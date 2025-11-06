@@ -1,4 +1,5 @@
 mod btc;
+mod config;
 
 #[macro_use]
 extern crate log;
