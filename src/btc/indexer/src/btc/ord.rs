@@ -1,6 +1,16 @@
-use ord::{InscriptionId, api::{Inscription, Inscriptions}};
+use ord::{
+    InscriptionId,
+    api::{Inscription, Inscriptions},
+};
 use reqwest::Client;
 use std::time::Duration;
+use reqwest::header::CONTENT_TYPE;
+
+#[derive(Debug, Clone)]
+pub enum ContentBody {
+    Text(String),
+    Binary(Vec<u8>),
+}
 
 pub struct OrdClient {
     client: Client,
@@ -18,10 +28,13 @@ impl OrdClient {
                 msg
             })?;
 
-        Ok(OrdClient { client, server_url: server_url.to_string() })
+        Ok(OrdClient {
+            client,
+            server_url: server_url.to_string(),
+        })
     }
 
-    async fn get_latest_block_height(&self) -> Result<u64, String> {
+    pub async fn get_latest_block_height(&self) -> Result<u64, String> {
         let url = format!("{}/blockheight", self.server_url);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             let msg = format!("Failed to send request to {}: {}", url, e);
@@ -110,7 +123,7 @@ impl OrdClient {
     */
     pub async fn get_inscriptions(
         &self,
-        inscription_ids: &[&str],
+        inscription_ids: &[InscriptionId],
     ) -> Result<Vec<Inscription>, String> {
         let url = format!("{}/inscriptions", self.server_url);
         let resp = self
@@ -164,7 +177,7 @@ impl OrdClient {
     }
      */
 
-    async fn get_inscription_by_block(
+    pub async fn get_inscription_by_block(
         &self,
         block_height: u64,
     ) -> Result<Vec<InscriptionId>, String> {
@@ -210,10 +223,10 @@ impl OrdClient {
         Ok(inscription_ids)
     }
 
-    async fn get_content_by_inscription_id(
+    pub async fn get_content_by_inscription_id(
         &self,
         inscription_id: &InscriptionId,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<ContentBody>, String> {
         let url = format!("{}/content/{}", self.server_url, inscription_id);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             let msg = format!("Failed to send request to {}: {}", url, e);
@@ -236,12 +249,36 @@ impl OrdClient {
             return Err(msg);
         }
 
-        let content = resp.text().await.map_err(|e| {
-            let msg = format!("Failed to read response text from {}: {}", url, e);
-            error!("{}", msg);
-            msg
-        })?;
+        // Check if the content type is text-based
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_lowercase());
+        let is_text = content_type.as_ref().map_or(false, |ct| {
+            ct.starts_with("text/")
+                || ct.contains("application/json")
+                || ct.contains("application/xml")
+        });
 
-        Ok(Some(content))
+        if is_text {
+            let content = resp.text().await.map_err(|e| {
+                let msg = format!("Failed to read response text from {}: {}", url, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            Ok(Some(ContentBody::Text(content)))
+        } else {
+            let content = resp.bytes().await.map_err(|e| {
+                let msg = format!("Failed to read response bytes from {}: {}", url, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            Ok(Some(ContentBody::Binary(content.to_vec())))
+        }
     }
 }
+
+pub type OrdClientRef = std::sync::Arc<OrdClient>;

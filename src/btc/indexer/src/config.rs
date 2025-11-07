@@ -96,13 +96,19 @@ impl OrdConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct USDBConfig {
+    pub genesis_block_height: u64,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexerConfig {
     // Used for store data and logs separately, default is "formal",
-    pub isolate: String,
+    pub isolate: Option<String>,
 
     pub bitcoin: BTCConfig,
 
     pub ordinals: OrdConfig,
+
+    pub usdb: USDBConfig,
 }
 
 pub struct ConfigManager {
@@ -158,6 +164,23 @@ impl ConfigManager {
 
     pub fn root_dir(&self) -> &PathBuf {
         &self.root_dir
+    }
+
+    pub fn data_dir(&self) -> PathBuf {
+        let dir = match &self.config.isolate {
+            Some(isolate) => {
+                self.root_dir.join(isolate).join("data")
+            }
+            None => {
+                self.root_dir.join("data")
+            }
+        };
+        
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir).expect("Could not create data directory");
+        }
+
+        dir
     }
 
     pub fn config(&self) -> &IndexerConfig {
