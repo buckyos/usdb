@@ -1,10 +1,11 @@
 use bitcoincore_rpc::Error as BTCError;
-use bitcoincore_rpc::bitcoin::{Block, Txid};
+use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoincore_rpc_json::GetRawTransactionResult;
+use bitcoincore_rpc::json::GetBlockResult;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 type TxCache = LruCache<String, GetRawTransactionResult>;
@@ -75,7 +76,7 @@ impl BTCClient {
         Err(msg)
     }
 
-    pub async fn get_block(&self, height: u64) -> Result<Block, String> {
+    pub async fn get_block(&self, height: u64) -> Result<GetBlockResult, String> {
         for i in 0..RETRY_COUNT {
             match self.get_block_inner(height) {
                 Ok(block) => return Ok(block),
@@ -103,9 +104,9 @@ impl BTCClient {
         Err(msg)
     }
 
-    fn get_block_inner(&self, height: u64) -> Result<Block, BTCError> {
+    fn get_block_inner(&self, height: u64) -> Result<GetBlockResult, BTCError> {
         let hash = self.client.get_block_hash(height)?;
-        self.client.get_block(&hash)
+        self.client.get_block_info(&hash)
     }
 
     pub async fn get_transaction(&self, txid: &Txid) -> Result<GetRawTransactionResult, String> {
@@ -154,7 +155,47 @@ impl BTCClient {
 
         Ok(tx)
     }
-}
 
+    // Get multiple transactions in batch
+    pub async fn get_transactions(
+        self: &BTCClientRef,
+        txids: &[Txid],
+    ) -> Result<Vec<GetRawTransactionResult>, String> {
+        const BATCH_SIZE: usize = 64;
+        let mut results = Vec::with_capacity(txids.len());
+
+        for chunk in txids.chunks(BATCH_SIZE) {
+            let mut handles = Vec::with_capacity(chunk.len());
+
+            for txid in chunk {
+                let client_clone = self.clone();
+                let txid_clone = *txid;
+                let handle =
+                    tokio::spawn(async move { client_clone.get_transaction(&txid_clone).await });
+                handles.push(handle);
+            }
+
+            for handle in handles {
+                match handle.await {
+                    Ok(Ok(tx)) => results.push(tx),
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => {
+                        let msg = format!("Task join error: {}", e);
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            results.len(),
+            txids.len(),
+            "Mismatch in number of transactions fetched"
+        );
+
+        Ok(results)
+    }
+}
 
 pub type BTCClientRef = Arc<BTCClient>;

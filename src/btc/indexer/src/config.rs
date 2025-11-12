@@ -101,7 +101,8 @@ pub struct USDBConfig {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexerConfig {
-    // Used for store data and logs separately, default is "formal",
+    // Used for store data and logs separately, default is none,
+    // So data and logs are stored in the root dir directly, or {isolate}/data and {isolate}/logs if set
     pub isolate: Option<String>,
 
     pub bitcoin: BTCConfig,

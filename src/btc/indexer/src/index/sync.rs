@@ -1,10 +1,12 @@
 use super::content::{InscriptionContentLoader, USDBInscription};
 use super::inscription::BlockInscriptionsCollector;
-use super::state::{SyncStateStorage, SyncStateStorageRef};
+use super::inscription::{InscriptionNewItem, InscriptionOperation};
+use super::sync_state::{SyncStateStorage, SyncStateStorageRef};
+use super::transfer::InscriptionTransferTracker;
 use crate::btc::{BTCClient, BTCClientRef, OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
+use crate::storage::{InscriptionsManager, InscriptionsManagerRef};
 use ord::api::Inscription;
-use ord::InscriptionId;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,6 +17,9 @@ pub struct InscriptionSyncer {
 
     current_block_height: AtomicU64,
     state: SyncStateStorageRef,
+
+    inscriptions_manager: InscriptionsManagerRef,
+    transfer_tracker: InscriptionTransferTracker,
 }
 
 impl InscriptionSyncer {
@@ -30,12 +35,22 @@ impl InscriptionSyncer {
         // Init state storage
         let state = SyncStateStorage::new(&config.data_dir())?;
 
+        let inscriptions_manager = Arc::new(InscriptionsManager::new(config.clone())?);
+        let transfer_tracker = InscriptionTransferTracker::new(
+            config.clone(),
+            inscriptions_manager.transfer_storage().clone(),
+        )?;
+
         let ret = Self {
             config,
             btc_client: Arc::new(btc_client),
             ord_client: Arc::new(ord_client),
+
             state: Arc::new(state),
             current_block_height: AtomicU64::new(0),
+
+            inscriptions_manager,
+            transfer_tracker,
         };
 
         Ok(ret)
@@ -46,7 +61,9 @@ impl InscriptionSyncer {
     }
 
     pub async fn init(&self) -> Result<(), String> {
-        // TODO
+        self.transfer_tracker.init().await?;
+
+        info!("Inscription transfer tracker initialized");
 
         Ok(())
     }
@@ -186,13 +203,53 @@ impl InscriptionSyncer {
     }
 
     async fn sync_block(&self, height: u64) -> Result<(), String> {
-        // Get inscriptions at this block
-        let inscription_ids = self.ord_client.get_inscription_by_block(height).await?;
+        info!("Processing inscriptions at block height {}", height);
+
+        let mut collector = BlockInscriptionsCollector::new(height);
+
+        // First process block inscriptions
+        self.process_block_inscriptions(height, &mut collector)
+            .await?;
+
+        // Then process inscription transfers
+        self.scan_block_inscription_transfer(height, &mut collector)
+            .await?;
+
+        // Check if there is anything to process
+        if collector.is_empty() {
+            info!(
+                "No unknown inscriptions and transfers found at block height {}",
+                height
+            );
+            return Ok(());
+        }
+
+        if collector.transfer_inscriptions().len() > 0 {
+            // Only remove inscriptions that is transfer op, inscribe data op should always be there!
+            let iter = collector
+                .transfer_inscriptions()
+                .iter()
+                .filter(|item| item.op == InscriptionOperation::Transfer);
+            let list = iter.collect::<Vec<_>>();
+
+            if list.len() > 0 {
+                info!(
+                    "Removing {} transferred inscriptions at block height {}",
+                    list.len(),
+                    height
+                );
+
+                self.transfer_tracker
+                    .remove_inscriptions_on_block_complete(&list)
+                    .await?;
+            }
+        }
 
         info!(
-            "Found {} inscriptions at block height {}",
-            inscription_ids.len(),
-            height
+            "Finished processing inscriptions at block height {}: {} new inscriptions, {} transfers",
+            height,
+            collector.new_inscriptions().len(),
+            collector.transfer_inscriptions().len()
         );
 
         Ok(())
@@ -228,7 +285,6 @@ impl InscriptionSyncer {
             "Number of inscriptions fetched should match number of inscription IDs"
         );
 
-        let begin_tick = std::time::Instant::now();
         let usdb_inscriptions = self
             .load_inscriptions_content(&inscriptions)
             .await
@@ -250,7 +306,7 @@ impl InscriptionSyncer {
                 continue;
             }
 
-            let (inscription, usdb_inscription) = item.unwrap();
+            let (inscription, content, usdb_inscription) = item.unwrap();
             if inscription.number < 0 {
                 warn!(
                     "Inscription {} at block {} has negative number {}, skipping",
@@ -258,9 +314,78 @@ impl InscriptionSyncer {
                 );
                 continue;
             }
-            
-            collector.collect_inscription(inscription, usdb_inscription.clone());
+
+            let create_info = self
+                .transfer_tracker
+                .calc_create_satpoint(&inscription.id)
+                .await?;
+
+            // FXIME: Should not happen? But just in case, we check here
+            if create_info.address.is_none() {
+                let msg = format!(
+                    "Inscription {} at block {} has no creator address",
+                    inscription.id, block_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let inscription_new_item = InscriptionNewItem {
+                inscription_id: inscription.id.clone(),
+                inscription_number: inscription.number,
+                block_height,
+                timestamp: inscription.timestamp as u32,
+                address: create_info.address.unwrap(), // The creator address
+                satpoint: create_info.satpoint,
+                value: create_info.value,
+
+                op: usdb_inscription.op(),
+                content: usdb_inscription,
+                content_string: content,
+
+                commit_txid: create_info.commit_txid,
+            };
+
+            // Process the new inscription
+            self.on_new_inscription(&inscription_new_item).await?;
+
+            // Add to collector for further processing
+            collector.add_new_inscription(inscription_new_item);
         }
+
+        Ok(())
+    }
+
+    async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
+        // First add to storage to persist
+        self.inscriptions_manager
+            .inscription_storage()
+            .add_new_inscription(
+                &item.inscription_id,
+                item.inscription_number,
+                item.block_height,
+                item.timestamp,
+                item.satpoint,
+                item.commit_txid,
+                item.value,
+                &item.content_string,
+                item.content.op(),
+                &item.address,
+            )?;
+
+        // Then record inscription transfer and track it
+        self.transfer_tracker
+            .add_new_inscription(
+                item.inscription_id.clone(),
+                item.inscription_number,
+                item.block_height,
+                item.timestamp,
+                item.address.clone(),
+                item.satpoint,
+                item.value,
+                item.content.op(),
+            )
+            .await?;
 
         Ok(())
     }
@@ -268,7 +393,7 @@ impl InscriptionSyncer {
     async fn load_inscriptions_content(
         &self,
         inscriptions: &Vec<Inscription>,
-    ) -> Result<Vec<Option<(Inscription, USDBInscription)>>, String> {
+    ) -> Result<Vec<Option<(Inscription, String, USDBInscription)>>, String> {
         const BATCH_SIZE: usize = 64;
         let mut contents = Vec::with_capacity(inscriptions.len());
 
@@ -288,7 +413,7 @@ impl InscriptionSyncer {
                         &config,
                     )
                     .await
-                    .map(|opt| opt.map(|usdb| (inscription, usdb)))
+                    .map(|opt| opt.map(|(content, usdb)| (inscription, content, usdb)))
                 });
 
                 handles.push(handle);
@@ -306,5 +431,30 @@ impl InscriptionSyncer {
         }
 
         Ok(contents)
+    }
+
+    async fn scan_block_inscription_transfer(
+        &self,
+        block_height: u64,
+        collector: &mut BlockInscriptionsCollector,
+    ) -> Result<(), String> {
+        let transfer_items = self
+            .transfer_tracker
+            .process_block(
+                block_height,
+                &self.inscriptions_manager.inscription_storage(),
+            )
+            .await?;
+
+        for item in &transfer_items {
+            self.inscriptions_manager
+                .inscription_storage()
+                .transfer_owner(&item.inscription_id, &item.to_address, block_height)?;
+        }
+
+        // Add transfer items to collector for further processing
+        collector.add_transfer_inscriptions(transfer_items);
+
+        Ok(())
     }
 }

@@ -1,5 +1,5 @@
 use super::btc::BTCClientRef;
-use bitcoincore_rpc::bitcoin::{Amount, Network, OutPoint};
+use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

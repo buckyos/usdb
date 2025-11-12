@@ -4,16 +4,57 @@ use bitcoincore_rpc::bitcoin::{
 };
 use ord::InscriptionId;
 use ordinals::SatPoint;
+use std::str::FromStr;
+use super::content::USDBInscription;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InscriptionOperation {
+    Inscribe,
+    Transfer,
+}
+
+impl InscriptionOperation {
+    pub fn as_str(&self) -> &str {
+        match self {
+            InscriptionOperation::Inscribe => "inscribe",
+            InscriptionOperation::Transfer => "transfer",
+        }
+    }
+
+    pub fn need_track_transfer(&self) -> bool {
+        match self {
+            InscriptionOperation::Inscribe => true,
+            InscriptionOperation::Transfer => true,
+        }
+    }
+}
+
+impl FromStr for InscriptionOperation {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "inscribe" => Ok(InscriptionOperation::Inscribe),
+            "transfer" => Ok(InscriptionOperation::Transfer),
+            _ => Err(format!("Invalid inscription operation: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct InscriptionNewItem {
     pub inscription_id: InscriptionId,
-    pub inscription_number: u64,
+    pub inscription_number: i32,
     pub block_height: u64,
     pub timestamp: u32,
     pub address: Address<NetworkUnchecked>, // The creator address
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub content: String,
+
+    pub content_string: String,
+    pub content: USDBInscription,
+    pub op: InscriptionOperation,
+    
     pub commit_txid: Txid,
 }
 
@@ -23,6 +64,7 @@ impl InscriptionNewItem {
     }
 }
 
+#[derive(Clone)]
 pub struct InscriptionTransferItem {
     pub inscription_id: InscriptionId,
     pub inscription_number: u64,
@@ -37,6 +79,7 @@ pub struct InscriptionTransferItem {
     pub value: Amount,
 
     pub content: String,
+    pub op: InscriptionOperation,
     pub index: u64, // Index indicates the number of transfers
 }
 
@@ -64,6 +107,10 @@ impl BlockInscriptionsCollector {
             new_inscriptions: Vec::new(),
             transfer_inscriptions: Vec::new(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.new_inscriptions.is_empty() && self.transfer_inscriptions.is_empty()
     }
 
     pub fn add_new_inscription(&mut self, item: InscriptionNewItem) {

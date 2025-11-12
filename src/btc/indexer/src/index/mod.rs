@@ -1,4 +1,7 @@
 mod sync;
-mod state;
+mod sync_state;
 mod inscription;
 mod content;
+mod transfer;
+
+pub use inscription::*;
