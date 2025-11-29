@@ -407,6 +407,17 @@ impl InscriptionTransferTracker {
                         &content,
                     )?;
 
+                    // The inscription must be valid USDB inscription
+                    if ret.is_none() {
+                        let msg = format!(
+                            "Inscription content is not valid USDB inscription for inscription_id {:?}",
+                            existing_item.inscription_id
+                        );
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+                    let ret = ret.unwrap();
+
                     info!(
                         "Found inscription transfer {} from {} to {}, value {}",
                         existing_item.inscription_id,

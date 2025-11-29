@@ -5,3 +5,4 @@ mod content;
 mod transfer;
 
 pub use inscription::*;
+pub use content::*;
