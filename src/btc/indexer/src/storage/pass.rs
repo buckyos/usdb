@@ -1,10 +1,8 @@
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::sync::Mutex;
-use ord::subcommand::index::info;
 use rusqlite::Connection;
 use ord::InscriptionId;
 use crate::index::MinerPassState;
-use crate::storage::pass;
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkUnchecked};
 use bitcoincore_rpc::bitcoin::{Network, Txid};
 
@@ -30,7 +28,7 @@ pub struct MinerPassStorage {
 }
 
 impl MinerPassStorage {
-    pub fn new(data_dir: PathBuf, network: Network) -> Result<Self, String> {
+    pub fn new(data_dir: &Path, network: Network) -> Result<Self, String> {
         let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
 
         let conn = Connection::open(&db_path).map_err(|e| {

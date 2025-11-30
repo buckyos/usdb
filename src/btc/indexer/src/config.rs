@@ -96,9 +96,25 @@ impl OrdConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElectrsConfig {
+    pub rpc_url: Option<String>,
+}
+
+impl ElectrsConfig {
+    pub fn rpc_url(&self) -> &str {
+        if let Some(ref url) = self.rpc_url {
+            url.as_str()
+        } else {
+            "tcp://127.0.0.1:50001"
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     pub genesis_block_height: u64,
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexerConfig {
     // Used for store data and logs separately, default is none,
@@ -108,6 +124,8 @@ pub struct IndexerConfig {
     pub bitcoin: BTCConfig,
 
     pub ordinals: OrdConfig,
+
+    pub electrs: ElectrsConfig,
 
     pub usdb: USDBConfig,
 }

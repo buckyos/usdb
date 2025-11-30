@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 tokio = { version = "*", features = ["full"] }
 bitcoincore-rpc = "0.19"
-ord = "0.23"
+ord = "0.24"
+electrum-client = "0.24"
 ordinals = "*"
 lru = "*" 
 serde_json = "*" 

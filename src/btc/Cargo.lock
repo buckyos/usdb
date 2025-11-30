@@ -1159,6 +1159,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
+name = "electrum-client"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5059f13888a90486e7268bbce59b175f5f76b1c55e5b9c568ceaa42d2b8507c"
+dependencies = [
+ "bitcoin",
+ "byteorder",
+ "libc",
+ "log",
+ "rustls",
+ "serde",
+ "serde_json",
+ "webpki-roots 0.25.4",
+ "winapi",
+]
+
+[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1582,6 +1599,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-conservative"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ee770c000993d17c185713463d5ebfbd1af9afae4c17cc295640104383bfbf0"
+
+[[package]]
 name = "hex_lit"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1864,6 +1887,7 @@ version = "0.1.0"
 dependencies = [
  "bitcoincore-rpc",
  "dirs",
+ "electrum-client",
  "log",
  "lru",
  "named-lock",
@@ -2133,6 +2157,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f182275033b808ede9427884caa8e05fa7db930801759524ca7925bd8aa7a82"
 dependencies = [
+ "half",
  "minicbor-derive",
 ]
 
@@ -2155,12 +2180,13 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "miniscript"
-version = "12.3.5"
+version = "13.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "487906208f38448e186e3deb02f2b8ef046a9078b0de00bdb28bf4fb9b76951c"
+checksum = "867b1f11e0545ad5ebbddd8a9f18756d9657a6758bf10d96cf15ddd0b726b650"
 dependencies = [
  "bech32",
  "bitcoin",
+ "hex-conservative 1.0.0",
 ]
 
 [[package]]
@@ -2453,9 +2479,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "ord"
-version = "0.23.3"
+version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c6cce896c02c652436a38706fd59327abde1060d9c94d1a8a585ed9b71e590a"
+checksum = "4a14f9f589029e3a1aa7ba8d4df202c4e84347f27a4267cd5ed1fc865e5cf365"
 dependencies = [
  "anyhow",
  "axum",
@@ -2483,7 +2509,6 @@ dependencies = [
  "hyper",
  "hyper-util",
  "indicatif",
- "lazy_static",
  "log",
  "mime",
  "mime_guess",
@@ -2745,9 +2770,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "2.6.3"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eca1e9d98d5a7e9002d0013e18d5a9b000aee942eb134883a82f06ebffb6c01"
+checksum = "ae323eb086579a3769daa2c753bb96deb95993c534711e0dbe881b5192906a06"
 dependencies = [
  "libc",
 ]
@@ -3923,6 +3948,12 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "webpki-roots"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f20c57d8d7db6d3b86154206ae5d8fba62dd39573114de97c2cb0578251f8e1"
 
 [[package]]
 name = "webpki-roots"
