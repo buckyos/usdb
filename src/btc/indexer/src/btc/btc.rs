@@ -204,7 +204,7 @@ pub type BTCClientRef = Arc<BTCClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::Auth;
+    use bitcoincore_rpc::{Auth, bitcoin::consensus::Decodable};
 
     #[tokio::test]
     async fn test_btc_client_creation() {
@@ -230,5 +230,8 @@ mod tests {
         let tx = btc_client.get_raw_transaction(&txid).await;
         assert!(tx.is_ok());
         println!("Transaction: {:?}", tx.unwrap());
+
+        bitcoincore_rpc::bitcoin::Block::consensus_decode(reader);
+        Client::get_block(&self, hash)
     }
 }
