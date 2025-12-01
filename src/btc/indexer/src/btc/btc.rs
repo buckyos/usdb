@@ -1,6 +1,6 @@
 use bitcoincore_rpc::Error as BTCError;
 use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoincore_rpc_json::GetRawTransactionResult;
+use bitcoincore_rpc::bitcoincore_rpc_json::{GetRawTransactionResult, GetTransactionResult};
 use bitcoincore_rpc::json::GetBlockResult;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use lru::LruCache;
@@ -109,14 +109,14 @@ impl BTCClient {
         self.client.get_block_info(&hash)
     }
 
-    pub async fn get_transaction(&self, txid: &Txid) -> Result<GetRawTransactionResult, String> {
+    pub async fn get_raw_transaction(&self, txid: &Txid) -> Result<GetRawTransactionResult, String> {
         for i in 0..RETRY_COUNT {
-            match self.get_transaction_inner(txid) {
+            match self.get_raw_transaction_inner(txid) {
                 Ok(tx) => return Ok(tx),
                 Err(error) => {
                     if Self::should_retry(&error) {
                         warn!(
-                            "get_transaction failed (attempt {} of {}): {}. Retrying...",
+                            "get_raw_transaction failed (attempt {} of {}): {}. Retrying...",
                             i + 1,
                             RETRY_COUNT,
                             error
@@ -124,7 +124,7 @@ impl BTCClient {
                         Self::sleep_for_retry().await;
                         continue;
                     } else {
-                        let msg = format!("get_transaction failed: {}", error);
+                        let msg = format!("get_raw_transaction failed: {}", error);
                         error!("{}", msg);
                         return Err(msg);
                     }
@@ -132,12 +132,12 @@ impl BTCClient {
             }
         }
 
-        let msg = format!("get_transaction failed after {} attempts", RETRY_COUNT);
+        let msg = format!("get_raw_transaction failed after {} attempts", RETRY_COUNT);
         error!("{}", msg);
         Err(msg)
     }
 
-    fn get_transaction_inner(&self, txid: &Txid) -> Result<GetRawTransactionResult, BTCError> {
+    fn get_raw_transaction_inner(&self, txid: &Txid) -> Result<GetRawTransactionResult, BTCError> {
         // First check the cache
         {
             let txid_str = txid.to_string();
@@ -157,7 +157,7 @@ impl BTCClient {
     }
 
     // Get multiple transactions in batch
-    pub async fn get_transactions(
+    pub async fn get_raw_transactions(
         self: &BTCClientRef,
         txids: &[Txid],
     ) -> Result<Vec<GetRawTransactionResult>, String> {
@@ -171,7 +171,7 @@ impl BTCClient {
                 let client_clone = self.clone();
                 let txid_clone = *txid;
                 let handle =
-                    tokio::spawn(async move { client_clone.get_transaction(&txid_clone).await });
+                    tokio::spawn(async move { client_clone.get_raw_transaction(&txid_clone).await });
                 handles.push(handle);
             }
 
@@ -199,3 +199,36 @@ impl BTCClient {
 }
 
 pub type BTCClientRef = Arc<BTCClient>;
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::Auth;
+
+    #[tokio::test]
+    async fn test_btc_client_creation() {
+        let rpc_url = "http://localhost:8332".to_string();
+        let cookie_path = std::env::home_dir()
+            .unwrap()
+            .join(".bitcoin")
+            .join(".cookie");
+        assert!(cookie_path.exists());
+
+        let auth = Auth::CookieFile(cookie_path);
+        let client = BTCClient::new(rpc_url, auth);
+        assert!(client.is_ok());
+
+        let btc_client = client.unwrap();
+        let height = btc_client.get_latest_block_height().await;
+        assert!(height.is_ok());
+        println!("Latest block height: {}", height.unwrap());
+
+        let txid = "32939f1cb22341c54c6db5dc0833acffbcefe822b3f82e6adf0de289a424fd53"
+            .parse()
+            .unwrap();
+        let tx = btc_client.get_raw_transaction(&txid).await;
+        assert!(tx.is_ok());
+        println!("Transaction: {:?}", tx.unwrap());
+    }
+}

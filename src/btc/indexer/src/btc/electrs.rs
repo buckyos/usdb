@@ -1,6 +1,12 @@
-
-use bitcoincore_rpc::bitcoin::address::{NetworkChecked, Address};
+use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
+use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
+use bitcoincore_rpc::bitcoin::{Transaction, Txid};
 use electrum_client::{Client, ElectrumApi, GetHistoryRes};
+
+pub struct TxFullItem {
+    pub vin: Vec<TxOut>,
+    pub vout: Vec<TxOut>,
+}
 
 pub struct ElectrsClient {
     client: Client,
@@ -22,9 +28,13 @@ impl ElectrsClient {
     }
 
     // Get address history
-    pub async fn get_history(&self, address: &Address<NetworkChecked>) -> Result<Vec<GetHistoryRes>, String> {
-        
-        let his = self.client.script_get_history(&address.script_pubkey())
+    pub async fn get_history(
+        &self,
+        address: &Address<NetworkChecked>,
+    ) -> Result<Vec<GetHistoryRes>, String> {
+        let his = self
+            .client
+            .script_get_history(&address.script_pubkey())
             .map_err(|e| {
                 let msg = format!("Failed to get history for address {}: {}", address, e);
                 error!("{}", msg);
@@ -33,6 +43,99 @@ impl ElectrsClient {
 
         Ok(his)
     }
+
+    pub async fn get_transaction(&self, txid: &Txid) -> Result<Transaction, String> {
+        let tx = self.client.transaction_get(txid).map_err(|e| {
+            let msg = format!("Failed to get transaction {}: {}", txid, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(tx)
+    }
+
+    // Expand a transaction to get full vin and vout details
+    pub async fn expand_tx(&self, txid: &Txid) -> Result<TxFullItem, String> {
+        let tx = self.client.transaction_get(txid).map_err(|e| {
+            let msg = format!("Failed to get transaction {}: {}", txid, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut vin = Vec::with_capacity(tx.input.len());
+        for input in tx.input {
+            let vin_tx = self
+                .client
+                .transaction_get(&input.previous_output.txid)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to get vin transaction {}: {}",
+                        input.previous_output.txid, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let vin_vout = input.previous_output.vout as usize;
+            if vin_vout >= vin_tx.output.len() {
+                let msg = format!(
+                    "Invalid vout index {} for transaction {}",
+                    vin_vout, input.previous_output.txid
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+
+            vin.push(vin_tx.output[vin_vout].clone());
+        }
+
+        let vout = tx.output.clone();
+
+        Ok(TxFullItem { vin, vout })
+    }
 }
 
 pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::Network;
+    use std::str::FromStr;
+
+    #[tokio::test]
+    async fn test_electrs_client() {
+        let server_url = "tcp://127.0.0.1:50001";
+        let client = ElectrsClient::new(server_url).expect("Failed to create Electrs client");
+        let address = Address::from_str("bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh")
+            .expect("Failed to parse address");
+        let address = address.assume_checked();
+        let history = client
+            .get_history(&address)
+            .await
+            .expect("Failed to get history");
+        assert!(history.len() > 0);
+
+        let txid =
+            Txid::from_str("32939f1cb22341c54c6db5dc0833acffbcefe822b3f82e6adf0de289a424fd53")
+                .expect("Failed to parse txid");
+        let tx = client
+            .get_transaction(&txid)
+            .await
+            .expect("Failed to get transaction");
+        println!("Transaction: {:?}", tx);
+
+        let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
+            .expect("Failed to parse address");
+        let address = address.require_network(Network::Bitcoin).unwrap();
+        let delta = client
+            .amount_delta_from_tx(&txid, &address)
+            .await
+            .expect("Failed to compute amount delta");
+        println!(
+            "Amount delta for address {} in tx {}: {}",
+            address, txid, delta
+        );
+    }
+}

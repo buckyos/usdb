@@ -40,7 +40,7 @@ impl UTXOValueManager {
 
     async fn search_utxo(&self, outpoint: &OutPoint) -> Result<Amount, String> {
         // First get the transaction
-        let tx = self.btc_client.get_transaction(&outpoint.txid).await?;
+        let tx = self.btc_client.get_raw_transaction(&outpoint.txid).await?;
 
         if tx.vout.len() <= outpoint.vout as usize {
             let msg = format!(

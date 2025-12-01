@@ -1,4 +1,4 @@
-use bitcoincore_rpc::bitcoin::address::NetworkUnchecked;
+use bitcoincore_rpc::bitcoin::address::{NetworkChecked};
 use bitcoincore_rpc::bitcoin::{Address, Network};
 use rusqlite::Connection;
 use std::path::PathBuf;
@@ -7,10 +7,17 @@ use std::sync::Mutex;
 
 // The balance record for an address in a specific block
 pub struct BalanceRecord {
-    pub address: Address<NetworkUnchecked>,
+    pub address: Address<NetworkChecked>,
     pub block_height: u64,
     pub delta: i64,   // The change in balance due to this block
     pub balance: u64, // The balance after all transactions in this block
+}
+
+#[derive(Debug, Clone)]
+pub struct WatchedAddress {
+    pub address: Address<NetworkChecked>,
+    pub block_height: u64,
+    pub balance: u64,
 }
 
 pub struct AddressBalanceStorage {
@@ -49,6 +56,8 @@ impl AddressBalanceStorage {
             "
             CREATE TABLE IF NOT EXISTS watched_addresses (
                 address TEXT NOT NULL PRIMARY KEY,
+                block_height INTEGER NOT NULL DEFAULT 0,
+                balance INTEGER NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -58,7 +67,10 @@ impl AddressBalanceStorage {
                 address TEXT NOT NULL,
                 block_height INTEGER NOT NULL,
                 delta INTEGER NOT NULL,
-                balance INTEGER NOT NULL
+                balance INTEGER NOT NULL,
+
+                foreign key(address) references watched_addresses(address),
+                UNIQUE(address, block_height)
             );
 
             CREATE INDEX IF NOT EXISTS idx_address_balances_address_block_height
@@ -98,6 +110,22 @@ impl AddressBalanceStorage {
                 WHERE max_h IS NOT NULL AND NEW.block_height <= max_h;
             END IF;
             END;
+
+            -- Update watched_addresses table after inserting into address_balances
+            CREATE TRIGGER trig_watched_sync_after_insert
+            AFTER INSERT ON address_balances
+            FOR EACH ROW
+            BEGIN
+                INSERT OR REPLACE INTO watched_addresses (address, block_height, balance)
+                VALUES (
+                    NEW.address,
+                    NEW.block_height,
+                    NEW.balance
+                );
+                -- Use INSERT OR REPLACE to:
+                --   - If exists → update block_height and balance
+                --   - If not exists → insert (although foreign key theoretically won't reach this step)
+            END;
             ",
         )
         .map_err(|e| {
@@ -114,8 +142,8 @@ impl AddressBalanceStorage {
         let changed = conn
             .execute(
                 "
-            INSERT OR IGNORE INTO watched_addresses (address)
-            VALUES (?)
+            INSERT OR IGNORE INTO watched_addresses (address, block_height, balance)
+            VALUES (?1, 0, 0)
             ",
                 [address],
             )
@@ -134,22 +162,211 @@ impl AddressBalanceStorage {
         Ok(())
     }
 
-    // Add a balance record for an address at a specific block
-    // And the block_height must be greater than the latest record's block_height!
-    pub fn add_balance_record(&self, record: &BalanceRecord) -> Result<(), String> {
-        let address = record
-            .address
-            .clone()
-            .require_network(self.network)
+    pub fn get_all_watched_addresses(&self) -> Result<Vec<WatchedAddress>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT address, block_height, balance
+            FROM watched_addresses
+            ",
+            )
             .map_err(|e| {
                 let msg = format!(
-                    "Failed to convert address to network {}: {}",
-                    self.network, e
+                    "Failed to prepare statement for getting all watched addresses: {}",
+                    e
                 );
                 error!("{}", msg);
                 msg
-            })?
-            .to_string();
+            })?;
+
+        let mut rows = stmt.query([]).map_err(|e| {
+            let msg = format!("Failed to query all watched addresses: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut result = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to fetch row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let addr_str: String = row.get(0).map_err(|e| {
+                let msg = format!("Failed to get address from row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            let address = Address::from_str(&addr_str)
+                .map_err(|e| {
+                    let msg = format!("Failed to parse address {}: {}", addr_str, e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .require_network(self.network)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Address {} is not valid for network {}: {}",
+                        addr_str, self.network, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            result.push(WatchedAddress {
+                address,
+                block_height: row.get(1).map_err(|e| {
+                    let msg = format!("Failed to get block_height from row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+                balance: row.get(2).map_err(|e| {
+                    let msg = format!("Failed to get balance from row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+            });
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_watched_address(&self, address: &str) -> Result<Option<WatchedAddress>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT address, block_height, balance
+            FROM watched_addresses
+            WHERE address = ?
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement for getting watched address {}: {}",
+                    address, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt.query([address]).map_err(|e| {
+            let msg = format!("Failed to query watched address {}: {}", address, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to fetch row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let addr_str: String = row.get(0).map_err(|e| {
+                let msg = format!("Failed to get address from row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            let address = Address::from_str(&addr_str)
+                .map_err(|e| {
+                    let msg = format!("Failed to parse address {}: {}", addr_str, e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .require_network(self.network)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Address {} is not valid for network {}: {}",
+                        addr_str, self.network, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            Ok(Some(WatchedAddress {
+                address,
+                block_height: row.get(1).map_err(|e| {
+                    let msg = format!("Failed to get block_height from row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+                balance: row.get(2).map_err(|e| {
+                    let msg = format!("Failed to get balance from row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Update the balance of a watched address at a specific block
+    // Which will read the latest balance and apply the delta to it
+    pub fn update_balance(
+        &self,
+        address: &Address<NetworkChecked>,
+        block_height: u64,
+        delta: i64,
+    ) -> Result<(), String> {
+        let address_str = address.to_string();
+
+        // Get the latest balance
+        let latest_balance = self.get_watched_address(&address_str)?;
+        assert!(
+            latest_balance.is_some(),
+            "Address {} must be watched before updating balance",
+            address_str
+        );
+        let latest_balance = latest_balance.unwrap();
+
+        // Check block height must be greater than latest
+        if block_height <= latest_balance.block_height {
+            let msg = format!(
+                "Block height {} must be greater than latest recorded height {} for address {}",
+                block_height, latest_balance.block_height, address_str
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        // Calculate new balance
+        let new_balance = if delta.is_negative() {
+            let delta_abs = delta.abs() as u64;
+            if delta_abs > latest_balance.balance {
+                let msg = format!(
+                    "Balance underflow: trying to decrease {} by {} which is greater than current balance {} for address {}",
+                    latest_balance.balance, delta_abs, latest_balance.balance, address_str
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            latest_balance.balance - delta_abs
+        } else {
+            latest_balance.balance + (delta as u64)
+        };
+
+        // Update the balance record
+        let record = BalanceRecord {
+            address: latest_balance.address,
+            block_height,
+            delta,
+            balance: new_balance,
+        };
+
+        self.add_balance_record(&record)?;
+
+        info!(
+            "Updated balance for address {} at block {}: delta {}, new balance {}",
+            address_str, block_height, delta, new_balance
+        );
+
+        Ok(())
+    }
+
+    // Add a balance record for an address at a specific block
+    // And the block_height must be greater than the latest record's block_height!
+    pub fn add_balance_record(&self, record: &BalanceRecord) -> Result<(), String> {
+        let address = record.address.to_string();
 
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -183,11 +400,14 @@ impl AddressBalanceStorage {
             error!("{}", msg);
             msg
         })?;
-        if !address.is_valid_for_network(self.network) {
-            let msg = format!("Address {} is not valid for Bitcoin network", addr_str);
+        let address = address.require_network(self.network).map_err(|e| {
+            let msg = format!(
+                "Address {} is not valid for network {}: {}",
+                addr_str, self.network, e
+            );
             error!("{}", msg);
-            return Err(msg);
-        }
+            msg
+        })?;
 
         Ok(BalanceRecord {
             address,
@@ -329,6 +549,5 @@ impl AddressBalanceStorage {
         }
     }
 }
-
 
 pub type AddressBalanceStorageRef = std::sync::Arc<AddressBalanceStorage>;

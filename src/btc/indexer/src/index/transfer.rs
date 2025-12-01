@@ -241,7 +241,7 @@ impl InscriptionTransferTracker {
         // First get tx by inscription id
         let tx = self
             .btc_client
-            .get_transaction(&inscription_id.txid)
+            .get_raw_transaction(&inscription_id.txid)
             .await?;
 
         // FIXME: There maybe multiple inscriptions in one tx input
@@ -341,7 +341,7 @@ impl InscriptionTransferTracker {
         let block = self.btc_client.get_block(block_height).await?;
 
         // Get all inscription ids in this block
-        let txs = self.btc_client.get_transactions(&block.tx).await?;
+        let txs = self.btc_client.get_raw_transactions(&block.tx).await?;
         assert_eq!(
             txs.len(),
             block.tx.len(),
