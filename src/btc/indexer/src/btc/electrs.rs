@@ -8,6 +8,30 @@ pub struct TxFullItem {
     pub vout: Vec<TxOut>,
 }
 
+impl TxFullItem {
+    pub fn amount_delta_from_tx(
+        &self,
+        address: &Address<NetworkChecked>,
+    ) -> Result<i64, String> {
+        let mut delta: i64 = 0;
+
+        let address_script = address.script_pubkey();
+        for vin in &self.vin {
+            if vin.script_pubkey == address_script {
+                delta -= vin.value.to_sat() as i64;
+            }
+        }
+
+        for vout in &self.vout {
+            if vout.script_pubkey == address_script {
+                delta += vout.value.to_sat() as i64;
+            }
+        }
+
+        Ok(delta)
+    }    
+}
+
 pub struct ElectrsClient {
     client: Client,
     server_url: String,
@@ -126,16 +150,21 @@ mod tests {
             .expect("Failed to get transaction");
         println!("Transaction: {:?}", tx);
 
+        let full_tx = client
+            .expand_tx(&txid)
+            .await
+            .expect("Failed to expand transaction");
+        println!("Full Transaction: vin={:?}, vout={:?}", full_tx.vin, full_tx.vout);
+
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
             .expect("Failed to parse address");
         let address = address.require_network(Network::Bitcoin).unwrap();
-        let delta = client
-            .amount_delta_from_tx(&txid, &address)
-            .await
+        let delta = full_tx.amount_delta_from_tx(&address)
             .expect("Failed to compute amount delta");
         println!(
             "Amount delta for address {} in tx {}: {}",
             address, txid, delta
         );
+        assert!(delta == -2045555); // Example value
     }
 }

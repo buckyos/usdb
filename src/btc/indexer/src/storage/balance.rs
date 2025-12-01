@@ -82,34 +82,23 @@ impl AddressBalanceStorage {
             BEFORE INSERT ON address_balances
             FOR EACH ROW
             BEGIN
-                -- Check if the address is being watched already
-                -- If it exists, all fields must be exactly the same (except for id)
-                PERFORM 1 FROM address_balances 
-                WHERE address = NEW.address 
-                AND block_height = NEW.block_height;
+                -- Reject same block_height with different data
+                SELECT RAISE(ABORT, 'duplicate block_height with different data')
+                FROM address_balances
+                WHERE address = NEW.address
+                AND block_height = NEW.block_height
+                AND (delta != NEW.delta OR balance != NEW.balance);
 
-                IF FOUND THEN
-                    -- If it exists, all fields must be exactly the same (except for id)
-                    SELECT RAISE(ABORT, 'duplicate block_height with different data')
-                    FROM address_balances
-                    WHERE address = NEW.address
-                    AND block_height = NEW.block_height
-                    AND (
-                            delta != NEW.delta 
-                        OR balance != NEW.balance
-                    );
-                END IF;
-
-                -- Check if block_height is strictly increasing (greater than the current maximum)
+                -- Enforce strictly increasing block_height
                 SELECT RAISE(ABORT, 'block_height must be greater than last recorded height')
                 FROM (
-                    SELECT MAX(block_height) AS max_h 
-                    FROM address_balances 
+                    SELECT MAX(block_height) AS max_h
+                    FROM address_balances
                     WHERE address = NEW.address
-                ) 
+                )
                 WHERE max_h IS NOT NULL AND NEW.block_height <= max_h;
-            END IF;
             END;
+
 
             -- Update watched_addresses table after inserting into address_balances
             CREATE TRIGGER trig_watched_sync_after_insert
@@ -551,3 +540,109 @@ impl AddressBalanceStorage {
 }
 
 pub type AddressBalanceStorageRef = std::sync::Arc<AddressBalanceStorage>;
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::Network;
+    use std::fs;
+
+    #[test]
+    fn test_address_balance_storage() {
+        let tmp_dir = std::env::temp_dir().join("usdb").join("test_address_balance_storage");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let test_db_path = tmp_dir.join(crate::constants::ADDRESS_BALANCE_DB_FILE);
+        if test_db_path.exists() {
+            fs::remove_file(&test_db_path).unwrap();
+        }
+        let storage =
+            AddressBalanceStorage::new(&tmp_dir, Network::Bitcoin).unwrap();
+
+        let test_address =
+            Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
+                .unwrap()
+                .require_network(Network::Bitcoin)
+                .unwrap();
+
+        // Add watched address
+        storage
+            .add_watched_address(&test_address.to_string())
+            .unwrap();
+        storage
+            .add_watched_address(&test_address.to_string())
+            .unwrap(); // Adding again should be no-op
+
+        // Update balance
+        storage
+            .update_balance(&test_address, 1, 1000)
+            .unwrap();
+        // Update balance with same block height and same delta should be failed
+        storage
+            .update_balance(&test_address, 1, 1000)
+            .unwrap_err();
+
+        // Update balance with same block height and different delta should error
+        let result = storage.update_balance(&test_address, 1, 500);
+        assert!(result.is_err());
+
+        // Check latest balance
+        let latest_balance = storage
+            .get_latest_balance(&test_address.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_balance.balance, 1000);
+        assert_eq!(latest_balance.block_height, 1);
+
+        // Check watched address
+        let watched_address = storage
+            .get_watched_address(&test_address.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(watched_address.balance, 1000);
+        assert_eq!(watched_address.block_height, 1);
+
+        storage
+            .update_balance(&test_address, 3, -500)
+            .unwrap();
+
+        // Get latest balance
+        let latest_balance = storage
+            .get_latest_balance(&test_address.to_string())
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest_balance.balance, 500);
+
+        // Get balance at block 1
+        let balance_at_1 = storage
+            .get_balance_at_block(&test_address.to_string(), 1)
+            .unwrap();
+        assert_eq!(balance_at_1, 1000);
+
+        // Get balance at block 2
+        let balance_at_2 = storage
+            .get_balance_at_block(&test_address.to_string(), 2)
+            .unwrap();
+        assert_eq!(balance_at_2, 1000);
+
+        // Get balance at block 3
+        let balance_at_3 = storage
+            .get_balance_at_block(&test_address.to_string(), 3)
+            .unwrap();
+        assert_eq!(balance_at_3, 500);
+
+        // Get balance at block 4
+        let balance_at_4 = storage
+            .get_balance_at_block(&test_address.to_string(), 4)
+            .unwrap();
+        assert_eq!(balance_at_4, 500);
+
+        // Insert balance with lower block height should error
+        let result = storage.update_balance(&test_address, 2, 200);
+        assert!(result.is_err());
+        
+        // Clean up
+        fs::remove_file(&test_db_path).unwrap();
+    }
+}

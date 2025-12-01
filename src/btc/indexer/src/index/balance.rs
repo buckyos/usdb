@@ -149,7 +149,7 @@ impl AddressBalanceIndexer {
 
         // Update balance for each found address
         for addr_info in found_address {
-            let delta = self.amount_delta_from_tx(&tx, &addr_info.address).await?;
+            let delta = tx.amount_delta_from_tx(&addr_info.address)?;
 
             self.balance_storage
                 .update_balance(&addr_info.address, block_height, delta)?;
@@ -183,7 +183,7 @@ impl AddressBalanceIndexer {
             // Load tx from btc client
             let tx = self.electrs_client.expand_tx(&item.tx_hash).await?;
 
-            let delta = self.amount_delta_from_tx(&tx, address).await?;
+            let delta = tx.amount_delta_from_tx(address)?;
 
             self.balance_storage
                 .update_balance(address, item.height as u64, delta)?;
@@ -192,28 +192,5 @@ impl AddressBalanceIndexer {
         // Implementation to index the balance for the given address
         // This is a placeholder implementation
         Ok(())
-    }
-
-    async fn amount_delta_from_tx(
-        &self,
-        tx: &TxFullItem,
-        address: &Address<NetworkChecked>,
-    ) -> Result<i64, String> {
-        let mut delta: i64 = 0;
-
-        let address_script = address.script_pubkey();
-        for vin in &tx.vin {
-            if vin.script_pubkey == address_script {
-                delta -= vin.value.to_sat() as i64;
-            }
-        }
-
-        for vout in &tx.vout {
-            if vout.script_pubkey == address_script {
-                delta += vout.value.to_sat() as i64;
-            }
-        }
-
-        Ok(delta)
     }
 }
