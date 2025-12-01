@@ -194,3 +194,32 @@ impl AddressBalanceIndexer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::{Network, key::rand::seq::index};
+    use std::str::FromStr;
+    use crate::{config::ConfigManager, storage};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_address_balance_indexer() {
+         let tmp_dir = std::env::temp_dir().join("usdb").join("test_address_balance_indexer");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let test_db_path = tmp_dir.join(crate::constants::ADDRESS_BALANCE_DB_FILE);
+        if test_db_path.exists() {
+            std::fs::remove_file(&test_db_path).unwrap();
+        }
+        let storage =
+            AddressBalanceStorage::new(&tmp_dir, Network::Bitcoin).unwrap();
+        let storage = Arc::new(storage);
+
+        let config = ConfigManager::new(None).expect("Failed to create config manager");
+        let config = Arc::new(config);
+
+        let indexer =
+            AddressBalanceIndexer::new(config, storage).expect("Failed to create indexer");
+    }
+}

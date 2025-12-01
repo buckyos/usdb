@@ -166,5 +166,16 @@ mod tests {
             address, txid, delta
         );
         assert!(delta == -2045555); // Example value
+
+
+        // Test another address
+        let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h").unwrap();
+        let address = address.require_network(Network::Bitcoin).unwrap();
+        let history = client
+            .get_history(&address)
+            .await
+            .expect("Failed to get history");
+        assert!(history.len() > 0);
+        println!("History for address {}: {}", address, history.len());
     }
 }
