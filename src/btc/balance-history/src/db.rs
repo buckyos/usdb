@@ -132,7 +132,9 @@ impl BalanceHistoryDB {
             batch.put_cf(cf, key, value);
         }
 
-        self.db.write(&batch).map_err(|e| {
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write batch to DB: {}", e);
             error!("{}", msg);
             msg
@@ -141,6 +143,62 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
+    // Get the latest balance entry for a given script_hash
+    pub fn get_latest_balance(
+        &self,
+        script_hash: ScriptHash,
+    ) -> Result<BalanceHistoryEntry, String> {
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        // Create an iterator in reverse mode starting from the maximum possible key for the script_hash
+        let max_key = Self::make_key(script_hash, u32::MAX);
+        let mut iter = self
+            .db
+            .iterator_cf(cf, IteratorMode::From(&max_key, Direction::Reverse));
+
+        if let Some(item) = iter.next() {
+            let (found_key, found_val) = item.map_err(|e| {
+                let msg = format!("Iterator error: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            assert!(
+                found_key.len() == BALANCE_HISTORY_KEY_LEN,
+                "Invalid balance key length {}",
+                found_key.len()
+            );
+
+            // Check if the ScriptHash matches
+            if &found_key[0..ScriptHash::LEN] == script_hash.as_ref() as &[u8] {
+                let block_height = Self::parse_block_height_from_key(&found_key);
+                let (delta, balance) = Self::parse_balance_from_value(&found_val);
+                let entry = BalanceHistoryEntry {
+                    script_hash,
+                    block_height,
+                    delta,
+                    balance,
+                };
+
+                return Ok(entry);
+            }
+        }
+
+        // No records found for this script_hash
+        let entry = BalanceHistoryEntry {
+            script_hash,
+            block_height: 0,
+            delta: 0,
+            balance: 0,
+        };
+
+        Ok(entry)
+    }
+    
     /// Get the balance entry for a given script_hash at or before the target block height
     pub fn get_balance_at_block_height(
         &self,
@@ -278,7 +336,7 @@ impl BalanceHistoryDB {
         })?;
 
         let mut ops = WriteOptions::default();
-        ops.set_sync(true);
+        ops.set_sync(false);
 
         let height_bytes = height.to_be_bytes();
         self.db
@@ -326,6 +384,7 @@ impl BalanceHistoryDB {
     }
 }
 
+pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 
 #[cfg(test)]
 mod tests {

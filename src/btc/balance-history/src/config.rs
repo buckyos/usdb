@@ -92,14 +92,30 @@ impl Default for BTCConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexConfig {
+    pub batch_size: usize,
+}
+
+impl Default for IndexConfig {
+    fn default() -> Self {
+        IndexConfig { batch_size: 32 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceHistoryConfig {
     pub btc: BTCConfig,
+    pub sync: IndexConfig,
 }
 
 impl Default for BalanceHistoryConfig {
     fn default() -> Self {
         BalanceHistoryConfig {
             btc: BTCConfig::default(),
+            sync: IndexConfig::default(),
         }
     }
 }
+
+
+pub type BalanceHistoryConfigRef = Arc<BalanceHistoryConfig>;
