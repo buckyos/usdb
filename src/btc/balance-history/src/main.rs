@@ -60,5 +60,51 @@ async fn main() {
     };
 
     output.set_message("Starting indexer...");
-    indexer.run().await.unwrap();
+
+
+    // Create a Future to wait for Ctrl+C (SIGINT) signal
+    use tokio::signal;
+    let sigint = signal::ctrl_c();
+    
+    // Create a Future to wait for SIGTERM signal (sent by kill command by default)
+    #[cfg(unix)]
+    let sigterm = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to create SIGTERM signal handler")
+            .recv()
+            .await;
+    };
+    
+    // On non-Unix systems, we only rely on Ctrl+C
+    #[cfg(not(unix))]
+    let sigterm = std::future::pending();
+
+    tokio::select! {
+        _ = sigint => {
+            info!("Received Ctrl+C, shutting down...");
+            output.set_message("Shutting down...");
+        }
+        _ = sigterm => {
+            info!("Received SIGTERM, shutting down...");
+            output.set_message("Shutting down...");
+        }
+        result = indexer.run() => {
+            if let Err(e) = result {
+                error!("Indexer encountered an error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Cleanup on shutdown
+    indexer.shutdown().await;
+
+    db.flush_all().unwrap_or_else(|e| {
+        error!("Failed to flush database on shutdown: {}", e);
+    });
+
+    println!("Shutdown complete.");
+   
+    // Sleep a moment to ensure all logs are flushed
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 }

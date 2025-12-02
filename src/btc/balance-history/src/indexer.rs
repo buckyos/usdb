@@ -1,11 +1,12 @@
-use std::collections::HashMap;
 use crate::btc::{BTCClient, BTCClientRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
+use crate::output::{self, IndexOutputRef};
 use crate::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
-use std::sync::Arc;
-use crate::output::IndexOutputRef;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
 
 type BlockHistoryCache = HashMap<ScriptHash, BalanceHistoryEntry>;
 
@@ -16,10 +17,16 @@ pub struct BalanceHistoryIndexer {
     utxo_cache: UTXOCacheRef,
     db: BalanceHistoryDBRef,
     output: IndexOutputRef,
+    shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    shutdown_rx: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
 }
 
 impl BalanceHistoryIndexer {
-    pub fn new(config: BalanceHistoryConfigRef, db: BalanceHistoryDBRef, output: IndexOutputRef) -> Result<Self, String> {
+    pub fn new(
+        config: BalanceHistoryConfigRef,
+        db: BalanceHistoryDBRef,
+        output: IndexOutputRef,
+    ) -> Result<Self, String> {
         // Init btc client
         let rpc_url = config.btc.rpc_url();
         let auth = config.btc.auth();
@@ -39,29 +46,60 @@ impl BalanceHistoryIndexer {
             utxo_cache,
             db,
             output,
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            shutdown_rx: Arc::new(Mutex::new(None)),
         })
     }
 
     pub async fn run(&self) -> Result<(), String> {
+        // Set up shutdown channel
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        self.shutdown_tx.lock().unwrap().replace(shutdown_tx);
+        self.shutdown_rx.lock().unwrap().replace(shutdown_rx);
+
         // Run the sync loop in a separate thread
         let indexer = self.clone();
-        let handle = tokio::task::spawn_blocking(move ||{
+        let handle = tokio::task::spawn_blocking(move || {
             indexer.run_loop();
+            info!("Balance History Indexer run loop exited.");
         });
 
-        match handle.await {
+        let ret = match handle.await {
             Ok(_) => {
-                unreachable!("Indexer thread should run indefinitely");
+                info!("Balance History Indexer thread completed successfully");
+                Ok(())
             }
             Err(e) => {
                 let msg = format!("Balance History Indexer thread panicked: {:?}", e);
                 error!("{}", msg);
                 Err(msg)
             }
+        };
+
+        ret
+    }
+
+    // Gracefully shutdown the indexer and wait for the run loop to exit
+    pub async fn shutdown(&self) {
+        let mut tx_lock = self.shutdown_tx.lock().unwrap();
+        if let Some(tx) = tx_lock.take() {
+            let _ = tx.send(());
+            info!("Shutdown signal sent to Balance History Indexer");
+
+            // Wait the run loop to exit
+            loop {
+                if self.shutdown_rx.lock().unwrap().is_none() {
+                    info!("Balance History Indexer has shut down");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        } else {
+            warn!("Shutdown signal already sent or indexer not running");
         }
     }
 
-    fn run_loop(&self) -> ! {
+    fn run_loop(&self) {
         info!("Starting Balance History Indexer...");
         self.output.set_message("Starting indexer");
 
@@ -73,7 +111,14 @@ impl BalanceHistoryIndexer {
                         latest_height
                     );
                     self.output.update_current_height(latest_height);
-                    self.output.set_message(&format!("Synced up to block height {}", latest_height));
+                    self.output
+                        .set_message(&format!("Synced up to block height {}", latest_height));
+
+                    // Check for shutdown signal before waiting for new blocks
+                    if self.check_shutdown() {
+                        info!("Indexer shutdown requested. Exiting sync loop");
+                        break;
+                    }
 
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {
@@ -82,25 +127,71 @@ impl BalanceHistoryIndexer {
                                 "New block detected at height {}. Continuing sync...",
                                 new_height
                             );
-                            self.output.set_message(&format!("New block detected at height {}", new_height));
+                            self.output.set_message(&format!(
+                                "New block detected at height {}",
+                                new_height
+                            ));
                         }
                         Err(e) => {
                             error!(
                                 "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
                                 e
                             );
-                            self.output.set_message(&format!("Error while waiting for new blocks: {}. Retrying in 10 seconds...", e));
+                            self.output.set_message(&format!(
+                                "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
+                                e
+                            ));
                             std::thread::sleep(std::time::Duration::from_secs(10));
+
+                            // Check for shutdown signal after error
+                            if self.check_shutdown() {
+                                info!("Indexer shutdown requested. Exiting sync loop");
+                                break;
+                            }
                         }
                     }
                 }
                 Err(e) => {
                     error!("Error during sync: {}. Retrying in 10 seconds...", e);
-                    self.output.set_message(&format!("Error during sync: {}. Retrying in 10 seconds...", e));
+                    self.output.set_message(&format!(
+                        "Error during sync: {}. Retrying in 10 seconds...",
+                        e
+                    ));
                     std::thread::sleep(std::time::Duration::from_secs(10));
+
+                    // Check for shutdown signal after error
+                    if self.check_shutdown() {
+                        info!("Indexer shutdown requested. Exiting sync loop");
+                        break;
+                    }
                 }
             }
         }
+
+        info!("Balance History Indexer shut down gracefully.");
+        self.output.set_message("Indexer shut down gracefully");
+
+        // Take the shutdown channel back
+        self.shutdown_rx.lock().unwrap().take();
+        self.shutdown_tx.lock().unwrap().take();
+    }
+
+    fn check_shutdown(&self) -> bool {
+        let mut rx_lock = self.shutdown_rx.lock().unwrap();
+        if let Some(rx) = rx_lock.as_mut() {
+            match rx.try_recv() {
+                Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
+                    info!("Shutdown signal received. Stopping indexer...");
+                    self.output.set_message("Indexer shutting down...");
+                    return true;
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    // No shutdown signal yet
+                    return false;
+                }
+            }
+        }
+        false
     }
 
     fn wait_for_new_blocks(&self, last_height: u64) -> Result<u64, String> {
@@ -112,6 +203,12 @@ impl BalanceHistoryIndexer {
             }
 
             std::thread::sleep(std::time::Duration::from_secs(1));
+
+            // Check for shutdown signal while waiting
+            if self.check_shutdown() {
+                info!("Indexer shutdown requested. Exiting wait for new blocks.");
+                return Ok(last_height);
+            }
         }
     }
 
@@ -138,12 +235,14 @@ impl BalanceHistoryIndexer {
             return Ok(last_synced_height as u64);
         }
 
-        self.output.set_message(format!(
-            "Syncing blocks {} to {}",
-            last_synced_height + 1,
-            latest_btc_height
-        ).as_str());
-
+        self.output.set_message(
+            format!(
+                "Syncing blocks {} to {}",
+                last_synced_height + 1,
+                latest_btc_height
+            )
+            .as_str(),
+        );
 
         // Process blocks in batches
         let batch_size = self.config.sync.batch_size;
@@ -153,17 +252,28 @@ impl BalanceHistoryIndexer {
             let end_height =
                 std::cmp::min(current_height + batch_size as u64 - 1, latest_btc_height);
             info!("Processing blocks [{} - {}]", current_height, end_height);
-            self.process_block_batch(current_height..=end_height)?;
-            current_height = end_height + 1;
+            let last_height = self.process_block_batch(current_height..=end_height)?;
+            current_height = last_height + 1;
+
+            // Check for shutdown signal between batches
+            if self.check_shutdown() {
+                info!("Indexer shutdown requested. Exiting sync once loop.");
+                break;
+            }
         }
 
-        Ok(latest_btc_height)
+        Ok(current_height - 1)
     }
 
+    // Process a batch of blocks from height_range.start() to height_range.end()
+    // Return the latest processed block height
     fn process_block_batch(
         &self,
         height_range: std::ops::RangeInclusive<u64>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
+        assert!(!height_range.is_empty(), "Height range should not be empty");
+
+        let mut last_height = 0;
         for height in height_range.clone() {
             debug!("Processing block at height {}", height);
 
@@ -175,18 +285,29 @@ impl BalanceHistoryIndexer {
             self.db.put_btc_block_height(height as u32)?;
 
             self.output.update_current_height(height);
-            self.output.set_message(&format!("Synced block at height {}", height));
+            self.output
+                .set_message(&format!("Synced block at height {}", height));
+
+            last_height = height;
+
+            // Check for shutdown signal after processing each block
+            if self.check_shutdown() {
+                info!("Indexer shutdown requested. Exiting block processing loop.");
+                break;
+            }
         }
 
         // Flush storage
-        self.db.flush_balance_history()?;
+        // FIXME: Should we flush all include utxo cache?
+        self.db.flush_all()?;
 
         info!(
             "Finished processing blocks [{} - {}]",
             height_range.start(),
-            height_range.end()
+            last_height,
         );
-        Ok(())
+
+        Ok(last_height)
     }
 
     fn process_block(&self, block_height: u64) -> Result<BlockHistoryCache, String> {
