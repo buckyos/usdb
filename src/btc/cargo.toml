@@ -3,4 +3,5 @@
 members = [
     "indexer",
     "balance-history",
+    "usdb-util",
 ]
