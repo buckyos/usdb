@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+usdb-util = { path = "../usdb-util" }
 tokio = { version = "*", features = ["full"] }
 bitcoincore-rpc = "0.19"
 ord = "0.24"

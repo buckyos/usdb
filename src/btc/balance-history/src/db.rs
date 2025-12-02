@@ -1,11 +1,11 @@
 use rust_rocksdb as rocksdb;
-
-use bitcoincore_rpc::bitcoin::{ScriptBuf, ScriptHash};
+use bitcoincore_rpc::bitcoin::{ScriptHash};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rocksdb::{
-    ColumnFamily, ColumnFamilyDescriptor, DB, Direction, Error, IteratorMode, Options, WriteBatch, WriteOptions,
+    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
 use std::path::{Path, PathBuf};
+use crate::config::BalanceHistoryConfigRef;
 
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
@@ -23,12 +23,13 @@ pub struct BalanceHistoryEntry {
 }
 
 pub struct BalanceHistoryDB {
+    config: BalanceHistoryConfigRef,
     file: PathBuf,
     db: DB,
 }
 
 impl BalanceHistoryDB {
-    pub fn new(data_dir: &Path) -> Result<Self, String> {
+    pub fn new(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
         let db_dir = data_dir.join("db");
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
@@ -67,7 +68,7 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        Ok(BalanceHistoryDB { file, db })
+        Ok(BalanceHistoryDB { file, db, config })
     }
 
     pub fn close(self) {
