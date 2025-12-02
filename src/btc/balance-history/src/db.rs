@@ -1,5 +1,5 @@
 use rust_rocksdb as rocksdb;
-use bitcoincore_rpc::bitcoin::{ScriptHash};
+use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
@@ -10,16 +10,24 @@ use crate::config::BalanceHistoryConfigRef;
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
+pub const UTXO_CF: &str = "utxo";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = ScriptHash::LEN + 4; // ScriptHash (20 bytes) + block_height (4 bytes)
+pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
+
 pub struct BalanceHistoryEntry {
     pub script_hash: ScriptHash,
     pub block_height: u32,
     pub delta: i64,
     pub balance: u64,
+}
+
+pub struct UTXOEntry {
+    pub script_hash: ScriptHash,
+    pub amount: u64,
 }
 
 pub struct BalanceHistoryDB {
@@ -56,10 +64,16 @@ impl BalanceHistoryDB {
         balance_history_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         balance_history_cf_options.create_if_missing(true);
 
+        let mut utxo_cf_options = Options::default();
+        utxo_cf_options.set_level_compaction_dynamic_level_bytes(true);
+        utxo_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
+        utxo_cf_options.create_if_missing(true);
+
         // Define column families
         let cf_descriptors = vec![
             ColumnFamilyDescriptor::new(BALANCE_HISTORY_CF, balance_history_cf_options),
             ColumnFamilyDescriptor::new(META_CF, Options::default()),
+            ColumnFamilyDescriptor::new(UTXO_CF, utxo_cf_options),
         ];
 
         let db = DB::open_cf_descriptors(&options, &file, cf_descriptors).map_err(|e| {
@@ -76,7 +90,7 @@ impl BalanceHistoryDB {
         info!("Closed RocksDB at {}", self.file.display());
     }
 
-    pub fn flush(&self) -> Result<(), String> {
+    pub fn flush_all(&self) -> Result<(), String> {
         self.db.flush().map_err(|e| {
             let msg = format!("Failed to flush RocksDB at {}: {}", self.file.display(), e);
             error!("{}", msg);
@@ -84,7 +98,24 @@ impl BalanceHistoryDB {
         })
     }
 
-    fn make_key(script_hash: ScriptHash, block_height: u32) -> Vec<u8> {
+    pub fn flush_balance_history(&self) -> Result<(), String> {
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.db.flush_cf(cf).map_err(|e| {
+            let msg = format!(
+                "Failed to flush column family {}: {}",
+                BALANCE_HISTORY_CF, e
+            );
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn make_balance_history_key(script_hash: ScriptHash, block_height: u32) -> Vec<u8> {
         // It is important that the block height is stored in big-endian format
         let height_bytes = block_height.to_be_bytes();
 
@@ -114,6 +145,25 @@ impl BalanceHistoryDB {
         (delta, balance)
     }
 
+    fn make_utxo_key(outpoint: &bitcoincore_rpc::bitcoin::OutPoint) -> Vec<u8> {
+        let mut key = Vec::with_capacity(UTXO_KEY_LEN);
+        key.extend_from_slice(outpoint.txid.as_ref());
+        key.extend_from_slice(&outpoint.vout.to_be_bytes());
+        key
+    }
+
+    fn parse_utxo_from_value(value: &[u8]) -> UTXOEntry {
+        assert!(value.len() == ScriptHash::LEN + 8, "Invalid UTXO value length");
+
+        let script_hash_bytes = &value[0..ScriptHash::LEN];
+        let amount_bytes = &value[ScriptHash::LEN..ScriptHash::LEN + 8];
+
+        let script_hash = ScriptHash::from_slice(script_hash_bytes).unwrap();
+        let amount = u64::from_be_bytes(amount_bytes.try_into().unwrap());
+
+        UTXOEntry { script_hash, amount }
+    }
+
     pub fn put_address_history(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {
         let mut batch = WriteBatch::default();
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
@@ -123,7 +173,7 @@ impl BalanceHistoryDB {
         })?;
 
         for entry in entries {
-            let key = Self::make_key(entry.script_hash, entry.block_height);
+            let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
 
             // Value format: delta (i64) + balance (u64)
             let mut value = Vec::with_capacity(16);
@@ -156,7 +206,7 @@ impl BalanceHistoryDB {
         })?;
 
         // Create an iterator in reverse mode starting from the maximum possible key for the script_hash
-        let max_key = Self::make_key(script_hash, u32::MAX);
+        let max_key = Self::make_balance_history_key(script_hash, u32::MAX);
         let mut iter = self
             .db
             .iterator_cf(cf, IteratorMode::From(&max_key, Direction::Reverse));
@@ -207,7 +257,7 @@ impl BalanceHistoryDB {
         target_height: u32,
     ) -> Result<BalanceHistoryEntry, String> {
         // Make the search key
-        let search_key = Self::make_key(script_hash, target_height);
+        let search_key = Self::make_balance_history_key(script_hash, target_height);
 
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
@@ -282,7 +332,7 @@ impl BalanceHistoryDB {
         })?;
 
         // Create the start key
-        let start_key = Self::make_key(script_hash, range_begin);
+        let start_key = Self::make_balance_history_key(script_hash, range_begin);
 
         // Create an iterator starting from start_key in forward direction
         let iter = self
@@ -383,6 +433,104 @@ impl BalanceHistoryDB {
             }
         }
     }
+
+    pub fn put_utxo(
+        &self,
+        outpoint: &OutPoint,
+        script_hash: &ScriptHash,
+        amount: u64,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+
+        // Value format: ScriptHash (20 bytes) + amount (u64)
+        let mut value = Vec::with_capacity(ScriptHash::LEN + 8);
+        value.extend_from_slice(script_hash.as_ref() as &[u8]);
+        value.extend_from_slice(&amount.to_be_bytes());
+
+        let key = Self::make_utxo_key(outpoint);
+
+        self.db
+            .put_cf_opt(cf, key, value, &ops)
+            .map_err(|e| {
+                let msg = format!("Failed to put UTXO: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(())
+    }
+
+    // Just get the UTXO without removing it
+    pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let key = Self::make_utxo_key(outpoint);
+
+        match self.db.get_cf(cf, key) {
+            Ok(Some(value)) => {
+                let utxo_entry = Self::parse_utxo_from_value(&value);
+                Ok(Some(utxo_entry))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!("Failed to get UTXO: {}", e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    // Remove and return the UTXO entry for the given outpoint
+    pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+
+        let key = Self::make_utxo_key(outpoint);
+
+        match self.db.get_cf(cf, &key) {
+            Ok(Some(value)) => {
+                let utxo_entry = Self::parse_utxo_from_value(&value);
+
+                // Remove the UTXO
+                self.db
+                    .delete_cf_opt(cf, &key, &ops)
+                    .map_err(|e| {
+                        let msg = format!("Failed to delete UTXO: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                Ok(Some(utxo_entry))
+            }
+            Ok(None) => {
+                let msg = format!("UTXO not found for outpoint: {}", outpoint);
+                warn!("{}", msg);
+                Ok(None)
+            }
+            Err(e) => {
+                let msg = format!("Failed to get UTXO: {}", e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
 }
 
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
@@ -391,6 +539,8 @@ pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use crate::config::BalanceHistoryConfig;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
 
     #[test]
     fn test_make_and_parse_key() {
@@ -398,7 +548,7 @@ mod tests {
         let script_hash = script.script_hash();
         let block_height = 123456;
 
-        let key = BalanceHistoryDB::make_key(script_hash, block_height);
+        let key = BalanceHistoryDB::make_balance_history_key(script_hash, block_height);
         let parsed_height = BalanceHistoryDB::parse_block_height_from_key(&key);
 
         assert_eq!(block_height, parsed_height);
@@ -421,10 +571,13 @@ mod tests {
 
     #[test]
     fn test_balance_history_db_put_and_get() {
+        let config = BalanceHistoryConfig::default();
+        let config = std::sync::Arc::new(config);
+
         let temp_dir = std::env::temp_dir().join("balance_history_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let db = BalanceHistoryDB::new(&temp_dir).unwrap();
+        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
 
         let script = ScriptBuf::from(vec![1u8; 32]);
         let script_hash = script.script_hash();
@@ -519,7 +672,7 @@ mod tests {
         db.close();
 
         // Test reopen the db
-        let db = BalanceHistoryDB::new(&temp_dir).unwrap();
+        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
         let entry = db
             .get_balance_at_block_height(script_hash, 250)
             .unwrap();
@@ -535,5 +688,48 @@ mod tests {
         db.put_btc_block_height(123456).unwrap();
         let height = db.get_btc_block_height().unwrap();
         assert_eq!(height, 123456);
+    }
+
+    #[test]
+    fn test_utxo_put_get_consume() {
+        let config = BalanceHistoryConfig::default();
+        let config = std::sync::Arc::new(config);   
+        let temp_dir = std::env::temp_dir().join("balance_history_utxo_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
+
+        let outpoint = OutPoint {
+            txid: Txid::from_slice(&[2u8; 32]).unwrap(),
+            vout: 1,
+        };
+        let script = ScriptBuf::from(vec![2u8; 32]);
+        let script_hash = script.script_hash();
+        let amount = 1000u64;
+
+        // Put UTXO
+        db.put_utxo(&outpoint, &script_hash, amount).unwrap();
+
+        // Get UTXO
+        let utxo_entry = db.get_utxo(&outpoint).unwrap().unwrap();
+        assert_eq!(utxo_entry.script_hash, script_hash);
+        assert_eq!(utxo_entry.amount, amount);
+
+        // Get none existing UTXO
+        let missing_outpoint = OutPoint {
+            txid: Txid::from_slice(&[3u8; 32]).unwrap(),
+            vout: 0,
+        };
+        let utxo_entry = db.get_utxo(&missing_outpoint).unwrap();
+        assert!(utxo_entry.is_none());
+
+        // Consume UTXO
+        let consumed_entry = db.spend_utxo(&outpoint).unwrap().unwrap();
+        assert_eq!(consumed_entry.script_hash, script_hash);
+        assert_eq!(consumed_entry.amount, amount);
+
+        // Try to get UTXO again, should be None
+        let utxo_entry = db.get_utxo(&outpoint).unwrap();
+        assert!(utxo_entry.is_none());
     }
 }

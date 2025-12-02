@@ -1,7 +1,7 @@
+use crate::db::BalanceHistoryDBRef;
+use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use moka::sync::Cache;
 use std::time::Duration;
-use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
-
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
@@ -11,28 +11,61 @@ pub struct CacheTxOut {
 
 pub struct UTXOCache {
     cache: Cache<OutPoint, CacheTxOut>, // (block_height, vout_index)
+    db: BalanceHistoryDBRef,
 }
 
 impl UTXOCache {
-    pub fn new() -> Self {
+    pub fn new(db: BalanceHistoryDBRef) -> Self {
         let cache = Cache::builder()
-            .time_to_live(Duration::from_hours(24 * 1)) // 1 hour TTL
+            .time_to_live(Duration::from_secs(60 * 60)) // 1 hour TTL
             .max_capacity(1024 * 1024 * 10 * 2) // Max 20 million entries
             .build();
 
-        Self { cache }
+        Self { cache, db }
     }
 
     pub fn insert(&self, outpoint: OutPoint, script_hash: ScriptHash, value: u64) {
-        self.cache.insert(outpoint, CacheTxOut { value, script_hash });
+        self.cache
+            .insert(outpoint, CacheTxOut { value, script_hash });
     }
 
-    pub fn get(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
-        self.cache.get(outpoint)
+    pub fn get(&self, outpoint: &OutPoint) -> Result<Option<CacheTxOut>, String> {
+        // First check in-memory cache
+        if let Some(cached) = self.cache.get(outpoint) {
+            return Ok(Some(cached));
+        }
+
+        // Next check persistent storage
+        if let Some(entry) = self.db.get_utxo(outpoint)? {
+            let cache_tx_out = CacheTxOut {
+                value: entry.amount,
+                script_hash: entry.script_hash,
+            };
+            
+            Ok(Some(cache_tx_out))
+        } else {
+            Ok(None)
+        }
     }
 
-    pub fn get_and_remove(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
-        self.cache.remove(outpoint)
+    pub fn spend(&self, outpoint: &OutPoint) -> Result<Option<CacheTxOut>, String> {
+        // First check in-memory cache
+        if let Some(cached) = self.cache.get(outpoint) {
+            self.cache.invalidate(outpoint);
+            return Ok(Some(cached));
+        }
+
+        // Next check persistent storage
+        if let Some(entry) = self.db.spend_utxo(outpoint)? {
+            let cache_tx_out = CacheTxOut {
+                value: entry.amount,
+                script_hash: entry.script_hash,
+            };
+            
+            Ok(Some(cache_tx_out))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn clear(&self) {

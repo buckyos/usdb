@@ -31,7 +31,7 @@ impl BalanceHistoryIndexer {
         let btc_client = Arc::new(btc_client);
 
         // Init UTXO cache
-        let utxo_cache = Arc::new(UTXOCache::new());
+        let utxo_cache = Arc::new(UTXOCache::new(db.clone()));
 
         Ok(Self {
             config,
@@ -179,7 +179,7 @@ impl BalanceHistoryIndexer {
         }
 
         // Flush storage
-        self.db.flush()?;
+        self.db.flush_balance_history()?;
 
         info!(
             "Finished processing blocks [{} - {}]",
@@ -304,7 +304,7 @@ impl BalanceHistoryIndexer {
 
     fn load_utxo(&self, outpoint: &OutPoint) -> Result<CacheTxOut, String> {
         // First try to get from cache
-        if let Some(cached) = self.utxo_cache.get_and_remove(outpoint) {
+        if let Some(cached) = self.utxo_cache.spend(outpoint)? {
             return Ok(cached);
         }
 

@@ -42,6 +42,8 @@ impl BTCClient {
         })
     }
 
+    // Get UTXO details for a given outpoint, maybe spent already
+    // So we should get it from transcation and then parse it
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String> {
         let ret = self
             .client
