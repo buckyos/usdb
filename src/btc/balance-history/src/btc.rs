@@ -1,25 +1,97 @@
 use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use std::sync::{Arc, RwLock};
 
 pub struct BTCClient {
-    client: Client,
+    rpc_url: String,
+    auth: Auth,
+    client: RwLock<Option<Arc<Client>>>,
 }
 
 impl BTCClient {
     pub fn new(rpc_url: String, auth: Auth) -> Result<Self, String> {
-        let client = Client::new(&rpc_url, auth).map_err(|e| {
+        /* 
+        // We should not create the client here, as the auth cookie file may not exists because bitcoind not started yet
+        // We should create the client on demand and update it when error occurs
+        let client = Client::new(&rpc_url, auth.clone()).map_err(|e| {
             let msg = format!("Failed to create BTC RPC client: {}", e);
-            log::error!("{}", msg);
+            error!("{}", msg);
             msg
         })?;
+        */
 
-        let ret = Self { client };
+        let ret = Self {
+            rpc_url,
+            auth,
+            client: RwLock::new(None),
+        };
 
         Ok(ret)
     }
 
+    fn update_client(&self) -> Result<(), String> {
+        let new_client = Client::new(&self.rpc_url, self.auth.clone()).map_err(|e| {
+            let msg = format!("Failed to update BTC RPC client: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let arc_client = Arc::new(new_client);
+
+        let mut write_guard = self.client.write().unwrap();
+        *write_guard = Some(arc_client);
+
+        info!("BTC RPC client updated successfully.");
+        Ok(())
+    }
+
+    fn client(&self) -> Result<Arc<Client>, String> {
+        {
+            let read_guard = self.client.read().unwrap();
+            if let Some(client) = &*read_guard {
+                return Ok(client.clone());
+            }
+        }
+
+        // In some case the client will create multiple times, it's ok
+        let msg = "BTC RPC client is not initialized, attempting to update.".to_string();
+        warn!("{}", msg);
+        self.update_client()?;
+
+        let read_guard = self.client.read().unwrap();
+        if let Some(client) = &*read_guard {
+            return Ok(client.clone());
+        }
+
+        Err("Failed to initialize BTC RPC client.".to_string())
+    }
+
+    fn is_auth_cookie(&self) -> bool {
+        matches!(self.auth, Auth::CookieFile(_))
+    }
+
+    fn on_error(&self, error: &bitcoincore_rpc::Error) {
+        match error {
+            bitcoincore_rpc::Error::JsonRpc(rpc_err) => {
+                match rpc_err {
+                    bitcoincore_rpc::jsonrpc::Error::Transport(_transport_err) => {
+                        // Transport error occurred, the bitcoind node might be restart with new auth cookie file
+                        // So we try to update the client to use the new auth info
+                        if self.is_auth_cookie() {
+                            let _ = self.update_client();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn get_latest_block_height(&self) -> Result<u64, String> {
-        self.client.get_block_count().map_err(|error| {
+        self.client()?.get_block_count().map_err(|error| {
+            self.on_error(&error);
+
             let msg = format!("get_block_count failed: {}", error);
             error!("{}", msg);
             msg
@@ -28,14 +100,21 @@ impl BTCClient {
 
     pub fn get_block(&self, block_height: u64) -> Result<Block, String> {
         // First get the block hash for the given height
-        let hash = self.client.get_block_hash(block_height).map_err(|error| {
-            let msg = format!("get_block_hash failed: {}", error);
-            error!("{}", msg);
-            msg
-        })?;
+        let hash = self
+            .client()?
+            .get_block_hash(block_height)
+            .map_err(|error| {
+                self.on_error(&error);
+
+                let msg = format!("get_block_hash failed: {}", error);
+                error!("{}", msg);
+                msg
+            })?;
 
         // Now get the block using the hash
-        self.client.get_block(&hash).map_err(|error| {
+        self.client()?.get_block(&hash).map_err(|error| {
+            self.on_error(&error);
+
             let msg = format!("get_block failed: {}", error);
             error!("{}", msg);
             msg
@@ -46,9 +125,11 @@ impl BTCClient {
     // So we should get it from transaction and then parse it
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String> {
         let ret = self
-            .client
+            .client()?
             .get_raw_transaction(&outpoint.txid, None)
             .map_err(|e| {
+                self.on_error(&e);
+
                 let msg = format!(
                     "Failed to get raw transaction for outpoint: {} {}",
                     outpoint, e
@@ -73,8 +154,8 @@ pub type BTCClientRef = std::sync::Arc<BTCClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::Txid;
     use bitcoincore_rpc::bitcoin::Address;
+    use bitcoincore_rpc::bitcoin::Txid;
     use std::str::FromStr;
     use usdb_util::BTCConfig;
 
@@ -102,7 +183,9 @@ mod tests {
         match utxo_result {
             Ok((script, amount)) => {
                 println!("UTXO Script: {:?}", script);
-                let address = Address::from_script(&script, bitcoincore_rpc::bitcoin::Network::Bitcoin).expect("Invalid script");
+                let address =
+                    Address::from_script(&script, bitcoincore_rpc::bitcoin::Network::Bitcoin)
+                        .expect("Invalid script");
                 println!("UTXO Address: {}", address);
                 assert_eq!(address.to_string(), "1CMb4HTBRQtweVanz79nfZmKXTDBcJC7Uu");
 
