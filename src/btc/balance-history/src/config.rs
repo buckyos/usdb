@@ -13,6 +13,7 @@ impl Default for IndexConfig {
         IndexConfig { batch_size: 32 }
     }
 }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceHistoryConfig {
     pub btc: BTCConfig,

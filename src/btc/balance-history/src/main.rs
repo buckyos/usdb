@@ -4,6 +4,7 @@ mod db;
 mod indexer;
 mod output;
 mod utxo;
+mod tool;
 
 #[macro_use]
 extern crate log;
@@ -12,10 +13,33 @@ use crate::config::BalanceHistoryConfig;
 use crate::db::BalanceHistoryDB;
 use crate::indexer::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
+use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-#[tokio::main]
-async fn main() {
+#[derive(Parser, Debug)]
+#[command(name = "balance-history")]
+#[command(author = "buckyos")]
+#[command(version = "0.1.0")]
+#[command(about = "Bitcoin Balance History Indexer", long_about = None)]
+#[command(long_about = None)]
+struct BalanceHistoryCli {
+    #[command(subcommand)]
+    command: BalanceHistoryCommands,
+}
+
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+enum BalanceHistoryCommands {
+    /// Delete the database files, DANGEROUS: This will remove all indexed data!
+    ClearDb {},
+
+    /// Run the service in daemon mode
+    #[command(alias = "d")]
+    Daemon {},
+}
+
+async fn main_run() {
+    
     let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
     // Init file logging
@@ -58,14 +82,12 @@ async fn main() {
             std::process::exit(1);
         }
     };
-
     output.set_message("Starting indexer...");
-
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;
     let sigint = signal::ctrl_c();
-    
+
     // Create a Future to wait for SIGTERM signal (sent by kill command by default)
     #[cfg(unix)]
     let sigterm = async {
@@ -74,7 +96,7 @@ async fn main() {
             .recv()
             .await;
     };
-    
+
     // On non-Unix systems, we only rely on Ctrl+C
     #[cfg(not(unix))]
     let sigterm = std::future::pending();
@@ -104,7 +126,29 @@ async fn main() {
     });
 
     println!("Shutdown complete.");
-   
+
     // Sleep a moment to ensure all logs are flushed
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = BalanceHistoryCli::parse();
+    match &cli.command {
+        BalanceHistoryCommands::ClearDb {} => {
+            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            if let Err(e) = crate::tool::clear_db_files(&root_dir) {
+                error!("Failed to clear database files: {}", e);
+                std::process::exit(1);
+            }
+            println!("Database files cleared successfully.");
+            return;
+        }
+        BalanceHistoryCommands::Daemon {} => {
+            // Proceed to daemonize and run the main process
+            crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+        }
+    }
+
+    main_run().await;
 }

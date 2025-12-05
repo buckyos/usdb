@@ -38,7 +38,7 @@ pub struct BalanceHistoryDB {
 
 impl BalanceHistoryDB {
     pub fn new(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
-        let db_dir = data_dir.join("db");
+        let db_dir = Self::get_db_dir(data_dir);
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
                 let msg = format!(
@@ -88,6 +88,11 @@ impl BalanceHistoryDB {
     pub fn close(self) {
         drop(self.db);
         info!("Closed RocksDB at {}", self.file.display());
+    }
+
+    pub fn get_db_dir(data_dir: &Path) -> PathBuf {
+        let db_dir = data_dir.join("db");
+        db_dir
     }
 
     pub fn flush_all(&self) -> Result<(), String> {
