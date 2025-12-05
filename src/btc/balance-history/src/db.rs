@@ -472,6 +472,39 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
+    pub fn put_utxos(
+        &self,
+        utxos: &Vec<(OutPoint, ScriptHash, u64)>,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut batch = WriteBatch::default();
+
+        for (outpoint, script_hash, amount) in utxos {
+            // Value format: ScriptHash (20 bytes) + amount (u64)
+            let mut value = Vec::with_capacity(ScriptHash::LEN + 8);
+            value.extend_from_slice(script_hash.as_ref() as &[u8]);
+            value.extend_from_slice(&amount.to_be_bytes());
+
+            let key = Self::make_utxo_key(outpoint);
+
+            batch.put_cf(cf, key, value);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write UTXO batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
     // Just get the UTXO without removing it
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -535,6 +568,54 @@ impl BalanceHistoryDB {
                 Err(msg)
             }
         }
+    }
+
+    pub fn spend_utxos(
+        &self,
+        outpoints: &Vec<OutPoint>,
+    ) -> Result<Vec<(OutPoint, UTXOEntry)>, String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+
+        let mut spent_utxos = Vec::new();
+
+        for outpoint in outpoints {
+            let key = Self::make_utxo_key(outpoint);
+
+            match self.db.get_cf(cf, &key) {
+                Ok(Some(value)) => {
+                    let utxo_entry = Self::parse_utxo_from_value(&value);
+
+                    // Remove the UTXO
+                    self.db
+                        .delete_cf_opt(cf, &key, &ops)
+                        .map_err(|e| {
+                            let msg = format!("Failed to delete UTXO: {}", e);
+                            error!("{}", msg);
+                            msg
+                        })?;
+
+                    spent_utxos.push((outpoint.clone(), utxo_entry));
+                }
+                Ok(None) => {
+                    let msg = format!("UTXO not found for outpoint: {}", outpoint);
+                    warn!("{}", msg);
+                }
+                Err(e) => {
+                    let msg = format!("Failed to get UTXO: {}", e);
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+
+        Ok(spent_utxos)
     }
 }
 

@@ -324,6 +324,9 @@ impl BalanceHistoryIndexer {
             self.db.put_address_history(&entries)?;
         }
 
+        // Save all utxo cache write entries to DB
+        self.utxo_cache.flush_write_cache()?;
+
         self.db.put_btc_block_height(last_height as u32)?;
         // Flush storage
         // FIXME: Should we flush all include utxo cache?
@@ -371,7 +374,8 @@ impl BalanceHistoryIndexer {
 
                             assert!(
                                 latest_entry.block_height < block_height as u32,
-                                "Latest entry block height should be less than current block height"
+                                "Latest entry block height should be less than current block height {} < {}",
+                                latest_entry.block_height, block_height
                             );
                             assert!(
                                 latest_entry.balance >= utxo.value,
