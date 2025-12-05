@@ -9,7 +9,7 @@ impl IndexOutput {
         let bar = ProgressBar::new(block_height);
         bar.set_style(
             ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {per_sec} {percent}% ({eta_precise} remaining) {msg}")
             .expect("Invalid progress bar template")
             .progress_chars("#>-"),
         );

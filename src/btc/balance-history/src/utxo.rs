@@ -24,9 +24,13 @@ impl UTXOCache {
         Self { cache, db }
     }
 
-    pub fn insert(&self, outpoint: OutPoint, script_hash: ScriptHash, value: u64) {
+    pub fn put(&self, outpoint: OutPoint, script_hash: ScriptHash, value: u64) -> Result<(), String> {
         self.cache
             .insert(outpoint, CacheTxOut { value, script_hash });
+
+        self.db.put_utxo(&outpoint, &script_hash, value)?;
+
+        Ok(())
     }
 
     pub fn get(&self, outpoint: &OutPoint) -> Result<Option<CacheTxOut>, String> {
@@ -58,7 +62,7 @@ impl UTXOCache {
         // Next check persistent storage
         if let Some(entry) = self.db.spend_utxo(outpoint)? {
             let cache_tx_out = CacheTxOut {
-                value: entry.amount,
+                value: entry.amount,  
                 script_hash: entry.script_hash,
             };
             

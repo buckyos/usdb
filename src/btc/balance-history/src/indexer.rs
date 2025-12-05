@@ -414,14 +414,14 @@ impl BalanceHistoryIndexer {
                 }
 
                 // Cache the UTXO for future use
-                self.utxo_cache.insert(
+                self.utxo_cache.put(
                     OutPoint {
                         txid,
                         vout: n as u32,
                     },
                     script_hash,
                     value,
-                );
+                )?;
             }
         }
 
