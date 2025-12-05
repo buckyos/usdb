@@ -1,7 +1,7 @@
 use crate::btc::{BTCClient, BTCClientRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use crate::output::{self, IndexOutputRef};
+use crate::output::{IndexOutputRef};
 use crate::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use std::collections::HashMap;
@@ -103,9 +103,11 @@ impl BalanceHistoryIndexer {
         info!("Starting Balance History Indexer...");
         self.output.set_message("Starting indexer");
 
+        let mut failed_attempts = 0;
         loop {
             match self.sync_once() {
                 Ok(latest_height) => {
+                    failed_attempts = 0;
                     info!(
                         "Sync iteration completed successfully. Latest synced height: {}",
                         latest_height
@@ -152,10 +154,13 @@ impl BalanceHistoryIndexer {
                     }
                 }
                 Err(e) => {
-                    error!("Error during sync: {}. Retrying in 10 seconds...", e);
+                    failed_attempts += 1;
+
+                    error!("Error during sync with attempt {}: {}. Retrying in 10 seconds...", failed_attempts, e);
+                    
                     self.output.set_message(&format!(
-                        "Error during sync: {}. Retrying in 10 seconds...",
-                        e
+                        "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
+                        failed_attempts, e
                     ));
                     std::thread::sleep(std::time::Duration::from_secs(10));
 

@@ -24,18 +24,20 @@ use std::sync::Arc;
 #[command(long_about = None)]
 struct BalanceHistoryCli {
     #[command(subcommand)]
-    command: BalanceHistoryCommands,
+    command: Option<BalanceHistoryCommands>,
+
+    /// Run the service in daemon mode
+    #[arg(short, long)]
+    daemon: bool,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone, Copy)]
 #[command(rename_all = "kebab-case")]
 enum BalanceHistoryCommands {
     /// Delete the database files, DANGEROUS: This will remove all indexed data!
+    /// Use with caution.
+    // #[command(alias = "c")]
     ClearDb {},
-
-    /// Run the service in daemon mode
-    #[command(alias = "d")]
-    Daemon {},
 }
 
 async fn main_run() {
@@ -134,8 +136,9 @@ async fn main_run() {
 #[tokio::main]
 async fn main() {
     let cli = BalanceHistoryCli::parse();
-    match &cli.command {
-        BalanceHistoryCommands::ClearDb {} => {
+
+    match cli.command {
+        Some(BalanceHistoryCommands::ClearDb {}) => {
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             if let Err(e) = crate::tool::clear_db_files(&root_dir) {
                 error!("Failed to clear database files: {}", e);
@@ -144,10 +147,12 @@ async fn main() {
             println!("Database files cleared successfully.");
             return;
         }
-        BalanceHistoryCommands::Daemon {} => {
-            // Proceed to daemonize and run the main process
-            crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-        }
+        None => {}
+    }
+
+    if cli.daemon {
+        // Proceed to daemonize and run the main process
+        crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     }
 
     main_run().await;
