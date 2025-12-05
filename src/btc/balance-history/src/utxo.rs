@@ -1,4 +1,4 @@
-use crate::db::BalanceHistoryDBRef;
+use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use moka::sync::Cache;
 use std::time::Duration;

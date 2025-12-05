@@ -1,7 +1,10 @@
+use crate::balance::{
+    AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache,
+};
 use crate::btc::{BTCClient, BTCClientRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use crate::output::{IndexOutputRef};
+use crate::output::IndexOutputRef;
 use crate::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use std::collections::HashMap;
@@ -15,6 +18,7 @@ pub struct BalanceHistoryIndexer {
     config: BalanceHistoryConfigRef,
     btc_client: BTCClientRef,
     utxo_cache: UTXOCacheRef,
+    balance_cache: AddressBalanceCacheRef,
     db: BalanceHistoryDBRef,
     output: IndexOutputRef,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
@@ -40,10 +44,14 @@ impl BalanceHistoryIndexer {
         // Init UTXO cache
         let utxo_cache = Arc::new(UTXOCache::new(db.clone()));
 
+        // Init Address Balance Cache
+        let balance_cache = Arc::new(AddressBalanceCache::new(db.clone()));
+
         Ok(Self {
             config,
             btc_client,
             utxo_cache,
+            balance_cache,
             db,
             output,
             shutdown_tx: Arc::new(Mutex::new(None)),
@@ -156,8 +164,11 @@ impl BalanceHistoryIndexer {
                 Err(e) => {
                     failed_attempts += 1;
 
-                    error!("Error during sync with attempt {}: {}. Retrying in 10 seconds...", failed_attempts, e);
-                    
+                    error!(
+                        "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
+                        failed_attempts, e
+                    );
+
                     self.output.set_message(&format!(
                         "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
                         failed_attempts, e
@@ -278,16 +289,22 @@ impl BalanceHistoryIndexer {
     ) -> Result<u64, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
+        let mut balance_sync_cache = AddressBalanceSyncCache::new(self.balance_cache.clone());
         let mut last_height = 0;
+        let mut result = Vec::new();
         for height in height_range.clone() {
             debug!("Processing block at height {}", height);
 
-            let block_history = self.process_block(height)?;
+            let block_history = self.process_block(height, &balance_sync_cache)?;
 
-            // Store to DB
+            // Convert block history map to vector for later processing
             let entries = block_history.into_values().collect::<Vec<_>>();
-            self.db.put_address_history(&entries)?;
-            self.db.put_btc_block_height(height as u32)?;
+
+            // Cache balance updates for latest balance retrieval
+            balance_sync_cache.on_block_synced(&entries);
+
+            // Save for batch write later
+            result.push((height, entries));
 
             self.output.update_current_height(height);
             self.output
@@ -302,6 +319,12 @@ impl BalanceHistoryIndexer {
             }
         }
 
+        // Save all balance entries to DB
+        for (_height, entries) in result {
+            self.db.put_address_history(&entries)?;
+        }
+
+        self.db.put_btc_block_height(last_height as u32)?;
         // Flush storage
         // FIXME: Should we flush all include utxo cache?
         self.db.flush_all()?;
@@ -315,7 +338,7 @@ impl BalanceHistoryIndexer {
         Ok(last_height)
     }
 
-    fn process_block(&self, block_height: u64) -> Result<BlockHistoryCache, String> {
+    fn process_block(&self, block_height: u64, balance_sync_cache: &AddressBalanceSyncCache) -> Result<BlockHistoryCache, String> {
         // Fetch the block
         let block = self.btc_client.get_block(block_height)?;
 
@@ -336,7 +359,7 @@ impl BalanceHistoryIndexer {
                     match history.entry(utxo.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Load latest record from DB to get current balance
-                            let latest_entry = self.db.get_latest_balance(utxo.script_hash)?;
+                            let latest_entry = balance_sync_cache.get(utxo.script_hash)?;
                             if latest_entry.block_height == block_height as u32 {
                                 // The block may have been synced, skip duplicate entry
                                 warn!(
@@ -385,7 +408,7 @@ impl BalanceHistoryIndexer {
                 match history.entry(script_hash) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         // Load latest record from DB to get current balance
-                        let latest_entry = self.db.get_latest_balance(script_hash)?;
+                        let latest_entry = balance_sync_cache.get(script_hash)?;
                         if latest_entry.block_height == block_height as u32 {
                             // The block may have been synced, skip duplicate entry
                             warn!(

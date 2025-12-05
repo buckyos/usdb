@@ -10,7 +10,7 @@ pub struct IndexConfig {
 
 impl Default for IndexConfig {
     fn default() -> Self {
-        IndexConfig { batch_size: 32 }
+        IndexConfig { batch_size: 256 }
     }
 }
 
