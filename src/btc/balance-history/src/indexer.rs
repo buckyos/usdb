@@ -405,6 +405,14 @@ impl BalanceHistoryIndexer {
             }
 
             let txid = tx.compute_txid();
+            if self.utxo_cache.check_black_list_coinbase_tx(block_height, &txid) && tx.is_coinbase() {
+                warn!(
+                    "Skipping blacklisted coinbase tx {} at block height {}",
+                    txid, block_height
+                );
+                continue;
+            }
+            
             for (n, vout) in tx.output.iter().enumerate() {
                 let script_hash = vout.script_pubkey.script_hash();
                 let value = vout.value.to_sat();

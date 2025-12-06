@@ -1,5 +1,5 @@
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
+use bitcoincore_rpc::bitcoin::ScriptHash;
 use moka::sync::Cache;
 use std::{collections::HashMap, time::Duration};
 
@@ -26,7 +26,7 @@ impl AddressBalanceCache {
     }
 
     pub fn put(&self, script_hash: ScriptHash, entry: AddressBalanceItem) {
-        let item  = AddressBalanceItem {
+        let item = AddressBalanceItem {
             block_height: entry.block_height,
             delta: entry.delta,
             balance: entry.balance,
@@ -59,7 +59,7 @@ pub type AddressBalanceCacheRef = std::sync::Arc<AddressBalanceCache>;
 
 pub struct AddressBalanceSyncCache {
     address_balance_cache: AddressBalanceCacheRef,
-    address_sync_cache: HashMap<ScriptHash, AddressBalanceItem>, 
+    address_sync_cache: HashMap<ScriptHash, AddressBalanceItem>,
 }
 
 impl AddressBalanceSyncCache {
@@ -80,10 +80,8 @@ impl AddressBalanceSyncCache {
                 balance: entry.balance,
             };
 
-            self.address_balance_cache.put(
-                entry.script_hash,
-                item.clone(),
-            );
+            self.address_balance_cache
+                .put(entry.script_hash, item.clone());
 
             self.address_sync_cache.insert(entry.script_hash, item);
         }

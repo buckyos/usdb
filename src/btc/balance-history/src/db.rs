@@ -505,6 +505,7 @@ impl BalanceHistoryDB {
 
         Ok(())
     }
+
     // Just get the UTXO without removing it
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
