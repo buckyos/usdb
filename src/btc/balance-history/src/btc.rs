@@ -1,5 +1,7 @@
 use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use jsonrpsee::core::client::{self, BatchResponse, ClientT};
+use jsonrpsee::core::params::BatchRequestBuilder;
 use std::sync::{Arc, RwLock};
 
 pub struct BTCClient {
@@ -10,7 +12,7 @@ pub struct BTCClient {
 
 impl BTCClient {
     pub fn new(rpc_url: String, auth: Auth) -> Result<Self, String> {
-        /* 
+        /*
         // We should not create the client here, as the auth cookie file may not exists because bitcoind not started yet
         // We should create the client on demand and update it when error occurs
         let client = Client::new(&rpc_url, auth.clone()).map_err(|e| {
@@ -121,6 +123,54 @@ impl BTCClient {
         })
     }
 
+    pub async fn get_blocks(
+        &self,
+        start_height: u64,
+        end_height: u64,
+    ) -> Result<Vec<Block>, String> {
+        assert!(end_height >= start_height);
+        let count = (end_height - start_height + 1) as usize;
+        let mut handles = Vec::with_capacity(count);
+
+        let client = self.client()?;
+        for height in start_height..=end_height {
+            let handle = tokio::task::spawn_blocking({
+                let client = client.clone();
+                move || {
+                    client
+                        .get_block_hash(height)
+                        .and_then(|hash| client.get_block(&hash))
+                }
+            });
+            handles.push(handle);
+        }
+
+        let results_of_handles = futures::future::join_all(handles).await;
+
+        let mut blocks = Vec::with_capacity(count);
+        for result in results_of_handles {
+            match result {
+                Ok(Ok(block)) => {
+                    blocks.push(block);
+                }
+                Ok(Err(e)) => {
+                    self.on_error(&e);
+
+                    let msg = format!("Failed to get block: {}", e);
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                Err(e) => {
+                    let msg = format!("Task join error: {}", e);
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+
+        Ok(blocks)
+    }
+
     // Get UTXO details for a given outpoint, maybe spent already
     // So we should get it from transaction and then parse it
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String> {
@@ -201,5 +251,37 @@ mod tests {
         let outpoint = OutPoint::new(txid, 3);
         let utxo_result = client.get_utxo(&outpoint);
         assert!(utxo_result.is_err());
+
+        // Test get_blocks
+        let start_height = 790000;
+        let end_height = 790256;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .max_blocking_threads(256)
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let begin_tick = std::time::Instant::now();
+            let blocks_result = client.get_blocks(start_height, end_height).await;
+            assert!(blocks_result.is_ok());
+            let blocks = blocks_result.unwrap();
+            assert_eq!(blocks.len() as u64, end_height - start_height + 1);
+            let end_tick = std::time::Instant::now();
+            println!("Time taken to get blocks: {:?}", end_tick - begin_tick);
+        });
+
+        // Use get_block to verify
+        let begin_tick = std::time::Instant::now();
+        for height in start_height..=end_height {
+            let block = client.get_block(height).unwrap();
+            //assert_eq!(block, blocks[(height - start_height) as usize]);
+        }
+        let end_tick = std::time::Instant::now();
+        println!(
+            "Time taken to get blocks individually: {:?}",
+            end_tick - begin_tick
+        );
     }
 }

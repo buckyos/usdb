@@ -7,6 +7,7 @@ edition = "2024"
 usdb-util = { path = "../usdb-util" }
 rust-rocksdb = "0.44"
 tokio = { version = "*", features = ["full"] }
+futures = "0.3"
 bitcoincore-rpc = "0.19"
 log = "*"
 serde = "1.0"
@@ -17,3 +18,7 @@ indicatif = "0.18"
 toml = "0.9"
 clap = { version = "4.5", features = ["derive"] }
 daemonize = "0.5"
+jsonrpc-core= "18.0"
+jsonrpc-derive = "18.0"
+jsonrpsee = { version = "0.26", features = ["client", "ws-client", "macros"] }
+base64 = "0.22"
