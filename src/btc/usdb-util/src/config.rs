@@ -15,6 +15,7 @@ pub struct BTCConfig {
     pub data_dir: Option<PathBuf>,
     pub rpc_url: Option<String>,
     pub auth: Option<BTCAuth>,
+    pub block_magic: Option<u32>,
 }
 
 impl BTCConfig {
@@ -38,6 +39,21 @@ impl BTCConfig {
                 Network::Regtest => base_dir.join(".bitcoin/regtest"),
                 Network::Signet => base_dir.join(".bitcoin/signet"),
                 Network::Testnet4 => base_dir.join(".bitcoin/testnet4"),
+            }
+        }
+    }
+
+    // FIXME: Magic number for test net is not verified, need to check when running a testnet node
+    pub fn block_magic(&self) -> u32 {
+        if let Some(magic) = self.block_magic {
+            magic
+        } else {
+            match self.network() {
+                Network::Bitcoin => 0xD9B4BEF9,
+                Network::Testnet => 0xDAB5BFFA,
+                Network::Regtest => 0xDAB5BFFA,
+                Network::Signet => 0x0A03CF40,
+                Network::Testnet4 => 0x07110907,
             }
         }
     }
@@ -85,6 +101,7 @@ impl Default for BTCConfig {
             data_dir: None,
             rpc_url: None,
             auth: None,
+            block_magic: None,
         }
     }
 }

@@ -7,7 +7,6 @@ mod utxo;
 mod tool;
 mod rpc;
 mod balance;
-mod batch;
 
 #[macro_use]
 extern crate log;

@@ -1,4 +1,4 @@
-use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf};
+use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf, BlockHash};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use jsonrpsee::core::client::{self, BatchResponse, ClientT};
 use jsonrpsee::core::params::BatchRequestBuilder;
@@ -95,6 +95,28 @@ impl BTCClient {
             self.on_error(&error);
 
             let msg = format!("get_block_count failed: {}", error);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    pub fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+        self.client()?
+            .get_block_hash(block_height)
+            .map_err(|error| {
+                self.on_error(&error);
+
+                let msg = format!("get_block_hash failed: {}", error);
+                error!("{}", msg);
+                msg
+            })
+    }
+
+    pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String> {
+        self.client()?.get_block(block_hash).map_err(|error| {
+            self.on_error(&error);
+
+            let msg = format!("get_block failed: {}", error);
             error!("{}", msg);
             msg
         })
