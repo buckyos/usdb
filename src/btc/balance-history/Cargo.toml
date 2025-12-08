@@ -22,3 +22,4 @@ jsonrpc-core= "18.0"
 jsonrpc-derive = "18.0"
 jsonrpsee = { version = "0.26", features = ["client", "ws-client", "macros"] }
 base64 = "0.22"
+num_cpus = "1.17"

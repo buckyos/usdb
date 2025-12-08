@@ -1,5 +1,5 @@
 use rust_rocksdb as rocksdb;
-use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid};
+use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid, BlockHash};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
@@ -11,12 +11,14 @@ use crate::config::BalanceHistoryConfigRef;
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
 pub const UTXO_CF: &str = "utxo";
+pub const BLOCKS_CF: &str = "blocks";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = ScriptHash::LEN + 4; // ScriptHash (20 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
+pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
 
 pub struct BalanceHistoryEntry {
     pub script_hash: ScriptHash,
@@ -28,6 +30,12 @@ pub struct BalanceHistoryEntry {
 pub struct UTXOEntry {
     pub script_hash: ScriptHash,
     pub amount: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockEntry {
+    pub block_file_index: u32,  // which blk file
+    pub block_file_offset: u64, // offset in the blk file
 }
 
 pub struct BalanceHistoryDB {
@@ -167,6 +175,21 @@ impl BalanceHistoryDB {
         let amount = u64::from_be_bytes(amount_bytes.try_into().unwrap());
 
         UTXOEntry { script_hash, amount }
+    }
+
+    fn parse_block_from_value(value: &[u8]) -> BlockEntry {
+        assert!(value.len() == 12, "Invalid Block value length");
+        
+        let block_file_index_bytes = &value[0..4];
+        let block_file_offset_bytes = &value[4..12];
+
+        let block_file_index = u32::from_be_bytes(block_file_index_bytes.try_into().unwrap());
+        let block_file_offset = u64::from_be_bytes(block_file_offset_bytes.try_into().unwrap());
+
+        BlockEntry {
+            block_file_index,
+            block_file_offset,
+        }
     }
 
     pub fn put_address_history(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {
@@ -617,6 +640,59 @@ impl BalanceHistoryDB {
         }
 
         Ok(spent_utxos)
+    }
+
+    pub fn put_blocks(
+        &self,
+        blocks: &Vec<(BlockHash, BlockEntry)>,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCKS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut batch = WriteBatch::default();
+
+        for (block_hash, block_entry) in blocks {
+            // Value format: block_file_index (u32) + block_file_offset (u64)
+            let mut value = Vec::with_capacity(12);
+            value.extend_from_slice(&block_entry.block_file_index.to_be_bytes());
+            value.extend_from_slice(&block_entry.block_file_offset.to_be_bytes());
+
+            batch.put_cf(cf, block_hash.as_ref() as &[u8], value);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write Blocks batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_block(&self, block_hash: &BlockHash) -> Result<Option<BlockEntry>, String> {
+        let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCKS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        match self.db.get_cf(cf, block_hash.as_ref() as &[u8]) {
+            Ok(Some(value)) => {
+                let block_entry = Self::parse_block_from_value(&value);
+                Ok(Some(block_entry))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!("Failed to get Block: {}", e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
     }
 }
 
