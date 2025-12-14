@@ -1,5 +1,6 @@
 use crate::btc::client::BTCClientRef;
 use crate::db::{BalanceHistoryDBRef, BlockEntry};
+use bitcoincore_rpc::bitcoin::address::error;
 use bitcoincore_rpc::bitcoin::consensus::Decodable;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash, block};
@@ -33,26 +34,6 @@ impl<R: Read> Read for XorReader<R> {
             self.pos = (self.pos + 1) % 8;
         }
         Ok(n)
-    }
-}
-
-struct CurrentBlockIterator {
-    next_file_index: usize,
-    current_blocks_in_file: Vec<Block>,
-    current_block_index_in_file: usize,
-    current_block_height: u64,
-    current_block_hash: BlockHash,
-}
-
-impl Default for CurrentBlockIterator {
-    fn default() -> Self {
-        CurrentBlockIterator {
-            next_file_index: 0,
-            current_blocks_in_file: Vec::new(),
-            current_block_index_in_file: 0,
-            current_block_height: 0,
-            current_block_hash: BlockHash::all_zeros(),
-        }
     }
 }
 
@@ -187,7 +168,6 @@ impl BlockFileReader {
         Ok(records)
     }
 
-    
     pub fn read_blk_records(&self, path: &Path) -> Result<Vec<Vec<u8>>, String> {
         let file = File::open(path).map_err(|e| {
             let msg = format!("Failed to open blk file {}: {}", path.display(), e);
@@ -383,6 +363,58 @@ impl BlockFileReader {
     }
 }
 
+// Cache block records read from blk files
+struct BlockFileCache {
+    reader: BlockFileReaderRef,
+    cache: moka::sync::Cache<usize, Vec<Block>>, // file_index -> blocks
+}
+
+impl BlockFileCache {
+    pub fn new(reader: BlockFileReaderRef, max_capacity: u64) -> Self {
+        let cache = moka::sync::Cache::builder()
+            .max_capacity(max_capacity)
+            .build();
+
+        Self { reader, cache }
+    }
+
+    pub fn get_block_by_file_index(
+        &self,
+        file_index: usize,
+        record_index: usize,
+    ) -> Result<Block, String> {
+        if let Some(blocks) = self.cache.get(&file_index) {
+            if let Some(block) = blocks.get(record_index) {
+                return Ok(block.clone());
+            } else {
+                let msg = format!(
+                    "Record index {} out of bounds for file index {}",
+                    record_index, file_index
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
+        let record = blocks.get(record_index);
+        if record.is_none() {
+            let msg = format!(
+                "Record index {} out of bounds for file index {}",
+                record_index, file_index
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let record = record.unwrap().clone();
+
+        // Cache the blocks
+        self.cache.insert(file_index, blocks);
+
+        Ok(record)
+    }
+}
+
 pub type BlockFileReaderRef = Arc<BlockFileReader>;
 
 struct BuildRecordResult {
@@ -390,29 +422,27 @@ struct BuildRecordResult {
     prev_block_hash: BlockHash,
     block_file_index: usize,
     block_file_offset: u64,
+    block_record_index: usize,
 }
 
 struct BlockRecordCache {
     block_hash_cache: HashMap<BlockHash, BlockEntry>,
     block_prev_hash_cache: HashMap<BlockHash, BlockHash>,
+    sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
 }
 
 pub struct BlocksIndexer {
     reader: BlockFileReaderRef,
-    db: BalanceHistoryDBRef,
-    cache: Mutex<BlockRecordCache>,
+    cache: Arc<Mutex<BlockRecordCache>>,
 }
 
 impl BlocksIndexer {
-    pub fn new(reader: BlockFileReaderRef, db: BalanceHistoryDBRef) -> Self {
-        Self {
-            reader,
-            db,
-            cache: Mutex::new(BlockRecordCache {
-                block_hash_cache: HashMap::new(),
-                block_prev_hash_cache: HashMap::new(),
-            }),
-        }
+    pub fn new(reader: BlockFileReaderRef, cache: Arc<Mutex<BlockRecordCache>>) -> Self {
+        Self { reader, cache }
+    }
+
+    pub fn cache(&self) -> Arc<Mutex<BlockRecordCache>> {
+        self.cache.clone()
     }
 
     fn build_index_by_file(&self, file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
@@ -420,7 +450,7 @@ impl BlocksIndexer {
 
         let mut offset = 0;
         let mut ret = Vec::new();
-        for record in records {
+        for (record_index, record) in records.iter().enumerate() {
             let block: Block = Block::consensus_decode(&mut record.as_slice()).map_err(|e| {
                 let msg = format!(
                     "Failed to deserialize block from blk file {}: {}",
@@ -436,6 +466,7 @@ impl BlocksIndexer {
                 prev_block_hash: block.header.prev_blockhash,
                 block_file_index: file_index,
                 block_file_offset: offset as u64,
+                block_record_index: record_index,
             };
             ret.push(item);
 
@@ -463,6 +494,7 @@ impl BlocksIndexer {
             let entry = BlockEntry {
                 block_file_index: record.block_file_index as u32,
                 block_file_offset: record.block_file_offset,
+                block_record_index: record.block_record_index,
             };
 
             if let Some(prev_entry) = cache
@@ -536,7 +568,10 @@ impl BlocksIndexer {
         end_file_index: usize,
     ) -> Result<(), String> {
         let tc = (num_cpus::get_physical() * 2).clamp(16, 96);
-        info!("Using {} max blocking threads for Tokio runtime to build index by file range", tc);
+        info!(
+            "Using {} max blocking threads for Tokio runtime to build index by file range",
+            tc
+        );
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -558,9 +593,12 @@ impl BlocksIndexer {
             }
             file_index += 1;
         }
-        
+
         if file_index == 0 {
-            let msg = format!("No blk files found in the data directory {}", self.reader.block_dir.display());
+            let msg = format!(
+                "No blk files found in the data directory {}",
+                self.reader.block_dir.display()
+            );
             error!("{}", msg);
             return Err(msg);
         }
@@ -571,9 +609,14 @@ impl BlocksIndexer {
 
     pub fn build_index(self: &Arc<Self>, client: BTCClientRef) -> Result<(), String> {
         let latest_blk_file_index = self.find_latest_blk_file()?;
-        let latest_blk_file_index = 100;
         self.build_index_by_file_range(0, latest_blk_file_index)?;
 
+        self.generate_sort_blocks()?;
+
+        Ok(())
+    }
+
+    fn generate_sort_blocks(&self) -> Result<(), String> {
         let cache = self.cache.lock().unwrap();
         let mut prev_hash = BlockHash::all_zeros();
         let mut block_height = 0;
@@ -589,19 +632,17 @@ impl BlocksIndexer {
             let block_hash = block_hash.unwrap();
             let entry = cache.block_hash_cache.get(block_hash);
             if entry.is_none() {
-                let msg = format!(
-                    "Block entry not found for block_hash {}",
-                    block_hash,
-                );
+                let msg = format!("Block entry not found for block_hash {}", block_hash,);
                 error!("{}", msg);
                 return Err(msg);
             }
 
             prev_hash = *block_hash;
-            blocks.push((block_height, entry.unwrap()));
+            blocks.push((block_height, block_hash.clone()));
             println!("Loaded block {} with hash {}", block_height, block_hash);
-            // Verify block height by fetching block from rpc
-            {
+
+            // For debug only: Verify block height by fetching block from rpc
+            /* {
                 let rpc_block = client.get_block(block_height).map_err(|e| {
                     let msg = format!(
                         "Failed to get block {} from rpc: {}",
@@ -624,36 +665,45 @@ impl BlocksIndexer {
                     return Err(msg);
                 }
             }
+            */
 
             block_height += 1;
         }
 
-        // self.db.put_blocks(&blocks)?;
+        // Save sorted blocks to cache
+        let mut cache = self.cache.lock().unwrap();
+        cache.sorted_blocks = blocks;
+
         Ok(())
     }
 }
 
 pub struct BlockLocalLoader {
     block_reader: BlockFileReaderRef,
-    db: BalanceHistoryDBRef,
     btc_client: BTCClientRef,
-    current_iterator: Mutex<CurrentBlockIterator>, // Use to load blocks sequentially from disk
+    block_index_cache: Arc<Mutex<BlockRecordCache>>,
+    file_cache: BlockFileCache,
 }
 
 impl BlockLocalLoader {
     pub fn new(
         block_magic: u32,
         data_dir: &Path,
-        db: BalanceHistoryDBRef,
         btc_client: BTCClientRef,
     ) -> Result<Self, String> {
         let block_reader = Arc::new(BlockFileReader::new(block_magic, data_dir)?);
+        let block_index_cache = Arc::new(Mutex::new(BlockRecordCache {
+            block_hash_cache: HashMap::new(),
+            block_prev_hash_cache: HashMap::new(),
+            sorted_blocks: Vec::new(),
+        }));
+        let file_cache = BlockFileCache::new(block_reader.clone(), 3); // Cache up to 3 blk files
 
         Ok(Self {
             block_reader,
-            db,
             btc_client,
-            current_iterator: Mutex::new(CurrentBlockIterator::default()),
+            block_index_cache,
+            file_cache,
         })
     }
 
@@ -686,14 +736,68 @@ impl BlockLocalLoader {
         Ok(blocks)
     }
 
-    fn get_blk_file_name(index: usize) -> String {
-        format!("blk{:05}.dat", index)
-    }
-
     pub fn build_index(&self) -> Result<(), String> {
-        let builder = BlocksIndexer::new(self.block_reader.clone(), self.db.clone());
+        let builder = BlocksIndexer::new(self.block_reader.clone(), self.block_index_cache.clone());
         let builder = Arc::new(builder);
         builder.build_index(self.btc_client.clone())
+    }
+
+    pub fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+        let cache = self.block_index_cache.lock().unwrap();
+        if cache.sorted_blocks.len() > block_height as usize {
+            Ok(cache.sorted_blocks[block_height as usize].1.clone())
+        } else {
+            warn!(
+                "Block height {} not found in local index cache, fetching from rpc",
+                block_height
+            );
+            self.btc_client.get_block_hash(block_height)
+        }
+    }
+
+    pub fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String> {
+        // First try to load block from local blk files
+        let cache = self.block_index_cache.lock().unwrap();
+        let entry = cache.block_hash_cache.get(block_hash);
+        if let Some(entry) = entry {
+            let block = self.file_cache.get_block_by_file_index(
+                entry.block_file_index as usize,
+                entry.block_record_index,
+            )?;
+            return Ok(block);
+        }
+
+        // If not found in local blk files, load from rpc
+        warn!(
+            "Block {} not found in local blk files, fetching from rpc",
+            block_hash
+        );
+        let block = self.btc_client.get_block_by_hash(block_hash).map_err(|e| {
+            let msg = format!("Failed to get block {} from rpc: {}", block_hash, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(block)
+    }
+
+    pub fn get_block_by_height(&self, block_height: u64) -> Result<Block, String> {
+        let block_hash = self.get_block_hash(block_height)?;
+        self.get_block_by_hash(&block_hash)
+    }
+
+    pub async fn get_blocks(
+        &self,
+        start_height: u64,
+        end_height: u64,
+    ) -> Result<Vec<Block>, String> {
+        let mut blocks = Vec::new();
+        for height in start_height..=end_height {
+            let block = self.get_block_by_height(height)?;
+            blocks.push(block);
+        }
+
+        Ok(blocks)
     }
 }
 
@@ -754,7 +858,6 @@ mod tests {
         println!("Finished loading blk files in {:?}", duration);
         */
 
-        
         let indexer = BlocksIndexer::new(reader.clone(), db.clone());
         let indexer = Arc::new(indexer);
         let begin_tick = std::time::Instant::now();
@@ -762,7 +865,6 @@ mod tests {
         let end_tick = std::time::Instant::now();
         let duration = end_tick.duration_since(begin_tick);
         println!("Finished building index in {:?}", duration);
-        
 
         let loader = BlockLocalLoader::new(
             config.btc.block_magic(),
@@ -773,5 +875,50 @@ mod tests {
         .unwrap();
 
         //loader.build_index().unwrap();
+    }
+
+    #[test]
+    fn test_latest_blk_file() {
+        let config = BalanceHistoryConfig::default();
+        let config = std::sync::Arc::new(config);
+
+        let client = BTCClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
+        let client = std::sync::Arc::new(client);
+
+        let reader =
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        let reader = Arc::new(reader);
+
+        let indexer = BlocksIndexer::new(
+            reader.clone(),
+            Arc::new(
+                BalanceHistoryDB::new(&std::env::temp_dir().join("db"), config.clone()).unwrap(),
+            ),
+        );
+        let indexer = Arc::new(indexer);
+
+        let latest_index = indexer.find_latest_blk_file().unwrap();
+        println!("Latest blk file index: {}", latest_index);
+
+        // Load latest blk file records
+        let latest_block_height = client.get_latest_block_height().unwrap();
+        println!("Latest block height from rpc: {}", latest_block_height);
+        let latest_block_hash = client.get_block_hash(latest_block_height).unwrap();
+        let records = reader.load_blk_blocks_by_index(latest_index).unwrap();
+        let mut found = false;
+        for record in records {
+            let block_hash = record.block_hash();
+            println!("Block hash: {}", block_hash);
+            if block_hash == latest_block_hash {
+                println!(
+                    "Found latest block {} in blk file {}",
+                    latest_block_height, latest_index
+                );
+                found = true;
+                break;
+            }
+        }
+
+        assert!(found, "Latest block not found in latest blk file");
     }
 }

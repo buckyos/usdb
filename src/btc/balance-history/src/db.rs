@@ -36,6 +36,7 @@ pub struct UTXOEntry {
 pub struct BlockEntry {
     pub block_file_index: u32,  // which blk file
     pub block_file_offset: u64, // offset in the blk file
+    pub block_record_index: usize, // index in the block record cache
 }
 
 pub struct BalanceHistoryDB {
@@ -177,7 +178,7 @@ impl BalanceHistoryDB {
         UTXOEntry { script_hash, amount }
     }
 
-    fn parse_block_from_value(value: &[u8]) -> BlockEntry {
+    fn parse_block_from_value(record_index: usize, value: &[u8]) -> BlockEntry {
         assert!(value.len() == 12, "Invalid Block value length");
         
         let block_file_index_bytes = &value[0..4];
@@ -189,6 +190,7 @@ impl BalanceHistoryDB {
         BlockEntry {
             block_file_index,
             block_file_offset,
+            block_record_index: record_index,
         }
     }
 
@@ -642,6 +644,7 @@ impl BalanceHistoryDB {
         Ok(spent_utxos)
     }
 
+    /*
     pub fn put_blocks(
         &self,
         blocks: &Vec<(BlockHash, BlockEntry)>,
@@ -694,6 +697,7 @@ impl BalanceHistoryDB {
             }
         }
     }
+    */
 }
 
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
