@@ -11,14 +11,14 @@ use crate::config::BalanceHistoryConfigRef;
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
 pub const UTXO_CF: &str = "utxo";
-pub const BLOCKS_CF: &str = "blocks";
+// pub const BLOCKS_CF: &str = "blocks";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = ScriptHash::LEN + 4; // ScriptHash (20 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
-pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
+// pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
 
 pub struct BalanceHistoryEntry {
     pub script_hash: ScriptHash,

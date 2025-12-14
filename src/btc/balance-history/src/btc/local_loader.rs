@@ -1,4 +1,4 @@
-use crate::btc::client::BTCClientRef;
+use crate::btc::rpc::BTCRpcClientRef;
 use crate::db::{BalanceHistoryDBRef, BlockEntry};
 use bitcoincore_rpc::bitcoin::address::error;
 use bitcoincore_rpc::bitcoin::consensus::Decodable;
@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use super::client::BTCClient;
 
 struct XorReader<R>
 where
@@ -431,6 +432,20 @@ struct BlockRecordCache {
     sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
 }
 
+impl BlockRecordCache {
+   pub fn new() -> Self {
+        Self {
+            block_hash_cache: HashMap::new(),
+            block_prev_hash_cache: HashMap::new(),
+            sorted_blocks: Vec::new(),
+        }
+    }
+
+    pub fn new_ref() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::new()))
+    }
+}
+
 pub struct BlocksIndexer {
     reader: BlockFileReaderRef,
     cache: Arc<Mutex<BlockRecordCache>>,
@@ -607,7 +622,7 @@ impl BlocksIndexer {
         Ok(file_index - 1)
     }
 
-    pub fn build_index(self: &Arc<Self>, client: BTCClientRef) -> Result<(), String> {
+    pub fn build_index(self: &Arc<Self>, client: BTCRpcClientRef) -> Result<(), String> {
         let latest_blk_file_index = self.find_latest_blk_file()?;
         self.build_index_by_file_range(0, latest_blk_file_index)?;
 
@@ -680,7 +695,7 @@ impl BlocksIndexer {
 
 pub struct BlockLocalLoader {
     block_reader: BlockFileReaderRef,
-    btc_client: BTCClientRef,
+    btc_client: BTCRpcClientRef,
     block_index_cache: Arc<Mutex<BlockRecordCache>>,
     file_cache: BlockFileCache,
 }
@@ -689,14 +704,10 @@ impl BlockLocalLoader {
     pub fn new(
         block_magic: u32,
         data_dir: &Path,
-        btc_client: BTCClientRef,
+        btc_client: BTCRpcClientRef,
     ) -> Result<Self, String> {
         let block_reader = Arc::new(BlockFileReader::new(block_magic, data_dir)?);
-        let block_index_cache = Arc::new(Mutex::new(BlockRecordCache {
-            block_hash_cache: HashMap::new(),
-            block_prev_hash_cache: HashMap::new(),
-            sorted_blocks: Vec::new(),
-        }));
+        let block_index_cache = BlockRecordCache::new_ref();
         let file_cache = BlockFileCache::new(block_reader.clone(), 3); // Cache up to 3 blk files
 
         Ok(Self {
@@ -707,6 +718,7 @@ impl BlockLocalLoader {
         })
     }
 
+    /*
     // Load missing blocks from rpc
     fn process_missing_blocks(
         &self,
@@ -735,6 +747,7 @@ impl BlockLocalLoader {
 
         Ok(blocks)
     }
+    */
 
     pub fn build_index(&self) -> Result<(), String> {
         let builder = BlocksIndexer::new(self.block_reader.clone(), self.block_index_cache.clone());
@@ -801,12 +814,50 @@ impl BlockLocalLoader {
     }
 }
 
+#[async_trait::async_trait]
+impl BTCClient for BlockLocalLoader {
+    async fn init(&self) -> Result<(), String> {
+        self.build_index()?;
+        info!("Block index built successfully");
+
+        let cache = self.block_index_cache.lock().unwrap();
+        let latest_height = (cache.sorted_blocks.len() as u64).saturating_sub(1);
+        info!("Local file latest block height: {}", latest_height);
+
+        Ok(())
+    }
+
+    fn get_latest_block_height(&self) -> Result<u64, String> {
+        self.btc_client.get_latest_block_height()
+    }
+
+    fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+        self.get_block_hash(block_height)
+    }
+
+    fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String> {
+        self.get_block_by_hash(block_hash)
+    }
+
+    fn get_block_by_height(&self, block_height: u64) -> Result<Block, String> {
+        self.get_block_by_height(block_height)
+    }
+
+    async fn get_blocks(&self, start_height: u64, end_height: u64) -> Result<Vec<Block>, String> {
+        self.get_blocks(start_height, end_height).await
+    }
+
+    fn get_utxo(&self, outpoint: &bitcoincore_rpc::bitcoin::OutPoint) -> Result<(bitcoincore_rpc::bitcoin::ScriptBuf, bitcoincore_rpc::bitcoin::Amount), String> {
+        self.btc_client.get_utxo(outpoint)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{BlockHash, bech32};
 
-    use super::super::client::BTCClient;
+    use super::super::rpc::BTCRpcClient;
     use super::*;
     use crate::config::BalanceHistoryConfig;
     use crate::db::BalanceHistoryDB;
@@ -820,7 +871,7 @@ mod tests {
         let config = BalanceHistoryConfig::default();
         let config = std::sync::Arc::new(config);
 
-        let client = BTCClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
+        let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
         let client = std::sync::Arc::new(client);
 
         let db = BalanceHistoryDB::new(&test_data_dir.join("db"), config.clone()).unwrap();
@@ -858,7 +909,8 @@ mod tests {
         println!("Finished loading blk files in {:?}", duration);
         */
 
-        let indexer = BlocksIndexer::new(reader.clone(), db.clone());
+        let cache = BlockRecordCache::new_ref();
+        let indexer = BlocksIndexer::new(reader.clone(), cache.clone());
         let indexer = Arc::new(indexer);
         let begin_tick = std::time::Instant::now();
         indexer.build_index_by_file_range(0, 5200).unwrap();
@@ -869,7 +921,6 @@ mod tests {
         let loader = BlockLocalLoader::new(
             config.btc.block_magic(),
             &config.btc.data_dir(),
-            db.clone(),
             client.clone(),
         )
         .unwrap();
@@ -882,18 +933,17 @@ mod tests {
         let config = BalanceHistoryConfig::default();
         let config = std::sync::Arc::new(config);
 
-        let client = BTCClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
+        let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
         let client = std::sync::Arc::new(client);
 
         let reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         let reader = Arc::new(reader);
 
+        let cache = BlockRecordCache::new_ref();
         let indexer = BlocksIndexer::new(
             reader.clone(),
-            Arc::new(
-                BalanceHistoryDB::new(&std::env::temp_dir().join("db"), config.clone()).unwrap(),
-            ),
+            cache.clone(),
         );
         let indexer = Arc::new(indexer);
 

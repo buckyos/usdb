@@ -1,7 +1,7 @@
 use crate::balance::{
     AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache,
 };
-use crate::btc::{BTCClient, BTCClientRef};
+use crate::btc::{BTCClient, BTCClientRef, create_btc_client};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
@@ -32,14 +32,8 @@ impl BalanceHistoryIndexer {
         output: IndexOutputRef,
     ) -> Result<Self, String> {
         // Init btc client
-        let rpc_url = config.btc.rpc_url();
-        let auth = config.btc.auth();
-        let btc_client = BTCClient::new(rpc_url, auth).map_err(|e| {
-            let msg = format!("Failed to create BTC client: {}", e);
-            log::error!("{}", msg);
-            msg
-        })?;
-        let btc_client = Arc::new(btc_client);
+        let last_synced_block_height = db.get_btc_block_height()? as u64;
+        let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
 
         // Init UTXO cache
         let utxo_cache = Arc::new(UTXOCache::new(db.clone()));
@@ -60,6 +54,10 @@ impl BalanceHistoryIndexer {
     }
 
     pub async fn run(&self) -> Result<(), String> {
+        // First initialize the BTC client
+        // This step may take some time for local loader to load blk files
+        self.btc_client.init().await?;
+
         // Set up shutdown channel
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         self.shutdown_tx.lock().unwrap().replace(shutdown_tx);
@@ -343,7 +341,7 @@ impl BalanceHistoryIndexer {
 
     fn process_block(&self, block_height: u64, balance_sync_cache: &AddressBalanceSyncCache) -> Result<BlockHistoryCache, String> {
         // Fetch the block
-        let block = self.btc_client.get_block(block_height)?;
+        let block = self.btc_client.get_block_by_height(block_height)?;
 
         let mut history = BlockHistoryCache::new();
 
