@@ -63,11 +63,11 @@ async fn main_run() {
     let config = Arc::new(config);
 
     // Init console output
-    let output = IndexOutput::new(0);
+    let output = IndexOutput::new();
     let output = Arc::new(output);
 
     // Initialize the database
-    output.set_message("Initializing database...");
+    output.println("Initializing database...");
     let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
         Ok(database) => database,
         Err(e) => {
@@ -76,7 +76,7 @@ async fn main_run() {
         }
     };
     let db = Arc::new(db);
-    output.set_message("Database initialized.");
+    output.println("Database initialized.");
 
     // Start the indexer
     let indexer = match BalanceHistoryIndexer::new(config.clone(), db.clone(), output.clone()) {
@@ -86,7 +86,7 @@ async fn main_run() {
             std::process::exit(1);
         }
     };
-    output.set_message("Starting indexer...");
+    output.println("Starting indexer...");
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;
@@ -108,11 +108,11 @@ async fn main_run() {
     tokio::select! {
         _ = sigint => {
             info!("Received Ctrl+C, shutting down...");
-            output.set_message("Shutting down...");
+            output.println("Shutting down...");
         }
         _ = sigterm => {
             info!("Received SIGTERM, shutting down...");
-            output.set_message("Shutting down...");
+            output.println("Shutting down...");
         }
         result = indexer.run() => {
             if let Err(e) = result {

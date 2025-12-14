@@ -107,7 +107,8 @@ impl BalanceHistoryIndexer {
 
     fn run_loop(&self) {
         info!("Starting Balance History Indexer...");
-        self.output.set_message("Starting indexer");
+        self.output.start_index(0);
+        self.output.set_index_message("Starting indexer");
 
         let mut failed_attempts = 0;
         loop {
@@ -120,7 +121,7 @@ impl BalanceHistoryIndexer {
                     );
                     self.output.update_current_height(latest_height);
                     self.output
-                        .set_message(&format!("Synced up to block height {}", latest_height));
+                        .set_index_message(&format!("Synced up to block height {}", latest_height));
 
                     // Check for shutdown signal before waiting for new blocks
                     if self.check_shutdown() {
@@ -135,7 +136,7 @@ impl BalanceHistoryIndexer {
                                 "New block detected at height {}. Continuing sync...",
                                 new_height
                             );
-                            self.output.set_message(&format!(
+                            self.output.set_index_message(&format!(
                                 "New block detected at height {}",
                                 new_height
                             ));
@@ -145,7 +146,7 @@ impl BalanceHistoryIndexer {
                                 "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
                                 e
                             );
-                            self.output.set_message(&format!(
+                            self.output.set_index_message(&format!(
                                 "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
                                 e
                             ));
@@ -167,7 +168,7 @@ impl BalanceHistoryIndexer {
                         failed_attempts, e
                     );
 
-                    self.output.set_message(&format!(
+                    self.output.set_index_message(&format!(
                         "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
                         failed_attempts, e
                     ));
@@ -183,7 +184,7 @@ impl BalanceHistoryIndexer {
         }
 
         info!("Balance History Indexer shut down gracefully.");
-        self.output.set_message("Indexer shut down gracefully");
+        self.output.set_index_message("Indexer shut down gracefully");
 
         // Take the shutdown channel back
         self.shutdown_rx.lock().unwrap().take();
@@ -196,7 +197,7 @@ impl BalanceHistoryIndexer {
             match rx.try_recv() {
                 Ok(_) | Err(oneshot::error::TryRecvError::Closed) => {
                     info!("Shutdown signal received. Stopping indexer...");
-                    self.output.set_message("Indexer shutting down...");
+                    self.output.set_index_message("Indexer shutting down...");
                     return true;
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {
@@ -249,7 +250,7 @@ impl BalanceHistoryIndexer {
             return Ok(last_synced_height as u64);
         }
 
-        self.output.set_message(
+        self.output.set_index_message(
             format!(
                 "Syncing blocks {} to {}",
                 last_synced_height + 1,
@@ -306,7 +307,7 @@ impl BalanceHistoryIndexer {
 
             self.output.update_current_height(height);
             self.output
-                .set_message(&format!("Synced block at height {}", height));
+                .set_index_message(&format!("Synced block at height {}", height));
 
             last_height = height;
 

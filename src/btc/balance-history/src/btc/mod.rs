@@ -6,9 +6,9 @@ pub use client::*;
 pub use local_loader::*;
 pub use rpc::*;
 
-use std::sync::Arc;
 use crate::config::BalanceHistoryConfigRef;
 use crate::output::IndexOutputRef;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BTCClientType {
@@ -48,13 +48,17 @@ pub fn create_btc_client(
         BTCClientType::RPC => Ok(Arc::new(Box::new(btc_client) as Box<dyn BTCClient>)),
         BTCClientType::LocalLoader => {
             let client = Arc::new(btc_client);
-            let loader =
-                BlockLocalLoader::new(config.btc.block_magic(), &config.btc.data_dir(), client)
-                    .map_err(|e| {
-                        let msg = format!("Failed to create BlockLocalLoader: {}", e);
-                        error!("{}", msg);
-                        msg
-                    })?;
+            let loader = BlockLocalLoader::new(
+                config.btc.block_magic(),
+                &config.btc.data_dir(),
+                client,
+                output,
+            )
+            .map_err(|e| {
+                let msg = format!("Failed to create BlockLocalLoader: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
 
             Ok(Arc::new(Box::new(loader) as Box<dyn BTCClient>))
         }
