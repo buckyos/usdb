@@ -364,6 +364,8 @@ impl BlockFileReader {
     }
 }
 
+const BLOCK_FILE_CACHE_MAX_CAPACITY: u64 = 8; // Max 8 blk files in cache
+
 // Cache block records read from blk files
 struct BlockFileCache {
     reader: BlockFileReaderRef,
@@ -374,7 +376,7 @@ impl BlockFileCache {
     pub fn new(reader: BlockFileReaderRef) -> Self {
         let cache = moka::sync::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(60 * 5)) // 5 minutes TTL
-            .max_capacity(4) // Max 4 blk files cached
+            .max_capacity(BLOCK_FILE_CACHE_MAX_CAPACITY) // Max 5 blk files cached
             .build();
 
         Self { reader, cache }
@@ -412,14 +414,14 @@ impl BlockFileCache {
         }
         let record = record.unwrap().clone();
 
+         // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
+        if file_index >= BLOCK_FILE_CACHE_MAX_CAPACITY as usize {
+            self.cache.invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
+        }
+
         // Cache the blocks
         let blocks = Arc::new(blocks);
         self.cache.insert(file_index, blocks);
-
-        // Remove file_index - 3 from cache to limit memory usage
-        if file_index >= 3 {
-            self.cache.invalidate(&(file_index - 3));
-        }
 
         Ok(record)
     }

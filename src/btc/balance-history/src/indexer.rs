@@ -345,6 +345,9 @@ impl BalanceHistoryIndexer {
         let block = self.btc_client.get_block_by_height(block_height)?;
 
         let mut history = BlockHistoryCache::new();
+        let mut vin_count = 0;
+        let mut utxo_count = 0;
+        let begin_time = std::time::Instant::now();
 
         // Process transactions in the block
         for tx in block.txdata.iter() {
@@ -357,6 +360,7 @@ impl BalanceHistoryIndexer {
                     );
 
                     let utxo = self.load_utxo(&vin.previous_output)?;
+                    vin_count += 1;
 
                     match history.entry(utxo.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
@@ -415,6 +419,7 @@ impl BalanceHistoryIndexer {
             for (n, vout) in tx.output.iter().enumerate() {
                 let script_hash = vout.script_pubkey.script_hash();
                 let value = vout.value.to_sat();
+                utxo_count += 1;
 
                 match history.entry(script_hash) {
                     std::collections::hash_map::Entry::Vacant(e) => {
@@ -459,6 +464,11 @@ impl BalanceHistoryIndexer {
             }
         }
 
+        let elapsed = begin_time.elapsed();
+        debug!(
+            "Processed block at height {}: {} vins, {} utxos, history entries {}, duration: {:.2?}",
+            block_height, vin_count, utxo_count, history.len(), elapsed
+        );
         Ok(history)
     }
 
