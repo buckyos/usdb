@@ -2,12 +2,11 @@ mod client;
 mod local_loader;
 mod rpc;
 
+use crate::config::BalanceHistoryConfigRef;
+use crate::output::IndexOutputRef;
 pub use client::*;
 pub use local_loader::*;
 pub use rpc::*;
-
-use crate::config::BalanceHistoryConfigRef;
-use crate::output::IndexOutputRef;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +14,7 @@ enum BTCClientType {
     RPC,
     LocalLoader,
 }
+
 pub fn create_btc_client(
     config: &BalanceHistoryConfigRef,
     output: IndexOutputRef,

@@ -1,6 +1,4 @@
-use crate::balance::{
-    AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache,
-};
+use crate::balance::{AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache};
 use crate::btc::{BTCClient, BTCClientRef, create_btc_client};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
@@ -33,7 +31,11 @@ impl BalanceHistoryIndexer {
     ) -> Result<Self, String> {
         // Init btc client
         let last_synced_block_height = db.get_btc_block_height()? as u64;
-        let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
+        let btc_client = create_btc_client(
+            &config,
+            output.clone(),
+            last_synced_block_height,
+        )?;
 
         // Init UTXO cache
         let utxo_cache = Arc::new(UTXOCache::new(db.clone()));
@@ -119,9 +121,10 @@ impl BalanceHistoryIndexer {
                         "Sync iteration completed successfully. Latest synced height: {}",
                         latest_height
                     );
+                    let msg = format!("Synced up to block height {}", latest_height);
                     self.output.update_current_height(latest_height);
                     self.output
-                        .set_index_message(&format!("Synced up to block height {}", latest_height));
+                        .set_index_message(&msg);
 
                     // Check for shutdown signal before waiting for new blocks
                     if self.check_shutdown() {
@@ -136,6 +139,8 @@ impl BalanceHistoryIndexer {
                                 "New block detected at height {}. Continuing sync...",
                                 new_height
                             );
+
+                            let msg = format!("New block detected at height {}", new_height);
                             self.output.set_index_message(&format!(
                                 "New block detected at height {}",
                                 new_height
@@ -146,10 +151,12 @@ impl BalanceHistoryIndexer {
                                 "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
                                 e
                             );
-                            self.output.set_index_message(&format!(
+                            let msg = format!(
                                 "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
                                 e
-                            ));
+                            );
+                            self.output.set_index_message(&msg);
+
                             std::thread::sleep(std::time::Duration::from_secs(10));
 
                             // Check for shutdown signal after error
@@ -168,10 +175,12 @@ impl BalanceHistoryIndexer {
                         failed_attempts, e
                     );
 
-                    self.output.set_index_message(&format!(
+                    let msg = format!(
                         "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
                         failed_attempts, e
-                    ));
+                    );
+                    self.output.set_index_message(&msg);
+
                     std::thread::sleep(std::time::Duration::from_secs(10));
 
                     // Check for shutdown signal after error
@@ -184,7 +193,8 @@ impl BalanceHistoryIndexer {
         }
 
         info!("Balance History Indexer shut down gracefully.");
-        self.output.set_index_message("Indexer shut down gracefully");
+        self.output
+            .set_index_message("Indexer shut down gracefully");
 
         // Take the shutdown channel back
         self.shutdown_rx.lock().unwrap().take();
@@ -250,14 +260,12 @@ impl BalanceHistoryIndexer {
             return Ok(last_synced_height as u64);
         }
 
-        self.output.set_index_message(
-            format!(
-                "Syncing blocks {} to {}",
-                last_synced_height + 1,
-                latest_btc_height
-            )
-            .as_str(),
+        let msg = format!(
+            "Syncing blocks {} to {}",
+            last_synced_height + 1,
+            latest_btc_height
         );
+        self.output.set_index_message(&msg);
 
         // Process blocks in batches
         let batch_size = self.config.sync.batch_size;
@@ -340,7 +348,11 @@ impl BalanceHistoryIndexer {
         Ok(last_height)
     }
 
-    fn process_block(&self, block_height: u64, balance_sync_cache: &AddressBalanceSyncCache) -> Result<BlockHistoryCache, String> {
+    fn process_block(
+        &self,
+        block_height: u64,
+        balance_sync_cache: &AddressBalanceSyncCache,
+    ) -> Result<BlockHistoryCache, String> {
         // Fetch the block
         let block = self.btc_client.get_block_by_height(block_height)?;
 
@@ -378,7 +390,8 @@ impl BalanceHistoryIndexer {
                             assert!(
                                 latest_entry.block_height < block_height as u32,
                                 "Latest entry block height should be less than current block height {} < {}",
-                                latest_entry.block_height, block_height
+                                latest_entry.block_height,
+                                block_height
                             );
                             assert!(
                                 latest_entry.balance >= utxo.value,
@@ -408,14 +421,18 @@ impl BalanceHistoryIndexer {
             }
 
             let txid = tx.compute_txid();
-            if self.utxo_cache.check_black_list_coinbase_tx(block_height, &txid) && tx.is_coinbase() {
+            if self
+                .utxo_cache
+                .check_black_list_coinbase_tx(block_height, &txid)
+                && tx.is_coinbase()
+            {
                 warn!(
                     "Skipping blacklisted coinbase tx {} at block height {}",
                     txid, block_height
                 );
                 continue;
             }
-            
+
             for (n, vout) in tx.output.iter().enumerate() {
                 let script_hash = vout.script_pubkey.script_hash();
                 let value = vout.value.to_sat();
@@ -467,7 +484,11 @@ impl BalanceHistoryIndexer {
         let elapsed = begin_time.elapsed();
         debug!(
             "Processed block at height {}: {} vins, {} utxos, history entries {}, duration: {:.2?}",
-            block_height, vin_count, utxo_count, history.len(), elapsed
+            block_height,
+            vin_count,
+            utxo_count,
+            history.len(),
+            elapsed
         );
         Ok(history)
     }

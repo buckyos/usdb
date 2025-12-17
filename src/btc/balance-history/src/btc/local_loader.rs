@@ -39,7 +39,7 @@ impl<R: Read> Read for XorReader<R> {
 }
 
 pub struct BlockFileReader {
-    block_dir: PathBuf, // Bitcoind blocks directory
+    block_dir: PathBuf, // Bitcoind service blocks directory
     xor_key: Vec<u8>,
     block_magic: u32,
 }
@@ -401,7 +401,10 @@ impl BlockFileCache {
             }
         }
 
-        info!("Cache miss for blk file index {}, record {}", file_index, record_index);
+        info!(
+            "Cache miss for blk file index {}, record {}",
+            file_index, record_index
+        );
         let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
         let record = blocks.get(record_index);
         if record.is_none() {
@@ -414,9 +417,10 @@ impl BlockFileCache {
         }
         let record = record.unwrap().clone();
 
-         // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
+        // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
         if file_index >= BLOCK_FILE_CACHE_MAX_CAPACITY as usize {
-            self.cache.invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
+            self.cache
+                .invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
         }
 
         // Cache the blocks
@@ -483,10 +487,8 @@ impl BlocksIndexer {
     }
 
     fn build_index_by_file(&self, file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
-        self.output.set_load_message(&format!(
-            "Indexing {}",
-            &BlockFileReader::get_blk_file_name(file_index)
-        ));
+        let msg = format!("Indexing blk file {}", &BlockFileReader::get_blk_file_name(file_index));
+        self.output.set_load_message(&msg);
 
         let records = self.reader.read_blk_records_by_index(file_index)?;
 
@@ -707,10 +709,11 @@ impl BlocksIndexer {
 
         self.output.start_load(latest_blk_file_index as u64);
         let latest_blk_file_index = latest_blk_file_index - 1; // Exclude the last file which may be incomplete
-        self.output.println(&format!(
-            "Building block index from {} blk files...",
-            latest_blk_file_index + 1
-        ));
+        let msg  = format!(
+            "Building block index from blk files 0 to {}...",
+            latest_blk_file_index
+        );
+        self.output.println(&msg);
 
         self.complete_count
             .store(0, std::sync::atomic::Ordering::SeqCst);
@@ -719,7 +722,9 @@ impl BlocksIndexer {
         self.output
             .set_load_message("Generating sorted block list...");
         self.generate_sort_blocks()?;
+
         self.output.set_load_message("Block index build complete.");
+        self.output.finish_load();
 
         Ok(())
     }
@@ -1131,7 +1136,6 @@ mod tests {
             let block = cache.get_block_by_file_index(3, i).unwrap();
             println!("Block from file index {} hash: {}", i, block.block_hash());
         }
-
 
         assert_eq!(block1.block_hash(), block1_again.block_hash());
     }

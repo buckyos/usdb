@@ -1,17 +1,23 @@
 use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
 use std::sync::Mutex;
+use crate::status::{SyncStatusManagerRef, SyncPhase};
 
 pub struct IndexOutput {
     mp: MultiProgress,
     load_bar: Mutex<Option<ProgressBar>>,
     index_bar: Mutex<Option<ProgressBar>>,
+    status: SyncStatusManagerRef,
 }
 
 impl IndexOutput {
-    pub fn new() -> Self {
+    pub fn new(status: SyncStatusManagerRef) -> Self {
         let mp = MultiProgress::new();
 
-        Self { mp, load_bar: Mutex::new(None), index_bar: Mutex::new(None) }
+        Self { mp, load_bar: Mutex::new(None), index_bar: Mutex::new(None), status }
+    }
+
+    pub fn status(&self) -> &SyncStatusManagerRef {
+        &self.status
     }
 
     fn create_bar(&self) -> ProgressBar {
@@ -29,15 +35,21 @@ impl IndexOutput {
         if let Err(e) = self.mp.println(msg) {
             error!("Failed to print message to console: {}", e);
         }
+        self.status.update_message(Some(msg.to_string()));
     }
 
     // Load methods
     pub fn start_load(&self, total: u64) {
         let bar = self.create_bar();
         bar.set_length(total);
-        let mut load_bar = self.load_bar.lock().unwrap();
-        assert!(load_bar.is_none(), "Load bar already started");
-        *load_bar = Some(bar);
+        {
+            let mut load_bar = self.load_bar.lock().unwrap();
+            assert!(load_bar.is_none(), "Load bar already started");
+            *load_bar = Some(bar);
+        }
+
+        self.status.update_phase(SyncPhase::Loading, Some("Starting block load".to_string()));
+        self.status.update_total(total, None);
     }
 
     pub fn update_load_total_count(&self, total: u64) {
@@ -45,12 +57,14 @@ impl IndexOutput {
         if let Some(bar) = load_bar.as_ref() {
             bar.set_length(total);
         }
+        self.status.update_total(total, None);
     }
     pub fn update_load_current_count(&self, current: u64) {
         let load_bar = self.load_bar.lock().unwrap();
         if let Some(bar) = load_bar.as_ref() {
             bar.set_position(current);
         }
+        self.status.update_current(current, None); 
     }
 
     pub fn set_load_message(&self, msg: &str) {
@@ -58,6 +72,7 @@ impl IndexOutput {
         if let Some(bar) = load_bar.as_ref() {
             bar.set_message(msg.to_string());
         }
+        self.status.update_message(Some(msg.to_string()));
     }
 
     pub fn finish_load(&self) {
@@ -65,6 +80,7 @@ impl IndexOutput {
         if let Some(bar) = load_bar.take() {
             bar.finish_with_message("Loading complete");
         }
+        self.status.update_message(Some("Loading complete".to_string()));
     }
 
     // Index methods
@@ -74,6 +90,9 @@ impl IndexOutput {
         let mut index_bar = self.index_bar.lock().unwrap();
         assert!(index_bar.is_none(), "Index bar already started");
         *index_bar = Some(bar);
+
+        self.status.update_phase(SyncPhase::Indexing, Some("Starting indexer".to_string()));
+        self.status.update_total(total, None);
     }
 
     pub fn update_total_block_height(&self, block_height: u64) {
@@ -81,6 +100,8 @@ impl IndexOutput {
         if let Some(bar) = index_bar.as_ref() {
             bar.set_length(block_height);
         }
+
+        self.status.update_total(block_height, None);
     }
 
     pub fn update_current_height(&self, current_height: u64) {
@@ -88,6 +109,8 @@ impl IndexOutput {
         if let Some(bar) = index_bar.as_ref() {
             bar.set_position(current_height);
         }
+
+        self.status.update_current(current_height, None);
     }
 
     pub fn set_index_message(&self, msg: &str) {
@@ -95,6 +118,8 @@ impl IndexOutput {
         if let Some(bar) = index_bar.as_ref() {
             bar.set_message(msg.to_string());
         }
+
+        self.status.update_message(Some(msg.to_string()));
     }
 
     pub fn finish_index(&self) {
@@ -102,6 +127,8 @@ impl IndexOutput {
         if let Some(bar) = index_bar.take() {
             bar.finish_with_message("Indexing complete");
         }
+
+        self.status.update_phase(SyncPhase::Synced, Some("Indexed complete".to_string()));
     }
 }
 

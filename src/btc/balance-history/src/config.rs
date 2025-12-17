@@ -15,9 +15,23 @@ impl Default for IndexConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RpcServer {
+    pub port: u16,
+}
+
+impl Default for RpcServer {
+    fn default() -> Self {
+        RpcServer {
+            port: 8099,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceHistoryConfig {
     pub btc: BTCConfig,
     pub sync: IndexConfig,
+    pub rpc_server: RpcServer,
 }
 
 impl Default for BalanceHistoryConfig {
@@ -25,6 +39,7 @@ impl Default for BalanceHistoryConfig {
         BalanceHistoryConfig {
             btc: BTCConfig::default(),
             sync: IndexConfig::default(),
+            rpc_server: RpcServer::default(),
         }
     }
 }

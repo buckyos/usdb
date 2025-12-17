@@ -5,8 +5,9 @@ mod indexer;
 mod output;
 mod utxo;
 mod tool;
-mod rpc;
+mod service;
 mod balance;
+mod status;
 
 #[macro_use]
 extern crate log;
@@ -17,6 +18,7 @@ use crate::indexer::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
+use crate::service::BalanceHistoryRpcServer;
 
 #[derive(Parser, Debug)]
 #[command(name = "balance-history")]
@@ -63,7 +65,9 @@ async fn main_run() {
     let config = Arc::new(config);
 
     // Init console output
-    let output = IndexOutput::new();
+    let status = status::SyncStatusManager::new();
+    let status = Arc::new(status);
+    let output = IndexOutput::new(status);
     let output = Arc::new(output);
 
     // Initialize the database
@@ -87,6 +91,17 @@ async fn main_run() {
         }
     };
     output.println("Starting indexer...");
+
+    // Start the RPC server
+    if let Err(e) = BalanceHistoryRpcServer::start(
+        config.clone(),
+        output.status().clone(),
+        db.clone(),
+    ) {
+        error!("Failed to start RPC server: {}", e);
+        std::process::exit(1);
+    }
+    output.println("RPC server started.");
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;
