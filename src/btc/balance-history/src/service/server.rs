@@ -1,24 +1,21 @@
-use std::ops::Add;
-
 use super::rpc::*;
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
-use jsonrpc_derive::rpc;
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
-use rayon::vec;
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
+    config: BalanceHistoryConfigRef,
     status: SyncStatusManagerRef,
     db: BalanceHistoryDBRef,
 }
 
 impl BalanceHistoryRpcServer {
-    pub fn new(status: SyncStatusManagerRef, db: BalanceHistoryDBRef) -> Self {
-        Self { status, db }
+    pub fn new(config: BalanceHistoryConfigRef, status: SyncStatusManagerRef, db: BalanceHistoryDBRef) -> Self {
+        Self { config, status, db }
     }
 
     pub fn start(
@@ -26,7 +23,7 @@ impl BalanceHistoryRpcServer {
         status: SyncStatusManagerRef,
         db: BalanceHistoryDBRef,
     ) -> Result<(), String> {
-        let ret = Self::new(status, db);
+        let ret = Self::new(config.clone(), status, db);
 
         let mut io = IoHandler::new();
         io.extend_with(ret.clone().to_delegate());
@@ -60,6 +57,12 @@ impl BalanceHistoryRpcServer {
 }
 
 impl BalanceHistoryRpc for BalanceHistoryRpcServer {
+    fn get_network_type(&self) -> JsonResult<String> {
+        let network = self.config.btc.network();
+
+        Ok(network.to_string())
+    }
+
     fn get_block_height(&self) -> JsonResult<u64> {
         let height = self.db.get_btc_block_height().map_err(|e| JsonError {
             code: ErrorCode::InternalError,

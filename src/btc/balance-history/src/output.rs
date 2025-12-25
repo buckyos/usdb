@@ -59,6 +59,7 @@ impl IndexOutput {
         }
         self.status.update_total(total, None);
     }
+    
     pub fn update_load_current_count(&self, current: u64) {
         let load_bar = self.load_bar.lock().unwrap();
         if let Some(bar) = load_bar.as_ref() {

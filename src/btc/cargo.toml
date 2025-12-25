@@ -3,5 +3,6 @@
 members = [
     "indexer",
     "balance-history",
+    "balance_history-cli",
     "usdb-util",
 ]

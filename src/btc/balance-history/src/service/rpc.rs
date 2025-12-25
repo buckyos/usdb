@@ -39,6 +39,10 @@ pub struct AddressBalance {
 
 #[rpc(server)]
 pub trait BalanceHistoryRpc {
+    /// Gets the current bitcoin chain network type
+    #[rpc(name = "get_network_type")]
+    fn get_network_type(&self) -> JsonResult<String>;
+    
     /// Gets the current synced block height in the database
     #[rpc(name = "get_block_height")]
     fn get_block_height(&self) -> JsonResult<u64>;

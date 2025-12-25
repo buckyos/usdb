@@ -5,3 +5,7 @@ pub const BALANCE_HISTORY_SERVICE_NAME: &str = "balance-history";
 
 // Directory constants
 pub const USDB_ROOT_DIR: &str = ".usdb";
+
+
+// Service http ports
+pub const BALANCE_HISTORY_SERVICE_HTTP_PORT: u16 = 8099;
