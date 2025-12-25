@@ -580,7 +580,7 @@ impl BalanceHistoryDB {
                         error!("{}", msg);
                         msg
                     })?;
-
+                    
                 Ok(Some(utxo_entry))
             }
             Ok(None) => {

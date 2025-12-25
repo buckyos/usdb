@@ -59,6 +59,7 @@ async fn main_run() {
         Ok(cfg) => cfg,
         Err(e) => {
             error!("Failed to load config: {}", e);
+            println!("Failed to load config: {}", e);
             std::process::exit(1);
         }
     };
@@ -76,6 +77,7 @@ async fn main_run() {
         Ok(database) => database,
         Err(e) => {
             error!("Failed to initialize database: {}", e);
+            output.println(&format!("Failed to initialize database: {}", e));
             std::process::exit(1);
         }
     };
@@ -87,6 +89,7 @@ async fn main_run() {
         Ok(idx) => idx,
         Err(e) => {
             error!("Failed to initialize indexer: {}", e);
+            output.println(&format!("Failed to initialize indexer: {}", e));
             std::process::exit(1);
         }
     };
@@ -99,6 +102,7 @@ async fn main_run() {
         db.clone(),
     ) {
         error!("Failed to start RPC server: {}", e);
+        output.println(&format!("Failed to start RPC server: {}", e));
         std::process::exit(1);
     }
     output.println("RPC server started.");

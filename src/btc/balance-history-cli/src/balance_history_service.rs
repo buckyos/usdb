@@ -116,25 +116,27 @@ impl BalanceHistoryService {
                 }
             };
 
-            if phase == SyncPhase::Initializing && status.phase == SyncPhase::Loading {
-                phase = SyncPhase::Loading;
-                output.println("Starting loading phase");
-                output.start_load(status.total);
-            } else if phase == SyncPhase::Loading && status.phase == SyncPhase::Indexing {
-                phase = SyncPhase::Indexing;
-                output.finish_load();
-                output.println("Starting indexing phase");
-                output.start_index(status.total);
-            } else if phase == SyncPhase::Indexing && status.phase == SyncPhase::Synced {
-                output.finish_index();
-                output.println("Syncing complete");
-                phase = SyncPhase::Synced;
-                break;
-            } else {
-                let msg = format!("Invalid phase transition from {:?} to {:?}", phase, status.phase);
-                output.println(&msg);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                continue;
+            if phase != status.phase {
+                if phase == SyncPhase::Initializing && status.phase == SyncPhase::Loading {
+                    phase = SyncPhase::Loading;
+                    output.println("Starting loading phase");
+                    output.start_load(status.total);
+                } else if phase == SyncPhase::Loading && status.phase == SyncPhase::Indexing {
+                    phase = SyncPhase::Indexing;
+                    output.finish_load();
+                    output.println("Starting indexing phase");
+                    output.start_index(status.total);
+                } else if phase == SyncPhase::Indexing && status.phase == SyncPhase::Synced {
+                    output.finish_index();
+                    output.println("Syncing complete");
+                    phase = SyncPhase::Synced;
+                    break;
+                } else {
+                    let msg = format!("Invalid phase transition from {:?} to {:?}", phase, status.phase);
+                    output.println(&msg);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    continue;
+                }
             }
 
             if phase == SyncPhase::Loading {
@@ -149,6 +151,9 @@ impl BalanceHistoryService {
                 if let Some(ref message) = status.message {
                     output.set_index_message(message);
                 }
+            } else if phase == SyncPhase::Synced {
+                output.println("Service is fully synced.");
+                break;
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
