@@ -31,11 +31,7 @@ impl BalanceHistoryIndexer {
     ) -> Result<Self, String> {
         // Init btc client
         let last_synced_block_height = db.get_btc_block_height()? as u64;
-        let btc_client = create_btc_client(
-            &config,
-            output.clone(),
-            last_synced_block_height,
-        )?;
+        let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
 
         // Init UTXO cache
         let utxo_cache = Arc::new(UTXOCache::new(db.clone()));
@@ -56,10 +52,6 @@ impl BalanceHistoryIndexer {
     }
 
     pub async fn run(&self) -> Result<(), String> {
-        // First initialize the BTC client
-        // This step may take some time for local loader to load blk files
-        self.btc_client.init().await?;
-
         // Set up shutdown channel
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         self.shutdown_tx.lock().unwrap().replace(shutdown_tx);
@@ -68,15 +60,43 @@ impl BalanceHistoryIndexer {
         // Run the sync loop in a separate thread
         let indexer = self.clone();
         let handle = tokio::task::spawn_blocking(move || {
-            indexer.run_loop();
-            info!("Balance History Indexer run loop exited.");
+            // First initialize the BTC client
+            // This step may take some time for local loader to load blk files
+            let ret = match indexer.btc_client.init() {
+                Ok(_) => {
+                    info!("BTC client initialized successfully.");
+
+                    indexer.run_loop();
+                    info!("Balance History Indexer run loop exited.");
+                    Ok::<(), String>(())
+                }
+                Err(e) => {
+                    let msg = format!("Failed to initialize BTC client: {}", e);
+                    error!("{}", msg);
+                    Err(msg)
+                }
+            };
+
+            // Take the shutdown channel back
+            indexer.shutdown_tx.lock().unwrap().take();
+            indexer.shutdown_rx.lock().unwrap().take();
+
+            info!("Balance History Indexer thread exiting.");
+            ret
         });
 
         let ret = match handle.await {
-            Ok(_) => {
-                info!("Balance History Indexer thread completed successfully");
-                Ok(())
-            }
+            Ok(ret) => match ret {
+                Ok(_) => {
+                    info!("Balance History Indexer thread exited successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    let msg = format!("Balance History Indexer encountered an error: {}", e);
+                    error!("{}", msg);
+                    Err(msg)
+                }
+            },
             Err(e) => {
                 let msg = format!("Balance History Indexer thread panicked: {:?}", e);
                 error!("{}", msg);
@@ -89,8 +109,12 @@ impl BalanceHistoryIndexer {
 
     // Gracefully shutdown the indexer and wait for the run loop to exit
     pub async fn shutdown(&self) {
-        let mut tx_lock = self.shutdown_tx.lock().unwrap();
-        if let Some(tx) = tx_lock.take() {
+        if let Err(e) = self.btc_client.stop() {
+            error!("Error while stopping BTC client: {}", e);
+        }
+
+        let tx = self.shutdown_tx.lock().unwrap().take();
+        if let Some(tx) = tx {
             let _ = tx.send(());
             info!("Shutdown signal sent to Balance History Indexer");
 
@@ -100,6 +124,7 @@ impl BalanceHistoryIndexer {
                     info!("Balance History Indexer has shut down");
                     break;
                 }
+
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         } else {
@@ -123,8 +148,7 @@ impl BalanceHistoryIndexer {
                     );
                     let msg = format!("Synced up to block height {}", latest_height);
                     self.output.update_current_height(latest_height);
-                    self.output
-                        .set_index_message(&msg);
+                    self.output.set_index_message(&msg);
 
                     // Check for shutdown signal before waiting for new blocks
                     if self.check_shutdown() {
@@ -141,10 +165,7 @@ impl BalanceHistoryIndexer {
                             );
 
                             let msg = format!("New block detected at height {}", new_height);
-                            self.output.set_index_message(&format!(
-                                "New block detected at height {}",
-                                new_height
-                            ));
+                            self.output.set_index_message(&msg);
                         }
                         Err(e) => {
                             error!(
@@ -195,10 +216,6 @@ impl BalanceHistoryIndexer {
         info!("Balance History Indexer shut down gracefully.");
         self.output
             .set_index_message("Indexer shut down gracefully");
-
-        // Take the shutdown channel back
-        self.shutdown_rx.lock().unwrap().take();
-        self.shutdown_tx.lock().unwrap().take();
     }
 
     fn check_shutdown(&self) -> bool {

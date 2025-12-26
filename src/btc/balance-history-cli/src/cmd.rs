@@ -28,6 +28,9 @@ pub enum Commands {
     /// Get sync status and keep displaying updates
     Status,
 
+    /// Stop the balance history service
+    Stop,
+
     /// Get balance history for one script_hash
     Balance {
         #[arg(value_name = "USER_ID")]

@@ -43,6 +43,11 @@ impl BalanceHistoryService {
                 // Handle Status command
                 self.process_sync_status().await?;
             }
+            Commands::Stop => {
+                // Handle Stop command
+                println!("Sending stop command to the service...");
+                self.client.stop().await?;
+            }
             Commands::Balance {
                 user,
                 height,

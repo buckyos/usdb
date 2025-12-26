@@ -39,6 +39,10 @@ impl RpcClient {
             .await
     }
 
+    pub async fn stop(&self) -> Result<(), String> {
+        self.rpc_call::<()>(&self.url, "stop", json!([])).await
+    }
+
     pub async fn get_address_balance(
         &self,
         script_hash: ScriptHash,

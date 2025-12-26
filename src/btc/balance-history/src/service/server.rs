@@ -5,25 +5,41 @@ use crate::status::{SyncStatus, SyncStatusManagerRef};
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
+use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
     config: BalanceHistoryConfigRef,
     status: SyncStatusManagerRef,
     db: BalanceHistoryDBRef,
+    shutdown_tx: watch::Sender<()>,
+    server_handle: Arc<Mutex<Option<jsonrpc_http_server::CloseHandle>>>,
 }
 
 impl BalanceHistoryRpcServer {
-    pub fn new(config: BalanceHistoryConfigRef, status: SyncStatusManagerRef, db: BalanceHistoryDBRef) -> Self {
-        Self { config, status, db }
+    pub fn new(
+        config: BalanceHistoryConfigRef,
+        status: SyncStatusManagerRef,
+        db: BalanceHistoryDBRef,
+        shutdown_tx: watch::Sender<()>,
+    ) -> Self {
+        Self {
+            config,
+            status,
+            db,
+            shutdown_tx,
+            server_handle: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn start(
         config: BalanceHistoryConfigRef,
         status: SyncStatusManagerRef,
         db: BalanceHistoryDBRef,
+        shutdown_tx: watch::Sender<()>,
     ) -> Result<(), String> {
-        let ret = Self::new(config.clone(), status, db);
+        let ret = Self::new(config.clone(), status, db, shutdown_tx.clone());
 
         let mut io = IoHandler::new();
         io.extend_with(ret.clone().to_delegate());
@@ -47,16 +63,49 @@ impl BalanceHistoryRpcServer {
                 msg
             })?;
 
+        let handle = server.close_handle();
         info!("RPC server listening on {}", addr);
         tokio::spawn(async move {
             server.wait();
         });
+
+        {
+            let mut current = ret.server_handle.lock().unwrap();
+            assert!(current.is_none(), "RPC server is already running");
+            *current = Some(handle);
+        }
 
         Ok(())
     }
 }
 
 impl BalanceHistoryRpc for BalanceHistoryRpcServer {
+    fn stop(&self) -> JsonResult<()> {
+        info!("Received stop command via RPC.");
+        if let Err(e) = self.shutdown_tx.send(()) {
+            let msg = format!("Failed to send shutdown signal: {}", e);
+            log::error!("{}", msg);
+            return Err(JsonError {
+                code: ErrorCode::InternalError,
+                message: msg,
+                data: None,
+            });
+        }
+
+        if let Some(handle) = self.server_handle.lock().unwrap().take() {
+            info!("Will abort RPC server task.");
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                info!("Closing RPC server.");
+                handle.close();
+            });
+        } else {
+            warn!("RPC server handle not found.");
+        }
+
+        Ok(())
+    }
+
     fn get_network_type(&self) -> JsonResult<String> {
         let network = self.config.btc.network();
 

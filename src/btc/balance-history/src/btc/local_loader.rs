@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 struct XorReader<R>
@@ -466,6 +466,7 @@ pub struct BlocksIndexer {
     cache: Arc<Mutex<BlockRecordCache>>,
     output: IndexOutputRef,
     complete_count: AtomicUsize,
+    should_stop: Arc<AtomicBool>,
 }
 
 impl BlocksIndexer {
@@ -473,17 +474,24 @@ impl BlocksIndexer {
         reader: BlockFileReaderRef,
         cache: Arc<Mutex<BlockRecordCache>>,
         output: IndexOutputRef,
+        should_stop: Arc<AtomicBool>,
     ) -> Self {
         Self {
             reader,
             cache,
             output,
             complete_count: AtomicUsize::new(0),
+            should_stop,
         }
     }
 
     pub fn cache(&self) -> Arc<Mutex<BlockRecordCache>> {
         self.cache.clone()
+    }
+
+    // Check if stop signal is set
+    fn check_stop(&self) -> bool {
+        self.should_stop.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn build_index_by_file(&self, file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
@@ -574,6 +582,10 @@ impl BlocksIndexer {
         let result: Vec<Result<(), String>> = (start_file_index..=end_file_index)
             .into_par_iter()
             .map(|file_index| {
+                if self.check_stop() {
+                    return Err("Stopped".to_string());
+                }
+
                 let result = self.build_index_by_file(file_index);
                 match result {
                     Ok(ret) => {
@@ -796,6 +808,7 @@ pub struct BlockLocalLoader {
     block_index_cache: Arc<Mutex<BlockRecordCache>>,
     file_cache: BlockFileCache,
     output: IndexOutputRef,
+    should_stop: Arc<AtomicBool>,
 }
 
 impl BlockLocalLoader {
@@ -815,6 +828,7 @@ impl BlockLocalLoader {
             block_index_cache,
             file_cache,
             output,
+            should_stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -854,6 +868,7 @@ impl BlockLocalLoader {
             self.block_reader.clone(),
             self.block_index_cache.clone(),
             self.output.clone(),
+            self.should_stop.clone(),
         );
         let builder = Arc::new(builder);
         builder.build_index(self.btc_client.clone())
@@ -920,13 +935,20 @@ impl BlockLocalLoader {
 
 #[async_trait::async_trait]
 impl BTCClient for BlockLocalLoader {
-    async fn init(&self) -> Result<(), String> {
+    fn init(&self) -> Result<(), String> {
         self.build_index()?;
         info!("Block index built successfully");
 
         let cache = self.block_index_cache.lock().unwrap();
         let latest_height = (cache.sorted_blocks.len() as u64).saturating_sub(1);
         info!("Local file latest block height: {}", latest_height);
+
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        self.should_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.output.println("Stopping BlockLocalLoader...");
 
         Ok(())
     }

@@ -57,4 +57,7 @@ pub trait BalanceHistoryRpc {
 
     #[rpc(name = "get_addresses_balances")]
     fn get_addresses_balances(&self, params: GetBalancesParams) -> JsonResult<Vec<Vec<AddressBalance>>>;
+
+    #[rpc(name = "stop")]
+    fn stop(&self) -> JsonResult<()>;
 }

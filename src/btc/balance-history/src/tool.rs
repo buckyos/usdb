@@ -39,7 +39,7 @@ pub fn daemonize_process(service_name: &str) {
 
     match daemonize.start() {
         Ok(_) => {
-            info!("{} service daemonized successfully", service_name);
+            println!("{} service daemonized successfully", service_name);
         }
         Err(e) => {
             println!("Error daemonizing {} service: {}", service_name, e);

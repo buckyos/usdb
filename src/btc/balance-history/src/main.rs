@@ -95,11 +95,14 @@ async fn main_run() {
     };
     output.println("Starting indexer...");
 
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+
     // Start the RPC server
     if let Err(e) = BalanceHistoryRpcServer::start(
         config.clone(),
         output.status().clone(),
         db.clone(),
+        shutdown_tx,
     ) {
         error!("Failed to start RPC server: {}", e);
         output.println(&format!("Failed to start RPC server: {}", e));
@@ -133,7 +136,12 @@ async fn main_run() {
             info!("Received SIGTERM, shutting down...");
             output.println("Shutting down...");
         }
+        _ = shutdown_rx.changed() => {
+            info!("Shutdown signal received from RPC, shutting down...");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
         result = indexer.run() => {
+            output.println("Indexer run loop exited.");
             if let Err(e) = result {
                 error!("Indexer encountered an error: {}", e);
                 std::process::exit(1);
@@ -142,7 +150,9 @@ async fn main_run() {
     }
 
     // Cleanup on shutdown
+    output.println("Shutting down indexer...");
     indexer.shutdown().await;
+    output.println("Shutdown indexer complete.");
 
     db.flush_all().unwrap_or_else(|e| {
         error!("Failed to flush database on shutdown: {}", e);
@@ -177,4 +187,5 @@ async fn main() {
     }
 
     main_run().await;
+    println!("Balance History service exited.");
 }

@@ -225,11 +225,18 @@ pub type BTCRpcClientRef = std::sync::Arc<BTCRpcClient>;
 
 #[async_trait::async_trait]
 impl BTCClient for BTCRpcClient {
-    async fn init(&self) -> Result<(), String> {
+    fn init(&self) -> Result<(), String> {
         // Just try to get latest block height to verify the connection
         let height = self.get_latest_block_height()?;
         info!("BTC RPC client initialized, latest block height: {}", height);
 
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<(), String> {
+        // No specific stop action needed for the RPC client
+        info!("BTC RPC client stopped.");
+        
         Ok(())
     }
 
