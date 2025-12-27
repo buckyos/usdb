@@ -4,6 +4,7 @@ use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use crate::config::BalanceHistoryConfigRef;
 
@@ -194,7 +195,7 @@ impl BalanceHistoryDB {
         }
     }
 
-    pub fn put_address_history(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {
+    pub fn put_address_history_sync(&self, entries_list: &[Vec<BalanceHistoryEntry>], block_height: u32) -> Result<(), String> {
         let mut batch = WriteBatch::default();
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
@@ -202,19 +203,30 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for entry in entries {
-            let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
+        for entries in entries_list {
+             for entry in entries {
+                let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
 
-            // Value format: delta (i64) + balance (u64)
-            let mut value = Vec::with_capacity(16);
-            value.extend_from_slice(&entry.delta.to_be_bytes());
-            value.extend_from_slice(&entry.balance.to_be_bytes());
+                // Value format: delta (i64) + balance (u64)
+                let mut value = Vec::with_capacity(16);
+                value.extend_from_slice(&entry.delta.to_be_bytes());
+                value.extend_from_slice(&entry.balance.to_be_bytes());
 
-            batch.put_cf(cf, key, value);
+                batch.put_cf(cf, key, value);
+            }
         }
 
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let height_bytes = block_height.to_be_bytes();
+        batch
+            .put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(false);
+        write_options.set_sync(true);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write batch to DB: {}", e);
             error!("{}", msg);
@@ -243,15 +255,15 @@ impl BalanceHistoryDB {
 
         if let Some(item) = iter.next() {
             let (found_key, found_val) = item.map_err(|e| {
-                let msg = format!("Iterator error: {}", e);
+                let msg = format!("Iterator error: {} {}", script_hash, e);
                 error!("{}", msg);
                 msg
             })?;
 
             assert!(
                 found_key.len() == BALANCE_HISTORY_KEY_LEN,
-                "Invalid balance key length {}",
-                found_key.len()
+                "Invalid balance key length {} {}",
+                script_hash, found_key.len()
             );
 
             // Check if the ScriptHash matches
@@ -497,9 +509,10 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn put_utxos(
+    pub fn update_utxos_sync(
         &self,
-        utxos: &Vec<(OutPoint, ScriptHash, u64)>,
+        new_utxos: &HashMap<OutPoint, (ScriptHash, u64)>,
+        remove_utxos: &HashSet<OutPoint>,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
@@ -509,7 +522,7 @@ impl BalanceHistoryDB {
 
         let mut batch = WriteBatch::default();
 
-        for (outpoint, script_hash, amount) in utxos {
+        for (outpoint, (script_hash, amount)) in new_utxos {
             // Value format: ScriptHash (20 bytes) + amount (u64)
             let mut value = Vec::with_capacity(ScriptHash::LEN + 8);
             value.extend_from_slice(script_hash.as_ref() as &[u8]);
@@ -520,8 +533,13 @@ impl BalanceHistoryDB {
             batch.put_cf(cf, key, value);
         }
 
+        for outpoint in remove_utxos {
+            let key = Self::make_utxo_key(outpoint);
+            batch.delete_cf(cf, key);
+        }
+
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(false);
+        write_options.set_sync(true);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write UTXO batch to DB: {}", e);
             error!("{}", msg);

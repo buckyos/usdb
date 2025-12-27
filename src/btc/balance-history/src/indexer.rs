@@ -313,6 +313,9 @@ impl BalanceHistoryIndexer {
     ) -> Result<u64, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
+        // Clear UTXO write cache before processing new batch
+        self.utxo_cache.clear_write_cache();
+
         let mut balance_sync_cache = AddressBalanceSyncCache::new(self.balance_cache.clone());
         let mut last_height = 0;
         let mut result = Vec::new();
@@ -328,7 +331,7 @@ impl BalanceHistoryIndexer {
             balance_sync_cache.on_block_synced(&entries);
 
             // Save for batch write later
-            result.push((height, entries));
+            result.push(entries);
 
             self.output.update_current_height(height);
             self.output
@@ -342,20 +345,13 @@ impl BalanceHistoryIndexer {
                 break;
             }
         }
-
-        // Save all balance entries to DB
-        for (_height, entries) in result {
-            self.db.put_address_history(&entries)?;
-        }
-
+        
         // Save all utxo cache write entries to DB
         self.utxo_cache.flush_write_cache()?;
 
-        self.db.put_btc_block_height(last_height as u32)?;
-        // Flush storage
-        // FIXME: Should we flush all include utxo cache?
-        self.db.flush_all()?;
-
+        // Save all balance entries to DB in sync mode
+        self.db.put_address_history_sync(&result, last_height as u32)?;
+        
         info!(
             "Finished processing blocks [{} - {}]",
             height_range.start(),

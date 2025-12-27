@@ -2,7 +2,7 @@ use crate::db::BalanceHistoryDBRef;
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use moka::sync::Cache;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ pub struct UTXOCache {
     cache: Cache<OutPoint, CacheTxOut>, // (block_height, vout_index)
     db: BalanceHistoryDBRef,
     write_cache: Mutex<HashMap<OutPoint, (ScriptHash, u64)>>, // To avoid duplicate writes
+    spend_cache: Mutex<HashSet<OutPoint>>, // Flush when writing to DB on batch process
 }
 
 impl UTXOCache {
@@ -24,12 +25,14 @@ impl UTXOCache {
             .time_to_live(Duration::from_secs(60 * 60)) // 1 hour TTL
             .max_capacity(1024 * 1024 * 10 * 2) // Max 20 million entries
             .build();
-        let write_cache = Mutex::new(HashMap::with_capacity(1024));
+        let write_cache = Mutex::new(HashMap::with_capacity(1024 * 16));
+        let spend_cache = Mutex::new(HashSet::with_capacity(1024 * 16));
 
         Self {
             cache,
             db,
             write_cache,
+            spend_cache,
         }
     }
 
@@ -82,12 +85,17 @@ impl UTXOCache {
 
         // Then check in-memory cache
         if let Some(cached) = self.cache.get(outpoint) {
-            self.cache.invalidate(outpoint);
+            let ret = self.spend_cache.lock().unwrap().insert(outpoint.clone());
+            assert!(ret, "Duplicate UTXO spend in spend cache: {}", outpoint);
+
             return Ok(Some(cached));
         }
 
         // At last check persistent storage
-        if let Some(entry) = self.db.spend_utxo(outpoint)? {
+        if let Some(entry) = self.db.get_utxo(outpoint)? {
+            let ret = self.spend_cache.lock().unwrap().insert(outpoint.clone());
+            assert!(ret, "Duplicate UTXO spend in spend cache: {}", outpoint);
+
             let cache_tx_out = CacheTxOut {
                 value: entry.amount,
                 script_hash: entry.script_hash,
@@ -99,8 +107,9 @@ impl UTXOCache {
         }
     }
 
-    pub fn clear(&self) {
-        self.cache.invalidate_all();
+    pub fn clear_write_cache(&self) {
+        self.write_cache.lock().unwrap().clear();
+        self.spend_cache.lock().unwrap().clear();
     }
 
     // Flush write cache to DB
@@ -110,12 +119,14 @@ impl UTXOCache {
             return Ok(());
         }
 
-        let utxos = write_cache
-            .iter()
-            .map(|(outpoint, (script_hash, amount))| (outpoint.clone(), *script_hash, *amount))
-            .collect::<Vec<_>>();
-        self.db.put_utxos(&utxos)?;
+        let mut spend_cache = self.spend_cache.lock().unwrap();
+        for outpoint in spend_cache.iter() {
+            self.cache.invalidate(outpoint);
+        }
+
+        self.db.update_utxos_sync(&*&write_cache, &*spend_cache)?;
         write_cache.clear();
+        spend_cache.clear();
 
         Ok(())
     }
