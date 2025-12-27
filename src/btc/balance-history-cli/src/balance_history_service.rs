@@ -1,9 +1,9 @@
 use super::cmd::{Cli, Commands, UserId};
 use crate::client::RpcClient;
-use bitcoincore_rpc::bitcoin::Network;
-use std::{sync::Arc};
-use std::str::FromStr;
 use balance_history::{AddressBalance, IndexOutput, SyncPhase, SyncStatusManager};
+use bitcoincore_rpc::bitcoin::Network;
+use std::str::FromStr;
+use std::sync::Arc;
 
 pub struct BalanceHistoryService {
     network: Network,
@@ -126,18 +126,27 @@ impl BalanceHistoryService {
                     phase = SyncPhase::Loading;
                     output.println("Starting loading phase");
                     output.start_load(status.total);
-                } else if phase == SyncPhase::Loading && status.phase == SyncPhase::Indexing {
+                } else if (phase == SyncPhase::Loading || phase == SyncPhase::Initializing)
+                    && status.phase == SyncPhase::Indexing
+                {
                     phase = SyncPhase::Indexing;
                     output.finish_load();
                     output.println("Starting indexing phase");
                     output.start_index(status.total);
-                } else if phase == SyncPhase::Indexing && status.phase == SyncPhase::Synced {
+                } else if (phase == SyncPhase::Indexing
+                    || phase == SyncPhase::Initializing
+                    || phase == SyncPhase::Loading)
+                    && status.phase == SyncPhase::Synced
+                {
                     output.finish_index();
                     output.println("Syncing complete");
                     phase = SyncPhase::Synced;
                     break;
                 } else {
-                    let msg = format!("Invalid phase transition from {:?} to {:?}", phase, status.phase);
+                    let msg = format!(
+                        "Invalid phase transition from {:?} to {:?}",
+                        phase, status.phase
+                    );
                     output.println(&msg);
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     continue;
