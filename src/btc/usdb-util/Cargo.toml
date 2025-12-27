@@ -5,8 +5,10 @@ edition = "2024"
 
 [dependencies]
 flexi_logger = "0.31"
+log = "0.4"
 named-lock = "0.4"
 dirs = "6.0"
 bitcoincore-rpc = "0.19"
 serde = "1.0"
 serde_json = "1.0"
+electrum-client = "0.24"

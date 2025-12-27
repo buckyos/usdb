@@ -1,4 +1,4 @@
-use crate::btc::{BTCClient, BTCClientRef, ElectrsClient, ElectrsClientRef, TxFullItem};
+use crate::btc::{BTCClient, BTCClientRef};
 use crate::config::ConfigManagerRef;
 use crate::storage::{AddressBalanceStorage, AddressBalanceStorageRef};
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
@@ -6,6 +6,7 @@ use bitcoincore_rpc::bitcoin::{ScriptBuf, Txid};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Mutex;
+use usdb_util::{ElectrsClient, ElectrsClientRef, TxFullItem};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WatchedAddressInfo {

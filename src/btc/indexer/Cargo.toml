@@ -8,7 +8,6 @@ usdb-util = { path = "../usdb-util" }
 tokio = { version = "*", features = ["full"] }
 bitcoincore-rpc = "0.19"
 ord = "0.24"
-electrum-client = "0.24"
 ordinals = "*"
 lru = "*" 
 serde_json = "1.0" 

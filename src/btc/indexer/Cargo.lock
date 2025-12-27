@@ -1831,7 +1831,6 @@ version = "0.1.0"
 dependencies = [
  "bitcoincore-rpc",
  "dirs",
- "electrum-client",
  "log",
  "lru",
  "named-lock",
@@ -3752,7 +3751,9 @@ version = "0.1.0"
 dependencies = [
  "bitcoincore-rpc",
  "dirs",
+ "electrum-client",
  "flexi_logger",
+ "log",
  "named-lock",
  "serde",
  "serde_json",
