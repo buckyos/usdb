@@ -352,6 +352,9 @@ impl BalanceHistoryIndexer {
         // Save all balance entries to DB in sync mode
         self.db.put_address_history_sync(&result, last_height as u32)?;
         
+        // Flush new balance cache sync entries to main cache
+        balance_sync_cache.flush_sync_cache();
+
         info!(
             "Finished processing blocks [{} - {}]",
             height_range.start(),
@@ -390,7 +393,7 @@ impl BalanceHistoryIndexer {
                     match history.entry(utxo.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Load latest record from DB to get current balance
-                            let latest_entry = balance_sync_cache.get(utxo.script_hash)?;
+                            let latest_entry = balance_sync_cache.get(utxo.script_hash, block_height as u32)?;
                             if latest_entry.block_height == block_height as u32 {
                                 // The block may have been synced, skip duplicate entry
                                 warn!(
@@ -454,7 +457,7 @@ impl BalanceHistoryIndexer {
                 match history.entry(script_hash) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         // Load latest record from DB to get current balance
-                        let latest_entry = balance_sync_cache.get(script_hash)?;
+                        let latest_entry = balance_sync_cache.get(script_hash, block_height as u32)?;
                         if latest_entry.block_height == block_height as u32 {
                             // The block may have been synced, skip duplicate entry
                             warn!(

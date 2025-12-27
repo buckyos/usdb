@@ -34,13 +34,21 @@ impl AddressBalanceCache {
         self.cache.insert(script_hash, item);
     }
 
-    pub fn get(&self, script_hash: ScriptHash) -> Result<AddressBalanceItem, String> {
+    pub fn get(&self, script_hash: ScriptHash, block_height: u32) -> Result<AddressBalanceItem, String> {
         if let Some(cached) = self.cache.get(&script_hash) {
+            assert!(
+                cached.block_height < block_height,
+                "Inconsistent cache state for script_hash: {} {} < {}",
+                script_hash,
+                cached.block_height,
+                block_height
+            );
+
             return Ok(cached);
         }
 
         // Check persistent storage
-        let entry = self.db.get_latest_balance(script_hash)?;
+        let entry = self.db.get_balance_at_block_height(script_hash, block_height)?;
         let item = AddressBalanceItem {
             block_height: entry.block_height,
             delta: entry.delta,
@@ -72,6 +80,7 @@ impl AddressBalanceSyncCache {
         }
     }
 
+    // Update sync cache on new block synced (should not update address_balance_cache yet)
     pub fn on_block_synced(&mut self, entries: &Vec<BalanceHistoryEntry>) {
         for entry in entries {
             let item = AddressBalanceItem {
@@ -80,20 +89,35 @@ impl AddressBalanceSyncCache {
                 balance: entry.balance,
             };
 
-            self.address_balance_cache
-                .put(entry.script_hash, item.clone());
-
             self.address_sync_cache.insert(entry.script_hash, item);
         }
     }
 
-    pub fn get(&self, script_hash: ScriptHash) -> Result<AddressBalanceItem, String> {
+    pub fn flush_sync_cache(&mut self) {
+        for (script_hash, item) in &self.address_sync_cache {
+            self.address_balance_cache.put(*script_hash, item.clone());
+        }
+        self.address_sync_cache.clear();
+    }
+
+    pub fn get(
+        &self,
+        script_hash: ScriptHash,
+        block_height: u32,
+    ) -> Result<AddressBalanceItem, String> {
         if let Some(cached) = self.address_sync_cache.get(&script_hash) {
+            assert!(
+                cached.block_height < block_height,
+                "Inconsistent sync cache state for script_hash: {} {} < {}",
+                script_hash,
+                cached.block_height,
+                block_height
+            );
             return Ok(cached.clone());
         }
 
         // Load from lru cache and db if necessary
-        let entry = self.address_balance_cache.get(script_hash)?;
+        let entry = self.address_balance_cache.get(script_hash, block_height)?;
         Ok(entry)
     }
 }
