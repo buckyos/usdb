@@ -1,16 +1,26 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::path::Path;
+use std::sync::Arc;
 use usdb_util::BTCConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
     pub batch_size: usize,
+
+    // UTXO cache size in bytes in memory
+    pub utxo_cache_bytes: usize,
+
+    // Balance cache size in bytes in memory
+    pub balance_cache_bytes: usize,
 }
 
 impl Default for IndexConfig {
     fn default() -> Self {
-        IndexConfig { batch_size: 256 }
+        Self {
+            batch_size: 64,
+            utxo_cache_bytes: 1024 * 1024 * 1024 * 8,   // 8 GB
+            balance_cache_bytes: 1024 * 1024 * 1024 * 4, // 4 GB
+        }
     }
 }
 
@@ -21,9 +31,7 @@ pub struct RpcServer {
 
 impl Default for RpcServer {
     fn default() -> Self {
-        RpcServer {
-            port: 8099,
-        }
+        RpcServer { port: 8099 }
     }
 }
 

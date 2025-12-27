@@ -5,6 +5,10 @@ use moka::sync::Cache;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
+use crate::config::BalanceHistoryConfig;
+
+// Cache item size estimate: OutPoint (36 bytes) + CacheTxOut (28 bytes) ~ 64 bytes
+const CACHE_ITEM_SIZE: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
@@ -20,10 +24,11 @@ pub struct UTXOCache {
 }
 
 impl UTXOCache {
-    pub fn new(db: BalanceHistoryDBRef) -> Self {
+    pub fn new(db: BalanceHistoryDBRef, config: &BalanceHistoryConfig) -> Self {
+        let max_capacity = config.sync.utxo_cache_bytes / CACHE_ITEM_SIZE;
         let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60 * 60)) // 1 hour TTL
-            .max_capacity(1024 * 1024 * 10 * 2) // Max 20 million entries
+            .time_to_live(Duration::from_secs(60 * 60 * 24)) // 1 day TTL
+            .max_capacity(max_capacity as u64) // Max entries based on config
             .build();
         let write_cache = Mutex::new(HashMap::with_capacity(1024 * 16));
         let spend_cache = Mutex::new(HashSet::with_capacity(1024 * 16));

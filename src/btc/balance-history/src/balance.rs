@@ -2,7 +2,10 @@ use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use bitcoincore_rpc::bitcoin::ScriptHash;
 use moka::sync::Cache;
 use std::{collections::HashMap, time::Duration};
+use crate::config::BalanceHistoryConfig;
 
+// Cache item size estimate: ScriptHash (20 bytes) + AddressBalanceItem (~20 bytes) ~ 40 bytes
+const CACHE_ITEM_SIZE: usize = 40;
 #[derive(Debug, Clone)]
 pub struct AddressBalanceItem {
     pub block_height: u32,
@@ -16,10 +19,12 @@ pub struct AddressBalanceCache {
 }
 
 impl AddressBalanceCache {
-    pub fn new(db: BalanceHistoryDBRef) -> Self {
+    pub fn new(db: BalanceHistoryDBRef, config: &BalanceHistoryConfig) -> Self {
+        let max_capacity = config.sync.balance_cache_bytes / CACHE_ITEM_SIZE;
+
         let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60 * 60)) // 1 hour TTL
-            .max_capacity(1024 * 1024 * 10 * 1) // Max 10 million entries
+            .time_to_live(Duration::from_secs(60 * 60 * 24)) // 1 day TTL
+            .max_capacity(max_capacity as u64) // Max entries based on config
             .build();
 
         Self { cache, db }
