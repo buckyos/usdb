@@ -1,4 +1,5 @@
 mod client;
+mod file_indexer;
 mod local_loader;
 mod rpc;
 
