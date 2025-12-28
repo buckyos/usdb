@@ -153,12 +153,9 @@ impl AddressIndexer {
             self.db.set_indexed_block_height(height)?;
 
             self.output.println(&format!(
-                "Indexed block height {}, new addresses: {}, total addresses (estimated): {}",
+                "Indexed block height {}, new addresses: {}",
                 height,
                 records.len(),
-                self.total_addresses
-                    .fetch_add(records.len() as u64, Ordering::SeqCst)
-                    + records.len() as u64
             ));
         }
 

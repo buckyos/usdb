@@ -1,12 +1,13 @@
-use rust_rocksdb as rocksdb;
-use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid};
+use super::helper::get_approx_cf_key_count;
+use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
+use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash, Txid};
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
+use rust_rocksdb as rocksdb;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use crate::config::BalanceHistoryConfigRef;
 
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
@@ -35,8 +36,8 @@ pub struct UTXOEntry {
 
 #[derive(Debug, Clone)]
 pub struct BlockEntry {
-    pub block_file_index: u32,  // which blk file
-    pub block_file_offset: u64, // offset in the blk file
+    pub block_file_index: u32,     // which blk file
+    pub block_file_offset: u64,    // offset in the blk file
     pub block_record_index: usize, // index in the block record cache
 }
 
@@ -141,7 +142,11 @@ impl BalanceHistoryDB {
     }
 
     fn parse_block_height_from_key(key: &[u8]) -> u32 {
-        assert!(key.len() == BALANCE_HISTORY_KEY_LEN, "Invalid balance key length {}", key.len());
+        assert!(
+            key.len() == BALANCE_HISTORY_KEY_LEN,
+            "Invalid balance key length {}",
+            key.len()
+        );
         let block_height_bytes = &key[ScriptHash::LEN..ScriptHash::LEN + 4];
         let block_height = u32::from_be_bytes(block_height_bytes.try_into().unwrap());
 
@@ -168,7 +173,10 @@ impl BalanceHistoryDB {
     }
 
     fn parse_utxo_from_value(value: &[u8]) -> UTXOEntry {
-        assert!(value.len() == ScriptHash::LEN + 8, "Invalid UTXO value length");
+        assert!(
+            value.len() == ScriptHash::LEN + 8,
+            "Invalid UTXO value length"
+        );
 
         let script_hash_bytes = &value[0..ScriptHash::LEN];
         let amount_bytes = &value[ScriptHash::LEN..ScriptHash::LEN + 8];
@@ -176,12 +184,15 @@ impl BalanceHistoryDB {
         let script_hash = ScriptHash::from_slice(script_hash_bytes).unwrap();
         let amount = u64::from_be_bytes(amount_bytes.try_into().unwrap());
 
-        UTXOEntry { script_hash, amount }
+        UTXOEntry {
+            script_hash,
+            amount,
+        }
     }
 
     fn parse_block_from_value(record_index: usize, value: &[u8]) -> BlockEntry {
         assert!(value.len() == 12, "Invalid Block value length");
-        
+
         let block_file_index_bytes = &value[0..4];
         let block_file_offset_bytes = &value[4..12];
 
@@ -195,7 +206,11 @@ impl BalanceHistoryDB {
         }
     }
 
-    pub fn put_address_history_sync(&self, entries_list: &[Vec<BalanceHistoryEntry>], block_height: u32) -> Result<(), String> {
+    pub fn put_address_history_sync(
+        &self,
+        entries_list: &[Vec<BalanceHistoryEntry>],
+        block_height: u32,
+    ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
@@ -204,7 +219,7 @@ impl BalanceHistoryDB {
         })?;
 
         for entries in entries_list {
-             for entry in entries {
+            for entry in entries {
                 let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
 
                 // Value format: delta (i64) + balance (u64)
@@ -222,8 +237,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         let height_bytes = block_height.to_be_bytes();
-        batch
-            .put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+        batch.put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
 
         let mut write_options = WriteOptions::default();
         write_options.set_sync(true);
@@ -263,7 +277,8 @@ impl BalanceHistoryDB {
             assert!(
                 found_key.len() == BALANCE_HISTORY_KEY_LEN,
                 "Invalid balance key length {} {}",
-                script_hash, found_key.len()
+                script_hash,
+                found_key.len()
             );
 
             // Check if the ScriptHash matches
@@ -291,7 +306,7 @@ impl BalanceHistoryDB {
 
         Ok(entry)
     }
-    
+
     /// Get the balance entry for a given script_hash at or before the target block height
     pub fn get_balance_at_block_height(
         &self,
@@ -389,7 +404,11 @@ impl BalanceHistoryDB {
                 msg
             })?;
 
-            assert!(key.len() == BALANCE_HISTORY_KEY_LEN, "Invalid balance key length {}", key.len());
+            assert!(
+                key.len() == BALANCE_HISTORY_KEY_LEN,
+                "Invalid balance key length {}",
+                key.len()
+            );
 
             // Boundary check 1: Check if the ScriptHash matches
             // If a different ScriptHash is encountered, it means the data for the current address has been fully traversed
@@ -453,10 +472,7 @@ impl BalanceHistoryDB {
         match self.db.get_cf(cf, META_KEY_BTC_BLOCK_HEIGHT) {
             Ok(Some(value)) => {
                 if value.len() != 4 {
-                    let msg = format!(
-                        "Invalid BTC block height value length: {}",
-                        value.len()
-                    );
+                    let msg = format!("Invalid BTC block height value length: {}", value.len());
                     error!("{}", msg);
                     return Err(msg);
                 }
@@ -498,13 +514,11 @@ impl BalanceHistoryDB {
 
         let key = Self::make_utxo_key(outpoint);
 
-        self.db
-            .put_cf_opt(cf, key, value, &ops)
-            .map_err(|e| {
-                let msg = format!("Failed to put UTXO: {}", e);
-                error!("{}", msg);
-                msg
-            })?;
+        self.db.put_cf_opt(cf, key, value, &ops).map_err(|e| {
+            let msg = format!("Failed to put UTXO: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(())
     }
@@ -591,14 +605,12 @@ impl BalanceHistoryDB {
                 let utxo_entry = Self::parse_utxo_from_value(&value);
 
                 // Remove the UTXO
-                self.db
-                    .delete_cf_opt(cf, &key, &ops)
-                    .map_err(|e| {
-                        let msg = format!("Failed to delete UTXO: {}", e);
-                        error!("{}", msg);
-                        msg
-                    })?;
-                    
+                self.db.delete_cf_opt(cf, &key, &ops).map_err(|e| {
+                    let msg = format!("Failed to delete UTXO: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
                 Ok(Some(utxo_entry))
             }
             Ok(None) => {
@@ -637,13 +649,11 @@ impl BalanceHistoryDB {
                     let utxo_entry = Self::parse_utxo_from_value(&value);
 
                     // Remove the UTXO
-                    self.db
-                        .delete_cf_opt(cf, &key, &ops)
-                        .map_err(|e| {
-                            let msg = format!("Failed to delete UTXO: {}", e);
-                            error!("{}", msg);
-                            msg
-                        })?;
+                    self.db.delete_cf_opt(cf, &key, &ops).map_err(|e| {
+                        let msg = format!("Failed to delete UTXO: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
 
                     spent_utxos.push((outpoint.clone(), utxo_entry));
                 }
@@ -662,6 +672,76 @@ impl BalanceHistoryDB {
         Ok(spent_utxos)
     }
 
+    pub fn get_history_balance_count(&self) -> Result<u64, String> {
+        get_approx_cf_key_count(&self.db, BALANCE_HISTORY_CF)
+    }
+
+    pub fn generate_snapshot<F>(&self, target_block_height: u32, mut on_snapshot_entries: F) -> Result<(), String>
+    where
+        F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
+    {
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        const BATCH_SIZE: usize = 1024 * 64;
+        let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
+
+        let mut current_script_hash: Option<ScriptHash> = None;
+        let mut current_founded = false;
+        let mut snapshot = Vec::with_capacity(BATCH_SIZE);
+        while let Some(Ok((key, value))) = iter.next() {
+            if key.len() != BALANCE_HISTORY_KEY_LEN {
+                continue;
+            }
+
+            let script_hash = ScriptHash::from_slice(&key[0..ScriptHash::LEN]).unwrap();
+            let height = u32::from_be_bytes(
+                key[ScriptHash::LEN..ScriptHash::LEN + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+
+            if current_script_hash.is_none() {
+                current_script_hash = Some(script_hash);
+            } else if current_script_hash.as_ref().unwrap() != &script_hash {
+                // Moved to a new script_hash
+                current_script_hash = Some(script_hash);
+                current_founded = false;
+            }
+
+            if !current_founded && height <= target_block_height {
+                let (delta, balance) = Self::parse_balance_from_value(&value);
+                if balance > 0 {
+                    let entry = BalanceHistoryEntry {
+                        script_hash,
+                        block_height: height,
+                        delta,
+                        balance,
+                    };
+                    snapshot.push(entry);
+
+                    if snapshot.len() >= BATCH_SIZE {
+                        // Flush snapshot batch
+                        on_snapshot_entries(&snapshot)?;
+                        snapshot.clear();
+                    }
+                } else {
+                    // Zero balance at this height, do not include in snapshot
+                }
+
+                current_founded = true;
+            }
+        }
+        // Flush remaining snapshot entries
+        if !snapshot.is_empty() {
+            on_snapshot_entries(&snapshot)?;
+        }
+
+        Ok(())
+    }
     /*
     pub fn put_blocks(
         &self,
@@ -723,9 +803,9 @@ pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
 
     #[test]
     fn test_make_and_parse_key() {
@@ -803,54 +883,40 @@ mod tests {
         db.put_address_history(&entries).unwrap();
 
         // Get balance at height 50 (before any entries)
-        let entry = db
-            .get_balance_at_block_height(script_hash, 50)
-            .unwrap();
+        let entry = db.get_balance_at_block_height(script_hash, 50).unwrap();
         assert_eq!(entry.block_height, 0);
         assert_eq!(entry.delta, 0);
         assert_eq!(entry.balance, 0);
 
         // Get balance at height 100
-        let entry = db
-            .get_balance_at_block_height(script_hash, 100)
-            .unwrap();
+        let entry = db.get_balance_at_block_height(script_hash, 100).unwrap();
         assert_eq!(entry.block_height, 100);
         assert_eq!(entry.delta, 500);
         assert_eq!(entry.balance, 500);
 
         // Test get_balance_at_block_height
-        let entry = db
-            .get_balance_at_block_height(script_hash, 250)
-            .unwrap();
+        let entry = db.get_balance_at_block_height(script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
         assert_eq!(entry.balance, 300);
 
         // Test get_balance_in_range
-        let range_entries = db
-            .get_balance_in_range(script_hash, 150, 350)
-            .unwrap();
+        let range_entries = db.get_balance_in_range(script_hash, 150, 350).unwrap();
         assert_eq!(range_entries.len(), 2);
         assert_eq!(range_entries[0].block_height, 200);
         assert_eq!(range_entries[1].block_height, 300);
 
         // Test get_balance_in_range with no entries
-        let range_entries = db
-            .get_balance_in_range(script_hash, 500, 600)
-            .unwrap();
+        let range_entries = db.get_balance_in_range(script_hash, 500, 600).unwrap();
         assert_eq!(range_entries.len(), 0);
 
         // Test get_balance_in_range that hits the upper boundary
-        let range_entries = db
-            .get_balance_in_range(script_hash, 350, 401)
-            .unwrap();
+        let range_entries = db.get_balance_in_range(script_hash, 350, 401).unwrap();
         assert_eq!(range_entries.len(), 1);
         assert_eq!(range_entries[0].block_height, 400);
 
         // Test get_balance_in_range that includes all entries
-        let range_entries = db
-            .get_balance_in_range(script_hash, 0, 1000)
-            .unwrap();
+        let range_entries = db.get_balance_in_range(script_hash, 0, 1000).unwrap();
         assert_eq!(range_entries.len(), 5);
         assert_eq!(range_entries[4].block_height, 401);
 
@@ -858,9 +924,7 @@ mod tests {
 
         // Test reopen the db
         let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
-        let entry = db
-            .get_balance_at_block_height(script_hash, 250)
-            .unwrap();
+        let entry = db.get_balance_at_block_height(script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
         assert_eq!(entry.balance, 300);
@@ -878,7 +942,7 @@ mod tests {
     #[test]
     fn test_utxo_put_get_consume() {
         let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);   
+        let config = std::sync::Arc::new(config);
         let temp_dir = std::env::temp_dir().join("balance_history_utxo_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
