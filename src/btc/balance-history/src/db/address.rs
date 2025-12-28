@@ -38,6 +38,12 @@ impl AddressDB {
         address_cf_options.set_level_compaction_dynamic_level_bytes(true);
         address_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         address_cf_options.create_if_missing(true);
+        address_cf_options.set_write_buffer_size(256 * 1024 * 1024);           // 256MB
+        address_cf_options.set_max_write_buffer_number(8);
+        address_cf_options.set_min_write_buffer_number_to_merge(3);
+        address_cf_options.set_max_bytes_for_level_base(4 * 1024 * 1024 * 1024); // 4GB
+        address_cf_options.set_target_file_size_base(64 * 1024 * 1024);
+        address_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
         // Define column families
         let cf_descriptors = vec![ColumnFamilyDescriptor::new(ADDRESS_CF, address_cf_options)];
@@ -63,13 +69,16 @@ impl AddressDB {
             msg
         })?;
 
+        let mut write_opts = rocksdb::WriteOptions::default();
+        write_opts.set_sync(false);
+
         let mut batch = WriteBatch::default();
 
         for (script_hash, script) in list {
             batch.put_cf(cf, script_hash.as_ref() as &[u8], script.as_bytes());
         }
 
-        self.db.write(&batch).map_err(|e| {
+        self.db.write_opt(&batch, &write_opts).map_err(|e| {
             let msg = format!("Failed to write batch of addresses: {}", e);
             error!("{}", msg);
             msg
@@ -78,6 +87,14 @@ impl AddressDB {
         Ok(())
     }
 
+    pub fn flush(&self) -> Result<(), String> {
+        self.db.flush().map_err(|e| {
+            let msg = format!("Failed to flush RocksDB: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+    
     pub fn get_address(&self, script_hash: &ScriptHash) -> Result<Option<ScriptBuf>, String> {
         let cf = self.db.cf_handle(ADDRESS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", ADDRESS_CF);

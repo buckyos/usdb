@@ -3,9 +3,10 @@ use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::{Block, ScriptBuf, ScriptHash};
+use bloomfilter::Bloom;
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -13,7 +14,8 @@ pub struct AddressIndexer {
     config: BalanceHistoryConfigRef,
     db: AddressDBRef,
     output: IndexOutputRef,
-    all: Arc<Mutex<HashSet<ScriptHash>>>,
+    filter: Arc<Mutex<Bloom<ScriptHash>>>,
+    total_addresses: Arc<AtomicU64>,
     should_stop: Arc<AtomicBool>,
 }
 
@@ -29,11 +31,18 @@ impl AddressIndexer {
             msg
         })?;
 
+        let bloom = Bloom::new_for_fp_rate(1_000_000_000, 0.01).map_err(|e| {
+            let msg = format!("Failed to create bloom filter: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
         Ok(Self {
             db: Arc::new(db),
             config,
             output,
-            all: Arc::new(Mutex::new(HashSet::new())),
+            filter: Arc::new(Mutex::new(bloom)),
+            total_addresses: Arc::new(AtomicU64::new(0)),
             should_stop: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -51,6 +60,9 @@ impl AddressIndexer {
                     dyn BlockFileIndexerCallback<Vec<(ScriptHash, ScriptBuf)>>,
                 >),
         );
+
+        self.filter.lock().unwrap().clear();
+        self.total_addresses.store(0, Ordering::SeqCst);
 
         let file_indexer = Arc::new(file_indexer);
         file_indexer.build_index()?;
@@ -99,8 +111,13 @@ impl BlockFileIndexerCallback<Vec<(ScriptHash, ScriptBuf)>> for AddressIndexer {
         for tx in &block.txdata {
             for output in &tx.output {
                 let script_hash = output.script_pubkey.script_hash();
-                if self.all.lock().unwrap().insert(script_hash) == false {
-                    continue;
+
+                {
+                    let mut filter = self.filter.lock().unwrap();
+                    if filter.check(&script_hash) {
+                        continue;
+                    }
+                    filter.set(&script_hash);
                 }
 
                 records.push((script_hash, output.script_pubkey.clone()));
@@ -116,21 +133,37 @@ impl BlockFileIndexerCallback<Vec<(ScriptHash, ScriptBuf)>> for AddressIndexer {
         complete_count: usize,
         records: Vec<(ScriptHash, ScriptBuf)>,
     ) -> Result<(), String> {
-        //self.db.put_addresses(&records)?;
+        self.db.put_addresses(&records)?;
 
-        let total = self.all.lock().unwrap().len();
-        self.output
-            .set_load_message(&format!("Indexed address file {}, new addresses: {}, total addresses: {}", block_file_index, records.len(), total));
+        let total = self
+            .total_addresses
+            .fetch_add(records.len() as u64, Ordering::SeqCst)
+            + records.len() as u64;
+
+        self.output.set_load_message(&format!(
+            "Indexed address file {}, new addresses: {}, total addresses (estimated): {}",
+            block_file_index,
+            records.len(),
+            total
+        ));
         self.output.update_load_current_count(complete_count as u64);
 
         Ok(())
     }
 
     fn on_index_complete(&self) -> Result<(), String> {
-        let count = self.all.lock().unwrap().len();
-        self.output.set_load_message(&format!("Address index build complete, total addresses {}", count));
+        self.db.flush()?;
+        
+        let count = self.total_addresses.load(Ordering::SeqCst);
+        self.output.set_load_message(&format!(
+            "Address index build complete, total addresses {}",
+            count
+        ));
         self.output.finish_load();
-        self.output.println(&format!("Address index build complete, total addresses {}", count));
+        self.output.println(&format!(
+            "Address index build complete, total addresses (estimated) {}",
+            count
+        ));
         Ok(())
     }
 
