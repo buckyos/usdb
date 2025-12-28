@@ -1,16 +1,11 @@
-use super::client::BTCClient;
-use crate::btc::rpc::BTCRpcClientRef;
-use crate::db::BlockEntry;
 use crate::output::IndexOutputRef;
+use bitcoincore_rpc::bitcoin::Block;
 use bitcoincore_rpc::bitcoin::consensus::Decodable;
-use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{Block, BlockHash};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 struct XorReader<R>
 where
@@ -368,7 +363,6 @@ pub type BlockFileReaderRef = Arc<BlockFileReader>;
 
 pub struct BlockFileIndexer<UserData> {
     reader: BlockFileReaderRef,
-    output: IndexOutputRef,
     complete_count: AtomicUsize,
     callback: BlockFileIndexerCallbackRef<UserData>,
 }
@@ -376,12 +370,10 @@ pub struct BlockFileIndexer<UserData> {
 impl<UserData> BlockFileIndexer<UserData> {
     pub fn new(
         reader: BlockFileReaderRef,
-        output: IndexOutputRef,
         callback: BlockFileIndexerCallbackRef<UserData>,
     ) -> Self {
         Self {
             reader,
-            output,
             callback,
             complete_count: AtomicUsize::new(0),
         }
@@ -393,12 +385,6 @@ impl<UserData> BlockFileIndexer<UserData> {
     }
 
     fn build_index_by_file(&self, file_index: usize) -> Result<(), String> {
-        let msg = format!(
-            "Indexing blk file {}",
-            &BlockFileReader::get_blk_file_name(file_index)
-        );
-        self.output.set_load_message(&msg);
-
         let records = self.reader.read_blk_records_by_index(file_index)?;
 
         let mut user_data = self.callback.on_file_index(file_index)?;
@@ -432,7 +418,15 @@ impl<UserData> BlockFileIndexer<UserData> {
             offset += 8 + 4 + record.len(); // magic + size + data
         }
 
-        if let Err(e) = self.callback.on_file_indexed(file_index, user_data) {
+        let complete_count = self
+            .complete_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+
+        if let Err(e) = self
+            .callback
+            .on_file_indexed(file_index, complete_count, user_data)
+        {
             let msg = format!(
                 "Failed to process indexed file for blk file {}: {}",
                 file_index, e
@@ -583,13 +577,12 @@ impl<UserData> BlockFileIndexer<UserData> {
     pub fn build_index(self: &Arc<Self>) -> Result<(), String> {
         let latest_blk_file_index = self.find_latest_blk_file()?;
 
-        self.output.start_load(latest_blk_file_index as u64);
+        self.complete_count
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+
+        self.callback.on_index_begin(latest_blk_file_index)?;
+
         let latest_blk_file_index = latest_blk_file_index - 1; // Exclude the last file which may be incomplete
-        let msg = format!(
-            "Building block index from blk files 0 to {}...",
-            latest_blk_file_index
-        );
-        self.output.println(&msg);
 
         self.complete_count
             .store(0, std::sync::atomic::Ordering::SeqCst);
@@ -597,14 +590,13 @@ impl<UserData> BlockFileIndexer<UserData> {
 
         self.callback.on_index_complete()?;
 
-        self.output.set_load_message("Block index build complete.");
-        self.output.finish_load();
-
         Ok(())
     }
 }
 
 pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
+    fn on_index_begin(&self, total: usize) -> Result<(), String>;
+
     fn on_file_index(&self, block_file_index: usize) -> Result<UserData, String>;
     fn on_block_indexed(
         &self,
@@ -615,7 +607,12 @@ pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
         block: &Block,
     ) -> Result<(), String>;
 
-    fn on_file_indexed(&self, block_file_index: usize, user_data: UserData) -> Result<(), String>;
+    fn on_file_indexed(
+        &self,
+        block_file_index: usize,
+        complete_count: usize,
+        user_data: UserData,
+    ) -> Result<(), String>;
 
     fn on_index_complete(&self) -> Result<(), String>;
 

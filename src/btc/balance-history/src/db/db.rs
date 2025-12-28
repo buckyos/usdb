@@ -1,5 +1,5 @@
 use rust_rocksdb as rocksdb;
-use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid, BlockHash};
+use bitcoincore_rpc::bitcoin::{ScriptHash, OutPoint, Txid};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,

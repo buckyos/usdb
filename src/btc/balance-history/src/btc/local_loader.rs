@@ -1,18 +1,14 @@
 use super::client::BTCClient;
 use super::file_indexer::{
-    BlockFileIndexer, BlockFileIndexerCallback, BlockFileIndexerCallbackRef, BlockFileReader,
-    BlockFileReaderRef,
+    BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader, BlockFileReaderRef,
 };
 use crate::btc::rpc::BTCRpcClientRef;
 use crate::db::BlockEntry;
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash};
-use serde::de;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, Read, Seek};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
@@ -117,11 +113,10 @@ pub struct BlocksIndexer {
     cache: Arc<Mutex<BlockRecordCache>>,
     output: IndexOutputRef,
     should_stop: Arc<AtomicBool>,
-    complete_count: Arc<AtomicUsize>,
 }
 
 impl BlocksIndexer {
-    pub fn new(
+    fn new(
         reader: BlockFileReaderRef,
         cache: Arc<Mutex<BlockRecordCache>>,
         output: IndexOutputRef,
@@ -132,12 +127,7 @@ impl BlocksIndexer {
             cache,
             output,
             should_stop,
-            complete_count: Arc::new(AtomicUsize::new(0)),
         }
-    }
-
-    pub fn cache(&self) -> Arc<Mutex<BlockRecordCache>> {
-        self.cache.clone()
     }
 
     fn merge_build_result(&self, result: Vec<BuildRecordResult>) -> Result<(), String> {
@@ -174,27 +164,16 @@ impl BlocksIndexer {
             }
         }
 
-        // Update progress
-        let count = self
-            .complete_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        self.output.update_load_current_count(count as u64);
-
         Ok(())
     }
 
     pub fn build_index(&self) -> Result<(), String> {
         let file_indexer = BlockFileIndexer::new(
             self.reader.clone(),
-            self.output.clone(),
             Arc::new(
                 Box::new(self.clone()) as Box<dyn BlockFileIndexerCallback<Vec<BuildRecordResult>>>
             ),
         );
-
-        self.complete_count
-            .store(0, std::sync::atomic::Ordering::SeqCst);
 
         let file_indexer = Arc::new(file_indexer);
         file_indexer.build_index()?;
@@ -264,7 +243,23 @@ impl BlocksIndexer {
 }
 
 impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
-    fn on_file_index(&self, _block_file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
+    fn on_index_begin(&self, total: usize) -> Result<(), String> {
+        self.output.start_load(total as u64);
+
+        let latest_blk_file_index = total - 1; // Exclude the last file which may be incomplete
+        let msg = format!(
+            "Building block index from blk files 0 to {}...",
+            latest_blk_file_index
+        );
+        self.output.println(&msg);
+
+        Ok(())
+    }
+
+    fn on_file_index(&self, block_file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
+        let msg = format!("Indexing blk file {}", block_file_index);
+        self.output.set_load_message(&msg);
+
         Ok(Vec::new())
     }
 
@@ -292,9 +287,14 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
     fn on_file_indexed(
         &self,
         _block_file_index: usize,
+        complete_count: usize,
         user_data: Vec<BuildRecordResult>,
     ) -> Result<(), String> {
         self.merge_build_result(user_data)?;
+
+        // Update progress
+        self.output.update_load_current_count(complete_count as u64);
+
         Ok(())
     }
 
@@ -302,6 +302,9 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
         self.output
             .set_load_message("Generating sorted block list...");
         self.generate_sort_blocks()?;
+
+        self.output.set_load_message("Block index build complete.");
+        self.output.finish_load();
 
         Ok(())
     }

@@ -1,8 +1,7 @@
-use bitcoincore_rpc::bitcoin::{Amount, Block, OutPoint, ScriptBuf, BlockHash};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
-use jsonrpsee::core::client::{self, BatchResponse, ClientT};
-use std::sync::{Arc, RwLock};
 use super::client::BTCClient;
+use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
+use bitcoincore_rpc::{Auth, Client, RpcApi};
+use std::sync::{Arc, RwLock};
 
 pub struct BTCRpcClient {
     rpc_url: String,
@@ -228,7 +227,10 @@ impl BTCClient for BTCRpcClient {
     fn init(&self) -> Result<(), String> {
         // Just try to get latest block height to verify the connection
         let height = self.get_latest_block_height()?;
-        info!("BTC RPC client initialized, latest block height: {}", height);
+        info!(
+            "BTC RPC client initialized, latest block height: {}",
+            height
+        );
 
         Ok(())
     }
@@ -236,7 +238,7 @@ impl BTCClient for BTCRpcClient {
     fn stop(&self) -> Result<(), String> {
         // No specific stop action needed for the RPC client
         info!("BTC RPC client stopped.");
-        
+
         Ok(())
     }
 

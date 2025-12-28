@@ -34,7 +34,6 @@ impl TxFullItem {
 
 pub struct ElectrsClient {
     client: Client,
-    server_url: String,
 }
 
 impl ElectrsClient {
@@ -47,7 +46,6 @@ impl ElectrsClient {
 
         Ok(Self {
             client,
-            server_url: server_url.to_string(),
         })
     }
 

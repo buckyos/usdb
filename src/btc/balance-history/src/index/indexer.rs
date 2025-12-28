@@ -1,9 +1,9 @@
-use crate::balance::{AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache};
-use crate::btc::{BTCClient, BTCClientRef, create_btc_client};
+use super::balance::{AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache};
+use crate::btc::{BTCClientRef, create_btc_client};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
-use crate::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
+use super::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

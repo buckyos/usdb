@@ -1,8 +1,7 @@
 use super::db::BalanceHistoryEntry;
 use bitcoincore_rpc::bitcoin::{ScriptHash, hashes::Hash};
 use rusqlite::types::{FromSql, FromSqlError, ToSql, ValueRef};
-use rusqlite::{Connection, Row, Transaction};
-use std::collections::HashMap;
+use rusqlite::{Connection};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
