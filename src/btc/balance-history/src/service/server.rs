@@ -38,7 +38,7 @@ impl BalanceHistoryRpcServer {
         status: SyncStatusManagerRef,
         db: BalanceHistoryDBRef,
         shutdown_tx: watch::Sender<()>,
-    ) -> Result<(), String> {
+    ) -> Result<Self, String> {
         let ret = Self::new(config.clone(), status, db, shutdown_tx.clone());
 
         let mut io = IoHandler::new();
@@ -65,7 +65,7 @@ impl BalanceHistoryRpcServer {
 
         let handle = server.close_handle();
         info!("RPC server listening on {}", addr);
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             server.wait();
         });
 
@@ -75,7 +75,21 @@ impl BalanceHistoryRpcServer {
             *current = Some(handle);
         }
 
-        Ok(())
+        Ok(ret)
+    }
+
+    pub async fn close(&self) {
+        if let Some(handle) = self.server_handle.lock().unwrap().take() {
+            info!("Closing RPC server.");
+            tokio::task::spawn_blocking(move || {
+                handle.close();
+            }).await.unwrap();
+            
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            info!("RPC server closed.");
+        } else {
+            warn!("RPC server handle not found.");
+        }
     }
 }
 
@@ -93,7 +107,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         }
 
         if let Some(handle) = self.server_handle.lock().unwrap().take() {
-            info!("Will abort RPC server task.");
+            info!("Closing RPC server.");
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 info!("Closing RPC server.");

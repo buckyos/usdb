@@ -98,16 +98,20 @@ async fn main_run() {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
     // Start the RPC server
-    if let Err(e) = BalanceHistoryRpcServer::start(
+    let ret = BalanceHistoryRpcServer::start(
         config.clone(),
         output.status().clone(),
         db.clone(),
         shutdown_tx,
-    ) {
+    );
+    if let Err(e) = &ret
+    {
         error!("Failed to start RPC server: {}", e);
         output.println(&format!("Failed to start RPC server: {}", e));
         std::process::exit(1);
     }
+    let rpc_server = ret.unwrap();
+
     output.println("RPC server started.");
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
@@ -157,6 +161,8 @@ async fn main_run() {
     db.flush_all().unwrap_or_else(|e| {
         error!("Failed to flush database on shutdown: {}", e);
     });
+
+    rpc_server.close().await;
 
     println!("Shutdown complete.");
 
