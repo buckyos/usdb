@@ -363,7 +363,7 @@ pub type BlockFileReaderRef = Arc<BlockFileReader>;
 
 pub struct BlockFileIndexer<UserData> {
     reader: BlockFileReaderRef,
-    complete_count: AtomicUsize,
+    complete_count: Arc<AtomicUsize>,
     callback: BlockFileIndexerCallbackRef<UserData>,
 }
 
@@ -375,7 +375,7 @@ impl<UserData> BlockFileIndexer<UserData> {
         Self {
             reader,
             callback,
-            complete_count: AtomicUsize::new(0),
+            complete_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -385,47 +385,50 @@ impl<UserData> BlockFileIndexer<UserData> {
     }
 
     fn build_index_by_file(&self, file_index: usize) -> Result<(), String> {
-        let records = self.reader.read_blk_records_by_index(file_index)?;
+        let mut ignore = false;
+        let mut user_data = self.callback.on_file_index(file_index, &mut ignore)?;
+        if ignore {
+            info!("Ignoring blk file {} as per callback request", file_index);
+        } else {
+            let records = self.reader.read_blk_records_by_index(file_index)?;
 
-        let mut user_data = self.callback.on_file_index(file_index)?;
+            let mut offset = 0;
+            for (record_index, record) in records.iter().enumerate() {
+                let block: Block =
+                    Block::consensus_decode(&mut record.as_slice()).map_err(|e| {
+                        let msg = format!(
+                            "Failed to deserialize block from blk file {}: {}",
+                            file_index, e
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
 
-        let mut offset = 0;
-        for (record_index, record) in records.iter().enumerate() {
-            let block: Block = Block::consensus_decode(&mut record.as_slice()).map_err(|e| {
-                let msg = format!(
-                    "Failed to deserialize block from blk file {}: {}",
-                    file_index, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+                if let Err(e) = self.callback.on_block_indexed(
+                    &mut user_data,
+                    file_index,
+                    offset,
+                    record_index,
+                    &block,
+                ) {
+                    let msg = format!(
+                        "Failed to process indexed block for blk file {}: {}",
+                        file_index, e
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
 
-            if let Err(e) = self.callback.on_block_indexed(
-                &mut user_data,
-                file_index,
-                offset,
-                record_index,
-                &block,
-            ) {
-                let msg = format!(
-                    "Failed to process indexed block for blk file {}: {}",
-                    file_index, e
-                );
-                error!("{}", msg);
-                return Err(msg);
+                offset += 8 + 4 + record.len(); // magic + size + data
             }
-
-            offset += 8 + 4 + record.len(); // magic + size + data
         }
 
-        let complete_count = self
-            .complete_count
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
+        self.complete_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        if let Err(e) = self
-            .callback
-            .on_file_indexed(file_index, complete_count, user_data)
+        if let Err(e) =
+            self.callback
+                .on_file_indexed(file_index, self.complete_count.clone(), user_data)
         {
             let msg = format!(
                 "Failed to process indexed file for blk file {}: {}",
@@ -584,8 +587,6 @@ impl<UserData> BlockFileIndexer<UserData> {
 
         let latest_blk_file_index = latest_blk_file_index - 1; // Exclude the last file which may be incomplete
 
-        self.complete_count
-            .store(0, std::sync::atomic::Ordering::SeqCst);
         self.build_index_by_file_range(0, latest_blk_file_index)?;
 
         self.callback.on_index_complete()?;
@@ -597,7 +598,8 @@ impl<UserData> BlockFileIndexer<UserData> {
 pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
     fn on_index_begin(&self, total: usize) -> Result<(), String>;
 
-    fn on_file_index(&self, block_file_index: usize) -> Result<UserData, String>;
+    fn on_file_index(&self, block_file_index: usize, ignore: &mut bool)
+    -> Result<UserData, String>;
     fn on_block_indexed(
         &self,
         user_data: &mut UserData,
@@ -610,7 +612,7 @@ pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
     fn on_file_indexed(
         &self,
         block_file_index: usize,
-        complete_count: usize,
+        complete_count: Arc<AtomicUsize>,
         user_data: UserData,
     ) -> Result<(), String>;
 

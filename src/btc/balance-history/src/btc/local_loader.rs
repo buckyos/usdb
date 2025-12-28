@@ -87,10 +87,10 @@ struct BuildRecordResult {
     block_record_index: usize,
 }
 
-struct BlockRecordCache {
-    block_hash_cache: HashMap<BlockHash, BlockEntry>,
-    block_prev_hash_cache: HashMap<BlockHash, BlockHash>,
-    sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
+pub struct BlockRecordCache {
+    pub block_hash_cache: HashMap<BlockHash, BlockEntry>,
+    pub block_prev_hash_cache: HashMap<BlockHash, BlockHash>,
+    pub sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
 }
 
 impl BlockRecordCache {
@@ -105,97 +105,65 @@ impl BlockRecordCache {
     pub fn new_ref() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self::new()))
     }
-}
 
-#[derive(Clone)]
-pub struct BlocksIndexer {
-    reader: BlockFileReaderRef,
-    cache: Arc<Mutex<BlockRecordCache>>,
-    output: IndexOutputRef,
-    should_stop: Arc<AtomicBool>,
-}
-
-impl BlocksIndexer {
-    fn new(
-        reader: BlockFileReaderRef,
-        cache: Arc<Mutex<BlockRecordCache>>,
-        output: IndexOutputRef,
-        should_stop: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            reader,
-            cache,
-            output,
-            should_stop,
+    pub fn get_latest_block_height(&self) -> u64 {
+        if self.sorted_blocks.is_empty() {
+            0
+        } else {
+            self.sorted_blocks.last().unwrap().0
         }
     }
 
-    fn merge_build_result(&self, result: Vec<BuildRecordResult>) -> Result<(), String> {
-        let mut cache = self.cache.lock().unwrap();
-        for record in result {
-            if let Some(prev_hash) = cache
-                .block_prev_hash_cache
-                .insert(record.prev_block_hash, record.block_hash)
-            {
-                let msg = format!(
-                    "Duplicate prev_blockhash found in blk file {}: prev_hash = {}, block_hash = {}",
-                    record.block_file_index, prev_hash, record.block_hash
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
+    pub fn clear(&mut self) {
+        self.block_hash_cache.clear();
+        self.block_prev_hash_cache.clear();
+        self.sorted_blocks.clear();
+    }
 
-            let entry = BlockEntry {
-                block_file_index: record.block_file_index as u32,
-                block_file_offset: record.block_file_offset,
-                block_record_index: record.block_record_index,
-            };
+    pub fn add_new_block_entry(
+        &mut self,
+        block_hash: &BlockHash,
+        prev_block_hash: &BlockHash,
+        entry: BlockEntry,
+    ) -> Result<(), String> {
+        if let Some(prev_hash) = self
+            .block_prev_hash_cache
+            .insert(*prev_block_hash, *block_hash)
+        {
+            let msg = format!(
+                "Duplicate prev_blockhash found in blk file {}: prev_hash = {}, block_hash = {}",
+                entry.block_file_index, prev_hash, block_hash
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
-            if let Some(prev_entry) = cache
-                .block_hash_cache
-                .insert(record.block_hash, entry.clone())
-            {
-                let msg = format!(
-                    "Duplicate block_hash found in blk file {}: block_hash = {}, prev_entry = {:?}, new_entry = {:?}",
-                    record.block_file_index, record.block_hash, prev_entry, entry
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
+        if let Some(prev_entry) = self.block_hash_cache.insert(*block_hash, entry.clone()) {
+            let msg = format!(
+                "Duplicate block_hash found in blk file {}: block_hash = {}, prev_entry = {:?}, new_entry = {:?}",
+                entry.block_file_index, block_hash, prev_entry, entry
+            );
+            error!("{}", msg);
+            return Err(msg);
         }
 
         Ok(())
     }
 
-    pub fn build_index(&self) -> Result<(), String> {
-        let file_indexer = BlockFileIndexer::new(
-            self.reader.clone(),
-            Arc::new(
-                Box::new(self.clone()) as Box<dyn BlockFileIndexerCallback<Vec<BuildRecordResult>>>
-            ),
-        );
-
-        let file_indexer = Arc::new(file_indexer);
-        file_indexer.build_index()?;
-
-        Ok(())
-    }
-
-    fn generate_sort_blocks(&self) -> Result<(), String> {
-        let mut cache = self.cache.lock().unwrap();
+    pub fn generate_sort_blocks(&mut self) -> Result<(), String> {
         let mut prev_hash = BlockHash::all_zeros();
         let mut block_height = 0;
-        let mut blocks = Vec::with_capacity(cache.block_hash_cache.len());
+        let mut blocks = Vec::with_capacity(self.block_hash_cache.len());
         loop {
             // Find block hash by prev_hash
-            let block_hash = cache.block_prev_hash_cache.get(&prev_hash);
+            let block_hash = self.block_prev_hash_cache.get(&prev_hash);
             if block_hash.is_none() {
                 break;
             }
 
             // Get block entry by block_hash
             let block_hash = block_hash.unwrap();
-            let entry = cache.block_hash_cache.get(block_hash);
+            let entry = self.block_hash_cache.get(block_hash);
             if entry.is_none() {
                 let msg = format!("Block entry not found for block_hash {}", block_hash,);
                 error!("{}", msg);
@@ -236,7 +204,60 @@ impl BlocksIndexer {
         }
 
         // Save sorted blocks to cache
-        cache.sorted_blocks = blocks;
+        self.sorted_blocks = blocks;
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct BlocksIndexer {
+    reader: BlockFileReaderRef,
+    cache: Arc<Mutex<BlockRecordCache>>,
+    output: IndexOutputRef,
+    should_stop: Arc<AtomicBool>,
+}
+
+impl BlocksIndexer {
+    fn new(
+        reader: BlockFileReaderRef,
+        cache: Arc<Mutex<BlockRecordCache>>,
+        output: IndexOutputRef,
+        should_stop: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            reader,
+            cache,
+            output,
+            should_stop,
+        }
+    }
+
+    fn merge_build_result(&self, result: Vec<BuildRecordResult>) -> Result<(), String> {
+        let mut cache = self.cache.lock().unwrap();
+        for record in result {
+            let entry = BlockEntry {
+                block_file_index: record.block_file_index as u32,
+                block_file_offset: record.block_file_offset,
+                block_record_index: record.block_record_index,
+            };
+
+            cache.add_new_block_entry(&record.block_hash, &record.prev_block_hash, entry)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn build_index(&self) -> Result<(), String> {
+        let file_indexer = BlockFileIndexer::new(
+            self.reader.clone(),
+            Arc::new(
+                Box::new(self.clone()) as Box<dyn BlockFileIndexerCallback<Vec<BuildRecordResult>>>
+            ),
+        );
+
+        let file_indexer = Arc::new(file_indexer);
+        file_indexer.build_index()?;
 
         Ok(())
     }
@@ -256,7 +277,11 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
         Ok(())
     }
 
-    fn on_file_index(&self, block_file_index: usize) -> Result<Vec<BuildRecordResult>, String> {
+    fn on_file_index(
+        &self,
+        block_file_index: usize,
+        _ignore: &mut bool,
+    ) -> Result<Vec<BuildRecordResult>, String> {
         let msg = format!("Indexing blk file {}", block_file_index);
         self.output.set_load_message(&msg);
 
@@ -287,13 +312,13 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
     fn on_file_indexed(
         &self,
         _block_file_index: usize,
-        complete_count: usize,
+        complete_count: Arc<AtomicUsize>,
         user_data: Vec<BuildRecordResult>,
     ) -> Result<(), String> {
         self.merge_build_result(user_data)?;
 
         // Update progress
-        self.output.update_load_current_count(complete_count as u64);
+        self.output.update_load_current_count(complete_count.load(std::sync::atomic::Ordering::Relaxed) as u64);
 
         Ok(())
     }
@@ -301,7 +326,7 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
     fn on_index_complete(&self) -> Result<(), String> {
         self.output
             .set_load_message("Generating sorted block list...");
-        self.generate_sort_blocks()?;
+        self.cache.lock().unwrap().generate_sort_blocks()?;
 
         self.output.set_load_message("Block index build complete.");
         self.output.finish_load();

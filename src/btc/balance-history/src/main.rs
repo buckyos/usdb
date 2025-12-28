@@ -72,13 +72,6 @@ async fn main_run() {
     let output = IndexOutput::new(status);
     let output = Arc::new(output);
 
-    let address_index =
-        crate::index::AddressIndexer::new(&root_dir, config.clone(), output.clone()).unwrap();
-    if let Err(e) = address_index.build_index() {
-        error!("Failed to build address index: {}", e);
-        output.println(&format!("Failed to build address index: {}", e));
-        std::process::exit(1);
-    }
     // Initialize the database
     output.println("Initializing database...");
     let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
@@ -183,6 +176,9 @@ async fn main() {
 
     match cli.command {
         Some(BalanceHistoryCommands::ClearDb {}) => {
+            // Init file logging
+            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             if let Err(e) = crate::tool::clear_db_files(&root_dir) {
                 error!("Failed to clear database files: {}", e);
@@ -192,6 +188,9 @@ async fn main() {
             return;
         }
         Some(BalanceHistoryCommands::IndexAddress {}) => {
+            // Init file logging
+            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Indexing addresses in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -216,7 +215,7 @@ async fn main() {
                 output.println(&format!("Failed to build address index: {}", e));
                 std::process::exit(1);
             }
-            
+
             println!("Address index built successfully.");
             return;
         }
