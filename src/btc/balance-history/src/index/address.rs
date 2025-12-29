@@ -5,10 +5,8 @@ use crate::btc::{
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
-use bitcoincore_rpc::bitcoin::address::error;
 use bitcoincore_rpc::bitcoin::{Block, ScriptBuf, ScriptHash};
 use bloomfilter::Bloom;
-use std::fmt::format;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

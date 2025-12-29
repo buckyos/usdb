@@ -1,7 +1,6 @@
 use super::db::BalanceHistoryEntry;
 use bitcoincore_rpc::bitcoin::{ScriptHash, hashes::Hash};
-use rusqlite::types::{FromSql, FromSqlError, ToSql, ValueRef};
-use rusqlite::{Connection};
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -86,6 +85,19 @@ impl SnapshotDB {
                 error!("{}", msg);
                 msg
             })?;
+
+        conn.execute_batch(
+            r#"
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA cache_size = -40000;   -- ≈ 80 MB
+            "#,
+        )
+        .map_err(|e| {
+            let msg = format!("Failed to set PRAGMA settings: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -185,15 +197,17 @@ impl SnapshotDB {
                 msg
             })?;
 
-        let count: u64 = stmt.query_row([], |row| row.get::<_, i64>(0).map(|v| v as u64)).map_err(|e| {
-            let msg = format!("Failed to query row: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        let count: u64 = stmt
+            .query_row([], |row| row.get::<_, i64>(0).map(|v| v as u64))
+            .map_err(|e| {
+                let msg = format!("Failed to query row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
 
         Ok(count)
     }
-    
+
     pub fn get_entries(
         &self,
         page_index: u32,

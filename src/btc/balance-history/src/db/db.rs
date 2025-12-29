@@ -5,7 +5,7 @@ use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash, Txid};
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
-use rust_rocksdb as rocksdb;
+use rust_rocksdb::{self as rocksdb};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -676,7 +676,115 @@ impl BalanceHistoryDB {
         get_approx_cf_key_count(&self.db, BALANCE_HISTORY_CF)
     }
 
-    pub fn generate_snapshot<F>(&self, target_block_height: u32, mut on_snapshot_entries: F) -> Result<(), String>
+    fn generate_snapshot_sharded(
+        &self,
+        target_block_height: u32,
+        shard_index: u8,
+        batch_size: usize,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut seek_key = vec![shard_index];
+        seek_key.resize(ScriptHash::LEN, 0xFF); // max ScriptHash
+        seek_key.extend_from_slice(&[0xFF; 4]); // max block height
+
+        let mut iter = self
+            .db
+            .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
+
+        let mut current_script_hash: Option<ScriptHash> = None;
+        let mut current_founded = false;
+        let mut snapshot = Vec::with_capacity(batch_size);
+        while let Some(Ok((key, value))) = iter.next() {
+            if key.len() != BALANCE_HISTORY_KEY_LEN {
+                continue;
+            }
+
+            if key[0] != shard_index {
+                // Moved to a new shard
+                break;
+            }
+
+            let script_hash = ScriptHash::from_slice(&key[0..ScriptHash::LEN]).unwrap();
+            let height = u32::from_be_bytes(
+                key[ScriptHash::LEN..ScriptHash::LEN + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+
+            if current_script_hash.is_none() {
+                current_script_hash = Some(script_hash);
+            } else if current_script_hash.as_ref().unwrap() != &script_hash {
+                // Moved to a new script_hash
+                current_script_hash = Some(script_hash);
+                current_founded = false;
+            }
+
+            if !current_founded && height <= target_block_height {
+                let (delta, balance) = Self::parse_balance_from_value(&value);
+                if balance > 0 {
+                    let entry = BalanceHistoryEntry {
+                        script_hash,
+                        block_height: height,
+                        delta,
+                        balance,
+                    };
+                    snapshot.push(entry);
+
+                    if snapshot.len() >= batch_size {
+                        // Flush snapshot batch
+                        cb.on_snapshot_entries(&snapshot)?;
+                        snapshot.clear();
+                    }
+                } else {
+                    // Zero balance at this height, do not include in snapshot
+                }
+
+                current_founded = true;
+            }
+        }
+
+        // Flush remaining snapshot entries
+        if !snapshot.is_empty() {
+            cb.on_snapshot_entries(&snapshot)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_snapshot_parallel(
+        &self,
+        target_block_height: u32,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String>
+    {
+        use rayon::prelude::*;
+
+        const SHARD_COUNT: u8 = 255;
+        const BATCH_SIZE: usize = 1024 * 64;
+
+        (0u8..=SHARD_COUNT).into_par_iter().try_for_each(|shard_index| {
+            self.generate_snapshot_sharded(
+                target_block_height,
+                shard_index,
+                BATCH_SIZE,
+                cb.clone(),
+            )
+        })?;
+
+        Ok(())
+    }
+    
+    pub fn generate_snapshot<F>(
+        &self,
+        target_block_height: u32,
+        mut callback: F,
+    ) -> Result<(), String>
     where
         F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
     {
@@ -725,7 +833,7 @@ impl BalanceHistoryDB {
 
                     if snapshot.len() >= BATCH_SIZE {
                         // Flush snapshot batch
-                        on_snapshot_entries(&snapshot)?;
+                        callback(&snapshot)?;
                         snapshot.clear();
                     }
                 } else {
@@ -737,7 +845,7 @@ impl BalanceHistoryDB {
         }
         // Flush remaining snapshot entries
         if !snapshot.is_empty() {
-            on_snapshot_entries(&snapshot)?;
+            callback(&snapshot)?;
         }
 
         Ok(())
@@ -799,6 +907,12 @@ impl BalanceHistoryDB {
 }
 
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
+
+pub trait SnapshotCallback: Send + Sync {
+    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String>;
+}
+
+pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
 
 #[cfg(test)]
 mod tests {

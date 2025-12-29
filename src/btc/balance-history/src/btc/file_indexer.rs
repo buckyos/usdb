@@ -1,4 +1,3 @@
-use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::Block;
 use bitcoincore_rpc::bitcoin::consensus::Decodable;
 use std::fs::File;
