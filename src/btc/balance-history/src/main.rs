@@ -44,6 +44,8 @@ enum BalanceHistoryCommands {
     ClearDb {},
 
     IndexAddress {},
+
+    Snapshot {},
 }
 
 async fn main_run() {
@@ -178,7 +180,7 @@ async fn main() {
         Some(BalanceHistoryCommands::ClearDb {}) => {
             // Init file logging
             usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            
+
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             if let Err(e) = crate::tool::clear_db_files(&root_dir) {
                 error!("Failed to clear database files: {}", e);
@@ -217,6 +219,48 @@ async fn main() {
             }
 
             println!("Address index built successfully.");
+            return;
+        }
+        Some(BalanceHistoryCommands::Snapshot {}) => {
+            // Init file logging
+            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+
+            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            println!("Generating snapshot in directory: {:?}", root_dir);
+            let config = match BalanceHistoryConfig::load(&root_dir) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    error!("Failed to load config: {}", e);
+                    println!("Failed to load config: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let config = Arc::new(config);
+            let status = status::SyncStatusManager::new();
+            let status = Arc::new(status);
+            let output = IndexOutput::new(status);
+            let output = Arc::new(output);
+
+            let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
+                Ok(database) => database,
+                Err(e) => {
+                    error!("Failed to initialize database: {}", e);
+                    output.println(&format!("Failed to initialize database: {}", e));
+                    std::process::exit(1);
+                }
+            };
+            let db = Arc::new(db);
+
+            let snapshot_indexer =
+                crate::index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
+            let target_block_height = 400_000; // Example target height
+            if let Err(e) = snapshot_indexer.run(target_block_height) {
+                error!("Failed to generate snapshot: {}", e);
+                output.println(&format!("Failed to generate snapshot: {}", e));
+                std::process::exit(1);
+            }
+
+            println!("Snapshot generated successfully.");
             return;
         }
         None => {}

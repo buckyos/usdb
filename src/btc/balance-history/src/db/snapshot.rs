@@ -65,12 +65,12 @@ impl SnapshotHash {
 }
 
 /// Snapshot Manager
-pub struct Snapshot {
+pub struct SnapshotDB {
     path: PathBuf,
     conn: Connection,
 }
 
-impl Snapshot {
+impl SnapshotDB {
     /// Create or open a snapshot database at the specified path
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| {
