@@ -17,7 +17,9 @@ use crate::db::BalanceHistoryDB;
 use crate::index::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
 use crate::service::BalanceHistoryRpcServer;
+use bitcoincore_rpc::bitcoin::address;
 use clap::{Parser, Subcommand};
+use usdb_util::LogConfig;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -46,13 +48,16 @@ enum BalanceHistoryCommands {
     IndexAddress {},
 
     Snapshot {},
+
+    VerifySnapshot {},
 }
 
 async fn main_run() {
     let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
     // Init file logging
-    usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+    usdb_util::init_log(config);
 
     let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     info!("Using service directory: {:?}", root_dir);
@@ -179,7 +184,13 @@ async fn main() {
     match cli.command {
         Some(BalanceHistoryCommands::ClearDb {}) => {
             // Init file logging
-            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig {
+                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+                file_name: Some(file_name),
+                console: false,
+            };
+            usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             if let Err(e) = crate::tool::clear_db_files(&root_dir) {
@@ -191,7 +202,13 @@ async fn main() {
         }
         Some(BalanceHistoryCommands::IndexAddress {}) => {
             // Init file logging
-            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig {
+                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+                file_name: Some(file_name),
+                console: false,
+            };
+            usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Indexing addresses in directory: {:?}", root_dir);
@@ -223,7 +240,12 @@ async fn main() {
         }
         Some(BalanceHistoryCommands::Snapshot {}) => {
             // Init file logging
-            usdb_util::init_log(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig {
+                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+                file_name: Some(format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME)),
+                console: false,
+            };
+            usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Generating snapshot in directory: {:?}", root_dir);
@@ -263,6 +285,7 @@ async fn main() {
             println!("Snapshot generated successfully.");
             return;
         }
+        
         None => {}
     }
 
