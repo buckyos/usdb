@@ -132,6 +132,11 @@ impl AddressIndexer {
             let mut records: Vec<(ScriptHash, ScriptBuf)> = Vec::new();
             for tx in &block.txdata {
                 for output in &tx.output {
+                    // Skip OP_RETURN outputs
+                    if output.script_pubkey.is_op_return() {
+                        continue;
+                    }
+
                     let script_hash = output.script_pubkey.script_hash();
                     {
                         // If the blk had been index before, the bloom filter maybe incomplete, so this filer may let some duplicates pass

@@ -452,8 +452,18 @@ impl BalanceHistoryIndexer {
             }
 
             for (n, vout) in tx.output.iter().enumerate() {
-                let script_hash = vout.script_pubkey.script_hash();
+                // Skip outputs that cannot be spent
+                if vout.script_pubkey.is_op_return() {
+                    continue;
+                }
+
+                // Skip zero value outputs
                 let value = vout.value.to_sat();
+                if value == 0 {
+                    continue;
+                }
+
+                let script_hash = vout.script_pubkey.script_hash();
                 utxo_count += 1;
 
                 match history.entry(script_hash) {
