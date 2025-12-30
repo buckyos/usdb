@@ -2,6 +2,7 @@ use bitcoincore_rpc::Auth;
 use bitcoincore_rpc::bitcoin::Network;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BTCAuth {
     None,
@@ -9,23 +10,31 @@ pub enum BTCAuth {
     CookieFile(PathBuf),
 }
 
+fn default_network() -> Network {
+    Network::Bitcoin
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BTCConfig {
-    pub network: Option<Network>,
+    #[serde(default = "default_network")]
+    pub network: Network,
+
+    #[serde(default)]
     pub data_dir: Option<PathBuf>,
+
+    #[serde(default)]
     pub rpc_url: Option<String>,
+
+    #[serde(default)]
     pub auth: Option<BTCAuth>,
+
+    #[serde(default)]
     pub block_magic: Option<u32>,
 }
 
 impl BTCConfig {
     pub fn network(&self) -> Network {
-        if let Some(network) = self.network {
-            network
-        } else {
-            // Default is main
-            Network::Bitcoin
-        }
+        self.network
     }
 
     pub fn data_dir(&self) -> PathBuf {
@@ -97,11 +106,55 @@ impl BTCConfig {
 impl Default for BTCConfig {
     fn default() -> Self {
         BTCConfig {
-            network: Some(Network::Bitcoin),
+            network: default_network(),
             data_dir: None,
             rpc_url: None,
             auth: None,
             block_magic: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrdConfig {
+    #[serde(default = "default_ord_rpc_url")]
+    pub rpc_url: String,
+}
+
+fn default_ord_rpc_url() -> String {
+    "http://127.0.0.1:8070".to_string()
+}
+
+impl OrdConfig {
+    pub fn rpc_url(&self) -> &str {
+        self.rpc_url.as_str()
+    }
+}
+
+impl Default for OrdConfig {
+    fn default() -> Self {
+        Self { rpc_url: default_ord_rpc_url() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElectrsConfig {
+    #[serde(default = "default_electrs_rpc_url")]
+    pub rpc_url: String,
+}
+
+fn default_electrs_rpc_url() -> String {
+    "tcp://127.0.0.1:50001".to_string()
+}
+
+impl ElectrsConfig {
+    pub fn rpc_url(&self) -> &str {
+        self.rpc_url.as_str()
+    }
+}
+
+impl Default for ElectrsConfig {
+    fn default() -> Self {
+        Self { rpc_url: default_electrs_rpc_url() }
     }
 }

@@ -1,37 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::BTCConfig;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OrdConfig {
-    pub rpc_url: Option<String>,
-}
-
-impl OrdConfig {
-    pub fn rpc_url(&self) -> &str {
-        if let Some(ref url) = self.rpc_url {
-            url.as_str()
-        } else {
-            "http://127.0.0.1:8070"
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ElectrsConfig {
-    pub rpc_url: Option<String>,
-}
-
-impl ElectrsConfig {
-    pub fn rpc_url(&self) -> &str {
-        if let Some(ref url) = self.rpc_url {
-            url.as_str()
-        } else {
-            "tcp://127.0.0.1:50001"
-        }
-    }
-}
+use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
