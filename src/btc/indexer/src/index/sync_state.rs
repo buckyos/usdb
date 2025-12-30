@@ -50,8 +50,8 @@ impl SyncStateStorage {
                 msg
             })?;
 
-        let height: Option<u64> = stmt
-            .query_row([], |row| row.get(0))
+        let height: Option<i64> = stmt
+            .query_row([], |row| row.get::<usize, i64>(0))
             .optional()
             .map_err(|e| {
                 let msg = format!("Failed to query btc_latest_block_height: {}", e);
@@ -59,7 +59,7 @@ impl SyncStateStorage {
                 msg
             })?;
 
-        Ok(height)
+        Ok(height.map(|h| h as u64))
     }
 
     // Update btc latest block height only block_height = current_block_height + 1 or current_block_height = 0
@@ -73,7 +73,7 @@ impl SyncStateStorage {
         })?;
 
         // First get the current height
-        let current_height: Option<u64> = tx
+        let current_height: Option<i64> = tx
             .prepare("SELECT value FROM state WHERE name = 'btc_latest_block_height'")
             .and_then(|mut stmt| stmt.query_row([], |row| row.get(0)).optional())
             .map_err(|e| {
@@ -83,7 +83,7 @@ impl SyncStateStorage {
             })?;
 
         if let Some(current) = current_height {
-            if height != current + 1 {
+            if height as i64 != current + 1 {
                 let msg = format!(
                     "New height {} is not equal to current height {} + 1",
                     height, current
@@ -97,7 +97,7 @@ impl SyncStateStorage {
         tx.execute(
             "INSERT INTO state (name, value) VALUES ('btc_latest_block_height', ?1)
              ON CONFLICT(name) DO UPDATE SET value = excluded.value",
-            [height],
+            [height as i64],
         )
         .map_err(|e| {
             let msg = format!("Failed to update btc_latest_block_height: {}", e);

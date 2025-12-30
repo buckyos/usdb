@@ -204,16 +204,16 @@ impl AddressBalanceStorage {
 
             result.push(WatchedAddress {
                 address,
-                block_height: row.get(1).map_err(|e| {
+                block_height: row.get::<usize, i64>(1).map_err(|e| {
                     let msg = format!("Failed to get block_height from row: {}", e);
                     error!("{}", msg);
                     msg
-                })?,
-                balance: row.get(2).map_err(|e| {
+                })? as u64,
+                balance: row.get::<usize, i64>(2).map_err(|e| {
                     let msg = format!("Failed to get balance from row: {}", e);
                     error!("{}", msg);
                     msg
-                })?,
+                })? as u64,
             });
         }
 
@@ -273,16 +273,16 @@ impl AddressBalanceStorage {
 
             Ok(Some(WatchedAddress {
                 address,
-                block_height: row.get(1).map_err(|e| {
+                block_height: row.get::<usize, i64>(1).map_err(|e| {
                     let msg = format!("Failed to get block_height from row: {}", e);
                     error!("{}", msg);
                     msg
-                })?,
-                balance: row.get(2).map_err(|e| {
+                })? as u64,
+                balance: row.get::<usize, i64>(2).map_err(|e| {
                     let msg = format!("Failed to get balance from row: {}", e);
                     error!("{}", msg);
                     msg
-                })?,
+                })? as u64,
             }))
         } else {
             Ok(None)
@@ -363,7 +363,7 @@ impl AddressBalanceStorage {
             INSERT INTO address_balances (address, block_height, delta, balance)
             VALUES (?, ?, ?, ?)
             ",
-            rusqlite::params![&address, record.block_height, record.delta, record.balance],
+            rusqlite::params![&address, record.block_height as i64, record.delta, record.balance as i64],
         )
         .map_err(|e| {
             let msg = format!(
@@ -400,21 +400,21 @@ impl AddressBalanceStorage {
 
         Ok(BalanceRecord {
             address,
-            block_height: row.get(2).map_err(|e| {
+            block_height: row.get::<usize, i64>(2).map_err(|e| {
                 let msg = format!("Failed to get block_height from row: {}", e);
                 error!("{}", msg);
                 msg
-            })?,
+            })? as u64,
             delta: row.get(3).map_err(|e| {
                 let msg = format!("Failed to get delta from row: {}", e);
                 error!("{}", msg);
                 msg
             })?,
-            balance: row.get(4).map_err(|e| {
+            balance: row.get::<usize, i64>(4).map_err(|e| {
                 let msg = format!("Failed to get balance from row: {}", e);
                 error!("{}", msg);
                 msg
-            })?,
+            })? as u64,
         })
     }
 
@@ -451,12 +451,12 @@ impl AddressBalanceStorage {
             error!("{}", msg);
             msg
         })? {
-            let block_height: u64 = row.get(0).map_err(|e| {
+            let block_height: i64 = row.get(0).map_err(|e| {
                 let msg = format!("Failed to get block_height from row: {}", e);
                 error!("{}", msg);
                 msg
             })?;
-            Ok(Some(block_height))
+            Ok(Some(block_height as u64))
         } else {
             Ok(None)
         }
@@ -518,7 +518,7 @@ impl AddressBalanceStorage {
             })?;
 
         let mut rows = stmt
-            .query(rusqlite::params![address, block_height])
+            .query(rusqlite::params![address, block_height as i64])
             .map_err(|e| {
                 let msg = format!("Failed to query balance at block: {}", e);
                 error!("{}", msg);
