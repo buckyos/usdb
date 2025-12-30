@@ -7,14 +7,15 @@ use std::sync::Mutex;
 use std::time::Duration;
 use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
+use crate::btc::BTCClientRef;
 
 // Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
 const CACHE_ITEM_SIZE: usize = 76;
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
-    pub value: u64,
     pub script_hash: USDBScriptHash,
+    pub value: u64,
 }
 
 pub struct UTXOCache {

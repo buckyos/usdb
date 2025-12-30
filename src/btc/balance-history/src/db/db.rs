@@ -2,13 +2,13 @@ use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{OutPoint, Txid};
-use usdb_util::USDBScriptHash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use usdb_util::USDBScriptHash;
 
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
@@ -588,6 +588,38 @@ impl BalanceHistoryDB {
         }
     }
 
+    pub fn get_utxos_bulk(&self, outpoints: &[OutPoint]) -> Result<Vec<Option<UTXOEntry>>, String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let keys: Vec<Vec<u8>> = outpoints.iter().map(Self::make_utxo_key).collect();
+
+        // Convert to iterator of (cf, key)
+        let cf_keys = keys.iter().map(|k| (cf, k.as_slice()));
+
+        // Execute batch read
+        let results = self.db.multi_get_cf(cf_keys);
+
+        // Parse results
+        let mut entries = Vec::with_capacity(outpoints.len());
+        for res in results {
+            match res {
+                Ok(Some(value)) => entries.push(Some(Self::parse_utxo_from_value(&value))),
+                Ok(None) => entries.push(None),
+                Err(e) => {
+                    let msg = format!("Failed to get UTXO in bulk: {}", e);
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+        
+        Ok(entries)
+    }
+
     // Remove and return the UTXO entry for the given outpoint
     pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -762,25 +794,26 @@ impl BalanceHistoryDB {
         &self,
         target_block_height: u32,
         cb: SnapshotCallbackRef,
-    ) -> Result<(), String>
-    {
+    ) -> Result<(), String> {
         use rayon::prelude::*;
 
         const SHARD_COUNT: u8 = 255;
         const BATCH_SIZE: usize = 1024 * 64;
 
-        (0u8..=SHARD_COUNT).into_par_iter().try_for_each(|shard_index| {
-            self.generate_snapshot_sharded(
-                target_block_height,
-                shard_index,
-                BATCH_SIZE,
-                cb.clone(),
-            )
-        })?;
+        (0u8..=SHARD_COUNT)
+            .into_par_iter()
+            .try_for_each(|shard_index| {
+                self.generate_snapshot_sharded(
+                    target_block_height,
+                    shard_index,
+                    BATCH_SIZE,
+                    cb.clone(),
+                )
+            })?;
 
         Ok(())
     }
-    
+
     pub fn generate_snapshot<F>(
         &self,
         target_block_height: u32,
