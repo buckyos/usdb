@@ -28,36 +28,14 @@ impl SnapshotIndexer {
         self.output.start_load(0);
 
         let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-        let snapshot_dir = root_dir.join("snapshots");
-        std::fs::create_dir_all(&snapshot_dir).map_err(|e| {
-            let msg = format!(
-                "Failed to create snapshot directory {:?}: {}",
-                snapshot_dir, e
-            );
-            error!("{}", msg);
-            msg
-        })?;
-
-        let db_snapshot_path = snapshot_dir.join(format!("snapshot_{}.db", target_block_height));
-        if db_snapshot_path.exists() {
-            let msg = format!("Snapshot database {:?} already exists", db_snapshot_path);
-            warn!("{}", msg);
-            self.output.println(&msg);
-
-            // For safety, do not overwrite existing snapshot, just return error
-            std::fs::remove_file(&db_snapshot_path).map_err(|e| {
-                let msg = format!(
-                    "Failed to remove existing snapshot database {:?}: {}",
-                    db_snapshot_path, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            //return Err(msg);
-        }
-
-        info!("Creating snapshot database at {:?}", db_snapshot_path);
-        let snapshot_db = SnapshotDB::open(&db_snapshot_path).map_err(|e| {
+        
+        info!("Creating snapshot database at {} height {}", root_dir.display(), target_block_height);
+        self.output.println(&format!(
+            "Creating snapshot database at {} height {}",
+            root_dir.display(),
+            target_block_height
+        ));
+        let snapshot_db = SnapshotDB::open_by_height(&root_dir, target_block_height, true).map_err(|e| {
             let msg = format!("Failed to create snapshot database: {}", e);
             error!("{}", msg);
             msg

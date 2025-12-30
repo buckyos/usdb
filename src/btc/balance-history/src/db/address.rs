@@ -35,7 +35,7 @@ impl AddressDB {
             })?;
         }
 
-        let file = db_dir.join("address_db");
+        let file = db_dir.join("address");
         info!("Opening RocksDB at {}", file.display());
 
         // Default options

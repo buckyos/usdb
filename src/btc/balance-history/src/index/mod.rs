@@ -8,3 +8,4 @@ mod verify;
 pub use indexer::*;
 pub use address::*;
 pub use snapshot::*;
+pub use verify::*;

@@ -1,3 +1,5 @@
+use crate::db;
+
 use super::db::BalanceHistoryEntry;
 use bitcoincore_rpc::bitcoin::{ScriptHash, hashes::Hash};
 use rusqlite::Connection;
@@ -105,6 +107,55 @@ impl SnapshotDB {
         })
     }
 
+    pub fn open_by_height(
+        root_dir: &Path,
+        block_height: u32,
+        create_new: bool,
+    ) -> Result<Self, String> {
+        let snapshot_dir = root_dir.join("snapshots");
+        std::fs::create_dir_all(&snapshot_dir).map_err(|e| {
+            let msg = format!(
+                "Failed to create snapshot directory {:?}: {}",
+                snapshot_dir, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let db_path = snapshot_dir.join(format!("snapshot_{}.db", block_height));
+        if create_new {
+            if db_path.exists() {
+                let msg = format!("Snapshot database {:?} already exists", db_path);
+                warn!("{}", msg);
+
+                // For safety, rename existing snapshot to old file
+                let old_db_path = snapshot_dir.join(format!(
+                    "snapshot_{}_{}.db",
+                    block_height,
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                ));
+                std::fs::rename(&db_path, &old_db_path).map_err(|e| {
+                    let msg = format!(
+                        "Failed to rename existing snapshot database {:?} to {:?}: {}",
+                        db_path, old_db_path, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            }
+        } else {
+            if !db_path.exists() {
+                let msg = format!("Snapshot database {:?} does not exist", db_path);
+                warn!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        Self::open(&db_path)
+    }
     /// Get the current height of the snapshot (returns None if no snapshot exists)
     pub fn current_height(&self) -> Result<Option<u64>, String> {
         let mut stmt = self

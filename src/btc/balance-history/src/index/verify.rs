@@ -26,7 +26,7 @@ impl SnapshotVerifier {
         }
     }
 
-    async fn verify(&self, index: u64) -> Result<(), String> {
+    pub async fn verify(&self, index: u64) -> Result<(), String> {
         info!("Starting snapshot verification");
 
         let entries = self.snapshot_db.get_entries(index, 1)?;
@@ -88,7 +88,7 @@ impl SnapshotVerifier {
             Some(entry) => {
                 info!(
                     "Loaded address for script hash {} -> {}",
-                    script_hash, entry
+                    script_hash, entry.script_hash()
                 );
                 Ok(entry)
             }
