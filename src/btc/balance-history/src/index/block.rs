@@ -1,10 +1,11 @@
 use super::utxo::{CacheTxOut, UTXOCacheRef};
 use crate::btc::BTCClientRef;
-use crate::db::BalanceHistoryDBRef;
+use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use usdb_util::ToUSDBScriptHash;
+use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use super::balance::AddressBalanceCacheRef;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
@@ -35,14 +36,16 @@ struct VInPosition {
 
 pub struct BatchBlockData {
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
-    vout_uxtos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
+    vout_utxos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
+    balances: Arc<Mutex<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
 }
 
 impl BatchBlockData {
     pub fn new() -> Self {
         Self {
             blocks: Arc::new(Mutex::new(Vec::new())),
-            vout_uxtos: Arc::new(Mutex::new(HashMap::new())),
+            vout_utxos: Arc::new(Mutex::new(HashMap::new())),
+            balances: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -53,6 +56,7 @@ pub struct BatchBlockPreloader {
     btc_client: BTCClientRef,
     db: BalanceHistoryDBRef,
     utxo_cache: UTXOCacheRef,
+    balance_cache: AddressBalanceCacheRef,
 }
 
 impl BatchBlockPreloader {
@@ -60,11 +64,13 @@ impl BatchBlockPreloader {
         btc_client: BTCClientRef,
         db: BalanceHistoryDBRef,
         utxo_cache: UTXOCacheRef,
+        balance_cache: AddressBalanceCacheRef,
     ) -> Self {
         Self {
             btc_client,
             db,
             utxo_cache,
+            balance_cache,
         }
     }
 
@@ -98,6 +104,12 @@ impl BatchBlockPreloader {
 
         for res in result {
             res?;
+        }
+
+        // Load balances at the starting block height - 1
+        if block_height_range.start > 0 {
+            let target_block_height = block_height_range.start - 1;
+            self.preload_balances(target_block_height, &data)?;
         }
 
         Ok(data)
@@ -154,7 +166,7 @@ impl BatchBlockPreloader {
         }
 
         // Append all vout UTXOs to UTXO cache
-        let mut vout_utxo_map = data.vout_uxtos.lock().unwrap();
+        let mut vout_utxo_map = data.vout_utxos.lock().unwrap();
         for tx in &preload_block.txdata {
             for (outpoint, cache_tx_out) in &tx.vout {
                 vout_utxo_map.insert(
@@ -182,7 +194,7 @@ impl BatchBlockPreloader {
         for (tx_index, tx) in &mut preload_block.txdata.iter_mut().enumerate() {
             for (vin_index, (outpoint, value)) in tx.vin.iter_mut().enumerate() {
                 // First check if the UTXO is already in vout cache (i.e., created in the same batch)
-                let mut vout_utxo_map = data.vout_uxtos.lock().unwrap();
+                let mut vout_utxo_map = data.vout_utxos.lock().unwrap();
                 if let Some(vout_utxo_info) = vout_utxo_map.get_mut(outpoint) {
                     assert!(
                         !vout_utxo_info.spend,
@@ -259,5 +271,59 @@ impl BatchBlockPreloader {
         }
 
         Ok(result)
+    }
+
+    fn preload_balances(&self, target_block_height: u64, data: &BatchBlockData) -> Result<(), String> {
+        use rayon::prelude::*;
+
+        // Collect all addresses involved
+        let mut addresses = HashSet::new();
+        {
+            let blocks = data.blocks.lock().unwrap();
+            for block in blocks.iter() {
+                for tx in block.txdata.iter() {
+                    // Collect vin addresses
+                    for (_outpoint, vout) in tx.vin.iter() {
+                        let vout = vout.as_ref().unwrap();
+                        // addresses.get_or_insert_with(&vout.script_hash, vout.script_hash.to_owned);
+                        addresses.insert(vout.script_hash.clone());
+                    }
+                    for (_outpoint, cache_tx_out) in tx.vout.iter() {
+                        addresses.insert(cache_tx_out.script_hash.clone());
+                    }
+                }
+            }
+        }
+
+        let mut sorted_addresses: Vec<_> = addresses.into_iter().collect();
+        sorted_addresses.par_sort_unstable();
+
+        // Batch load balances
+        let result: Vec<Result<BalanceHistoryEntry, String>> = sorted_addresses.into_par_iter().map(|script_hash| {
+            // First load from balance cache
+            if let Ok(cached) = self.balance_cache.get(script_hash, target_block_height as u32) {
+                let entry = BalanceHistoryEntry {
+                    script_hash,
+                    block_height: cached.block_height,
+                    delta: cached.delta,
+                    balance: cached.balance,
+                };
+
+                return Ok(entry);
+            }
+
+            // Then load from db
+            let balance = self.db.get_balance_at_block_height(script_hash, target_block_height as u32)?;
+
+            Ok(balance)
+        }).collect();
+
+        let mut balances_map = data.balances.lock().unwrap();
+        for res in result {
+            let balance = res?;
+            balances_map.insert(balance.script_hash.clone(), balance);
+        }
+
+        Ok(())
     }
 }

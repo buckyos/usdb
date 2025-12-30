@@ -1,4 +1,4 @@
-use bitcoincore_rpc::bitcoin::{ScriptBuf, ScriptHash};
+use bitcoincore_rpc::bitcoin::ScriptBuf;
 use rocksdb::{ColumnFamilyDescriptor, DB, Options, WriteBatch};
 use rust_rocksdb as rocksdb;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,6 @@ impl AddressDB {
         address_cf_options.set_max_bytes_for_level_base(4 * 1024 * 1024 * 1024); // 4GB
         address_cf_options.set_target_file_size_base(64 * 1024 * 1024);
         address_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
-
 
         // Define column families
         let cf_descriptors = vec![
@@ -195,17 +194,17 @@ impl AddressDB {
             msg
         })?;
 
-        match self.db.get_cf(cf, META_LAST_INDEXED_BLOCK_HEIGHT.as_bytes()) {
+        match self
+            .db
+            .get_cf(cf, META_LAST_INDEXED_BLOCK_HEIGHT.as_bytes())
+        {
             Ok(Some(value)) => {
                 if value.len() != 4 {
-                    let msg = format!(
-                        "Invalid BTC block height value length: {}",
-                        value.len()
-                    );
+                    let msg = format!("Invalid BTC block height value length: {}", value.len());
                     error!("{}", msg);
                     return Err(msg);
                 }
-                
+
                 let height = u32::from_le_bytes((value.as_ref() as &[u8]).try_into().unwrap());
                 Ok(Some(height))
             }

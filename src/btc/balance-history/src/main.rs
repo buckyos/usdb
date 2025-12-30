@@ -17,7 +17,6 @@ use crate::db::BalanceHistoryDB;
 use crate::index::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
 use crate::service::BalanceHistoryRpcServer;
-use bitcoincore_rpc::bitcoin::address;
 use clap::{Parser, Subcommand};
 use usdb_util::LogConfig;
 use std::sync::Arc;

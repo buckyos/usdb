@@ -3,6 +3,8 @@
         "Electrs",
         "satpoint",
         "usdb",
-        "vout"
+        "vout",
+        "utxo",
+        "utxos"
     ]
 }
