@@ -1,7 +1,8 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash, Txid};
+use bitcoincore_rpc::bitcoin::{OutPoint, Txid};
+use usdb_util::USDBScriptHash;
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
@@ -18,19 +19,19 @@ pub const UTXO_CF: &str = "utxo";
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
 
-pub const BALANCE_HISTORY_KEY_LEN: usize = ScriptHash::LEN + 4; // ScriptHash (20 bytes) + block_height (4 bytes)
+pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 // pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
 
 pub struct BalanceHistoryEntry {
-    pub script_hash: ScriptHash,
+    pub script_hash: USDBScriptHash,
     pub block_height: u32,
     pub delta: i64,
     pub balance: u64,
 }
 
 pub struct UTXOEntry {
-    pub script_hash: ScriptHash,
+    pub script_hash: USDBScriptHash,
     pub amount: u64,
 }
 
@@ -131,7 +132,7 @@ impl BalanceHistoryDB {
         })
     }
 
-    fn make_balance_history_key(script_hash: ScriptHash, block_height: u32) -> Vec<u8> {
+    fn make_balance_history_key(script_hash: USDBScriptHash, block_height: u32) -> Vec<u8> {
         // It is important that the block height is stored in big-endian format
         let height_bytes = block_height.to_be_bytes();
 
@@ -147,7 +148,7 @@ impl BalanceHistoryDB {
             "Invalid balance key length {}",
             key.len()
         );
-        let block_height_bytes = &key[ScriptHash::LEN..ScriptHash::LEN + 4];
+        let block_height_bytes = &key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4];
         let block_height = u32::from_be_bytes(block_height_bytes.try_into().unwrap());
 
         block_height
@@ -174,14 +175,14 @@ impl BalanceHistoryDB {
 
     fn parse_utxo_from_value(value: &[u8]) -> UTXOEntry {
         assert!(
-            value.len() == ScriptHash::LEN + 8,
+            value.len() == USDBScriptHash::LEN + 8,
             "Invalid UTXO value length"
         );
 
-        let script_hash_bytes = &value[0..ScriptHash::LEN];
-        let amount_bytes = &value[ScriptHash::LEN..ScriptHash::LEN + 8];
+        let script_hash_bytes = &value[0..USDBScriptHash::LEN];
+        let amount_bytes = &value[USDBScriptHash::LEN..USDBScriptHash::LEN + 8];
 
-        let script_hash = ScriptHash::from_slice(script_hash_bytes).unwrap();
+        let script_hash = USDBScriptHash::from_slice(script_hash_bytes).unwrap();
         let amount = u64::from_be_bytes(amount_bytes.try_into().unwrap());
 
         UTXOEntry {
@@ -253,7 +254,7 @@ impl BalanceHistoryDB {
     // Get the latest balance entry for a given script_hash
     pub fn get_latest_balance(
         &self,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
     ) -> Result<BalanceHistoryEntry, String> {
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
@@ -281,8 +282,8 @@ impl BalanceHistoryDB {
                 found_key.len()
             );
 
-            // Check if the ScriptHash matches
-            if &found_key[0..ScriptHash::LEN] == script_hash.as_ref() as &[u8] {
+            // Check if the USDBScriptHash matches
+            if &found_key[0..USDBScriptHash::LEN] == script_hash.as_ref() as &[u8] {
                 let block_height = Self::parse_block_height_from_key(&found_key);
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
                 let entry = BalanceHistoryEntry {
@@ -310,7 +311,7 @@ impl BalanceHistoryDB {
     /// Get the balance entry for a given script_hash at or before the target block height
     pub fn get_balance_at_block_height(
         &self,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
         target_height: u32,
     ) -> Result<BalanceHistoryEntry, String> {
         // Make the search key
@@ -343,9 +344,9 @@ impl BalanceHistoryDB {
                 found_key.len()
             );
 
-            // Boundary check 1: Ensure the key length is correct and belongs to the same ScriptHash
+            // Boundary check 1: Ensure the key length is correct and belongs to the same USDBScriptHash
             // impl AsRef<[u8]> for Hash
-            if &found_key[0..ScriptHash::LEN] == script_hash.as_ref() as &[u8] {
+            if &found_key[0..USDBScriptHash::LEN] == script_hash.as_ref() as &[u8] {
                 // Found a record for the same address.
                 // Since it is Reverse and the starting point is target_height,
                 // the found_height here must be <= target_height.
@@ -362,7 +363,7 @@ impl BalanceHistoryDB {
             }
         }
 
-        // If the iterator is empty, or has moved to the previous ScriptHash,
+        // If the iterator is empty, or has moved to the previous USDBScriptHash,
         // it means there are no records for this address before the target_height.
         // The default balance is 0. and block_height is 0.
         let entry = BalanceHistoryEntry {
@@ -378,7 +379,7 @@ impl BalanceHistoryDB {
     /// Get balance records for a given script_hash within [range_begin, range_end)
     pub fn get_balance_in_range(
         &self,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
         range_begin: u32,
         range_end: u32,
     ) -> Result<Vec<BalanceHistoryEntry>, String> {
@@ -410,9 +411,9 @@ impl BalanceHistoryDB {
                 key.len()
             );
 
-            // Boundary check 1: Check if the ScriptHash matches
-            // If a different ScriptHash is encountered, it means the data for the current address has been fully traversed
-            if &key[0..ScriptHash::LEN] != script_hash.as_ref() as &[u8] {
+            // Boundary check 1: Check if the USDBScriptHash matches
+            // If a different USDBScriptHash is encountered, it means the data for the current address has been fully traversed
+            if &key[0..USDBScriptHash::LEN] != script_hash.as_ref() as &[u8] {
                 break;
             }
 
@@ -495,7 +496,7 @@ impl BalanceHistoryDB {
     pub fn put_utxo(
         &self,
         outpoint: &OutPoint,
-        script_hash: &ScriptHash,
+        script_hash: &USDBScriptHash,
         amount: u64,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -507,8 +508,8 @@ impl BalanceHistoryDB {
         let mut ops = WriteOptions::default();
         ops.set_sync(false);
 
-        // Value format: ScriptHash (20 bytes) + amount (u64)
-        let mut value = Vec::with_capacity(ScriptHash::LEN + 8);
+        // Value format: USDBScriptHash (32 bytes) + amount (u64)
+        let mut value = Vec::with_capacity(USDBScriptHash::LEN + 8);
         value.extend_from_slice(script_hash.as_ref() as &[u8]);
         value.extend_from_slice(&amount.to_be_bytes());
 
@@ -525,7 +526,7 @@ impl BalanceHistoryDB {
 
     pub fn update_utxos_sync(
         &self,
-        new_utxos: &HashMap<OutPoint, (ScriptHash, u64)>,
+        new_utxos: &HashMap<OutPoint, (USDBScriptHash, u64)>,
         remove_utxos: &HashSet<OutPoint>,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -537,8 +538,8 @@ impl BalanceHistoryDB {
         let mut batch = WriteBatch::default();
 
         for (outpoint, (script_hash, amount)) in new_utxos {
-            // Value format: ScriptHash (20 bytes) + amount (u64)
-            let mut value = Vec::with_capacity(ScriptHash::LEN + 8);
+            // Value format: USDBScriptHash (32 bytes) + amount (u64)
+            let mut value = Vec::with_capacity(USDBScriptHash::LEN + 8);
             value.extend_from_slice(script_hash.as_ref() as &[u8]);
             value.extend_from_slice(&amount.to_be_bytes());
 
@@ -690,14 +691,14 @@ impl BalanceHistoryDB {
         })?;
 
         let mut seek_key = vec![shard_index];
-        seek_key.resize(ScriptHash::LEN, 0xFF); // max ScriptHash
+        seek_key.resize(USDBScriptHash::LEN, 0xFF); // max USDBScriptHash
         seek_key.extend_from_slice(&[0xFF; 4]); // max block height
 
         let mut iter = self
             .db
             .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
-        let mut current_script_hash: Option<ScriptHash> = None;
+        let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(batch_size);
         while let Some(Ok((key, value))) = iter.next() {
@@ -710,9 +711,9 @@ impl BalanceHistoryDB {
                 break;
             }
 
-            let script_hash = ScriptHash::from_slice(&key[0..ScriptHash::LEN]).unwrap();
+            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
-                key[ScriptHash::LEN..ScriptHash::LEN + 4]
+                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -797,7 +798,7 @@ impl BalanceHistoryDB {
         const BATCH_SIZE: usize = 1024 * 64;
         let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
 
-        let mut current_script_hash: Option<ScriptHash> = None;
+        let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(BATCH_SIZE);
         while let Some(Ok((key, value))) = iter.next() {
@@ -805,9 +806,9 @@ impl BalanceHistoryDB {
                 continue;
             }
 
-            let script_hash = ScriptHash::from_slice(&key[0..ScriptHash::LEN]).unwrap();
+            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
-                key[ScriptHash::LEN..ScriptHash::LEN + 4]
+                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -920,11 +921,12 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use usdb_util::ToUSDBScriptHash;
 
     #[test]
     fn test_make_and_parse_key() {
         let script = ScriptBuf::from(vec![0u8; 32]);
-        let script_hash = script.script_hash();
+        let script_hash = script.to_usdb_script_hash();
         let block_height = 123456;
 
         let key = BalanceHistoryDB::make_balance_history_key(script_hash, block_height);
@@ -959,7 +961,7 @@ mod tests {
         let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
 
         let script = ScriptBuf::from(vec![1u8; 32]);
-        let script_hash = script.script_hash();
+        let script_hash = script.to_usdb_script_hash();
 
         let entries = vec![
             BalanceHistoryEntry {
@@ -994,7 +996,7 @@ mod tests {
             },
         ];
 
-        db.put_address_history(&entries).unwrap();
+        db.put_address_history_sync(&vec![entries], 401).unwrap();
 
         // Get balance at height 50 (before any entries)
         let entry = db.get_balance_at_block_height(script_hash, 50).unwrap();
@@ -1067,7 +1069,7 @@ mod tests {
             vout: 1,
         };
         let script = ScriptBuf::from(vec![2u8; 32]);
-        let script_hash = script.script_hash();
+        let script_hash = script.to_usdb_script_hash();
         let amount = 1000u64;
 
         // Put UTXO

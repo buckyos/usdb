@@ -1,10 +1,9 @@
-use crate::db;
-
 use super::db::BalanceHistoryEntry;
-use bitcoincore_rpc::bitcoin::{ScriptHash, hashes::Hash};
+use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use usdb_util::USDBScriptHash;
 
 // The version of the snapshot database schema
 pub const SNAPSHOT_DB_VERSION: u32 = 1;
@@ -293,7 +292,7 @@ impl SnapshotDB {
                         msg
                     })?;
 
-                    ScriptHash::from_slice(&blob).map_err(|e| {
+                    USDBScriptHash::from_slice(&blob).map_err(|e| {
                         let msg = format!("Failed to convert script_hash blob: {}", e);
                         error!("{}", msg);
                         msg

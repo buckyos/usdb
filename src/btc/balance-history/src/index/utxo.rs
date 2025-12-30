@@ -1,25 +1,26 @@
 use crate::db::BalanceHistoryDBRef;
 use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
+use bitcoincore_rpc::bitcoin::{OutPoint};
 use moka::sync::Cache;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 use crate::config::BalanceHistoryConfig;
+use usdb_util::USDBScriptHash;
 
-// Cache item size estimate: OutPoint (36 bytes) + CacheTxOut (28 bytes) ~ 64 bytes
-const CACHE_ITEM_SIZE: usize = 64;
+// Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
+const CACHE_ITEM_SIZE: usize = 76;
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
     pub value: u64,
-    pub script_hash: ScriptHash,
+    pub script_hash: USDBScriptHash,
 }
 
 pub struct UTXOCache {
     cache: Cache<OutPoint, CacheTxOut>, // (block_height, vout_index)
     db: BalanceHistoryDBRef,
-    write_cache: Mutex<HashMap<OutPoint, (ScriptHash, u64)>>, // To avoid duplicate writes
+    write_cache: Mutex<HashMap<OutPoint, (USDBScriptHash, u64)>>, // To avoid duplicate writes
     spend_cache: Mutex<HashSet<OutPoint>>, // Flush when writing to DB on batch process
 }
 
@@ -44,7 +45,7 @@ impl UTXOCache {
     pub fn put(
         &self,
         outpoint: OutPoint,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
         value: u64,
     ) -> Result<(), String> {
         self.cache

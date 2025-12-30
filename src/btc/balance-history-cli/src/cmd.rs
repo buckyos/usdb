@@ -1,6 +1,7 @@
 use bitcoincore_rpc::bitcoin::Network;
 use bitcoincore_rpc::bitcoin::address::NetworkUnchecked;
-use bitcoincore_rpc::bitcoin::{Address, ScriptHash};
+use bitcoincore_rpc::bitcoin::{Address};
+use usdb_util::{USDBScriptHash, ToUSDBScriptHash};
 use clap::{Parser, Subcommand};
 use std::ops::Range;
 use std::str::FromStr;
@@ -58,7 +59,7 @@ pub enum Commands {
 
 pub enum UserId {
     Address(Address<NetworkUnchecked>),
-    ScriptHash(ScriptHash),
+    ScriptHash(USDBScriptHash),
 }
 
 impl FromStr for UserId {
@@ -66,10 +67,10 @@ impl FromStr for UserId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // First check if it's a valid Address by trying to parse it
-        // If that fails, try to parse it as a ScriptHash
+        // If that fails, try to parse it as a USDBScriptHash
         if let Ok(addr) = Address::<NetworkUnchecked>::from_str(s) {
             return Ok(UserId::Address(addr));
-        } else if let Ok(script_hash) = s.parse::<ScriptHash>() {
+        } else if let Ok(script_hash) = s.parse::<USDBScriptHash>() {
             Ok(UserId::ScriptHash(script_hash))
         } else {
             let msg = format!("Invalid user ID: {}", s);
@@ -81,7 +82,7 @@ impl FromStr for UserId {
 }
 
 impl UserId {
-    pub fn to_script_hash(&self, network: Network) -> Result<ScriptHash, String> {
+    pub fn to_script_hash(&self, network: Network) -> Result<USDBScriptHash, String> {
         match self {
             UserId::Address(addr) => {
                 // First convert to a NetworkChecked address
@@ -91,7 +92,7 @@ impl UserId {
                     msg
                 })?;
 
-                Ok(checked_addr.script_pubkey().script_hash())
+                Ok(checked_addr.script_pubkey().to_usdb_script_hash())
             }
             UserId::ScriptHash(sh) => Ok(*sh),
         }

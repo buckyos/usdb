@@ -12,3 +12,4 @@ bitcoincore-rpc = "0.19"
 serde = "1.0"
 serde_json = "1.0"
 electrum-client = "0.24"
+tokio = { version = "1.48", features = ["full"] }

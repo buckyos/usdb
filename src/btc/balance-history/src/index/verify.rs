@@ -1,8 +1,8 @@
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef, SnapshotDB, SnapshotDBRef};
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
-use bitcoincore_rpc::bitcoin::{Script, ScriptBuf, ScriptHash};
-use usdb_util::{ElectrsClient, ElectrsClientRef};
+use bitcoincore_rpc::bitcoin::{Script, ScriptBuf};
+use usdb_util::{ElectrsClient, ElectrsClientRef, ToUSDBScriptHash, USDBScriptHash};
 
 pub struct SnapshotVerifier {
     config: BalanceHistoryConfigRef,
@@ -54,11 +54,16 @@ impl SnapshotVerifier {
                 error!("{}", msg);
                 msg
             })?;
-        let address = Address::from_script(&script, self.config.btc.network()).map_err(|e| {
-            let msg = format!("Failed to create address from script: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+
+        let address = match Address::from_script(&script, self.config.btc.network()) {
+            Ok(addr) => {
+                format!("addr:{}", addr)
+            }
+            Err(_) => {
+                // Non-standard address, use script representation
+                format!("script_hash:{}", script)
+            }
+        };
         info!(
             "Loaded address {} -> {}",
             snapshot_entry.script_hash, address
@@ -82,13 +87,13 @@ impl SnapshotVerifier {
         Ok(())
     }
 
-    fn load_address_by_script_hash(&self, script_hash: &ScriptHash) -> Result<ScriptBuf, String> {
+    fn load_address_by_script_hash(&self, script_hash: &USDBScriptHash) -> Result<ScriptBuf, String> {
         let addr_entry = self.address_db.get_address(script_hash)?;
         match addr_entry {
             Some(entry) => {
-                info!(
+                debug!(
                     "Loaded address for script hash {} -> {}",
-                    script_hash, entry.script_hash()
+                    script_hash, entry.to_usdb_script_hash()
                 );
                 Ok(entry)
             }

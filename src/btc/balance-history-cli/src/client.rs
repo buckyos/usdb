@@ -1,9 +1,9 @@
 use balance_history::SyncStatus;
-use bitcoincore_rpc::bitcoin::ScriptHash;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::ops::Range;
+use usdb_util::USDBScriptHash;
 
 pub struct RpcClient {
     url: String,
@@ -45,7 +45,7 @@ impl RpcClient {
 
     pub async fn get_address_balance(
         &self,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<balance_history::AddressBalance>, String> {
@@ -65,7 +65,7 @@ impl RpcClient {
 
     pub async fn get_addresses_balances(
         &self,
-        script_hashes: Vec<ScriptHash>,
+        script_hashes: Vec<USDBScriptHash>,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<Vec<balance_history::AddressBalance>>, String> {

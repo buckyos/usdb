@@ -4,12 +4,14 @@ use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
 use super::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
-use bitcoincore_rpc::bitcoin::{OutPoint, ScriptHash};
+use bitcoincore_rpc::bitcoin::{OutPoint};
+use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
-type BlockHistoryCache = HashMap<ScriptHash, BalanceHistoryEntry>;
+// Use to keep the balance history result for a block
+type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
 
 #[derive(Clone)]
 pub struct BalanceHistoryIndexer {
@@ -369,11 +371,11 @@ impl BalanceHistoryIndexer {
         &self,
         block_height: u64,
         balance_sync_cache: &AddressBalanceSyncCache,
-    ) -> Result<BlockHistoryCache, String> {
+    ) -> Result<BlockHistoryResult, String> {
         // Fetch the block
         let block = self.btc_client.get_block_by_height(block_height)?;
 
-        let mut history = BlockHistoryCache::new();
+        let mut history = BlockHistoryResult::new();
         let mut vin_count = 0;
         let mut utxo_count = 0;
         let begin_time = std::time::Instant::now();
@@ -463,7 +465,7 @@ impl BalanceHistoryIndexer {
                     continue;
                 }
 
-                let script_hash = vout.script_pubkey.script_hash();
+                let script_hash = vout.script_pubkey.to_usdb_script_hash();
                 utxo_count += 1;
 
                 match history.entry(script_hash) {
@@ -531,7 +533,7 @@ impl BalanceHistoryIndexer {
         // Load from RPC as needed
         let (script, amount) = self.btc_client.get_utxo(outpoint)?;
         Ok(CacheTxOut {
-            script_hash: script.script_hash(),
+            script_hash: script.to_usdb_script_hash(),
             value: amount.to_sat(),
         })
     }

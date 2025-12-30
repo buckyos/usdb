@@ -1,15 +1,14 @@
-
-use bitcoincore_rpc::bitcoin::ScriptHash;
 use serde::{Deserialize, Serialize};
 use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use std::ops::Range;
 use crate::status::SyncStatus;
+use usdb_util::USDBScriptHash;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBalanceParams {
-    pub script_hash: ScriptHash,
+    pub script_hash: USDBScriptHash,
 
     // Optional param 1: Specific block height
     pub block_height: Option<u32>,
@@ -20,7 +19,7 @@ pub struct GetBalanceParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBalancesParams {
-    pub script_hashes: Vec<ScriptHash>,
+    pub script_hashes: Vec<USDBScriptHash>,
 
     // Optional param 1: Specific block height
     pub block_height: Option<u32>,

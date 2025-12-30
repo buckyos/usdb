@@ -1,11 +1,12 @@
+use crate::config::BalanceHistoryConfig;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use bitcoincore_rpc::bitcoin::ScriptHash;
 use moka::sync::Cache;
 use std::{collections::HashMap, time::Duration};
-use crate::config::BalanceHistoryConfig;
+use usdb_util::USDBScriptHash;
 
-// Cache item size estimate: ScriptHash (20 bytes) + AddressBalanceItem (~20 bytes) ~ 40 bytes
-const CACHE_ITEM_SIZE: usize = 40;
+// Cache item size estimate: USDBScriptHash (32 bytes) + AddressBalanceItem (~20 bytes) ~ 52 bytes
+const CACHE_ITEM_SIZE: usize = 52;
+
 #[derive(Debug, Clone)]
 pub struct AddressBalanceItem {
     pub block_height: u32,
@@ -14,7 +15,7 @@ pub struct AddressBalanceItem {
 }
 
 pub struct AddressBalanceCache {
-    cache: Cache<ScriptHash, AddressBalanceItem>, // script_hash -> balance
+    cache: Cache<USDBScriptHash, AddressBalanceItem>, // script_hash -> balance
     db: BalanceHistoryDBRef,
 }
 
@@ -30,7 +31,7 @@ impl AddressBalanceCache {
         Self { cache, db }
     }
 
-    pub fn put(&self, script_hash: ScriptHash, entry: AddressBalanceItem) {
+    pub fn put(&self, script_hash: USDBScriptHash, entry: AddressBalanceItem) {
         let item = AddressBalanceItem {
             block_height: entry.block_height,
             delta: entry.delta,
@@ -39,7 +40,11 @@ impl AddressBalanceCache {
         self.cache.insert(script_hash, item);
     }
 
-    pub fn get(&self, script_hash: ScriptHash, block_height: u32) -> Result<AddressBalanceItem, String> {
+    pub fn get(
+        &self,
+        script_hash: USDBScriptHash,
+        block_height: u32,
+    ) -> Result<AddressBalanceItem, String> {
         if let Some(cached) = self.cache.get(&script_hash) {
             assert!(
                 cached.block_height < block_height,
@@ -53,7 +58,9 @@ impl AddressBalanceCache {
         }
 
         // Check persistent storage
-        let entry = self.db.get_balance_at_block_height(script_hash, block_height)?;
+        let entry = self
+            .db
+            .get_balance_at_block_height(script_hash, block_height)?;
         let item = AddressBalanceItem {
             block_height: entry.block_height,
             delta: entry.delta,
@@ -72,7 +79,7 @@ pub type AddressBalanceCacheRef = std::sync::Arc<AddressBalanceCache>;
 
 pub struct AddressBalanceSyncCache {
     address_balance_cache: AddressBalanceCacheRef,
-    address_sync_cache: HashMap<ScriptHash, AddressBalanceItem>,
+    address_sync_cache: HashMap<USDBScriptHash, AddressBalanceItem>,
 }
 
 impl AddressBalanceSyncCache {
@@ -107,7 +114,7 @@ impl AddressBalanceSyncCache {
 
     pub fn get(
         &self,
-        script_hash: ScriptHash,
+        script_hash: USDBScriptHash,
         block_height: u32,
     ) -> Result<AddressBalanceItem, String> {
         if let Some(cached) = self.address_sync_cache.get(&script_hash) {

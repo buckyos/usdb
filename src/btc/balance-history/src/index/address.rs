@@ -5,18 +5,19 @@ use crate::btc::{
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
-use bitcoincore_rpc::bitcoin::{Block, ScriptBuf, ScriptHash};
+use bitcoincore_rpc::bitcoin::{Block, ScriptBuf};
 use bloomfilter::Bloom;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone)]
 pub struct AddressIndexer {
     config: BalanceHistoryConfigRef,
     db: AddressDBRef,
     output: IndexOutputRef,
-    filter: Arc<Mutex<Bloom<ScriptHash>>>,
+    filter: Arc<Mutex<Bloom<USDBScriptHash>>>,
     block_cache: Arc<Mutex<BlockRecordCache>>,
     total_addresses: Arc<AtomicU64>,
     should_stop: Arc<AtomicBool>,
@@ -30,6 +31,7 @@ impl AddressIndexer {
         output: IndexOutputRef,
     ) -> Result<Self, String> {
         output.println("Initializing AddressIndexer...");
+
         let db = AddressDB::new(root_dir).map_err(|e| {
             let msg = format!("Failed to create AddressDB: {}", e);
             error!("{}", msg);
@@ -67,7 +69,8 @@ impl AddressIndexer {
         if !self.db.is_all_file_indexed()? {
             self.build_index_from_local()?;
         } else {
-            self.output.println("All blk files have been indexed, skipping local index...");
+            self.output
+                .println("All blk files have been indexed, skipping local index...");
         }
 
         self.build_index_from_rpc()?;
@@ -85,7 +88,7 @@ impl AddressIndexer {
             block_reader,
             Arc::new(Box::new(self.clone())
                 as Box<
-                    dyn BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>>,
+                    dyn BlockFileIndexerCallback<Option<Vec<(USDBScriptHash, ScriptBuf)>>>,
                 >),
         );
 
@@ -129,7 +132,7 @@ impl AddressIndexer {
             let block = self.btc_client.get_block_by_height(height as u64)?;
 
             // Process block
-            let mut records: Vec<(ScriptHash, ScriptBuf)> = Vec::new();
+            let mut records: Vec<(USDBScriptHash, ScriptBuf)> = Vec::new();
             for tx in &block.txdata {
                 for output in &tx.output {
                     // Skip OP_RETURN outputs
@@ -137,7 +140,7 @@ impl AddressIndexer {
                         continue;
                     }
 
-                    let script_hash = output.script_pubkey.script_hash();
+                    let script_hash = output.script_pubkey.to_usdb_script_hash();
                     {
                         // If the blk had been index before, the bloom filter maybe incomplete, so this filer may let some duplicates pass
                         let mut filter = self.filter.lock().unwrap();
@@ -181,7 +184,7 @@ impl AddressIndexer {
     }
 }
 
-impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressIndexer {
+impl BlockFileIndexerCallback<Option<Vec<(USDBScriptHash, ScriptBuf)>>> for AddressIndexer {
     fn on_index_begin(&self, total: usize) -> Result<(), String> {
         self.output.start_load(total as u64);
 
@@ -199,7 +202,7 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
         &self,
         block_file_index: usize,
         _ignore: &mut bool,
-    ) -> Result<Option<Vec<(ScriptHash, ScriptBuf)>>, String> {
+    ) -> Result<Option<Vec<(USDBScriptHash, ScriptBuf)>>, String> {
         // Check if this blk file has already been indexed, then skip it
         match self.db.is_file_indexed(block_file_index as u32)? {
             true => Ok(None),
@@ -209,7 +212,7 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
 
     fn on_block_indexed(
         &self,
-        records: &mut Option<Vec<(ScriptHash, ScriptBuf)>>,
+        records: &mut Option<Vec<(USDBScriptHash, ScriptBuf)>>,
         block_file_index: usize,
         block_file_offset: usize,
         block_record_index: usize,
@@ -232,7 +235,12 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
         if let Some(records) = records.as_mut() {
             for tx in &block.txdata {
                 for output in &tx.output {
-                    let script_hash = output.script_pubkey.script_hash();
+                    // Skip OP_RETURN outputs
+                    if output.script_pubkey.is_op_return() {
+                        continue;
+                    }
+
+                    let script_hash = output.script_pubkey.to_usdb_script_hash();
 
                     {
                         let mut filter = self.filter.lock().unwrap();
@@ -248,7 +256,6 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
         } else {
             // This block file has been indexed before, so skip
         }
-        
 
         Ok(())
     }
@@ -257,7 +264,7 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
         &self,
         block_file_index: usize,
         complete_count: Arc<std::sync::atomic::AtomicUsize>,
-        records: Option<Vec<(ScriptHash, ScriptBuf)>>,
+        records: Option<Vec<(USDBScriptHash, ScriptBuf)>>,
     ) -> Result<(), String> {
         if let Some(ref records) = records {
             if !records.is_empty() {
@@ -283,9 +290,7 @@ impl BlockFileIndexerCallback<Option<Vec<(ScriptHash, ScriptBuf)>>> for AddressI
             + new_records_len as u64;
         self.output.set_load_message(&format!(
             "Indexed address file {}, new addresses: {}, total addresses (estimated): {}",
-            block_file_index,
-            new_records_len,
-            total
+            block_file_index, new_records_len, total
         ));
         self.output.update_load_current_count(
             complete_count.load(std::sync::atomic::Ordering::Relaxed) as u64,
