@@ -210,10 +210,10 @@ impl SnapshotDB {
 
     pub fn get_entries(
         &self,
-        page_index: u32,
+        page_index: u64,
         page_size: u32,
     ) -> Result<Vec<BalanceHistoryEntry>, String> {
-        let offset = (page_index as u64) * (page_size as u64);
+        let offset = page_index * (page_size as u64);
         let mut stmt = self.conn.prepare(
             "SELECT script_hash, height, balance, delta FROM balance_history ORDER BY id LIMIT ?1 OFFSET ?2"
         ).map_err(|e| {
@@ -271,3 +271,5 @@ impl SnapshotDB {
         Ok(entries)
     }
 }
+
+pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;

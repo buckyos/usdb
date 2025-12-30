@@ -1,6 +1,6 @@
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
-use bitcoincore_rpc::bitcoin::{Transaction, Txid};
+use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script};
 use electrum_client::{Client, ElectrumApi, GetHistoryRes};
 
 pub struct TxFullItem {
@@ -11,19 +11,18 @@ pub struct TxFullItem {
 impl TxFullItem {
     pub fn amount_delta_from_tx(
         &self,
-        address: &Address<NetworkChecked>,
+        address: &Script,
     ) -> Result<i64, String> {
         let mut delta: i64 = 0;
 
-        let address_script = address.script_pubkey();
         for vin in &self.vin {
-            if vin.script_pubkey == address_script {
+            if vin.script_pubkey == *address {
                 delta -= vin.value.to_sat() as i64;
             }
         }
 
         for vout in &self.vout {
-            if vout.script_pubkey == address_script {
+            if vout.script_pubkey == *address {
                 delta += vout.value.to_sat() as i64;
             }
         }
@@ -59,6 +58,22 @@ impl ElectrsClient {
             .script_get_history(&address.script_pubkey())
             .map_err(|e| {
                 let msg = format!("Failed to get history for address {}: {}", address, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(his)
+    }
+
+    pub async fn get_history_by_script(
+        &self,
+        script: &Script,
+    ) -> Result<Vec<GetHistoryRes>, String> {
+        let his = self
+            .client
+            .script_get_history(&script)
+            .map_err(|e| {
+                let msg = format!("Failed to get history for script {}: {}", script, e);
                 error!("{}", msg);
                 msg
             })?;
@@ -157,7 +172,7 @@ mod tests {
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
             .expect("Failed to parse address");
         let address = address.require_network(Network::Bitcoin).unwrap();
-        let delta = full_tx.amount_delta_from_tx(&address)
+        let delta = full_tx.amount_delta_from_tx(&address.script_pubkey())
             .expect("Failed to compute amount delta");
         println!(
             "Amount delta for address {} in tx {}: {}",

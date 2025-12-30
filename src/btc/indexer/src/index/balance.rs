@@ -150,7 +150,7 @@ impl AddressBalanceIndexer {
 
         // Update balance for each found address
         for addr_info in found_address {
-            let delta = tx.amount_delta_from_tx(&addr_info.address)?;
+            let delta = tx.amount_delta_from_tx(&addr_info.address.script_pubkey())?;
 
             self.balance_storage
                 .update_balance(&addr_info.address, block_height, delta)?;
@@ -184,7 +184,7 @@ impl AddressBalanceIndexer {
             // Load tx from btc client
             let tx = self.electrs_client.expand_tx(&item.tx_hash).await?;
 
-            let delta = tx.amount_delta_from_tx(address)?;
+            let delta = tx.amount_delta_from_tx(&address.script_pubkey())?;
 
             self.balance_storage
                 .update_balance(address, item.height as u64, delta)?;
