@@ -23,6 +23,7 @@ pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScrip
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 // pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
 
+#[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
     pub script_hash: USDBScriptHash,
     pub block_height: u32,
@@ -207,9 +208,9 @@ impl BalanceHistoryDB {
         }
     }
 
-    pub fn put_address_history_sync(
+    pub fn update_address_history_sync(
         &self,
-        entries_list: &[Vec<BalanceHistoryEntry>],
+        entries_list: &HashMap<USDBScriptHash, BalanceHistoryEntry>,
         block_height: u32,
     ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
@@ -219,17 +220,15 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for entries in entries_list {
-            for entry in entries {
-                let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
+        for (_, entry) in entries_list {
+            let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
 
-                // Value format: delta (i64) + balance (u64)
-                let mut value = Vec::with_capacity(16);
-                value.extend_from_slice(&entry.delta.to_be_bytes());
-                value.extend_from_slice(&entry.balance.to_be_bytes());
+            // Value format: delta (i64) + balance (u64)
+            let mut value = Vec::with_capacity(16);
+            value.extend_from_slice(&entry.delta.to_be_bytes());
+            value.extend_from_slice(&entry.balance.to_be_bytes());
 
-                batch.put_cf(cf, key, value);
-            }
+            batch.put_cf(cf, key, value);
         }
 
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
@@ -524,10 +523,10 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn update_utxos_sync(
+    pub fn update_utxos_async(
         &self,
-        new_utxos: &HashMap<OutPoint, (USDBScriptHash, u64)>,
-        remove_utxos: &HashSet<OutPoint>,
+        new_utxos: &Vec<(OutPoint, (USDBScriptHash, u64))>,
+        remove_utxos: &Vec<OutPoint>,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
@@ -554,7 +553,7 @@ impl BalanceHistoryDB {
         }
 
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(true);
+        write_options.set_sync(false);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write UTXO batch to DB: {}", e);
             error!("{}", msg);
@@ -616,7 +615,7 @@ impl BalanceHistoryDB {
                 }
             }
         }
-        
+
         Ok(entries)
     }
 
