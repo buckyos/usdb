@@ -22,7 +22,7 @@ enum BTCClientType {
 pub fn create_btc_client(
     config: &BalanceHistoryConfigRef,
     output: IndexOutputRef,
-    last_synced_block_height: u64,
+    last_synced_block_height: u32,
 ) -> Result<BTCClientRef, String> {
     let rpc_url = config.btc.rpc_url();
     let auth = config.btc.auth();

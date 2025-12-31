@@ -33,7 +33,7 @@ impl BalanceHistoryIndexer {
         output: IndexOutputRef,
     ) -> Result<Self, String> {
         // Init btc client
-        let last_synced_block_height = db.get_btc_block_height()? as u64;
+        let last_synced_block_height = db.get_btc_block_height()?;
         let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
 
         // Init UTXO cache

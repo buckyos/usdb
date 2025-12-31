@@ -130,7 +130,7 @@ impl AddressIndexer {
         ));
 
         for height in (current_block_height + 1)..=latest_block_height {
-            let block = self.btc_client.get_block_by_height(height as u64)?;
+            let block = self.btc_client.get_block_by_height(height)?;
 
             // Process block
             let mut records: Vec<(USDBScriptHash, ScriptBuf)> = Vec::new();

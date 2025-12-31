@@ -102,7 +102,7 @@ impl BatchBlockPreloader {
 
         let mut blocks = Vec::new();
         for height in block_height_range.clone() {
-            let block = self.btc_client.get_block_by_height(height as u64)?;
+            let block = self.btc_client.get_block_by_height(height)?;
 
             blocks.push((height, block));
         }

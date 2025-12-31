@@ -90,19 +90,19 @@ impl BTCRpcClient {
         }
     }
 
-    pub fn get_latest_block_height(&self) -> Result<u64, String> {
+    pub fn get_latest_block_height(&self) -> Result<u32, String> {
         self.client()?.get_block_count().map_err(|error| {
             self.on_error(&error);
 
             let msg = format!("get_block_count failed: {}", error);
             error!("{}", msg);
             msg
-        })
+        }).map(|count| count as u32)
     }
 
-    pub fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+    pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
         self.client()?
-            .get_block_hash(block_height)
+            .get_block_hash(block_height as u64)
             .map_err(|error| {
                 self.on_error(&error);
 
@@ -122,11 +122,11 @@ impl BTCRpcClient {
         })
     }
 
-    pub fn get_block(&self, block_height: u64) -> Result<Block, String> {
+    pub fn get_block(&self, block_height: u32) -> Result<Block, String> {
         // First get the block hash for the given height
         let hash = self
             .client()?
-            .get_block_hash(block_height)
+            .get_block_hash(block_height as u64)
             .map_err(|error| {
                 self.on_error(&error);
 
@@ -147,8 +147,8 @@ impl BTCRpcClient {
 
     pub async fn get_blocks(
         &self,
-        start_height: u64,
-        end_height: u64,
+        start_height: u32,
+        end_height: u32,
     ) -> Result<Vec<Block>, String> {
         assert!(end_height >= start_height);
         let count = (end_height - start_height + 1) as usize;
@@ -160,7 +160,7 @@ impl BTCRpcClient {
                 let client = client.clone();
                 move || {
                     client
-                        .get_block_hash(height)
+                        .get_block_hash(height as u64)
                         .and_then(|hash| client.get_block(&hash))
                 }
             });
@@ -243,11 +243,11 @@ impl BTCClient for BTCRpcClient {
         Ok(())
     }
 
-    fn get_latest_block_height(&self) -> Result<u64, String> {
+    fn get_latest_block_height(&self) -> Result<u32, String> {
         self.get_latest_block_height()
     }
 
-    fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+    fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
         self.get_block_hash(block_height)
     }
 
@@ -255,11 +255,11 @@ impl BTCClient for BTCRpcClient {
         self.get_block_by_hash(block_hash)
     }
 
-    fn get_block_by_height(&self, block_height: u64) -> Result<Block, String> {
+    fn get_block_by_height(&self, block_height: u32) -> Result<Block, String> {
         self.get_block(block_height)
     }
 
-    async fn get_blocks(&self, start_height: u64, end_height: u64) -> Result<Vec<Block>, String> {
+    async fn get_blocks(&self, start_height: u32, end_height: u32) -> Result<Vec<Block>, String> {
         self.get_blocks(start_height, end_height).await
     }
 
@@ -334,7 +334,7 @@ mod tests {
             let blocks_result = client.get_blocks(start_height, end_height).await;
             assert!(blocks_result.is_ok());
             let blocks = blocks_result.unwrap();
-            assert_eq!(blocks.len() as u64, end_height - start_height + 1);
+            assert_eq!(blocks.len() as u32, end_height - start_height + 1);
             let end_tick = std::time::Instant::now();
             println!("Time taken to get blocks: {:?}", end_tick - begin_tick);
         });

@@ -94,7 +94,7 @@ pub struct BlockRecordCache {
     // Mapping from prev_block_hash -> block_hash
     // There maybe multiple blocks with the same prev_block_hash (e.g. forks),
     block_prev_hash_cache: HashMap<BlockHash, Vec<BlockHash>>,
-    sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
+    sorted_blocks: Vec<(u32, BlockHash)>, // (height, block_hash)
 }
 
 impl BlockRecordCache {
@@ -111,7 +111,7 @@ impl BlockRecordCache {
         Arc::new(Mutex::new(Self::new(btc_client)))
     }
 
-    pub fn get_latest_block_height(&self) -> u64 {
+    pub fn get_latest_block_height(&self) -> u32 {
         if self.sorted_blocks.is_empty() {
             0
         } else {
@@ -426,7 +426,7 @@ impl BlockLocalLoader {
         builder.build_index()
     }
 
-    pub fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+    pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
         let cache = self.block_index_cache.lock().unwrap();
         if cache.sorted_blocks.len() > block_height as usize {
             Ok(cache.sorted_blocks[block_height as usize].1.clone())
@@ -465,15 +465,15 @@ impl BlockLocalLoader {
         Ok(block)
     }
 
-    pub fn get_block_by_height(&self, block_height: u64) -> Result<Block, String> {
+    pub fn get_block_by_height(&self, block_height: u32) -> Result<Block, String> {
         let block_hash = self.get_block_hash(block_height)?;
         self.get_block_by_hash(&block_hash)
     }
 
     pub async fn get_blocks(
         &self,
-        start_height: u64,
-        end_height: u64,
+        start_height: u32,
+        end_height: u32,
     ) -> Result<Vec<Block>, String> {
         let mut blocks = Vec::new();
         for height in start_height..=end_height {
@@ -492,7 +492,7 @@ impl BTCClient for BlockLocalLoader {
         info!("Block index built successfully");
 
         let cache = self.block_index_cache.lock().unwrap();
-        let latest_height = (cache.sorted_blocks.len() as u64).saturating_sub(1);
+        let latest_height = (cache.sorted_blocks.len() as u32).saturating_sub(1);
         info!("Local file latest block height: {}", latest_height);
 
         Ok(())
@@ -506,11 +506,11 @@ impl BTCClient for BlockLocalLoader {
         Ok(())
     }
 
-    fn get_latest_block_height(&self) -> Result<u64, String> {
+    fn get_latest_block_height(&self) -> Result<u32, String> {
         self.btc_client.get_latest_block_height()
     }
 
-    fn get_block_hash(&self, block_height: u64) -> Result<BlockHash, String> {
+    fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
         self.get_block_hash(block_height)
     }
 
@@ -518,11 +518,11 @@ impl BTCClient for BlockLocalLoader {
         self.get_block_by_hash(block_hash)
     }
 
-    fn get_block_by_height(&self, block_height: u64) -> Result<Block, String> {
+    fn get_block_by_height(&self, block_height: u32) -> Result<Block, String> {
         self.get_block_by_height(block_height)
     }
 
-    async fn get_blocks(&self, start_height: u64, end_height: u64) -> Result<Vec<Block>, String> {
+    async fn get_blocks(&self, start_height: u32, end_height: u32) -> Result<Vec<Block>, String> {
         self.get_blocks(start_height, end_height).await
     }
 
@@ -626,7 +626,7 @@ mod tests {
         let block_height = 400000;
         output.start_index(block_height);
         for height in 0..block_height {
-            let _block = loader.get_block_by_height(height).unwrap();
+            let _block = loader.get_block_by_height(height as u32).unwrap();
             //let _block_hash = block.block_hash();
             output.update_current_height(height as u64 + 1);
         }
