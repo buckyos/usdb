@@ -1,14 +1,14 @@
 use super::balance::{AddressBalanceCache, AddressBalanceCacheRef};
+use super::block::BatchBlockProcessor;
+use super::utxo::{UTXOCache, UTXOCacheRef};
 use crate::btc::{BTCClientRef, create_btc_client};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
-use super::utxo::{ UTXOCache, UTXOCacheRef};
-use usdb_util::{ USDBScriptHash};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
-use super::block::BatchBlockProcessor;
+use usdb_util::USDBScriptHash;
 
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
@@ -34,7 +34,12 @@ impl BalanceHistoryIndexer {
     ) -> Result<Self, String> {
         // Init btc client
         let last_synced_block_height = db.get_btc_block_height()?;
-        let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
+        let btc_client = create_btc_client(
+            &config,
+            output.clone(),
+            db.clone(),
+            last_synced_block_height,
+        )?;
 
         // Init UTXO cache
         let utxo_cache = Arc::new(UTXOCache::new(&config));
@@ -276,7 +281,8 @@ impl BalanceHistoryIndexer {
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
-        self.output.update_total_block_height(latest_btc_height as u64);
+        self.output
+            .update_total_block_height(latest_btc_height as u64);
         self.output.update_current_height(last_synced_height as u64);
 
         if latest_btc_height <= last_synced_height {
@@ -318,10 +324,7 @@ impl BalanceHistoryIndexer {
 
     // Process a batch of blocks from height_range.start() to height_range.end() (not included)
     // Return the last processed block height
-    fn process_block_batch(
-        &self,
-        height_range: std::ops::Range<u32>,
-    ) -> Result<u32, String> {
+    fn process_block_batch(&self, height_range: std::ops::Range<u32>) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
         self.batch_block_processor
@@ -330,8 +333,7 @@ impl BalanceHistoryIndexer {
         let last_height = height_range.end - 1;
         info!(
             "Finished processing blocks [{} - {}]",
-            height_range.start,
-            last_height,
+            height_range.start, last_height,
         );
 
         Ok(last_height)

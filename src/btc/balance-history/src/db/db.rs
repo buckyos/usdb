@@ -1,11 +1,12 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{OutPoint, Txid};
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use usdb_util::USDBScriptHash;
 
@@ -13,14 +14,16 @@ use usdb_util::USDBScriptHash;
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
 pub const UTXO_CF: &str = "utxo";
-// pub const BLOCKS_CF: &str = "blocks";
+pub const BLOCKS_CF: &str = "blocks";
+pub const BLOCK_HEIGHTS_CF: &str = "block_heights";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
+pub const META_KEY_LAST_BLOCK_FILE_INDEX: &str = "last_block_file_index";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
-// pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
+pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
@@ -98,6 +101,8 @@ impl BalanceHistoryDB {
             ColumnFamilyDescriptor::new(BALANCE_HISTORY_CF, balance_history_cf_options),
             ColumnFamilyDescriptor::new(META_CF, Options::default()),
             ColumnFamilyDescriptor::new(UTXO_CF, utxo_cf_options),
+            ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
+            ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
         ];
 
         let db = DB::open_cf_descriptors(&options, &file, cf_descriptors).map_err(|e| {
@@ -368,7 +373,7 @@ impl BalanceHistoryDB {
                     target_height,
                     script_hash,
                 );
-                
+
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
                 let entry = BalanceHistoryEntry {
                     script_hash,
@@ -902,19 +907,21 @@ impl BalanceHistoryDB {
 
         Ok(())
     }
-    /*
-    pub fn put_blocks(
+
+    pub fn put_blocks_sync(
         &self,
+        last_block_file_index: u32,
         blocks: &Vec<(BlockHash, BlockEntry)>,
+        block_heights: &Vec<(u32, BlockHash)>,
     ) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+
+        // Put blocks
         let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BLOCKS_CF);
             error!("{}", msg);
             msg
         })?;
-
-        let mut batch = WriteBatch::default();
-
         for (block_hash, block_entry) in blocks {
             // Value format: block_file_index (u32) + block_file_offset (u64)
             let mut value = Vec::with_capacity(12);
@@ -924,8 +931,34 @@ impl BalanceHistoryDB {
             batch.put_cf(cf, block_hash.as_ref() as &[u8], value);
         }
 
+        // Put block heights
+        let cf = self.db.cf_handle(BLOCK_HEIGHTS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_HEIGHTS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        for (block_height, block_hash) in block_heights {
+            batch.put_cf(
+                cf,
+                &block_height.to_be_bytes(),
+                block_hash.as_ref() as &[u8],
+            );
+        }
+
+        // Put META_KEY_LAST_BLOCK_FILE_INDEX in META_CF
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        batch.put_cf(
+            cf,
+            META_KEY_LAST_BLOCK_FILE_INDEX,
+            &last_block_file_index.to_be_bytes(),
+        );
+
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(false);
+        write_options.set_sync(true);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write Blocks batch to DB: {}", e);
             error!("{}", msg);
@@ -935,27 +968,132 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn get_block(&self, block_hash: &BlockHash) -> Result<Option<BlockEntry>, String> {
+    pub fn get_last_block_file_index(&self) -> Result<Option<u32>, String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        match self.db.get_cf(cf, META_KEY_LAST_BLOCK_FILE_INDEX) {
+            Ok(Some(value)) => {
+                if value.len() != 4 {
+                    let msg = format!(
+                        "Invalid last block file index value length: {}",
+                        value.len()
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                let index = u32::from_be_bytes((value.as_ref() as &[u8]).try_into().unwrap());
+                Ok(Some(index))
+            }
+            Ok(None) => {
+                // Key does not exist, return index 0
+                info!("Last block file index not found in DB, returning None");
+                Ok(None)
+            }
+            Err(e) => {
+                let msg = format!("Failed to get last block file index: {}", e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    pub fn get_all_blocks(&self) -> Result<HashMap<BlockHash, BlockEntry>, String> {
         let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BLOCKS_CF);
             error!("{}", msg);
             msg
         })?;
 
-        match self.db.get_cf(cf, block_hash.as_ref() as &[u8]) {
-            Ok(Some(value)) => {
-                let block_entry = Self::parse_block_from_value(&value);
-                Ok(Some(block_entry))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => {
-                let msg = format!("Failed to get Block: {}", e);
+        let mut results = HashMap::new();
+        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!("Iterator error: {}", e);
                 error!("{}", msg);
-                Err(msg)
-            }
+                msg
+            })?;
+            assert!(key.len() == 32, "Invalid Block key length {}", key.len());
+            let block_hash = BlockHash::from_slice(&key).unwrap();
+            let block_entry = Self::parse_block_from_value(0, &value);
+            results.insert(block_hash, block_entry);
         }
+
+        Ok(results)
     }
-    */
+
+    pub fn get_all_block_heights(&self) -> Result<Vec<(u32, BlockHash)>, String> {
+        let cf = self.db.cf_handle(BLOCK_HEIGHTS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_HEIGHTS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut results = Vec::new();
+        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!("Iterator error: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            assert!(
+                key.len() == 4,
+                "Invalid BlockHeight key length {}",
+                key.len()
+            );
+
+            let block_height = u32::from_be_bytes(key.as_ref().try_into().unwrap());
+            let block_hash = BlockHash::from_slice(&value).unwrap();
+            results.push((block_height, block_hash));
+        }
+
+        Ok(results)
+    }
+
+    pub fn clear_blocks(&self) -> Result<(), String> {
+        // Clear meta last block file index at META_CF first
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        self.db.delete_cf(cf, META_KEY_LAST_BLOCK_FILE_INDEX).map_err(|e| {
+            let msg = format!("Failed to clear meta last block file index: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        // Clear BLOCKS_CF and BLOCK_HEIGHTS_CF
+        let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCKS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.db.delete_cf(cf, b"").map_err(|e| {
+            let msg = format!("Failed to clear Blocks CF: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let cf = self.db.cf_handle(BLOCK_HEIGHTS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_HEIGHTS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        self.db.delete_cf(cf, b"").map_err(|e| {
+            let msg = format!("Failed to clear Block Heights CF: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        info!("Cleared all blocks and block heights from DB");
+        Ok(())
+    }
 }
 
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;

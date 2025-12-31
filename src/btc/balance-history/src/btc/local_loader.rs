@@ -3,7 +3,7 @@ use super::file_indexer::{
     BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader, BlockFileReaderRef,
 };
 use crate::btc::rpc::BTCRpcClientRef;
-use crate::db::BlockEntry;
+use crate::db::{BalanceHistoryDB, BalanceHistoryDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash};
@@ -109,6 +109,43 @@ impl BlockRecordCache {
 
     pub fn new_ref(btc_client: BTCRpcClientRef) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self::new(btc_client)))
+    }
+
+    // Try load block records from db if exists
+    pub fn load_from_db(&mut self, db: &BalanceHistoryDB) -> Result<(), String> {
+        let blocks = db.get_all_blocks()?;
+        let block_heights = db.get_all_block_heights()?;
+
+        self.block_hash_cache = blocks;
+        self.sorted_blocks = block_heights;
+
+        Ok(())
+    }
+
+    pub fn save_to_db(
+        &self,
+        last_block_file_index: u32,
+        db: &BalanceHistoryDB,
+    ) -> Result<(), String> {
+        // Expand block_hash_cache to vec and sort
+        let mut blocks = Vec::with_capacity(self.block_hash_cache.len());
+        for (block_hash, entry) in self.block_hash_cache.iter() {
+            blocks.push((block_hash.clone(), entry.clone()));
+        }
+
+        use rayon::prelude::*;
+        blocks.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+        db.put_blocks_sync(last_block_file_index, &blocks, &self.sorted_blocks)?;
+
+        Ok(())
+    }
+
+    pub fn calc_latest_block_file_index(&self) -> Option<u32> {
+        self.block_hash_cache
+            .values()
+            .map(|entry| entry.block_file_index)
+            .max()
     }
 
     pub fn get_latest_block_height(&self) -> u32 {
@@ -391,6 +428,7 @@ pub struct BlockLocalLoader {
     btc_client: BTCRpcClientRef,
     block_index_cache: Arc<Mutex<BlockRecordCache>>,
     file_cache: BlockFileCache,
+    db: BalanceHistoryDBRef,
     output: IndexOutputRef,
     should_stop: Arc<AtomicBool>,
 }
@@ -400,6 +438,7 @@ impl BlockLocalLoader {
         block_magic: u32,
         data_dir: &Path,
         btc_client: BTCRpcClientRef,
+        db: BalanceHistoryDBRef,
         output: IndexOutputRef,
     ) -> Result<Self, String> {
         let block_reader = Arc::new(BlockFileReader::new(block_magic, data_dir)?);
@@ -411,19 +450,59 @@ impl BlockLocalLoader {
             btc_client,
             block_index_cache,
             file_cache,
+            db,
             output,
             should_stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
     pub fn build_index(&self) -> Result<(), String> {
+        // First try load from db
+        if let Some(last_block_file_index) = self.db.get_last_block_file_index()? {
+            info!(
+                "Loading block index from db, last indexed blk file index: {}",
+                last_block_file_index
+            );
+
+            let current_last_blk_file = self.block_reader.find_latest_blk_file()? as u32;
+            if last_block_file_index > current_last_blk_file {
+                // Is this possible?
+                let msg = format!(
+                    "Inconsistent last block file index: db has {}, but current blk files only up to {}",
+                    last_block_file_index, current_last_blk_file
+                );
+                error!("{}", msg);
+                self.db.clear_blocks()?;
+            } else if last_block_file_index >= current_last_blk_file - 10 {
+                self.output.println("Loading block index from db...");
+                let mut cache = self.block_index_cache.lock().unwrap();
+                cache.load_from_db(&self.db)?;
+
+                self.output.println("Block index loaded from db.");
+
+                return Ok(());
+            } else {
+                warn!(
+                    "Block index in db is outdated (last indexed blk file index: {}, current last blk file index: {}), rebuilding index from blk files...",
+                    last_block_file_index, current_last_blk_file
+                );
+            }
+        }
+
         let builder = BlocksIndexer::new(
             self.block_reader.clone(),
             self.block_index_cache.clone(),
             self.output.clone(),
             self.should_stop.clone(),
         );
-        builder.build_index()
+        builder.build_index()?;
+
+        // Save to db
+        let cache = self.block_index_cache.lock().unwrap();
+        let last_block_file_index = cache.calc_latest_block_file_index().unwrap();
+        cache.save_to_db(last_block_file_index, &self.db)?;
+
+        Ok(())
     }
 
     pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {

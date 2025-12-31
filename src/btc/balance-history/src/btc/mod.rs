@@ -12,6 +12,7 @@ pub use rpc::*;
 use crate::config::BalanceHistoryConfigRef;
 use crate::output::IndexOutputRef;
 use std::sync::Arc;
+use crate::db::BalanceHistoryDBRef;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BTCClientType {
@@ -22,6 +23,7 @@ enum BTCClientType {
 pub fn create_btc_client(
     config: &BalanceHistoryConfigRef,
     output: IndexOutputRef,
+    db: BalanceHistoryDBRef,
     last_synced_block_height: u32,
 ) -> Result<BTCClientRef, String> {
     let rpc_url = config.btc.rpc_url();
@@ -56,6 +58,7 @@ pub fn create_btc_client(
                 config.btc.block_magic(),
                 &config.btc.data_dir(),
                 client,
+                db,
                 output,
             )
             .map_err(|e| {
