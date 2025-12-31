@@ -104,19 +104,26 @@ impl BatchBlockPreloader {
             block_height_range
         );
 
-        let mut blocks = Vec::new();
+        let mut data = BatchBlockData::new();
+        data.block_range = block_height_range.clone();
+        let data = Arc::new(data);
+
+        let begin = std::time::Instant::now();
+        let mut blocks = Vec::with_capacity(block_height_range.len());
         for height in block_height_range.clone() {
             let block = self.btc_client.get_block_by_height(height)?;
 
             blocks.push((height, block));
         }
 
-        let mut data = BatchBlockData::new();
-        data.block_range = block_height_range.clone();
-        let data = Arc::new(data);
-
+        data.bench_mark.load_blocks_duration_micros.store(
+            begin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+       
         // Preprocess all blocks in parallel and got all vin and vout UTXOs
         use rayon::prelude::*;
+        let begin = std::time::Instant::now();
         let result: Vec<Result<PreloadBlock, String>> = blocks
             .into_par_iter()
             .map(|(block_height, block)| {
@@ -130,12 +137,17 @@ impl BatchBlockPreloader {
         for res in result {
             preprocessed_blocks.push(res?);
         }
+        data.bench_mark.preprocess_utxos_duration_micros.store(
+            begin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         // Now preload UTXOs for all blocks
+        let begin = std::time::Instant::now();
         let result: Vec<Result<(), String>> = preprocessed_blocks
             .into_par_iter()
             .map(|mut preload_block| {
-                self.preload_block(&mut preload_block, &data)?;
+                self.preload_utxos(&mut preload_block, &data)?;
 
                 data.blocks.lock().unwrap().push(preload_block);
 
@@ -146,6 +158,11 @@ impl BatchBlockPreloader {
             res?;
         }
 
+        data.bench_mark.preload_utxos_duration_micros.store(
+            begin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         // Sort the blocks by height
         {
             let mut blocks = data.blocks.lock().unwrap();
@@ -154,8 +171,14 @@ impl BatchBlockPreloader {
 
         // Load balances at the starting block height - 1
         if block_height_range.start > 0 {
+            let begin = std::time::Instant::now();
             let target_block_height = block_height_range.start - 1;
             self.preload_balances(target_block_height, &data)?;
+
+            data.bench_mark.preload_balances_duration_micros.store(
+                begin.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         Ok(data)
@@ -237,7 +260,7 @@ impl BatchBlockPreloader {
         Ok(preload_block)
     }
 
-    fn preload_block(
+    fn preload_utxos(
         &self,
         preload_block: &mut PreloadBlock,
         data: &BatchBlockData,
@@ -286,7 +309,16 @@ impl BatchBlockPreloader {
         }
 
         // Batch load UTXOs
+        let begin = std::time::Instant::now();
+        data.bench_mark.preload_utxos_from_none_memory_counts.fetch_add(
+            outpoints_to_load.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let loaded_utxos = self.fetch_utxos(&outpoints_to_load)?;
+        data.bench_mark.preload_utxos_from_none_memory_duration_micros.store(
+            begin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         assert!(
             loaded_utxos.len() == outpoints_to_load.len(),
@@ -361,6 +393,11 @@ impl BatchBlockPreloader {
         let mut sorted_addresses: Vec<_> = addresses.into_iter().collect();
         sorted_addresses.par_sort_unstable();
 
+        data.bench_mark.preload_balances_counts.store(
+            sorted_addresses.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
         // Batch load balances
         let result: Vec<Result<BalanceHistoryEntry, String>> = sorted_addresses
             .into_par_iter()
@@ -384,6 +421,10 @@ impl BatchBlockPreloader {
                 let balance = self
                     .db
                     .get_balance_at_block_height(script_hash, target_block_height as u32)?;
+                data.bench_mark.preload_balances_from_db_counts.store(
+                    1,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
 
                 Ok(balance)
             })
@@ -770,9 +811,16 @@ impl BatchBlockProcessor {
         );
         let data = preloader.preload(block_height_range.clone())?;
 
+        let begin = std::time::Instant::now();
         let processor = BatchBlockBalanceProcessor::new();
         processor.process(&data)?;
 
+        data.bench_mark.process_balances_duration_micros.store(
+            begin.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
+        // Flush all data to db and caches
         let flusher = BatchBlockFlusher::new(
             self.db.clone(),
             self.utxo_cache.clone(),
@@ -782,11 +830,11 @@ impl BatchBlockProcessor {
 
         data.bench_mark.balance_cache_counts.store(
             self.balance_cache.get_count(),
-            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::Relaxed,
         );
         data.bench_mark.utxo_cache_counts.store(
             self.utxo_cache.get_count(),
-            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::Relaxed,
         );
 
         data.bench_mark.log();

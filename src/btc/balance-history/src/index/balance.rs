@@ -21,7 +21,8 @@ pub struct AddressBalanceCache {
 impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
         let max_capacity = config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + MOKA_OVERHEAD_BYTES);
-
+        info!("AddressBalanceCache max capacity: {} entries", max_capacity);
+        
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(60 * 60 * 4)) // 4 hours TTL
             .max_capacity(max_capacity as u64) // Max entries based on config
