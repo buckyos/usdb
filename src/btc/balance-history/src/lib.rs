@@ -8,6 +8,7 @@ mod output;
 mod tool;
 mod service;
 mod status;
+mod bench;
 
 #[macro_use]
 extern crate log;

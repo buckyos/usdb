@@ -22,11 +22,15 @@ impl AddressBalanceCache {
         let max_capacity = config.sync.balance_cache_bytes / CACHE_ITEM_SIZE;
 
         let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60 * 60 * 24)) // 1 day TTL
+            .time_to_live(Duration::from_secs(60 * 60 * 4)) // 4 hours TTL
             .max_capacity(max_capacity as u64) // Max entries based on config
             .build();
 
         Self { cache }
+    }
+
+    pub fn get_count(&self) -> u64 {
+        self.cache.entry_count()
     }
 
     pub fn put(&self, script_hash: USDBScriptHash, entry: AddressBalanceItem) {

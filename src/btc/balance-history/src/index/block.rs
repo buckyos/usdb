@@ -7,6 +7,7 @@ use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
@@ -52,6 +53,8 @@ pub struct BatchBlockData {
     vout_utxos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
     balances: Arc<Mutex<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
+
+    bench_mark: BatchBlockBenchMarkRef,
 }
 
 impl BatchBlockData {
@@ -62,6 +65,7 @@ impl BatchBlockData {
             vout_utxos: Arc::new(Mutex::new(HashMap::new())),
             balances: Arc::new(Mutex::new(HashMap::new())),
             balance_history: Arc::new(Mutex::new(Vec::new())),
+            bench_mark: Arc::new(BatchBlockBenchMark::new()),
         }
     }
 }
@@ -435,13 +439,32 @@ impl BatchBlockFlusher {
                     },
                 );
             }
+
+            data.bench_mark.batch_update_balance_cache_counts.store(
+                balances.len() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         // Update balance to db in batch
+        let begin = std::time::Instant::now();
+
         let last_block_height = data.block_range.end - 1;
         let all = data.balance_history.lock().unwrap();
         self.db
             .update_address_history_sync(&all, last_block_height as u32)?;
+
+        // Update bench mark info
+        let duration = begin.elapsed();
+        data.bench_mark.batch_update_balances_duration_micros.store(
+            duration.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
+        data.bench_mark.batch_put_balance_counts.store(
+            all.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         Ok(())
     }
@@ -504,7 +527,26 @@ impl BatchBlockFlusher {
         spent_utxo_list.par_sort_unstable();
 
         // Update UTXOs in db finally
+        let begin = std::time::Instant::now();
+
         self.db.update_utxos_async(&utxo_list, &spent_utxo_list)?;
+
+        let duration = begin.elapsed();
+        data.bench_mark.batch_update_utxo_duration_micros.store(
+            duration.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    
+        // Update bench mark info
+        data.bench_mark.batch_put_utxo_counts.store(
+            utxo_list.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        data.bench_mark.batch_spent_utxo_counts.store(
+            spent_utxo_list.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        
 
         Ok(())
     }
@@ -737,6 +779,17 @@ impl BatchBlockProcessor {
             self.balance_cache.clone(),
         );
         flusher.flush(&data)?;
+
+        data.bench_mark.balance_cache_counts.store(
+            self.balance_cache.get_count(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        data.bench_mark.utxo_cache_counts.store(
+            self.utxo_cache.get_count(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+
+        data.bench_mark.log();
 
         Ok(())
     }
