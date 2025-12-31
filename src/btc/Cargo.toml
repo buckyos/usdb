@@ -1,8 +1,7 @@
 [workspace]
-
 members = [
     "indexer",
     "balance-history",
-    "balance_history-cli",
+    "balance-history-cli",
     "usdb-util",
 ]
