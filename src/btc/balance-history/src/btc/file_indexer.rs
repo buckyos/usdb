@@ -86,6 +86,29 @@ impl BlockFileReader {
         self.block_dir.join(Self::get_blk_file_name(index))
     }
 
+    pub fn find_latest_blk_file(&self) -> Result<usize, String> {
+        let mut file_index = 0;
+        loop {
+            let file = self.get_blk_file_path(file_index);
+            if !file.exists() {
+                break;
+            }
+            file_index += 1;
+        }
+
+        if file_index == 0 {
+            let msg = format!(
+                "No blk files found in the data directory {}",
+                self.block_dir.display()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!("Latest blk file index found: {}", file_index - 1);
+        Ok(file_index - 1)
+    }
+
     pub fn read_blk_records2(&self, path: &Path) -> Result<Vec<Block>, String> {
         let mut data = std::fs::read(path).map_err(|e| {
             let msg = format!("Failed to read blk file {}: {}", path.display(), e);
@@ -553,31 +576,8 @@ impl<UserData> BlockFileIndexer<UserData> {
     }
     */
 
-    fn find_latest_blk_file(&self) -> Result<usize, String> {
-        let mut file_index = 0;
-        loop {
-            let file = self.reader.get_blk_file_path(file_index);
-            if !file.exists() {
-                break;
-            }
-            file_index += 1;
-        }
-
-        if file_index == 0 {
-            let msg = format!(
-                "No blk files found in the data directory {}",
-                self.reader.block_dir.display()
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        info!("Latest blk file index found: {}", file_index - 1);
-        Ok(file_index - 1)
-    }
-
     pub fn build_index(self: &Arc<Self>) -> Result<(), String> {
-        let latest_blk_file_index = self.find_latest_blk_file()?;
+        let latest_blk_file_index = self.reader.find_latest_blk_file()?;
 
         self.complete_count
             .store(0, std::sync::atomic::Ordering::SeqCst);

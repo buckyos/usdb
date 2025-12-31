@@ -75,11 +75,23 @@ impl BalanceHistoryDB {
         balance_history_cf_options.set_level_compaction_dynamic_level_bytes(true);
         balance_history_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         balance_history_cf_options.create_if_missing(true);
+        balance_history_cf_options.set_write_buffer_size(256 * 1024 * 1024); // 256MB
+        balance_history_cf_options.set_max_write_buffer_number(8);
+        balance_history_cf_options.set_min_write_buffer_number_to_merge(3);
+        balance_history_cf_options.set_max_bytes_for_level_base(2 * 1024 * 1024 * 1024); // 2GB
+        balance_history_cf_options.set_target_file_size_base(64 * 1024 * 1024);
+        balance_history_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
         let mut utxo_cf_options = Options::default();
         utxo_cf_options.set_level_compaction_dynamic_level_bytes(true);
         utxo_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         utxo_cf_options.create_if_missing(true);
+        utxo_cf_options.set_write_buffer_size(256 * 1024 * 1024); // 256MB
+        utxo_cf_options.set_max_write_buffer_number(8);
+        utxo_cf_options.set_min_write_buffer_number_to_merge(3);
+        utxo_cf_options.set_max_bytes_for_level_base(4 * 1024 * 1024 * 1024); // 4GB
+        utxo_cf_options.set_target_file_size_base(64 * 1024 * 1024);
+        utxo_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
         // Define column families
         let cf_descriptors = vec![
@@ -1035,7 +1047,7 @@ mod tests {
             },
         ];
 
-        db.put_address_history_sync(&vec![entries], 401).unwrap();
+        db.update_address_history_sync(&entries, 401).unwrap();
 
         // Get balance at height 50 (before any entries)
         let entry = db.get_balance_at_block_height(script_hash, 50).unwrap();
