@@ -46,19 +46,20 @@ impl AddressIndexer {
 
         let rpc_url = config.btc.rpc_url();
         let auth = config.btc.auth();
-        let btc_client = BTCRpcClient::new(rpc_url, auth).map_err(|e| {
+        let rpc_client = BTCRpcClient::new(rpc_url, auth).map_err(|e| {
             let msg = format!("Failed to create BTC client: {}", e);
             error!("{}", msg);
             msg
         })?;
-        let btc_client = Arc::new(Box::new(btc_client) as Box<dyn btc::BTCClient>);
+
+        let btc_client = Arc::new(Box::new(rpc_client.clone()) as Box<dyn btc::BTCClient>);
 
         Ok(Self {
             db: Arc::new(db),
             config,
             output,
             filter: Arc::new(Mutex::new(bloom)),
-            block_cache: Arc::new(Mutex::new(BlockRecordCache::new())),
+            block_cache: Arc::new(Mutex::new(BlockRecordCache::new(Arc::new(rpc_client)))),
             total_addresses: Arc::new(AtomicU64::new(0)),
             should_stop: Arc::new(AtomicBool::new(false)),
             btc_client,

@@ -88,22 +88,27 @@ struct BuildRecordResult {
 }
 
 pub struct BlockRecordCache {
-    pub block_hash_cache: HashMap<BlockHash, BlockEntry>,
-    pub block_prev_hash_cache: HashMap<BlockHash, BlockHash>,
-    pub sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
+    btc_client: BTCRpcClientRef,
+    block_hash_cache: HashMap<BlockHash, BlockEntry>,
+
+    // Mapping from prev_block_hash -> block_hash
+    // There maybe multiple blocks with the same prev_block_hash (e.g. forks),
+    block_prev_hash_cache: HashMap<BlockHash, Vec<BlockHash>>,
+    sorted_blocks: Vec<(u64, BlockHash)>, // (height, block_hash)
 }
 
 impl BlockRecordCache {
-    pub fn new() -> Self {
+    pub fn new(btc_client: BTCRpcClientRef) -> Self {
         Self {
+            btc_client,
             block_hash_cache: HashMap::new(),
             block_prev_hash_cache: HashMap::new(),
             sorted_blocks: Vec::new(),
         }
     }
 
-    pub fn new_ref() -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self::new()))
+    pub fn new_ref(btc_client: BTCRpcClientRef) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self::new(btc_client)))
     }
 
     pub fn get_latest_block_height(&self) -> u64 {
@@ -126,16 +131,17 @@ impl BlockRecordCache {
         prev_block_hash: &BlockHash,
         entry: BlockEntry,
     ) -> Result<(), String> {
-        if let Some(prev_hash) = self
-            .block_prev_hash_cache
-            .insert(*prev_block_hash, *block_hash)
-        {
-            let msg = format!(
-                "Duplicate prev_blockhash found in blk file {}: prev_hash = {}, block_hash = {}",
-                entry.block_file_index, prev_hash, block_hash
-            );
-            error!("{}", msg);
-            return Err(msg);
+        match self.block_prev_hash_cache.entry(*prev_block_hash) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(vec![*block_hash]);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                warn!(
+                    "Multiple blocks with the same prev_block_hash {}: adding block_hash {}",
+                    prev_block_hash, block_hash
+                );
+                e.get_mut().push(*block_hash);
+            }
         }
 
         if let Some(prev_entry) = self.block_hash_cache.insert(*block_hash, entry.clone()) {
@@ -156,21 +162,60 @@ impl BlockRecordCache {
         let mut blocks = Vec::with_capacity(self.block_hash_cache.len());
         loop {
             // Find block hash by prev_hash
-            let block_hash = self.block_prev_hash_cache.get(&prev_hash);
-            if block_hash.is_none() {
+            let ret = self.block_prev_hash_cache.get(&prev_hash);
+            if ret.is_none() {
                 break;
             }
+            let block_hashes = ret.unwrap();
+            assert!(
+                !block_hashes.is_empty(),
+                "Block hashes list should not be empty for prev_hash {}",
+                prev_hash
+            );
+
+            // If there are multiple blocks with the same prev_hash (forks), use btc rpc to find the main chain block
+            let block_hash = if block_hashes.len() > 1 {
+                warn!(
+                    "Multiple blocks found with the same prev_hash {}: {:?}, querying rpc for main chain block",
+                    prev_hash, block_hashes
+                );
+
+                let block = self
+                    .btc_client
+                    .get_block_by_height(block_height)
+                    .map_err(|e| {
+                        let msg = format!(
+                            "Failed to get block at height {} from rpc: {}",
+                            block_height, e
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
+                let block_hash = block.block_hash();
+
+                if !block_hashes.contains(&block_hash) {
+                    let msg = format!(
+                        "Rpc returned block hash {} at height {}, which is not in the list of block hashes {:?} with prev_hash {}",
+                        block_hash, block_height, block_hashes, prev_hash
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                block_hash
+            } else {
+                block_hashes[0]
+            };
 
             // Get block entry by block_hash
-            let block_hash = block_hash.unwrap();
-            let entry = self.block_hash_cache.get(block_hash);
+            let entry = self.block_hash_cache.get(&block_hash);
             if entry.is_none() {
                 let msg = format!("Block entry not found for block_hash {}", block_hash,);
                 error!("{}", msg);
                 return Err(msg);
             }
 
-            prev_hash = *block_hash;
+            prev_hash = block_hash;
             blocks.push((block_height, block_hash.clone()));
             debug!("Loaded block {} with hash {}", block_height, block_hash);
 
@@ -318,7 +363,9 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
         self.merge_build_result(user_data)?;
 
         // Update progress
-        self.output.update_load_current_count(complete_count.load(std::sync::atomic::Ordering::Relaxed) as u64);
+        self.output.update_load_current_count(
+            complete_count.load(std::sync::atomic::Ordering::Relaxed) as u64,
+        );
 
         Ok(())
     }
@@ -356,7 +403,7 @@ impl BlockLocalLoader {
         output: IndexOutputRef,
     ) -> Result<Self, String> {
         let block_reader = Arc::new(BlockFileReader::new(block_magic, data_dir)?);
-        let block_index_cache = BlockRecordCache::new_ref();
+        let block_index_cache = BlockRecordCache::new_ref(btc_client.clone());
         let file_cache = BlockFileCache::new(block_reader.clone()); // Cache up to 3 blk files
 
         Ok(Self {
@@ -579,7 +626,7 @@ mod tests {
         let block_height = 400000;
         output.start_index(block_height);
         for height in 0..block_height {
-            let block = loader.get_block_by_height(height).unwrap();
+            let _block = loader.get_block_by_height(height).unwrap();
             //let _block_hash = block.block_hash();
             output.update_current_height(height as u64 + 1);
         }
@@ -602,17 +649,24 @@ mod tests {
         let output = crate::output::IndexOutput::new(status.clone());
         let output = Arc::new(output);
 
-        let cache = BlockRecordCache::new_ref();
+        let cache = BlockRecordCache::new_ref(client.clone());
         let should_stop = Arc::new(AtomicBool::new(false));
-        let indexer = BlocksIndexer::new(reader.clone(), cache.clone(), output.clone(), should_stop.clone());
+        let indexer = BlocksIndexer::new(
+            reader.clone(),
+            cache.clone(),
+            output.clone(),
+            should_stop.clone(),
+        );
         let indexer = Arc::new(indexer);
 
         let latest_index = reader.find_latest_blk_file().unwrap();
         println!("Latest blk file index: {}", latest_index);
 
-        let block_hash = "00000000000000000001742dae886a6caa2f9c39f3967218861c3c2403a03d10".parse::<BlockHash>().unwrap();
+        let block_hash = "00000000000000000001742dae886a6caa2f9c39f3967218861c3c2403a03d10"
+            .parse::<BlockHash>()
+            .unwrap();
         let block = client.get_block_by_hash(&block_hash).unwrap();
-        println!("Block {} found from rpc {}", block_hash, block.header.);
+        println!("Block {} found from rpc", block_hash);
 
         // Load latest blk file records
         let latest_block_height = client.get_latest_block_height().unwrap();

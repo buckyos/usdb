@@ -3,10 +3,11 @@ use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use std::sync::{Arc, RwLock};
 
+#[derive(Clone)]
 pub struct BTCRpcClient {
     rpc_url: String,
     auth: Auth,
-    client: RwLock<Option<Arc<Client>>>,
+    client: Arc<RwLock<Option<Arc<Client>>>>,
 }
 
 impl BTCRpcClient {
@@ -24,7 +25,7 @@ impl BTCRpcClient {
         let ret = Self {
             rpc_url,
             auth,
-            client: RwLock::new(None),
+            client: Arc::new(RwLock::new(None)),
         };
 
         Ok(ret)
