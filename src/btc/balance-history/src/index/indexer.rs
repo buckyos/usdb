@@ -331,6 +331,9 @@ impl BalanceHistoryIndexer {
             .process_blocks(height_range.clone())?;
 
         let last_height = height_range.end - 1;
+        self.output
+            .update_current_height(last_height as u64);
+        
         info!(
             "Finished processing blocks [{} - {}]",
             height_range.start, last_height,

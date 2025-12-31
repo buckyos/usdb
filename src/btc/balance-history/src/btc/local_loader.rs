@@ -321,7 +321,7 @@ impl BlocksIndexer {
             let entry = BlockEntry {
                 block_file_index: record.block_file_index as u32,
                 block_file_offset: record.block_file_offset,
-                block_record_index: record.block_record_index,
+                block_record_index: record.block_record_index as u32,
             };
 
             cache.add_new_block_entry(&record.block_hash, &record.prev_block_hash, entry)?;
@@ -498,9 +498,15 @@ impl BlockLocalLoader {
         builder.build_index()?;
 
         // Save to db
+        info!("Saving block index to db...");
+        self.output.println("Saving block index to db...");
+
         let cache = self.block_index_cache.lock().unwrap();
         let last_block_file_index = cache.calc_latest_block_file_index().unwrap();
         cache.save_to_db(last_block_file_index, &self.db)?;
+
+        info!("Block index saved to db {}", last_block_file_index);
+        self.output.println(&format!("Block index saved to db {}", last_block_file_index));
 
         Ok(())
     }
@@ -525,7 +531,7 @@ impl BlockLocalLoader {
         if let Some(entry) = entry {
             let block = self.file_cache.get_block_by_file_index(
                 entry.block_file_index as usize,
-                entry.block_record_index,
+                entry.block_record_index as usize,
             )?;
             return Ok(block);
         }

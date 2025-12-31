@@ -228,7 +228,7 @@ impl BlockFileIndexerCallback<Option<Vec<(USDBScriptHash, ScriptBuf)>>> for Addr
                 BlockEntry {
                     block_file_index: block_file_index as u32,
                     block_file_offset: block_file_offset as u64,
-                    block_record_index,
+                    block_record_index: block_record_index as u32,
                 },
             )?;
         }

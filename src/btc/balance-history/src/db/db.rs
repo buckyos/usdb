@@ -24,6 +24,7 @@ pub const META_KEY_LAST_BLOCK_FILE_INDEX: &str = "last_block_file_index";
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
+pub const BLOCKS_VALUE_LEN: usize = 16; // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
@@ -42,7 +43,7 @@ pub struct UTXOEntry {
 pub struct BlockEntry {
     pub block_file_index: u32,     // which blk file
     pub block_file_offset: u64,    // offset in the blk file
-    pub block_record_index: usize, // index in the block record cache
+    pub block_record_index: u32, // index in the block record cache
 }
 
 pub struct BalanceHistoryDB {
@@ -208,19 +209,21 @@ impl BalanceHistoryDB {
         }
     }
 
-    fn parse_block_from_value(record_index: usize, value: &[u8]) -> BlockEntry {
-        assert!(value.len() == 12, "Invalid Block value length");
+    fn parse_block_from_value(value: &[u8]) -> BlockEntry {
+        assert!(value.len() == BLOCKS_VALUE_LEN, "Invalid Block value length {}", value.len());
 
         let block_file_index_bytes = &value[0..4];
         let block_file_offset_bytes = &value[4..12];
+        let record_index_bytes = &value[12..16];
 
         let block_file_index = u32::from_be_bytes(block_file_index_bytes.try_into().unwrap());
         let block_file_offset = u64::from_be_bytes(block_file_offset_bytes.try_into().unwrap());
+        let block_record_index = u32::from_be_bytes(record_index_bytes.try_into().unwrap());
 
         BlockEntry {
             block_file_index,
             block_file_offset,
-            block_record_index: record_index,
+            block_record_index,
         }
     }
 
@@ -923,10 +926,11 @@ impl BalanceHistoryDB {
             msg
         })?;
         for (block_hash, block_entry) in blocks {
-            // Value format: block_file_index (u32) + block_file_offset (u64)
-            let mut value = Vec::with_capacity(12);
+            // Value format: block_file_index (u32) + block_file_offset (u64) + block_record_index (u32)
+            let mut value = Vec::with_capacity(BLOCKS_VALUE_LEN);
             value.extend_from_slice(&block_entry.block_file_index.to_be_bytes());
             value.extend_from_slice(&block_entry.block_file_offset.to_be_bytes());
+            value.extend_from_slice(&block_entry.block_record_index.to_be_bytes());
 
             batch.put_cf(cf, block_hash.as_ref() as &[u8], value);
         }
@@ -1016,9 +1020,10 @@ impl BalanceHistoryDB {
                 error!("{}", msg);
                 msg
             })?;
-            assert!(key.len() == 32, "Invalid Block key length {}", key.len());
+            assert!(key.len() == BLOCKS_KEY_LEN, "Invalid Block key length {}", key.len());
             let block_hash = BlockHash::from_slice(&key).unwrap();
-            let block_entry = Self::parse_block_from_value(0, &value);
+            
+            let block_entry = Self::parse_block_from_value(&value);
             results.insert(block_hash, block_entry);
         }
 
