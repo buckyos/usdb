@@ -111,12 +111,26 @@ impl BatchBlockPreloader {
         data.block_range = block_height_range.clone();
         let data = Arc::new(data);
 
+        // Preprocess all blocks in parallel and got all vin and vout UTXOs
         use rayon::prelude::*;
-        let result: Vec<Result<(), String>> = blocks
+        let result: Vec<Result<PreloadBlock, String>> = blocks
             .into_par_iter()
             .map(|(block_height, block)| {
-                let mut preload_block = self.preprocess_block(block_height, &block, &data)?;
+                let preload_block = self.preprocess_block(block_height, &block, &data)?;
 
+                Ok(preload_block)
+            })
+            .collect();
+
+        let mut preprocessed_blocks = Vec::with_capacity(result.len());
+        for res in result {
+            preprocessed_blocks.push(res?);
+        }
+
+        // Now preload UTXOs for all blocks
+        let result: Vec<Result<(), String>> = preprocessed_blocks
+            .into_par_iter()
+            .map(|mut preload_block| {
                 self.preload_block(&mut preload_block, &data)?;
 
                 data.blocks.lock().unwrap().push(preload_block);
@@ -124,7 +138,6 @@ impl BatchBlockPreloader {
                 Ok(())
             })
             .collect();
-
         for res in result {
             res?;
         }
@@ -167,7 +180,7 @@ impl BatchBlockPreloader {
                 for vin in &tx.input {
                     let outpoint = &vin.previous_output;
 
-                    // Here we juse use None as placeholder, the real UTXO will be loaded in batch later
+                    // Here we just use None as placeholder, the real UTXO will be loaded in batch later
                     let preload_vin = PreloadVIn {
                         outpoint: outpoint.clone(),
                         cache_tx_out: None,
@@ -508,7 +521,6 @@ impl BatchBlockBalanceProcessor {
     }
 
     pub fn process(&self, data: &BatchBlockDataRef) -> Result<(), String> {
-        
         // For each block in the batch, process balances
         let blocks = data.blocks.lock().unwrap();
         let mut block_history_results = Vec::with_capacity(blocks.len());
@@ -533,14 +545,15 @@ impl BatchBlockBalanceProcessor {
                     match block_history.entry(&vout.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
-                            let current_balance = balances.get(&vout.script_hash).ok_or_else(|| {
-                                let msg = format!(
-                                    "Balance not found for address {} at block height {}",
-                                    vout.script_hash, block.height
-                                );
-                                error!("{}", msg);
-                                msg
-                            })?;
+                            let current_balance =
+                                balances.get(&vout.script_hash).ok_or_else(|| {
+                                    let msg = format!(
+                                        "Balance not found for address {} at block height {}",
+                                        vout.script_hash, block.height
+                                    );
+                                    error!("{}", msg);
+                                    msg
+                                })?;
 
                             assert!(
                                 current_balance.block_height < block.height,
@@ -561,7 +574,7 @@ impl BatchBlockBalanceProcessor {
                                 script_hash: vout.script_hash.clone(),
                                 block_height: block.height,
                                 delta: -(vout.value as i64),
-                                balance: current_balance.balance,   // Just copy current balance, we will update it below
+                                balance: current_balance.balance, // Just copy current balance, we will update it below
                             };
 
                             e.insert(new_balance);
@@ -580,14 +593,16 @@ impl BatchBlockBalanceProcessor {
                     match block_history.entry(&vout.cache_tx_out.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
-                            let current_balance = balances.get(&vout.cache_tx_out.script_hash).ok_or_else(|| {
-                                let msg = format!(
-                                    "Balance not found for address {} at block height {}",
-                                    vout.cache_tx_out.script_hash, block.height
-                                );
-                                error!("{}", msg);
-                                msg
-                            })?;
+                            let current_balance = balances
+                                .get(&vout.cache_tx_out.script_hash)
+                                .ok_or_else(|| {
+                                    let msg = format!(
+                                        "Balance not found for address {} at block height {}",
+                                        vout.cache_tx_out.script_hash, block.height
+                                    );
+                                    error!("{}", msg);
+                                    msg
+                                })?;
 
                             assert!(
                                 current_balance.block_height < block.height,
@@ -601,7 +616,7 @@ impl BatchBlockBalanceProcessor {
                                 script_hash: vout.cache_tx_out.script_hash.clone(),
                                 block_height: block.height,
                                 delta: vout.cache_tx_out.value as i64,
-                                balance: current_balance.balance,   // Just copy current balance, we will update it below
+                                balance: current_balance.balance, // Just copy current balance, we will update it below
                             };
 
                             e.insert(new_balance);
@@ -652,14 +667,16 @@ impl BatchBlockBalanceProcessor {
         // Convert to vector and sort
         info!(
             "Processed {} balance history entries for block range {:?}",
-            block_history_count,
-            data.block_range,
+            block_history_count, data.block_range,
         );
 
         let mut all = data.balance_history.lock().unwrap();
-        assert!(all.is_empty(), "Balance history vector is not empty before flushing");
+        assert!(
+            all.is_empty(),
+            "Balance history vector is not empty before flushing"
+        );
         all.reserve(block_history_count);
-        
+
         for block_history in block_history_results.into_iter() {
             for (_, entry) in block_history.into_iter() {
                 all.push(entry);
@@ -702,10 +719,7 @@ impl BatchBlockProcessor {
         }
     }
 
-    pub fn process_blocks(
-        &self,
-        block_height_range: std::ops::Range<u32>,
-    ) -> Result<(), String> {
+    pub fn process_blocks(&self, block_height_range: std::ops::Range<u32>) -> Result<(), String> {
         let preloader = BatchBlockPreloader::new(
             self.btc_client.clone(),
             self.db.clone(),
