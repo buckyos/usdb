@@ -210,7 +210,7 @@ impl BalanceHistoryDB {
 
     pub fn update_address_history_sync(
         &self,
-        entries_list: &HashMap<USDBScriptHash, BalanceHistoryEntry>,
+        entries_list: &Vec<BalanceHistoryEntry>,
         block_height: u32,
     ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
@@ -220,7 +220,7 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for (_, entry) in entries_list {
+        for entry in entries_list {
             let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
 
             // Value format: delta (i64) + balance (u64)
@@ -350,6 +350,14 @@ impl BalanceHistoryDB {
                 // Since it is Reverse and the starting point is target_height,
                 // the found_height here must be <= target_height.
                 let block_height = Self::parse_block_height_from_key(&found_key);
+                assert!(
+                    block_height <= target_height,
+                    "Found block height {} greater than target height {} for script_hash {}",
+                    block_height,
+                    target_height,
+                    script_hash,
+                );
+                
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
                 let entry = BalanceHistoryEntry {
                     script_hash,

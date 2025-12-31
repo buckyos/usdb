@@ -526,7 +526,7 @@ impl BalanceHistoryIndexer {
 
     fn load_utxo(&self, outpoint: &OutPoint) -> Result<CacheTxOut, String> {
         // First try to get from cache
-        if let Some(cached) = self.utxo_cache.spend(outpoint)? {
+        if let Some(cached) = self.utxo_cache.spend(outpoint) {
             return Ok(cached);
         }
 

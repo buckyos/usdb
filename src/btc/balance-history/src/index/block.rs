@@ -10,7 +10,7 @@ use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
-    block_height: u64,
+    block_height: u32,
     tx_index: u32,
 }
 
@@ -37,7 +37,7 @@ pub struct PreloadTx {
 }
 
 pub struct PreloadBlock {
-    pub height: u64,
+    pub height: u32,
     pub txdata: Vec<PreloadTx>,
 }
 
@@ -47,10 +47,11 @@ struct VInPosition {
 }
 
 pub struct BatchBlockData {
-    block_range: std::ops::Range<u64>,
+    block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
     vout_utxos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
     balances: Arc<Mutex<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
+    balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
 }
 
 impl BatchBlockData {
@@ -60,6 +61,7 @@ impl BatchBlockData {
             blocks: Arc::new(Mutex::new(Vec::new())),
             vout_utxos: Arc::new(Mutex::new(HashMap::new())),
             balances: Arc::new(Mutex::new(HashMap::new())),
+            balance_history: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -90,11 +92,12 @@ impl BatchBlockPreloader {
 
     pub fn preload(
         &self,
-        block_height_range: std::ops::Range<u64>,
+        block_height_range: std::ops::Range<u32>,
     ) -> Result<BatchBlockDataRef, String> {
         assert!(
             block_height_range.start < block_height_range.end,
-            "Invalid block height range {:?}", block_height_range
+            "Invalid block height range {:?}",
+            block_height_range
         );
 
         let mut blocks = Vec::new();
@@ -126,6 +129,12 @@ impl BatchBlockPreloader {
             res?;
         }
 
+        // Sort the blocks by height
+        {
+            let mut blocks = data.blocks.lock().unwrap();
+            blocks.par_sort_unstable_by(|a, b| a.height.cmp(&b.height));
+        }
+
         // Load balances at the starting block height - 1
         if block_height_range.start > 0 {
             let target_block_height = block_height_range.start - 1;
@@ -137,7 +146,7 @@ impl BatchBlockPreloader {
 
     fn preprocess_block(
         &self,
-        block_height: u64,
+        block_height: u32,
         block: &Block,
         data: &BatchBlockData,
     ) -> Result<PreloadBlock, String> {
@@ -239,7 +248,7 @@ impl BatchBlockPreloader {
                 }
 
                 // Then check if the UTXO is in utxo cache then use it(need spend)
-                if let Some(cache_tx_out) = self.utxo_cache.spend(&vin.outpoint)? {
+                if let Some(cache_tx_out) = self.utxo_cache.spend(&vin.outpoint) {
                     vin.cache_tx_out.replace(cache_tx_out);
                     continue;
                 }
@@ -280,7 +289,7 @@ impl BatchBlockPreloader {
     }
 
     fn fetch_utxos(&self, outpoints: &[OutPoint]) -> Result<Vec<CacheTxOut>, String> {
-        // First try to get from db
+        // First try to get from db by bulk
         let all = self.db.get_utxos_bulk(outpoints)?;
 
         // Then load from rpc for missing ones
@@ -304,9 +313,10 @@ impl BatchBlockPreloader {
         Ok(result)
     }
 
+    // Preload balances for all addresses involved up to target_block_height (<= target_block_height)
     fn preload_balances(
         &self,
-        target_block_height: u64,
+        target_block_height: u32,
         data: &BatchBlockData,
     ) -> Result<(), String> {
         use rayon::prelude::*;
@@ -323,6 +333,7 @@ impl BatchBlockPreloader {
                         // addresses.get_or_insert_with(&vout.script_hash, vout.script_hash.to_owned);
                         addresses.insert(vout.script_hash.clone());
                     }
+
                     for vout in tx.vout.iter() {
                         addresses.insert(vout.cache_tx_out.script_hash.clone());
                     }
@@ -338,7 +349,7 @@ impl BatchBlockPreloader {
             .into_par_iter()
             .map(|script_hash| {
                 // First load from balance cache
-                if let Ok(cached) = self
+                if let Some(cached) = self
                     .balance_cache
                     .get(script_hash, target_block_height as u32)
                 {
@@ -415,8 +426,9 @@ impl BatchBlockFlusher {
 
         // Update balance to db in batch
         let last_block_height = data.block_range.end - 1;
-        let balances = data.balances.lock().unwrap();
-        self.db.update_address_history_sync(&balances, last_block_height as u32)?;
+        let all = data.balance_history.lock().unwrap();
+        self.db
+            .update_address_history_sync(&all, last_block_height as u32)?;
 
         Ok(())
     }
@@ -434,15 +446,18 @@ impl BatchBlockFlusher {
                     continue;
                 }
 
-                utxo_list.push((outpoint.clone(), (
-                    vout_utxo_info.item.script_hash.clone(),
-                    vout_utxo_info.item.value
-                )));
+                utxo_list.push((
+                    outpoint.clone(),
+                    (
+                        vout_utxo_info.item.script_hash.clone(),
+                        vout_utxo_info.item.value,
+                    ),
+                ));
                 self.utxo_cache.put(
                     outpoint.clone(),
                     vout_utxo_info.item.script_hash.clone(),
                     vout_utxo_info.item.value,
-                )?;
+                );
             }
         }
 
@@ -477,6 +492,236 @@ impl BatchBlockFlusher {
 
         // Update UTXOs in db finally
         self.db.update_utxos_async(&utxo_list, &spent_utxo_list)?;
+
+        Ok(())
+    }
+}
+
+// Use to keep the balance history result for a block
+type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
+
+pub struct BatchBlockBalanceProcessor {}
+
+impl BatchBlockBalanceProcessor {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn process(&self, data: &BatchBlockDataRef) -> Result<(), String> {
+        
+        // For each block in the batch, process balances
+        let blocks = data.blocks.lock().unwrap();
+        let mut block_history_results = Vec::with_capacity(blocks.len());
+        let mut block_history_count = 0;
+
+        for (block, height) in blocks.iter().zip(data.block_range.clone()) {
+            assert!(
+                block.height == height,
+                "Block height mismatch: expected {}, got {}",
+                height,
+                block.height
+            );
+
+            // First traverse all transactions to calculate balance delta
+            let mut block_history = HashMap::new();
+            let mut balances = data.balances.lock().unwrap();
+            for tx in block.txdata.iter() {
+                // Process vin (decrease balance)
+                for vin in tx.vin.iter() {
+                    let vout = vin.cache_tx_out.as_ref().unwrap();
+
+                    match block_history.entry(&vout.script_hash) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            // Create new entry
+                            let current_balance = balances.get(&vout.script_hash).ok_or_else(|| {
+                                let msg = format!(
+                                    "Balance not found for address {} at block height {}",
+                                    vout.script_hash, block.height
+                                );
+                                error!("{}", msg);
+                                msg
+                            })?;
+
+                            assert!(
+                                current_balance.block_height < block.height,
+                                "Balance block height {} is greater or equal to current block height {} for script_hash {}",
+                                current_balance.block_height,
+                                block.height,
+                                vout.script_hash
+                            );
+                            assert!(
+                                current_balance.balance >= vout.value,
+                                "Insufficient balance for script_hash {}: {} < {}",
+                                vout.script_hash,
+                                current_balance.balance,
+                                vout.value
+                            );
+
+                            let new_balance = BalanceHistoryEntry {
+                                script_hash: vout.script_hash.clone(),
+                                block_height: block.height,
+                                delta: -(vout.value as i64),
+                                balance: current_balance.balance,   // Just copy current balance, we will update it below
+                            };
+
+                            e.insert(new_balance);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            // Update existing entry's delta
+                            let entry = e.get_mut();
+
+                            entry.delta -= vout.value as i64;
+                        }
+                    }
+                }
+
+                // Process vout (increase balance)
+                for vout in tx.vout.iter() {
+                    match block_history.entry(&vout.cache_tx_out.script_hash) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            // Create new entry
+                            let current_balance = balances.get(&vout.cache_tx_out.script_hash).ok_or_else(|| {
+                                let msg = format!(
+                                    "Balance not found for address {} at block height {}",
+                                    vout.cache_tx_out.script_hash, block.height
+                                );
+                                error!("{}", msg);
+                                msg
+                            })?;
+
+                            assert!(
+                                current_balance.block_height < block.height,
+                                "Balance block height {} is greater or equal to current block height {} for script_hash {}",
+                                current_balance.block_height,
+                                block.height,
+                                vout.cache_tx_out.script_hash
+                            );
+
+                            let new_balance = BalanceHistoryEntry {
+                                script_hash: vout.cache_tx_out.script_hash.clone(),
+                                block_height: block.height,
+                                delta: vout.cache_tx_out.value as i64,
+                                balance: current_balance.balance,   // Just copy current balance, we will update it below
+                            };
+
+                            e.insert(new_balance);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            // Update existing entry's delta
+                            let entry = e.get_mut();
+
+                            entry.delta += vout.cache_tx_out.value as i64;
+                        }
+                    }
+                }
+            }
+
+            // Then update balances based on deltas
+            for (&script_hash, history_entry) in block_history.iter_mut() {
+                // First ensure balance will not go negative and calculate new balance
+                let balance = history_entry.balance as i64;
+                assert!(
+                    balance + history_entry.delta >= 0,
+                    "Insufficient balance for script_hash {} at block height {}: {} + {} < 0",
+                    script_hash,
+                    history_entry.block_height,
+                    balance,
+                    history_entry.delta
+                );
+                history_entry.balance = (balance + history_entry.delta) as u64;
+
+                // Update the main balance map for current batch processing
+                let balance_entry = balances.get_mut(script_hash).ok_or_else(|| {
+                    let msg = format!(
+                        "Balance not found for address {} at block height {}",
+                        script_hash, history_entry.block_height
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                balance_entry.delta = history_entry.delta;
+                balance_entry.balance = history_entry.balance;
+                balance_entry.block_height = history_entry.block_height;
+            }
+
+            block_history_count += block_history.len();
+            block_history_results.push(block_history);
+        }
+
+        // Convert to vector and sort
+        info!(
+            "Processed {} balance history entries for block range {:?}",
+            block_history_count,
+            data.block_range,
+        );
+
+        let mut all = data.balance_history.lock().unwrap();
+        assert!(all.is_empty(), "Balance history vector is not empty before flushing");
+        all.reserve(block_history_count);
+        
+        for block_history in block_history_results.into_iter() {
+            for (_, entry) in block_history.into_iter() {
+                all.push(entry);
+            }
+        }
+
+        use rayon::prelude::*;
+        all.par_sort_by(|a, b| {
+            if a.script_hash != b.script_hash {
+                return a.script_hash.cmp(&b.script_hash);
+            }
+
+            a.block_height.cmp(&b.block_height)
+        });
+
+        Ok(())
+    }
+}
+
+pub struct BatchBlockProcessor {
+    btc_client: BTCClientRef,
+    db: BalanceHistoryDBRef,
+    utxo_cache: UTXOCacheRef,
+    balance_cache: AddressBalanceCacheRef,
+}
+
+impl BatchBlockProcessor {
+    pub fn new(
+        btc_client: BTCClientRef,
+        db: BalanceHistoryDBRef,
+        utxo_cache: UTXOCacheRef,
+        balance_cache: AddressBalanceCacheRef,
+    ) -> Self {
+        Self {
+            btc_client,
+            db,
+            utxo_cache,
+            balance_cache,
+        }
+    }
+
+    pub async fn process_batch(
+        &self,
+        block_height_range: std::ops::Range<u32>,
+    ) -> Result<(), String> {
+        let preloader = BatchBlockPreloader::new(
+            self.btc_client.clone(),
+            self.db.clone(),
+            self.utxo_cache.clone(),
+            self.balance_cache.clone(),
+        );
+        let data = preloader.preload(block_height_range.clone())?;
+
+        let processor = BatchBlockBalanceProcessor::new();
+        processor.process(&data)?;
+
+        let flusher = BatchBlockFlusher::new(
+            self.db.clone(),
+            self.utxo_cache.clone(),
+            self.balance_cache.clone(),
+        );
+        flusher.flush(&data).await?;
 
         Ok(())
     }
