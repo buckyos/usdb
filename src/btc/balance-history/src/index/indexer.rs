@@ -150,8 +150,6 @@ impl BalanceHistoryIndexer {
 
     fn run_loop(&self) {
         info!("Starting Balance History Indexer...");
-        self.output.start_index(0);
-        self.output.set_index_message("Starting indexer");
 
         let mut failed_attempts = 0;
         loop {
@@ -281,9 +279,15 @@ impl BalanceHistoryIndexer {
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
-        self.output
-            .update_total_block_height(latest_btc_height as u64);
-        self.output.update_current_height(last_synced_height as u64);
+        if !self.output.is_index_started() {
+            self.output.set_index_message("Starting indexer...");
+            self.output
+                .start_index(latest_btc_height as u64, last_synced_height as u64);
+        } else {
+            self.output
+                .update_total_block_height(latest_btc_height as u64);
+            self.output.update_current_height(last_synced_height as u64);
+        }
 
         if latest_btc_height <= last_synced_height {
             info!(
@@ -330,10 +334,11 @@ impl BalanceHistoryIndexer {
         self.batch_block_processor
             .process_blocks(height_range.clone())?;
 
+        self.db.flush_all()?;
+
         let last_height = height_range.end - 1;
-        self.output
-            .update_current_height(last_height as u64);
-        
+        self.output.update_current_height(last_height as u64);
+
         info!(
             "Finished processing blocks [{} - {}]",
             height_range.start, last_height,

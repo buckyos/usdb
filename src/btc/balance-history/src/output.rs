@@ -85,15 +85,25 @@ impl IndexOutput {
     }
 
     // Index methods
-    pub fn start_index(&self, total: u64) {
-        let bar = self.create_bar();
+    pub fn start_index(&self, total: u64, current: u64) {
+        let bar: ProgressBar = self.create_bar();
         bar.set_length(total);
+
+        for _ in 0..current {
+            bar.inc(1);
+        }
+
         let mut index_bar = self.index_bar.lock().unwrap();
         assert!(index_bar.is_none(), "Index bar already started");
         *index_bar = Some(bar);
 
         self.status.update_phase(SyncPhase::Indexing, Some("Starting indexer".to_string()));
         self.status.update_total(total, None);
+    }
+
+    pub fn is_index_started(&self) -> bool {
+        let index_bar = self.index_bar.lock().unwrap();
+        index_bar.is_some()
     }
 
     pub fn update_total_block_height(&self, block_height: u64) {
