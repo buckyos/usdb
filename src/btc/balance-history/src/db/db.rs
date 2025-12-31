@@ -6,7 +6,6 @@ use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use usdb_util::USDBScriptHash;
 

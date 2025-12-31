@@ -1,6 +1,6 @@
 use crate::config::BalanceHistoryConfig;
 use moka::sync::Cache;
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: USDBScriptHash (32 bytes) + AddressBalanceItem (~20 bytes) ~ 52 bytes
@@ -62,3 +62,5 @@ impl AddressBalanceCache {
         self.cache.invalidate_all();
     }
 }
+
+pub type AddressBalanceCacheRef = std::sync::Arc<AddressBalanceCache>;

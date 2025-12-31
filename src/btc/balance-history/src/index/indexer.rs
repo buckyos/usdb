@@ -1,14 +1,14 @@
-use super::balance::{AddressBalanceCache, AddressBalanceCacheRef, AddressBalanceSyncCache};
+use super::balance::{AddressBalanceCache, AddressBalanceCacheRef};
 use crate::btc::{BTCClientRef, create_btc_client};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
-use super::utxo::{CacheTxOut, UTXOCache, UTXOCacheRef};
-use bitcoincore_rpc::bitcoin::{OutPoint};
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use super::utxo::{ UTXOCache, UTXOCacheRef};
+use usdb_util::{ USDBScriptHash};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
+use super::block::BatchBlockProcessor;
 
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
@@ -20,6 +20,7 @@ pub struct BalanceHistoryIndexer {
     utxo_cache: UTXOCacheRef,
     balance_cache: AddressBalanceCacheRef,
     db: BalanceHistoryDBRef,
+    batch_block_processor: BatchBlockProcessor,
     output: IndexOutputRef,
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     shutdown_rx: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
@@ -36,10 +37,17 @@ impl BalanceHistoryIndexer {
         let btc_client = create_btc_client(&config, output.clone(), last_synced_block_height)?;
 
         // Init UTXO cache
-        let utxo_cache = Arc::new(UTXOCache::new(db.clone(), &config));
+        let utxo_cache = Arc::new(UTXOCache::new(&config));
 
         // Init Address Balance Cache
-        let balance_cache = Arc::new(AddressBalanceCache::new(db.clone(), &config));
+        let balance_cache = Arc::new(AddressBalanceCache::new(&config));
+
+        let batch_block_processor = BatchBlockProcessor::new(
+            btc_client.clone(),
+            db.clone(),
+            utxo_cache.clone(),
+            balance_cache.clone(),
+        );
 
         Ok(Self {
             config,
@@ -47,6 +55,7 @@ impl BalanceHistoryIndexer {
             utxo_cache,
             balance_cache,
             db,
+            batch_block_processor,
             output,
             shutdown_tx: Arc::new(Mutex::new(None)),
             shutdown_rx: Arc::new(Mutex::new(None)),
@@ -149,7 +158,7 @@ impl BalanceHistoryIndexer {
                         latest_height
                     );
                     let msg = format!("Synced up to block height {}", latest_height);
-                    self.output.update_current_height(latest_height);
+                    self.output.update_current_height(latest_height as u64);
                     self.output.set_index_message(&msg);
 
                     // Check for shutdown signal before waiting for new blocks
@@ -238,9 +247,9 @@ impl BalanceHistoryIndexer {
         false
     }
 
-    fn wait_for_new_blocks(&self, last_height: u64) -> Result<u64, String> {
+    fn wait_for_new_blocks(&self, last_height: u32) -> Result<u32, String> {
         loop {
-            let latest_height = self.btc_client.get_latest_block_height()?;
+            let latest_height = self.btc_client.get_latest_block_height()? as u32;
             if latest_height > last_height {
                 info!("New block detected: {} > {}", latest_height, last_height);
                 return Ok(latest_height);
@@ -256,10 +265,10 @@ impl BalanceHistoryIndexer {
         }
     }
 
-    // Return the latest synced block height
-    fn sync_once(&self) -> Result<u64, String> {
+    // Return the last synced block height
+    fn sync_once(&self) -> Result<u32, String> {
         // Get latest block height from BTC node
-        let latest_btc_height = self.btc_client.get_latest_block_height()?;
+        let latest_btc_height = self.btc_client.get_latest_block_height()? as u32;
         info!("Latest BTC block height: {}", latest_btc_height);
 
         // Get last synced block height from DB
@@ -267,16 +276,16 @@ impl BalanceHistoryIndexer {
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
-        self.output.update_total_block_height(latest_btc_height);
+        self.output.update_total_block_height(latest_btc_height as u64);
         self.output.update_current_height(last_synced_height as u64);
 
-        if latest_btc_height <= last_synced_height as u64 {
+        if latest_btc_height <= last_synced_height {
             info!(
                 "No new blocks to sync. Latest BTC height: {}, Last synced height: {}",
                 latest_btc_height, last_synced_height
             );
 
-            return Ok(last_synced_height as u64);
+            return Ok(last_synced_height);
         }
 
         let msg = format!(
@@ -288,13 +297,13 @@ impl BalanceHistoryIndexer {
 
         // Process blocks in batches
         let batch_size = self.config.sync.batch_size;
-        let mut current_height = last_synced_height as u64 + 1;
+        let mut current_height = last_synced_height + 1;
 
         while current_height <= latest_btc_height {
             let end_height =
-                std::cmp::min(current_height + batch_size as u64 - 1, latest_btc_height);
+                std::cmp::min(current_height + batch_size as u32 - 1, latest_btc_height);
             info!("Processing blocks [{} - {}]", current_height, end_height);
-            let last_height = self.process_block_batch(current_height..=end_height)?;
+            let last_height = self.process_block_batch(current_height..(end_height + 1))?;
             current_height = last_height + 1;
 
             // Check for shutdown signal between batches
@@ -307,234 +316,24 @@ impl BalanceHistoryIndexer {
         Ok(current_height - 1)
     }
 
-    // Process a batch of blocks from height_range.start() to height_range.end()
-    // Return the latest processed block height
+    // Process a batch of blocks from height_range.start() to height_range.end() (not included)
+    // Return the last processed block height
     fn process_block_batch(
         &self,
-        height_range: std::ops::RangeInclusive<u64>,
-    ) -> Result<u64, String> {
+        height_range: std::ops::Range<u32>,
+    ) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
-        // Clear UTXO write cache before processing new batch
-        self.utxo_cache.clear_write_cache();
+        self.batch_block_processor
+            .process_blocks(height_range.clone())?;
 
-        let mut balance_sync_cache = AddressBalanceSyncCache::new(self.balance_cache.clone());
-        let mut last_height = 0;
-        let mut result = Vec::new();
-        for height in height_range.clone() {
-            debug!("Processing block at height {}", height);
-
-            let block_history = self.process_block(height, &balance_sync_cache)?;
-
-            // Convert block history map to vector for later processing
-            let entries = block_history.into_values().collect::<Vec<_>>();
-
-            // Cache balance updates for latest balance retrieval
-            balance_sync_cache.on_block_synced(&entries);
-
-            // Save for batch write later
-            result.push(entries);
-
-            self.output.update_current_height(height);
-            self.output
-                .set_index_message(&format!("Synced block at height {}", height));
-
-            last_height = height;
-
-            // Check for shutdown signal after processing each block
-            if self.check_shutdown() {
-                info!("Indexer shutdown requested. Exiting block processing loop.");
-                break;
-            }
-        }
-
-        // Save all utxo cache write entries to DB
-        self.utxo_cache.flush_write_cache()?;
-
-        // Save all balance entries to DB in sync mode
-        self.db
-            .put_address_history_sync(&result, last_height as u32)?;
-
-        // Flush new balance cache sync entries to main cache
-        balance_sync_cache.flush_sync_cache();
-
+        let last_height = height_range.end - 1;
         info!(
             "Finished processing blocks [{} - {}]",
-            height_range.start(),
+            height_range.start,
             last_height,
         );
 
         Ok(last_height)
-    }
-
-    fn process_block(
-        &self,
-        block_height: u64,
-        balance_sync_cache: &AddressBalanceSyncCache,
-    ) -> Result<BlockHistoryResult, String> {
-        // Fetch the block
-        let block = self.btc_client.get_block_by_height(block_height)?;
-
-        let mut history = BlockHistoryResult::new();
-        let mut vin_count = 0;
-        let mut utxo_count = 0;
-        let begin_time = std::time::Instant::now();
-
-        // Process transactions in the block
-        for tx in block.txdata.iter() {
-            if !tx.is_coinbase() {
-                for vin in tx.input.iter() {
-                    assert!(
-                        !vin.previous_output.is_null(),
-                        "Previous output should not be null {}",
-                        tx.compute_txid()
-                    );
-
-                    let utxo = self.load_utxo(&vin.previous_output)?;
-                    vin_count += 1;
-
-                    match history.entry(utxo.script_hash) {
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            // Load latest record from DB to get current balance
-                            let latest_entry =
-                                balance_sync_cache.get(utxo.script_hash, block_height as u32)?;
-                            if latest_entry.block_height == block_height as u32 {
-                                // The block may have been synced, skip duplicate entry
-                                warn!(
-                                    "Skipping duplicate entry for script_hash {} at block height {}",
-                                    utxo.script_hash, block_height
-                                );
-                                continue;
-                            }
-
-                            assert!(
-                                latest_entry.block_height < block_height as u32,
-                                "Latest entry block height should be less than current block height {} < {}",
-                                latest_entry.block_height,
-                                block_height
-                            );
-                            assert!(
-                                latest_entry.balance >= utxo.value,
-                                "Insufficient balance for script_hash {}",
-                                utxo.script_hash
-                            );
-                            e.insert(BalanceHistoryEntry {
-                                script_hash: utxo.script_hash,
-                                block_height: block_height as u32,
-                                delta: -(utxo.value as i64),
-                                balance: latest_entry.balance - utxo.value,
-                            });
-                        }
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            let entry = e.get_mut();
-
-                            assert!(
-                                entry.balance >= utxo.value,
-                                "Insufficient balance for script_hash {}",
-                                utxo.script_hash
-                            );
-                            entry.delta -= utxo.value as i64;
-                            entry.balance -= utxo.value;
-                        }
-                    }
-                }
-            }
-
-            let txid = tx.compute_txid();
-            if self
-                .utxo_cache
-                .check_black_list_coinbase_tx(block_height, &txid)
-                && tx.is_coinbase()
-            {
-                warn!(
-                    "Skipping blacklisted coinbase tx {} at block height {}",
-                    txid, block_height
-                );
-                continue;
-            }
-
-            for (n, vout) in tx.output.iter().enumerate() {
-                // Skip outputs that cannot be spent
-                if vout.script_pubkey.is_op_return() {
-                    continue;
-                }
-
-                // Skip zero value outputs
-                let value = vout.value.to_sat();
-                if value == 0 {
-                    continue;
-                }
-
-                let script_hash = vout.script_pubkey.to_usdb_script_hash();
-                utxo_count += 1;
-
-                match history.entry(script_hash) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        // Load latest record from DB to get current balance
-                        let latest_entry =
-                            balance_sync_cache.get(script_hash, block_height as u32)?;
-                        if latest_entry.block_height == block_height as u32 {
-                            // The block may have been synced, skip duplicate entry
-                            warn!(
-                                "Skipping duplicate entry for script_hash {} at block height {}",
-                                script_hash, block_height
-                            );
-                            continue;
-                        }
-
-                        assert!(
-                            latest_entry.block_height < block_height as u32,
-                            "Latest entry block height should be less than current block height"
-                        );
-                        e.insert(BalanceHistoryEntry {
-                            script_hash,
-                            block_height: block_height as u32,
-                            delta: value as i64,
-                            balance: latest_entry.balance + value,
-                        });
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                        let entry = e.get_mut();
-                        entry.delta += value as i64;
-                        entry.balance += value;
-                    }
-                }
-
-                // Cache the UTXO for future use
-                self.utxo_cache.put(
-                    OutPoint {
-                        txid,
-                        vout: n as u32,
-                    },
-                    script_hash,
-                    value,
-                )?;
-            }
-        }
-
-        let elapsed = begin_time.elapsed();
-        debug!(
-            "Processed block at height {}: {} vins, {} utxos, history entries {}, duration: {:.2?}",
-            block_height,
-            vin_count,
-            utxo_count,
-            history.len(),
-            elapsed
-        );
-        Ok(history)
-    }
-
-    fn load_utxo(&self, outpoint: &OutPoint) -> Result<CacheTxOut, String> {
-        // First try to get from cache
-        if let Some(cached) = self.utxo_cache.spend(outpoint) {
-            return Ok(cached);
-        }
-
-        // Load from RPC as needed
-        let (script, amount) = self.btc_client.get_utxo(outpoint)?;
-        Ok(CacheTxOut {
-            script_hash: script.to_usdb_script_hash(),
-            value: amount.to_sat(),
-        })
     }
 }

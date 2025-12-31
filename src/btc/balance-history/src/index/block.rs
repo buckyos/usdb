@@ -102,7 +102,7 @@ impl BatchBlockPreloader {
 
         let mut blocks = Vec::new();
         for height in block_height_range.clone() {
-            let block = self.btc_client.get_block_by_height(height)?;
+            let block = self.btc_client.get_block_by_height(height as u64)?;
 
             blocks.push((height, block));
         }
@@ -401,7 +401,7 @@ impl BatchBlockFlusher {
         }
     }
 
-    pub async fn flush(&self, data: &BatchBlockDataRef) -> Result<(), String> {
+    pub fn flush(&self, data: &BatchBlockDataRef) -> Result<(), String> {
         self.flush_utxos(data)?;
         self.flush_balances(data)?;
 
@@ -679,6 +679,7 @@ impl BatchBlockBalanceProcessor {
     }
 }
 
+#[derive(Clone)]
 pub struct BatchBlockProcessor {
     btc_client: BTCClientRef,
     db: BalanceHistoryDBRef,
@@ -701,7 +702,7 @@ impl BatchBlockProcessor {
         }
     }
 
-    pub async fn process_batch(
+    pub fn process_blocks(
         &self,
         block_height_range: std::ops::Range<u32>,
     ) -> Result<(), String> {
@@ -721,7 +722,7 @@ impl BatchBlockProcessor {
             self.utxo_cache.clone(),
             self.balance_cache.clone(),
         );
-        flusher.flush(&data).await?;
+        flusher.flush(&data)?;
 
         Ok(())
     }

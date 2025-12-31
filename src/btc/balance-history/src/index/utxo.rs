@@ -1,8 +1,6 @@
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{OutPoint};
 use moka::sync::Cache;
-use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::time::Duration;
 use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
