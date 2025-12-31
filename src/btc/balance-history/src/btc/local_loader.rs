@@ -702,6 +702,7 @@ mod tests {
             config.btc.block_magic(),
             &config.btc.data_dir(),
             client.clone(),
+            db.clone(),
             output.clone(),
         )
         .unwrap();
@@ -709,7 +710,7 @@ mod tests {
         loader.build_index().unwrap();
 
         let block_height = 400000;
-        output.start_index(block_height);
+        output.start_index(block_height, 0);
         for height in 0..block_height {
             let _block = loader.get_block_by_height(height as u32).unwrap();
             //let _block_hash = block.block_hash();

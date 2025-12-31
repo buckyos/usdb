@@ -8,11 +8,11 @@ fn default_batch_size() -> usize {
 }
 
 fn default_utxo_cache_bytes() -> usize {
-    1024 * 1024 * 1024 * 8 // 8 GB
+    1024 * 1024 * 1024 * 6 // 6 GB
 }
 
 fn default_balance_cache_bytes() -> usize {
-    1024 * 1024 * 1024 * 4 // 4 GB
+    1024 * 1024 * 1024 * 6 // 6 GB
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

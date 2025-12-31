@@ -23,8 +23,8 @@ pub const META_KEY_LAST_BLOCK_FILE_INDEX: &str = "last_block_file_index";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
-pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes) + block_height (4 bytes)
-pub const BLOCKS_VALUE_LEN: usize = 16; // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
+pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
+pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {

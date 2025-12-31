@@ -6,7 +6,8 @@ use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
-const CACHE_ITEM_SIZE: usize = 76;
+const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<CacheTxOut>();
+const MOKA_OVERHEAD_BYTES: usize = 300; // Estimated overhead per entry in moka
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
@@ -20,10 +21,11 @@ pub struct UTXOCache {
 
 impl UTXOCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity = config.sync.utxo_cache_bytes / CACHE_ITEM_SIZE;
+        let max_capacity = config.sync.utxo_cache_bytes / (CACHE_ITEM_SIZE + MOKA_OVERHEAD_BYTES);
         let cache = Cache::builder()
             .time_to_live(Duration::from_secs(60 * 60 * 4)) // 4 hours TTL
             .max_capacity(max_capacity as u64) // Max entries based on config
+            .initial_capacity(1024 * 1024 * 16)
             .build();
 
         Self {
@@ -34,7 +36,7 @@ impl UTXOCache {
     pub fn get_count(&self) -> u64 {
         self.cache.entry_count()
     }
-    
+
     pub fn put(
         &self,
         outpoint: OutPoint,
@@ -89,3 +91,35 @@ impl UTXOCache {
 }
 
 pub type UTXOCacheRef = std::sync::Arc<UTXOCache>;
+
+#[cfg(test)]
+mod tests {
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use super::*;
+
+    #[test]
+    fn test_utxo_cache_size() {
+        let count = 1024 * 1024 * 10; // 10 million entries
+        let cache = Cache::builder()
+                .max_capacity(count * 10)
+                .build();
+        
+
+        // Append random entries up to count
+        let value = CacheTxOut {
+            script_hash: USDBScriptHash::from_slice(&[0u8; 32]).unwrap(),
+            value: 1000,
+        };
+        let txid = Txid::from_slice(&[1u8; 32]).unwrap();
+        for i in 0..count {
+            let outpoint = OutPoint {
+                txid: txid.clone(),
+                vout: i as u32,
+            };
+            cache.insert(outpoint, value.clone());
+        }
+
+        println!("Cache entry count: {}", cache.entry_count());
+        std::thread::sleep(std::time::Duration::from_secs(1000));
+    }
+}

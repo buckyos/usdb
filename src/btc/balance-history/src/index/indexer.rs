@@ -334,7 +334,7 @@ impl BalanceHistoryIndexer {
         self.batch_block_processor
             .process_blocks(height_range.clone())?;
 
-        self.db.flush_all()?;
+        // self.db.flush_all()?;
 
         let last_height = height_range.end - 1;
         self.output.update_current_height(last_height as u64);
