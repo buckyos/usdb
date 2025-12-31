@@ -1,13 +1,13 @@
 use super::balance::{AddressBalanceCacheRef, AddressBalanceItem};
 use super::utxo::{CacheTxOut, UTXOCacheRef};
+use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
 use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
-use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
@@ -51,7 +51,7 @@ pub struct BatchBlockData {
     block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
     vout_utxos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
-    balances: Arc<Mutex<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
+    balances: Arc<RwLock<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
 
     bench_mark: BatchBlockBenchMarkRef,
@@ -63,7 +63,7 @@ impl BatchBlockData {
             block_range: 0..0,
             blocks: Arc::new(Mutex::new(Vec::new())),
             vout_utxos: Arc::new(Mutex::new(HashMap::new())),
-            balances: Arc::new(Mutex::new(HashMap::new())),
+            balances: Arc::new(RwLock::new(HashMap::new())),
             balance_history: Arc::new(Mutex::new(Vec::new())),
             bench_mark: Arc::new(BatchBlockBenchMark::new()),
         }
@@ -120,7 +120,7 @@ impl BatchBlockPreloader {
             begin.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-       
+
         // Preprocess all blocks in parallel and got all vin and vout UTXOs
         use rayon::prelude::*;
         let begin = std::time::Instant::now();
@@ -310,15 +310,19 @@ impl BatchBlockPreloader {
 
         // Batch load UTXOs
         let begin = std::time::Instant::now();
-        data.bench_mark.preload_utxos_from_none_memory_counts.fetch_add(
-            outpoints_to_load.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        data.bench_mark
+            .preload_utxos_from_none_memory_counts
+            .fetch_add(
+                outpoints_to_load.len() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         let loaded_utxos = self.fetch_utxos(&outpoints_to_load)?;
-        data.bench_mark.preload_utxos_from_none_memory_duration_micros.store(
-            begin.elapsed().as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        data.bench_mark
+            .preload_utxos_from_none_memory_duration_micros
+            .store(
+                begin.elapsed().as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
 
         assert!(
             loaded_utxos.len() == outpoints_to_load.len(),
@@ -421,16 +425,15 @@ impl BatchBlockPreloader {
                 let balance = self
                     .db
                     .get_balance_at_block_height(script_hash, target_block_height as u32)?;
-                data.bench_mark.preload_balances_from_db_counts.store(
-                    1,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                data.bench_mark
+                    .preload_balances_from_db_counts
+                    .store(1, std::sync::atomic::Ordering::Relaxed);
 
                 Ok(balance)
             })
             .collect();
 
-        let mut balances_map = data.balances.lock().unwrap();
+        let mut balances_map = data.balances.write().unwrap();
         for res in result {
             let balance = res?;
             balances_map.insert(balance.script_hash.clone(), balance);
@@ -469,7 +472,7 @@ impl BatchBlockFlusher {
     fn flush_balances(&self, data: &BatchBlockDataRef) -> Result<(), String> {
         // Update balance cache
         {
-            let balances = data.balances.lock().unwrap();
+            let balances = data.balances.read().unwrap();
             for (script_hash, entry) in balances.iter() {
                 self.balance_cache.put(
                     *script_hash,
@@ -481,10 +484,9 @@ impl BatchBlockFlusher {
                 );
             }
 
-            data.bench_mark.batch_update_balance_cache_counts.store(
-                balances.len() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            data.bench_mark
+                .batch_update_balance_cache_counts
+                .store(balances.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Update balance to db in batch
@@ -502,10 +504,9 @@ impl BatchBlockFlusher {
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        data.bench_mark.batch_put_balance_counts.store(
-            all.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        data.bench_mark
+            .batch_put_balance_counts
+            .store(all.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
         Ok(())
     }
@@ -577,17 +578,15 @@ impl BatchBlockFlusher {
             duration.as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-    
+
         // Update bench mark info
-        data.bench_mark.batch_put_utxo_counts.store(
-            utxo_list.len() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        data.bench_mark
+            .batch_put_utxo_counts
+            .store(utxo_list.len() as u64, std::sync::atomic::Ordering::Relaxed);
         data.bench_mark.batch_spent_utxo_counts.store(
             spent_utxo_list.len() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-        
 
         Ok(())
     }
@@ -609,23 +608,19 @@ impl BatchBlockBalanceProcessor {
         let mut block_history_results = Vec::with_capacity(blocks.len());
         let mut block_history_count = 0;
 
-        for (block, height) in blocks.iter().zip(data.block_range.clone()) {
-            assert!(
-                block.height == height,
-                "Block height mismatch: expected {}, got {}",
-                height,
-                block.height
-            );
+        // First calc delta in parallel
+        use rayon::prelude::*;
+        let result: Vec<Result<HashMap<USDBScriptHash, BalanceHistoryEntry>, String>> = blocks.par_iter().map(|block| {
 
-            // First traverse all transactions to calculate balance delta
-            let mut block_history = HashMap::new();
-            let mut balances = data.balances.lock().unwrap();
+            // Traverse all transactions to calculate balance delta
+            let mut block_history: HashMap<USDBScriptHash, BalanceHistoryEntry> = HashMap::new();
+            let balances = data.balances.read().unwrap();
             for tx in block.txdata.iter() {
                 // Process vin (decrease balance)
                 for vin in tx.vin.iter() {
                     let vout = vin.cache_tx_out.as_ref().unwrap();
 
-                    match block_history.entry(&vout.script_hash) {
+                    match block_history.entry(vout.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
                             let current_balance =
@@ -645,19 +640,12 @@ impl BatchBlockBalanceProcessor {
                                 block.height,
                                 vout.script_hash
                             );
-                            assert!(
-                                current_balance.balance >= vout.value,
-                                "Insufficient balance for script_hash {}: {} < {}",
-                                vout.script_hash,
-                                current_balance.balance,
-                                vout.value
-                            );
 
                             let new_balance = BalanceHistoryEntry {
                                 script_hash: vout.script_hash.clone(),
                                 block_height: block.height,
                                 delta: -(vout.value as i64),
-                                balance: current_balance.balance, // Just copy current balance, we will update it below
+                                balance: 0, // Just set balance to 0, we will update it below
                             };
 
                             e.insert(new_balance);
@@ -673,7 +661,7 @@ impl BatchBlockBalanceProcessor {
 
                 // Process vout (increase balance)
                 for vout in tx.vout.iter() {
-                    match block_history.entry(&vout.cache_tx_out.script_hash) {
+                    match block_history.entry(vout.cache_tx_out.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
                             let current_balance = balances
@@ -699,7 +687,7 @@ impl BatchBlockBalanceProcessor {
                                 script_hash: vout.cache_tx_out.script_hash.clone(),
                                 block_height: block.height,
                                 delta: vout.cache_tx_out.value as i64,
-                                balance: current_balance.balance, // Just copy current balance, we will update it below
+                                balance: 0, // Just set balance to 0, we will update it below
                             };
 
                             e.insert(new_balance);
@@ -714,10 +702,30 @@ impl BatchBlockBalanceProcessor {
                 }
             }
 
-            // Then update balances based on deltas
+            Ok(block_history)
+        }).collect();
+
+        for res in result {
+            block_history_results.push(res?);
+        }
+
+        // Then update balances based on deltas serialized
+        let mut balances = data.balances.write().unwrap();
+        for  block_history in block_history_results.iter_mut() {
             for (&script_hash, history_entry) in block_history.iter_mut() {
-                // First ensure balance will not go negative and calculate new balance
-                let balance = history_entry.balance as i64;
+                
+                // First load current balance entry to get the last balance
+                let balance_entry = balances.get_mut(&script_hash).ok_or_else(|| {
+                    let msg = format!(
+                        "Balance not found for address {} at block height {}",
+                        script_hash, history_entry.block_height
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                // Ensure balance will not go negative and calculate new balance
+                let balance = balance_entry.balance as i64;
                 assert!(
                     balance + history_entry.delta >= 0,
                     "Insufficient balance for script_hash {} at block height {}: {} + {} < 0",
@@ -729,22 +737,12 @@ impl BatchBlockBalanceProcessor {
                 history_entry.balance = (balance + history_entry.delta) as u64;
 
                 // Update the main balance map for current batch processing
-                let balance_entry = balances.get_mut(script_hash).ok_or_else(|| {
-                    let msg = format!(
-                        "Balance not found for address {} at block height {}",
-                        script_hash, history_entry.block_height
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
-
                 balance_entry.delta = history_entry.delta;
                 balance_entry.balance = history_entry.balance;
                 balance_entry.block_height = history_entry.block_height;
             }
 
             block_history_count += block_history.len();
-            block_history_results.push(block_history);
         }
 
         // Convert to vector and sort
@@ -766,7 +764,6 @@ impl BatchBlockBalanceProcessor {
             }
         }
 
-        use rayon::prelude::*;
         all.par_sort_by(|a, b| {
             if a.script_hash != b.script_hash {
                 return a.script_hash.cmp(&b.script_hash);
