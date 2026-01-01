@@ -29,3 +29,4 @@ rayon = "1.11"
 rusqlite = { version = "0.38", features = ["bundled"] }
 sha2 = "0.10"
 bloomfilter = "3.0"
+sysinfo = "0.37"

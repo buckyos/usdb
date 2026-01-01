@@ -74,6 +74,7 @@ impl BalanceHistoryDB {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
+        options.set_bytes_per_sync(1024 * 1024 * 4); // 4MB
 
         let mut balance_history_cf_options = Options::default();
         balance_history_cf_options.set_level_compaction_dynamic_level_bytes(true);
@@ -259,7 +260,7 @@ impl BalanceHistoryDB {
         batch.put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
 
         let mut write_options = WriteOptions::default();
-        write_options.set_sync(true);
+        write_options.set_sync(false);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
             let msg = format!("Failed to write batch to DB: {}", e);
             error!("{}", msg);
@@ -646,6 +647,7 @@ impl BalanceHistoryDB {
         Ok(entries)
     }
 
+    /*
     // Remove and return the UTXO entry for the given outpoint
     pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -730,6 +732,7 @@ impl BalanceHistoryDB {
 
         Ok(spent_utxos)
     }
+    */
 
     pub fn get_history_balance_count(&self) -> Result<u64, String> {
         get_approx_cf_key_count(&self.db, BALANCE_HISTORY_CF)

@@ -440,6 +440,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sysinfo",
  "tokio",
  "toml 0.9.10+spec-1.1.0",
  "usdb-util",

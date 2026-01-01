@@ -7,12 +7,26 @@ fn default_batch_size() -> usize {
     64
 }
 
-fn default_utxo_cache_bytes() -> usize {
-    1024 * 1024 * 1024 * 6 // 6 GB
+fn get_cache_size() -> usize {
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_memory();
+    let available_memory = sys.available_memory();
+
+    // Leave 5 GB free
+    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 5);
+    cache_size as usize
 }
 
+// 1/4 of total cache size, at least 1 GB
+fn default_utxo_cache_bytes() -> usize {
+    let size = get_cache_size() / 4;
+    size.max(1024 * 1024 * 1024)
+}
+
+// 3/4 of total cache size, at least 3 GB
 fn default_balance_cache_bytes() -> usize {
-    1024 * 1024 * 1024 * 6 // 6 GB
+    let size = get_cache_size() * 3 / 4;
+    size.max(3 * 1024 * 1024 * 1024)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,7 +37,6 @@ pub struct IndexConfig {
     // UTXO cache size in bytes in memory
     #[serde(default = "default_utxo_cache_bytes")]
     pub utxo_cache_bytes: usize,
-
 
     // Balance cache size in bytes in memory
     #[serde(default = "default_balance_cache_bytes")]
