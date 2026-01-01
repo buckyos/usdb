@@ -30,6 +30,12 @@ fn default_balance_cache_bytes() -> usize {
     size.max(3 * 1024 * 1024 * 1024)
 }
 
+// When memory percent is not specified, default to 90%
+// That is when used memory percent is up to 90%, we will start shrinking caches
+fn default_max_memory_percent() -> usize {
+    90
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
     #[serde(default = "default_batch_size")]
@@ -42,15 +48,21 @@ pub struct IndexConfig {
     // Balance cache size in bytes in memory
     #[serde(default = "default_balance_cache_bytes")]
     pub balance_cache_bytes: usize,
+
+    // Maximum percent of system memory to use for caches
+    // Value can be 10-100
+    #[serde(default = "default_max_memory_percent")]
+    pub max_memory_percent: usize,
 }
 
 
 impl Default for IndexConfig {
     fn default() -> Self {
-        IndexConfig {
+        Self {
             batch_size: default_batch_size(),
             utxo_cache_bytes: default_utxo_cache_bytes(),
             balance_cache_bytes: default_balance_cache_bytes(),
+            max_memory_percent: default_max_memory_percent(),
         }
     }
 }

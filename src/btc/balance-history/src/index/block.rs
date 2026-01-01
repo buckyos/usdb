@@ -1,5 +1,4 @@
-use super::balance::AddressBalanceCacheRef;
-use super::utxo::UTXOCacheRef;
+use crate::cache::{UTXOCacheRef, AddressBalanceCacheRef};
 use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};

@@ -1,7 +1,7 @@
-use super::balance::{AddressBalanceCache, AddressBalanceCacheRef};
 use super::block::BatchBlockProcessor;
-use super::utxo::{UTXOCache, UTXOCacheRef};
 use crate::btc::{BTCClientRef, create_btc_client};
+use crate::cache::{AddressBalanceCache, AddressBalanceCacheRef, MemoryCacheMonitor, MemoryCacheMonitorRef};
+use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
@@ -19,6 +19,7 @@ pub struct BalanceHistoryIndexer {
     btc_client: BTCClientRef,
     utxo_cache: UTXOCacheRef,
     balance_cache: AddressBalanceCacheRef,
+    cache_monitor: MemoryCacheMonitorRef,
     db: BalanceHistoryDBRef,
     batch_block_processor: BatchBlockProcessor,
     output: IndexOutputRef,
@@ -47,6 +48,12 @@ impl BalanceHistoryIndexer {
         // Init Address Balance Cache
         let balance_cache = Arc::new(AddressBalanceCache::new(&config));
 
+        let cache_monitor = Arc::new(MemoryCacheMonitor::new(
+            config.clone(),
+            utxo_cache.clone(),
+            balance_cache.clone(),
+        ));
+
         let batch_block_processor = BatchBlockProcessor::new(
             btc_client.clone(),
             db.clone(),
@@ -59,6 +66,7 @@ impl BalanceHistoryIndexer {
             btc_client,
             utxo_cache,
             balance_cache,
+            cache_monitor,
             db,
             batch_block_processor,
             output,
@@ -72,6 +80,9 @@ impl BalanceHistoryIndexer {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         self.shutdown_tx.lock().unwrap().replace(shutdown_tx);
         self.shutdown_rx.lock().unwrap().replace(shutdown_rx);
+
+        // Start cache monitor
+        self.cache_monitor.start();
 
         // Run the sync loop in a separate thread
         let indexer = self.clone();

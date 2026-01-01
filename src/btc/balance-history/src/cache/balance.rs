@@ -1,6 +1,6 @@
 use crate::config::BalanceHistoryConfig;
 use lru::LruCache;
-use std::num::NonZeroUsize;
+use std::num::{NonZero, NonZeroUsize};
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 use crate::types::{BalanceHistoryData, BalanceHistoryDataRef};
@@ -19,15 +19,19 @@ impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
         let max_capacity =
             config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
-        let max_capacity: usize = 1024 * 1024 * 150; // For testing, limit to 150 million entries
+        // let max_capacity: usize = 1024 * 1024 * 150; // For testing, limit to 150 million entries
         info!(
             "AddressBalanceCache max capacity: {} entries, total {} bytes",
             max_capacity, config.sync.balance_cache_bytes
         );
 
         let cache = Mutex::new(LruCache::new(NonZeroUsize::new(max_capacity).unwrap()));
-
+        
         Self { cache }
+    }
+
+    pub fn get_item_size() -> usize {
+        CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES
     }
 
     pub fn get_count(&self) -> u64 {
@@ -39,7 +43,7 @@ impl AddressBalanceCache {
             // Do not cache zero balance entries to save memory
             return;
         }
-        
+
         self.cache.lock().unwrap().put(script_hash, data);
     }
 
@@ -65,6 +69,17 @@ impl AddressBalanceCache {
 
     pub fn clear(&self) {
         self.cache.lock().unwrap().clear();
+    }
+
+    pub fn shrink(&self, target_count: usize) {
+        let mut cache = self.cache.lock().unwrap();
+
+        info!(
+            "Shrinking AddressBalanceCache to target count: {} -> {}",
+            cache.len(),
+            target_count
+        );
+        cache.resize(NonZeroUsize::new(target_count).unwrap());
     }
 }
 

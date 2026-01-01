@@ -1,6 +1,4 @@
-mod balance;
 mod indexer;
-mod utxo;
 mod address;
 mod snapshot;
 mod verify;

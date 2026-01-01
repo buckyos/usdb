@@ -1,19 +1,20 @@
 #![allow(dead_code)]
 
+mod bench;
 mod btc;
+mod cache;
 mod config;
 mod db;
 mod index;
 mod output;
-mod tool;
 mod service;
 mod status;
-mod bench;
+mod tool;
 mod types;
 
 #[macro_use]
 extern crate log;
 
-pub use status::*;
-pub use service::*;
 pub use output::*;
+pub use service::*;
+pub use status::*;

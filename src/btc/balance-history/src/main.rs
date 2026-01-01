@@ -2,6 +2,7 @@
 
 mod bench;
 mod btc;
+mod cache;
 mod config;
 mod db;
 mod index;
