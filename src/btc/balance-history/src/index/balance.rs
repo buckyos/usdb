@@ -19,7 +19,7 @@ impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
         let max_capacity =
             config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
-        let max_capacity: usize = 1024 * 1024 * 100; // For testing, limit to 100 million entries
+        let max_capacity: usize = 1024 * 1024 * 150; // For testing, limit to 150 million entries
         info!(
             "AddressBalanceCache max capacity: {} entries, total {} bytes",
             max_capacity, config.sync.balance_cache_bytes
@@ -35,6 +35,11 @@ impl AddressBalanceCache {
     }
 
     pub fn put(&self, script_hash: USDBScriptHash, data: BalanceHistoryDataRef) {
+        if data.balance == 0 {
+            // Do not cache zero balance entries to save memory
+            return;
+        }
+        
         self.cache.lock().unwrap().put(script_hash, data);
     }
 
