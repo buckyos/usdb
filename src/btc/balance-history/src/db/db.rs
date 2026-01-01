@@ -1,10 +1,10 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
-use crate::types::{OutPointRef, UTXOEntry, UTXOEntryRef};
+use crate::types::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions,
+    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions, ReadOptions
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
@@ -83,6 +83,19 @@ impl BalanceHistoryDB {
         balance_history_cf_options.set_target_file_size_base(64 * 1024 * 1024);
         balance_history_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
+        balance_history_cf_options.set_prefix_extractor(
+            rocksdb::SliceTransform::create_fixed_prefix(USDBScriptHash::LEN),
+        );
+
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        // Enable whole key and prefix bloom filter
+        block_opts.set_bloom_filter(10.0, false); 
+        balance_history_cf_options.set_block_based_table_factory(&block_opts);
+    
+        // Enable Memtable prefix bloom filter to speed up in-memory data lookups
+        balance_history_cf_options.set_memtable_prefix_bloom_ratio(0.1);
+        
+
         let mut utxo_cf_options = Options::default();
         utxo_cf_options.set_level_compaction_dynamic_level_bytes(true);
         utxo_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
@@ -147,13 +160,11 @@ impl BalanceHistoryDB {
         })
     }
 
-    fn make_balance_history_key(script_hash: USDBScriptHash, block_height: u32) -> Vec<u8> {
+    fn make_balance_history_key(script_hash: &USDBScriptHash, block_height: u32) -> [u8; BALANCE_HISTORY_KEY_LEN] {
         // It is important that the block height is stored in big-endian format
-        let height_bytes = block_height.to_be_bytes();
-
-        let mut key = Vec::with_capacity(BALANCE_HISTORY_KEY_LEN);
-        key.extend_from_slice(script_hash.as_ref());
-        key.extend_from_slice(&height_bytes);
+        let mut key = [0u8; BALANCE_HISTORY_KEY_LEN];
+        key[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref());
+        key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4].copy_from_slice(&block_height.to_be_bytes());
         key
     }
 
@@ -181,10 +192,10 @@ impl BalanceHistoryDB {
         (delta, balance)
     }
 
-    fn make_utxo_key(outpoint: &OutPoint) -> Vec<u8> {
-        let mut key = Vec::with_capacity(UTXO_KEY_LEN);
-        key.extend_from_slice(outpoint.txid.as_ref());
-        key.extend_from_slice(&outpoint.vout.to_be_bytes());
+    fn make_utxo_key(outpoint: &OutPoint) -> [u8; UTXO_KEY_LEN] {
+        let mut key = [0u8; UTXO_KEY_LEN];
+        key[..32].copy_from_slice(outpoint.txid.as_ref());
+        key[32..36].copy_from_slice(&outpoint.vout.to_be_bytes());
         key
     }
 
@@ -200,10 +211,7 @@ impl BalanceHistoryDB {
         let script_hash = USDBScriptHash::from_slice(script_hash_bytes).unwrap();
         let value = u64::from_be_bytes(amount_bytes.try_into().unwrap());
 
-        UTXOEntry {
-            script_hash,
-            value,
-        }
+        UTXOEntry { script_hash, value }
     }
 
     fn parse_block_from_value(value: &[u8]) -> BlockEntry {
@@ -241,12 +249,12 @@ impl BalanceHistoryDB {
         })?;
 
         for entry in entries_list {
-            let key = Self::make_balance_history_key(entry.script_hash, entry.block_height);
+            let key = Self::make_balance_history_key(&entry.script_hash, entry.block_height);
 
             // Value format: delta (i64) + balance (u64)
-            let mut value = Vec::with_capacity(16);
-            value.extend_from_slice(&entry.delta.to_be_bytes());
-            value.extend_from_slice(&entry.balance.to_be_bytes());
+            let mut value = [0u8; 16];
+            value[..8].copy_from_slice(&entry.delta.to_be_bytes());
+            value[8..16].copy_from_slice(&entry.balance.to_be_bytes());
 
             batch.put_cf(cf, key, value);
         }
@@ -273,8 +281,8 @@ impl BalanceHistoryDB {
     // Get the latest balance entry for a given script_hash
     pub fn get_latest_balance(
         &self,
-        script_hash: USDBScriptHash,
-    ) -> Result<BalanceHistoryEntry, String> {
+        script_hash: &USDBScriptHash,
+    ) -> Result<BalanceHistoryData, String> {
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
             error!("{}", msg);
@@ -305,8 +313,7 @@ impl BalanceHistoryDB {
             if &found_key[0..USDBScriptHash::LEN] == script_hash.as_ref() as &[u8] {
                 let block_height = Self::parse_block_height_from_key(&found_key);
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
-                let entry = BalanceHistoryEntry {
-                    script_hash,
+                let entry = BalanceHistoryData {
                     block_height,
                     delta,
                     balance,
@@ -317,8 +324,7 @@ impl BalanceHistoryDB {
         }
 
         // No records found for this script_hash
-        let entry = BalanceHistoryEntry {
-            script_hash,
+        let entry = BalanceHistoryData {
             block_height: 0,
             delta: 0,
             balance: 0,
@@ -330,9 +336,9 @@ impl BalanceHistoryDB {
     /// Get the balance entry for a given script_hash at or before the target block height
     pub fn get_balance_at_block_height(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: &USDBScriptHash,
         target_height: u32,
-    ) -> Result<BalanceHistoryEntry, String> {
+    ) -> Result<BalanceHistoryData, String> {
         // Make the search key
         let search_key = Self::make_balance_history_key(script_hash, target_height);
 
@@ -342,13 +348,17 @@ impl BalanceHistoryDB {
             msg
         })?;
 
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_prefix_same_as_start(true); // Use prefix seek
+        read_opts.set_total_order_seek(false); // Disable total order seek for performance and use prefix seek
+
         // Create an iterator in reverse mode
         // IteratorMode::From(key, Reverse) positions at:
         // 1. If the key exists, it positions at that key.
         // 2. If the key does not exist, it positions at the first key less than the key (i.e., the previous height).
         let mut iter = self
             .db
-            .iterator_cf(cf, IteratorMode::From(&search_key, Direction::Reverse));
+            .iterator_cf_opt(cf, read_opts, IteratorMode::From(&search_key, Direction::Reverse));
 
         if let Some(item) = iter.next() {
             let (found_key, found_val) = item.map_err(|e| {
@@ -379,8 +389,7 @@ impl BalanceHistoryDB {
                 );
 
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
-                let entry = BalanceHistoryEntry {
-                    script_hash,
+                let entry = BalanceHistoryData {
                     block_height,
                     delta,
                     balance,
@@ -393,8 +402,7 @@ impl BalanceHistoryDB {
         // If the iterator is empty, or has moved to the previous USDBScriptHash,
         // it means there are no records for this address before the target_height.
         // The default balance is 0. and block_height is 0.
-        let entry = BalanceHistoryEntry {
-            script_hash,
+        let entry = BalanceHistoryData {
             block_height: 0,
             delta: 0,
             balance: 0,
@@ -409,7 +417,13 @@ impl BalanceHistoryDB {
         script_hash: USDBScriptHash,
         range_begin: u32,
         range_end: u32,
-    ) -> Result<Vec<BalanceHistoryEntry>, String> {
+    ) -> Result<Vec<BalanceHistoryData>, String> {
+        assert!(
+            range_begin < range_end,
+            "Invalid range: {} >= {}",
+            range_begin,
+            range_end
+        );
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
             error!("{}", msg);
@@ -417,12 +431,16 @@ impl BalanceHistoryDB {
         })?;
 
         // Create the start key
-        let start_key = Self::make_balance_history_key(script_hash, range_begin);
+        let start_key = Self::make_balance_history_key(&script_hash, range_begin);
+
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_prefix_same_as_start(true); // Use prefix seek
+        read_opts.set_total_order_seek(false); // Disable total order seek for performance and use prefix seek
 
         // Create an iterator starting from start_key in forward direction
         let iter = self
             .db
-            .iterator_cf(cf, IteratorMode::From(&start_key, Direction::Forward));
+            .iterator_cf_opt(cf, read_opts, IteratorMode::From(&start_key, Direction::Forward));
 
         let mut results = Vec::new();
         for item in iter {
@@ -455,8 +473,7 @@ impl BalanceHistoryDB {
             // Parse Value
             let (delta, balance) = Self::parse_balance_from_value(&value);
 
-            let entry = BalanceHistoryEntry {
-                script_hash,
+            let entry = BalanceHistoryData {
                 block_height: height,
                 delta,
                 balance,
@@ -536,9 +553,9 @@ impl BalanceHistoryDB {
         ops.set_sync(false);
 
         // Value format: USDBScriptHash (32 bytes) + amount (u64)
-        let mut value = Vec::with_capacity(USDBScriptHash::LEN + 8);
-        value.extend_from_slice(script_hash.as_ref() as &[u8]);
-        value.extend_from_slice(&amount.to_be_bytes());
+        let mut value = [0u8; USDBScriptHash::LEN + 8];
+        value[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref() as &[u8]);
+        value[USDBScriptHash::LEN..].copy_from_slice(&amount.to_be_bytes());
 
         let key = Self::make_utxo_key(outpoint);
 
@@ -566,9 +583,10 @@ impl BalanceHistoryDB {
 
         for (outpoint, utxo) in new_utxos {
             // Value format: USDBScriptHash (32 bytes) + amount (u64)
-            let mut value = Vec::with_capacity(USDBScriptHash::LEN + 8);
-            value.extend_from_slice(utxo.script_hash.as_ref() as &[u8]);
-            value.extend_from_slice(&utxo.value.to_be_bytes());
+            let mut value = [0u8; USDBScriptHash::LEN + 8];
+            value[..USDBScriptHash::LEN].copy_from_slice(utxo.script_hash.as_ref() as &[u8]);
+            value[USDBScriptHash::LEN..].copy_from_slice(&utxo.value.to_be_bytes());
+
             let key = Self::make_utxo_key(outpoint);
 
             batch.put_cf(cf, key, value);
@@ -600,7 +618,7 @@ impl BalanceHistoryDB {
 
         let key = Self::make_utxo_key(outpoint);
 
-        match self.db.get_cf(cf, key) {
+        match self.db.get_pinned_cf(cf, key) {
             Ok(Some(value)) => {
                 let utxo_entry = Self::parse_utxo_from_value(&value);
                 Ok(Some(utxo_entry))
@@ -624,7 +642,7 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        let keys: Vec<Vec<u8>> = outpoints
+        let keys: Vec<[u8; UTXO_KEY_LEN]> = outpoints
             .iter()
             .map(|outpoint| Self::make_utxo_key(&outpoint))
             .collect();
@@ -633,7 +651,7 @@ impl BalanceHistoryDB {
         let cf_keys = keys.iter().map(|k| (cf, k.as_slice()));
 
         // Execute batch read
-        let results = self.db.multi_get_cf(cf_keys);
+        let results = self.db.multi_get_pinned_cf(cf_keys);
 
         // Parse results
         let mut entries = Vec::with_capacity(outpoints.len());
@@ -935,10 +953,10 @@ impl BalanceHistoryDB {
         })?;
         for (block_hash, block_entry) in blocks {
             // Value format: block_file_index (u32) + block_file_offset (u64) + block_record_index (u32)
-            let mut value = Vec::with_capacity(BLOCKS_VALUE_LEN);
-            value.extend_from_slice(&block_entry.block_file_index.to_be_bytes());
-            value.extend_from_slice(&block_entry.block_file_offset.to_be_bytes());
-            value.extend_from_slice(&block_entry.block_record_index.to_be_bytes());
+            let mut value = [0u8; BLOCKS_VALUE_LEN];
+            value[..4].copy_from_slice(&block_entry.block_file_index.to_be_bytes());
+            value[4..12].copy_from_slice(&block_entry.block_file_offset.to_be_bytes());
+            value[12..16].copy_from_slice(&block_entry.block_record_index.to_be_bytes());
 
             batch.put_cf(cf, block_hash.as_ref() as &[u8], value);
         }
@@ -1137,7 +1155,7 @@ mod tests {
         let script_hash = script.to_usdb_script_hash();
         let block_height = 123456;
 
-        let key = BalanceHistoryDB::make_balance_history_key(script_hash, block_height);
+        let key = BalanceHistoryDB::make_balance_history_key(&script_hash, block_height);
         let parsed_height = BalanceHistoryDB::parse_block_height_from_key(&key);
 
         assert_eq!(block_height, parsed_height);
