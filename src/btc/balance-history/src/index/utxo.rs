@@ -1,8 +1,8 @@
-use bitcoincore_rpc::bitcoin::Txid;
+use crate::config::BalanceHistoryConfig;
 use bitcoincore_rpc::bitcoin::OutPoint;
+use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
 use std::sync::Mutex;
-use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
@@ -23,25 +23,23 @@ impl UTXOCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
         let max_capacity = config.sync.utxo_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
         // let max_capacity: usize = 1024 * 1024 * 20; // For testing, limit to 80 million entries
-        info!("UTXOCache max capacity: {} entries, total {} bytes", max_capacity, config.sync.utxo_cache_bytes);
-        
-        let cache = Mutex::new(LruCache::new(std::num::NonZeroUsize::new(max_capacity).unwrap()));
-        Self {
-            cache,
-        }
+        info!(
+            "UTXOCache max capacity: {} entries, total {} bytes",
+            max_capacity, config.sync.utxo_cache_bytes
+        );
+
+        let cache = Mutex::new(LruCache::new(
+            std::num::NonZeroUsize::new(max_capacity).unwrap(),
+        ));
+        Self { cache }
     }
 
     pub fn get_count(&self) -> u64 {
         self.cache.lock().unwrap().len() as u64
     }
 
-    pub fn put(
-        &self,
-        outpoint: OutPoint,
-        script_hash: USDBScriptHash,
-        value: u64,
-    ) {
-         let item = CacheTxOut { value, script_hash };
+    pub fn put(&self, outpoint: OutPoint, script_hash: USDBScriptHash, value: u64) {
+        let item = CacheTxOut { value, script_hash };
         self.cache.lock().unwrap().put(outpoint, item);
     }
 
@@ -92,8 +90,8 @@ pub type UTXOCacheRef = std::sync::Arc<UTXOCache>;
 
 #[cfg(test)]
 mod tests {
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use super::*;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
 
     #[test]
     fn test_utxo_cache_size() {
@@ -103,7 +101,6 @@ mod tests {
         let available_memory = sys.available_memory();
 
         let mut cache = LruCache::new(std::num::NonZeroUsize::new(count + 1000).unwrap());
-        
 
         // Append random entries up to count
         let value = CacheTxOut {

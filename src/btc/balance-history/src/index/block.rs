@@ -385,6 +385,28 @@ impl BatchBlockPreloader {
         use rayon::prelude::*;
 
         // Collect all addresses involved
+        let blocks = data.blocks.lock().unwrap();
+        let addresses: HashSet<_> = blocks
+            .par_iter()
+            .flat_map(|block| block.txdata.par_iter())
+            .flat_map(|tx| {
+                // Collect vin addresses
+                let vin_hashes = tx
+                    .vin
+                    .par_iter()
+                    .map(|vin| vin.cache_tx_out.as_ref().unwrap().script_hash.clone());
+
+                // Collect vout addresses
+                let vout_hashes = tx
+                    .vout
+                    .par_iter()
+                    .map(|vout| vout.cache_tx_out.script_hash.clone());
+
+                vin_hashes.chain(vout_hashes)
+            })
+            .collect();
+
+        /*
         let mut addresses = HashSet::new();
         {
             let blocks = data.blocks.lock().unwrap();
@@ -403,6 +425,7 @@ impl BatchBlockPreloader {
                 }
             }
         }
+        */
 
         let mut sorted_addresses: Vec<_> = addresses.into_iter().collect();
         sorted_addresses.par_sort_unstable();
@@ -552,29 +575,22 @@ impl BatchBlockFlusher {
         utxo_list.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         // Then found all spent UTXOs to remove from db
-        let mut spent_utxo_list = Vec::new();
-        {
-            // Traverse all vin to find spent ones
+        let mut spent_utxo_list: Vec<_> = {
+            use rayon::prelude::*;
             let blocks = data.blocks.lock().unwrap();
-            let mut total = 0;
-            for block in blocks.iter() {
-                for tx in block.txdata.iter() {
-                    total += tx.vin.len();
-                }
-            }
 
-            spent_utxo_list.reserve(total);
-
-            for block in blocks.iter() {
-                for tx in block.txdata.iter() {
-                    for vin in tx.vin.iter() {
-                        if vin.need_flush {
-                            spent_utxo_list.push(vin.outpoint.clone());
-                        }
-                    }
-                }
-            }
-        }
+            blocks
+                .par_iter()
+                .flat_map(|block| {
+                    block.txdata.par_iter().flat_map(|tx| {
+                        tx.vin
+                            .par_iter()
+                            .filter(|vin| vin.need_flush)
+                            .map(|vin| vin.outpoint.clone())
+                    })
+                })
+                .collect()
+        };
 
         spent_utxo_list.par_sort_unstable();
 
