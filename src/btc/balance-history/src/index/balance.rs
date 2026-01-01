@@ -3,28 +3,23 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
+use crate::types::{BalanceHistoryData, BalanceHistoryDataRef};
 
-// Cache item size estimate: USDBScriptHash (32 bytes) + AddressBalanceItem (~20 bytes) ~ 52 bytes
+// Cache item size estimate: USDBScriptHash (32 bytes) + BalanceHistoryData (~20 bytes) ~ 52 bytes
 const CACHE_ITEM_SIZE: usize =
-    std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<AddressBalanceItem>();
+    std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<BalanceHistoryData>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
-#[derive(Debug, Clone)]
-pub struct AddressBalanceItem {
-    pub block_height: u32,
-    pub delta: i64,
-    pub balance: u64,
-}
 
 pub struct AddressBalanceCache {
-    cache: Mutex<LruCache<USDBScriptHash, AddressBalanceItem>>, // script_hash -> balance
+    cache: Mutex<LruCache<USDBScriptHash, BalanceHistoryDataRef>>, // script_hash -> balance
 }
 
 impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
         let max_capacity =
             config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
-        // let max_capacity: usize = 1024 * 1024 * 80; // For testing, limit to 90 million entries
+        let max_capacity: usize = 1024 * 1024 * 100; // For testing, limit to 100 million entries
         info!(
             "AddressBalanceCache max capacity: {} entries, total {} bytes",
             max_capacity, config.sync.balance_cache_bytes
@@ -39,20 +34,15 @@ impl AddressBalanceCache {
         self.cache.lock().unwrap().len() as u64
     }
 
-    pub fn put(&self, script_hash: USDBScriptHash, entry: AddressBalanceItem) {
-        let item = AddressBalanceItem {
-            block_height: entry.block_height,
-            delta: entry.delta,
-            balance: entry.balance,
-        };
-        self.cache.lock().unwrap().put(script_hash, item);
+    pub fn put(&self, script_hash: USDBScriptHash, data: BalanceHistoryDataRef) {
+        self.cache.lock().unwrap().put(script_hash, data);
     }
 
     pub fn get(
         &self,
         script_hash: USDBScriptHash,
         block_height: u32,
-    ) -> Option<AddressBalanceItem> {
+    ) -> Option<BalanceHistoryDataRef> {
         if let Some(cached) = self.cache.lock().unwrap().get(&script_hash) {
             assert!(
                 cached.block_height <= block_height,
@@ -92,7 +82,7 @@ mod tests {
 
         for i in 0..count {
             let script_hash = USDBScriptHash::hash(&i.to_le_bytes());
-            let item = AddressBalanceItem {
+            let item = BalanceHistoryData {
                 block_height: i as u32,
                 delta: i as i64,
                 balance: i as u64,

@@ -1,5 +1,6 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
+use crate::types::{OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
@@ -34,15 +35,10 @@ pub struct BalanceHistoryEntry {
     pub balance: u64,
 }
 
-pub struct UTXOEntry {
-    pub script_hash: USDBScriptHash,
-    pub amount: u64,
-}
-
 #[derive(Debug, Clone)]
 pub struct BlockEntry {
-    pub block_file_index: u32,     // which blk file
-    pub block_file_offset: u64,    // offset in the blk file
+    pub block_file_index: u32,   // which blk file
+    pub block_file_offset: u64,  // offset in the blk file
     pub block_record_index: u32, // index in the block record cache
 }
 
@@ -185,7 +181,7 @@ impl BalanceHistoryDB {
         (delta, balance)
     }
 
-    fn make_utxo_key(outpoint: &bitcoincore_rpc::bitcoin::OutPoint) -> Vec<u8> {
+    fn make_utxo_key(outpoint: &OutPoint) -> Vec<u8> {
         let mut key = Vec::with_capacity(UTXO_KEY_LEN);
         key.extend_from_slice(outpoint.txid.as_ref());
         key.extend_from_slice(&outpoint.vout.to_be_bytes());
@@ -202,16 +198,20 @@ impl BalanceHistoryDB {
         let amount_bytes = &value[USDBScriptHash::LEN..USDBScriptHash::LEN + 8];
 
         let script_hash = USDBScriptHash::from_slice(script_hash_bytes).unwrap();
-        let amount = u64::from_be_bytes(amount_bytes.try_into().unwrap());
+        let value = u64::from_be_bytes(amount_bytes.try_into().unwrap());
 
         UTXOEntry {
             script_hash,
-            amount,
+            value,
         }
     }
 
     fn parse_block_from_value(value: &[u8]) -> BlockEntry {
-        assert!(value.len() == BLOCKS_VALUE_LEN, "Invalid Block value length {}", value.len());
+        assert!(
+            value.len() == BLOCKS_VALUE_LEN,
+            "Invalid Block value length {}",
+            value.len()
+        );
 
         let block_file_index_bytes = &value[0..4];
         let block_file_offset_bytes = &value[4..12];
@@ -553,8 +553,8 @@ impl BalanceHistoryDB {
 
     pub fn update_utxos_async(
         &self,
-        new_utxos: &Vec<(OutPoint, (USDBScriptHash, u64))>,
-        remove_utxos: &Vec<OutPoint>,
+        new_utxos: &Vec<(OutPointRef, UTXOEntryRef)>,
+        remove_utxos: &Vec<OutPointRef>,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
@@ -564,12 +564,11 @@ impl BalanceHistoryDB {
 
         let mut batch = WriteBatch::default();
 
-        for (outpoint, (script_hash, amount)) in new_utxos {
+        for (outpoint, utxo) in new_utxos {
             // Value format: USDBScriptHash (32 bytes) + amount (u64)
             let mut value = Vec::with_capacity(USDBScriptHash::LEN + 8);
-            value.extend_from_slice(script_hash.as_ref() as &[u8]);
-            value.extend_from_slice(&amount.to_be_bytes());
-
+            value.extend_from_slice(utxo.script_hash.as_ref() as &[u8]);
+            value.extend_from_slice(&utxo.value.to_be_bytes());
             let key = Self::make_utxo_key(outpoint);
 
             batch.put_cf(cf, key, value);
@@ -615,14 +614,20 @@ impl BalanceHistoryDB {
         }
     }
 
-    pub fn get_utxos_bulk(&self, outpoints: &[OutPoint]) -> Result<Vec<Option<UTXOEntry>>, String> {
+    pub fn get_utxos_bulk(
+        &self,
+        outpoints: &[OutPointRef],
+    ) -> Result<Vec<Option<UTXOEntry>>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
             error!("{}", msg);
             msg
         })?;
 
-        let keys: Vec<Vec<u8>> = outpoints.iter().map(Self::make_utxo_key).collect();
+        let keys: Vec<Vec<u8>> = outpoints
+            .iter()
+            .map(|outpoint| Self::make_utxo_key(&outpoint))
+            .collect();
 
         // Convert to iterator of (cf, key)
         let cf_keys = keys.iter().map(|k| (cf, k.as_slice()));
@@ -1023,9 +1028,13 @@ impl BalanceHistoryDB {
                 error!("{}", msg);
                 msg
             })?;
-            assert!(key.len() == BLOCKS_KEY_LEN, "Invalid Block key length {}", key.len());
+            assert!(
+                key.len() == BLOCKS_KEY_LEN,
+                "Invalid Block key length {}",
+                key.len()
+            );
             let block_hash = BlockHash::from_slice(&key).unwrap();
-            
+
             let block_entry = Self::parse_block_from_value(&value);
             results.insert(block_hash, block_entry);
         }
@@ -1069,11 +1078,13 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             msg
         })?;
-        self.db.delete_cf(cf, META_KEY_LAST_BLOCK_FILE_INDEX).map_err(|e| {
-            let msg = format!("Failed to clear meta last block file index: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        self.db
+            .delete_cf(cf, META_KEY_LAST_BLOCK_FILE_INDEX)
+            .map_err(|e| {
+                let msg = format!("Failed to clear meta last block file index: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
 
         // Clear BLOCKS_CF and BLOCK_HEIGHTS_CF
         let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
@@ -1286,7 +1297,8 @@ mod tests {
         assert!(utxo_entry.is_none());
 
         // Consume UTXO
-        db.update_utxos_async(&vec![], &vec![outpoint.clone()]).unwrap();
+        db.update_utxos_async(&vec![], &vec![outpoint.clone()])
+            .unwrap();
 
         // Try to get UTXO again, should be None
         let utxo_entry = db.get_utxo(&outpoint).unwrap();

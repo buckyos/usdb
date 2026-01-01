@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod bench;
 mod btc;
 mod config;
 mod db;
@@ -8,7 +9,7 @@ mod output;
 mod service;
 mod status;
 mod tool;
-mod bench;
+mod types;
 
 #[macro_use]
 extern crate log;
@@ -19,8 +20,8 @@ use crate::index::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
 use crate::service::BalanceHistoryRpcServer;
 use clap::{Parser, Subcommand};
-use usdb_util::LogConfig;
 use std::sync::Arc;
+use usdb_util::LogConfig;
 
 #[derive(Parser, Debug)]
 #[command(name = "balance-history")]
@@ -242,7 +243,10 @@ async fn main() {
             // Init file logging
             let config = LogConfig {
                 service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME)),
+                file_name: Some(format!(
+                    "{}_snapshot",
+                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
+                )),
                 console: false,
             };
             usdb_util::init_log(config);
@@ -289,7 +293,10 @@ async fn main() {
             // Init file logging
             let config = LogConfig {
                 service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(format!("{}_verify_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME)),
+                file_name: Some(format!(
+                    "{}_verify_snapshot",
+                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
+                )),
                 console: true,
             };
             usdb_util::init_log(config);
@@ -320,7 +327,7 @@ async fn main() {
                 }
             };
             let address_db = Arc::new(db);
-            
+
             let block_height = 400_000; // Example block height
             let db = match crate::db::SnapshotDB::open_by_height(&root_dir, block_height, false) {
                 Ok(database) => database,
@@ -332,9 +339,7 @@ async fn main() {
             };
             let snapshot_db = Arc::new(db);
 
-            let electrs_client = match usdb_util::ElectrsClient::new(
-                &config.electrs.rpc_url(),
-            ) {
+            let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
                 Ok(client) => client,
                 Err(e) => {
                     error!("Failed to create electrs client: {}", e);
@@ -344,8 +349,12 @@ async fn main() {
             };
             let electrs_client = Arc::new(electrs_client);
 
-            let verifier =
-                crate::index::SnapshotVerifier::new(config.clone(), electrs_client,address_db, snapshot_db);
+            let verifier = crate::index::SnapshotVerifier::new(
+                config.clone(),
+                electrs_client,
+                address_db,
+                snapshot_db,
+            );
             if let Err(e) = verifier.verify(1).await {
                 error!("Failed to verify snapshot: {}", e);
                 output.println(&format!("Failed to verify snapshot: {}", e));

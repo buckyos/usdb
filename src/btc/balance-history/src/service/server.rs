@@ -145,7 +145,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         if let Some(height) = params.block_height {
             let ret = self
                 .db
-                .get_balance_at_block_height(params.script_hash, height)
+                .get_balance_at_block_height(&params.script_hash, height)
                 .map_err(|e| JsonError {
                     code: ErrorCode::InternalError,
                     message: format!("Failed to get balance at block height {}: {}", height, e),
@@ -157,6 +157,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
                 balance: ret.balance,
                 delta: ret.delta,
             };
+            
             Ok(vec![ret])
         } else if let Some(range) = params.block_range {
             let ret = self

@@ -1,8 +1,11 @@
-use super::balance::{AddressBalanceCacheRef, AddressBalanceItem};
-use super::utxo::{CacheTxOut, UTXOCacheRef};
+use super::balance::AddressBalanceCacheRef;
+use super::utxo::UTXOCacheRef;
 use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
+use crate::types::{
+    BalanceHistoryData, BalanceHistoryDataRef, OutPointRef, UTXOEntry, UTXOEntryRef,
+};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
 use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
@@ -16,19 +19,19 @@ struct BlockTxIndex {
 }
 
 struct VOutUtxoInfo {
-    item: CacheTxOut,
+    item: UTXOEntryRef,
     spend: bool, // Whether this UTXO is spent in the batch
 }
 
 pub struct PreloadVIn {
-    pub outpoint: OutPoint,
-    pub cache_tx_out: Option<CacheTxOut>,
+    pub outpoint: OutPointRef,
+    pub cache_tx_out: Option<UTXOEntryRef>,
     pub need_flush: bool,
 }
 
 pub struct PreloadVOut {
-    pub outpoint: OutPoint,
-    pub cache_tx_out: CacheTxOut,
+    pub outpoint: OutPointRef,
+    pub cache_tx_out: UTXOEntryRef,
 }
 
 pub struct PreloadTx {
@@ -50,8 +53,8 @@ struct VInPosition {
 pub struct BatchBlockData {
     block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
-    vout_utxos: Arc<Mutex<HashMap<OutPoint, VOutUtxoInfo>>>,
-    balances: Arc<RwLock<HashMap<USDBScriptHash, BalanceHistoryEntry>>>,
+    vout_utxos: Arc<Mutex<HashMap<OutPointRef, VOutUtxoInfo>>>,
+    balances: Arc<RwLock<HashMap<USDBScriptHash, BalanceHistoryData>>>,
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
 
     bench_mark: BatchBlockBenchMarkRef,
@@ -219,7 +222,7 @@ impl BatchBlockPreloader {
 
                     // Here we just use None as placeholder, the real UTXO will be loaded in batch later
                     let preload_vin = PreloadVIn {
-                        outpoint: outpoint.clone(),
+                        outpoint: Arc::new(outpoint.clone()),
                         cache_tx_out: None,
                         need_flush: true,
                     };
@@ -238,14 +241,14 @@ impl BatchBlockPreloader {
                     vout: n as u32,
                 };
 
-                let cache_tx_out = CacheTxOut {
+                let cache_tx_out = UTXOEntry {
                     value: vout.value.to_sat(),
                     script_hash: vout.script_pubkey.to_usdb_script_hash(),
                 };
 
                 let preload_vout = PreloadVOut {
-                    outpoint,
-                    cache_tx_out,
+                    outpoint: Arc::new(outpoint),
+                    cache_tx_out: Arc::new(cache_tx_out),
                 };
                 preload_tx.vout.push(preload_vout);
             }
@@ -351,7 +354,7 @@ impl BatchBlockPreloader {
         Ok(())
     }
 
-    fn fetch_utxos(&self, outpoints: &[OutPoint]) -> Result<Vec<CacheTxOut>, String> {
+    fn fetch_utxos(&self, outpoints: &[OutPointRef]) -> Result<Vec<UTXOEntryRef>, String> {
         // First try to get from db by bulk
         let all = self.db.get_utxos_bulk(outpoints)?;
 
@@ -359,17 +362,15 @@ impl BatchBlockPreloader {
         let mut result = Vec::with_capacity(outpoints.len());
         for (i, item) in all.into_iter().enumerate() {
             if let Some(utxo) = item {
-                result.push(CacheTxOut {
-                    value: utxo.amount,
-                    script_hash: utxo.script_hash,
-                });
+                result.push(Arc::new(utxo));
             } else {
                 // Load from rpc
                 let (script, amount) = self.btc_client.get_utxo(&outpoints[i])?;
-                result.push(CacheTxOut {
+                let entry = UTXOEntry {
                     value: amount.to_sat(),
                     script_hash: script.to_usdb_script_hash(),
-                });
+                };
+                result.push(Arc::new(entry));
             }
         }
 
@@ -436,7 +437,7 @@ impl BatchBlockPreloader {
         );
 
         // Batch load balances
-        let result: Vec<Result<BalanceHistoryEntry, String>> = sorted_addresses
+        let result: Vec<Result<(USDBScriptHash, BalanceHistoryDataRef), String>> = sorted_addresses
             .into_par_iter()
             .map(|script_hash| {
                 // First load from balance cache
@@ -444,32 +445,25 @@ impl BatchBlockPreloader {
                     .balance_cache
                     .get(script_hash, target_block_height as u32)
                 {
-                    let entry = BalanceHistoryEntry {
-                        script_hash,
-                        block_height: cached.block_height,
-                        delta: cached.delta,
-                        balance: cached.balance,
-                    };
-
-                    return Ok(entry);
+                    return Ok((script_hash, cached));
                 }
 
                 // Then load from db
                 let balance = self
                     .db
-                    .get_balance_at_block_height(script_hash, target_block_height as u32)?;
+                    .get_balance_at_block_height(&script_hash, target_block_height as u32)?;
                 data.bench_mark
                     .preload_balances_from_db_counts
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                Ok(balance)
+                Ok((script_hash, Arc::new(balance)))
             })
             .collect();
 
         let mut balances_map = data.balances.write().unwrap();
         for res in result {
-            let balance = res?;
-            balances_map.insert(balance.script_hash.clone(), balance);
+            let (script_hash, balance) = res?;
+            balances_map.insert(script_hash, balance.as_ref().clone());
         }
 
         Ok(())
@@ -507,14 +501,8 @@ impl BatchBlockFlusher {
         {
             let balances = data.balances.read().unwrap();
             for (script_hash, entry) in balances.iter() {
-                self.balance_cache.put(
-                    *script_hash,
-                    AddressBalanceItem {
-                        block_height: entry.block_height,
-                        delta: entry.delta,
-                        balance: entry.balance,
-                    },
-                );
+                self.balance_cache
+                    .put(*script_hash, Arc::new(entry.clone()));
             }
 
             data.bench_mark
@@ -557,18 +545,10 @@ impl BatchBlockFlusher {
                     continue;
                 }
 
-                utxo_list.push((
-                    outpoint.clone(),
-                    (
-                        vout_utxo_info.item.script_hash.clone(),
-                        vout_utxo_info.item.value,
-                    ),
-                ));
-                self.utxo_cache.put(
-                    outpoint.clone(),
-                    vout_utxo_info.item.script_hash.clone(),
-                    vout_utxo_info.item.value,
-                );
+                utxo_list.push((outpoint.clone(), vout_utxo_info.item.clone()));
+
+                self.utxo_cache
+                    .put(outpoint.clone(), vout_utxo_info.item.clone());
             }
         }
 

@@ -1,22 +1,16 @@
 use crate::config::BalanceHistoryConfig;
+use crate::types::{OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
 use std::sync::Mutex;
-use usdb_util::USDBScriptHash;
 
-// Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
-const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<CacheTxOut>();
+// Cache item size estimate: OutPoint (32 + 4 bytes) + UTXOEntry (8 + 32 bytes) ~ 76 bytes
+const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<UTXOEntry>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
-#[derive(Debug, Clone)]
-pub struct CacheTxOut {
-    pub script_hash: USDBScriptHash,
-    pub value: u64,
-}
-
 pub struct UTXOCache {
-    cache: Mutex<LruCache<OutPoint, CacheTxOut>>, // (block_height, vout_index)
+    cache: Mutex<LruCache<OutPointRef, UTXOEntryRef>>,
 }
 
 impl UTXOCache {
@@ -38,12 +32,11 @@ impl UTXOCache {
         self.cache.lock().unwrap().len() as u64
     }
 
-    pub fn put(&self, outpoint: OutPoint, script_hash: USDBScriptHash, value: u64) {
-        let item = CacheTxOut { value, script_hash };
-        self.cache.lock().unwrap().put(outpoint, item);
+    pub fn put(&self, outpoint: OutPointRef, utxo: UTXOEntryRef) {
+        self.cache.lock().unwrap().put(outpoint, utxo);
     }
 
-    pub fn get(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
+    pub fn get(&self, outpoint: &OutPoint) -> Option<UTXOEntryRef> {
         if let Some(cached) = self.cache.lock().unwrap().get(outpoint) {
             return Some(cached.clone());
         }
@@ -51,7 +44,7 @@ impl UTXOCache {
         None
     }
 
-    pub fn spend(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
+    pub fn spend(&self, outpoint: &OutPoint) -> Option<UTXOEntryRef> {
         if let Some(cached) = self.cache.lock().unwrap().pop(outpoint) {
             return Some(cached);
         }
@@ -103,7 +96,7 @@ mod tests {
         let mut cache = LruCache::new(std::num::NonZeroUsize::new(count + 1000).unwrap());
 
         // Append random entries up to count
-        let value = CacheTxOut {
+        let value = UTXOEntry {
             script_hash: USDBScriptHash::from_slice(&[0u8; 32]).unwrap(),
             value: 1000,
         };
