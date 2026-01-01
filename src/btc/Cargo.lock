@@ -432,6 +432,7 @@ dependencies = [
  "jsonrpc-http-server",
  "jsonrpsee",
  "log",
+ "lru",
  "moka",
  "num_cpus",
  "rayon",

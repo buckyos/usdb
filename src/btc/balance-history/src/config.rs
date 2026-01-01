@@ -11,9 +11,12 @@ fn get_cache_size() -> usize {
     let mut sys = sysinfo::System::new_all();
     sys.refresh_memory();
     let available_memory = sys.available_memory();
+    info!("Available memory: {} bytes", available_memory);
 
-    // Leave 5 GB free
-    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 5);
+    // Leave 10 GB free
+    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 10);
+    info!("Calculated cache size: {} bytes", cache_size);
+
     cache_size as usize
 }
 

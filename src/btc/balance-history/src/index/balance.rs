@@ -1,11 +1,13 @@
 use crate::config::BalanceHistoryConfig;
-use moka::sync::Cache;
+use lru::LruCache;
+use std::num::{NonZero, NonZeroUsize};
 use std::time::Duration;
+use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: USDBScriptHash (32 bytes) + AddressBalanceItem (~20 bytes) ~ 52 bytes
 const CACHE_ITEM_SIZE: usize = std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<AddressBalanceItem>();
-const MOKA_OVERHEAD_BYTES: usize = 300; // Estimated overhead per entry in moka
+const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
 #[derive(Debug, Clone)]
 pub struct AddressBalanceItem {
@@ -15,25 +17,22 @@ pub struct AddressBalanceItem {
 }
 
 pub struct AddressBalanceCache {
-    cache: Cache<USDBScriptHash, AddressBalanceItem>, // script_hash -> balance
+    cache: Mutex<LruCache<USDBScriptHash, AddressBalanceItem>>, // script_hash -> balance
 }
 
 impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity = config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + MOKA_OVERHEAD_BYTES);
+        let max_capacity = config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+        // let max_capacity: usize = 1024 * 1024 * 80; // For testing, limit to 90 million entries
         info!("AddressBalanceCache max capacity: {} entries, total {} bytes", max_capacity, config.sync.balance_cache_bytes);
         
-        let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60 * 60 * 4)) // 4 hours TTL
-            .max_capacity(max_capacity as u64) // Max entries based on config
-            .initial_capacity(1024 * 1024 * 10)
-            .build();
+        let cache = Mutex::new(LruCache::new(NonZeroUsize::new(max_capacity).unwrap()));
 
         Self { cache }
     }
 
     pub fn get_count(&self) -> u64 {
-        self.cache.entry_count()
+        self.cache.lock().unwrap().len() as u64
     }
 
     pub fn put(&self, script_hash: USDBScriptHash, entry: AddressBalanceItem) {
@@ -42,7 +41,7 @@ impl AddressBalanceCache {
             delta: entry.delta,
             balance: entry.balance,
         };
-        self.cache.insert(script_hash, item);
+        self.cache.lock().unwrap().put(script_hash, item);
     }
 
     pub fn get(
@@ -50,7 +49,7 @@ impl AddressBalanceCache {
         script_hash: USDBScriptHash,
         block_height: u32,
     ) -> Option<AddressBalanceItem> {
-        if let Some(cached) = self.cache.get(&script_hash) {
+        if let Some(cached) = self.cache.lock().unwrap().get(&script_hash) {
             assert!(
                 cached.block_height <= block_height,
                 "Inconsistent cache state for script_hash: {} {} < {}",
@@ -59,14 +58,14 @@ impl AddressBalanceCache {
                 block_height
             );
 
-            return Some(cached);
+            return Some(cached.clone());
         }
 
         None
     }
 
     pub fn clear(&self) {
-        self.cache.invalidate_all();
+        self.cache.lock().unwrap().clear();
     }
 }
 
@@ -80,10 +79,13 @@ mod tests {
 
     #[test]
     fn test_address_balance_cache_size() {
-        let count = 1024 * 1024 * 10; // 10 million entries
-        let cache = Cache::builder()
-                .max_capacity(count * 10)
-                .build();
+        let count = 1024 * 1024 * 20; // 20 million entries
+
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_memory();
+        let available_memory = sys.available_memory();
+
+        let mut cache = LruCache::new(NonZeroUsize::new(count + 1000).unwrap());
 
         for i in 0..count {
             let script_hash = USDBScriptHash::hash(&i.to_le_bytes());
@@ -92,12 +94,18 @@ mod tests {
                 delta: i as i64,
                 balance: i as u64,
             };
-            cache.insert(script_hash, item);
+            cache.put(script_hash, item);
         }
+
+        sys.refresh_memory();
+        let available_memory_after = sys.available_memory();
+        let used_memory = available_memory - available_memory_after;
+        let item_memory = used_memory / (count as u64);
+        println!("Used memory for cache: {} bytes", used_memory);
+        println!("Estimated memory per item: {} bytes", item_memory);
 
         // assert_eq!(cache.entry_count(), count as u64);
 
-        println!("Cache entry count: {}", cache.entry_count());
-        std::thread::sleep(std::time::Duration::from_secs(1000));
+        println!("Cache entry count: {}", cache.len());
     }
 }

@@ -437,7 +437,7 @@ impl BatchBlockPreloader {
                     .get_balance_at_block_height(script_hash, target_block_height as u32)?;
                 data.bench_mark
                     .preload_balances_from_db_counts
-                    .store(1, std::sync::atomic::Ordering::Relaxed);
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 Ok(balance)
             })

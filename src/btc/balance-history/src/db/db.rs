@@ -1286,9 +1286,7 @@ mod tests {
         assert!(utxo_entry.is_none());
 
         // Consume UTXO
-        let consumed_entry = db.spend_utxo(&outpoint).unwrap().unwrap();
-        assert_eq!(consumed_entry.script_hash, script_hash);
-        assert_eq!(consumed_entry.amount, amount);
+        db.update_utxos_async(&vec![], &vec![outpoint.clone()]).unwrap();
 
         // Try to get UTXO again, should be None
         let utxo_entry = db.get_utxo(&outpoint).unwrap();

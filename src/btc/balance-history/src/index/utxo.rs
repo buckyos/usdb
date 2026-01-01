@@ -1,13 +1,14 @@
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{OutPoint};
-use moka::sync::Cache;
+use lru::LruCache;
+use std::sync::Mutex;
 use std::time::Duration;
 use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: OutPoint (32 + 4 bytes) + CacheTxOut (8 + 32 bytes) ~ 76 bytes
 const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<CacheTxOut>();
-const MOKA_OVERHEAD_BYTES: usize = 300; // Estimated overhead per entry in moka
+const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
 #[derive(Debug, Clone)]
 pub struct CacheTxOut {
@@ -16,27 +17,23 @@ pub struct CacheTxOut {
 }
 
 pub struct UTXOCache {
-    cache: Cache<OutPoint, CacheTxOut>, // (block_height, vout_index)
+    cache: Mutex<LruCache<OutPoint, CacheTxOut>>, // (block_height, vout_index)
 }
 
 impl UTXOCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity = config.sync.utxo_cache_bytes / (CACHE_ITEM_SIZE + MOKA_OVERHEAD_BYTES);
+        let max_capacity = config.sync.utxo_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+        // let max_capacity: usize = 1024 * 1024 * 20; // For testing, limit to 80 million entries
         info!("UTXOCache max capacity: {} entries, total {} bytes", max_capacity, config.sync.utxo_cache_bytes);
         
-        let cache = Cache::builder()
-            .time_to_live(Duration::from_secs(60 * 60 * 4)) // 4 hours TTL
-            .max_capacity(max_capacity as u64) // Max entries based on config
-            .initial_capacity(1024 * 1024 * 16)
-            .build();
-
+        let cache = Mutex::new(LruCache::new(std::num::NonZeroUsize::new(max_capacity).unwrap()));
         Self {
             cache,
         }
     }
 
     pub fn get_count(&self) -> u64 {
-        self.cache.entry_count()
+        self.cache.lock().unwrap().len() as u64
     }
 
     pub fn put(
@@ -45,20 +42,20 @@ impl UTXOCache {
         script_hash: USDBScriptHash,
         value: u64,
     ) {
-        self.cache
-            .insert(outpoint, CacheTxOut { value, script_hash });
+         let item = CacheTxOut { value, script_hash };
+        self.cache.lock().unwrap().put(outpoint, item);
     }
 
     pub fn get(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
-        if let Some(cached) = self.cache.get(outpoint) {
-            return Some(cached)
+        if let Some(cached) = self.cache.lock().unwrap().get(outpoint) {
+            return Some(cached.clone());
         }
 
         None
     }
 
     pub fn spend(&self, outpoint: &OutPoint) -> Option<CacheTxOut> {
-        if let Some(cached) = self.cache.remove(outpoint) {
+        if let Some(cached) = self.cache.lock().unwrap().pop(outpoint) {
             return Some(cached);
         }
 
@@ -101,10 +98,12 @@ mod tests {
 
     #[test]
     fn test_utxo_cache_size() {
-        let count = 1024 * 1024 * 10; // 10 million entries
-        let cache = Cache::builder()
-                .max_capacity(count * 10)
-                .build();
+        let count = 1024 * 1024 * 20; // 20 million entries
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_memory();
+        let available_memory = sys.available_memory();
+
+        let mut cache = LruCache::new(std::num::NonZeroUsize::new(count + 1000).unwrap());
         
 
         // Append random entries up to count
@@ -118,10 +117,16 @@ mod tests {
                 txid: txid.clone(),
                 vout: i as u32,
             };
-            cache.insert(outpoint, value.clone());
+            cache.put(outpoint, value.clone());
         }
 
-        println!("Cache entry count: {}", cache.entry_count());
-        std::thread::sleep(std::time::Duration::from_secs(1000));
+        sys.refresh_memory();
+        let available_memory_after = sys.available_memory();
+        let used_memory = available_memory - available_memory_after;
+        let item_memory = used_memory / (count as u64);
+        println!("Used memory for cache: {} bytes", used_memory);
+        println!("Estimated memory per item: {} bytes", item_memory);
+
+        println!("Cache entry count: {}", cache.len());
     }
 }
