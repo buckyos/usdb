@@ -1,12 +1,12 @@
 use crate::config::BalanceHistoryConfig;
 use lru::LruCache;
-use std::num::{NonZero, NonZeroUsize};
-use std::time::Duration;
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 
 // Cache item size estimate: USDBScriptHash (32 bytes) + AddressBalanceItem (~20 bytes) ~ 52 bytes
-const CACHE_ITEM_SIZE: usize = std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<AddressBalanceItem>();
+const CACHE_ITEM_SIZE: usize =
+    std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<AddressBalanceItem>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
 #[derive(Debug, Clone)]
@@ -22,10 +22,14 @@ pub struct AddressBalanceCache {
 
 impl AddressBalanceCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity = config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+        let max_capacity =
+            config.sync.balance_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
         // let max_capacity: usize = 1024 * 1024 * 80; // For testing, limit to 90 million entries
-        info!("AddressBalanceCache max capacity: {} entries, total {} bytes", max_capacity, config.sync.balance_cache_bytes);
-        
+        info!(
+            "AddressBalanceCache max capacity: {} entries, total {} bytes",
+            max_capacity, config.sync.balance_cache_bytes
+        );
+
         let cache = Mutex::new(LruCache::new(NonZeroUsize::new(max_capacity).unwrap()));
 
         Self { cache }
@@ -70,7 +74,6 @@ impl AddressBalanceCache {
 }
 
 pub type AddressBalanceCacheRef = std::sync::Arc<AddressBalanceCache>;
-
 
 #[cfg(test)]
 mod tests {

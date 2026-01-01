@@ -1,8 +1,7 @@
 use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoin::{OutPoint};
+use bitcoincore_rpc::bitcoin::OutPoint;
 use lru::LruCache;
 use std::sync::Mutex;
-use std::time::Duration;
 use crate::config::BalanceHistoryConfig;
 use usdb_util::USDBScriptHash;
 

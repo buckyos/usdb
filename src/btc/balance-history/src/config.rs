@@ -8,13 +8,11 @@ fn default_batch_size() -> usize {
 }
 
 fn get_cache_size() -> usize {
-    let mut sys = sysinfo::System::new_all();
-    sys.refresh_memory();
-    let available_memory = sys.available_memory();
+    let available_memory = usdb_util::get_smart_memory_limit();
     info!("Available memory: {} bytes", available_memory);
 
-    // Leave 10 GB free
-    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 10);
+    // Leave 8 GB free
+    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 8);
     info!("Calculated cache size: {} bytes", cache_size);
 
     cache_size as usize

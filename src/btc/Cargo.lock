@@ -2231,6 +2231,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-docker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+dependencies = [
+ "once_cell",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4742,10 +4751,12 @@ dependencies = [
  "dirs",
  "electrum-client",
  "flexi_logger",
+ "is-docker",
  "log",
  "named-lock",
  "serde",
  "serde_json",
+ "sysinfo",
  "tokio",
 ]
 
