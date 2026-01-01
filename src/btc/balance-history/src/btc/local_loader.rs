@@ -35,6 +35,49 @@ impl BlockFileCache {
         file_index: usize,
         record_index: usize,
     ) -> Result<Block, String> {
+        let ret = self.cache.entry(file_index).or_try_insert_with(|| {
+            info!(
+                "Cache miss for blk file index {}, record {}",
+                file_index, record_index
+            );
+            let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
+            
+            // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
+            if file_index >= BLOCK_FILE_CACHE_MAX_CAPACITY as usize {
+                self.cache
+                    .invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
+            }
+
+            // Cache the blocks
+            let blocks = Arc::new(blocks);
+            Ok::<Arc<Vec<Block>>, String>(blocks)
+        });
+
+        if let Err(e) = &ret {
+            return Err(e.as_ref().clone());
+        }
+
+        let ret = ret.unwrap();
+        let blocks = ret.value();
+        if let Some(block) = blocks.get(record_index) {
+            // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
+            return Ok(block.clone());
+        } else {
+            let msg = format!(
+                "Record index {} out of bounds for file index {}",
+                record_index, file_index
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+    }
+
+    /*
+    pub fn get_block_by_file_index(
+        &self,
+        file_index: usize,
+        record_index: usize,
+    ) -> Result<Block, String> {
         if let Some(blocks) = self.cache.get(&file_index) {
             if let Some(block) = blocks.get(record_index) {
                 // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
@@ -77,6 +120,7 @@ impl BlockFileCache {
 
         Ok(record)
     }
+    */
 }
 
 struct BuildRecordResult {
@@ -506,7 +550,10 @@ impl BlockLocalLoader {
         cache.save_to_db(last_block_file_index, &self.db)?;
 
         info!("Block index saved to db {}", last_block_file_index);
-        self.output.println(&format!("Block index saved to db {}", last_block_file_index));
+        self.output.println(&format!(
+            "Block index saved to db {}",
+            last_block_file_index
+        ));
 
         Ok(())
     }

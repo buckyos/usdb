@@ -98,6 +98,8 @@ impl BatchBlockPreloader {
         &self,
         block_height_range: std::ops::Range<u32>,
     ) -> Result<BatchBlockDataRef, String> {
+        use rayon::prelude::*;
+
         assert!(
             block_height_range.start < block_height_range.end,
             "Invalid block height range {:?}",
@@ -110,9 +112,18 @@ impl BatchBlockPreloader {
 
         let begin = std::time::Instant::now();
         let mut blocks = Vec::with_capacity(block_height_range.len());
-        for height in block_height_range.clone() {
-            let block = self.btc_client.get_block_by_height(height)?;
+        let ret: Vec<Result<(u32, Block), String>> = block_height_range
+            .clone()
+            .into_par_iter()
+            .map(|height| {
+                self.btc_client
+                    .get_block_by_height(height)
+                    .map(|block| (height, block))
+            })
+            .collect();
 
+        for res in ret {
+            let (height, block) = res?;
             blocks.push((height, block));
         }
 
@@ -122,7 +133,6 @@ impl BatchBlockPreloader {
         );
 
         // Preprocess all blocks in parallel and got all vin and vout UTXOs
-        use rayon::prelude::*;
         let begin = std::time::Instant::now();
         let result: Vec<Result<PreloadBlock, String>> = blocks
             .into_par_iter()
@@ -711,9 +721,8 @@ impl BatchBlockBalanceProcessor {
 
         // Then update balances based on deltas serialized
         let mut balances = data.balances.write().unwrap();
-        for  block_history in block_history_results.iter_mut() {
+        for block_history in block_history_results.iter_mut() {
             for (&script_hash, history_entry) in block_history.iter_mut() {
-                
                 // First load current balance entry to get the last balance
                 let balance_entry = balances.get_mut(&script_hash).ok_or_else(|| {
                     let msg = format!(
