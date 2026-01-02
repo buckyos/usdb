@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
-use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script};
+use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script, ScriptBuf};
 use electrum_client::{Client, ElectrumApi, GetHistoryRes, Param, ScriptHash as ElectrumScriptHash};
-
+use crate::types::BalanceHistoryData;
 use crate::{ToUSDBScriptHash, USDBScriptHash};
 
 pub struct TxFullItem {
@@ -11,26 +11,51 @@ pub struct TxFullItem {
     pub vout: Vec<TxOut>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ElectrsBalanceHistory {
+    pub balance: u64,
+    pub script_buf: ScriptBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElectrsBalanceHistoryList {
+    pub history: Vec<BalanceHistoryData>,
+    pub script_buf: ScriptBuf,
+}
+
 impl TxFullItem {
     pub fn amount_delta_from_tx(
         &self,
         script_hash: &USDBScriptHash,
-    ) -> Result<i64, String> {
+    ) -> Result<(i64, ScriptBuf), String> {
         let mut delta: i64 = 0;
 
+        let mut script_buf = None;
         for vin in &self.vin {
             if vin.script_pubkey.to_usdb_script_hash() == *script_hash {
                 delta -= vin.value.to_sat() as i64;
+                if script_buf.is_none() {
+                    script_buf = Some(vin.script_pubkey.clone());
+                }
             }
         }
 
         for vout in &self.vout {
             if vout.script_pubkey.to_usdb_script_hash() == *script_hash {
                 delta += vout.value.to_sat() as i64;
+                if script_buf.is_none() {
+                    script_buf = Some(vout.script_pubkey.clone());
+                }
             }
         }
 
-        Ok(delta)
+        assert!(
+            script_buf.is_some(),
+            "Script buffer not found for script hash {} in transaction",
+            script_hash
+        );
+
+        Ok((delta, script_buf.unwrap()))
     }    
 }
 
@@ -95,10 +120,11 @@ impl ElectrsClient {
         &self,
         script_hash: &USDBScriptHash,
         block_height: u32,
-    ) -> Result<u64, String> {
+    ) -> Result<ElectrsBalanceHistory, String> {
         let history = self.get_history(script_hash).await?;
 
         let mut balance: i64 = 0;
+        let mut script_buf = None;
         for item in history {
             if item.height > block_height as i32 {
                 break;
@@ -106,7 +132,10 @@ impl ElectrsClient {
             // Load tx from btc client
             let tx = self.expand_tx(&item.tx_hash).await?;
 
-            let delta = tx.amount_delta_from_tx(script_hash)?;
+            let (delta, script_buf_inner) = tx.amount_delta_from_tx(script_hash)?;
+            if script_buf.is_none() {
+                script_buf = Some(script_buf_inner);
+            }
             balance += delta;
             assert!(
                 balance >= 0,
@@ -119,7 +148,12 @@ impl ElectrsClient {
             "Calculated balance for script hash {} at block height {}: {}",
             script_hash, block_height, balance
         );
-        Ok(balance as u64)
+
+        let ret = ElectrsBalanceHistory {
+            balance: balance as u64,
+            script_buf: script_buf.unwrap(),
+        };
+        Ok(ret)
     }
 
     // Calculate balance history for an address up to a specific block height
@@ -127,11 +161,12 @@ impl ElectrsClient {
         &self,
         script_hash: &USDBScriptHash,
         block_height: u32,
-    ) -> Result<Vec<(u32, i64, u64)>, String> {
+    ) -> Result<ElectrsBalanceHistoryList, String> {
         let history = self.get_history(script_hash).await?;
 
         let mut balance: i64 = 0;
         let mut result = Vec::with_capacity(history.len());
+        let mut script_buf = None;
         for item in history {
             if item.height > block_height as i32 {
                 break;
@@ -140,7 +175,10 @@ impl ElectrsClient {
             // Load tx from btc client
             let tx = self.expand_tx(&item.tx_hash).await?;
 
-            let delta = tx.amount_delta_from_tx(script_hash)?;
+            let (delta, script_buf_inner) = tx.amount_delta_from_tx(script_hash)?;
+            if script_buf.is_none() {
+                script_buf = Some(script_buf_inner);
+            }
             balance += delta;
             assert!(
                 balance >= 0,
@@ -148,7 +186,12 @@ impl ElectrsClient {
                 script_hash
             );
 
-            result.push((item.height as u32, delta, balance as u64));
+            let data = BalanceHistoryData {
+                block_height: item.height as u32,
+                delta,
+                balance: balance as u64,
+            };
+            result.push(data);
         }
 
         info!(
@@ -156,7 +199,12 @@ impl ElectrsClient {
             script_hash,
             result.len()
         );
-        Ok(result)
+
+        let ret = ElectrsBalanceHistoryList {
+            history: result,
+            script_buf: script_buf.unwrap(),
+        };
+        Ok(ret)
     }
 
     pub async fn get_transaction(&self, txid: &Txid) -> Result<Transaction, String> {

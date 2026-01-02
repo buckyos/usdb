@@ -1,5 +1,5 @@
 use crate::config::BalanceHistoryConfig;
-use crate::types::{OutPointRef, UTXOEntry, UTXOEntryRef};
+use usdb_util::{OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
@@ -68,7 +68,7 @@ impl UTXOCache {
         info!("Clearing UTXOCache, current count: {}", cache.len());
         cache.clear();
     }
-    
+
     /*
     The two coinbase transactions both exist in two blocks.
     This problem was solved in BIP30 so this cannot happen again.

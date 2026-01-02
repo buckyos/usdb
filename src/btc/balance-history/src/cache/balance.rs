@@ -1,5 +1,5 @@
 use crate::config::BalanceHistoryConfig;
-use crate::types::{BalanceHistoryData, BalanceHistoryDataRef};
+use usdb_util::{BalanceHistoryData, BalanceHistoryDataRef};
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -69,7 +69,7 @@ impl AddressBalanceCache {
     pub fn clear(&self) {
         let mut cache = self.cache.lock().unwrap();
         info!("Clearing AddressBalanceCache, current count: {}", cache.len());
-        
+
         cache.clear();
     }
 

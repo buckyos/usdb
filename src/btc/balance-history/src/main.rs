@@ -10,7 +10,6 @@ mod output;
 mod service;
 mod status;
 mod tool;
-mod types;
 
 #[macro_use]
 extern crate log;
@@ -52,17 +51,26 @@ enum BalanceHistoryCommands {
     Snapshot {},
 
     VerifySnapshot {},
+
+    Verify {},
 }
 
 async fn main_run() {
     let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
+    // Init console output
+    let status = status::SyncStatusManager::new();
+    let status = Arc::new(status);
+    let output = IndexOutput::new(status);
+    let output = Arc::new(output);
+
     // Init file logging
-    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME).enable_console(true);
     usdb_util::init_log(config);
 
     let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     info!("Using service directory: {:?}", root_dir);
+    output.println(&format!("Using service directory: {:?}", root_dir));
 
     // Load configuration
     let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -75,14 +83,8 @@ async fn main_run() {
     };
     let config = Arc::new(config);
 
-    // Init console output
-    let status = status::SyncStatusManager::new();
-    let status = Arc::new(status);
-    let output = IndexOutput::new(status);
-    let output = Arc::new(output);
-
     // Initialize the database
-    output.println("Initializing database...");
+    output.println("Initializing database... this may take a while.");
     let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
         Ok(database) => database,
         Err(e) => {
@@ -361,6 +363,74 @@ async fn main() {
                 output.println(&format!("Failed to verify snapshot: {}", e));
                 std::process::exit(1);
             }
+
+            println!("Snapshot verified successfully.");
+            return;
+        }
+        Some(BalanceHistoryCommands::Verify {}) => {
+            // Init file logging
+            let config = LogConfig {
+                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+                file_name: Some(format!(
+                    "{}_verify",
+                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
+                )),
+                console: true,
+            };
+            usdb_util::init_log(config);
+
+            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            println!("Verifying balance history in directory: {:?}", root_dir);
+            let config = match BalanceHistoryConfig::load(&root_dir) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    error!("Failed to load config: {}", e);
+                    println!("Failed to load config: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let config = Arc::new(config);
+            let status = status::SyncStatusManager::new();
+            let status = Arc::new(status);
+            let output = IndexOutput::new(status);
+            let output = Arc::new(output);
+
+            // Load balance history DB
+            let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
+                Ok(database) => database,
+                Err(e) => {
+                    error!("Failed to initialize database: {}", e);
+                    output.println(&format!("Failed to initialize database: {}", e));
+                    std::process::exit(1);
+                }
+            };
+            let db = Arc::new(db);
+
+            let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to create electrs client: {}", e);
+                    output.println(&format!("Failed to create electrs client: {}", e));
+                    std::process::exit(1);
+                }
+            };
+            let electrs_client = Arc::new(electrs_client);
+
+            let verifier = crate::index::BalanceHistoryVerifier::new(
+                config.clone(),
+                electrs_client,
+                db,
+            );
+
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = verifier.verify_latest() {
+                    error!("Failed to verify balance history: {}", e);
+                    output.println(&format!("Failed to verify balance history: {}", e));
+                    std::process::exit(1);
+                }
+            })
+            .await
+            .unwrap();
 
             println!("Snapshot verified successfully.");
             return;

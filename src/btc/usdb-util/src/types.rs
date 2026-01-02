@@ -1,6 +1,6 @@
 use bitcoincore_rpc::bitcoin::OutPoint;
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use crate::USDBScriptHash;
 
 #[derive(Debug, Clone)]
 pub struct UTXOEntry {

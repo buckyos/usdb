@@ -1,14 +1,12 @@
-use crate::cache::{UTXOCacheRef, AddressBalanceCacheRef};
 use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
+use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use crate::types::{
-    BalanceHistoryData, BalanceHistoryDataRef, OutPointRef, UTXOEntry, UTXOEntryRef,
-};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
 use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
+use usdb_util::{BalanceHistoryData, BalanceHistoryDataRef, OutPointRef, UTXOEntry, UTXOEntryRef};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

@@ -10,7 +10,6 @@ mod output;
 mod service;
 mod status;
 mod tool;
-mod types;
 
 #[macro_use]
 extern crate log;

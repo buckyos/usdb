@@ -1,15 +1,16 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
-use crate::types::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, WriteBatch, WriteOptions, ReadOptions
+    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
+    WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use usdb_util::USDBScriptHash;
+use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
 
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
@@ -89,12 +90,11 @@ impl BalanceHistoryDB {
 
         let mut block_opts = rocksdb::BlockBasedOptions::default();
         // Enable whole key and prefix bloom filter
-        block_opts.set_bloom_filter(10.0, false); 
+        block_opts.set_bloom_filter(10.0, false);
         balance_history_cf_options.set_block_based_table_factory(&block_opts);
-    
+
         // Enable Memtable prefix bloom filter to speed up in-memory data lookups
         balance_history_cf_options.set_memtable_prefix_bloom_ratio(0.1);
-        
 
         let mut utxo_cf_options = Options::default();
         utxo_cf_options.set_level_compaction_dynamic_level_bytes(true);
@@ -160,11 +160,15 @@ impl BalanceHistoryDB {
         })
     }
 
-    fn make_balance_history_key(script_hash: &USDBScriptHash, block_height: u32) -> [u8; BALANCE_HISTORY_KEY_LEN] {
+    fn make_balance_history_key(
+        script_hash: &USDBScriptHash,
+        block_height: u32,
+    ) -> [u8; BALANCE_HISTORY_KEY_LEN] {
         // It is important that the block height is stored in big-endian format
         let mut key = [0u8; BALANCE_HISTORY_KEY_LEN];
         key[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref());
-        key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4].copy_from_slice(&block_height.to_be_bytes());
+        key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+            .copy_from_slice(&block_height.to_be_bytes());
         key
     }
 
@@ -356,9 +360,11 @@ impl BalanceHistoryDB {
         // IteratorMode::From(key, Reverse) positions at:
         // 1. If the key exists, it positions at that key.
         // 2. If the key does not exist, it positions at the first key less than the key (i.e., the previous height).
-        let mut iter = self
-            .db
-            .iterator_cf_opt(cf, read_opts, IteratorMode::From(&search_key, Direction::Reverse));
+        let mut iter = self.db.iterator_cf_opt(
+            cf,
+            read_opts,
+            IteratorMode::From(&search_key, Direction::Reverse),
+        );
 
         if let Some(item) = iter.next() {
             let (found_key, found_val) = item.map_err(|e| {
@@ -438,9 +444,11 @@ impl BalanceHistoryDB {
         read_opts.set_total_order_seek(false); // Disable total order seek for performance and use prefix seek
 
         // Create an iterator starting from start_key in forward direction
-        let iter = self
-            .db
-            .iterator_cf_opt(cf, read_opts, IteratorMode::From(&start_key, Direction::Forward));
+        let iter = self.db.iterator_cf_opt(
+            cf,
+            read_opts,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
 
         let mut results = Vec::new();
         for item in iter {
@@ -485,6 +493,13 @@ impl BalanceHistoryDB {
         Ok(results)
     }
 
+     pub fn get_all_balance(
+        &self,
+        script_hash: &USDBScriptHash,
+    ) -> Result<Vec<BalanceHistoryData>, String> {
+        self.get_balance_in_range(script_hash, 0, u32::MAX)
+    }
+    
     pub fn put_btc_block_height(&self, height: u32) -> Result<(), String> {
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", META_CF);
@@ -867,14 +882,10 @@ impl BalanceHistoryDB {
     }
 
     // Traverse the latest balance entry for each script_hash in descending order
-    pub fn traverse_latest<F>(
-        &self,
-        batch_size: usize,
-        mut callback: F,
-    ) -> Result<(), String>
+    pub fn traverse_latest<F>(&self, batch_size: usize, mut callback: F) -> Result<(), String>
     where
         F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
-        {
+    {
         assert!(batch_size > 0, "Batch size must be greater than 0");
 
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
@@ -890,7 +901,7 @@ impl BalanceHistoryDB {
             if key.len() != BALANCE_HISTORY_KEY_LEN {
                 continue;
             }
-        
+
             let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
                 key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
@@ -909,7 +920,7 @@ impl BalanceHistoryDB {
             }
 
             let (delta, balance) = Self::parse_balance_from_value(&value);
-            
+
             let entry = BalanceHistoryEntry {
                 script_hash,
                 block_height: height,
@@ -1217,8 +1228,8 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use usdb_util::ToUSDBScriptHash;
     use std::sync::Arc;
+    use usdb_util::ToUSDBScriptHash;
 
     #[test]
     fn test_make_and_parse_key() {
