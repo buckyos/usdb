@@ -2,16 +2,16 @@ use super::client::{BTCClient, BTCClientType};
 use super::file_indexer::{
     BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader, BlockFileReaderRef,
 };
-use crate::btc::rpc::BTCRpcClientRef;
+use crate::cache::BlockFileCache;
 use crate::db::{BalanceHistoryDB, BalanceHistoryDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash};
-use crate::cache::BlockFileCache;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
+use usdb_util::BTCRpcClientRef;
 
 struct BuildRecordResult {
     block_hash: BlockHash,

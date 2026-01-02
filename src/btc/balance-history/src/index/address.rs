@@ -1,7 +1,8 @@
 use crate::btc::{
-    self, BTCClientRef, BTCRpcClient, BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader,
+    self, BTCClientRef, BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader,
     BlockRecordCache,
 };
+use usdb_util::BTCRpcClient;
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef, BlockEntry};
 use crate::output::IndexOutputRef;

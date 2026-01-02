@@ -4,16 +4,15 @@ mod local_loader;
 mod rpc;
 
 pub use client::*;
-pub use local_loader::*;
 pub use file_indexer::*;
+pub use local_loader::*;
 pub use rpc::*;
 
-
 use crate::config::BalanceHistoryConfigRef;
+use crate::db::BalanceHistoryDBRef;
 use crate::output::IndexOutputRef;
 use std::sync::Arc;
-use crate::db::BalanceHistoryDBRef;
-
+use usdb_util::BTCRpcClient;
 
 pub fn create_btc_client(
     config: &BalanceHistoryConfigRef,
