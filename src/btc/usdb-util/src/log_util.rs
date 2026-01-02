@@ -15,6 +15,16 @@ impl LogConfig {
             console: false,
         }
     }
+
+    pub fn with_file_name(mut self, file_name: &str) -> Self {
+        self.file_name = Some(file_name.to_string());
+        self
+    }
+
+    pub fn enable_console(mut self, enable: bool) -> Self {
+        self.console = enable;
+        self
+    }
 }
 
 pub fn init_log(config: LogConfig) {

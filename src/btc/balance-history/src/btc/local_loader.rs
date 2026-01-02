@@ -7,113 +7,11 @@ use crate::db::{BalanceHistoryDB, BalanceHistoryDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash};
-use lru::LruCache;
+use crate::cache::BlockFileCache;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
-
-// Each blk file cache will take 200-250MB memory
-const BLOCK_FILE_CACHE_MAX_CAPACITY: u64 = 10; // Max 10 blk files in cache
-
-// Cache block records read from blk files
-struct BlockFileCache {
-    reader: BlockFileReaderRef,
-    cache: Mutex<LruCache<usize, Arc<Vec<Block>>>>, // file_index -> blocks
-}
-
-impl BlockFileCache {
-    pub fn new(reader: BlockFileReaderRef) -> Self {
-        let cache = Mutex::new(LruCache::new(
-            std::num::NonZeroUsize::new(BLOCK_FILE_CACHE_MAX_CAPACITY as usize).unwrap(),
-        ));
-
-        Self { reader, cache }
-    }
-
-    pub fn get_block_by_file_index(
-        &self,
-        file_index: usize,
-        record_index: usize,
-    ) -> Result<Block, String> {
-        let blocks = {
-            let mut cache = self.cache.lock().unwrap();
-            cache.try_get_or_insert(file_index, || {
-                info!(
-                    "Cache miss for blk file index {}, record {}",
-                    file_index, record_index
-                );
-                let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
-
-                // Cache the blocks
-                let blocks = Arc::new(blocks);
-                Ok::<Arc<Vec<Block>>, String>(blocks)
-            })?.clone()
-        };
-
-        if let Some(block) = blocks.get(record_index) {
-            // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
-            return Ok(block.clone());
-        } else {
-            let msg = format!(
-                "Record index {} out of bounds for file index {}",
-                record_index, file_index
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-    }
-
-    /*
-    pub fn get_block_by_file_index(
-        &self,
-        file_index: usize,
-        record_index: usize,
-    ) -> Result<Block, String> {
-        if let Some(blocks) = self.cache.get(&file_index) {
-            if let Some(block) = blocks.get(record_index) {
-                // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
-                return Ok(block.clone());
-            } else {
-                let msg = format!(
-                    "Record index {} out of bounds for file index {}",
-                    record_index, file_index
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-        }
-
-        info!(
-            "Cache miss for blk file index {}, record {}",
-            file_index, record_index
-        );
-        let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
-        let record = blocks.get(record_index);
-        if record.is_none() {
-            let msg = format!(
-                "Record index {} out of bounds for file index {}",
-                record_index, file_index
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-        let record = record.unwrap().clone();
-
-        // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
-        if file_index >= BLOCK_FILE_CACHE_MAX_CAPACITY as usize {
-            self.cache
-                .invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
-        }
-
-        // Cache the blocks
-        let blocks = Arc::new(blocks);
-        self.cache.insert(file_index, blocks);
-
-        Ok(record)
-    }
-    */
-}
 
 struct BuildRecordResult {
     block_hash: BlockHash,
