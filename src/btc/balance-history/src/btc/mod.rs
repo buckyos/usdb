@@ -14,11 +14,6 @@ use crate::output::IndexOutputRef;
 use std::sync::Arc;
 use crate::db::BalanceHistoryDBRef;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BTCClientType {
-    RPC,
-    LocalLoader,
-}
 
 pub fn create_btc_client(
     config: &BalanceHistoryConfigRef,

@@ -75,6 +75,12 @@ impl BlockFileCache {
         }
     }
 
+    pub fn clear(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        info!("Clearing BlockFileCache, current count: {}", cache.len());
+        cache.clear();
+    }
+    
     /*
     pub fn get_block_by_file_index(
         &self,

@@ -1,4 +1,4 @@
-use super::client::BTCClient;
+use super::client::{BTCClient, BTCClientType};
 use super::file_indexer::{
     BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader, BlockFileReaderRef,
 };
@@ -509,6 +509,10 @@ impl BlockLocalLoader {
 
 #[async_trait::async_trait]
 impl BTCClient for BlockLocalLoader {
+    fn get_type(&self) -> BTCClientType {
+        BTCClientType::LocalLoader
+    }
+
     fn init(&self) -> Result<(), String> {
         self.build_index()?;
         info!("Block index built successfully");
@@ -524,6 +528,22 @@ impl BTCClient for BlockLocalLoader {
         self.should_stop
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self.output.println("Stopping BlockLocalLoader...");
+
+        Ok(())
+    }
+
+    fn on_sync_complete(&self, block_height: u32) -> Result<(), String> {
+        // Clear caches
+        {
+            let mut cache = self.block_index_cache.lock().unwrap();
+            cache.clear();
+        }
+        self.file_cache.clear();
+
+        debug!(
+            "BlockLocalLoader sync complete at block height {}: caches cleared",
+            block_height
+        );
 
         Ok(())
     }

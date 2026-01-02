@@ -183,6 +183,9 @@ impl BalanceHistoryIndexer {
 
                     // Clear some caches after sync is complete
                     self.cache_monitor.on_sync_complete();
+                    self.btc_client.on_sync_complete(latest_height).unwrap_or_else(|e| {
+                        error!("Error during BTC client on_sync_complete: {}", e);
+                    });
 
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {

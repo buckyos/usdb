@@ -1,10 +1,22 @@
 use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BTCClientType {
+    RPC,
+    LocalLoader,
+}
+
 #[async_trait::async_trait]
 pub trait BTCClient: Send + Sync {
+    fn get_type(&self) -> BTCClientType;
+
     fn init(&self) -> Result<(), String>;
     fn stop(&self) -> Result<(), String>;
+
+    // Called when sync is complete
+    // This may be called multiple times
+    fn on_sync_complete(&self, block_height: u32) -> Result<(), String>;
     
     fn get_latest_block_height(&self) -> Result<u32, String>;
     fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String>;

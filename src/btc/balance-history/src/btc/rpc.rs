@@ -1,4 +1,5 @@
 use super::client::BTCClient;
+use super::client::BTCClientType;
 use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use std::sync::{Arc, RwLock};
@@ -91,13 +92,16 @@ impl BTCRpcClient {
     }
 
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
-        self.client()?.get_block_count().map_err(|error| {
-            self.on_error(&error);
+        self.client()?
+            .get_block_count()
+            .map_err(|error| {
+                self.on_error(&error);
 
-            let msg = format!("get_block_count failed: {}", error);
-            error!("{}", msg);
-            msg
-        }).map(|count| count as u32)
+                let msg = format!("get_block_count failed: {}", error);
+                error!("{}", msg);
+                msg
+            })
+            .map(|count| count as u32)
     }
 
     pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
@@ -225,6 +229,10 @@ pub type BTCRpcClientRef = std::sync::Arc<BTCRpcClient>;
 
 #[async_trait::async_trait]
 impl BTCClient for BTCRpcClient {
+    fn get_type(&self) -> BTCClientType {
+        BTCClientType::RPC
+    }
+
     fn init(&self) -> Result<(), String> {
         // Just try to get latest block height to verify the connection
         let height = self.get_latest_block_height()?;
@@ -240,6 +248,11 @@ impl BTCClient for BTCRpcClient {
         // No specific stop action needed for the RPC client
         info!("BTC RPC client stopped.");
 
+        Ok(())
+    }
+
+    fn on_sync_complete(&self, _block_height: u32) -> Result<(), String> {
+        // Do nothing for RPC client
         Ok(())
     }
 
