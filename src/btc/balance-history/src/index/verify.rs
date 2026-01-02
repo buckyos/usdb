@@ -1,8 +1,170 @@
 use crate::config::BalanceHistoryConfigRef;
-use crate::db::{AddressDBRef, SnapshotDBRef};
+use crate::db::{AddressDBRef, BalanceHistoryDBRef, SnapshotDBRef};
 use bitcoincore_rpc::bitcoin::address::Address;
-use bitcoincore_rpc::bitcoin::{Script, ScriptBuf};
+use bitcoincore_rpc::bitcoin::{ScriptBuf};
 use usdb_util::{ElectrsClientRef, ToUSDBScriptHash, USDBScriptHash};
+
+pub struct BalanceHistoryVerifier {
+    config: BalanceHistoryConfigRef,
+    electrs_client: ElectrsClientRef,
+    address_db: AddressDBRef,
+    db: BalanceHistoryDBRef,
+}
+
+impl BalanceHistoryVerifier {
+    pub fn new(
+        config: BalanceHistoryConfigRef,
+        electrs_client: ElectrsClientRef,
+        address_db: AddressDBRef,
+        db: BalanceHistoryDBRef,
+    ) -> Self {
+        Self {
+            config,
+            electrs_client,
+            address_db,
+            db,
+        }
+    }
+
+    pub fn verify_latest(&self) -> Result<(), String> {
+        info!("Starting full balance history verification for latest block height");
+
+        self.db.traverse_latest(1, |entries| {
+            assert!(
+                entries.len() == 1,
+                "Expected exactly one snapshot entry for latest block height, found {}",
+                entries.len()
+            );
+
+            let entry = &entries[0];
+            self.verify_address_at_height_sync(
+                &entry.script_hash,
+                entry.block_height,
+                entry.balance,
+            )
+        })
+    }
+
+    pub fn verify_at_height(&self, target_block_height: u32) -> Result<(), String> {
+        info!(
+            "Starting full balance history verification at block height {}",
+            target_block_height
+        );
+
+        self.db
+            .traverse_at_height(target_block_height, 1, |entries| {
+                assert!(
+                    entries.len() == 1,
+                    "Expected exactly one snapshot entry for block height {}, found {}",
+                    target_block_height,
+                    entries.len()
+                );
+
+                let entry = &entries[0];
+                self.verify_address_at_height_sync(
+                    &entry.script_hash,
+                    target_block_height,
+                    entry.balance,
+                )
+            })
+    }
+
+    pub fn verify_address(&self, script_hash: &USDBScriptHash) -> Result<(), String> {
+        let block_height = self.db.get_btc_block_height()?;
+        info!(
+            "Starting full balance history verification for script_hash: {} up to block height {}",
+            script_hash, block_height
+        );
+
+        let addr_entry = self.address_db.get_address(script_hash)?;
+        let script = match addr_entry {
+            Some(entry) => entry,
+            None => {
+                let msg = format!("Address not found for script hash {}", script_hash);
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+
+        let history = tokio::runtime::Handle::current().block_on(async {
+            self.electrs_client
+                .calc_balance_history_by_script(&script, block_height)
+                .await
+        })?;
+
+        for (height, delta, balance) in history {
+            let entry = self.db.get_balance_at_block_height(script_hash, height)?;
+            if entry.balance != balance || entry.delta != delta {
+                let msg = format!(
+                    "Balance history mismatch for script_hash {} at block height {}: expected (delta={}, balance={}), got (delta={}, balance={})",
+                    script_hash, height, entry.delta, entry.balance, delta, balance
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        info!(
+            "Completed full balance history verification for script_hash: {} up to block height {}",
+            script_hash, block_height
+        );
+
+        Ok(())
+    }
+
+    fn verify_address_at_height_sync(
+        &self,
+        script_hash: &USDBScriptHash,
+        block_height: u32,
+        balance: u64,
+    ) -> Result<(), String> {
+        tokio::runtime::Handle::current().block_on(async {
+            self.verify_address_at_height(script_hash, block_height, balance)
+                .await
+        })
+    }
+    async fn verify_address_at_height(
+        &self,
+        script_hash: &USDBScriptHash,
+        block_height: u32,
+        balance: u64,
+    ) -> Result<(), String> {
+        info!(
+            "Starting balance history verification for script_hash: {}",
+            script_hash
+        );
+
+        let addr_entry = self.address_db.get_address(script_hash)?;
+        let script = match addr_entry {
+            Some(entry) => entry,
+            None => {
+                let msg = format!("Address not found for script hash {}", script_hash);
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+
+        let electrs_balance = self
+            .electrs_client
+            .calc_balance_by_script(&script, block_height)
+            .await?;
+
+        if balance != electrs_balance {
+            let msg = format!(
+                "Balance mismatch for script_hash {} at block height {}: expected {}, got {}",
+                script_hash, block_height, balance, electrs_balance
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!(
+            "Balance history verification successful for script_hash {} at block height {}: balance={}",
+            script_hash, block_height, balance
+        );
+        Ok(())
+    }
+}
 
 pub struct SnapshotVerifier {
     config: BalanceHistoryConfigRef,
@@ -70,7 +232,8 @@ impl SnapshotVerifier {
         );
 
         let ret = self
-            .calc_balance_from_electrs(&script, snapshot_entry.block_height)
+            .electrs_client
+            .calc_balance_by_script(&script, snapshot_entry.block_height)
             .await?;
         assert!(
             ret == snapshot_entry.balance,
@@ -107,36 +270,5 @@ impl SnapshotVerifier {
                 Err(msg)
             }
         }
-    }
-
-    async fn calc_balance_from_electrs(
-        &self,
-        address: &Script,
-        block_height: u32,
-    ) -> Result<u64, String> {
-        let history = self.electrs_client.get_history_by_script(address).await?;
-
-        let mut balance: i64 = 0;
-        for item in history {
-            if item.height > block_height as i32 {
-                break;
-            }
-            // Load tx from btc client
-            let tx = self.electrs_client.expand_tx(&item.tx_hash).await?;
-
-            let delta = tx.amount_delta_from_tx(address)?;
-            balance += delta;
-            assert!(
-                balance >= 0,
-                "Balance went negative for address {}",
-                address
-            );
-        }
-
-        info!(
-            "Calculated balance for address {} at block height {}: {}",
-            address, block_height, balance
-        );
-        Ok(balance as u64)
     }
 }

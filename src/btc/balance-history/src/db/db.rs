@@ -866,26 +866,95 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn generate_snapshot<F>(
+    // Traverse the latest balance entry for each script_hash in descending order
+    pub fn traverse_latest<F>(
         &self,
-        target_block_height: u32,
+        batch_size: usize,
         mut callback: F,
     ) -> Result<(), String>
     where
         F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
-    {
+        {
+        assert!(batch_size > 0, "Batch size must be greater than 0");
+
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
             error!("{}", msg);
             msg
         })?;
 
-        const BATCH_SIZE: usize = 1024 * 64;
+        let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
+        let mut current_script_hash: Option<USDBScriptHash> = None;
+        let mut snapshot = Vec::with_capacity(batch_size);
+        while let Some(Ok((key, value))) = iter.next() {
+            if key.len() != BALANCE_HISTORY_KEY_LEN {
+                continue;
+            }
+        
+            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
+            let height = u32::from_be_bytes(
+                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+
+            if current_script_hash.is_none() {
+                current_script_hash = Some(script_hash);
+            } else if current_script_hash.as_ref().unwrap() != &script_hash {
+                // Moved to a new script_hash
+                current_script_hash = Some(script_hash);
+            } else {
+                // Already processed this script_hash
+                continue;
+            }
+
+            let (delta, balance) = Self::parse_balance_from_value(&value);
+            
+            let entry = BalanceHistoryEntry {
+                script_hash,
+                block_height: height,
+                delta,
+                balance,
+            };
+            snapshot.push(entry);
+
+            if snapshot.len() >= batch_size {
+                // Flush snapshot batch
+                callback(&snapshot)?;
+                snapshot.clear();
+            }
+        }
+
+        // Flush remaining snapshot entries
+        if !snapshot.is_empty() {
+            callback(&snapshot)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn traverse_at_height<F>(
+        &self,
+        target_block_height: u32,
+        batch_size: usize,
+        mut callback: F,
+    ) -> Result<(), String>
+    where
+        F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
+    {
+        assert!(batch_size > 0, "Batch size must be greater than 0");
+
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
         let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
 
         let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;
-        let mut snapshot = Vec::with_capacity(BATCH_SIZE);
+        let mut snapshot = Vec::with_capacity(batch_size);
         while let Some(Ok((key, value))) = iter.next() {
             if key.len() != BALANCE_HISTORY_KEY_LEN {
                 continue;
@@ -917,7 +986,7 @@ impl BalanceHistoryDB {
                     };
                     snapshot.push(entry);
 
-                    if snapshot.len() >= BATCH_SIZE {
+                    if snapshot.len() >= batch_size {
                         // Flush snapshot batch
                         callback(&snapshot)?;
                         snapshot.clear();
@@ -929,6 +998,7 @@ impl BalanceHistoryDB {
                 current_founded = true;
             }
         }
+
         // Flush remaining snapshot entries
         if !snapshot.is_empty() {
             callback(&snapshot)?;

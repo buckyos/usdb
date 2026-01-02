@@ -81,6 +81,75 @@ impl ElectrsClient {
         Ok(his)
     }
 
+    // Calculate balance for an address at a specific block height
+    pub async fn calc_balance_by_script(
+        &self,
+        address: &Script,
+        block_height: u32,
+    ) -> Result<u64, String> {
+        let history = self.get_history_by_script(address).await?;
+
+        let mut balance: i64 = 0;
+        for item in history {
+            if item.height > block_height as i32 {
+                break;
+            }
+            // Load tx from btc client
+            let tx = self.expand_tx(&item.tx_hash).await?;
+
+            let delta = tx.amount_delta_from_tx(address)?;
+            balance += delta;
+            assert!(
+                balance >= 0,
+                "Balance went negative for address {}",
+                address
+            );
+        }
+
+        info!(
+            "Calculated balance for address {} at block height {}: {}",
+            address, block_height, balance
+        );
+        Ok(balance as u64)
+    }
+
+    // Calculate balance history for an address up to a specific block height
+    pub async fn calc_balance_history_by_script(
+        &self,
+        address: &Script,
+        block_height: u32,
+    ) -> Result<Vec<(u32, i64, u64)>, String> {
+        let history = self.get_history_by_script(address).await?;
+
+        let mut balance: i64 = 0;
+        let mut result = Vec::with_capacity(history.len());
+        for item in history {
+            if item.height > block_height as i32 {
+                break;
+            }
+            
+            // Load tx from btc client
+            let tx = self.expand_tx(&item.tx_hash).await?;
+
+            let delta = tx.amount_delta_from_tx(address)?;
+            balance += delta;
+            assert!(
+                balance >= 0,
+                "Balance went negative for address {}",
+                address
+            );
+
+            result.push((item.height as u32, delta, balance as u64));
+        }
+
+        info!(
+            "Calculated balance history for address {}: {} entries",
+            address,
+            result.len()
+        );
+        Ok(result)
+    }
+
     pub async fn get_transaction(&self, txid: &Txid) -> Result<Transaction, String> {
         let tx = self.client.transaction_get(txid).map_err(|e| {
             let msg = format!("Failed to get transaction {}: {}", txid, e);
