@@ -1,7 +1,10 @@
+use std::sync::atomic::Ordering;
 use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
 use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script};
-use electrum_client::{Client, ElectrumApi, GetHistoryRes};
+use electrum_client::{Client, ElectrumApi, GetHistoryRes, Param, ScriptHash as ElectrumScriptHash};
+
+use crate::{ToUSDBScriptHash, USDBScriptHash};
 
 pub struct TxFullItem {
     pub vin: Vec<TxOut>,
@@ -11,18 +14,18 @@ pub struct TxFullItem {
 impl TxFullItem {
     pub fn amount_delta_from_tx(
         &self,
-        address: &Script,
+        script_hash: &USDBScriptHash,
     ) -> Result<i64, String> {
         let mut delta: i64 = 0;
 
         for vin in &self.vin {
-            if vin.script_pubkey == *address {
+            if vin.script_pubkey.to_usdb_script_hash() == *script_hash {
                 delta -= vin.value.to_sat() as i64;
             }
         }
 
         for vout in &self.vout {
-            if vout.script_pubkey == *address {
+            if vout.script_pubkey.to_usdb_script_hash() == *script_hash {
                 delta += vout.value.to_sat() as i64;
             }
         }
@@ -51,17 +54,23 @@ impl ElectrsClient {
     // Get address history
     pub async fn get_history(
         &self,
-        address: &Address<NetworkChecked>,
+        script_hash: &USDBScriptHash,
     ) -> Result<Vec<GetHistoryRes>, String> {
-        let his = self
-            .client
-            .script_get_history(&address.script_pubkey())
+        let script_hash_str = format!("{:x}", script_hash);
+
+        let params = vec![Param::String(script_hash_str)];
+        let result = self.client.raw_call("blockchain.scripthash.get_history", params)
             .map_err(|e| {
-                let msg = format!("Failed to get history for address {}: {}", address, e);
+                let msg = format!("Failed to get history for script hash {}: {}", script_hash, e);
                 error!("{}", msg);
                 msg
             })?;
 
+        let his: Vec<GetHistoryRes> = serde_json::from_value(result).map_err(|e| {
+            let msg = format!("Failed to parse history for script hash {}: {}", script_hash, e);
+            error!("{}", msg);
+            msg
+        })?;
         Ok(his)
     }
 
@@ -82,12 +91,12 @@ impl ElectrsClient {
     }
 
     // Calculate balance for an address at a specific block height
-    pub async fn calc_balance_by_script(
+    pub async fn calc_balance(
         &self,
-        address: &Script,
+        script_hash: &USDBScriptHash,
         block_height: u32,
     ) -> Result<u64, String> {
-        let history = self.get_history_by_script(address).await?;
+        let history = self.get_history(script_hash).await?;
 
         let mut balance: i64 = 0;
         for item in history {
@@ -97,29 +106,29 @@ impl ElectrsClient {
             // Load tx from btc client
             let tx = self.expand_tx(&item.tx_hash).await?;
 
-            let delta = tx.amount_delta_from_tx(address)?;
+            let delta = tx.amount_delta_from_tx(script_hash)?;
             balance += delta;
             assert!(
                 balance >= 0,
-                "Balance went negative for address {}",
-                address
+                "Balance went negative for script hash {}",
+                script_hash
             );
         }
 
         info!(
-            "Calculated balance for address {} at block height {}: {}",
-            address, block_height, balance
+            "Calculated balance for script hash {} at block height {}: {}",
+            script_hash, block_height, balance
         );
         Ok(balance as u64)
     }
 
     // Calculate balance history for an address up to a specific block height
-    pub async fn calc_balance_history_by_script(
+    pub async fn calc_balance_history(
         &self,
-        address: &Script,
+        script_hash: &USDBScriptHash,
         block_height: u32,
     ) -> Result<Vec<(u32, i64, u64)>, String> {
-        let history = self.get_history_by_script(address).await?;
+        let history = self.get_history(script_hash).await?;
 
         let mut balance: i64 = 0;
         let mut result = Vec::with_capacity(history.len());
@@ -127,24 +136,24 @@ impl ElectrsClient {
             if item.height > block_height as i32 {
                 break;
             }
-            
+
             // Load tx from btc client
             let tx = self.expand_tx(&item.tx_hash).await?;
 
-            let delta = tx.amount_delta_from_tx(address)?;
+            let delta = tx.amount_delta_from_tx(script_hash)?;
             balance += delta;
             assert!(
                 balance >= 0,
-                "Balance went negative for address {}",
-                address
+                "Balance went negative for script hash {}",
+                script_hash
             );
 
             result.push((item.height as u32, delta, balance as u64));
         }
 
         info!(
-            "Calculated balance history for address {}: {} entries",
-            address,
+            "Calculated balance history for script hash {}: {} entries",
+            script_hash,
             result.len()
         );
         Ok(result)
@@ -207,7 +216,7 @@ pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::Network;
+    use bitcoincore_rpc::bitcoin::{Network};
     use std::str::FromStr;
 
     #[tokio::test]
@@ -218,7 +227,7 @@ mod tests {
             .expect("Failed to parse address");
         let address = address.assume_checked();
         let history = client
-            .get_history(&address)
+            .get_history(&address.script_pubkey().to_usdb_script_hash())
             .await
             .expect("Failed to get history");
         assert!(history.len() > 0);
@@ -241,7 +250,7 @@ mod tests {
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
             .expect("Failed to parse address");
         let address = address.require_network(Network::Bitcoin).unwrap();
-        let delta = full_tx.amount_delta_from_tx(&address.script_pubkey())
+        let delta = full_tx.amount_delta_from_tx(&address.script_pubkey().to_usdb_script_hash())
             .expect("Failed to compute amount delta");
         println!(
             "Amount delta for address {} in tx {}: {}",
@@ -253,8 +262,9 @@ mod tests {
         // Test another address
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h").unwrap();
         let address = address.require_network(Network::Bitcoin).unwrap();
+        let script_hash = address.script_pubkey().to_usdb_script_hash();
         let history = client
-            .get_history(&address)
+            .get_history(&script_hash)
             .await
             .expect("Failed to get history");
         assert!(history.len() > 0);

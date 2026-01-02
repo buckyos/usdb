@@ -1,7 +1,7 @@
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDBRef, BalanceHistoryDBRef, SnapshotDBRef};
+use bitcoincore_rpc::bitcoin::ScriptBuf;
 use bitcoincore_rpc::bitcoin::address::Address;
-use bitcoincore_rpc::bitcoin::{ScriptBuf};
 use usdb_util::{ElectrsClientRef, ToUSDBScriptHash, USDBScriptHash};
 
 pub struct BalanceHistoryVerifier {
@@ -76,19 +76,9 @@ impl BalanceHistoryVerifier {
             script_hash, block_height
         );
 
-        let addr_entry = self.address_db.get_address(script_hash)?;
-        let script = match addr_entry {
-            Some(entry) => entry,
-            None => {
-                let msg = format!("Address not found for script hash {}", script_hash);
-                error!("{}", msg);
-                return Err(msg);
-            }
-        };
-
         let history = tokio::runtime::Handle::current().block_on(async {
             self.electrs_client
-                .calc_balance_history_by_script(&script, block_height)
+                .calc_balance_history(script_hash, block_height)
                 .await
         })?;
 
@@ -123,6 +113,7 @@ impl BalanceHistoryVerifier {
                 .await
         })
     }
+
     async fn verify_address_at_height(
         &self,
         script_hash: &USDBScriptHash,
@@ -134,19 +125,27 @@ impl BalanceHistoryVerifier {
             script_hash
         );
 
-        let addr_entry = self.address_db.get_address(script_hash)?;
-        let script = match addr_entry {
-            Some(entry) => entry,
-            None => {
-                let msg = format!("Address not found for script hash {}", script_hash);
-                error!("{}", msg);
-                return Err(msg);
-            }
-        };
+        let script = self.address_db.get_address(script_hash)?.ok_or_else(|| {
+            let msg = format!("Address not found for script_hash: {}", script_hash);
+            error!("{}", msg);
+            msg
+        })?;
+        let addr = Address::from_script(&script, self.config.btc.network()).map_err(|e| {
+            let msg = format!(
+                "Failed to parse address from script for script_hash {}: {}",
+                script_hash, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        info!(
+            "Loaded address for script_hash {} -> addr {}",
+            script_hash, addr
+        );
 
         let electrs_balance = self
             .electrs_client
-            .calc_balance_by_script(&script, block_height)
+            .calc_balance(script_hash, block_height)
             .await?;
 
         if balance != electrs_balance {
@@ -233,18 +232,18 @@ impl SnapshotVerifier {
 
         let ret = self
             .electrs_client
-            .calc_balance_by_script(&script, snapshot_entry.block_height)
+            .calc_balance(&snapshot_entry.script_hash, snapshot_entry.block_height)
             .await?;
         assert!(
             ret == snapshot_entry.balance,
-            "Balance mismatch for address {}: expected {}, got {}",
-            address,
+            "Balance mismatch for script_hash {}: expected {}, got {}",
+            snapshot_entry.script_hash,
             snapshot_entry.balance,
             ret
         );
 
         info!(
-            "Snapshot verification successful for index {}: address={}, balance={}",
+            "Snapshot verification successful for index {}: script_hash={}, balance={}",
             index, snapshot_entry.script_hash, snapshot_entry.balance
         );
         Ok(())
