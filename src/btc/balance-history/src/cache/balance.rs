@@ -40,6 +40,8 @@ impl AddressBalanceCache {
     pub fn put(&self, script_hash: USDBScriptHash, data: BalanceHistoryDataRef) {
         if data.balance == 0 {
             // Do not cache zero balance entries to save memory
+            // So we must remove any existing cache entry for this script_hash
+            self.cache.lock().unwrap().pop(&script_hash);
             return;
         }
 
