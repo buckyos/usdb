@@ -7,25 +7,26 @@ use crate::db::{BalanceHistoryDB, BalanceHistoryDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash};
+use lru::LruCache;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
-const BLOCK_FILE_CACHE_MAX_CAPACITY: u64 = 8; // Max 8 blk files in cache
+// Each blk file cache will take 200-250MB memory
+const BLOCK_FILE_CACHE_MAX_CAPACITY: u64 = 10; // Max 10 blk files in cache
 
 // Cache block records read from blk files
 struct BlockFileCache {
     reader: BlockFileReaderRef,
-    cache: moka::sync::Cache<usize, Arc<Vec<Block>>>, // file_index -> blocks
+    cache: Mutex<LruCache<usize, Arc<Vec<Block>>>>, // file_index -> blocks
 }
 
 impl BlockFileCache {
     pub fn new(reader: BlockFileReaderRef) -> Self {
-        let cache = moka::sync::Cache::builder()
-            .time_to_live(std::time::Duration::from_secs(60 * 5)) // 5 minutes TTL
-            .max_capacity(BLOCK_FILE_CACHE_MAX_CAPACITY) // Max 5 blk files cached
-            .build();
+        let cache = Mutex::new(LruCache::new(
+            std::num::NonZeroUsize::new(BLOCK_FILE_CACHE_MAX_CAPACITY as usize).unwrap(),
+        ));
 
         Self { reader, cache }
     }
@@ -35,30 +36,21 @@ impl BlockFileCache {
         file_index: usize,
         record_index: usize,
     ) -> Result<Block, String> {
-        let ret = self.cache.entry(file_index).or_try_insert_with(|| {
-            info!(
-                "Cache miss for blk file index {}, record {}",
-                file_index, record_index
-            );
-            let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
-            
-            // Remove file_index - BLOCK_FILE_CACHE_MAX_CAPACITY from cache to limit memory usage
-            if file_index >= BLOCK_FILE_CACHE_MAX_CAPACITY as usize {
-                self.cache
-                    .invalidate(&(file_index - BLOCK_FILE_CACHE_MAX_CAPACITY as usize));
-            }
+        let blocks = {
+            let mut cache = self.cache.lock().unwrap();
+            cache.try_get_or_insert(file_index, || {
+                info!(
+                    "Cache miss for blk file index {}, record {}",
+                    file_index, record_index
+                );
+                let blocks = self.reader.load_blk_blocks_by_index(file_index)?;
 
-            // Cache the blocks
-            let blocks = Arc::new(blocks);
-            Ok::<Arc<Vec<Block>>, String>(blocks)
-        });
+                // Cache the blocks
+                let blocks = Arc::new(blocks);
+                Ok::<Arc<Vec<Block>>, String>(blocks)
+            })?.clone()
+        };
 
-        if let Err(e) = &ret {
-            return Err(e.as_ref().clone());
-        }
-
-        let ret = ret.unwrap();
-        let blocks = ret.value();
         if let Some(block) = blocks.get(record_index) {
             // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
             return Ok(block.clone());
@@ -706,6 +698,8 @@ mod tests {
         let output = crate::output::IndexOutput::new(status);
         let output = Arc::new(output);
 
+        test_memory_usage(&reader);
+        return;
         /*
         let begin_tick = std::time::Instant::now();
         let mut file_index = 0;
@@ -763,6 +757,48 @@ mod tests {
             //let _block_hash = block.block_hash();
             output.update_current_height(height as u64 + 1);
         }
+    }
+
+    fn test_memory_usage(reader: &BlockFileReader) {
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_memory();
+        let available_memory = sys.available_memory();
+
+        let start_index = 3000;
+        let mut file_index = start_index;
+        let count = 10;
+        let mut result = Vec::new();
+        loop {
+            let file = reader.get_blk_file_path(file_index);
+            if !file.exists() {
+                println!("No more blk files to read at index {:?}", file);
+                break;
+            }
+
+            //let blocks = reader.load_blk_blocks_by_index(file_index).unwrap();
+            let blocks = reader.read_blk_records2(&file).unwrap();
+            println!(
+                "Loaded {} blocks from blk file {}",
+                blocks.len(),
+                file_index
+            );
+            result.push(blocks);
+
+            file_index += 1;
+            if file_index >= start_index + count {
+                break;
+            }
+        }
+
+        sys.refresh_memory();
+        let available_memory_after = sys.available_memory();
+        let used_memory = available_memory - available_memory_after;
+        let item_memory = used_memory / count as u64;
+        println!(
+            "Used memory after loading {} blk files: {} bytes",
+            count, used_memory
+        );
+        println!("Estimated memory per item: {} bytes", item_memory);
     }
 
     #[test]
