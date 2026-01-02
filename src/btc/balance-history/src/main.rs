@@ -65,7 +65,7 @@ async fn main_run() {
     let output = Arc::new(output);
 
     // Init file logging
-    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME).enable_console(true);
+    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME).enable_console(false);
     usdb_util::init_log(config);
 
     let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -123,7 +123,7 @@ async fn main_run() {
     }
     let rpc_server = ret.unwrap();
 
-    output.println("RPC server started.");
+    output.println(&format!("RPC server started at {}", rpc_server.get_listen_url()));
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;

@@ -1,8 +1,6 @@
-use std::sync::atomic::Ordering;
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
 use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script, ScriptBuf};
-use electrum_client::{Client, ElectrumApi, GetHistoryRes, Param, ScriptHash as ElectrumScriptHash};
+use electrum_client::{Client, ElectrumApi, GetHistoryRes, Param};
 use crate::types::BalanceHistoryData;
 use crate::{ToUSDBScriptHash, USDBScriptHash};
 

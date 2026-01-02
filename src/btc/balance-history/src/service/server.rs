@@ -11,6 +11,7 @@ use tokio::sync::watch;
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
     config: BalanceHistoryConfigRef,
+    addr: std::net::SocketAddr,
     status: SyncStatusManagerRef,
     db: BalanceHistoryDBRef,
     shutdown_tx: watch::Sender<()>,
@@ -20,17 +21,23 @@ pub struct BalanceHistoryRpcServer {
 impl BalanceHistoryRpcServer {
     pub fn new(
         config: BalanceHistoryConfigRef,
+        addr: std::net::SocketAddr,
         status: SyncStatusManagerRef,
         db: BalanceHistoryDBRef,
         shutdown_tx: watch::Sender<()>,
     ) -> Self {
         Self {
             config,
+            addr,
             status,
             db,
             shutdown_tx,
             server_handle: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn get_listen_url(&self) -> String {
+        format!("http://{}", self.addr)
     }
 
     pub fn start(
@@ -39,11 +46,6 @@ impl BalanceHistoryRpcServer {
         db: BalanceHistoryDBRef,
         shutdown_tx: watch::Sender<()>,
     ) -> Result<Self, String> {
-        let ret = Self::new(config.clone(), status, db, shutdown_tx.clone());
-
-        let mut io = IoHandler::new();
-        io.extend_with(ret.clone().to_delegate());
-
         let addr = format!("127.0.0.1:{}", config.rpc_server.port)
             .parse()
             .map_err(|e| {
@@ -52,6 +54,13 @@ impl BalanceHistoryRpcServer {
                 msg
             })?;
 
+
+        let ret = Self::new(config.clone(), addr, status, db, shutdown_tx.clone());
+
+        let mut io = IoHandler::new();
+        io.extend_with(ret.clone().to_delegate());
+
+        
         let server = ServerBuilder::new(io)
             .cors(DomainsValidation::AllowOnly(vec![
                 AccessControlAllowOrigin::Any,

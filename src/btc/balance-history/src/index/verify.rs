@@ -1,5 +1,3 @@
-use std::ops::Add;
-
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDBRef, BalanceHistoryDBRef, SnapshotDBRef};
 use bitcoincore_rpc::bitcoin::ScriptBuf;

@@ -297,7 +297,9 @@ impl BalanceHistoryIndexer {
 
         // Update output to current status
         if !self.output.is_index_started() {
-            self.output.set_index_message("Starting indexer...");
+            self.output.println("Starting indexer...");
+            self.output
+                .println(&format!("Latest BTC block height: {}, Last synced block height: {}", latest_btc_height, last_synced_height));
             self.output
                 .start_index(latest_btc_height as u64, last_synced_height as u64);
         } else {
@@ -348,6 +350,10 @@ impl BalanceHistoryIndexer {
     fn process_block_batch(&self, height_range: std::ops::Range<u32>) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
+        self.output.println(&format!(
+            "Processing block batch [{} - {})",
+            height_range.start, height_range.end
+        ));
         self.batch_block_processor
             .process_blocks(height_range.clone())?;
 
