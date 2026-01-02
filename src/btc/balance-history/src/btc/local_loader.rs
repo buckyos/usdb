@@ -377,7 +377,7 @@ impl BlockLocalLoader {
     ) -> Result<Self, String> {
         let block_reader = Arc::new(BlockFileReader::new(block_magic, data_dir)?);
         let block_index_cache = BlockRecordCache::new_ref(btc_client.clone());
-        let file_cache = BlockFileCache::new(block_reader.clone()); // Cache up to 3 blk files
+        let file_cache = BlockFileCache::new(block_reader.clone())?;
 
         Ok(Self {
             block_reader,

@@ -2,6 +2,7 @@ use crate::btc::BlockFileReaderRef;
 use bitcoincore_rpc::bitcoin::Block;
 use lru::LruCache;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -18,19 +19,19 @@ pub struct BlockFileCache {
 }
 
 impl BlockFileCache {
-    pub fn new(reader: BlockFileReaderRef) -> Self {
+    pub fn new(reader: BlockFileReaderRef) -> Result<Self, String> {
         let cache = Mutex::new(LruCache::new(
             std::num::NonZeroUsize::new(BLOCK_FILE_CACHE_MAX_CAPACITY as usize).unwrap(),
         ));
 
         let prefetch_manager = PrefetchManager::new(reader.clone());
-        prefetch_manager.start();
+        prefetch_manager.start()?;
 
-        Self {
+        Ok(Self {
             reader,
             cache,
             prefetch_manager,
-        }
+        })
     }
 
     pub fn get_block_by_file_index(
@@ -132,6 +133,7 @@ struct PrefetchManager {
     queue: Arc<Mutex<VecDeque<(usize, Arc<Vec<Block>>)>>>,
     reader: BlockFileReaderRef,
     sender: Arc<Mutex<Option<mpsc::Sender<usize>>>>,
+    latest_blk_file_index: Arc<AtomicUsize>,
 }
 
 impl PrefetchManager {
@@ -140,6 +142,7 @@ impl PrefetchManager {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             reader,
             sender: Arc::new(Mutex::new(None)),
+            latest_blk_file_index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -155,18 +158,30 @@ impl PrefetchManager {
         }
     }
 
-    pub fn start(&self) {
+    pub fn start(&self) -> Result<(), String> {
         let (tx, rx) = mpsc::channel::<usize>();
         {
             let mut sender_lock = self.sender.lock().unwrap();
             *sender_lock = Some(tx);
         }
 
+        // Find the latest file index in local blk files
+        // And we should not prefetch beyond that
+        let latest_blk_file_index = self.reader.find_latest_blk_file()?;
+        self.latest_blk_file_index.store(latest_blk_file_index, Ordering::SeqCst);
+
         let manager = self.clone();
         std::thread::spawn(move || {
             loop {
                 // Wait for prefetch requests
                 if let Ok(file_index) = rx.recv() {
+                    if file_index == 0 {
+                        // Stop signal
+                        info!("Stopping block file prefetch manager");
+                        break;
+                    }
+
+                    let mut reach_end = false;
                     loop {
                         let (count, last_file_index) = {
                             let queue = manager.queue.lock().unwrap();
@@ -183,6 +198,16 @@ impl PrefetchManager {
                             file_index
                         };
 
+                        if prefetch_index > manager.latest_blk_file_index.load(Ordering::SeqCst) {
+                            // Reached the latest blk file, stop prefetching
+                            info!(
+                                "Reached latest blk file index {}, stop prefetching",
+                                manager.latest_blk_file_index.load(Ordering::SeqCst)
+                            );
+                            reach_end = true;
+                            break;
+                        }
+
                         let blocks = match manager.reader.load_blk_blocks_by_index(prefetch_index) {
                             Ok(blocks) => {
                                 info!("Prefetched blk file index {}", prefetch_index);
@@ -190,15 +215,26 @@ impl PrefetchManager {
                             }
                             Err(err) => {
                                 error!("Failed to load blk file index {}: {}", prefetch_index, err);
-                                continue;
+                                break;
                             }
                         };
 
                         manager.add_prefetch(prefetch_index, blocks);
                     }
+
+                    if reach_end {
+                        break;
+                    }
                 }
             }
         });
+
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        // Use index 0 as stop signal
+        self.notify_prefetch(0);
     }
 
     pub fn add_prefetch(&self, file_index: usize, blocks: Arc<Vec<Block>>) {
