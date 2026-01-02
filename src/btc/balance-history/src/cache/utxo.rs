@@ -63,6 +63,12 @@ impl UTXOCache {
         cache.resize(std::num::NonZeroUsize::new(target_count).unwrap());
     }
 
+    pub fn clear(&self) {
+        let mut cache = self.cache.lock().unwrap();
+        info!("Clearing UTXOCache, current count: {}", cache.len());
+        cache.clear();
+    }
+    
     /*
     The two coinbase transactions both exist in two blocks.
     This problem was solved in BIP30 so this cannot happen again.

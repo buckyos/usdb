@@ -67,7 +67,10 @@ impl AddressBalanceCache {
     }
 
     pub fn clear(&self) {
-        self.cache.lock().unwrap().clear();
+        let mut cache = self.cache.lock().unwrap();
+        info!("Clearing AddressBalanceCache, current count: {}", cache.len());
+        
+        cache.clear();
     }
 
     pub fn shrink(&self, target_count: usize) {

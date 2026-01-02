@@ -32,6 +32,12 @@ impl MemoryCacheMonitor {
         });
     }
 
+    // Called when sync is complete to shrink caches
+    // This maybe called multiple times
+    pub fn on_sync_complete(&self) {
+        self.utxo_cache.clear();
+    }
+
     fn check(&self) {
         let max_memory_percent = self.config.sync.max_memory_percent;
 

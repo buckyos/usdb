@@ -181,6 +181,9 @@ impl BalanceHistoryIndexer {
                         break;
                     }
 
+                    // Clear some caches after sync is complete
+                    self.cache_monitor.on_sync_complete();
+
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {
                         Ok(new_height) => {
