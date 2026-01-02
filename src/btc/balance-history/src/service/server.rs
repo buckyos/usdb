@@ -157,12 +157,12 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
                 balance: ret.balance,
                 delta: ret.delta,
             };
-            
+
             Ok(vec![ret])
         } else if let Some(range) = params.block_range {
             let ret = self
                 .db
-                .get_balance_in_range(params.script_hash, range.start, range.end)
+                .get_balance_in_range(&params.script_hash, range.start, range.end)
                 .map_err(|e| JsonError {
                     code: ErrorCode::InternalError,
                     message: format!("Failed to get balance in block range: {}", e),

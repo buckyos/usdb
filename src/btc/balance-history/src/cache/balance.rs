@@ -1,15 +1,14 @@
 use crate::config::BalanceHistoryConfig;
+use crate::types::{BalanceHistoryData, BalanceHistoryDataRef};
 use lru::LruCache;
-use std::num::{NonZero, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
-use crate::types::{BalanceHistoryData, BalanceHistoryDataRef};
 
 // Cache item size estimate: USDBScriptHash (32 bytes) + BalanceHistoryData (~20 bytes) ~ 52 bytes
 const CACHE_ITEM_SIZE: usize =
     std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<BalanceHistoryData>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
-
 
 pub struct AddressBalanceCache {
     cache: Mutex<LruCache<USDBScriptHash, BalanceHistoryDataRef>>, // script_hash -> balance
@@ -26,7 +25,7 @@ impl AddressBalanceCache {
         );
 
         let cache = Mutex::new(LruCache::new(NonZeroUsize::new(max_capacity).unwrap()));
-        
+
         Self { cache }
     }
 

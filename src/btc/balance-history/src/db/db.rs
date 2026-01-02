@@ -414,7 +414,7 @@ impl BalanceHistoryDB {
     /// Get balance records for a given script_hash within [range_begin, range_end)
     pub fn get_balance_in_range(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: &USDBScriptHash,
         range_begin: u32,
         range_end: u32,
     ) -> Result<Vec<BalanceHistoryData>, String> {
@@ -431,7 +431,7 @@ impl BalanceHistoryDB {
         })?;
 
         // Create the start key
-        let start_key = Self::make_balance_history_key(&script_hash, range_begin);
+        let start_key = Self::make_balance_history_key(script_hash, range_begin);
 
         let mut read_opts = ReadOptions::default();
         read_opts.set_prefix_same_as_start(true); // Use prefix seek
@@ -1148,6 +1148,7 @@ mod tests {
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use usdb_util::ToUSDBScriptHash;
+    use std::sync::Arc;
 
     #[test]
     fn test_make_and_parse_key() {
@@ -1225,40 +1226,40 @@ mod tests {
         db.update_address_history_sync(&entries, 401).unwrap();
 
         // Get balance at height 50 (before any entries)
-        let entry = db.get_balance_at_block_height(script_hash, 50).unwrap();
+        let entry = db.get_balance_at_block_height(&script_hash, 50).unwrap();
         assert_eq!(entry.block_height, 0);
         assert_eq!(entry.delta, 0);
         assert_eq!(entry.balance, 0);
 
         // Get balance at height 100
-        let entry = db.get_balance_at_block_height(script_hash, 100).unwrap();
+        let entry = db.get_balance_at_block_height(&script_hash, 100).unwrap();
         assert_eq!(entry.block_height, 100);
         assert_eq!(entry.delta, 500);
         assert_eq!(entry.balance, 500);
 
         // Test get_balance_at_block_height
-        let entry = db.get_balance_at_block_height(script_hash, 250).unwrap();
+        let entry = db.get_balance_at_block_height(&script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
         assert_eq!(entry.balance, 300);
 
         // Test get_balance_in_range
-        let range_entries = db.get_balance_in_range(script_hash, 150, 350).unwrap();
+        let range_entries = db.get_balance_in_range(&script_hash, 150, 350).unwrap();
         assert_eq!(range_entries.len(), 2);
         assert_eq!(range_entries[0].block_height, 200);
         assert_eq!(range_entries[1].block_height, 300);
 
         // Test get_balance_in_range with no entries
-        let range_entries = db.get_balance_in_range(script_hash, 500, 600).unwrap();
+        let range_entries = db.get_balance_in_range(&script_hash, 500, 600).unwrap();
         assert_eq!(range_entries.len(), 0);
 
         // Test get_balance_in_range that hits the upper boundary
-        let range_entries = db.get_balance_in_range(script_hash, 350, 401).unwrap();
+        let range_entries = db.get_balance_in_range(&script_hash, 350, 401).unwrap();
         assert_eq!(range_entries.len(), 1);
         assert_eq!(range_entries[0].block_height, 400);
 
         // Test get_balance_in_range that includes all entries
-        let range_entries = db.get_balance_in_range(script_hash, 0, 1000).unwrap();
+        let range_entries = db.get_balance_in_range(&script_hash, 0, 1000).unwrap();
         assert_eq!(range_entries.len(), 5);
         assert_eq!(range_entries[4].block_height, 401);
 
@@ -1266,7 +1267,7 @@ mod tests {
 
         // Test reopen the db
         let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
-        let entry = db.get_balance_at_block_height(script_hash, 250).unwrap();
+        let entry = db.get_balance_at_block_height(&script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
         assert_eq!(entry.balance, 300);
@@ -1304,7 +1305,7 @@ mod tests {
         // Get UTXO
         let utxo_entry = db.get_utxo(&outpoint).unwrap().unwrap();
         assert_eq!(utxo_entry.script_hash, script_hash);
-        assert_eq!(utxo_entry.amount, amount);
+        assert_eq!(utxo_entry.value, amount);
 
         // Get none existing UTXO
         let missing_outpoint = OutPoint {
@@ -1315,7 +1316,7 @@ mod tests {
         assert!(utxo_entry.is_none());
 
         // Consume UTXO
-        db.update_utxos_async(&vec![], &vec![outpoint.clone()])
+        db.update_utxos_async(&vec![], &vec![Arc::new(outpoint.clone())])
             .unwrap();
 
         // Try to get UTXO again, should be None

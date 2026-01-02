@@ -96,6 +96,7 @@ pub type UTXOCacheRef = std::sync::Arc<UTXOCache>;
 mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use usdb_util::USDBScriptHash;
 
     #[test]
     fn test_utxo_cache_size() {
