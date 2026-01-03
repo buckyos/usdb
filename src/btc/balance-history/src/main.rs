@@ -85,7 +85,7 @@ async fn main_run() {
 
     // Initialize the database
     output.println("Initializing database... this may take a while.");
-    let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
+    let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
         Ok(database) => database,
         Err(e) => {
             error!("Failed to initialize database: {}", e);
@@ -123,7 +123,10 @@ async fn main_run() {
     }
     let rpc_server = ret.unwrap();
 
-    output.println(&format!("RPC server started at {}", rpc_server.get_listen_url()));
+    output.println(&format!(
+        "RPC server started at {}",
+        rpc_server.get_listen_url()
+    ));
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;
@@ -270,7 +273,7 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
+            let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
@@ -396,7 +399,7 @@ async fn main() {
             let output = Arc::new(output);
 
             // Load balance history DB
-            let db = match BalanceHistoryDB::new(&root_dir, config.clone()) {
+            let db = match BalanceHistoryDB::open_for_read(&root_dir, config.clone()) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
@@ -416,11 +419,8 @@ async fn main() {
             };
             let electrs_client = Arc::new(electrs_client);
 
-            let verifier = crate::index::BalanceHistoryVerifier::new(
-                config.clone(),
-                electrs_client,
-                db,
-            );
+            let verifier =
+                crate::index::BalanceHistoryVerifier::new(config.clone(), electrs_client, db);
 
             tokio::task::spawn_blocking(move || {
                 if let Err(e) = verifier.verify_latest() {

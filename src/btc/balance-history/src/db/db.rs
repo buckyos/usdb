@@ -50,7 +50,7 @@ pub struct BalanceHistoryDB {
 }
 
 impl BalanceHistoryDB {
-    pub fn new(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
+    pub fn open(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
         let db_dir = Self::get_db_dir(data_dir);
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
@@ -125,9 +125,59 @@ impl BalanceHistoryDB {
         Ok(BalanceHistoryDB { file, db, config })
     }
 
+    pub fn open_for_read(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
+        let db_dir = Self::get_db_dir(data_dir);
+        let file = db_dir.join("balance_history");
+        info!("Opening RocksDB in read-only mode at {}", file.display());
+
+        let mut opts = Options::default();
+        opts.create_if_missing(false);
+
+        let tmp_dir = std::env::temp_dir().join("usdb_balance_history_secondary");
+        if !tmp_dir.exists() {
+            std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+                let msg = format!(
+                    "Could not create secondary RocksDB directory at {}: {}",
+                    tmp_dir.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        let cf_descriptors_names = vec![
+            BALANCE_HISTORY_CF,
+            META_CF,
+            UTXO_CF,
+            BLOCKS_CF,
+            BLOCK_HEIGHTS_CF,
+        ];
+        let db = DB::open_cf_as_secondary(&opts, &file, &tmp_dir, cf_descriptors_names).map_err(|e| {
+            let msg = format!("Failed to open RocksDB at {}: {}", file.display(), e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(BalanceHistoryDB {
+            file,
+            db,
+            config,
+        })
+    }
+
     pub fn close(self) {
         drop(self.db);
         info!("Closed RocksDB at {}", self.file.display());
+    }
+
+    // Flush secondary DB to catch up with primary in read-only mode
+    pub fn flush_with_primary(&self) -> Result<(), String> {
+        self.db.try_catch_up_with_primary().map_err(|e| {
+            let msg = format!("Failed to flush secondary RocksDB at {}: {}", self.file.display(), e);
+            error!("{}", msg);
+            msg
+        })
     }
 
     pub fn get_db_dir(data_dir: &Path) -> PathBuf {
@@ -493,13 +543,13 @@ impl BalanceHistoryDB {
         Ok(results)
     }
 
-     pub fn get_all_balance(
+    pub fn get_all_balance(
         &self,
         script_hash: &USDBScriptHash,
     ) -> Result<Vec<BalanceHistoryData>, String> {
         self.get_balance_in_range(script_hash, 0, u32::MAX)
     }
-    
+
     pub fn put_btc_block_height(&self, height: u32) -> Result<(), String> {
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", META_CF);
@@ -1266,7 +1316,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("balance_history_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
 
         let script = ScriptBuf::from(vec![1u8; 32]);
         let script_hash = script.to_usdb_script_hash();
@@ -1347,7 +1397,7 @@ mod tests {
         db.close();
 
         // Test reopen the db
-        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
         let entry = db.get_balance_at_block_height(&script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
@@ -1370,7 +1420,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("balance_history_utxo_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let db = BalanceHistoryDB::new(&temp_dir, config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
 
         let outpoint = OutPoint {
             txid: Txid::from_slice(&[2u8; 32]).unwrap(),

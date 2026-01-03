@@ -604,7 +604,7 @@ mod tests {
         let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
         let client = std::sync::Arc::new(client);
 
-        let db = BalanceHistoryDB::new(&test_data_dir.join("db"), config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(&test_data_dir.join("db"), config.clone()).unwrap();
         let db = std::sync::Arc::new(db);
 
         let reader =

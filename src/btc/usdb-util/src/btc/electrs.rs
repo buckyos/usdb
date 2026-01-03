@@ -1,8 +1,8 @@
-use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
-use bitcoincore_rpc::bitcoin::{Transaction, Txid, Script, ScriptBuf};
-use electrum_client::{Client, ElectrumApi, GetHistoryRes, Param};
 use crate::types::BalanceHistoryData;
 use crate::{ToUSDBScriptHash, USDBScriptHash};
+use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
+use bitcoincore_rpc::bitcoin::{Script, ScriptBuf, Transaction, Txid};
+use electrum_client::{Client, ElectrumApi, GetBalanceRes, GetHistoryRes, Param};
 
 pub struct TxFullItem {
     pub vin: Vec<TxOut>,
@@ -54,7 +54,7 @@ impl TxFullItem {
         );
 
         Ok((delta, script_buf.unwrap()))
-    }    
+    }
 }
 
 pub struct ElectrsClient {
@@ -69,9 +69,36 @@ impl ElectrsClient {
             msg
         })?;
 
-        Ok(Self {
-            client,
-        })
+        Ok(Self { client })
+    }
+
+    // Get address balance
+    pub async fn get_balance(&self, script_hash: &USDBScriptHash) -> Result<u64, String> {
+        let script_hash_str = format!("{:x}", script_hash);
+
+        let params = vec![Param::String(script_hash_str)];
+        let result = self
+            .client
+            .raw_call("blockchain.scripthash.get_balance", params)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to get balance for script hash {}: {}",
+                    script_hash, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let balance_res: GetBalanceRes = serde_json::from_value(result).map_err(|e| {
+            let msg = format!(
+                "Failed to parse balance for script hash {}: {}",
+                script_hash, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(balance_res.confirmed)
     }
 
     // Get address history
@@ -82,15 +109,23 @@ impl ElectrsClient {
         let script_hash_str = format!("{:x}", script_hash);
 
         let params = vec![Param::String(script_hash_str)];
-        let result = self.client.raw_call("blockchain.scripthash.get_history", params)
+        let result = self
+            .client
+            .raw_call("blockchain.scripthash.get_history", params)
             .map_err(|e| {
-                let msg = format!("Failed to get history for script hash {}: {}", script_hash, e);
+                let msg = format!(
+                    "Failed to get history for script hash {}: {}",
+                    script_hash, e
+                );
                 error!("{}", msg);
                 msg
             })?;
 
         let his: Vec<GetHistoryRes> = serde_json::from_value(result).map_err(|e| {
-            let msg = format!("Failed to parse history for script hash {}: {}", script_hash, e);
+            let msg = format!(
+                "Failed to parse history for script hash {}: {}",
+                script_hash, e
+            );
             error!("{}", msg);
             msg
         })?;
@@ -101,14 +136,11 @@ impl ElectrsClient {
         &self,
         script: &Script,
     ) -> Result<Vec<GetHistoryRes>, String> {
-        let his = self
-            .client
-            .script_get_history(&script)
-            .map_err(|e| {
-                let msg = format!("Failed to get history for script {}: {}", script, e);
-                error!("{}", msg);
-                msg
-            })?;
+        let his = self.client.script_get_history(&script).map_err(|e| {
+            let msg = format!("Failed to get history for script {}: {}", script, e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(his)
     }
@@ -247,7 +279,6 @@ impl ElectrsClient {
                 return Err(msg);
             }
 
-
             vin.push(vin_tx.output[vin_vout].clone());
         }
 
@@ -262,7 +293,7 @@ pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::{Network};
+    use bitcoincore_rpc::bitcoin::Network;
     use std::str::FromStr;
 
     #[tokio::test]
@@ -291,19 +322,22 @@ mod tests {
             .expand_tx(&txid)
             .await
             .expect("Failed to expand transaction");
-        println!("Full Transaction: vin={:?}, vout={:?}", full_tx.vin, full_tx.vout);
+        println!(
+            "Full Transaction: vin={:?}, vout={:?}",
+            full_tx.vin, full_tx.vout
+        );
 
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
             .expect("Failed to parse address");
         let address = address.require_network(Network::Bitcoin).unwrap();
-        let delta = full_tx.amount_delta_from_tx(&address.script_pubkey().to_usdb_script_hash())
+        let delta = full_tx
+            .amount_delta_from_tx(&address.script_pubkey().to_usdb_script_hash())
             .expect("Failed to compute amount delta");
         println!(
             "Amount delta for address {} in tx {}: {}",
             address, txid, delta
         );
         assert!(delta == -2045555); // Example value
-
 
         // Test another address
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h").unwrap();

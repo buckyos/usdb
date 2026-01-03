@@ -34,11 +34,15 @@ impl BalanceHistoryVerifier {
             );
 
             let entry = &entries[0];
-            self.verify_address_at_height_sync(
-                &entry.script_hash,
-                entry.block_height,
-                entry.balance,
-            )
+            if let Err(e) = self.verify_address_latest_sync(&entry.script_hash, entry.balance) {
+                warn!("Failed to verify address {}: {}", entry.script_hash, e);
+                self.db.flush_with_primary()?;
+
+                // Retry once after flushing
+                self.verify_address_latest_sync(&entry.script_hash, entry.balance)?;
+            }
+
+            Ok(())
         })
     }
 
@@ -79,21 +83,30 @@ impl BalanceHistoryVerifier {
                 .await
         })?;
 
-        let address = Address::from_script(&history.script_buf, self.config.btc.network()).map_err(|e| {
-            let msg = format!(
-                "Failed to parse address from script for script_hash {}: {}",
-                script_hash, e
-            );
-            error!("{}", msg);
-            msg
-        })?;
+        let address = Address::from_script(&history.script_buf, self.config.btc.network())
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to parse address from script for script_hash {}: {}",
+                    script_hash, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
         for data in history.history {
-            let entry = self.db.get_balance_at_block_height(script_hash, data.block_height)?;
+            let entry = self
+                .db
+                .get_balance_at_block_height(script_hash, data.block_height)?;
             if entry.balance != data.balance || entry.delta != data.delta {
                 let msg = format!(
                     "Balance history mismatch for script_hash {} at block height {}: expected (delta={}, balance={}), got (delta={}, balance={}), address {}",
-                    script_hash, data.block_height, entry.delta, entry.balance, data.delta, data.balance, address
+                    script_hash,
+                    data.block_height,
+                    entry.delta,
+                    entry.balance,
+                    data.delta,
+                    data.balance,
+                    address
                 );
                 error!("{}", msg);
                 return Err(msg);
@@ -126,11 +139,6 @@ impl BalanceHistoryVerifier {
         block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
-        info!(
-            "Starting balance history verification for script_hash: {}",
-            script_hash
-        );
-
         /*
         let script = self.address_db.get_address(script_hash)?.ok_or_else(|| {
             let msg = format!("Address not found for script_hash: {}", script_hash);
@@ -156,14 +164,15 @@ impl BalanceHistoryVerifier {
             .calc_balance(script_hash, block_height)
             .await?;
 
-        let address = Address::from_script(&electrs_balance.script_buf, self.config.btc.network()).map_err(|e| {
-            let msg = format!(
-                "Failed to parse address from script for script_hash {}: {}",
-                script_hash, e
-            );
-            error!("{}", msg);
-            msg
-        })?;
+        let address = Address::from_script(&electrs_balance.script_buf, self.config.btc.network())
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to parse address from script for script_hash {}: {}",
+                    script_hash, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
         if electrs_balance.balance != balance {
             let msg = format!(
@@ -173,13 +182,54 @@ impl BalanceHistoryVerifier {
             error!("{}", msg);
 
             let all = self.db.get_all_balance(script_hash)?;
-            error!("Full balance history for script_hash {}: {:?}", script_hash, all);
+            error!(
+                "Full balance history for script_hash {}: {:?}",
+                script_hash, all
+            );
             return Err(msg);
         }
 
         info!(
             "Balance history verification successful for script_hash {} at block height {}: balance={}, address={}",
             script_hash, block_height, balance, address
+        );
+        Ok(())
+    }
+
+    fn verify_address_latest_sync(
+        &self,
+        script_hash: &USDBScriptHash,
+        balance: u64,
+    ) -> Result<(), String> {
+        tokio::runtime::Handle::current()
+            .block_on(async { self.verify_address_latest(script_hash, balance).await })
+    }
+
+    async fn verify_address_latest(
+        &self,
+        script_hash: &USDBScriptHash,
+        balance: u64,
+    ) -> Result<(), String> {
+        let electrs_balance = self.electrs_client.get_balance(script_hash).await?;
+
+        if electrs_balance != balance {
+            let msg = format!(
+                "Balance mismatch for script_hash {}: expected {}, got {}",
+                script_hash, balance, electrs_balance
+            );
+            error!("{}", msg);
+
+            let all = self.db.get_all_balance(script_hash)?;
+            error!(
+                "Full balance history for script_hash {}: {:?}",
+                script_hash, all
+            );
+            return Err(msg);
+        }
+
+        info!(
+            "Balance history verification successful for script_hash {}: balance={}",
+            script_hash, balance
         );
         Ok(())
     }
@@ -230,14 +280,15 @@ impl SnapshotVerifier {
             .calc_balance(&snapshot_entry.script_hash, snapshot_entry.block_height)
             .await?;
 
-        let addr = Address::from_script(&ret.script_buf, self.config.btc.network()).map_err(|e| {
-            let msg = format!(
-                "Failed to parse address from script for script_hash {}: {}",
-                snapshot_entry.script_hash, e
-            );
-            error!("{}", msg);
-            msg
-        })?;
+        let addr =
+            Address::from_script(&ret.script_buf, self.config.btc.network()).map_err(|e| {
+                let msg = format!(
+                    "Failed to parse address from script for script_hash {}: {}",
+                    snapshot_entry.script_hash, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
         assert!(
             ret.balance == snapshot_entry.balance,
