@@ -64,6 +64,10 @@ enum BalanceHistoryCommands {
         /// Specify the target block height to verify
         /// #[arg(short, long)]
         height: Option<u32>,
+
+        /// Specify the starting address or script hash to verify from
+        #[arg(long, alias = "start")]
+        from: Option<String>,
     },
 }
 
@@ -386,6 +390,7 @@ async fn main() {
             address,
             script_hash,
             height,
+            from,
         }) => {
             // Init file logging
             let config = LogConfig {
@@ -464,6 +469,19 @@ async fn main() {
                 None
             };
 
+            let from = if let Some(from_str) = from {
+                match usdb_util::parse_script_hash_any(&from_str, &config.btc.network) {
+                    Ok(sh) => Some(sh),
+                    Err(e) => {
+                        error!("Failed to parse 'from' script hash or address: {}", e);
+                        output.println(&format!("Failed to parse 'from' script hash or address: {}", e));
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
+
             tokio::task::spawn_blocking(move || {
                 if script_hash.is_some() {
                     output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
@@ -478,14 +496,14 @@ async fn main() {
                             "Verifying balance history at height {}...",
                             height.unwrap()
                         ));
-                        if let Err(e) = verifier.verify_at_height(height.unwrap()) {
+                        if let Err(e) = verifier.verify_at_height(height.unwrap(), from) {
                             error!("Failed to verify balance history: {}", e);
                             output.println(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                     } else {
                         output.println("Verifying entire balance history...");
-                        if let Err(e) = verifier.verify_latest() {
+                        if let Err(e) = verifier.verify_latest(from) {
                             error!("Failed to verify balance history: {}", e);
                             output.println(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);

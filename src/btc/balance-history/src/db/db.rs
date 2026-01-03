@@ -153,17 +153,15 @@ impl BalanceHistoryDB {
             BLOCKS_CF,
             BLOCK_HEIGHTS_CF,
         ];
-        let db = DB::open_cf_as_secondary(&opts, &file, &tmp_dir, cf_descriptors_names).map_err(|e| {
-            let msg = format!("Failed to open RocksDB at {}: {}", file.display(), e);
-            error!("{}", msg);
-            msg
-        })?;
+        let db = DB::open_cf_as_secondary(&opts, &file, &tmp_dir, cf_descriptors_names).map_err(
+            |e| {
+                let msg = format!("Failed to open RocksDB at {}: {}", file.display(), e);
+                error!("{}", msg);
+                msg
+            },
+        )?;
 
-        Ok(BalanceHistoryDB {
-            file,
-            db,
-            config,
-        })
+        Ok(BalanceHistoryDB { file, db, config })
     }
 
     pub fn close(self) {
@@ -174,7 +172,11 @@ impl BalanceHistoryDB {
     // Flush secondary DB to catch up with primary in read-only mode
     pub fn flush_with_primary(&self) -> Result<(), String> {
         self.db.try_catch_up_with_primary().map_err(|e| {
-            let msg = format!("Failed to flush secondary RocksDB at {}: {}", self.file.display(), e);
+            let msg = format!(
+                "Failed to flush secondary RocksDB at {}: {}",
+                self.file.display(),
+                e
+            );
             error!("{}", msg);
             msg
         })
@@ -932,7 +934,12 @@ impl BalanceHistoryDB {
     }
 
     // Traverse the latest balance entry for each script_hash in descending order
-    pub fn traverse_latest<F>(&self, batch_size: usize, mut callback: F) -> Result<(), String>
+    pub fn traverse_latest<F>(
+        &self,
+        start_script_hash: Option<USDBScriptHash>,
+        batch_size: usize,
+        mut callback: F,
+    ) -> Result<(), String>
     where
         F: FnMut(&[BalanceHistoryEntry]) -> Result<(), String>,
     {
@@ -944,7 +951,18 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
+        let mut iter = match start_script_hash {
+            Some(script_hash) => {
+                let mut seek_key = Vec::with_capacity(USDBScriptHash::LEN + 4);
+                seek_key.extend_from_slice(script_hash.as_ref());
+                seek_key.extend_from_slice(&[0xFF; 4]); // max block height
+
+                self.db
+                    .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
+            }
+            None => self.db.iterator_cf(&cf, IteratorMode::End),
+        };
+
         let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut snapshot = Vec::with_capacity(batch_size);
         while let Some(Ok((key, value))) = iter.next() {
@@ -996,6 +1014,7 @@ impl BalanceHistoryDB {
 
     pub fn traverse_at_height<F>(
         &self,
+        start_script_hash: Option<USDBScriptHash>,
         target_block_height: u32,
         batch_size: usize,
         mut callback: F,
@@ -1011,7 +1030,17 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        let mut iter = self.db.iterator_cf(&cf, IteratorMode::End);
+        let mut iter = match start_script_hash {
+            Some(script_hash) => {
+                let mut seek_key = Vec::with_capacity(USDBScriptHash::LEN + 4);
+                seek_key.extend_from_slice(script_hash.as_ref());
+                seek_key.extend_from_slice(&[0xFF; 4]); // max block height
+
+                self.db
+                    .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
+            }
+            None => self.db.iterator_cf(&cf, IteratorMode::End),
+        };
 
         let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;

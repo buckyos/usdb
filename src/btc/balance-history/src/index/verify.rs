@@ -27,16 +27,16 @@ impl BalanceHistoryVerifier {
         }
     }
 
-    pub fn verify_latest(&self) -> Result<(), String> {
+    pub fn verify_latest(&self, start: Option<USDBScriptHash>) -> Result<(), String> {
         info!("Starting full balance history verification for latest block height");
 
         let mut script_hashes = vec![];
         let mut balances = vec![];
-        
+
         const BATCH_SIZE: usize = 256;
         let mut total = 0u64;
         self.output.start_index(u32::MAX as u64, 0);
-        self.db.traverse_latest(1, |entries| {
+        self.db.traverse_latest(start, 1, |entries| {
             assert!(
                 entries.len() == 1,
                 "Expected exactly one snapshot entry for latest block height, found {}",
@@ -47,7 +47,6 @@ impl BalanceHistoryVerifier {
             balances.push(entries[0].balance);
 
             if script_hashes.len() >= BATCH_SIZE {
-
                 // Verify batch
                 if let Err(e) = self.verify_address_latest_batch_sync(&script_hashes, &balances) {
                     warn!("Failed to verify address batch: {}", e);
@@ -78,14 +77,18 @@ impl BalanceHistoryVerifier {
         })
     }
 
-    pub fn verify_at_height(&self, target_block_height: u32) -> Result<(), String> {
+    pub fn verify_at_height(
+        &self,
+        target_block_height: u32,
+        start: Option<USDBScriptHash>,
+    ) -> Result<(), String> {
         info!(
             "Starting full balance history verification at block height {}",
             target_block_height
         );
 
         self.db
-            .traverse_at_height(target_block_height, 1, |entries| {
+            .traverse_at_height(start, target_block_height, 1, |entries| {
                 assert!(
                     entries.len() == 1,
                     "Expected exactly one snapshot entry for block height {}, found {}",
@@ -102,11 +105,14 @@ impl BalanceHistoryVerifier {
             })
     }
 
-    pub fn verify_address(&self, script_hash: &USDBScriptHash, block_height: Option<u32>) -> Result<(), String> {
+    pub fn verify_address(
+        &self,
+        script_hash: &USDBScriptHash,
+        block_height: Option<u32>,
+    ) -> Result<(), String> {
         let block_height = match block_height {
             Some(height) => height,
-            None =>
-                self.db.get_btc_block_height()?
+            None => self.db.get_btc_block_height()?,
         };
 
         info!(

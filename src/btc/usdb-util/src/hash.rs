@@ -41,8 +41,18 @@ pub fn address_string_to_script_hash(
     Ok(addr.script_pubkey().to_usdb_script_hash())
 }
 
-pub fn  parse_script_hash(s: &str) -> Result<USDBScriptHash, String> {
+pub fn parse_script_hash(s: &str) -> Result<USDBScriptHash, String> {
     USDBScriptHash::from_str(s).map_err(|e| format!("Invalid script hash {}: {}", s, e))
+}
+
+pub fn parse_script_hash_any(s: &str, network: &bitcoincore_rpc::bitcoin::Network) -> Result<USDBScriptHash, String> {
+    // Try to parse as USDBScriptHash first
+    if let Ok(sh) = parse_script_hash(s) {
+        return Ok(sh);
+    }
+
+    // Otherwise, try to parse as address
+    address_string_to_script_hash(s, network)
 }
 
 #[cfg(test)]
