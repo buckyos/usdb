@@ -50,7 +50,7 @@ struct VInPosition {
 pub struct BatchBlockData {
     block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
-    vout_utxos: Arc<Mutex<HashMap<OutPointRef, VOutUtxoInfo>>>,
+    vout_utxos: Arc<RwLock<HashMap<OutPointRef, VOutUtxoInfo>>>,
     balances: Arc<RwLock<HashMap<USDBScriptHash, BalanceHistoryData>>>,
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
 
@@ -62,7 +62,7 @@ impl BatchBlockData {
         Self {
             block_range: 0..0,
             blocks: Arc::new(Mutex::new(Vec::new())),
-            vout_utxos: Arc::new(Mutex::new(HashMap::new())),
+            vout_utxos: Arc::new(RwLock::new(HashMap::new())),
             balances: Arc::new(RwLock::new(HashMap::new())),
             balance_history: Arc::new(Mutex::new(Vec::new())),
             bench_mark: Arc::new(BatchBlockBenchMark::new()),
@@ -206,55 +206,67 @@ impl BatchBlockPreloader {
         };
 
         // Load all vins' UTXOs into cache
-        for tx in &block.txdata {
-            let mut preload_tx = PreloadTx {
-                txid: tx.compute_txid(),
-                vin: Vec::with_capacity(tx.input.len()),
-                vout: Vec::with_capacity(tx.output.len()),
-            };
+        // Here we do not use rayon because we already used rayon to process blocks in higher level
+        preload_block.txdata = block
+            .txdata
+            .iter()
+            .map(|tx| {
+                let mut preload_tx = PreloadTx {
+                    txid: tx.compute_txid(),
+                    vin: Vec::with_capacity(tx.input.len()),
+                    vout: Vec::with_capacity(tx.output.len()),
+                };
 
-            if !tx.is_coinbase() {
-                for vin in &tx.input {
-                    let outpoint = &vin.previous_output;
+                if !tx.is_coinbase() {
+                    for vin in &tx.input {
+                        let outpoint = &vin.previous_output;
 
-                    // Here we just use None as placeholder, the real UTXO will be loaded in batch later
-                    let preload_vin = PreloadVIn {
-                        outpoint: Arc::new(outpoint.clone()),
-                        cache_tx_out: None,
-                        need_flush: true,
+                        // Here we just use None as placeholder, the real UTXO will be loaded in batch later
+                        let preload_vin = PreloadVIn {
+                            outpoint: Arc::new(outpoint.clone()),
+                            cache_tx_out: None,
+                            need_flush: true,
+                        };
+                        preload_tx.vin.push(preload_vin);
+                    }
+                }
+
+                for (n, vout) in tx.output.iter().enumerate() {
+                    // Skip outputs that cannot be spent
+                    if vout.script_pubkey.is_op_return() {
+                        continue;
+                    }
+
+                    let outpoint = OutPoint {
+                        txid: preload_tx.txid,
+                        vout: n as u32,
                     };
-                    preload_tx.vin.push(preload_vin);
+
+                    let cache_tx_out = UTXOEntry {
+                        value: vout.value.to_sat(),
+                        script_hash: vout.script_pubkey.to_usdb_script_hash(),
+                    };
+
+                    let preload_vout = PreloadVOut {
+                        outpoint: Arc::new(outpoint),
+                        cache_tx_out: Arc::new(cache_tx_out),
+                    };
+                    preload_tx.vout.push(preload_vout);
                 }
-            }
 
-            for (n, vout) in tx.output.iter().enumerate() {
-                // Skip outputs that cannot be spent
-                if vout.script_pubkey.is_op_return() {
-                    continue;
-                }
-
-                let outpoint = OutPoint {
-                    txid: preload_tx.txid,
-                    vout: n as u32,
-                };
-
-                let cache_tx_out = UTXOEntry {
-                    value: vout.value.to_sat(),
-                    script_hash: vout.script_pubkey.to_usdb_script_hash(),
-                };
-
-                let preload_vout = PreloadVOut {
-                    outpoint: Arc::new(outpoint),
-                    cache_tx_out: Arc::new(cache_tx_out),
-                };
-                preload_tx.vout.push(preload_vout);
-            }
-
-            preload_block.txdata.push(preload_tx);
-        }
+                preload_tx
+            })
+            .collect();
 
         // Append all vout UTXOs to UTXO cache
-        let mut vout_utxo_map = data.vout_utxos.lock().unwrap();
+        let mut vout_utxo_map = data.vout_utxos.write().unwrap();
+        let estimated = preload_block
+            .txdata
+            .iter()
+            .map(|tx| tx.vout.len())
+            .sum::<usize>();
+        vout_utxo_map.reserve(estimated);
+
         for tx in &preload_block.txdata {
             for vout in &tx.vout {
                 vout_utxo_map.insert(
@@ -282,19 +294,21 @@ impl BatchBlockPreloader {
         for (tx_index, tx) in &mut preload_block.txdata.iter_mut().enumerate() {
             for (vin_index, vin) in tx.vin.iter_mut().enumerate() {
                 // First check if the UTXO is already in vout cache (i.e., created in the same batch)
-                let mut vout_utxo_map = data.vout_utxos.lock().unwrap();
-                if let Some(vout_utxo_info) = vout_utxo_map.get_mut(&vin.outpoint) {
-                    assert!(
-                        !vout_utxo_info.spend,
-                        "Double spend of UTXO in the same batch: {}",
-                        vin.outpoint
-                    );
-                    vout_utxo_info.spend = true;
+                {
+                    let mut vout_utxo_map = data.vout_utxos.write().unwrap();
+                    if let Some(vout_utxo_info) = vout_utxo_map.get_mut(&vin.outpoint) {
+                        assert!(
+                            !vout_utxo_info.spend,
+                            "Double spend of UTXO in the same batch: {}",
+                            vin.outpoint
+                        );
+                        vout_utxo_info.spend = true;
 
-                    vin.cache_tx_out.replace(vout_utxo_info.item.clone());
-                    vin.need_flush = false; // No need to flush UTXO created in the same batch
+                        vin.cache_tx_out.replace(vout_utxo_info.item.clone());
+                        vin.need_flush = false; // No need to flush UTXO created in the same batch
 
-                    continue;
+                        continue;
+                    }
                 }
 
                 // Then check if the UTXO is in utxo cache then use it(need spend)
@@ -458,6 +472,8 @@ impl BatchBlockPreloader {
             .collect();
 
         let mut balances_map = data.balances.write().unwrap();
+        balances_map.reserve(result.len());
+
         for res in result {
             let (script_hash, balance) = res?;
             balances_map.insert(script_hash, balance.as_ref().clone());
@@ -534,7 +550,7 @@ impl BatchBlockFlusher {
         // First found unspent UTXOs to add to cache and db
         let mut utxo_list = Vec::new();
         {
-            let vout_utxos = data.vout_utxos.lock().unwrap();
+            let vout_utxos = data.vout_utxos.read().unwrap();
             utxo_list.reserve(vout_utxos.len());
 
             for (outpoint, vout_utxo_info) in vout_utxos.iter() {
