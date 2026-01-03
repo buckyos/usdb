@@ -1,4 +1,6 @@
+use super::CacheStrategy;
 use crate::config::BalanceHistoryConfig;
+use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
@@ -8,25 +10,42 @@ use usdb_util::{OutPointRef, UTXOEntry, UTXOEntryRef};
 // Cache item size estimate: OutPoint (32 + 4 bytes) + UTXOEntry (8 + 32 bytes) ~ 76 bytes
 const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<UTXOEntry>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
+const NORMAL_CACHE_MAX_ENTRIES: usize = 1024 * 16; // 16K entries for normal strategy
 
 pub struct UTXOCache {
     cache: Mutex<LruCache<OutPointRef, UTXOEntryRef>>,
+    strategy: Mutex<CacheStrategy>,
+    config: BalanceHistoryConfigRef,
 }
 
 impl UTXOCache {
-    pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity =
-            config.sync.utxo_max_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+    pub fn new(config: BalanceHistoryConfigRef, strategy: CacheStrategy) -> Self {
+        let max_capacity = Self::cap_by_strategy(strategy, &config);
+
         // let max_capacity: usize = 1024 * 1024 * 20; // For testing, limit to 80 million entries
         info!(
-            "UTXOCache max capacity: {} entries, total {} bytes",
-            max_capacity, config.sync.utxo_max_cache_bytes
+            "UTXOCache max capacity: {} entries, config max {} bytes, strategy: {:?}",
+            max_capacity, config.sync.utxo_max_cache_bytes, strategy
         );
 
         let cache = Mutex::new(LruCache::new(
             std::num::NonZeroUsize::new(max_capacity).unwrap(),
         ));
-        Self { cache }
+
+        Self {
+            cache,
+            strategy: Mutex::new(strategy),
+            config,
+        }
+    }
+
+    fn cap_by_strategy(strategy: CacheStrategy, config: &BalanceHistoryConfig) -> usize {
+        match strategy {
+            CacheStrategy::BestEffort => {
+                config.sync.utxo_max_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES)
+            }
+            CacheStrategy::Normal => NORMAL_CACHE_MAX_ENTRIES,
+        }
     }
 
     pub fn get_count(&self) -> u64 {
@@ -68,6 +87,24 @@ impl UTXOCache {
         let mut cache = self.cache.lock().unwrap();
         info!("Clearing UTXOCache, current count: {}", cache.len());
         cache.clear();
+    }
+
+    pub fn update_strategy(&self, strategy: CacheStrategy) {
+        let mut strategy_lock = self.strategy.lock().unwrap();
+        if *strategy_lock != strategy {
+            info!(
+                "Updating UTXOCache strategy: {:?} -> {:?}",
+                *strategy_lock, strategy
+            );
+            *strategy_lock = strategy;
+
+            // Recreate cache with new strategy
+            let max_capacity = Self::cap_by_strategy(strategy, &self.config);
+
+            // Move existing entries to new cache
+            let mut cache = self.cache.lock().unwrap();
+            cache.resize(std::num::NonZeroUsize::new(max_capacity).unwrap());
+        }
     }
 
     /*

@@ -1,5 +1,5 @@
 use super::block::BatchBlockProcessor;
-use crate::btc::{BTCClientRef, create_btc_client};
+use crate::btc::{BTCClientRef, create_btc_client, BTCClientType};
 use crate::cache::{AddressBalanceCache, AddressBalanceCacheRef, MemoryCacheMonitor, MemoryCacheMonitorRef};
 use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
@@ -42,11 +42,22 @@ impl BalanceHistoryIndexer {
             last_synced_block_height,
         )?;
 
+        let cache_strategy = match btc_client.get_type() {
+            BTCClientType::LocalLoader => {
+                info!("Using BestEffort cache strategy for Local Loader BTC client");
+                crate::cache::CacheStrategy::BestEffort
+            }
+            BTCClientType::RPC => {
+                info!("Using Normal cache strategy for RPC BTC client");
+                crate::cache::CacheStrategy::Normal
+            }
+        };
+
         // Init UTXO cache
-        let utxo_cache = Arc::new(UTXOCache::new(&config));
+        let utxo_cache = Arc::new(UTXOCache::new(config.clone(), cache_strategy));
 
         // Init Address Balance Cache
-        let balance_cache = Arc::new(AddressBalanceCache::new(&config));
+        let balance_cache = Arc::new(AddressBalanceCache::new(config.clone(), cache_strategy));
 
         let cache_monitor = Arc::new(MemoryCacheMonitor::new(
             config.clone(),

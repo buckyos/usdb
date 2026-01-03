@@ -59,4 +59,4 @@ pub trait BalanceHistoryRpc {
 
     #[rpc(name = "stop")]
     fn stop(&self) -> JsonResult<()>;
-}
+} 

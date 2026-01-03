@@ -1,4 +1,6 @@
+use super::CacheStrategy;
 use crate::config::BalanceHistoryConfig;
+use crate::config::BalanceHistoryConfigRef;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -12,21 +14,36 @@ const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
 pub struct AddressBalanceCache {
     cache: Mutex<LruCache<USDBScriptHash, BalanceHistoryDataRef>>, // script_hash -> balance
+    strategy: Mutex<CacheStrategy>,
+    config: BalanceHistoryConfigRef,
 }
 
 impl AddressBalanceCache {
-    pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity =
-            config.sync.balance_max_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+    pub fn new(config: BalanceHistoryConfigRef, strategy: CacheStrategy) -> Self {
+        let max_capacity = Self::cap_by_strategy(strategy, &config);
+
         // let max_capacity: usize = 1024 * 1024 * 150; // For testing, limit to 150 million entries
         info!(
-            "AddressBalanceCache max capacity: {} entries, total {} bytes",
-            max_capacity, config.sync.balance_max_cache_bytes
+            "AddressBalanceCache max capacity: {} entries, max config {} bytes, strategy: {:?}",
+            max_capacity, config.sync.balance_max_cache_bytes, strategy
         );
 
         let cache = Mutex::new(LruCache::new(NonZeroUsize::new(max_capacity).unwrap()));
 
-        Self { cache }
+        Self {
+            cache,
+            strategy: Mutex::new(strategy),
+            config,
+        }
+    }
+
+    fn cap_by_strategy(strategy: CacheStrategy, config: &BalanceHistoryConfig) -> usize {
+        match strategy {
+            CacheStrategy::BestEffort => {
+                config.sync.balance_max_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES)
+            }
+            CacheStrategy::Normal => 1024 * 256, // 256K entries for normal strategy
+        }
     }
 
     pub fn get_item_size() -> usize {
@@ -87,6 +104,24 @@ impl AddressBalanceCache {
             target_count
         );
         cache.resize(NonZeroUsize::new(target_count).unwrap());
+    }
+
+    pub fn update_strategy(&self, strategy: CacheStrategy) {
+        let mut strategy_lock = self.strategy.lock().unwrap();
+        if *strategy_lock != strategy {
+            info!(
+                "Updating AddressBalanceCache strategy: {:?} -> {:?}",
+                *strategy_lock, strategy
+            );
+            *strategy_lock = strategy;
+
+            // Recreate cache with new strategy
+            let max_capacity = Self::cap_by_strategy(strategy, &self.config);
+
+            // Move existing entries to new cache
+            let mut cache = self.cache.lock().unwrap();
+            cache.resize(std::num::NonZeroUsize::new(max_capacity).unwrap());
+        }
     }
 }
 

@@ -35,8 +35,8 @@ impl MemoryCacheMonitor {
     // Called when sync is complete to shrink caches
     // This maybe called multiple times
     pub fn on_sync_complete(&self) {
-        self.utxo_cache.clear();
-        self.address_balance_cache.clear();
+        self.utxo_cache.update_strategy(super::CacheStrategy::Normal);
+        self.address_balance_cache.update_strategy(super::CacheStrategy::Normal);
     }
 
     fn check(&self) {
