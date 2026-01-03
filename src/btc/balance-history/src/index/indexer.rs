@@ -350,7 +350,7 @@ impl BalanceHistoryIndexer {
     fn process_block_batch(&self, height_range: std::ops::Range<u32>) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
 
-        self.output.println(&format!(
+        self.output.set_index_message(&format!(
             "Processing block batch [{} - {})",
             height_range.start, height_range.end
         ));

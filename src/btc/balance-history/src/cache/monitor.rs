@@ -36,6 +36,7 @@ impl MemoryCacheMonitor {
     // This maybe called multiple times
     pub fn on_sync_complete(&self) {
         self.utxo_cache.clear();
+        self.address_balance_cache.clear();
     }
 
     fn check(&self) {

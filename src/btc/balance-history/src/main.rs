@@ -69,8 +69,8 @@ async fn main_run() {
     usdb_util::init_log(config);
 
     let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-    info!("Using service directory: {:?}", root_dir);
-    output.println(&format!("Using service directory: {:?}", root_dir));
+    info!("Using service directory: {}", root_dir.display());
+    output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration
     let config = match BalanceHistoryConfig::load(&root_dir) {

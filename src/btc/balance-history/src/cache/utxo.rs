@@ -1,9 +1,9 @@
 use crate::config::BalanceHistoryConfig;
-use usdb_util::{OutPointRef, UTXOEntry, UTXOEntryRef};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
 use std::sync::Mutex;
+use usdb_util::{OutPointRef, UTXOEntry, UTXOEntryRef};
 
 // Cache item size estimate: OutPoint (32 + 4 bytes) + UTXOEntry (8 + 32 bytes) ~ 76 bytes
 const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<UTXOEntry>();
@@ -15,11 +15,12 @@ pub struct UTXOCache {
 
 impl UTXOCache {
     pub fn new(config: &BalanceHistoryConfig) -> Self {
-        let max_capacity = config.sync.utxo_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
+        let max_capacity =
+            config.sync.utxo_max_cache_bytes / (CACHE_ITEM_SIZE + CACHE_OVERHEAD_BYTES);
         // let max_capacity: usize = 1024 * 1024 * 20; // For testing, limit to 80 million entries
         info!(
             "UTXOCache max capacity: {} entries, total {} bytes",
-            max_capacity, config.sync.utxo_cache_bytes
+            max_capacity, config.sync.utxo_max_cache_bytes
         );
 
         let cache = Mutex::new(LruCache::new(
