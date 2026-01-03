@@ -3,10 +3,11 @@ use crate::btc::BTCClientRef;
 use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
 use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
 use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
+use dashmap::DashMap;
 use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use usdb_util::{BalanceHistoryData, BalanceHistoryDataRef, OutPointRef, UTXOEntry, UTXOEntryRef};
+use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -51,7 +52,11 @@ pub struct BatchBlockData {
     block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
     vout_utxos: Arc<RwLock<HashMap<OutPointRef, VOutUtxoInfo>>>,
-    balances: Arc<RwLock<HashMap<USDBScriptHash, BalanceHistoryData>>>,
+
+    // Keep let latest balances for all addresses involved from block to block t+n
+    balances: Arc<DashMap<USDBScriptHash, BalanceHistoryData>>,
+
+    // Use to keep all balance history entries for the batch, will be flushed to db at once
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
 
     bench_mark: BatchBlockBenchMarkRef,
@@ -63,7 +68,7 @@ impl BatchBlockData {
             block_range: 0..0,
             blocks: Arc::new(Mutex::new(Vec::new())),
             vout_utxos: Arc::new(RwLock::new(HashMap::new())),
-            balances: Arc::new(RwLock::new(HashMap::new())),
+            balances: Arc::new(DashMap::new()),
             balance_history: Arc::new(Mutex::new(Vec::new())),
             bench_mark: Arc::new(BatchBlockBenchMark::new()),
         }
@@ -418,27 +423,6 @@ impl BatchBlockPreloader {
             })
             .collect();
 
-        /*
-        let mut addresses = HashSet::new();
-        {
-            let blocks = data.blocks.lock().unwrap();
-            for block in blocks.iter() {
-                for tx in block.txdata.iter() {
-                    // Collect vin addresses
-                    for vin in tx.vin.iter() {
-                        let vout = vin.cache_tx_out.as_ref().unwrap();
-                        // addresses.get_or_insert_with(&vout.script_hash, vout.script_hash.to_owned);
-                        addresses.insert(vout.script_hash.clone());
-                    }
-
-                    for vout in tx.vout.iter() {
-                        addresses.insert(vout.cache_tx_out.script_hash.clone());
-                    }
-                }
-            }
-        }
-        */
-
         let mut sorted_addresses: Vec<_> = addresses.into_iter().collect();
         sorted_addresses.par_sort_unstable();
 
@@ -448,15 +432,16 @@ impl BatchBlockPreloader {
         );
 
         // Batch load balances
-        let result: Vec<Result<(USDBScriptHash, BalanceHistoryDataRef), String>> = sorted_addresses
+        sorted_addresses
             .into_par_iter()
             .map(|script_hash| {
-                // First load from balance cache
+                // First load from global balance cache
                 if let Some(cached) = self
                     .balance_cache
-                    .get(script_hash, target_block_height as u32)
+                    .get(&script_hash, target_block_height as u32)
                 {
-                    return Ok((script_hash, cached));
+                    data.balances.insert(script_hash, cached.as_ref().clone());
+                    return Ok(());
                 }
 
                 // Then load from db
@@ -467,17 +452,11 @@ impl BatchBlockPreloader {
                     .preload_balances_from_db_counts
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                Ok((script_hash, Arc::new(balance)))
+                data.balances.insert(script_hash, balance);
+                Ok(())
             })
-            .collect();
-
-        let mut balances_map = data.balances.write().unwrap();
-        balances_map.reserve(result.len());
-
-        for res in result {
-            let (script_hash, balance) = res?;
-            balances_map.insert(script_hash, balance.as_ref().clone());
-        }
+            .find_any(|ret: &Result<(), String>| ret.is_err())
+            .map_or_else(|| Ok(()), |e| e.clone())?;
 
         Ok(())
     }
@@ -510,17 +489,17 @@ impl BatchBlockFlusher {
     }
 
     fn flush_balances(&self, data: &BatchBlockDataRef) -> Result<(), String> {
-        // Update balance cache
+        // Update block balance caches to global balance caches
         {
-            let balances = data.balances.read().unwrap();
-            for (script_hash, entry) in balances.iter() {
+            for entry in data.balances.iter() {
                 self.balance_cache
-                    .put(*script_hash, Arc::new(entry.clone()));
+                    .put(entry.key(), Arc::new(entry.value().clone()));
             }
 
-            data.bench_mark
-                .batch_update_balance_cache_counts
-                .store(balances.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            data.bench_mark.batch_update_balance_cache_counts.store(
+                data.balances.len() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         // Update balance to db in batch
@@ -624,16 +603,14 @@ impl BatchBlockBalanceProcessor {
     pub fn process(&self, data: &BatchBlockDataRef) -> Result<(), String> {
         // For each block in the batch, process balances
         let blocks = data.blocks.lock().unwrap();
-        let mut block_history_results = Vec::with_capacity(blocks.len());
         let mut block_history_count = 0;
 
         // First calc delta in parallel
         use rayon::prelude::*;
-        let result: Vec<Result<HashMap<USDBScriptHash, BalanceHistoryEntry>, String>> = blocks.par_iter().map(|block| {
+        let mut block_history_results: Vec<Result<HashMap<USDBScriptHash, BalanceHistoryData>, String>> = blocks.par_iter().map(|block| {
 
             // Traverse all transactions to calculate balance delta
-            let mut block_history: HashMap<USDBScriptHash, BalanceHistoryEntry> = HashMap::new();
-            let balances = data.balances.read().unwrap();
+            let mut block_history: HashMap<USDBScriptHash, BalanceHistoryData> = HashMap::with_capacity(block.txdata.len() * 16);
             for tx in block.txdata.iter() {
                 // Process vin (decrease balance)
                 for vin in tx.vin.iter() {
@@ -642,26 +619,7 @@ impl BatchBlockBalanceProcessor {
                     match block_history.entry(vout.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
-                            let current_balance =
-                                balances.get(&vout.script_hash).ok_or_else(|| {
-                                    let msg = format!(
-                                        "Balance not found for address {} at block height {}",
-                                        vout.script_hash, block.height
-                                    );
-                                    error!("{}", msg);
-                                    msg
-                                })?;
-
-                            assert!(
-                                current_balance.block_height < block.height,
-                                "Balance block height {} is greater or equal to current block height {} for script_hash {}",
-                                current_balance.block_height,
-                                block.height,
-                                vout.script_hash
-                            );
-
-                            let new_balance = BalanceHistoryEntry {
-                                script_hash: vout.script_hash.clone(),
+                            let new_balance = BalanceHistoryData {
                                 block_height: block.height,
                                 delta: -(vout.value as i64),
                                 balance: 0, // Just set balance to 0, we will update it below
@@ -683,27 +641,7 @@ impl BatchBlockBalanceProcessor {
                     match block_history.entry(vout.cache_tx_out.script_hash) {
                         std::collections::hash_map::Entry::Vacant(e) => {
                             // Create new entry
-                            let current_balance = balances
-                                .get(&vout.cache_tx_out.script_hash)
-                                .ok_or_else(|| {
-                                    let msg = format!(
-                                        "Balance not found for address {} at block height {}",
-                                        vout.cache_tx_out.script_hash, block.height
-                                    );
-                                    error!("{}", msg);
-                                    msg
-                                })?;
-
-                            assert!(
-                                current_balance.block_height < block.height,
-                                "Balance block height {} is greater or equal to current block height {} for script_hash {}",
-                                current_balance.block_height,
-                                block.height,
-                                vout.cache_tx_out.script_hash
-                            );
-
-                            let new_balance = BalanceHistoryEntry {
-                                script_hash: vout.cache_tx_out.script_hash.clone(),
+                            let new_balance = BalanceHistoryData {
                                 block_height: block.height,
                                 delta: vout.cache_tx_out.value as i64,
                                 balance: 0, // Just set balance to 0, we will update it below
@@ -724,16 +662,13 @@ impl BatchBlockBalanceProcessor {
             Ok(block_history)
         }).collect();
 
-        for res in result {
-            block_history_results.push(res?);
-        }
 
         // Then update balances based on deltas serialized
-        let mut balances = data.balances.write().unwrap();
-        for block_history in block_history_results.iter_mut() {
+        for ret in block_history_results.iter_mut() {
+            let block_history = ret.as_mut().map_err(|e| e.to_string())?;
             for (&script_hash, history_entry) in block_history.iter_mut() {
                 // First load current balance entry to get the last balance
-                let balance_entry = balances.get_mut(&script_hash).ok_or_else(|| {
+                let mut balance_entry = data.balances.get_mut(&script_hash).ok_or_else(|| {
                     let msg = format!(
                         "Balance not found for address {} at block height {}",
                         script_hash, history_entry.block_height
@@ -776,8 +711,15 @@ impl BatchBlockBalanceProcessor {
         );
         all.reserve(block_history_count);
 
-        for block_history in block_history_results.into_iter() {
-            for (_, entry) in block_history.into_iter() {
+        for ret in block_history_results.into_iter() {
+            let block_history = ret?;
+            for (script_hash, data) in block_history.into_iter() {
+                let entry = BalanceHistoryEntry {
+                    script_hash,
+                    block_height: data.block_height,
+                    delta: data.delta,
+                    balance: data.balance,
+                };
                 all.push(entry);
             }
         }

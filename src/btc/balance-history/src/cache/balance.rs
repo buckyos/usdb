@@ -37,23 +37,23 @@ impl AddressBalanceCache {
         self.cache.lock().unwrap().len() as u64
     }
 
-    pub fn put(&self, script_hash: USDBScriptHash, data: BalanceHistoryDataRef) {
+    pub fn put(&self, script_hash: &USDBScriptHash, data: BalanceHistoryDataRef) {
         if data.balance == 0 {
             // Do not cache zero balance entries to save memory
             // So we must remove any existing cache entry for this script_hash
-            self.cache.lock().unwrap().pop(&script_hash);
+            self.cache.lock().unwrap().pop(script_hash);
             return;
         }
 
-        self.cache.lock().unwrap().put(script_hash, data);
+        self.cache.lock().unwrap().put(script_hash.clone(), data);
     }
 
     pub fn get(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: &USDBScriptHash,
         block_height: u32,
     ) -> Option<BalanceHistoryDataRef> {
-        if let Some(cached) = self.cache.lock().unwrap().get(&script_hash) {
+        if let Some(cached) = self.cache.lock().unwrap().get(script_hash) {
             assert!(
                 cached.block_height <= block_height,
                 "Inconsistent cache state for script_hash: {} {} < {}",
