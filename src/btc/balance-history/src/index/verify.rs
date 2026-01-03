@@ -52,6 +52,9 @@ impl BalanceHistoryVerifier {
                     warn!("Failed to verify address batch: {}", e);
                     self.db.flush_with_primary()?;
 
+                    // Sleep for a while to allow indexer to catch up
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+
                     // Retry once after flushing
                     self.verify_address_latest_batch_sync(&script_hashes, &balances)?;
                 }

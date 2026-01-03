@@ -179,7 +179,10 @@ impl BalanceHistoryDB {
             );
             error!("{}", msg);
             msg
-        })
+        })?;
+
+        info!("Flushed secondary RocksDB at {}", self.file.display());
+        Ok(())
     }
 
     pub fn get_db_dir(data_dir: &Path) -> PathBuf {

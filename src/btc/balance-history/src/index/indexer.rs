@@ -342,6 +342,9 @@ impl BalanceHistoryIndexer {
             }
         }
 
+        // Finally flush the db to ensure all data is persisted
+        self.db.flush_all()?;
+
         Ok(current_height - 1)
     }
 
