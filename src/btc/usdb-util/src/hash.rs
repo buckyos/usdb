@@ -1,5 +1,7 @@
 use bitcoincore_rpc::bitcoin::hashes::{self, Hash, sha256};
 use bitcoincore_rpc::bitcoin::{Script, ScriptBuf};
+use sysinfo::User;
+use std::str::FromStr;
 
 hashes::hash_newtype! {
     pub struct USDBScriptHash(sha256::Hash);
@@ -24,6 +26,23 @@ impl ToUSDBScriptHash for ScriptBuf {
     fn to_usdb_script_hash(&self) -> USDBScriptHash {
         self.as_script().to_usdb_script_hash()
     }
+}
+
+pub fn address_string_to_script_hash(
+    address: &str,
+    network: &bitcoincore_rpc::bitcoin::Network,
+) -> Result<USDBScriptHash, String> {
+    let addr = bitcoincore_rpc::bitcoin::Address::from_str(address)
+        .map_err(|e| format!("Invalid address {}: {}", address, e))?;
+    let addr = addr
+        .require_network(*network)
+        .map_err(|e| format!("Address network mismatch for {}: {}", address, e))?;
+
+    Ok(addr.script_pubkey().to_usdb_script_hash())
+}
+
+pub fn  parse_script_hash(s: &str) -> Result<USDBScriptHash, String> {
+    USDBScriptHash::from_str(s).map_err(|e| format!("Invalid script hash {}: {}", s, e))
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDBRef, BalanceHistoryDBRef, SnapshotDBRef};
+use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::ScriptBuf;
 use bitcoincore_rpc::bitcoin::address::Address;
 use usdb_util::{ElectrsClientRef, ToUSDBScriptHash, USDBScriptHash};
@@ -8,6 +9,7 @@ pub struct BalanceHistoryVerifier {
     config: BalanceHistoryConfigRef,
     electrs_client: ElectrsClientRef,
     db: BalanceHistoryDBRef,
+    output: IndexOutputRef,
 }
 
 impl BalanceHistoryVerifier {
@@ -15,17 +17,25 @@ impl BalanceHistoryVerifier {
         config: BalanceHistoryConfigRef,
         electrs_client: ElectrsClientRef,
         db: BalanceHistoryDBRef,
+        output: IndexOutputRef,
     ) -> Self {
         Self {
             config,
             electrs_client,
             db,
+            output,
         }
     }
 
     pub fn verify_latest(&self) -> Result<(), String> {
         info!("Starting full balance history verification for latest block height");
 
+        let mut script_hashes = vec![];
+        let mut balances = vec![];
+        
+        const BATCH_SIZE: usize = 256;
+        let mut total = 0u64;
+        self.output.start_index(u32::MAX as u64, 0);
         self.db.traverse_latest(1, |entries| {
             assert!(
                 entries.len() == 1,
@@ -33,13 +43,35 @@ impl BalanceHistoryVerifier {
                 entries.len()
             );
 
-            let entry = &entries[0];
-            if let Err(e) = self.verify_address_latest_sync(&entry.script_hash, entry.balance) {
-                warn!("Failed to verify address {}: {}", entry.script_hash, e);
-                self.db.flush_with_primary()?;
+            script_hashes.push(entries[0].script_hash.clone());
+            balances.push(entries[0].balance);
 
-                // Retry once after flushing
-                self.verify_address_latest_sync(&entry.script_hash, entry.balance)?;
+            if script_hashes.len() >= BATCH_SIZE {
+
+                // Verify batch
+                if let Err(e) = self.verify_address_latest_batch_sync(&script_hashes, &balances) {
+                    warn!("Failed to verify address batch: {}", e);
+                    self.db.flush_with_primary()?;
+
+                    // Retry once after flushing
+                    self.verify_address_latest_batch_sync(&script_hashes, &balances)?;
+                }
+
+                script_hashes.clear();
+                balances.clear();
+
+                // Use prefix of 8 bytes as progress indicator, from FFFFFFFF... to 00000000...
+
+                let hash = entries[0].script_hash.as_ref() as &[u8];
+                let pos = u32::MAX - u32::from_be_bytes(hash[0..4].try_into().unwrap());
+
+                self.output.update_current_height(pos as u64);
+                self.output.set_index_message(&format!(
+                    "Verifying balance history [{} - {}]",
+                    total,
+                    total + BATCH_SIZE as u64
+                ));
+                total += BATCH_SIZE as u64;
             }
 
             Ok(())
@@ -70,12 +102,21 @@ impl BalanceHistoryVerifier {
             })
     }
 
-    pub fn verify_address(&self, script_hash: &USDBScriptHash) -> Result<(), String> {
-        let block_height = self.db.get_btc_block_height()?;
+    pub fn verify_address(&self, script_hash: &USDBScriptHash, block_height: Option<u32>) -> Result<(), String> {
+        let block_height = match block_height {
+            Some(height) => height,
+            None =>
+                self.db.get_btc_block_height()?
+        };
+
         info!(
             "Starting full balance history verification for script_hash: {} up to block height {}",
             script_hash, block_height
         );
+        self.output.println(&format!(
+            "Starting full balance history verification for script_hash: {} up to block height {}",
+            script_hash, block_height
+        ));
 
         let history = tokio::runtime::Handle::current().block_on(async {
             self.electrs_client
@@ -109,6 +150,13 @@ impl BalanceHistoryVerifier {
                     address
                 );
                 error!("{}", msg);
+
+                let all = self.db.get_all_balance(script_hash)?;
+                error!(
+                    "Full balance history for script_hash {}: {:?}",
+                    script_hash, all
+                );
+
                 return Err(msg);
             }
         }
@@ -231,6 +279,52 @@ impl BalanceHistoryVerifier {
             "Balance history verification successful for script_hash {}: balance={}",
             script_hash, balance
         );
+        Ok(())
+    }
+
+    fn verify_address_latest_batch_sync(
+        &self,
+        script_hashes: &[USDBScriptHash],
+        balances: &[u64],
+    ) -> Result<(), String> {
+        tokio::runtime::Handle::current().block_on(async {
+            self.verify_address_latest_batch(script_hashes, balances)
+                .await
+        })
+    }
+
+    async fn verify_address_latest_batch(
+        &self,
+        script_hashes: &[USDBScriptHash],
+        balances: &[u64],
+    ) -> Result<(), String> {
+        let electrs_balances = self.electrs_client.get_balances(script_hashes).await?;
+
+        for i in 0..script_hashes.len() {
+            if electrs_balances[i] != balances[i] {
+                let msg = format!(
+                    "Balance mismatch for script_hash {}: expected {}, got {}",
+                    script_hashes[i], balances[i], electrs_balances[i]
+                );
+                error!("{}", msg);
+
+                let all = self.db.get_all_balance(&script_hashes[i])?;
+                error!(
+                    "Full balance history for script_hash {}: {:?}",
+                    script_hashes[i], all
+                );
+                return Err(msg);
+            }
+        }
+
+        /*
+        for i in 0..script_hashes.len() {
+            info!(
+                "Balance history verification successful for script_hash {}: balance={}",
+                script_hashes[i], balances[i]
+            );
+        }
+        */
         Ok(())
     }
 }

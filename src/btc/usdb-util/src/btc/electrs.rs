@@ -101,6 +101,40 @@ impl ElectrsClient {
         Ok(balance_res.confirmed)
     }
 
+    pub  async fn get_balances(&self, script_hashes: &[USDBScriptHash]) -> Result<Vec<u64>, String> {
+        let mut batch = electrum_client::Batch::default();
+        for script_hash in script_hashes {
+            let script_hash_str = format!("{:x}", script_hash);
+            let params = vec![Param::String(script_hash_str)];
+            batch.raw(
+                String::from("blockchain.scripthash.get_balance"),
+                params,
+            );
+        }
+        
+        let ret = self.client
+            .batch_call(&batch)
+            .map_err(|e| {
+                let msg = format!("Failed to send batch request: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        let mut balances = Vec::with_capacity(script_hashes.len());
+        for value in ret {
+            let balance_res: GetBalanceRes = serde_json::from_value(value).map_err(|e| {
+                let msg = format!(
+                    "Failed to parse balance in batch response: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            balances.push(balance_res.confirmed);
+        }
+
+        Ok(balances)
+    }
+
     // Get address history
     pub async fn get_history(
         &self,

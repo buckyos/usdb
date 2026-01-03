@@ -38,7 +38,7 @@ struct BalanceHistoryCli {
     daemon: bool,
 }
 
-#[derive(Subcommand, Debug, Clone, Copy)]
+#[derive(Subcommand, Debug, Clone)]
 #[command(rename_all = "kebab-case")]
 enum BalanceHistoryCommands {
     /// Delete the database files, DANGEROUS: This will remove all indexed data!
@@ -52,7 +52,19 @@ enum BalanceHistoryCommands {
 
     VerifySnapshot {},
 
-    Verify {},
+    Verify {
+        /// Specify the target address to verify
+        #[arg(short, long)]
+        address: Option<String>,
+
+        /// Specify the target script hash to verify
+        #[arg(short, long)]
+        script_hash: Option<String>,
+
+        /// Specify the target block height to verify
+        /// #[arg(short, long)]
+        height: Option<u32>,
+    },
 }
 
 async fn main_run() {
@@ -370,7 +382,11 @@ async fn main() {
             println!("Snapshot verified successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::Verify {}) => {
+        Some(BalanceHistoryCommands::Verify {
+            address,
+            script_hash,
+            height,
+        }) => {
             // Init file logging
             let config = LogConfig {
                 service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
@@ -419,14 +435,62 @@ async fn main() {
             };
             let electrs_client = Arc::new(electrs_client);
 
-            let verifier =
-                crate::index::BalanceHistoryVerifier::new(config.clone(), electrs_client, db);
+            let verifier = crate::index::BalanceHistoryVerifier::new(
+                config.clone(),
+                electrs_client,
+                db,
+                output.clone(),
+            );
+
+            let script_hash = if let Some(addr_str) = address {
+                match usdb_util::address_string_to_script_hash(&addr_str, &config.btc.network) {
+                    Ok(sh) => Some(sh),
+                    Err(e) => {
+                        error!("Failed to convert address to script hash: {}", e);
+                        output.println(&format!("Failed to convert address to script hash: {}", e));
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(sh_str) = script_hash {
+                match usdb_util::parse_script_hash(&sh_str) {
+                    Ok(sh) => Some(sh),
+                    Err(e) => {
+                        error!("Failed to parse script hash: {}", e);
+                        output.println(&format!("Failed to parse script hash: {}", e));
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
 
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = verifier.verify_latest() {
-                    error!("Failed to verify balance history: {}", e);
-                    output.println(&format!("Failed to verify balance history: {}", e));
-                    std::process::exit(1);
+                if script_hash.is_some() {
+                    output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
+                    if let Err(e) = verifier.verify_address(&script_hash.unwrap(), height) {
+                        error!("Failed to verify balance history: {}", e);
+                        output.println(&format!("Failed to verify balance history: {}", e));
+                        std::process::exit(1);
+                    }
+                } else {
+                    if height.is_some() {
+                        output.println(&format!(
+                            "Verifying balance history at height {}...",
+                            height.unwrap()
+                        ));
+                        if let Err(e) = verifier.verify_at_height(height.unwrap()) {
+                            error!("Failed to verify balance history: {}", e);
+                            output.println(&format!("Failed to verify balance history: {}", e));
+                            std::process::exit(1);
+                        }
+                    } else {
+                        output.println("Verifying entire balance history...");
+                        if let Err(e) = verifier.verify_latest() {
+                            error!("Failed to verify balance history: {}", e);
+                            output.println(&format!("Failed to verify balance history: {}", e));
+                            std::process::exit(1);
+                        }
+                    }
                 }
             })
             .await
