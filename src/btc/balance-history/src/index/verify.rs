@@ -48,7 +48,7 @@ impl BalanceHistoryVerifier {
 
             if script_hashes.len() >= BATCH_SIZE {
                 // Verify batch
-                if let Err(e) = self.verify_address_latest_batch_sync(&script_hashes, &balances) {
+                if let Err(e) = self.verify_address_latest_balance_batch_sync(&script_hashes, &balances) {
                     warn!("Failed to verify address batch: {}", e);
                     self.db.flush_with_primary()?;
 
@@ -56,7 +56,7 @@ impl BalanceHistoryVerifier {
                     std::thread::sleep(std::time::Duration::from_secs(10));
 
                     // Retry once after flushing
-                    self.verify_address_latest_batch_sync(&script_hashes, &balances)?;
+                    self.verify_address_latest_balance_batch_sync(&script_hashes, &balances)?;
                 }
 
                 script_hashes.clear();
@@ -100,7 +100,7 @@ impl BalanceHistoryVerifier {
                 );
 
                 let entry = &entries[0];
-                self.verify_address_at_height_sync(
+                self.verify_address_balance_at_height_sync(
                     &entry.script_hash,
                     target_block_height,
                     entry.balance,
@@ -108,16 +108,26 @@ impl BalanceHistoryVerifier {
             })
     }
 
-    pub fn verify_address(
+    pub fn verify_address_latest(
         &self,
         script_hash: &USDBScriptHash,
-        block_height: Option<u32>,
     ) -> Result<(), String> {
-        let block_height = match block_height {
-            Some(height) => height,
-            None => self.db.get_btc_block_height()?,
-        };
+        self.output.println(&format!(
+            "Starting latest balance history verification for script_hash: {}",
+            script_hash
+        ));
 
+        let entry = self.db.get_latest_balance(script_hash)?;
+        let latest_block_height = self.db.get_btc_block_height()?;
+
+        self.verify_address_latest_balance_sync(script_hash, latest_block_height, entry.balance)
+    }
+
+    pub fn verify_address_at_height(
+        &self,
+        script_hash: &USDBScriptHash,
+        block_height: u32,
+    ) -> Result<(), String> {
         info!(
             "Starting full balance history verification for script_hash: {} up to block height {}",
             script_hash, block_height
@@ -178,19 +188,19 @@ impl BalanceHistoryVerifier {
         Ok(())
     }
 
-    fn verify_address_at_height_sync(
+    fn verify_address_balance_at_height_sync(
         &self,
         script_hash: &USDBScriptHash,
         block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
         tokio::runtime::Handle::current().block_on(async {
-            self.verify_address_at_height(script_hash, block_height, balance)
+            self.verify_address_balance_at_height(script_hash, block_height, balance)
                 .await
         })
     }
 
-    async fn verify_address_at_height(
+    async fn verify_address_balance_at_height(
         &self,
         script_hash: &USDBScriptHash,
         block_height: u32,
@@ -253,26 +263,28 @@ impl BalanceHistoryVerifier {
         Ok(())
     }
 
-    fn verify_address_latest_sync(
+    fn verify_address_latest_balance_sync(
         &self,
         script_hash: &USDBScriptHash,
+        latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
         tokio::runtime::Handle::current()
-            .block_on(async { self.verify_address_latest(script_hash, balance).await })
+            .block_on(async { self.verify_address_latest_balance(script_hash, latest_block_height, balance).await })
     }
 
-    async fn verify_address_latest(
+    async fn verify_address_latest_balance(
         &self,
         script_hash: &USDBScriptHash,
+        latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
         let electrs_balance = self.electrs_client.get_balance(script_hash).await?;
 
         if electrs_balance != balance {
             let msg = format!(
-                "Balance mismatch for script_hash {}: expected {}, got {}",
-                script_hash, balance, electrs_balance
+                "Balance mismatch for script_hash {}: expected {}, got {}, used latest block height {}",
+                script_hash, balance, electrs_balance, latest_block_height
             );
             error!("{}", msg);
 
@@ -285,24 +297,24 @@ impl BalanceHistoryVerifier {
         }
 
         info!(
-            "Balance history verification successful for script_hash {}: balance={}",
-            script_hash, balance
+            "Balance history verification successful for script_hash {}: balance={}, used latest block height={}",
+            script_hash, balance, latest_block_height
         );
         Ok(())
     }
 
-    fn verify_address_latest_batch_sync(
+    fn verify_address_latest_balance_batch_sync(
         &self,
         script_hashes: &[USDBScriptHash],
         balances: &[u64],
     ) -> Result<(), String> {
         tokio::runtime::Handle::current().block_on(async {
-            self.verify_address_latest_batch(script_hashes, balances)
+            self.verify_address_latest_balance_batch(script_hashes, balances)
                 .await
         })
     }
 
-    async fn verify_address_latest_batch(
+    async fn verify_address_latest_balance_batch(
         &self,
         script_hashes: &[USDBScriptHash],
         balances: &[u64],

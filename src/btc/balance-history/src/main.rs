@@ -474,7 +474,10 @@ async fn main() {
                     Ok(sh) => Some(sh),
                     Err(e) => {
                         error!("Failed to parse 'from' script hash or address: {}", e);
-                        output.println(&format!("Failed to parse 'from' script hash or address: {}", e));
+                        output.println(&format!(
+                            "Failed to parse 'from' script hash or address: {}",
+                            e
+                        ));
                         std::process::exit(1);
                     }
                 }
@@ -484,11 +487,27 @@ async fn main() {
 
             tokio::task::spawn_blocking(move || {
                 if script_hash.is_some() {
-                    output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
-                    if let Err(e) = verifier.verify_address(&script_hash.unwrap(), height) {
-                        error!("Failed to verify balance history: {}", e);
-                        output.println(&format!("Failed to verify balance history: {}", e));
-                        std::process::exit(1);
+                    if let Some(height) = height {
+                        output.println(&format!(
+                            "Verifying balance history for script_hash {} at height {}...",
+                            script_hash.as_ref().unwrap(),
+                            height
+                        ));
+                        if let Err(e) = verifier.verify_address_at_height(&script_hash.unwrap(), height) {
+                            error!("Failed to verify balance history: {}", e);
+                            output.println(&format!("Failed to verify balance history: {}", e));
+                            std::process::exit(1);
+                        }
+                        println!("Balance history verified successfully for script_hash {} at height {}.", script_hash.as_ref().unwrap(), height);
+                        return;
+                    } else {
+                        output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
+                        if let Err(e) = verifier.verify_address_latest(&script_hash.unwrap()) {
+                            error!("Failed to verify balance history: {}", e);
+                            output.println(&format!("Failed to verify balance history: {}", e));
+                            std::process::exit(1);
+                        }
+                        println!("Balance history verified successfully for script_hash {}.", script_hash.as_ref().unwrap());
                     }
                 } else {
                     if height.is_some() {
