@@ -6,7 +6,6 @@ mod rpc;
 pub use client::*;
 pub use file_indexer::*;
 pub use local_loader::*;
-pub use rpc::*;
 
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;

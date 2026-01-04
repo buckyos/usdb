@@ -1,15 +1,11 @@
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
-mod bench;
-mod btc;
-mod cache;
 mod config;
-mod db;
-mod index;
 mod output;
 mod service;
 mod status;
-mod tool;
+mod db;
 
 #[macro_use]
 extern crate log;
