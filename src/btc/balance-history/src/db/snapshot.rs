@@ -10,19 +10,20 @@ pub const SNAPSHOT_DB_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotMeta {
-    pub snapshot_height: u64,
+    pub block_height: u32,   
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
 }
 
 impl SnapshotMeta {
-    pub fn new(snapshot_height: u64) -> Self {
+    pub fn new(block_height: u32) -> Self {
         let start = SystemTime::now();
         let since_the_epoch = start
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards");
+
         Self {
-            snapshot_height,
+            block_height,
             generated_at: since_the_epoch.as_secs(),
             version: SNAPSHOT_DB_VERSION,
         }
@@ -155,11 +156,12 @@ impl SnapshotDB {
 
         Self::open(&db_path)
     }
-    /// Get the current height of the snapshot (returns None if no snapshot exists)
-    pub fn current_height(&self) -> Result<Option<u64>, String> {
+
+    /// Get the current block height of the snapshot (returns None if no snapshot exists)
+    pub fn current_block_height(&self) -> Result<Option<u64>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT snapshot_height FROM meta ORDER BY generated_at DESC LIMIT 1")
+            .prepare("SELECT block_height FROM meta ORDER BY generated_at DESC LIMIT 1")
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
                 error!("{}", msg);
@@ -181,9 +183,9 @@ impl SnapshotDB {
     pub fn update_meta(&self, meta: &SnapshotMeta) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT INTO meta (snapshot_height, generated_at, version) VALUES (?1, ?2, ?3)",
+                "INSERT INTO meta (block_height, generated_at, version) VALUES (?1, ?2, ?3)",
                 (
-                    meta.snapshot_height as i64,
+                    meta.block_height as i64,
                     meta.generated_at as i64,
                     meta.version as i64,
                 ),
@@ -195,6 +197,35 @@ impl SnapshotDB {
             })?;
 
         Ok(())
+    }
+
+    pub fn get_meta(&self) -> Result<SnapshotMeta, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT block_height, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
+            )
+            .map_err(|e| {
+                let msg = format!("Failed to prepare statement: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let meta = stmt
+            .query_row([], |row| {
+                Ok(SnapshotMeta {
+                    block_height: row.get::<_, i64>(0).map(|v| v as u32)?,
+                    generated_at: row.get::<_, i64>(1).map(|v| v as u64)?,
+                    version: row.get::<_, i64>(2).map(|v| v as u32)?,
+                })
+            })
+            .map_err(|e| {
+                let msg = format!("Failed to query row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(meta)
     }
 
     pub fn put_entries(&mut self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {

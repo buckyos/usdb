@@ -508,7 +508,7 @@ impl BatchBlockFlusher {
         let last_block_height = data.block_range.end - 1;
         let all = data.balance_history.lock().unwrap();
         self.db
-            .update_address_history_sync(&all, last_block_height as u32)?;
+            .update_address_history_async(&all, last_block_height as u32)?;
 
         // Update bench mark info
         let duration = begin.elapsed();

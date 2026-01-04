@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS meta (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_height INTEGER NOT NULL,
+    block_height    INTEGER NOT NULL,
     generated_at    INTEGER NOT NULL,
     version         INTEGER NOT NULL DEFAULT 1
 );

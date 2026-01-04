@@ -295,7 +295,40 @@ impl BalanceHistoryDB {
         }
     }
 
-    pub fn update_address_history_sync(
+    pub fn put_address_history_async(
+        &self,
+        entries_list: &Vec<BalanceHistoryEntry>,
+    ) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in entries_list {
+            let key = Self::make_balance_history_key(&entry.script_hash, entry.block_height);
+
+            // Value format: delta (i64) + balance (u64)
+            let mut value = [0u8; 16];
+            value[..8].copy_from_slice(&entry.delta.to_be_bytes());
+            value[8..16].copy_from_slice(&entry.balance.to_be_bytes());
+
+            batch.put_cf(cf, key, value);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn update_address_history_async(
         &self,
         entries_list: &Vec<BalanceHistoryEntry>,
         block_height: u32,
@@ -563,7 +596,7 @@ impl BalanceHistoryDB {
         })?;
 
         let mut ops = WriteOptions::default();
-        ops.set_sync(false);
+        ops.set_sync(true);
 
         let height_bytes = height.to_be_bytes();
         self.db

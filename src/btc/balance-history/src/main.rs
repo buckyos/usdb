@@ -48,9 +48,24 @@ enum BalanceHistoryCommands {
 
     IndexAddress {},
 
-    Snapshot {},
+    /// Create a snapshot of the specified block height
+    CreateSnapshot {
+        /// Specify the target block height for the snapshot
+        #[arg(short, long)]
+        block_height: u32,
+    },
 
     VerifySnapshot {},
+
+    InstallSnapshot {
+        /// Specify the snapshot file to install, if the file is relative, it is relative to the service directory ${root}/snapshots/
+        #[arg(short, long)]
+        file: String,
+
+        /// Specify the expected hash of the snapshot file for verification
+        #[arg(short, long)]
+        hash: Option<String>,
+    },
 
     Verify {
         /// Specify the target address to verify
@@ -257,7 +272,7 @@ async fn main() {
             println!("Address index built successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::Snapshot {}) => {
+        Some(BalanceHistoryCommands::CreateSnapshot { block_height }) => {
             // Init file logging
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -293,14 +308,76 @@ async fn main() {
 
             let snapshot_indexer =
                 crate::index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
-            let target_block_height = 400_000; // Example target height
-            if let Err(e) = snapshot_indexer.run(target_block_height) {
+            if let Err(e) = snapshot_indexer.run(block_height) {
                 error!("Failed to generate snapshot: {}", e);
                 output.println(&format!("Failed to generate snapshot: {}", e));
                 std::process::exit(1);
             }
 
             println!("Snapshot generated successfully.");
+            return;
+        }
+        Some( BalanceHistoryCommands::InstallSnapshot { file, hash } ) => {
+            // Init file logging
+            let file_name = format!("{}_install_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(false);
+            usdb_util::init_log(config);
+
+            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            println!("Installing snapshot in directory: {:?}", root_dir);
+
+            let mut file_path = std::path::PathBuf::from(&file);
+            if file_path.is_relative() {
+                file_path = root_dir.clone();
+                file_path.push("snapshots");
+                file_path.push(&file);
+                println!("Resolved relative snapshot file path to: {:?}", file_path);
+            }
+            if !file_path.exists() {
+                error!("Snapshot file does not exist: {:?}", file_path);
+                println!("Snapshot file does not exist: {:?}", file_path);
+                std::process::exit(1);
+            }
+
+            let config = match BalanceHistoryConfig::load(&root_dir) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    error!("Failed to load config: {}", e);
+                    println!("Failed to load config: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            let config = Arc::new(config);
+            let status = status::SyncStatusManager::new();
+            let status = Arc::new(status);
+            let output = IndexOutput::new(status);
+            let output = Arc::new(output);
+
+            let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
+                Ok(database) => database,
+                Err(e) => {
+                    error!("Failed to initialize database: {}", e);
+                    output.println(&format!("Failed to initialize database: {}", e));
+                    std::process::exit(1);
+                }
+            };
+            let db = Arc::new(db);
+
+            let data = crate::index::SnapshotData {
+                file: file_path.clone(),
+                hash: hash.clone(),
+            };
+            let snapshot_installer =
+                crate::index::SnapshotInstaller::new(config.clone(), db, output.clone());
+            if let Err(e) = snapshot_installer.install(data) {
+                error!("Failed to install snapshot: {}", e);
+                output.println(&format!("Failed to install snapshot: {}", e));
+                std::process::exit(1);
+            }
+
+            println!("Snapshot installed successfully.");
             return;
         }
         Some(BalanceHistoryCommands::VerifySnapshot {}) => {
