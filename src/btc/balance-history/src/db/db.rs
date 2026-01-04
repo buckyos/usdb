@@ -9,6 +9,7 @@ use rocksdb::{
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
 
@@ -43,14 +44,25 @@ pub struct BlockEntry {
     pub block_record_index: u32, // index in the block record cache
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BalanceHistoryDBMode {
+    BestEffort,
+    Normal,
+}
+
 pub struct BalanceHistoryDB {
     config: BalanceHistoryConfigRef,
+    mode: Mutex<BalanceHistoryDBMode>,
     file: PathBuf,
     db: DB,
 }
 
 impl BalanceHistoryDB {
-    pub fn open(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
+    pub fn open(
+        data_dir: &Path,
+        config: BalanceHistoryConfigRef,
+        mode: BalanceHistoryDBMode,
+    ) -> Result<Self, String> {
         let db_dir = Self::get_db_dir(data_dir);
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
@@ -65,21 +77,165 @@ impl BalanceHistoryDB {
         }
 
         let file = db_dir.join("balance_history");
-        info!("Opening RocksDB at {}", file.display());
+        info!("Opening RocksDB at {}, mode {:?}", file.display(), mode);
 
         // Default options
+        let options = Self::get_options_on_mode(mode);
+
+        // Define column families
+        let cf_descriptors = Self::get_cf_descriptors_on_mode(mode);
+        let db = DB::open_cf_descriptors(&options, &file, cf_descriptors).map_err(|e| {
+            let msg = format!("Failed to open RocksDB at {}: {}", file.display(), e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(BalanceHistoryDB {
+            file,
+            db,
+            config,
+            mode: Mutex::new(mode),
+        })
+    }
+
+    pub fn switch_mode(&self, mode: BalanceHistoryDBMode) -> Result<(), String> {
+        let old_mode;
+        {
+            let mut guard = self.mode.lock().unwrap();
+            old_mode = *guard;
+            *guard = mode;
+        }
+
+        if old_mode != mode {
+            info!(
+                "Switched BalanceHistoryDB mode from {:?} to {:?}",
+                old_mode, mode
+            );
+            let new_opts = match mode {
+                BalanceHistoryDBMode::BestEffort => vec![
+                    ("write_buffer_size".to_string(), "268435456".to_string()), // 256MB
+                    ("max_write_buffer_number".to_string(), "8".to_string()),
+                    (
+                        "min_write_buffer_number_to_merge".to_string(),
+                        "3".to_string(),
+                    ),
+                    ("memtable_prefix_bloom_ratio".to_string(), "0.1".to_string()),
+                ],
+                BalanceHistoryDBMode::Normal => vec![
+                    ("write_buffer_size".to_string(), "67108864".to_string()), // 64MB
+                    ("max_write_buffer_number".to_string(), "2".to_string()),
+                    (
+                        "min_write_buffer_number_to_merge".to_string(),
+                        "1".to_string(),
+                    ),
+                    ("memtable_prefix_bloom_ratio".to_string(), "0".to_string()),
+                ],
+            };
+            let cf = self.db.cf_handle(BALANCE_HISTORY_CF).unwrap();
+            let new_opts: Vec<(&str, &str)> = new_opts
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            self.db.set_options_cf(cf, &new_opts).map_err(|e| {
+                let msg = format!("Failed to set new options for BalanceHistoryCF: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            let new_opts = match mode {
+                BalanceHistoryDBMode::BestEffort => vec![
+                    ("write_buffer_size".to_string(), "268435456".to_string()), // 256MB
+                    ("max_write_buffer_number".to_string(), "8".to_string()),
+                    (
+                        "min_write_buffer_number_to_merge".to_string(),
+                        "3".to_string(),
+                    ),
+                ],
+                BalanceHistoryDBMode::Normal => vec![
+                    ("write_buffer_size".to_string(), "67108864".to_string()), // 64MB
+                    ("max_write_buffer_number".to_string(), "2".to_string()),
+                    (
+                        "min_write_buffer_number_to_merge".to_string(),
+                        "1".to_string(),
+                    ),
+                ],
+            };
+
+            let cf = self.db.cf_handle(UTXO_CF).unwrap();
+            let new_opts: Vec<(&str, &str)> = new_opts
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            self.db.set_options_cf(cf, &new_opts).map_err(|e| {
+                let msg = format!("Failed to set new options for UTXOCF: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn get_options_on_mode(mode: BalanceHistoryDBMode) -> Options {
         let mut options = Options::default();
         options.create_if_missing(true);
         options.create_missing_column_families(true);
-        options.set_bytes_per_sync(1024 * 1024 * 4); // 4MB
 
+        match mode {
+            BalanceHistoryDBMode::BestEffort => {
+                options.set_bytes_per_sync(1024 * 1024 * 4); // 4MB
+            }
+            BalanceHistoryDBMode::Normal => {
+                options.set_bytes_per_sync(1024 * 1024 * 1); // 1MB
+            }
+        }
+
+        options
+    }
+
+    fn get_cf_descriptors_on_mode(mode: BalanceHistoryDBMode) -> Vec<ColumnFamilyDescriptor> {
+        // Define column families
+        vec![
+            ColumnFamilyDescriptor::new(
+                BALANCE_HISTORY_CF,
+                Self::get_balance_history_cf_opts_on_mode(mode),
+            ),
+            ColumnFamilyDescriptor::new(META_CF, Options::default()),
+            ColumnFamilyDescriptor::new(UTXO_CF, Self::get_utxo_cf_opts_on_mode(mode)),
+            ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
+            ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
+        ]
+    }
+
+    fn get_balance_history_cf_opts_on_mode(mode: BalanceHistoryDBMode) -> Options {
+        match mode {
+            BalanceHistoryDBMode::BestEffort => Self::best_balance_history_cf_opts(),
+            BalanceHistoryDBMode::Normal => Self::normal_balance_history_cf_opts(),
+        }
+    }
+
+    fn best_balance_history_cf_opts() -> Options {
+        let mut opts = Self::normal_balance_history_cf_opts();
+
+        opts.set_write_buffer_size(256 * 1024 * 1024); // 256MB
+        opts.set_max_write_buffer_number(8);
+        opts.set_min_write_buffer_number_to_merge(3);
+
+        let mut block_opts = rocksdb::BlockBasedOptions::default();
+        // Enable whole key and prefix bloom filter
+        block_opts.set_bloom_filter(10.0, false);
+        opts.set_block_based_table_factory(&block_opts);
+
+        // Enable Memtable prefix bloom filter to speed up in-memory data lookups
+        opts.set_memtable_prefix_bloom_ratio(0.1);
+        opts
+    }
+
+    fn normal_balance_history_cf_opts() -> Options {
         let mut balance_history_cf_options = Options::default();
         balance_history_cf_options.set_level_compaction_dynamic_level_bytes(true);
         balance_history_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         balance_history_cf_options.create_if_missing(true);
-        balance_history_cf_options.set_write_buffer_size(256 * 1024 * 1024); // 256MB
-        balance_history_cf_options.set_max_write_buffer_number(8);
-        balance_history_cf_options.set_min_write_buffer_number_to_merge(3);
         balance_history_cf_options.set_max_bytes_for_level_base(2 * 1024 * 1024 * 1024); // 2GB
         balance_history_cf_options.set_target_file_size_base(64 * 1024 * 1024);
         balance_history_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
@@ -88,44 +244,39 @@ impl BalanceHistoryDB {
             rocksdb::SliceTransform::create_fixed_prefix(USDBScriptHash::LEN),
         );
 
-        let mut block_opts = rocksdb::BlockBasedOptions::default();
-        // Enable whole key and prefix bloom filter
-        block_opts.set_bloom_filter(10.0, false);
-        balance_history_cf_options.set_block_based_table_factory(&block_opts);
+        balance_history_cf_options
+    }
 
-        // Enable Memtable prefix bloom filter to speed up in-memory data lookups
-        balance_history_cf_options.set_memtable_prefix_bloom_ratio(0.1);
+    fn get_utxo_cf_opts_on_mode(mode: BalanceHistoryDBMode) -> Options {
+        match mode {
+            BalanceHistoryDBMode::BestEffort => Self::best_utxo_cf_opts(),
+            BalanceHistoryDBMode::Normal => Self::normal_utxo_cf_opts(),
+        }
+    }
 
+    fn best_utxo_cf_opts() -> Options {
+        let mut opts = Self::normal_utxo_cf_opts();
+
+        opts.set_write_buffer_size(256 * 1024 * 1024); // 256MB
+        opts.set_max_write_buffer_number(8);
+        opts.set_min_write_buffer_number_to_merge(3);
+
+        opts
+    }
+
+    fn normal_utxo_cf_opts() -> Options {
         let mut utxo_cf_options = Options::default();
         utxo_cf_options.set_level_compaction_dynamic_level_bytes(true);
         utxo_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
         utxo_cf_options.create_if_missing(true);
-        utxo_cf_options.set_write_buffer_size(256 * 1024 * 1024); // 256MB
-        utxo_cf_options.set_max_write_buffer_number(8);
-        utxo_cf_options.set_min_write_buffer_number_to_merge(3);
         utxo_cf_options.set_max_bytes_for_level_base(4 * 1024 * 1024 * 1024); // 4GB
         utxo_cf_options.set_target_file_size_base(64 * 1024 * 1024);
         utxo_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
-        // Define column families
-        let cf_descriptors = vec![
-            ColumnFamilyDescriptor::new(BALANCE_HISTORY_CF, balance_history_cf_options),
-            ColumnFamilyDescriptor::new(META_CF, Options::default()),
-            ColumnFamilyDescriptor::new(UTXO_CF, utxo_cf_options),
-            ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
-            ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
-        ];
-
-        let db = DB::open_cf_descriptors(&options, &file, cf_descriptors).map_err(|e| {
-            let msg = format!("Failed to open RocksDB at {}: {}", file.display(), e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        Ok(BalanceHistoryDB { file, db, config })
+        utxo_cf_options
     }
 
-    pub fn open_for_read(data_dir: &Path, config: BalanceHistoryConfigRef) -> Result<Self, String> {
+    pub fn open_for_read(data_dir: &Path, config: BalanceHistoryConfigRef, mode: BalanceHistoryDBMode) -> Result<Self, String> {
         let db_dir = Self::get_db_dir(data_dir);
         let file = db_dir.join("balance_history");
         info!("Opening RocksDB in read-only mode at {}", file.display());
@@ -161,7 +312,7 @@ impl BalanceHistoryDB {
             },
         )?;
 
-        Ok(BalanceHistoryDB { file, db, config })
+        Ok(BalanceHistoryDB { file, db, config, mode: Mutex::new(mode) })
     }
 
     pub fn close(self) {
