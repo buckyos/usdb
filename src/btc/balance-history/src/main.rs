@@ -208,11 +208,9 @@ async fn main() {
         Some(BalanceHistoryCommands::ClearDb {}) => {
             // Init file logging
             let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig {
-                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(file_name),
-                console: false,
-            };
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(true);
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -226,11 +224,9 @@ async fn main() {
         Some(BalanceHistoryCommands::IndexAddress {}) => {
             // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig {
-                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(file_name),
-                console: false,
-            };
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(false);
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -263,14 +259,10 @@ async fn main() {
         }
         Some(BalanceHistoryCommands::Snapshot {}) => {
             // Init file logging
-            let config = LogConfig {
-                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(format!(
-                    "{}_snapshot",
-                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
-                )),
-                console: false,
-            };
+            let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(false);
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -313,14 +305,13 @@ async fn main() {
         }
         Some(BalanceHistoryCommands::VerifySnapshot {}) => {
             // Init file logging
-            let config = LogConfig {
-                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(format!(
-                    "{}_verify_snapshot",
-                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
-                )),
-                console: true,
-            };
+            let file_name = format!(
+                "{}_verify_snapshot",
+                usdb_util::BALANCE_HISTORY_SERVICE_NAME
+            );
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(false);
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -393,14 +384,10 @@ async fn main() {
             from,
         }) => {
             // Init file logging
-            let config = LogConfig {
-                service_name: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
-                file_name: Some(format!(
-                    "{}_verify",
-                    usdb_util::BALANCE_HISTORY_SERVICE_NAME
-                )),
-                console: true,
-            };
+            let file_name = format!("{}_verify", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(true);
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -533,7 +520,7 @@ async fn main() {
             .await
             .unwrap();
 
-            println!("Snapshot verified successfully.");
+            println!("Balance history verified successfully.");
             return;
         }
         None => {}

@@ -1,6 +1,5 @@
 use bitcoincore_rpc::bitcoin::hashes::{self, Hash, sha256};
 use bitcoincore_rpc::bitcoin::{Script, ScriptBuf};
-use sysinfo::User;
 use std::str::FromStr;
 
 hashes::hash_newtype! {

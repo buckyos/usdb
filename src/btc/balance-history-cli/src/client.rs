@@ -49,12 +49,11 @@ impl RpcClient {
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<balance_history::AddressBalance>, String> {
-        let params = json!({
+        let params = json!([{
             "script_hash": script_hash,
             "block_height": block_height,
             "block_range": block_range,
-        });
-
+        }]);
         self.rpc_call::<Vec<balance_history::AddressBalance>>(
             &self.url,
             "get_address_balance",
@@ -69,12 +68,12 @@ impl RpcClient {
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<Vec<balance_history::AddressBalance>>, String> {
-        let params = json!({
+        let params = json!([{
             "script_hashes": script_hashes,
             "block_height": block_height,
             "block_range": block_range,
-        });
-
+        }]);
+        
         self.rpc_call::<Vec<Vec<balance_history::AddressBalance>>>(
             &self.url,
             "get_addresses_balances",
@@ -116,7 +115,7 @@ impl RpcClient {
             })?;
 
         if let Some(err) = resp.get("error") {
-            let msg = format!("RPC Error: {:?}", err);
+            let msg = format!("RPC Error: {:?}, resp {:?}", err, resp);
             log::error!("{}", msg);
             return Err(msg);
         }

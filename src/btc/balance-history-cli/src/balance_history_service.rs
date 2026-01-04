@@ -132,7 +132,7 @@ impl BalanceHistoryService {
                     phase = SyncPhase::Indexing;
                     output.finish_load();
                     output.println("Starting indexing phase");
-                    output.start_index(status.total);
+                    output.start_index(status.total, status.current);
                 } else if (phase == SyncPhase::Indexing
                     || phase == SyncPhase::Initializing
                     || phase == SyncPhase::Loading)

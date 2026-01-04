@@ -3,6 +3,7 @@ use flexi_logger::{Cleanup, Criterion, FileSpec, Logger, Naming, detailed_format
 
 pub struct LogConfig {
     pub service_name: String,
+    pub file: bool,
     pub file_name: Option<String>,
     pub console: bool,
 }
@@ -13,7 +14,13 @@ impl LogConfig {
             service_name: service_name.to_string(),
             file_name: None,
             console: false,
+            file: true,
         }
+    }
+
+    pub fn enable_file(mut self, enable: bool) -> Self {
+        self.file = enable;
+        self
     }
 
     pub fn with_file_name(mut self, file_name: &str) -> Self {
@@ -34,18 +41,23 @@ pub fn init_log(config: LogConfig) {
     let file_name = config.file_name.unwrap_or(config.service_name);
     let logger = Logger::try_with_str("info")
         .unwrap()
-        .format(detailed_format) // Set detailed log format
-        .log_to_file(
-            FileSpec::default()
-                .directory(log_dir) // Log files directory
-                .basename(file_name), // Base name of log files
-        )
-        // --- Enable log rotation ---
-        .rotate(
-            Criterion::Size(100_000_000), // Rotate when file size reaches 100 MB
-            Naming::Timestamps,           // Use timestamps for new file names
-            Cleanup::KeepLogFiles(20),    // Keep only the latest 20 log files
-        );
+        .format(detailed_format); // Set detailed log format
+    let logger = if config.file {
+        logger
+            .log_to_file(
+                FileSpec::default()
+                    .directory(log_dir) // Log files directory
+                    .basename(file_name), // Base name of log files
+            )
+            // --- Enable log rotation ---
+            .rotate(
+                Criterion::Size(100_000_000), // Rotate when file size reaches 100 MB
+                Naming::Timestamps,           // Use timestamps for new file names
+                Cleanup::KeepLogFiles(20),    // Keep only the latest 20 log files
+            )
+    } else {
+        logger
+    };
 
     let logger = if config.console {
         logger.duplicate_to_stderr(flexi_logger::Duplicate::All)

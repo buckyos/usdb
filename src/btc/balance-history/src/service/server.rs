@@ -189,12 +189,18 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
             Ok(balances)
         } else {
-            let msg = format!("Either block_height or block_range must be specified");
-            Err(JsonError {
-                code: ErrorCode::InvalidParams,
-                message: msg,
+            let ret = self.db.get_latest_balance(&params.script_hash).map_err(|e| JsonError {
+                code: ErrorCode::InternalError,
+                message: format!("Failed to get latest balance: {}", e),
                 data: None,
-            })
+            })?;
+            let ret = AddressBalance {
+                block_height: ret.block_height,
+                balance: ret.balance,
+                delta: ret.delta,
+            };
+
+            Ok(vec![ret])
         }
     }
 
@@ -202,18 +208,6 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         &self,
         params: GetBalancesParams,
     ) -> JsonResult<Vec<Vec<AddressBalance>>> {
-        if params.block_height.is_none() && params.block_range.is_none() {
-            let msg = format!(
-                "Either block_height or block_range must be specified for script_hash: {}",
-                params.script_hashes.len()
-            );
-            return Err(JsonError {
-                code: ErrorCode::InvalidParams,
-                message: msg,
-                data: None,
-            });
-        }
-
         use rayon::prelude::*;
 
         let results: JsonResult<Vec<Vec<AddressBalance>>> = params
