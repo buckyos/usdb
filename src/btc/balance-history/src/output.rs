@@ -89,9 +89,8 @@ impl IndexOutput {
         let bar: ProgressBar = self.create_bar();
         bar.set_length(total);
 
-        for _ in 0..current {
-            bar.inc(1);
-        }
+        bar.set_position(current);
+        bar.reset_eta();
 
         let mut index_bar = self.index_bar.lock().unwrap();
         assert!(index_bar.is_none(), "Index bar already started");
