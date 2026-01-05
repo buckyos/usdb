@@ -160,6 +160,10 @@ impl BalanceHistoryConfig {
     pub fn db_dir(&self) -> PathBuf {
         self.root_dir.join("db")
     }
+
+    pub fn snapshot_dir(&self) -> PathBuf {
+        self.root_dir.join("snapshots")
+    }
 }
 
 pub type BalanceHistoryConfigRef = Arc<BalanceHistoryConfig>;

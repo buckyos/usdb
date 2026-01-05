@@ -6,17 +6,8 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS balance_history (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    script_hash BLOB    NOT NULL,    -- 20 bytes
-    height      INTEGER NOT NULL,
+    script_hash BLOB    NOT NULL PRIMARY KEY, -- 32 bytes
+    height      INTEGER NOT NULL,    -- u32
     balance     INTEGER NOT NULL,    -- u64
-    delta       INTEGER NOT NULL,
-    
-    UNIQUE(script_hash, height)
+    delta       INTEGER NOT NULL     -- i64
 );
-
-CREATE INDEX IF NOT EXISTS idx_balance_history_script_hash 
-    ON balance_history(script_hash);
-
-CREATE INDEX IF NOT EXISTS idx_balance_history_height 
-    ON balance_history(height);

@@ -7,6 +7,7 @@ use crate::output::IndexOutputRef;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use usdb_util::USDBScriptHash;
 
 pub struct SnapshotIndexer {
     config: BalanceHistoryConfigRef,
@@ -50,8 +51,10 @@ impl SnapshotIndexer {
 
         let total = self.db.get_history_balance_count()?;
         self.output.update_load_total_count(total);
-        self.output
-            .println(&format!("Will generate snapshot with {} entries at block height {}", total, target_block_height));
+        self.output.println(&format!(
+            "Will generate snapshot with {} entries at block height {}",
+            total, target_block_height
+        ));
 
         let generator = SnapshotGenerator {
             db: Arc::new(Mutex::new(snapshot_db)),
@@ -82,12 +85,15 @@ struct SnapshotGenerator {
 }
 
 impl SnapshotCallback for SnapshotGenerator {
-    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry], entries_processed: u64) -> Result<(), String> {
+    fn on_snapshot_entries(
+        &self,
+        entries: &[BalanceHistoryEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
         self.db.lock().unwrap().put_entries(entries)?;
 
         // Use entries_processed to update count
-        let count =
-            self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
         self.output.update_load_current_count(count);
 
         // Display last entry info
@@ -149,7 +155,8 @@ impl SnapshotInstaller {
                 return Err(msg);
             }
         } else {
-            self.output.println("No snapshot file hash provided, skipping verification");
+            self.output
+                .println("No snapshot file hash provided, skipping verification");
         }
 
         let snapshot_db = SnapshotDB::open(&data.file).map_err(|e| {
@@ -173,10 +180,11 @@ impl SnapshotInstaller {
 
         // Load balance by batch
         let page_size = 1024 * 256; // 256k entries per batch
-        let mut page_index = 0;
+        let mut last_script_hash: Option<USDBScriptHash> = None;
+        let mut installed_total = 0u64;
         loop {
             let entries = snapshot_db
-                .get_entries(page_index, page_size)
+                .get_entries(page_size, last_script_hash.as_ref())
                 .map_err(|e| {
                     let msg = format!("Failed to read snapshot entries: {}", e);
                     self.output.println(&msg);
@@ -188,15 +196,20 @@ impl SnapshotInstaller {
                 self.output.println(&msg);
                 msg
             })?;
+            installed_total += entries.len() as u64;
 
-            let count = (page_index as u64) * (page_size as u64) + (entries.len() as u64);
-            self.output.update_load_current_count(count);
-            page_index += 1;
+            if let Some(last_entry) = entries.last() {
+                last_script_hash = Some(last_entry.script_hash.clone());
+            }
+
+            self.output.update_load_current_count(installed_total);
 
             if entries.len() < page_size as usize {
                 break;
             }
         }
+
+        assert!(installed_total == total, "Installed total {} does not match expected total {}", installed_total, total);
         self.db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
             self.output.println(&msg);

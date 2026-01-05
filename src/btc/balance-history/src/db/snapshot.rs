@@ -10,7 +10,7 @@ pub const SNAPSHOT_DB_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotMeta {
-    pub block_height: u32,   
+    pub block_height: u32,
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
 }
@@ -289,26 +289,177 @@ impl SnapshotDB {
         Ok(count)
     }
 
-    pub fn get_entries(
+    pub fn get_entry(
         &self,
-        page_index: u64,
-        page_size: u32,
-    ) -> Result<Vec<BalanceHistoryEntry>, String> {
-        let offset = page_index * (page_size as u64);
+        script_hash: &USDBScriptHash,
+    ) -> Result<Option<BalanceHistoryEntry>, String> {
         let mut stmt = self.conn.prepare(
-            "SELECT script_hash, height, balance, delta FROM balance_history ORDER BY id LIMIT ?1 OFFSET ?2"
+            "SELECT script_hash, height, balance, delta FROM balance_history WHERE script_hash = ?1"
         ).map_err(|e| {
             let msg = format!("Failed to prepare statement: {}", e);
             error!("{}", msg);
             msg
         })?;
 
-        let mut entries_iter = stmt.query([page_size as i64, offset as i64]).map_err(|e| {
+        let mut rows = stmt.query([script_hash.as_ref() as &[u8]]).map_err(|e| {
             let msg = format!("Failed to query map: {}", e);
             error!("{}", msg);
             msg
         })?;
 
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to get next row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let entry = BalanceHistoryEntry {
+                script_hash: {
+                    let blob: Vec<u8> = row.get(0).map_err(|e| {
+                        let msg = format!("Failed to get script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                        let msg = format!("Failed to convert script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?
+                },
+                block_height: row.get::<_, i64>(1).map_err(|e| {
+                    let msg = format!("Failed to get block height: {}", e);
+                    error!("{}", msg);
+                    msg
+                })? as u32,
+                balance: row.get::<_, i64>(2).map_err(|e| {
+                    let msg = format!("Failed to get balance: {}", e);
+                    error!("{}", msg);
+                    msg
+                })? as u64,
+                delta: row.get::<_, i64>(3).map_err(|e| {
+                    let msg = format!("Failed to get delta: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+            };
+
+            Ok(Some(entry))
+        } else {
+            Ok(None)
+        }
+    }
+
+     pub fn get_entries_by_page(
+        &self,
+        page_offset: u32,
+        page_size: u32,
+    ) -> Result<Vec<BalanceHistoryEntry>, String> {
+        let sql = "
+            SELECT script_hash, height, balance, delta 
+            FROM balance_history 
+            ORDER BY script_hash ASC 
+            LIMIT ?1 OFFSET ?2
+        ";
+
+        let mut stmt = self.conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries_iter = stmt.query(rusqlite::params![
+            page_size as i64,
+            (page_offset as i64) * (page_size as i64),
+        ]).map_err(|e| {
+            let msg = format!("Failed to query map: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = entries_iter.next().map_err(|e| {
+            let msg = format!("Failed to get next row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let entry = BalanceHistoryEntry {
+                script_hash: {
+                    let blob: Vec<u8> = row.get(0).map_err(|e| {
+                        let msg = format!("Failed to get script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                        let msg = format!("Failed to convert script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?
+                },
+                block_height: row.get::<_, i64>(1).map_err(|e| {
+                    let msg = format!("Failed to get block height: {}", e);
+                    error!("{}", msg);
+                    msg
+                })? as u32,
+                balance: row.get::<_, i64>(2).map_err(|e| {
+                    let msg = format!("Failed to get balance: {}", e);
+                    error!("{}", msg);
+                    msg
+                })? as u64,
+                delta: row.get::<_, i64>(3).map_err(|e| {
+                    let msg = format!("Failed to get delta: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+            };
+
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
+
+    pub fn get_entries(
+        &self,
+        page_size: u32,
+        last_script_hash: Option<&USDBScriptHash>,
+    ) -> Result<Vec<BalanceHistoryEntry>, String> {
+        let sql = match last_script_hash {
+            Some(_) => {
+                "
+                SELECT script_hash, height, balance, delta 
+                FROM balance_history 
+                WHERE script_hash > ?1 
+                ORDER BY script_hash ASC 
+                LIMIT ?2
+                "
+            }
+            None => {
+                "
+                SELECT script_hash, height, balance, delta 
+                FROM balance_history 
+                ORDER BY script_hash ASC 
+                LIMIT ?1
+                "
+            }
+        };
+
+        let params = match last_script_hash {
+            Some(last_script_hash) => rusqlite::params![
+                last_script_hash.as_ref() as &[u8],
+                page_size as i64,
+            ],
+            None => rusqlite::params![page_size as i64],
+        };
+
+        let mut stmt = self.conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries_iter = stmt.query(params).map_err(|e| {
+            let msg = format!("Failed to query map: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
         let mut entries = Vec::with_capacity(page_size as usize);
         while let Some(row) = entries_iter.next().map_err(|e| {
             let msg = format!("Failed to get next row: {}", e);
@@ -354,3 +505,51 @@ impl SnapshotDB {
 }
 
 pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BalanceHistoryConfig;
+
+    #[test]
+    fn test_snapshot_db_creation() {
+        let dir = std::env::temp_dir().join("usdb").join("test_snapshot");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("snapshot_test.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        let snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        let meta = SnapshotMeta::new(100);
+        snapshot_db.update_meta(&meta).unwrap();
+
+        let retrieved_meta = snapshot_db.get_meta().unwrap();
+        assert_eq!(retrieved_meta.block_height, 100);
+        assert_eq!(retrieved_meta.version, SNAPSHOT_DB_VERSION);
+    }
+
+    #[test]
+    fn test_load() {
+        let config = BalanceHistoryConfig::default();
+        let target_block_height = 900_000;
+        // let file_name = format!("snapshot_{}.db", target_block_height);
+        // let dir = config.snapshot_dir().join(file_name);
+        let snapshot_db = SnapshotDB::open_by_height(&config.root_dir, target_block_height, false)
+            .expect("Failed to load snapshot DB");
+
+        let script_hash = usdb_util::parse_script_hash(
+            "1ab30e67c2f1cdfe77c5e47bc458e3f12ab6acc95778f5f26db5396d6647cd89",
+        )
+        .unwrap();
+
+        let entry = snapshot_db
+            .get_entry(&script_hash)
+            .expect("Failed to get entry")
+            .expect("Entry not found");
+        println!(
+            "Entry at height {}: balance={}, delta={}",
+            entry.block_height, entry.balance, entry.delta
+        );
+    }
+}

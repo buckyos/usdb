@@ -607,61 +607,65 @@ impl BatchBlockBalanceProcessor {
 
         // First calc delta in parallel
         use rayon::prelude::*;
-        let mut block_history_results: Vec<Result<HashMap<USDBScriptHash, BalanceHistoryData>, String>> = blocks.par_iter().map(|block| {
+        let mut block_history_results: Vec<
+            Result<HashMap<USDBScriptHash, BalanceHistoryData>, String>,
+        > = blocks
+            .par_iter()
+            .map(|block| {
+                // Traverse all transactions to calculate balance delta
+                let mut block_history: HashMap<USDBScriptHash, BalanceHistoryData> =
+                    HashMap::with_capacity(block.txdata.len() * 16);
+                for tx in block.txdata.iter() {
+                    // Process vin (decrease balance)
+                    for vin in tx.vin.iter() {
+                        let vout = vin.cache_tx_out.as_ref().unwrap();
 
-            // Traverse all transactions to calculate balance delta
-            let mut block_history: HashMap<USDBScriptHash, BalanceHistoryData> = HashMap::with_capacity(block.txdata.len() * 16);
-            for tx in block.txdata.iter() {
-                // Process vin (decrease balance)
-                for vin in tx.vin.iter() {
-                    let vout = vin.cache_tx_out.as_ref().unwrap();
+                        match block_history.entry(vout.script_hash) {
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                // Create new entry
+                                let new_balance = BalanceHistoryData {
+                                    block_height: block.height,
+                                    delta: -(vout.value as i64),
+                                    balance: 0, // Just set balance to 0, we will update it below
+                                };
 
-                    match block_history.entry(vout.script_hash) {
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            // Create new entry
-                            let new_balance = BalanceHistoryData {
-                                block_height: block.height,
-                                delta: -(vout.value as i64),
-                                balance: 0, // Just set balance to 0, we will update it below
-                            };
+                                e.insert(new_balance);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                // Update existing entry's delta
+                                let entry = e.get_mut();
 
-                            e.insert(new_balance);
+                                entry.delta -= vout.value as i64;
+                            }
                         }
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            // Update existing entry's delta
-                            let entry = e.get_mut();
+                    }
 
-                            entry.delta -= vout.value as i64;
+                    // Process vout (increase balance)
+                    for vout in tx.vout.iter() {
+                        match block_history.entry(vout.cache_tx_out.script_hash) {
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                // Create new entry
+                                let new_balance = BalanceHistoryData {
+                                    block_height: block.height,
+                                    delta: vout.cache_tx_out.value as i64,
+                                    balance: 0, // Just set balance to 0, we will update it below
+                                };
+
+                                e.insert(new_balance);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                // Update existing entry's delta
+                                let entry = e.get_mut();
+
+                                entry.delta += vout.cache_tx_out.value as i64;
+                            }
                         }
                     }
                 }
 
-                // Process vout (increase balance)
-                for vout in tx.vout.iter() {
-                    match block_history.entry(vout.cache_tx_out.script_hash) {
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            // Create new entry
-                            let new_balance = BalanceHistoryData {
-                                block_height: block.height,
-                                delta: vout.cache_tx_out.value as i64,
-                                balance: 0, // Just set balance to 0, we will update it below
-                            };
-
-                            e.insert(new_balance);
-                        }
-                        std::collections::hash_map::Entry::Occupied(mut e) => {
-                            // Update existing entry's delta
-                            let entry = e.get_mut();
-
-                            entry.delta += vout.cache_tx_out.value as i64;
-                        }
-                    }
-                }
-            }
-
-            Ok(block_history)
-        }).collect();
-
+                Ok(block_history)
+            })
+            .collect();
 
         // Then update balances based on deltas serialized
         for ret in block_history_results.iter_mut() {
