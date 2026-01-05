@@ -180,7 +180,7 @@ impl SnapshotInstaller {
         ));
 
         // Load balance by batch
-        let page_size = 1024;
+        let page_size = 1024 * 256; // 256k entries per batch
         let mut page_index = 0;
         loop {
             let entries = snapshot_db

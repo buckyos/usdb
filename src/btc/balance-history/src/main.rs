@@ -38,6 +38,20 @@ struct BalanceHistoryCli {
     daemon: bool,
 }
 
+use clap::{Args};
+
+#[derive(Args, Debug, Clone)]
+#[group(required = true, multiple = false)]
+struct InstallSnapshotSource {
+    /// Specify the snapshot file to install, if the file is relative, it is relative to the service directory ${root}/snapshots/
+    #[arg(short, long)]
+    file: Option<String>,
+
+    /// Specify the expected hash of the snapshot file for verification, which in directory ${root}/snapshots/snapshot_{block_height}.db
+    #[arg(short, long)]
+    block_height: Option<u32>,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 #[command(rename_all = "kebab-case")]
 enum BalanceHistoryCommands {
@@ -58,9 +72,8 @@ enum BalanceHistoryCommands {
     VerifySnapshot {},
 
     InstallSnapshot {
-        /// Specify the snapshot file to install, if the file is relative, it is relative to the service directory ${root}/snapshots/
-        #[arg(short, long)]
-        file: String,
+       #[clap(flatten)]
+        source: InstallSnapshotSource,
 
         /// Specify the expected hash of the snapshot file for verification
         #[arg(short, long)]
@@ -293,7 +306,10 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::BestEffort) {
+            let db = match BalanceHistoryDB::open(
+                config.clone(),
+                db::BalanceHistoryDBMode::BestEffort,
+            ) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
@@ -314,7 +330,7 @@ async fn main() {
             println!("Snapshot generated successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::InstallSnapshot { file, hash }) => {
+        Some(BalanceHistoryCommands::InstallSnapshot { source, hash }) => {
             // Init file logging
             let file_name = format!(
                 "{}_install_snapshot",
@@ -328,13 +344,30 @@ async fn main() {
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Installing snapshot in directory: {:?}", root_dir);
 
-            let mut file_path = std::path::PathBuf::from(&file);
-            if file_path.is_relative() {
-                file_path = root_dir.clone();
+            let file_path = if let Some(ref f) = source.file {
+                let mut file_path = std::path::PathBuf::from(f);
+                if file_path.is_relative() {
+                    file_path = root_dir.clone();
+                    file_path.push("snapshots");
+                    file_path.push(&source.file.as_ref().unwrap());
+                    println!("Resolved relative snapshot file path to: {:?}", file_path);
+                }
+                file_path
+            } else if let Some(block_height) = source.block_height {
+                let mut file_path = root_dir.clone();
                 file_path.push("snapshots");
-                file_path.push(&file);
-                println!("Resolved relative snapshot file path to: {:?}", file_path);
-            }
+                file_path.push(format!("snapshot_{}.db", block_height));
+                println!(
+                    "Using snapshot file for block height {}: {:?}",
+                    block_height, file_path
+                );
+                file_path
+            } else {
+                error!("No snapshot file or block height specified for installation.");
+                println!("No snapshot file or block height specified for installation.");
+                std::process::exit(1);
+            };
+            
             if !file_path.exists() {
                 error!("Snapshot file does not exist: {:?}", file_path);
                 println!("Snapshot file does not exist: {:?}", file_path);
@@ -355,7 +388,8 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::Normal) {
+            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::BestEffort)
+            {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
