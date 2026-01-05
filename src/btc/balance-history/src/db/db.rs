@@ -175,6 +175,7 @@ impl BalanceHistoryDB {
         match mode {
             BalanceHistoryDBMode::BestEffort => {
                 options.set_bytes_per_sync(1024 * 1024 * 4); // 4MB
+                options.increase_parallelism(num_cpus::get() as i32); // Set parallelism to number of CPU cores
             }
             BalanceHistoryDBMode::Normal => {
                 options.set_bytes_per_sync(1024 * 1024 * 1); // 1MB
