@@ -1,4 +1,4 @@
-use super::client::{BTCClient, BTCClientType};
+use super::client::{BTCClient, BTCClientRef, BTCClientType};
 use super::file_indexer::{
     BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader, BlockFileReaderRef,
 };
@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
-use usdb_util::BTCRpcClientRef;
 
 struct BuildRecordResult {
     block_hash: BlockHash,
@@ -22,7 +21,7 @@ struct BuildRecordResult {
 }
 
 pub struct BlockRecordCache {
-    btc_client: BTCRpcClientRef,
+    btc_client: BTCClientRef,
     block_hash_cache: HashMap<BlockHash, BlockEntry>,
 
     // Mapping from prev_block_hash -> block_hash
@@ -32,7 +31,7 @@ pub struct BlockRecordCache {
 }
 
 impl BlockRecordCache {
-    pub fn new(btc_client: BTCRpcClientRef) -> Self {
+    pub fn new(btc_client: BTCClientRef) -> Self {
         Self {
             btc_client,
             block_hash_cache: HashMap::new(),
@@ -41,7 +40,7 @@ impl BlockRecordCache {
         }
     }
 
-    pub fn new_ref(btc_client: BTCRpcClientRef) -> Arc<Mutex<Self>> {
+    pub fn new_ref(btc_client: BTCClientRef) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self::new(btc_client)))
     }
 
@@ -359,7 +358,7 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
 
 pub struct BlockLocalLoader {
     block_reader: BlockFileReaderRef,
-    btc_client: BTCRpcClientRef,
+    btc_client: BTCClientRef,
     block_index_cache: Arc<Mutex<BlockRecordCache>>,
     file_cache: BlockFileCache,
     db: BalanceHistoryDBRef,
@@ -371,7 +370,7 @@ impl BlockLocalLoader {
     pub fn new(
         block_magic: u32,
         data_dir: &Path,
-        btc_client: BTCRpcClientRef,
+        btc_client: BTCClientRef,
         db: BalanceHistoryDBRef,
         output: IndexOutputRef,
     ) -> Result<Self, String> {

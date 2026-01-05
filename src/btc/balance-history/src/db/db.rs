@@ -8,7 +8,7 @@ use rocksdb::{
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
@@ -59,11 +59,10 @@ pub struct BalanceHistoryDB {
 
 impl BalanceHistoryDB {
     pub fn open(
-        data_dir: &Path,
         config: BalanceHistoryConfigRef,
         mode: BalanceHistoryDBMode,
     ) -> Result<Self, String> {
-        let db_dir = Self::get_db_dir(data_dir);
+        let db_dir = config.db_dir();
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
                 let msg = format!(
@@ -115,20 +114,12 @@ impl BalanceHistoryDB {
                 BalanceHistoryDBMode::BestEffort => vec![
                     ("write_buffer_size".to_string(), "268435456".to_string()), // 256MB
                     ("max_write_buffer_number".to_string(), "8".to_string()),
-                    (
-                        "min_write_buffer_number_to_merge".to_string(),
-                        "3".to_string(),
-                    ),
-                    ("memtable_prefix_bloom_ratio".to_string(), "0.1".to_string()),
+                    //("memtable_prefix_bloom_ratio".to_string(), "0.1".to_string()),
                 ],
                 BalanceHistoryDBMode::Normal => vec![
                     ("write_buffer_size".to_string(), "67108864".to_string()), // 64MB
                     ("max_write_buffer_number".to_string(), "2".to_string()),
-                    (
-                        "min_write_buffer_number_to_merge".to_string(),
-                        "1".to_string(),
-                    ),
-                    ("memtable_prefix_bloom_ratio".to_string(), "0".to_string()),
+                    //("memtable_prefix_bloom_ratio".to_string(), "0".to_string()),
                 ],
             };
             let cf = self.db.cf_handle(BALANCE_HISTORY_CF).unwrap();
@@ -146,18 +137,18 @@ impl BalanceHistoryDB {
                 BalanceHistoryDBMode::BestEffort => vec![
                     ("write_buffer_size".to_string(), "268435456".to_string()), // 256MB
                     ("max_write_buffer_number".to_string(), "8".to_string()),
-                    (
-                        "min_write_buffer_number_to_merge".to_string(),
-                        "3".to_string(),
-                    ),
+                    //(
+                    //    "min_write_buffer_number_to_merge".to_string(),
+                    //    "3".to_string(),
+                    //),
                 ],
                 BalanceHistoryDBMode::Normal => vec![
                     ("write_buffer_size".to_string(), "67108864".to_string()), // 64MB
                     ("max_write_buffer_number".to_string(), "2".to_string()),
-                    (
-                        "min_write_buffer_number_to_merge".to_string(),
-                        "1".to_string(),
-                    ),
+                    //(
+                    //    "min_write_buffer_number_to_merge".to_string(),
+                    //    "1".to_string(),
+                    //),
                 ],
             };
 
@@ -276,8 +267,8 @@ impl BalanceHistoryDB {
         utxo_cf_options
     }
 
-    pub fn open_for_read(data_dir: &Path, config: BalanceHistoryConfigRef, mode: BalanceHistoryDBMode) -> Result<Self, String> {
-        let db_dir = Self::get_db_dir(data_dir);
+    pub fn open_for_read(config: BalanceHistoryConfigRef, mode: BalanceHistoryDBMode) -> Result<Self, String> {
+        let db_dir = config.db_dir();
         let file = db_dir.join("balance_history");
         info!("Opening RocksDB in read-only mode at {}", file.display());
 
@@ -336,13 +327,12 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn get_db_dir(data_dir: &Path) -> PathBuf {
-        let db_dir = data_dir.join("db");
-        db_dir
-    }
 
     pub fn flush_all(&self) -> Result<(), String> {
-        self.db.flush().map_err(|e| {
+        let mut flush_opts = rocksdb::FlushOptions::default();
+        flush_opts.set_wait(true); // Wait until flush is done
+
+        self.db.flush_opt(&flush_opts).map_err(|e| {
             let msg = format!("Failed to flush RocksDB at {}: {}", self.file.display(), e);
             error!("{}", msg);
             msg

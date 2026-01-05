@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig, BALANCE_HISTORY_SERVICE_HTTP_PORT};
+use usdb_util::{BALANCE_HISTORY_SERVICE_HTTP_PORT, BTCConfig, ElectrsConfig, OrdConfig};
 
 fn default_batch_size() -> usize {
-    64
+    128
 }
 
 fn get_cache_size() -> usize {
@@ -36,18 +36,26 @@ fn default_max_memory_percent() -> usize {
     90
 }
 
+fn default_local_loader_threshold() -> usize {
+    500
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
+    /// Threshold of blocks behind to switch to LocalLoader client
+    #[serde(default = "default_local_loader_threshold")]
+    pub local_loader_threshold: usize,
+
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
 
     // UTXO cache size in bytes in memory
     #[serde(default = "default_utxo_cache_bytes")]
-    pub utxo_cache_bytes: usize,
+    pub utxo_max_cache_bytes: usize,
 
     // Balance cache size in bytes in memory
     #[serde(default = "default_balance_cache_bytes")]
-    pub balance_cache_bytes: usize,
+    pub balance_max_cache_bytes: usize,
 
     // Maximum percent of system memory to use for caches
     // Value can be 10-100
@@ -55,13 +63,13 @@ pub struct IndexConfig {
     pub max_memory_percent: usize,
 }
 
-
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
+            local_loader_threshold: default_local_loader_threshold(),
             batch_size: default_batch_size(),
-            utxo_cache_bytes: default_utxo_cache_bytes(),
-            balance_cache_bytes: default_balance_cache_bytes(),
+            utxo_max_cache_bytes: default_utxo_cache_bytes(),
+            balance_max_cache_bytes: default_balance_cache_bytes(),
             max_memory_percent: default_max_memory_percent(),
         }
     }
@@ -79,12 +87,22 @@ fn default_rpc_port() -> u16 {
 
 impl Default for RpcServer {
     fn default() -> Self {
-        RpcServer { port: default_rpc_port() }
+        RpcServer {
+            port: default_rpc_port(),
+        }
     }
+}
+
+fn get_default_root_dir() -> PathBuf {
+    let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+    root_dir
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BalanceHistoryConfig {
+    #[serde(default = "get_default_root_dir")]
+    pub root_dir: PathBuf,
+
     pub btc: BTCConfig,
     pub ordinals: OrdConfig,
     pub electrs: ElectrsConfig,
@@ -96,6 +114,7 @@ pub struct BalanceHistoryConfig {
 impl Default for BalanceHistoryConfig {
     fn default() -> Self {
         Self {
+            root_dir: get_default_root_dir(),
             btc: BTCConfig::default(),
             ordinals: OrdConfig::default(),
             electrs: ElectrsConfig::default(),
@@ -136,6 +155,10 @@ impl BalanceHistoryConfig {
 
             Ok(config)
         }
+    }
+
+    pub fn db_dir(&self) -> PathBuf {
+        self.root_dir.join("db")
     }
 }
 

@@ -60,7 +60,7 @@ impl AddressIndexer {
             config,
             output,
             filter: Arc::new(Mutex::new(bloom)),
-            block_cache: Arc::new(Mutex::new(BlockRecordCache::new(Arc::new(rpc_client)))),
+            block_cache: Arc::new(Mutex::new(BlockRecordCache::new( btc_client.clone()))),
             total_addresses: Arc::new(AtomicU64::new(0)),
             should_stop: Arc::new(AtomicBool::new(false)),
             btc_client,

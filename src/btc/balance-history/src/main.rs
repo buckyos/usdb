@@ -114,21 +114,8 @@ async fn main_run() {
     };
     let config = Arc::new(config);
 
-    // Initialize the database
-    output.println("Initializing database... this may take a while.");
-    let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
-        Ok(database) => database,
-        Err(e) => {
-            error!("Failed to initialize database: {}", e);
-            output.println(&format!("Failed to initialize database: {}", e));
-            std::process::exit(1);
-        }
-    };
-    let db = Arc::new(db);
-    output.println("Database initialized.");
-
     // Start the indexer
-    let indexer = match BalanceHistoryIndexer::new(config.clone(), db.clone(), output.clone()) {
+    let indexer = match BalanceHistoryIndexer::new(config.clone(), output.clone()) {
         Ok(idx) => idx,
         Err(e) => {
             error!("Failed to initialize indexer: {}", e);
@@ -144,7 +131,7 @@ async fn main_run() {
     let ret = BalanceHistoryRpcServer::start(
         config.clone(),
         output.status().clone(),
-        db.clone(),
+        indexer.db().clone(),
         shutdown_tx,
     );
     if let Err(e) = &ret {
@@ -203,7 +190,7 @@ async fn main_run() {
     indexer.shutdown().await;
     output.println("Shutdown indexer complete.");
 
-    db.flush_all().unwrap_or_else(|e| {
+    indexer.db().flush_all().unwrap_or_else(|e| {
         error!("Failed to flush database on shutdown: {}", e);
     });
 
@@ -229,7 +216,17 @@ async fn main() {
             usdb_util::init_log(config);
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            if let Err(e) = crate::tool::clear_db_files(&root_dir) {
+            println!("Will clear database files in directory: {:?}", root_dir);
+            let config = match BalanceHistoryConfig::load(&root_dir) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    error!("Failed to load config: {}", e);
+                    println!("Failed to load config: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = crate::tool::clear_db_files(&config.db_dir()) {
                 error!("Failed to clear database files: {}", e);
                 std::process::exit(1);
             }
@@ -296,7 +293,7 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
+            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::BestEffort) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
@@ -317,9 +314,12 @@ async fn main() {
             println!("Snapshot generated successfully.");
             return;
         }
-        Some( BalanceHistoryCommands::InstallSnapshot { file, hash } ) => {
+        Some(BalanceHistoryCommands::InstallSnapshot { file, hash }) => {
             // Init file logging
-            let file_name = format!("{}_install_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let file_name = format!(
+                "{}_install_snapshot",
+                usdb_util::BALANCE_HISTORY_SERVICE_NAME
+            );
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
                 .with_file_name(&file_name)
                 .enable_console(false);
@@ -355,7 +355,7 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::open(&root_dir, config.clone()) {
+            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::Normal) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
@@ -484,7 +484,10 @@ async fn main() {
             let output = Arc::new(output);
 
             // Load balance history DB
-            let db = match BalanceHistoryDB::open_for_read(&root_dir, config.clone()) {
+            let db = match BalanceHistoryDB::open_for_read(
+                config.clone(),
+                db::BalanceHistoryDBMode::BestEffort,
+            ) {
                 Ok(database) => database,
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);

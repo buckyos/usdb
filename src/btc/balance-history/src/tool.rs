@@ -1,10 +1,8 @@
-use crate::db::BalanceHistoryDB;
 use std::path::Path;
 use daemonize::Daemonize;
 use std::fs::File;
 
-pub fn clear_db_files(data_dir: &Path) -> Result<(), String> {
-    let db_dir = BalanceHistoryDB::get_db_dir(data_dir);
+pub fn clear_db_files(db_dir: &Path) -> Result<(), String> {
     if db_dir.exists() {
         std::fs::remove_dir_all(&db_dir).map_err(|e| {
             let msg = format!(

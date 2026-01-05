@@ -1,9 +1,9 @@
 use super::block::BatchBlockProcessor;
-use crate::btc::{BTCClientRef, create_btc_client, BTCClientType};
+use crate::btc::{BTCClientRef, BTCClientType, create_btc_rpc_client, create_local_btc_client};
 use crate::cache::{AddressBalanceCache, AddressBalanceCacheRef, MemoryCacheMonitor, MemoryCacheMonitorRef};
 use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
-use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
+use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry, BalanceHistoryDB, BalanceHistoryDBMode};
 use crate::output::IndexOutputRef;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -30,17 +30,60 @@ pub struct BalanceHistoryIndexer {
 impl BalanceHistoryIndexer {
     pub fn new(
         config: BalanceHistoryConfigRef,
-        db: BalanceHistoryDBRef,
         output: IndexOutputRef,
     ) -> Result<Self, String> {
-        // Init btc client
+        // First open in normal mode to get last synced block height
+        output.println("Initializing database in normal mode... this may take a while.");
+        let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal) {
+            Ok(database) => database,
+            Err(e) => {
+                let msg = format!("Failed to initialize database: {}", e);
+                error!("{}", msg);
+                output.println(&msg);
+                return Err(msg);
+            }
+        };
+        output.println("Database initialized.");
+
+        // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
-        let btc_client = create_btc_client(
-            &config,
-            output.clone(),
-            db.clone(),
-            last_synced_block_height,
-        )?;
+        let btc_rpc_client = create_btc_rpc_client(&config)?;
+        let latest_block_height = btc_rpc_client.get_latest_block_height().444map_err(|e| {
+            let msg = format!("Failed to get latest block height from BTC client: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let (db, btc_client) =if latest_block_height - last_synced_block_height > config.sync.local_loader_threshold as u32 {
+            info!("Using LocalLoader BTC client as we are behind by more than {} blocks", config.sync.local_loader_threshold);
+
+            drop(db); // Close the normal mode db
+
+            output.println("Reinitializing database in best effort mode... this may take a while.");
+            let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::BestEffort) {
+                Ok(database) => database,
+                Err(e) => {
+                    let msg = format!("Failed to initialize database: {}", e);
+                    error!("{}", msg);
+                    output.println(&msg);
+                    return Err(msg);
+                }
+            };
+            let db = Arc::new(db);
+            output.println("Database reinitialized.");
+
+            let btc_client = create_local_btc_client(
+                btc_rpc_client.clone(),
+                &config,
+                output.clone(),
+                db.clone(),
+            )?;
+
+            (db, btc_client)
+        } else {
+            info!("Using RPC BTC client");
+            (Arc::new(db), btc_rpc_client)
+        };
 
         let cache_strategy = match btc_client.get_type() {
             BTCClientType::LocalLoader => {
@@ -84,6 +127,10 @@ impl BalanceHistoryIndexer {
             shutdown_tx: Arc::new(Mutex::new(None)),
             shutdown_rx: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn db(&self) -> &BalanceHistoryDBRef {
+        &self.db
     }
 
     pub async fn run(&self) -> Result<(), String> {
@@ -197,6 +244,10 @@ impl BalanceHistoryIndexer {
                     self.btc_client.on_sync_complete(latest_height).unwrap_or_else(|e| {
                         error!("Error during BTC client on_sync_complete: {}", e);
                     });
+                    if let Err(e) = self.db.switch_mode(BalanceHistoryDBMode::Normal) {
+                        error!("Error switching DB to Normal mode: {}", e);
+                        break;
+                    }
 
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {
