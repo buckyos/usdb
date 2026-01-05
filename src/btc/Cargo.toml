@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "indexer",
+    "usdb-indexer",
     "balance-history",
     "balance-history-cli",
     "usdb-util",
