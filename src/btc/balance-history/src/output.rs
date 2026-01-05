@@ -32,8 +32,17 @@ impl IndexOutput {
     }
 
     pub fn println(&self, msg: &str) {
+        info!("{}", msg);
         if let Err(e) = self.mp.println(msg) {
             error!("Failed to print message to console: {}", e);
+        }
+        self.status.update_message(Some(msg.to_string()));
+    }
+
+    pub fn eprintln(&self, msg: &str) {
+        error!("{}", msg);
+        if let Err(e) = self.mp.println(msg) {
+            error!("Failed to print error message to console: {}", e);
         }
         self.status.update_message(Some(msg.to_string()));
     }

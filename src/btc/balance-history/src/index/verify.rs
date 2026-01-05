@@ -128,10 +128,6 @@ impl BalanceHistoryVerifier {
         script_hash: &USDBScriptHash,
         block_height: u32,
     ) -> Result<(), String> {
-        info!(
-            "Starting full balance history verification for script_hash: {} up to block height {}",
-            script_hash, block_height
-        );
         self.output.println(&format!(
             "Starting full balance history verification for script_hash: {} up to block height {}",
             script_hash, block_height

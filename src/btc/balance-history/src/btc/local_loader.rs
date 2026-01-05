@@ -431,7 +431,6 @@ impl BlockLocalLoader {
         builder.build_index()?;
 
         // Save to db
-        info!("Saving block index to db...");
         self.output.println("Saving block index to db...");
 
         let cache = self.block_index_cache.lock().unwrap();

@@ -112,8 +112,8 @@ impl AddressIndexer {
                 "No indexed block height found, should run full index by local loader instead of RPC, latest block height: {}",
                 latest_block_height
             );
-            self.output.println(&msg);
-            error!("{}", msg);
+            self.output.eprintln(&msg);
+
             return Err(msg);
         }
         let current_block_height = current_block_height.unwrap();
@@ -172,7 +172,6 @@ impl AddressIndexer {
             latest_block_height
         );
         self.output.println(&msg);
-        info!("{}", msg);
 
         Ok(())
     }

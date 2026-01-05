@@ -53,9 +53,14 @@ impl BalanceHistoryIndexer {
             error!("{}", msg);
             msg
         })?;
+        output.println(&format!(
+            "Latest BTC block height: {}, Last synced block height: {}",
+            latest_block_height, last_synced_block_height
+        ));
 
         let (db, btc_client) =if latest_block_height - last_synced_block_height > config.sync.local_loader_threshold as u32 {
-            info!("Using LocalLoader BTC client as we are behind by more than {} blocks", config.sync.local_loader_threshold);
+            let msg = format!("Using LocalLoader BTC client as we are behind by more than {} blocks", config.sync.local_loader_threshold);
+            output.println(&msg);
 
             drop(db); // Close the normal mode db
 
@@ -64,8 +69,8 @@ impl BalanceHistoryIndexer {
                 Ok(database) => database,
                 Err(e) => {
                     let msg = format!("Failed to initialize database: {}", e);
-                    error!("{}", msg);
-                    output.println(&msg);
+                    output.eprintln(&msg);
+                    
                     return Err(msg);
                 }
             };

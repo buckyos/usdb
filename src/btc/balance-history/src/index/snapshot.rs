@@ -33,11 +33,6 @@ impl SnapshotIndexer {
 
         let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
-        info!(
-            "Creating snapshot database at {} height {}",
-            root_dir.display(),
-            target_block_height
-        );
         self.output.println(&format!(
             "Creating snapshot database at {} height {}",
             root_dir.display(),
@@ -73,7 +68,6 @@ impl SnapshotIndexer {
             "Completed snapshot generation up to block height {}, total entries: {}",
             target_block_height, total_count
         );
-        info!("{}", msg);
         self.output.println(&msg);
 
         Ok(())
@@ -144,7 +138,6 @@ impl SnapshotInstaller {
         }
 
         if let Some(hash) = data.hash {
-            info!("Verifying snapshot file hash...");
             self.output.println("Verifying snapshot file hash...");
             let file_hash = SnapshotHash::calc_hash(&data.file)?;
             if file_hash.to_ascii_lowercase() != hash.to_ascii_lowercase() {
@@ -156,7 +149,6 @@ impl SnapshotInstaller {
                 return Err(msg);
             }
         } else {
-            info!("No snapshot file hash provided, skipping verification");
             self.output.println("No snapshot file hash provided, skipping verification");
         }
 
@@ -219,10 +211,6 @@ impl SnapshotInstaller {
                 msg
             })?;
 
-        info!(
-            "Completed snapshot installation up to block height {}",
-            meta.block_height
-        );
         self.output.println(&format!(
             "Completed snapshot installation up to block height {}",
             meta.block_height

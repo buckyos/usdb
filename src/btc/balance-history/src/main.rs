@@ -113,7 +113,6 @@ async fn main_run() {
     usdb_util::init_log(config);
 
     let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-    info!("Using service directory: {}", root_dir.display());
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration
@@ -131,8 +130,7 @@ async fn main_run() {
     let indexer = match BalanceHistoryIndexer::new(config.clone(), output.clone()) {
         Ok(idx) => idx,
         Err(e) => {
-            error!("Failed to initialize indexer: {}", e);
-            output.println(&format!("Failed to initialize indexer: {}", e));
+            output.eprintln(&format!("Failed to initialize indexer: {}", e));
             std::process::exit(1);
         }
     };
@@ -148,8 +146,7 @@ async fn main_run() {
         shutdown_tx,
     );
     if let Err(e) = &ret {
-        error!("Failed to start RPC server: {}", e);
-        output.println(&format!("Failed to start RPC server: {}", e));
+        output.eprintln(&format!("Failed to start RPC server: {}", e));
         std::process::exit(1);
     }
     let rpc_server = ret.unwrap();
@@ -178,21 +175,19 @@ async fn main_run() {
 
     tokio::select! {
         _ = sigint => {
-            info!("Received Ctrl+C, shutting down...");
-            output.println("Shutting down...");
+            output.println("Received Ctrl+C, shutting down...");
         }
         _ = sigterm => {
-            info!("Received SIGTERM, shutting down...");
-            output.println("Shutting down...");
+            output.println("Received SIGTERM, shutting down...");
         }
         _ = shutdown_rx.changed() => {
-            info!("Shutdown signal received from RPC, shutting down...");
+            output.println("Shutdown signal received from RPC, shutting down...");
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         result = indexer.run() => {
             output.println("Indexer run loop exited.");
             if let Err(e) = result {
-                error!("Indexer encountered an error: {}", e);
+                output.eprintln(&format!("Indexer encountered an error: {}", e));
                 std::process::exit(1);
             }
         }
@@ -274,8 +269,7 @@ async fn main() {
                 crate::index::AddressIndexer::new(&root_dir, config.clone(), output.clone())
                     .unwrap();
             if let Err(e) = address_index.build_index() {
-                error!("Failed to build address index: {}", e);
-                output.println(&format!("Failed to build address index: {}", e));
+                output.eprintln(&format!("Failed to build address index: {}", e));
                 std::process::exit(1);
             }
 
@@ -392,8 +386,7 @@ async fn main() {
             {
                 Ok(database) => database,
                 Err(e) => {
-                    error!("Failed to initialize database: {}", e);
-                    output.println(&format!("Failed to initialize database: {}", e));
+                    output.eprintln(&format!("Failed to initialize database: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -406,8 +399,7 @@ async fn main() {
             let snapshot_installer =
                 crate::index::SnapshotInstaller::new(config.clone(), db, output.clone());
             if let Err(e) = snapshot_installer.install(data) {
-                error!("Failed to install snapshot: {}", e);
-                output.println(&format!("Failed to install snapshot: {}", e));
+                output.eprintln(&format!("Failed to install snapshot: {}", e));
                 std::process::exit(1);
             }
 
@@ -445,8 +437,7 @@ async fn main() {
             let db = match crate::db::AddressDB::new(&root_dir) {
                 Ok(database) => database,
                 Err(e) => {
-                    error!("Failed to open address database: {}", e);
-                    output.println(&format!("Failed to open address database: {}", e));
+                    output.eprintln(&format!("Failed to open address database: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -456,8 +447,7 @@ async fn main() {
             let db = match crate::db::SnapshotDB::open_by_height(&root_dir, block_height, false) {
                 Ok(database) => database,
                 Err(e) => {
-                    error!("Failed to open snapshot database: {}", e);
-                    output.println(&format!("Failed to open snapshot database: {}", e));
+                    output.eprintln(&format!("Failed to open snapshot database: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -466,8 +456,7 @@ async fn main() {
             let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
                 Ok(client) => client,
                 Err(e) => {
-                    error!("Failed to create electrs client: {}", e);
-                    output.println(&format!("Failed to create electrs client: {}", e));
+                    output.eprintln(&format!("Failed to create electrs client: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -480,8 +469,7 @@ async fn main() {
                 snapshot_db,
             );
             if let Err(e) = verifier.verify(1).await {
-                error!("Failed to verify snapshot: {}", e);
-                output.println(&format!("Failed to verify snapshot: {}", e));
+                output.eprintln(&format!("Failed to verify snapshot: {}", e));
                 std::process::exit(1);
             }
 
@@ -524,8 +512,7 @@ async fn main() {
             ) {
                 Ok(database) => database,
                 Err(e) => {
-                    error!("Failed to initialize database: {}", e);
-                    output.println(&format!("Failed to initialize database: {}", e));
+                    output.eprintln(&format!("Failed to initialize database: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -534,8 +521,7 @@ async fn main() {
             let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
                 Ok(client) => client,
                 Err(e) => {
-                    error!("Failed to create electrs client: {}", e);
-                    output.println(&format!("Failed to create electrs client: {}", e));
+                    output.eprintln(&format!("Failed to create electrs client: {}", e));
                     std::process::exit(1);
                 }
             };
@@ -552,8 +538,7 @@ async fn main() {
                 match usdb_util::address_string_to_script_hash(&addr_str, &config.btc.network) {
                     Ok(sh) => Some(sh),
                     Err(e) => {
-                        error!("Failed to convert address to script hash: {}", e);
-                        output.println(&format!("Failed to convert address to script hash: {}", e));
+                        output.eprintln(&format!("Failed to convert address to script hash: {}", e));
                         std::process::exit(1);
                     }
                 }
@@ -561,8 +546,7 @@ async fn main() {
                 match usdb_util::parse_script_hash(&sh_str) {
                     Ok(sh) => Some(sh),
                     Err(e) => {
-                        error!("Failed to parse script hash: {}", e);
-                        output.println(&format!("Failed to parse script hash: {}", e));
+                        output.eprintln(&format!("Failed to parse script hash: {}", e));
                         std::process::exit(1);
                     }
                 }
@@ -574,8 +558,7 @@ async fn main() {
                 match usdb_util::parse_script_hash_any(&from_str, &config.btc.network) {
                     Ok(sh) => Some(sh),
                     Err(e) => {
-                        error!("Failed to parse 'from' script hash or address: {}", e);
-                        output.println(&format!(
+                        output.eprintln(&format!(
                             "Failed to parse 'from' script hash or address: {}",
                             e
                         ));
@@ -595,8 +578,7 @@ async fn main() {
                             height
                         ));
                         if let Err(e) = verifier.verify_address_at_height(&script_hash.unwrap(), height) {
-                            error!("Failed to verify balance history: {}", e);
-                            output.println(&format!("Failed to verify balance history: {}", e));
+                            output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                         println!("Balance history verified successfully for script_hash {} at height {}.", script_hash.as_ref().unwrap(), height);
@@ -604,8 +586,7 @@ async fn main() {
                     } else {
                         output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
                         if let Err(e) = verifier.verify_address_latest(&script_hash.unwrap()) {
-                            error!("Failed to verify balance history: {}", e);
-                            output.println(&format!("Failed to verify balance history: {}", e));
+                            output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                         println!("Balance history verified successfully for script_hash {}.", script_hash.as_ref().unwrap());
@@ -617,15 +598,13 @@ async fn main() {
                             height.unwrap()
                         ));
                         if let Err(e) = verifier.verify_at_height(height.unwrap(), from) {
-                            error!("Failed to verify balance history: {}", e);
-                            output.println(&format!("Failed to verify balance history: {}", e));
+                            output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                     } else {
                         output.println("Verifying entire balance history...");
                         if let Err(e) = verifier.verify_latest(from) {
-                            error!("Failed to verify balance history: {}", e);
-                            output.println(&format!("Failed to verify balance history: {}", e));
+                            output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                     }

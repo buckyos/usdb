@@ -117,6 +117,7 @@ impl BalanceHistoryService {
                     let msg = format!("Failed to get sync status: {}", e);
                     output.println(&msg);
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
                     continue;
                 }
             };
@@ -140,7 +141,7 @@ impl BalanceHistoryService {
                 {
                     output.finish_index();
                     output.println("Syncing complete");
-                    phase = SyncPhase::Synced;
+                    // phase = SyncPhase::Synced;
                     break;
                 } else {
                     let msg = format!(
