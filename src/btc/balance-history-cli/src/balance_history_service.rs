@@ -48,11 +48,7 @@ impl BalanceHistoryService {
                 println!("Sending stop command to the service...");
                 self.client.stop().await?;
             }
-            Commands::Balance {
-                user,
-                height,
-                range,
-            } => {
+            Commands::Balance { user, mut position } => {
                 // Handle Balance command
                 let user_id = match UserId::from_str(&user) {
                     Ok(id) => id,
@@ -63,18 +59,28 @@ impl BalanceHistoryService {
                     }
                 };
 
+                if position.all {
+                    position.height = None;
+                    position.range = Some(std::ops::Range {
+                        start: 0,
+                        end: u32::MAX,
+                    });
+                } else if position.latest {
+                    position.height = None;
+                    position.range = None;
+                }
+
                 let script_hash = user_id.to_script_hash(self.network)?;
                 let balances = self
                     .client
-                    .get_address_balance(script_hash, height, range)
+                    .get_address_balance(script_hash, position.height, position.range)
                     .await?;
 
                 BalanceFormatter::print_balances(&balances);
             }
             Commands::Balances {
                 users,
-                height,
-                range,
+                mut position,
             } => {
                 let mut script_hashes = Vec::new();
                 for user in &users {
@@ -91,9 +97,20 @@ impl BalanceHistoryService {
                     script_hashes.push(script_hash);
                 }
 
+                if position.all {
+                    position.height = None;
+                    position.range = Some(std::ops::Range {
+                        start: 0,
+                        end: u32::MAX,
+                    });
+                } else if position.latest {
+                    position.height = None;
+                    position.range = None;
+                }
+
                 let all_balances = self
                     .client
-                    .get_addresses_balances(script_hashes, height, range)
+                    .get_addresses_balances(script_hashes, position.height, position.range)
                     .await?;
                 for (user, balances) in users.iter().zip(all_balances) {
                     println!("\nBalance history for user: {}", user);
@@ -182,6 +199,8 @@ struct BalanceFormatter;
 
 impl BalanceFormatter {
     fn print_balances(balances: &[AddressBalance]) {
+        // Filter which block_height  == 0
+        let balances: Vec<_> = balances.iter().filter(|b| b.block_height != 0).collect();
         if balances.is_empty() {
             println!("No balance data found.");
             return;

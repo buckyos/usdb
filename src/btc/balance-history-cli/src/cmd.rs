@@ -2,7 +2,7 @@ use bitcoincore_rpc::bitcoin::Network;
 use bitcoincore_rpc::bitcoin::address::NetworkUnchecked;
 use bitcoincore_rpc::bitcoin::{Address};
 use usdb_util::{USDBScriptHash, ToUSDBScriptHash};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, Args};
 use std::ops::Range;
 use std::str::FromStr;
 use usdb_util::BALANCE_HISTORY_SERVICE_HTTP_PORT;
@@ -37,11 +37,8 @@ pub enum Commands {
         #[arg(value_name = "USER_ID")]
         user: String,
 
-        #[arg(long, value_name = "HEIGHT")]
-        height: Option<u32>,
-
-        #[arg(long, value_parser = parse_range, value_name = "START..END")]
-        range: Option<Range<u32>>,
+        #[clap(flatten)]
+        position: BalancesPosition,
     },
 
     /// Get balance history for multiple script_hashes
@@ -49,12 +46,29 @@ pub enum Commands {
         #[arg(value_name = "USER_ID", num_args = 1..)]
         users: Vec<String>,
 
-        #[arg(long)]
-        height: Option<u32>,
-
-        #[arg(long, value_parser = parse_range)]
-        range: Option<Range<u32>>,
+        #[clap(flatten)]
+        position: BalancesPosition,
     },
+}
+
+#[derive(Args, Debug, Clone)]
+#[group(required = true, multiple = false)]
+pub struct BalancesPosition {
+    /// Block height to get balances at
+    #[arg(long, value_name = "HEIGHT")]
+    pub height: Option<u32>,
+
+    /// Block range to get balances in
+    #[arg(long, value_parser = parse_range, value_name = "START..END")]
+    pub range: Option<Range<u32>>,
+
+    /// Get balances for all blocks
+    #[arg(short, long, default_value_t = false, value_name = "ALL")]
+    pub all: bool,
+
+    /// Get latest balance only
+    #[arg(long, default_value_t = false, value_name = "LATEST")]
+    pub latest: bool,
 }
 
 pub enum UserId {
