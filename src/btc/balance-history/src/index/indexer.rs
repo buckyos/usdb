@@ -48,7 +48,7 @@ impl BalanceHistoryIndexer {
         // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
         let btc_rpc_client = create_btc_rpc_client(&config)?;
-        let latest_block_height = btc_rpc_client.get_latest_block_height().444map_err(|e| {
+        let latest_block_height = btc_rpc_client.get_latest_block_height().map_err(|e| {
             let msg = format!("Failed to get latest block height from BTC client: {}", e);
             error!("{}", msg);
             msg

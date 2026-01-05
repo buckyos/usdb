@@ -56,21 +56,26 @@ impl SnapshotIndexer {
         let total = self.db.get_history_balance_count()?;
         self.output.update_load_total_count(total);
         self.output
-            .println(&format!("Will generate snapshot with {} entries", total));
+            .println(&format!("Will generate snapshot with {} entries at block height {}", total, target_block_height));
 
         let generator = SnapshotGenerator {
             db: Arc::new(Mutex::new(snapshot_db)),
             count: Arc::new(AtomicU64::new(0)),
             output: self.output.clone(),
         };
-        let cb = Arc::new(Box::new(generator) as Box<dyn SnapshotCallback>);
+        let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
         self.db
             .generate_snapshot_parallel(target_block_height, cb)?;
 
-        info!(
-            "Completed snapshot generation up to block height {}",
-            target_block_height
+        let total_count = generator.db.lock().unwrap().get_entries_count()?;
+
+        let msg = format!(
+            "Completed snapshot generation up to block height {}, total entries: {}",
+            target_block_height, total_count
         );
+        info!("{}", msg);
+        self.output.println(&msg);
+
         Ok(())
     }
 }
@@ -83,17 +88,18 @@ struct SnapshotGenerator {
 }
 
 impl SnapshotCallback for SnapshotGenerator {
-    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {
+    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry], entries_processed: u64) -> Result<(), String> {
         self.db.lock().unwrap().put_entries(entries)?;
 
+        // Use entries_processed to update count
         let count =
-            self.count.fetch_add(entries.len() as u64, Ordering::SeqCst) + entries.len() as u64;
+            self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
         self.output.update_load_current_count(count);
 
         // Display last entry info
         if let Some(last_entry) = entries.last() {
             self.output.set_load_message(&format!(
-                "{}: {} @ {}",
+                "{}: {} sat @ {}",
                 last_entry.script_hash, last_entry.balance, last_entry.block_height,
             ));
         }

@@ -1001,6 +1001,7 @@ impl BalanceHistoryDB {
     }
     */
 
+    // Get approximate count of balance history entries
     pub fn get_history_balance_count(&self) -> Result<u64, String> {
         get_approx_cf_key_count(&self.db, BALANCE_HISTORY_CF)
     }
@@ -1029,6 +1030,7 @@ impl BalanceHistoryDB {
         let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(batch_size);
+        let mut entries_processed = 0u64;
         while let Some(Ok((key, value))) = iter.next() {
             if key.len() != BALANCE_HISTORY_KEY_LEN {
                 continue;
@@ -1038,6 +1040,8 @@ impl BalanceHistoryDB {
                 // Moved to a new shard
                 break;
             }
+
+            entries_processed += 1;
 
             let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
@@ -1067,8 +1071,9 @@ impl BalanceHistoryDB {
 
                     if snapshot.len() >= batch_size {
                         // Flush snapshot batch
-                        cb.on_snapshot_entries(&snapshot)?;
+                        cb.on_snapshot_entries(&snapshot, entries_processed)?;
                         snapshot.clear();
+                        entries_processed = 0;
                     }
                 } else {
                     // Zero balance at this height, do not include in snapshot
@@ -1080,7 +1085,7 @@ impl BalanceHistoryDB {
 
         // Flush remaining snapshot entries
         if !snapshot.is_empty() {
-            cb.on_snapshot_entries(&snapshot)?;
+            cb.on_snapshot_entries(&snapshot, entries_processed)?;
         }
 
         Ok(())
@@ -1473,7 +1478,7 @@ impl BalanceHistoryDB {
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 
 pub trait SnapshotCallback: Send + Sync {
-    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry]) -> Result<(), String>;
+    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry], entries_processed: u64) -> Result<(), String>;
 }
 
 pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
