@@ -8,7 +8,7 @@ use rocksdb::{
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
@@ -268,7 +268,10 @@ impl BalanceHistoryDB {
         utxo_cf_options
     }
 
-    pub fn open_for_read(config: BalanceHistoryConfigRef, mode: BalanceHistoryDBMode) -> Result<Self, String> {
+    pub fn open_for_read(
+        config: BalanceHistoryConfigRef,
+        mode: BalanceHistoryDBMode,
+    ) -> Result<Self, String> {
         let db_dir = config.db_dir();
         let file = db_dir.join("balance_history");
         info!("Opening RocksDB in read-only mode at {}", file.display());
@@ -304,7 +307,12 @@ impl BalanceHistoryDB {
             },
         )?;
 
-        Ok(BalanceHistoryDB { file, db, config, mode: Mutex::new(mode) })
+        Ok(BalanceHistoryDB {
+            file,
+            db,
+            config,
+            mode: Mutex::new(mode),
+        })
     }
 
     pub fn close(self) {
@@ -327,7 +335,6 @@ impl BalanceHistoryDB {
         info!("Flushed secondary RocksDB at {}", self.file.display());
         Ok(())
     }
-
 
     pub fn flush_all(&self) -> Result<(), String> {
         let mut flush_opts = rocksdb::FlushOptions::default();
@@ -1022,21 +1029,26 @@ impl BalanceHistoryDB {
 
         let mut seek_key = vec![shard_index];
         seek_key.resize(USDBScriptHash::LEN, 0xFF); // max USDBScriptHash
-        seek_key.extend_from_slice(&[0xFF; 4]); // max block height
+        let seek_key = Self::make_balance_history_key(
+            &USDBScriptHash::from_slice(&seek_key).unwrap(),
+            u32::MAX,
+        );
 
         let mut iter = self
             .db
-            .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
+            .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
         let mut current_script_hash: Option<USDBScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(batch_size);
         let mut entries_processed = 0u64;
+
         while let Some(Ok((key, value))) = iter.next() {
             if key.len() != BALANCE_HISTORY_KEY_LEN {
                 continue;
             }
 
+            //info!("Shard {:0x} processing key {:x?}", shard_index, key);
             if key[0] != shard_index {
                 // Moved to a new shard
                 break;
@@ -1051,9 +1063,7 @@ impl BalanceHistoryDB {
                     .unwrap(),
             );
 
-            if current_script_hash.is_none() {
-                current_script_hash = Some(script_hash);
-            } else if current_script_hash.as_ref().unwrap() != &script_hash {
+            if current_script_hash.as_ref() != Some(&script_hash) {
                 // Moved to a new script_hash
                 current_script_hash = Some(script_hash);
                 current_founded = false;
@@ -1141,9 +1151,9 @@ impl BalanceHistoryDB {
                 seek_key.extend_from_slice(&[0xFF; 4]); // max block height
 
                 self.db
-                    .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
+                    .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
             }
-            None => self.db.iterator_cf(&cf, IteratorMode::End),
+            None => self.db.full_iterator_cf(&cf, IteratorMode::End),
         };
 
         let mut current_script_hash: Option<USDBScriptHash> = None;
@@ -1220,9 +1230,9 @@ impl BalanceHistoryDB {
                 seek_key.extend_from_slice(&[0xFF; 4]); // max block height
 
                 self.db
-                    .iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
+                    .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse))
             }
-            None => self.db.iterator_cf(&cf, IteratorMode::End),
+            None => self.db.full_iterator_cf(&cf, IteratorMode::End),
         };
 
         let mut current_script_hash: Option<USDBScriptHash> = None;
@@ -1479,7 +1489,11 @@ impl BalanceHistoryDB {
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 
 pub trait SnapshotCallback: Send + Sync {
-    fn on_snapshot_entries(&self, entries: &[BalanceHistoryEntry], entries_processed: u64) -> Result<(), String>;
+    fn on_snapshot_entries(
+        &self,
+        entries: &[BalanceHistoryEntry],
+        entries_processed: u64,
+    ) -> Result<(), String>;
 }
 
 pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
@@ -1522,13 +1536,15 @@ mod tests {
 
     #[test]
     fn test_balance_history_db_put_and_get() {
-        let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);
+        let mut config = BalanceHistoryConfig::default();
 
         let temp_dir = std::env::temp_dir().join("balance_history_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
         let script = ScriptBuf::from(vec![1u8; 32]);
         let script_hash = script.to_usdb_script_hash();
@@ -1566,7 +1582,7 @@ mod tests {
             },
         ];
 
-        db.update_address_history_sync(&entries, 401).unwrap();
+        db.update_address_history_async(&entries, 401).unwrap();
 
         // Get balance at height 50 (before any entries)
         let entry = db.get_balance_at_block_height(&script_hash, 50).unwrap();
@@ -1609,7 +1625,7 @@ mod tests {
         db.close();
 
         // Test reopen the db
-        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         let entry = db.get_balance_at_block_height(&script_hash, 250).unwrap();
         assert_eq!(entry.block_height, 200);
         assert_eq!(entry.delta, -200);
@@ -1627,12 +1643,15 @@ mod tests {
 
     #[test]
     fn test_utxo_put_get_consume() {
-        let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);
+        let mut config = BalanceHistoryConfig::default();
+
         let temp_dir = std::env::temp_dir().join("balance_history_utxo_test");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let db = BalanceHistoryDB::open(&temp_dir, config.clone()).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
         let outpoint = OutPoint {
             txid: Txid::from_slice(&[2u8; 32]).unwrap(),
