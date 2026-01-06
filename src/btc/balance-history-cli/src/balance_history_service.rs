@@ -1,5 +1,5 @@
 use super::cmd::{Cli, Commands, UserId};
-use crate::client::RpcClient;
+use balance_history::RpcClient;
 use balance_history::{AddressBalance, IndexOutput, SyncPhase, SyncStatusManager};
 use bitcoincore_rpc::bitcoin::Network;
 use std::str::FromStr;

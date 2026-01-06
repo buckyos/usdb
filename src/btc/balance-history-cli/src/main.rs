@@ -1,5 +1,4 @@
 mod balance_history_service;
-mod client;
 mod cmd;
 
 use balance_history_service::BalanceHistoryService;

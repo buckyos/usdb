@@ -1,4 +1,5 @@
-use balance_history::SyncStatus;
+use super::rpc::AddressBalance;
+use crate::status::SyncStatus;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -48,13 +49,13 @@ impl RpcClient {
         script_hash: USDBScriptHash,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
-    ) -> Result<Vec<balance_history::AddressBalance>, String> {
+    ) -> Result<Vec<AddressBalance>, String> {
         let params = json!([{
             "script_hash": script_hash,
             "block_height": block_height,
             "block_range": block_range,
         }]);
-        self.rpc_call::<Vec<balance_history::AddressBalance>>(
+        self.rpc_call::<Vec<AddressBalance>>(
             &self.url,
             "get_address_balance",
             params,
@@ -67,14 +68,14 @@ impl RpcClient {
         script_hashes: Vec<USDBScriptHash>,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
-    ) -> Result<Vec<Vec<balance_history::AddressBalance>>, String> {
+    ) -> Result<Vec<Vec<AddressBalance>>, String> {
         let params = json!([{
             "script_hashes": script_hashes,
             "block_height": block_height,
             "block_range": block_range,
         }]);
-        
-        self.rpc_call::<Vec<Vec<balance_history::AddressBalance>>>(
+
+        self.rpc_call::<Vec<Vec<AddressBalance>>>(
             &self.url,
             "get_addresses_balances",
             params,

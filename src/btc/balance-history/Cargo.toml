@@ -32,3 +32,4 @@ bloomfilter = "3.0"
 sysinfo = "0.37"
 lru ="0.16"
 dashmap = "6.1"
+reqwest = { version = "0.13", features = ["json"] }
