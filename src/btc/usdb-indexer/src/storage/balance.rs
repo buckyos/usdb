@@ -1,13 +1,13 @@
-use bitcoincore_rpc::bitcoin::address::{NetworkChecked};
-use bitcoincore_rpc::bitcoin::{Address, Network};
+use bitcoincore_rpc::bitcoin::Network;
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Mutex;
+use usdb_util::USDBScriptHash;
 
 // The balance record for an address in a specific block
 pub struct BalanceRecord {
-    pub address: Address<NetworkChecked>,
+    pub address: USDBScriptHash,
     pub block_height: u64,
     pub delta: i64,   // The change in balance due to this block
     pub balance: u64, // The balance after all transactions in this block
@@ -15,7 +15,7 @@ pub struct BalanceRecord {
 
 #[derive(Debug, Clone)]
 pub struct WatchedAddress {
-    pub address: Address<NetworkChecked>,
+    pub address: USDBScriptHash,
     pub block_height: u64,
     pub balance: u64,
 }
@@ -126,7 +126,7 @@ impl AddressBalanceStorage {
         Ok(())
     }
 
-    pub fn add_watched_address(&self, address: &str) -> Result<(), String> {
+    pub fn add_watched_address(&self, address: &USDBScriptHash) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         let changed = conn
             .execute(
@@ -134,7 +134,7 @@ impl AddressBalanceStorage {
             INSERT OR IGNORE INTO watched_addresses (address, block_height, balance)
             VALUES (?1, 0, 0)
             ",
-                [address],
+                [address.to_string()],
             )
             .map_err(|e| {
                 let msg = format!("Failed to add watched address {}: {}", address, e);
@@ -186,21 +186,11 @@ impl AddressBalanceStorage {
                 error!("{}", msg);
                 msg
             })?;
-            let address = Address::from_str(&addr_str)
-                .map_err(|e| {
-                    let msg = format!("Failed to parse address {}: {}", addr_str, e);
-                    error!("{}", msg);
-                    msg
-                })?
-                .require_network(self.network)
-                .map_err(|e| {
-                    let msg = format!(
-                        "Address {} is not valid for network {}: {}",
-                        addr_str, self.network, e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+            let address = USDBScriptHash::from_str(&addr_str).map_err(|e| {
+                let msg = format!("Failed to parse address {}: {}", addr_str, e);
+                error!("{}", msg);
+                msg
+            })?;
 
             result.push(WatchedAddress {
                 address,
@@ -220,7 +210,10 @@ impl AddressBalanceStorage {
         Ok(result)
     }
 
-    pub fn get_watched_address(&self, address: &str) -> Result<Option<WatchedAddress>, String> {
+    pub fn get_watched_address(
+        &self,
+        address: &USDBScriptHash,
+    ) -> Result<Option<WatchedAddress>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -239,7 +232,7 @@ impl AddressBalanceStorage {
                 msg
             })?;
 
-        let mut rows = stmt.query([address]).map_err(|e| {
+        let mut rows = stmt.query([address.to_string()]).map_err(|e| {
             let msg = format!("Failed to query watched address {}: {}", address, e);
             error!("{}", msg);
             msg
@@ -255,21 +248,11 @@ impl AddressBalanceStorage {
                 error!("{}", msg);
                 msg
             })?;
-            let address = Address::from_str(&addr_str)
-                .map_err(|e| {
-                    let msg = format!("Failed to parse address {}: {}", addr_str, e);
-                    error!("{}", msg);
-                    msg
-                })?
-                .require_network(self.network)
-                .map_err(|e| {
-                    let msg = format!(
-                        "Address {} is not valid for network {}: {}",
-                        addr_str, self.network, e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+            let address = USDBScriptHash::from_str(&addr_str).map_err(|e| {
+                let msg = format!("Failed to parse address {}: {}", addr_str, e);
+                error!("{}", msg);
+                msg
+            })?;
 
             Ok(Some(WatchedAddress {
                 address,
@@ -293,18 +276,16 @@ impl AddressBalanceStorage {
     // Which will read the latest balance and apply the delta to it
     pub fn update_balance(
         &self,
-        address: &Address<NetworkChecked>,
+        address: &USDBScriptHash,
         block_height: u64,
         delta: i64,
     ) -> Result<(), String> {
-        let address_str = address.to_string();
-
         // Get the latest balance
-        let latest_balance = self.get_watched_address(&address_str)?;
+        let latest_balance = self.get_watched_address(&address)?;
         assert!(
             latest_balance.is_some(),
             "Address {} must be watched before updating balance",
-            address_str
+            address
         );
         let latest_balance = latest_balance.unwrap();
 
@@ -312,7 +293,7 @@ impl AddressBalanceStorage {
         if block_height <= latest_balance.block_height {
             let msg = format!(
                 "Block height {} must be greater than latest recorded height {} for address {}",
-                block_height, latest_balance.block_height, address_str
+                block_height, latest_balance.block_height, address
             );
             error!("{}", msg);
             return Err(msg);
@@ -324,7 +305,7 @@ impl AddressBalanceStorage {
             if delta_abs > latest_balance.balance {
                 let msg = format!(
                     "Balance underflow: trying to decrease {} by {} which is greater than current balance {} for address {}",
-                    latest_balance.balance, delta_abs, latest_balance.balance, address_str
+                    latest_balance.balance, delta_abs, latest_balance.balance, address,
                 );
                 error!("{}", msg);
                 return Err(msg);
@@ -346,7 +327,7 @@ impl AddressBalanceStorage {
 
         info!(
             "Updated balance for address {} at block {}: delta {}, new balance {}",
-            address_str, block_height, delta, new_balance
+            address, block_height, delta, new_balance
         );
 
         Ok(())
@@ -363,7 +344,12 @@ impl AddressBalanceStorage {
             INSERT INTO address_balances (address, block_height, delta, balance)
             VALUES (?, ?, ?, ?)
             ",
-            rusqlite::params![&address, record.block_height as i64, record.delta, record.balance as i64],
+            rusqlite::params![
+                &address,
+                record.block_height as i64,
+                record.delta,
+                record.balance as i64
+            ],
         )
         .map_err(|e| {
             let msg = format!(
@@ -384,16 +370,8 @@ impl AddressBalanceStorage {
             msg
         })?;
 
-        let address = Address::from_str(&addr_str).map_err(|e| {
+        let address = USDBScriptHash::from_str(&addr_str).map_err(|e| {
             let msg = format!("Failed to parse address {}: {}", addr_str, e);
-            error!("{}", msg);
-            msg
-        })?;
-        let address = address.require_network(self.network).map_err(|e| {
-            let msg = format!(
-                "Address {} is not valid for network {}: {}",
-                addr_str, self.network, e
-            );
             error!("{}", msg);
             msg
         })?;
@@ -541,47 +519,40 @@ impl AddressBalanceStorage {
 
 pub type AddressBalanceStorageRef = std::sync::Arc<AddressBalanceStorage>;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::Network;
     use std::fs;
+    use usdb_util::ToUSDBScriptHash;
 
     #[test]
     fn test_address_balance_storage() {
-        let tmp_dir = std::env::temp_dir().join("usdb").join("test_address_balance_storage");
+        let tmp_dir = std::env::temp_dir()
+            .join("usdb")
+            .join("test_address_balance_storage");
         std::fs::create_dir_all(&tmp_dir).unwrap();
 
         let test_db_path = tmp_dir.join(crate::constants::ADDRESS_BALANCE_DB_FILE);
         if test_db_path.exists() {
             fs::remove_file(&test_db_path).unwrap();
         }
-        let storage =
-            AddressBalanceStorage::new(&tmp_dir, Network::Bitcoin).unwrap();
+        let storage = AddressBalanceStorage::new(&tmp_dir, Network::Bitcoin).unwrap();
 
-        let test_address =
-            Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
-                .unwrap()
-                .require_network(Network::Bitcoin)
-                .unwrap();
+        let test_address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
+            .unwrap()
+            .require_network(Network::Bitcoin)
+            .unwrap();
+        let test_address = test_address.script_pubkey().to_usdb_script_hash();
 
         // Add watched address
-        storage
-            .add_watched_address(&test_address.to_string())
-            .unwrap();
-        storage
-            .add_watched_address(&test_address.to_string())
-            .unwrap(); // Adding again should be no-op
+        storage.add_watched_address(&test_address).unwrap();
+        storage.add_watched_address(&test_address).unwrap(); // Adding again should be no-op
 
         // Update balance
-        storage
-            .update_balance(&test_address, 1, 1000)
-            .unwrap();
+        storage.update_balance(&test_address, 1, 1000).unwrap();
         // Update balance with same block height and same delta should be failed
-        storage
-            .update_balance(&test_address, 1, 1000)
-            .unwrap_err();
+        storage.update_balance(&test_address, 1, 1000).unwrap_err();
 
         // Update balance with same block height and different delta should error
         let result = storage.update_balance(&test_address, 1, 500);
@@ -603,9 +574,7 @@ mod tests {
         assert_eq!(watched_address.balance, 1000);
         assert_eq!(watched_address.block_height, 1);
 
-        storage
-            .update_balance(&test_address, 3, -500)
-            .unwrap();
+        storage.update_balance(&test_address, 3, -500).unwrap();
 
         // Get latest balance
         let latest_balance = storage
@@ -641,7 +610,7 @@ mod tests {
         // Insert balance with lower block height should error
         let result = storage.update_balance(&test_address, 2, 200);
         assert!(result.is_err());
-        
+
         // Clean up
         fs::remove_file(&test_db_path).unwrap();
     }

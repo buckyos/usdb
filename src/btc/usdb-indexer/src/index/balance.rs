@@ -1,22 +1,20 @@
 use crate::btc::{BTCClient, BTCClientRef};
 use crate::config::ConfigManagerRef;
 use crate::storage::{AddressBalanceStorage, AddressBalanceStorageRef};
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkChecked};
-use bitcoincore_rpc::bitcoin::{ScriptBuf, Txid};
+use bitcoincore_rpc::bitcoin::{Txid};
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::Mutex;
-use usdb_util::{ElectrsClient, ElectrsClientRef, TxFullItem};
+use usdb_util::{ElectrsClient, ElectrsClientRef, TxFullItem, USDBScriptHash, ToUSDBScriptHash};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WatchedAddressInfo {
-    address: Address<NetworkChecked>,
+    address: USDBScriptHash,
     block_height: u64,
     balance: u64,
 }
 
 pub struct WatchedAddressManager {
-    addresses: Mutex<HashMap<ScriptBuf, WatchedAddressInfo>>,
+    addresses: Mutex<HashMap<USDBScriptHash, WatchedAddressInfo>>,
 }
 
 impl WatchedAddressManager {
@@ -30,13 +28,12 @@ impl WatchedAddressManager {
         let stored_addresses = balance_storage.get_all_watched_addresses()?;
         let mut addresses_lock = self.addresses.lock().unwrap();
         for addr in stored_addresses {
-            let script = addr.address.script_pubkey();
             let info = WatchedAddressInfo {
                 address: addr.address.clone(),
                 block_height: addr.block_height,
                 balance: addr.balance,
             };
-            let ret = addresses_lock.insert(script, info);
+            let ret = addresses_lock.insert(addr.address.clone(), info);
             assert!(
                 ret.is_none(),
                 "Duplicate address found in storage: {}",
@@ -54,7 +51,7 @@ impl WatchedAddressManager {
 
         let mut found_addresses: Vec<WatchedAddressInfo> = Vec::new();
         for vin in &tx.vin {
-            if let Some(info) = addresses_lock.get(&vin.script_pubkey) {
+            if let Some(info) = addresses_lock.get(&vin.script_pubkey.to_usdb_script_hash()) {
                 if found_addresses.iter().all(|a| a.address != info.address) {
                     found_addresses.push(info.clone());
                 }
@@ -62,7 +59,7 @@ impl WatchedAddressManager {
         }
 
         for vout in &tx.vout {
-            if let Some(info) = addresses_lock.get(&vout.script_pubkey) {
+            if let Some(info) = addresses_lock.get(&vout.script_pubkey.to_usdb_script_hash()) {
                 if found_addresses.iter().all(|a| a.address != info.address) {
                     found_addresses.push(info.clone());
                 }
@@ -150,48 +147,9 @@ impl AddressBalanceIndexer {
 
         // Update balance for each found address
         for addr_info in found_address {
-            let delta = tx.amount_delta_from_tx(&addr_info.address.script_pubkey())?;
-
-            self.balance_storage
-                .update_balance(&addr_info.address, block_height, delta)?;
+            // TODO
         }
 
-        Ok(())
-    }
-
-    // Additional methods for BalanceIndexer can be added here in range[start, end)
-    pub async fn index_address_balance(
-        &self,
-        address: &Address<NetworkChecked>,
-        block_range: Range<u64>,
-    ) -> Result<(), String> {
-        // First load existing balance from electrs
-        let list = self.electrs_client.get_history(address).await?;
-        for item in list {
-            // Check if the item is in mempool or unconfirmed
-            if item.height <= 0 {
-                continue;
-            }
-
-            if (item.height as u64) < block_range.start {
-                continue;
-            }
-
-            if (item.height as u64) >= block_range.end {
-                break;
-            }
-
-            // Load tx from btc client
-            let tx = self.electrs_client.expand_tx(&item.tx_hash).await?;
-
-            let delta = tx.amount_delta_from_tx(&address.script_pubkey())?;
-
-            self.balance_storage
-                .update_balance(address, item.height as u64, delta)?;
-        }
-
-        // Implementation to index the balance for the given address
-        // This is a placeholder implementation
         Ok(())
     }
 }

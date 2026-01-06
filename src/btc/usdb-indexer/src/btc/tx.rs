@@ -1,15 +1,15 @@
 use super::utxo::UTXOValueManager;
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkUnchecked};
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint, Txid};
 use bitcoincore_rpc::bitcoincore_rpc_json::GetRawTransactionResult;
 use ordinals::SatPoint;
+use usdb_util::{USDBScriptHash, ToUSDBScriptHash};
 
 pub struct TxVOutItem {
     pub outpoint: OutPoint,
     pub value: Amount,
 
     // FIXME: should we cache address here too?
-    pub address: Option<Address<NetworkUnchecked>>,
+    pub address: Option<USDBScriptHash>,
 }
 
 pub struct TxItem {
@@ -21,7 +21,7 @@ pub struct TxItem {
 pub struct SatPointResult {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<Address<NetworkUnchecked>>,
+    pub address: Option<USDBScriptHash>,
 }
 
 impl TxItem {
@@ -49,7 +49,8 @@ impl TxItem {
             };
 
             let address = if let Some(address) = &item.script_pub_key.address {
-                Some(address.clone())
+                let address  = address.clone().assume_checked();
+                Some(address.script_pubkey().to_usdb_script_hash())
             } else {
                 None
             };

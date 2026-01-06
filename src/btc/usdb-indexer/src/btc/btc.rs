@@ -1,6 +1,6 @@
 use bitcoincore_rpc::Error as BTCError;
 use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoincore_rpc_json::{GetRawTransactionResult, GetTransactionResult};
+use bitcoincore_rpc::bitcoincore_rpc_json::{GetRawTransactionResult};
 use bitcoincore_rpc::json::GetBlockResult;
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use lru::LruCache;

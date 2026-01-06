@@ -6,19 +6,18 @@ use crate::index::content::InscriptionContentLoader;
 use crate::storage::InscriptionStorage;
 use crate::util::Util;
 use bitcoincore_rpc::bitcoin::Txid;
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkUnchecked};
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
+use usdb_util::USDBScriptHash;
 
 
 pub struct InscriptionCreateInfo {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<Address<NetworkUnchecked>>,
+    pub address: Option<USDBScriptHash>,
     pub commit_txid: Txid,
 }
 
@@ -200,7 +199,7 @@ impl InscriptionTransferTracker {
         inscription_number: i32,
         block_height: u64,
         timestamp: u32,
-        creator_address: Address<NetworkUnchecked>,
+        creator_address: USDBScriptHash,
         satpoint: SatPoint,
         value: Amount,
         op: InscriptionOperation,

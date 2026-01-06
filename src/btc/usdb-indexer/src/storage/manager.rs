@@ -15,10 +15,9 @@ impl InscriptionsManager {
         config: ConfigManagerRef,
     ) -> Result<Self, String> {
         let data_dir = config.data_dir();
-        let network = config.config().bitcoin.network();
-
-        let inscription_storage = Arc::new(InscriptionStorage::new(&data_dir, network)?);
-        let transfer_storage = Arc::new(InscriptionTransferStorage::new(&data_dir, network)?);
+        
+        let inscription_storage = Arc::new(InscriptionStorage::new(&data_dir)?);
+        let transfer_storage = Arc::new(InscriptionTransferStorage::new(&data_dir)?);
 
         Ok(InscriptionsManager {
             config,

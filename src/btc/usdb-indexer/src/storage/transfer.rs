@@ -1,13 +1,12 @@
 use crate::index::InscriptionOperation;
-use bitcoincore_rpc::bitcoin::{Amount, Network};
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkUnchecked};
+use bitcoincore_rpc::bitcoin::{Amount};
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-
+use usdb_util::USDBScriptHash;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InscriptionTransferRecordItem {
@@ -16,8 +15,8 @@ pub struct InscriptionTransferRecordItem {
     pub block_height: u64,
     pub timestamp: u32,
     pub satpoint: SatPoint,
-    pub from_address: Option<Address<NetworkUnchecked>>,
-    pub to_address: Option<Address<NetworkUnchecked>>, // None if burn as fee
+    pub from_address: Option<USDBScriptHash>,
+    pub to_address: Option<USDBScriptHash>, // None if burn as fee
     pub value: Amount,
     pub index: u64, // Index indicates the number of transfers
     pub op: InscriptionOperation,
@@ -25,12 +24,11 @@ pub struct InscriptionTransferRecordItem {
 
 pub struct InscriptionTransferStorage {
     db_path: PathBuf,
-    network: Network,
     conn: Mutex<Connection>,
 }
 
 impl InscriptionTransferStorage {
-    pub fn new(data_dir: &Path, network: Network) -> Result<Self, String> {
+    pub fn new(data_dir: &Path) -> Result<Self, String> {
         let db_path = data_dir.join(crate::constants::TRANSFER_DB_FILE);
 
         let conn = Connection::open(&db_path).map_err(|e| {
@@ -74,7 +72,6 @@ impl InscriptionTransferStorage {
 
         let storage = Self {
             db_path,
-            network,
             conn: Mutex::new(conn),
         };
 
@@ -87,24 +84,8 @@ impl InscriptionTransferStorage {
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
 
-        let from_address = match &record.from_address {
-            Some(addr) => {
-                Some(addr.clone().require_network(self.network).map_err(|e| {
-                    let msg = format!("Invalid from_address network: {}", e);
-                    log::error!("{}", msg);
-                    msg
-                })?.to_string())
-            }
-            None => None,
-        };
-        let to_address = match &record.to_address {
-            Some(addr) => Some(addr.clone().require_network(self.network).map_err(|e| {
-                let msg = format!("Invalid to_address network: {}", e);
-                log::error!("{}", msg);
-                msg
-            })?.to_string()),
-            None => None,
-        };
+        let from_address = record.from_address.map(|v| v.to_string());
+        let to_address = record.to_address.map(|v| v.to_string());
 
         conn.execute(
             "INSERT OR REPLACE INTO inscription_transfers (
@@ -192,7 +173,7 @@ impl InscriptionTransferStorage {
             error!("{}", msg);
             msg
         })? {
-            Some(addr_str) => Some(Address::from_str(&addr_str).map_err(|e| {
+            Some(addr_str) => Some(USDBScriptHash::from_str(&addr_str).map_err(|e| {
                 let msg = format!("Invalid from_address in DB: {}", e);
                 error!("{}", msg);
                 msg
@@ -205,7 +186,7 @@ impl InscriptionTransferStorage {
             error!("{}", msg);
             msg
         })? {
-            Some(addr_str) => Some(Address::from_str(&addr_str).map_err(|e| {
+            Some(addr_str) => Some(USDBScriptHash::from_str(&addr_str).map_err(|e| {
                 let msg = format!("Invalid to_address in DB: {}", e);
                 error!("{}", msg);
                 msg
@@ -426,6 +407,5 @@ impl InscriptionTransferStorage {
         Ok(records)
     }
 }
-
 
 pub type InscriptionTransferStorageRef = Arc<InscriptionTransferStorage>;

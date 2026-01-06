@@ -1,13 +1,13 @@
 use crate::index::InscriptionOperation;
 use bitcoincore_rpc::bitcoin::Amount;
-use bitcoincore_rpc::bitcoin::address::{Address, NetworkUnchecked};
-use bitcoincore_rpc::bitcoin::{Network, Txid};
+use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
+use usdb_util::USDBScriptHash;
 
 #[derive(Debug, Clone)]
 pub struct InscriptionInfo {
@@ -23,8 +23,8 @@ pub struct InscriptionInfo {
     pub content: String,
     pub op: InscriptionOperation,
 
-    pub creator: Address<NetworkUnchecked>,
-    pub owner: Address<NetworkUnchecked>,
+    pub creator: USDBScriptHash,
+    pub owner: USDBScriptHash,
 
     pub last_block_height: u64, // Last block height that this inscription transferred to new owner
 
@@ -33,12 +33,11 @@ pub struct InscriptionInfo {
 
 pub struct InscriptionStorage {
     db_path: PathBuf,
-    network: Network,
     conn: Mutex<Connection>,
 }
 
 impl InscriptionStorage {
-    pub fn new(data_dir: &Path, network: Network) -> Result<Self, String> {
+    pub fn new(data_dir: &Path) -> Result<Self, String> {
         let db_path = data_dir.join(crate::constants::INSCRIPTIONS_DB_FILE);
 
         let conn = Connection::open(&db_path).map_err(|e| {
@@ -90,7 +89,6 @@ impl InscriptionStorage {
 
         let storage = Self {
             db_path,
-            network,
             conn: Mutex::new(conn),
         };
 
@@ -111,17 +109,9 @@ impl InscriptionStorage {
         content: &str,
         op: InscriptionOperation,
 
-        creator: &Address<NetworkUnchecked>,
+        creator: &USDBScriptHash,
     ) -> Result<(), String> {
-        let creator = creator
-            .clone()
-            .require_network(self.network)
-            .map_err(|e| {
-                let msg = format!("Invalid creator address network: {}", e);
-                log::error!("{}", msg);
-                msg
-            })?
-            .to_string();
+        let creator = creator.to_string();
 
         let conn = self.conn.lock().unwrap();
 
@@ -173,30 +163,9 @@ impl InscriptionStorage {
     pub fn transfer_owner(
         &self,
         inscription_id: &InscriptionId,
-        new_owner: &Option<Address<NetworkUnchecked>>,
+        new_owner: &Option<USDBScriptHash>,
         block_height: u64,
     ) -> Result<(), String> {
-        let new_owner = match new_owner {
-            Some(addr) => Some(
-                addr.clone()
-                    .require_network(self.network)
-                    .map_err(|e| {
-                        let msg = format!("Invalid new owner address network: {}", e);
-                        log::error!("{}", msg);
-                        msg
-                    })?
-                    .to_string(),
-            ),
-            None => {
-                // The inscription is burned as fee
-                warn!(
-                    "Inscription {} is being burned as fee at block height {}",
-                    inscription_id, block_height
-                );
-                None
-            }
-        };
-
         let conn = self.conn.lock().unwrap();
 
         let tx_result = conn.execute(
@@ -205,7 +174,11 @@ impl InscriptionStorage {
                  last_block_height = ?2,
                  transfer_count = transfer_count + 1
              WHERE inscription_id = ?3 AND last_block_height <= ?2",
-            rusqlite::params![&new_owner, block_height as i64, inscription_id.to_string()],
+            rusqlite::params![
+                new_owner.map(|v| v.to_string()),
+                block_height as i64,
+                inscription_id.to_string()
+            ],
         );
 
         match tx_result {
@@ -346,7 +319,7 @@ impl InscriptionStorage {
             error!("{}", msg);
             msg
         })?;
-        let creator = Address::from_str(&creator_str).map_err(|e| {
+        let creator = USDBScriptHash::from_str(&creator_str).map_err(|e| {
             let msg = format!(
                 "Failed to parse creator address '{}' from database: {}",
                 creator_str, e
@@ -354,21 +327,13 @@ impl InscriptionStorage {
             error!("{}", msg);
             msg
         })?;
-        if !creator.is_valid_for_network(self.network) {
-            let msg = format!(
-                "Creator address '{}' has invalid network: {}",
-                creator_str, self.network
-            );
-            error!("{}", msg);
-            return Err(msg);
-        };
 
         let owner_str: String = row.get(10).map_err(|e| {
             let msg = format!("Failed to get owner column from database row: {}", e);
             error!("{}", msg);
             msg
         })?;
-        let owner = Address::from_str(&owner_str).map_err(|e| {
+        let owner = USDBScriptHash::from_str(&owner_str).map_err(|e| {
             let msg = format!(
                 "Failed to parse owner address '{}' from database: {}",
                 owner_str, e
@@ -376,14 +341,6 @@ impl InscriptionStorage {
             error!("{}", msg);
             msg
         })?;
-        if !owner.is_valid_for_network(self.network) {
-            let msg = format!(
-                "Owner address {} has invalid network: {}",
-                owner_str, self.network
-            );
-            error!("{}", msg);
-            return Err(msg);
-        };
 
         let last_block_height: u64 = row.get::<_, i64>(11).map_err(|e| {
             let msg = format!(

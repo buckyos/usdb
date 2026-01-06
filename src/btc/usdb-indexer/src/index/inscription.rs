@@ -1,11 +1,11 @@
+use super::content::USDBInscription;
 use bitcoincore_rpc::bitcoin::{
     Amount, Txid,
-    address::{Address, NetworkUnchecked},
 };
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::str::FromStr;
-use super::content::USDBInscription;
+use usdb_util::USDBScriptHash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InscriptionOperation {
@@ -47,14 +47,14 @@ pub struct InscriptionNewItem {
     pub inscription_number: i32,
     pub block_height: u64,
     pub timestamp: u32,
-    pub address: Address<NetworkUnchecked>, // The creator address
+    pub address: USDBScriptHash, // The creator address
     pub satpoint: SatPoint,
     pub value: Amount,
 
     pub content_string: String,
     pub content: USDBInscription,
     pub op: InscriptionOperation,
-    
+
     pub commit_txid: Txid,
 }
 
@@ -74,8 +74,8 @@ pub struct InscriptionTransferItem {
     pub prev_satpoint: Option<SatPoint>,
 
     // When transfer, to_address is None means burn as fee
-    pub from_address: Address<NetworkUnchecked>,
-    pub to_address: Option<Address<NetworkUnchecked>>,
+    pub from_address: USDBScriptHash,
+    pub to_address: Option<USDBScriptHash>,
     pub value: Amount,
 
     pub content: String,
