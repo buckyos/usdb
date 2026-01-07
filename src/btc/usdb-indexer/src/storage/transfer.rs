@@ -12,7 +12,7 @@ use usdb_util::USDBScriptHash;
 pub struct InscriptionTransferRecordItem {
     pub inscription_id: InscriptionId,
     pub inscription_number: i32,
-    pub block_height: u64,
+    pub block_height: u32,
     pub timestamp: u32,
     pub satpoint: SatPoint,
     pub from_address: Option<USDBScriptHash>,
@@ -149,7 +149,7 @@ impl InscriptionTransferStorage {
             let msg = format!("Failed to get block_height from DB row: {}", e);
             error!("{}", msg);
             msg
-        })? as u64;
+        })? as u32;
 
         let timestamp = row.get::<_, i64>(3).map_err(|e| {
             let msg = format!("Failed to get timestamp from DB row: {}", e);

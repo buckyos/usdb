@@ -34,7 +34,7 @@ impl OrdClient {
         })
     }
 
-    pub async fn get_latest_block_height(&self) -> Result<u64, String> {
+    pub async fn get_latest_block_height(&self) -> Result<u32, String> {
         let url = format!("{}/blockheight", self.server_url);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             let msg = format!("Failed to send request to {}: {}", url, e);
@@ -59,7 +59,7 @@ impl OrdClient {
         })?;
 
         if let Some(height) = block_info.get("data").and_then(|h| h.as_u64()) {
-            Ok(height)
+            Ok(height as u32)
         } else {
             let msg = format!("Missing 'data' field in response from {}", url);
             error!("{}", msg);
@@ -179,7 +179,7 @@ impl OrdClient {
 
     pub async fn get_inscription_by_block(
         &self,
-        block_height: u64,
+        block_height: u32,
     ) -> Result<Vec<InscriptionId>, String> {
         let mut page = 0;
         let mut inscription_ids = Vec::new();

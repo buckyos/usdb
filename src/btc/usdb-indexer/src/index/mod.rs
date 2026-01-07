@@ -1,4 +1,4 @@
-mod sync;
+mod indexer;
 mod sync_state;
 mod inscription;
 mod content;

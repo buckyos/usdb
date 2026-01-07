@@ -8,7 +8,7 @@ use usdb_util::USDBScriptHash;
 // The balance record for an address in a specific block
 pub struct BalanceRecord {
     pub address: USDBScriptHash,
-    pub block_height: u64,
+    pub block_height: u32,
     pub delta: i64,   // The change in balance due to this block
     pub balance: u64, // The balance after all transactions in this block
 }
@@ -16,7 +16,7 @@ pub struct BalanceRecord {
 #[derive(Debug, Clone)]
 pub struct WatchedAddress {
     pub address: USDBScriptHash,
-    pub block_height: u64,
+    pub block_height: u32,
     pub balance: u64,
 }
 
@@ -198,7 +198,7 @@ impl AddressBalanceStorage {
                     let msg = format!("Failed to get block_height from row: {}", e);
                     error!("{}", msg);
                     msg
-                })? as u64,
+                })? as u32,
                 balance: row.get::<usize, i64>(2).map_err(|e| {
                     let msg = format!("Failed to get balance from row: {}", e);
                     error!("{}", msg);
@@ -260,7 +260,7 @@ impl AddressBalanceStorage {
                     let msg = format!("Failed to get block_height from row: {}", e);
                     error!("{}", msg);
                     msg
-                })? as u64,
+                })? as u32,
                 balance: row.get::<usize, i64>(2).map_err(|e| {
                     let msg = format!("Failed to get balance from row: {}", e);
                     error!("{}", msg);
@@ -277,7 +277,7 @@ impl AddressBalanceStorage {
     pub fn update_balance(
         &self,
         address: &USDBScriptHash,
-        block_height: u64,
+        block_height: u32,
         delta: i64,
     ) -> Result<(), String> {
         // Get the latest balance
@@ -382,7 +382,7 @@ impl AddressBalanceStorage {
                 let msg = format!("Failed to get block_height from row: {}", e);
                 error!("{}", msg);
                 msg
-            })? as u64,
+            })? as u32,
             delta: row.get(3).map_err(|e| {
                 let msg = format!("Failed to get delta from row: {}", e);
                 error!("{}", msg);

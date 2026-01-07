@@ -14,7 +14,7 @@ pub struct InscriptionInfo {
     pub inscription_id: InscriptionId,
     pub inscription_number: i32,
 
-    pub genesis_block_height: u64,
+    pub genesis_block_height: u32,
     pub genesis_timestamp: u32,
     pub genesis_satpoint: SatPoint,
     pub commit_txid: Txid,
@@ -26,7 +26,7 @@ pub struct InscriptionInfo {
     pub creator: USDBScriptHash,
     pub owner: USDBScriptHash,
 
-    pub last_block_height: u64, // Last block height that this inscription transferred to new owner
+    pub last_block_height: u32, // Last block height that this inscription transferred to new owner
 
     pub transfer_count: u64,
 }
@@ -100,7 +100,7 @@ impl InscriptionStorage {
         inscription_id: &InscriptionId,
         inscription_number: i32,
 
-        block_height: u64,
+        block_height: u32,
         timestamp: u32,
         satpoint: SatPoint,
         commit_txid: Txid,
@@ -164,7 +164,7 @@ impl InscriptionStorage {
         &self,
         inscription_id: &InscriptionId,
         new_owner: &Option<USDBScriptHash>,
-        block_height: u64,
+        block_height: u32,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
 
@@ -238,14 +238,14 @@ impl InscriptionStorage {
             msg
         })?;
 
-        let genesis_block_height: u64 = row.get::<_, i64>(2).map_err(|e| {
+        let genesis_block_height: u32 = row.get::<_, i64>(2).map_err(|e| {
             let msg = format!(
                 "Failed to get genesis_block_height column from database row: {}",
                 e
             );
             error!("{}", msg);
             msg
-        })? as u64;
+        })? as u32;
 
         let genesis_timestamp: u32 = row.get::<_, i64>(3).map_err(|e| {
             let msg = format!(
@@ -342,14 +342,14 @@ impl InscriptionStorage {
             msg
         })?;
 
-        let last_block_height: u64 = row.get::<_, i64>(11).map_err(|e| {
+        let last_block_height: u32 = row.get::<_, i64>(11).map_err(|e| {
             let msg = format!(
                 "Failed to get last_block_height column from database row: {}",
                 e
             );
             error!("{}", msg);
             msg
-        })? as u64;
+        })? as u32;
 
         let transfer_count: u64 = row.get::<_, i64>(12).map_err(|e| {
             let msg = format!(
@@ -430,7 +430,7 @@ impl InscriptionStorage {
 
     pub fn get_inscriptions_by_block(
         &self,
-        block_height: u64,
+        block_height: u32,
     ) -> Result<Vec<InscriptionInfo>, String> {
         let conn = self.conn.lock().unwrap();
 

@@ -1,9 +1,9 @@
 use super::inscription::{InscriptionOperation, InscriptionTransferItem};
-use crate::storage::{InscriptionTransferRecordItem, InscriptionTransferStorageRef};
-use crate::btc::{BTCClient, BTCClientRef, TxItem, UTXOValueManager, UTXOValueManagerRef};
+use crate::btc::{TxItem, UTXOValueManager, UTXOValueManagerRef};
 use crate::config::ConfigManagerRef;
 use crate::index::content::InscriptionContentLoader;
 use crate::storage::InscriptionStorage;
+use crate::storage::{InscriptionTransferRecordItem, InscriptionTransferStorageRef};
 use crate::util::Util;
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
@@ -11,8 +11,7 @@ use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use usdb_util::USDBScriptHash;
-
+use usdb_util::{BTCRpcClientRef, USDBScriptHash, BTCRpcClient};
 
 pub struct InscriptionCreateInfo {
     pub satpoint: SatPoint,
@@ -92,7 +91,7 @@ pub struct InscriptionTransferTracker {
     inscriptions: Mutex<MultiMap>,
     storage: InscriptionTransferStorageRef,
 
-    btc_client: BTCClientRef,
+    btc_client: BTCRpcClientRef,
     utxo_cache: UTXOValueManagerRef,
 }
 
@@ -101,7 +100,7 @@ impl InscriptionTransferTracker {
         config: ConfigManagerRef,
         storage: InscriptionTransferStorageRef,
     ) -> Result<Self, String> {
-        let btc_client = BTCClient::new(
+        let btc_client = BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
             config.config().bitcoin.auth(),
         )?;
@@ -197,7 +196,7 @@ impl InscriptionTransferTracker {
         &self,
         inscription_id: InscriptionId,
         inscription_number: i32,
-        block_height: u64,
+        block_height: u32,
         timestamp: u32,
         creator_address: USDBScriptHash,
         satpoint: SatPoint,
@@ -237,47 +236,34 @@ impl InscriptionTransferTracker {
         &self,
         inscription_id: &InscriptionId,
     ) -> Result<InscriptionCreateInfo, String> {
-        // First get tx by inscription id
-        let tx = self
-            .btc_client
-            .get_raw_transaction(&inscription_id.txid)
-            .await?;
+        // First get reveal tx by inscription id
+        let tx = self.btc_client.get_transaction(&inscription_id.txid)?;
 
         // FIXME: There maybe multiple inscriptions in one tx input
-        let mut index = inscription_id.index as usize;
-        if index >= tx.vin.len() {
+        let index = inscription_id.index as usize;
+        if index >= tx.input.len() {
             let msg = format!(
                 "Invalid vout index {} for transaction {}, vin length {}",
                 index,
                 inscription_id.txid,
-                tx.vin.len()
+                tx.input.len()
             );
             error!("{}", msg);
-            index = tx.vin.len() - 1;
-        }
-
-        let vin = &tx.vin[index];
-
-        if vin.txid.is_none() || vin.vout.is_none() {
-            // FIXME Maybe coinbase tx?
-            let msg = format!(
-                "No commit txid found for inscription_id {:?} in transaction {}",
-                inscription_id, inscription_id.txid
-            );
-            warn!("{}", msg);
             return Err(msg);
         }
 
-        let commit_txid = vin.txid.clone().unwrap();
+        let vin = &tx.input[index];
+
+        let commit_txid = vin.previous_output.txid.clone();
         let satpoint = SatPoint {
             outpoint: OutPoint {
                 txid: commit_txid.clone(),
-                vout: vin.vout.unwrap(),
+                vout: vin.previous_output.vout,
             },
             offset: 0,
         };
 
-        let item = TxItem::from_tx(&tx);
+        let item = TxItem::from_tx(tx);
         let ret = item.calc_next_satpoint(satpoint, &self.utxo_cache).await?;
         if ret.is_none() {
             let msg = format!(
@@ -329,7 +315,7 @@ impl InscriptionTransferTracker {
 
     pub async fn process_block(
         &self,
-        block_height: u64,
+        block_height: u32,
         inscription_storage: &InscriptionStorage,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
         info!(
@@ -337,27 +323,19 @@ impl InscriptionTransferTracker {
             block_height,
         );
 
-        let block = self.btc_client.get_block(block_height).await?;
-
-        // Get all inscription ids in this block
-        let txs = self.btc_client.get_raw_transactions(&block.tx).await?;
-        assert_eq!(
-            txs.len(),
-            block.tx.len(),
-            "Mismatch in number of transactions fetched"
-        );
+        let block = self.btc_client.get_block(block_height)?;
 
         let mut transfer_items = Vec::new();
-        for tx in txs {
-            let tx_item = TxItem::from_tx(&tx);
+        for tx in block.txdata {
+            let tx_item = TxItem::from_tx(tx);
 
             // Check all input in current tx if match any inscription outpoint
-            for vin in &tx_item.vin {
+            for vin in &tx_item.tx.input {
                 // Check if current outpoint is included in this tx's input, if exists,
                 // then it's a transfer, we should update the transfer record and remove it from monitor list
                 let existing_items = {
                     let coll = self.inscriptions.lock().unwrap();
-                    coll.get(vin).cloned()
+                    coll.get(&vin.previous_output).cloned()
                 };
 
                 if existing_items.is_none() {
@@ -371,7 +349,7 @@ impl InscriptionTransferTracker {
                 for existing_item in existing_items {
                     info!(
                         "Found transfer for inscription_id {} in transaction {} block {}",
-                        existing_item.inscription_id, tx.txid, block_height
+                        existing_item.inscription_id, tx_item.txid, block_height
                     );
 
                     let ret = tx_item
@@ -380,7 +358,7 @@ impl InscriptionTransferTracker {
                     if ret.is_none() {
                         let msg = format!(
                             "Failed to calculate next satpoint for inscription_id {:?} in transaction {}",
-                            existing_item.inscription_id, tx.txid
+                            existing_item.inscription_id, tx_item.txid
                         );
                         error!("{}", msg);
                         return Err(msg);
@@ -429,7 +407,7 @@ impl InscriptionTransferTracker {
                         inscription_id: existing_item.inscription_id.clone(),
                         inscription_number: existing_item.inscription_number,
                         block_height,
-                        timestamp: block.time as u32,
+                        timestamp: block.header.time,
                         satpoint: sret.satpoint,
                         from_address: existing_item.to_address.clone(),
                         to_address: sret.address.clone(),
@@ -441,9 +419,9 @@ impl InscriptionTransferTracker {
 
                     let transfer_item = InscriptionTransferItem {
                         inscription_id: existing_item.inscription_id.clone(),
-                        inscription_number: existing_item.inscription_number as u64,
+                        inscription_number: existing_item.inscription_number,
                         block_height,
-                        timestamp: block.time as u32,
+                        timestamp: block.header.time,
                         satpoint: sret.satpoint,
                         prev_satpoint: Some(existing_item.satpoint.clone()),
                         from_address: existing_item.to_address.clone().unwrap(),

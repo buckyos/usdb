@@ -226,7 +226,7 @@ impl BTCRpcClient {
         Ok((tx_out.script_pubkey.clone(), tx_out.value))
     }
 
-    pub fn get_transcation(&self, txid: &Txid) -> Result<Transaction, String> {
+    pub fn get_transaction(&self, txid: &Txid) -> Result<Transaction, String> {
         self.client()?.get_raw_transaction(txid, None).map_err(|e| {
             self.on_error(&e);
 
@@ -241,7 +241,7 @@ impl BTCRpcClient {
 
         let ret: Vec<Result<Transaction, String>> = txids
             .par_iter()
-            .map(|txid| self.get_transcation(txid))
+            .map(|txid| self.get_transaction(txid))
             .collect();
 
         let mut txs = Vec::with_capacity(txids.len());

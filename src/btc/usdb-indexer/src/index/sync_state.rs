@@ -39,7 +39,7 @@ impl SyncStateStorage {
         Ok(storage)
     }
 
-    pub fn get_btc_latest_block_height(&self) -> Result<Option<u64>, String> {
+    pub fn get_btc_latest_block_height(&self) -> Result<Option<u32>, String> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
@@ -59,11 +59,11 @@ impl SyncStateStorage {
                 msg
             })?;
 
-        Ok(height.map(|h| h as u64))
+        Ok(height.map(|h| h as u32))
     }
 
     // Update btc latest block height only block_height = current_block_height + 1 or current_block_height = 0
-    pub fn update_btc_latest_block_height(&self, height: u64) -> Result<(), String> {
+    pub fn update_btc_latest_block_height(&self, height: u32) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
 
         let tx = conn.transaction().map_err(|e| {

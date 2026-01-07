@@ -5,7 +5,7 @@ use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
-    pub genesis_block_height: u64,
+    pub genesis_block_height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

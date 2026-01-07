@@ -3,29 +3,30 @@ use super::inscription::BlockInscriptionsCollector;
 use super::inscription::{InscriptionNewItem, InscriptionOperation};
 use super::sync_state::{SyncStateStorage, SyncStateStorageRef};
 use super::transfer::InscriptionTransferTracker;
-use crate::btc::{BTCClient, BTCClientRef, OrdClient, OrdClientRef};
+use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
 use crate::storage::{InscriptionsManager, InscriptionsManagerRef};
 use ord::api::Inscription;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
+use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 
-pub struct InscriptionSyncer {
+pub struct InscriptionIndexer {
     config: ConfigManagerRef,
-    btc_client: BTCClientRef,
+    btc_client: BTCRpcClientRef,
     ord_client: OrdClientRef,
 
-    current_block_height: AtomicU64,
+    current_block_height: AtomicU32,
     state: SyncStateStorageRef,
 
     inscriptions_manager: InscriptionsManagerRef,
     transfer_tracker: InscriptionTransferTracker,
 }
 
-impl InscriptionSyncer {
+impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
         // Init btc client
-        let btc_client = BTCClient::new(
+        let btc_client = BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
             config.config().bitcoin.auth(),
         )?;
@@ -47,7 +48,7 @@ impl InscriptionSyncer {
             ord_client: Arc::new(ord_client),
 
             state: Arc::new(state),
-            current_block_height: AtomicU64::new(0),
+            current_block_height: AtomicU32::new(0),
 
             inscriptions_manager,
             transfer_tracker,
@@ -56,7 +57,7 @@ impl InscriptionSyncer {
         Ok(ret)
     }
 
-    pub fn current_block_height(&self) -> u64 {
+    pub fn current_block_height(&self) -> u32 {
         self.current_block_height.load(Ordering::SeqCst)
     }
 
@@ -118,8 +119,8 @@ impl InscriptionSyncer {
     }
 
     // Get latest block height from BTC and ord, use the smaller one!
-    async fn get_latest_block_height(&self) -> Result<u64, String> {
-        let height = self.btc_client.get_latest_block_height().await?;
+    async fn get_latest_block_height(&self) -> Result<u32, String> {
+        let height = self.btc_client.get_latest_block_height()?;
 
         let ord_height = self.ord_client.get_latest_block_height().await?;
 
@@ -179,7 +180,7 @@ impl InscriptionSyncer {
     }
 
     // Sync blocks from begin to end, inclusive: [begin, end]
-    async fn sync_blocks(&self, begin: u64, end: u64) -> Result<(), String> {
+    async fn sync_blocks(&self, begin: u32, end: u32) -> Result<(), String> {
         assert!(
             begin <= end,
             "Begin block height should be less than or equal to end"
@@ -202,7 +203,7 @@ impl InscriptionSyncer {
         Ok(())
     }
 
-    async fn sync_block(&self, height: u64) -> Result<(), String> {
+    async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
 
         let mut collector = BlockInscriptionsCollector::new(height);
@@ -257,7 +258,7 @@ impl InscriptionSyncer {
 
     async fn process_block_inscriptions(
         &self,
-        block_height: u64,
+        block_height: u32,
         collector: &mut BlockInscriptionsCollector,
     ) -> Result<(), String> {
         let inscription_ids = self
@@ -435,7 +436,7 @@ impl InscriptionSyncer {
 
     async fn scan_block_inscription_transfer(
         &self,
-        block_height: u64,
+        block_height: u32,
         collector: &mut BlockInscriptionsCollector,
     ) -> Result<(), String> {
         let transfer_items = self

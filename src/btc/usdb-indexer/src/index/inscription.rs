@@ -45,7 +45,7 @@ impl FromStr for InscriptionOperation {
 pub struct InscriptionNewItem {
     pub inscription_id: InscriptionId,
     pub inscription_number: i32,
-    pub block_height: u64,
+    pub block_height: u32,
     pub timestamp: u32,
     pub address: USDBScriptHash, // The creator address
     pub satpoint: SatPoint,
@@ -67,8 +67,8 @@ impl InscriptionNewItem {
 #[derive(Clone)]
 pub struct InscriptionTransferItem {
     pub inscription_id: InscriptionId,
-    pub inscription_number: u64,
-    pub block_height: u64,
+    pub inscription_number: i32,
+    pub block_height: u32,
     pub timestamp: u32,
     pub satpoint: SatPoint,
     pub prev_satpoint: Option<SatPoint>,
@@ -95,13 +95,13 @@ impl InscriptionTransferItem {
 }
 
 pub struct BlockInscriptionsCollector {
-    block_height: u64,
+    block_height: u32,
     new_inscriptions: Vec<InscriptionNewItem>,
     transfer_inscriptions: Vec<InscriptionTransferItem>,
 }
 
 impl BlockInscriptionsCollector {
-    pub fn new(block_height: u64) -> Self {
+    pub fn new(block_height: u32) -> Self {
         Self {
             block_height,
             new_inscriptions: Vec::new(),
@@ -129,7 +129,7 @@ impl BlockInscriptionsCollector {
         self.transfer_inscriptions.extend(items);
     }
 
-    pub fn block_height(&self) -> u64 {
+    pub fn block_height(&self) -> u32 {
         self.block_height
     }
 
