@@ -17,3 +17,4 @@ dirs = "*"
 serde = "*"
 rusqlite = { version = "0.38", features = ["bundled"] }
 named-lock = "0.4"
+balance-history = { path = "../balance-history" }

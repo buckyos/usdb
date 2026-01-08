@@ -337,7 +337,7 @@ impl InscriptionIndexer {
                 block_height,
                 timestamp: inscription.timestamp as u32,
                 address: create_info.address.unwrap(), // The creator address
-                satpoint: create_info.satpoint,
+                satpoint: inscription.satpoint,
                 value: create_info.value,
 
                 op: usdb_inscription.op(),

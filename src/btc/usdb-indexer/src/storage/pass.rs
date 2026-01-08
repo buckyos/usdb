@@ -12,7 +12,7 @@ pub struct MinerPassInfo {
     pub inscription_number: i32,
 
     pub mint_txid: Txid,
-    pub mint_block_height: u64,
+    pub mint_block_height: u32,
     pub mint_owner: USDBScriptHash, // The owner address who minted the pass
 
     pub eth_main: String,
@@ -78,6 +78,12 @@ impl MinerPassStorage {
 
                 INDEX idx_miner_pass_inscription_id (inscription_id)
             );
+
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_inscription_id
+            ON miner_passes (inscription_id);
+
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_eth_main
+            ON miner_passes (eth_main);
             ",
         )
         .map_err(|e| {
@@ -319,7 +325,7 @@ impl MinerPassStorage {
                 );
                 error!("{}", msg);
                 msg
-            })? as u64,
+            })? as u32,
             mint_owner: row
                 .get::<_, String>(4)
                 .map_err(|e| {
@@ -439,4 +445,73 @@ impl MinerPassStorage {
             Ok(None)
         }
     }
+
+    // Get the last active mint miner pass owned by the given owner address
+    // There is one an at most one active mint pass per owner at any time
+    pub fn get_last_active_mint_pass_by_owner(
+        &self,
+        owner: &USDBScriptHash,
+    ) -> Result<Option<MinerPassInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                inscription_id,
+                inscription_number,
+
+                mint_txid,
+                mint_block_height,
+                mint_owner,
+                
+                eth_main,
+                eth_collab,
+                prev,
+
+                owner,
+                state
+            FROM miner_passes
+            WHERE owner = ?1 AND state = ?2
+            ORDER BY mint_block_height DESC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get last active miner pass by owner: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![owner.to_string(), MinerPassState::Active.as_str()])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query last active miner pass by owner from database: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying last active miner pass by owner: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let pass_info = Self::row_to_pass_item(&row)?;
+            Ok(Some(pass_info))
+        } else {
+            Ok(None)
+        }
+    }
 }
+
+
+pub type MinerPassStorageRef = std::sync::Arc<MinerPassStorage>;

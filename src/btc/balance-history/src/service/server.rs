@@ -169,6 +169,11 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
             Ok(vec![ret])
         } else if let Some(range) = params.block_range {
+            // Handle empty range
+            if range.is_empty() {
+                return Ok(Vec::new());
+            }
+
             let ret = self
                 .db
                 .get_balance_in_range(&params.script_hash, range.start, range.end)

@@ -74,7 +74,6 @@ impl WatchedAddressManager {
 mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::{Network, key::rand::seq::index};
-    use std::str::FromStr;
     use crate::{config::ConfigManager, storage};
     use std::sync::Arc;
 
@@ -93,8 +92,5 @@ mod tests {
 
         let config = ConfigManager::new(None).expect("Failed to create config manager");
         let config = Arc::new(config);
-
-        let indexer =
-            AddressBalanceIndexer::new(config, storage).expect("Failed to create indexer");
     }
 }

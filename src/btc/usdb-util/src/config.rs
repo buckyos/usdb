@@ -158,3 +158,14 @@ impl Default for ElectrsConfig {
         Self { rpc_url: default_electrs_rpc_url() }
     }
 }
+
+
+fn default_balance_history_rpc_url() -> String {
+    format!("http://127.0.0.1:{}", crate::constants::BALANCE_HISTORY_SERVICE_HTTP_PORT)
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BalanceHistoryConfig {
+    #[serde(default = "default_balance_history_rpc_url")]
+    pub rpc_url: String,
+}

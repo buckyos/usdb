@@ -28,9 +28,9 @@ const VALID_CONTENT_TYPES: [&str; 3] = [
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MinerPassState {
-    Active,
-    Dormant,
-    Consumed,
+    Active = 0,
+    Dormant = 1,
+    Consumed = 2,
 }
 
 impl MinerPassState {
@@ -39,6 +39,14 @@ impl MinerPassState {
             MinerPassState::Active => "active",
             MinerPassState::Dormant => "dormant",
             MinerPassState::Consumed => "consumed",
+        }
+    }
+
+    pub fn as_int(&self) -> u32 {
+        match self {
+            MinerPassState::Active => 0,
+            MinerPassState::Dormant => 1,
+            MinerPassState::Consumed => 2,
         }
     }
 }
@@ -52,6 +60,19 @@ impl FromStr for MinerPassState {
             "dormant" => Ok(MinerPassState::Dormant),
             "consumed" => Ok(MinerPassState::Consumed),
             _ => Err(format!("Invalid MinerPassState string: {}", s)),
+        }
+    }
+}
+
+impl TryFrom<u32> for MinerPassState {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(MinerPassState::Active),
+            1 => Ok(MinerPassState::Dormant),
+            2 => Ok(MinerPassState::Consumed),
+            _ => Err(format!("Invalid MinerPassState integer: {}", value)),
         }
     }
 }

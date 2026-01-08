@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig};
+use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig, BalanceHistoryConfig};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
@@ -20,6 +20,8 @@ pub struct IndexerConfig {
 
     pub electrs: ElectrsConfig,
 
+    pub balance_history: BalanceHistoryConfig,
+    
     pub usdb: USDBConfig,
 }
 
