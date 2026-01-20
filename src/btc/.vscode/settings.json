@@ -5,6 +5,7 @@
         "usdb",
         "vout",
         "utxo",
-        "utxos"
+        "utxos",
+        "Shatoshi"
     ]
 }

@@ -1,4 +1,4 @@
-use crate::index::MinerPassState;
+use crate::{config::ConfigManagerRef, index::MinerPassState};
 use ord::{InscriptionId, templates::inscription};
 use usdb_util::USDBScriptHash;
 
@@ -37,7 +37,7 @@ pub struct PassEnergyStorage {
 
 impl PassEnergyStorage {
     pub fn new(
-        
+        config: ConfigManagerRef,
     ) -> Self {
         Self {
             

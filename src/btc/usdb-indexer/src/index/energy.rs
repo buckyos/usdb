@@ -1,13 +1,16 @@
 use super::content::MinerPassState;
 use crate::config::ConfigManagerRef;
+use crate::index::pass;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
 use ord::InscriptionId;
+use ord::subcommand::index::info;
 use usdb_util::USDBScriptHash;
 
 // 0.001 btc threshold = 100_000 Satoshi
 const ENERGY_BALANCE_THRESHOLD: u64 = 100_000; // in Satoshi 0.001 BTC
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassEnergyResult {
     pub energy: u64,
     pub state: MinerPassState,
@@ -37,6 +40,7 @@ impl PassEnergyManager {
         })
     }
 
+    // Get the balance of an address at a specific block height, which may changed on or before that height
     async fn get_balance_at_height(
         &self,
         address: &USDBScriptHash,
@@ -61,6 +65,7 @@ impl PassEnergyManager {
                 address, block_height
             );
             warn!("{}", msg);
+
             Ok(AddressBalance {
                 block_height,
                 balance: 0,
@@ -81,6 +86,7 @@ impl PassEnergyManager {
         Ok(balances)
     }
 
+    // When a new Miner Pass is created, initialize its energy record with zero energy at the block height
     pub async fn on_new_pass(
         &self,
         inscription_id: &InscriptionId,
@@ -92,6 +98,7 @@ impl PassEnergyManager {
             .await?;
 
         // Should exactly match the block height when inscription is created
+        // Because the utxos must changed at that block height, so we must have balance record at that height
         if balance.block_height != block_height {
             let msg = format!(
                 "Balance history not found for owner {} at block height {} when creating new Miner Pass {}",
@@ -142,6 +149,7 @@ impl PassEnergyManager {
         Ok(value)
     }
 
+    // Kernel function to update the energy of a Miner Pass at given block height
     pub async fn update_pass_energy(
         &self,
         inscription_id: &InscriptionId,
@@ -174,16 +182,19 @@ impl PassEnergyManager {
             });
         }
 
-        // For active passes, get the owner's balance records between last_record.block_height and block_height
+        // For active passes, get the owner's balance records between last_record.block_height and block_height: [last_record.block_height + 1, block_height]
         let range = (last_record.block_height + 1)..(block_height + 1);
         let balances = self
             .get_balance_at_range(&last_record.owner_address, range)
             .await?;
 
-        // Update energy based on balance changes
+        // Update energy based on balance changes records
         for balance_record in balances {
             // Calculate energy bonus between last_record.block_height and balance_record.block_height base on last_record.owner_balance
-            let r: u32 = balance_record.block_height - last_record.block_height;
+            // The R is related to the H, H = current block height - miner certificate's activation block height. The larger the H, the larger the R, but the R has an upper limit.
+            let r: u32 = balance_record.block_height - last_record.active_block_height;
+            assert!(r >= 1, "R should be at least 1");
+
             let energy_delta = if last_record.owner_balance >= ENERGY_BALANCE_THRESHOLD {
                 last_record.owner_balance * 10000 * r as u64
             } else {
@@ -222,9 +233,9 @@ impl PassEnergyManager {
 
         let ret = if last_record.block_height < block_height {
             // No balance changes in between, just calculate energy up to block_height
-            // This record should not save to storage, as there is no balance change
+            // This record should not save to storage, as there is no balance change record at this height
             let energy_delta = if last_record.owner_balance >= ENERGY_BALANCE_THRESHOLD {
-                let r = block_height - last_record.block_height;
+                let r = block_height - last_record.active_block_height;
                 last_record.owner_balance * 10000 * r as u64
             } else {
                 0u64
@@ -245,12 +256,35 @@ impl PassEnergyManager {
         Ok(ret)
     }
 
-    pub fn on_pass_dormant(
+    // Last update the pass energy when marking dormant
+    pub async fn on_pass_dormant(
         &self,
         inscription_id: &InscriptionId,
-        new_owner_address: &USDBScriptHash,
         block_height: u32,
     ) -> Result<(), String> {
+        // Update the energy record as well for the last time
+        let ret = self
+            .update_pass_energy(&inscription_id, block_height)
+            .await?;
+
+        // Just for debugging, verify the last pass energy
+        let last_pass_energy = self.get_pass_energy(&inscription_id, block_height).await?;
+
+        assert_eq!(
+            last_pass_energy.as_ref(),
+            Some(&ret),
+            "Last pass energy should match after update {} at {}",
+            inscription_id,
+            block_height
+        );
+
+        info!(
+            "Miner Pass {} marked as Dormant at block height {}, final energy: {}",
+            inscription_id,
+            block_height,
+            ret.energy
+        );
+
         Ok(())
     }
 
@@ -258,8 +292,22 @@ impl PassEnergyManager {
     pub fn on_pass_consumed(
         &self,
         inscription_id: &InscriptionId,
+        owner_address: &USDBScriptHash,
         block_height: u32,
     ) -> Result<(), String> {
+        // Insert a new record with zero energy and state consumed
+        let record = PassEnergyRecord {
+            inscription_id: inscription_id.clone(),
+            block_height,
+            state: MinerPassState::Consumed,
+            active_block_height: block_height,
+            owner_address: owner_address.clone(),
+            owner_balance: 0,
+            owner_delta: 0,
+            energy: 0,
+        };
+        self.storage.insert_pass_energy_record(&record)?;
+
         Ok(())
     }
 }
