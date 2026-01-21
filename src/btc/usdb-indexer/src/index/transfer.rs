@@ -2,7 +2,7 @@ use super::inscription::{InscriptionOperation, InscriptionTransferItem};
 use crate::btc::{TxItem, UTXOValueManager, UTXOValueManagerRef};
 use crate::config::ConfigManagerRef;
 use crate::index::content::InscriptionContentLoader;
-use crate::storage::InscriptionStorage;
+use crate::storage::{InscriptionStorage, InscriptionStorageRef};
 use crate::storage::{InscriptionTransferRecordItem, InscriptionTransferStorageRef};
 use crate::util::Util;
 use bitcoincore_rpc::bitcoin::Txid;
@@ -89,16 +89,18 @@ impl MultiMap {
 pub struct InscriptionTransferTracker {
     config: ConfigManagerRef,
     inscriptions: Mutex<MultiMap>,
-    storage: InscriptionTransferStorageRef,
+    storage: InscriptionStorageRef,
+    transfer_storage: InscriptionTransferStorageRef,
 
     btc_client: BTCRpcClientRef,
-    utxo_cache: UTXOValueManagerRef,
+    utxo_manager: UTXOValueManagerRef,
 }
 
 impl InscriptionTransferTracker {
     pub fn new(
         config: ConfigManagerRef,
-        storage: InscriptionTransferStorageRef,
+        storage: InscriptionStorageRef,
+        transfer_storage: InscriptionTransferStorageRef,
     ) -> Result<Self, String> {
         let btc_client = BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
@@ -106,15 +108,16 @@ impl InscriptionTransferTracker {
         )?;
         let btc_client = Arc::new(btc_client);
 
-        let utxo_cache = UTXOValueManager::new(btc_client.clone());
-        let utxo_cache = Arc::new(utxo_cache);
+        let utxo_manager = UTXOValueManager::new(btc_client.clone());
+        let utxo_manager = Arc::new(utxo_manager);
 
         let ret = Self {
             config,
-            inscriptions: Mutex::new(MultiMap::new()),
             storage,
+            inscriptions: Mutex::new(MultiMap::new()),
+            transfer_storage,
             btc_client,
-            utxo_cache,
+            utxo_manager,
         };
 
         Ok(ret)
@@ -134,7 +137,7 @@ impl InscriptionTransferTracker {
 
     async fn load_all_records(&self) -> Result<(), String> {
         let records = self
-            .storage
+            .transfer_storage
             .get_all_inscriptions_with_last_transfer()
             .map_err(|e| {
                 let msg = format!("Failed to load existing transfer records: {}", e);
@@ -264,7 +267,7 @@ impl InscriptionTransferTracker {
         };
 
         let item = TxItem::from_tx(tx);
-        let ret = item.calc_next_satpoint(satpoint, &self.utxo_cache).await?;
+        let ret = item.calc_output_satpoint(satpoint, &self.utxo_manager).await?;
         if ret.is_none() {
             let msg = format!(
                 "No satpoint found for inscription_id {:?} in transaction {}",
@@ -289,8 +292,8 @@ impl InscriptionTransferTracker {
         &self,
         record: &InscriptionTransferRecordItem,
     ) -> Result<(), String> {
-        // Store in persistent storage and update db
-        self.storage.insert_transfer_record(&record).map_err(|e| {
+        // Store in persistent transfer_storage and update db
+        self.transfer_storage.insert_transfer_record(&record).map_err(|e| {
             let msg = format!(
                 "Failed to store transfer record for inscription_id {:?}: {}",
                 record.inscription_id, e
@@ -316,7 +319,6 @@ impl InscriptionTransferTracker {
     pub async fn process_block(
         &self,
         block_height: u32,
-        inscription_storage: &InscriptionStorage,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
         info!(
             "Processing block {} for inscription transfers",
@@ -353,11 +355,11 @@ impl InscriptionTransferTracker {
                     );
 
                     let ret = tx_item
-                        .calc_next_satpoint(existing_item.satpoint, &self.utxo_cache)
+                        .calc_output_satpoint(existing_item.satpoint, &self.utxo_manager)
                         .await?;
                     if ret.is_none() {
                         let msg = format!(
-                            "Failed to calculate next satpoint for inscription_id {:?} in transaction {}",
+                            "Failed to calculate output satpoint for inscription_id {} in transaction {}",
                             existing_item.inscription_id, tx_item.txid
                         );
                         error!("{}", msg);
@@ -367,11 +369,11 @@ impl InscriptionTransferTracker {
                     let sret = ret.unwrap();
 
                     // Load content from inscription storage
-                    let content = inscription_storage
+                    let content = self.storage
                         .get_inscription_content(&existing_item.inscription_id)?;
                     if content.is_none() {
                         let msg = format!(
-                            "Inscription content not found for inscription_id {:?}",
+                            "Inscription content not found for inscription_id {}",
                             existing_item.inscription_id
                         );
                         error!("{}", msg);
@@ -387,7 +389,7 @@ impl InscriptionTransferTracker {
                     // The inscription must be valid USDB inscription
                     if ret.is_none() {
                         let msg = format!(
-                            "Inscription content is not valid USDB inscription for inscription_id {:?}",
+                            "Inscription content is not valid USDB inscription for inscription_id {}",
                             existing_item.inscription_id
                         );
                         error!("{}", msg);

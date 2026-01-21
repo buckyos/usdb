@@ -1,9 +1,10 @@
 use super::content::MinerPassState;
 use super::energy::PassEnergyManagerRef;
 use crate::config::ConfigManagerRef;
-use crate::storage::{MinerPassInfo, MinerPassStorageRef};
+use crate::storage::{MinerPassInfo, MinerPassStorage, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
+use std::sync::Arc;
 use usdb_util::USDBScriptHash;
 
 pub struct PassMintInscriptionInfo {
@@ -30,12 +31,13 @@ pub struct MinerPassManager {
 impl MinerPassManager {
     pub fn new(
         config: ConfigManagerRef,
-        storage: MinerPassStorageRef,
         energy_manager: PassEnergyManagerRef,
     ) -> Result<Self, String> {
+        let storage = MinerPassStorage::new(&config.data_dir())?;
+
         Ok(Self {
             config,
-            storage,
+            storage: Arc::new(storage),
             energy_manager,
         })
     }
@@ -115,9 +117,14 @@ impl MinerPassManager {
             }
         }
 
-        // Update energy record as well
+        // Update energy record for the new pass with inherited energy
         self.energy_manager
-            .update_pass_energy(&mint_info.inscription_id, mint_info.mint_block_height)
+            .on_new_pass(
+                &mint_info.inscription_id,
+                &mint_info.mint_owner,
+                mint_info.mint_block_height,
+                inherited_energy,
+            )
             .await?;
 
         Ok(())
@@ -235,6 +242,7 @@ impl MinerPassManager {
 
         Ok(energy.energy)
     }
+
     pub async fn on_pass_transfer(
         &self,
         inscription_id: &InscriptionId,
@@ -265,9 +273,10 @@ impl MinerPassManager {
         }
 
         // Update the owner and state(to Dormant) in storage
-        self.storage
-            .transfer_owner(inscription_id, new_owner)?;
+        self.storage.transfer_owner(inscription_id, new_owner)?;
 
         Ok(())
     }
 }
+
+pub type MinerPassManagerRef = Arc<MinerPassManager>;

@@ -84,6 +84,26 @@ pub struct USDBMint {
     pub prev: Vec<String>,
 }
 
+impl USDBMint {
+    pub fn prev_inscription_ids(&self) -> Vec<InscriptionId> {
+        let mut ids = Vec::new();
+        for prev in &self.prev {
+            match InscriptionId::from_str(prev) {
+                Ok(id) => ids.push(id),
+                Err(e) => {
+                    warn!(
+                        "Failed to parse prev inscription id {} in USDBMint: {}",
+                        prev, e
+                    );
+                    continue;
+                },
+            }
+        }
+        
+        ids
+    }
+}
+
 // TODO: define different types of USDB inscriptions
 #[derive(Debug, Clone)]
 pub enum USDBInscription {
@@ -98,6 +118,12 @@ impl USDBInscription {
     pub fn op(&self) -> InscriptionOperation {
         match self {
             USDBInscription::Mint(_) => InscriptionOperation::Inscribe,
+        }
+    }
+
+    pub fn as_mint(&self) -> Option<&USDBMint> {
+        match self {
+            USDBInscription::Mint(mint) => Some(mint),
         }
     }
 }

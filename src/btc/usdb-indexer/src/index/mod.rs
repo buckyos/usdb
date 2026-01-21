@@ -3,7 +3,6 @@ mod sync_state;
 mod inscription;
 mod content;
 mod transfer;
-mod balance;
 mod energy;
 mod pass;
 

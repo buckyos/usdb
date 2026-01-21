@@ -10,6 +10,8 @@ use ord::api::Inscription;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
+use super::energy::{PassEnergyManagerRef, PassEnergyManager};
+use super::pass::{MinerPassManager, MinerPassManagerRef, MinerPassState, PassMintInscriptionInfo};
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
@@ -21,6 +23,9 @@ pub struct InscriptionIndexer {
 
     inscriptions_manager: InscriptionsManagerRef,
     transfer_tracker: InscriptionTransferTracker,
+
+    pass_energy_manager: PassEnergyManagerRef,
+    miner_pass_manager: MinerPassManagerRef,
 }
 
 impl InscriptionIndexer {
@@ -42,6 +47,15 @@ impl InscriptionIndexer {
             inscriptions_manager.transfer_storage().clone(),
         )?;
 
+        // Init pass energy manager
+        let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
+
+        // Init pass storage
+        let miner_pass_manager = Arc::new(MinerPassManager::new(
+            config.clone(),
+            pass_energy_manager.clone(),
+        )?);
+
         let ret = Self {
             config,
             btc_client: Arc::new(btc_client),
@@ -52,11 +66,15 @@ impl InscriptionIndexer {
 
             inscriptions_manager,
             transfer_tracker,
+
+            pass_energy_manager,
+            miner_pass_manager,
         };
 
         Ok(ret)
     }
 
+    // Get current block height should be processed(last processed block height + 1)
     pub fn current_block_height(&self) -> u32 {
         self.current_block_height.load(Ordering::SeqCst)
     }
@@ -159,12 +177,13 @@ impl InscriptionIndexer {
             return Ok(());
         }
 
-        let sync_begin = self.current_block_height();
-        let sync_end = height;
-        if let Err(e) = self.sync_blocks(sync_begin, sync_end).await {
+
+        let block_range = self.current_block_height()..=height;
+        if let Err(e) = self.sync_blocks(block_range.clone()).await {
             let msg = format!(
-                "Failed to sync inscriptions from block [{}, {}]: {}",
-                sync_begin, sync_end, e
+                "Failed to sync inscriptions from block range {:?}: {}",
+                block_range,
+                e
             );
             error!("{}", msg);
             return Err(msg);
@@ -180,13 +199,13 @@ impl InscriptionIndexer {
     }
 
     // Sync blocks from begin to end, inclusive: [begin, end]
-    async fn sync_blocks(&self, begin: u32, end: u32) -> Result<(), String> {
+    async fn sync_blocks(&self, block_range: std::ops::RangeInclusive<u32>) -> Result<(), String> {
         assert!(
-            begin <= end,
-            "Begin block height should be less than or equal to end"
+            !block_range.is_empty(),
+            "Block range should not be empty {:?}", block_range
         );
 
-        for height in begin..=end {
+        for height in block_range {
             info!("Syncing inscriptions at block height {}", height);
 
             // Sync this block
@@ -213,7 +232,7 @@ impl InscriptionIndexer {
             .await?;
 
         // Then process inscription transfers
-        self.scan_block_inscription_transfer(height, &mut collector)
+        self.process_block_inscription_transfer(height, &mut collector)
             .await?;
 
         // Check if there is anything to process
@@ -387,6 +406,19 @@ impl InscriptionIndexer {
                 item.content.op(),
             )
             .await?;
+        
+        let mint_content = item.content.as_mint().unwrap();
+        let mint_info = PassMintInscriptionInfo {
+            inscription_id: item.inscription_id.clone(),
+            inscription_number: item.inscription_number,
+            mint_txid: item.txid().clone(),
+            mint_block_height: item.block_height,
+            mint_owner: item.address.clone(),
+            eth_main: mint_content.eth_main.clone(),
+            eth_collab: mint_content.eth_collab.clone(),
+            prev: mint_content.prev_inscription_ids(),
+        };
+        self.miner_pass_manager.on_mint_pass(&mint_info).await?;
 
         Ok(())
     }
@@ -434,7 +466,7 @@ impl InscriptionIndexer {
         Ok(contents)
     }
 
-    async fn scan_block_inscription_transfer(
+    async fn process_block_inscription_transfer(
         &self,
         block_height: u32,
         collector: &mut BlockInscriptionsCollector,

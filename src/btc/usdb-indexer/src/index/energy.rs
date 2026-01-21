@@ -91,6 +91,7 @@ impl PassEnergyManager {
         inscription_id: &InscriptionId,
         owner_address: &USDBScriptHash,
         block_height: u32,
+        inherited_energy: u64,
     ) -> Result<(), String> {
         let balance = self
             .get_balance_at_height(owner_address, block_height)
@@ -118,13 +119,13 @@ impl PassEnergyManager {
             owner_address: owner_address.clone(),
             owner_balance: balance.balance,
             owner_delta: balance.delta,
-            energy: 0,
+            energy: inherited_energy,
         };
         self.storage.insert_pass_energy_record(&record)?;
 
         info!(
-            "New Miner Pass {} created at block height {} for owner {}, initial balance: {}, delta: {}",
-            inscription_id, block_height, owner_address, balance.balance, balance.delta
+            "New Miner Pass {} created at block height {} for owner {}, initial balance: {}, delta: {}, inherited energy: {}",
+            inscription_id, block_height, owner_address, balance.balance, balance.delta, inherited_energy
         );
         Ok(())
     }

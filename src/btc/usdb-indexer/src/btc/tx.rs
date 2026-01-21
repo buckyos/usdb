@@ -1,16 +1,8 @@
 use super::utxo::UTXOValueManager;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint, Transaction, Txid};
-use bitcoincore_rpc::bitcoincore_rpc_json::GetRawTransactionResult;
 use ordinals::SatPoint;
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
-pub struct TxVOutItem {
-    pub outpoint: OutPoint,
-    pub value: Amount,
-
-    // FIXME: should we cache address here too?
-    pub address: Option<USDBScriptHash>,
-}
 
 pub struct TxItem {
     pub txid: Txid,
@@ -29,7 +21,8 @@ impl TxItem {
         TxItem { txid, tx }
     }
 
-    pub async fn calc_next_satpoint(
+    // Given an input satpoint, calculate the output satpoint after this transaction
+    pub async fn calc_output_satpoint(
         &self,
         satpoint: SatPoint,
         utxo_manager: &UTXOValueManager,
@@ -106,4 +99,5 @@ impl TxItem {
             address: None,
         }))
     }
+
 }
