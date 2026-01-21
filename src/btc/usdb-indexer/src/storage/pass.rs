@@ -58,9 +58,7 @@ impl MinerPassStorage {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS miner_passes (
-                sequence_number INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                inscription_id TEXT NOT NULL UNIQUE,
+                inscription_id TEXT NOT NULL PRIMARY KEY,
                 inscription_number INTEGER NOT NULL,
 
                 mint_txid TEXT NOT NULL,
@@ -74,13 +72,11 @@ impl MinerPassStorage {
                 owner TEXT NOT NULL,
                 state TEXT NOT NULL,
 
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                INDEX idx_miner_pass_inscription_id (inscription_id)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
-            CREATE INDEX IF NOT EXISTS idx_miner_pass_inscription_id
-            ON miner_passes (inscription_id);
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_owner_state
+            ON miner_passes (owner, state);
 
             CREATE INDEX IF NOT EXISTS idx_miner_pass_eth_main
             ON miner_passes (eth_main);

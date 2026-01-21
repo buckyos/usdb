@@ -1,10 +1,8 @@
 use super::content::MinerPassState;
 use crate::config::ConfigManagerRef;
-use crate::index::pass;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
 use ord::InscriptionId;
-use ord::subcommand::index::info;
 use usdb_util::USDBScriptHash;
 
 // 0.001 btc threshold = 100_000 Satoshi
@@ -23,7 +21,8 @@ pub struct PassEnergyManager {
 
 impl PassEnergyManager {
     pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
-        let storage = PassEnergyStorage::new(config.clone());
+        let storage = PassEnergyStorage::new(&config.data_dir())?;
+
         let balance_history_client = BalanceHistoryRpcClient::new(
             &config.config().balance_history.rpc_url,
         )
@@ -280,9 +279,7 @@ impl PassEnergyManager {
 
         info!(
             "Miner Pass {} marked as Dormant at block height {}, final energy: {}",
-            inscription_id,
-            block_height,
-            ret.energy
+            inscription_id, block_height, ret.energy
         );
 
         Ok(())

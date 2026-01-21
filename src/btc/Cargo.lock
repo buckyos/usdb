@@ -493,6 +493,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d965446196e3b7decd44aa7ee49e31d630118f90ef12f97900f262eb915c951d"
 
 [[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "bincode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "bincode_derive"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
+dependencies = [
+ "virtue",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3779,9 +3799,9 @@ dependencies = [
 
 [[package]]
 name = "rust-librocksdb-sys"
-version = "0.40.0+10.7.5"
+version = "0.41.0+10.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c00d2a200a5d3a21d9c2d39785d8542b2226cf3d132976c04f32eae31d3c0394"
+checksum = "706d611b4b6e4888f536085c4f13f720133a80910d68cb66efc82c810c977d2c"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -3795,9 +3815,9 @@ dependencies = [
 
 [[package]]
 name = "rust-rocksdb"
-version = "0.44.2"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1139f88cb2ef35c4310f818025cd7e09e1895b42a44d1aed3ac6733d3e398b21"
+checksum = "cedcc7d13785a99cf2b932cf0e23b72e0da260a8f7c62b33e14bea28a125545a"
 dependencies = [
  "libc",
  "parking_lot 0.12.5",
@@ -4883,6 +4903,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
 name = "url"
 version = "2.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4905,6 +4931,7 @@ name = "usdb-indexer"
 version = "0.1.0"
 dependencies = [
  "balance-history",
+ "bincode",
  "bitcoincore-rpc",
  "dirs",
  "log",
@@ -4914,6 +4941,7 @@ dependencies = [
  "ordinals",
  "reqwest 0.13.1",
  "rusqlite",
+ "rust-rocksdb",
  "serde",
  "serde_json",
  "tokio",
@@ -4973,6 +5001,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtue"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "walkdir"

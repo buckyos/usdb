@@ -6,6 +6,9 @@
         "vout",
         "utxo",
         "utxos",
-        "Shatoshi"
+        "Satoshi",
+        "rocksdb",
+        "bitcoind",
+        "bitcoincore",
     ]
 }
