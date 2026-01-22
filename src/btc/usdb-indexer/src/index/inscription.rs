@@ -67,28 +67,17 @@ impl InscriptionNewItem {
 #[derive(Clone)]
 pub struct InscriptionTransferItem {
     pub inscription_id: InscriptionId,
-    pub inscription_number: i32,
     pub block_height: u32,
-    pub timestamp: u32,
+
+    pub prev_satpoint: SatPoint,
     pub satpoint: SatPoint,
-    pub prev_satpoint: Option<SatPoint>,
 
     // When transfer, to_address is None means burn as fee
     pub from_address: USDBScriptHash,
     pub to_address: Option<USDBScriptHash>,
-    pub value: Amount,
-
-    pub content: String,
-    pub op: InscriptionOperation,
-    pub index: u64, // Index indicates the number of transfers
 }
 
 impl InscriptionTransferItem {
-    pub fn set_prev_satpoint(&mut self, prev_satpoint: SatPoint) {
-        assert!(self.prev_satpoint.is_none(), "prev_satpoint is already set");
-        self.prev_satpoint = Some(prev_satpoint);
-    }
-
     pub fn txid(&self) -> &Txid {
         &self.satpoint.outpoint.txid
     }

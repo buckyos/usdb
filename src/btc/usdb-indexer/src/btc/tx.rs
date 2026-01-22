@@ -12,7 +12,7 @@ pub struct TxItem {
 pub struct SatPointResult {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<USDBScriptHash>,
+    pub address: Option<USDBScriptHash>, // If address is None, it means the satpoint is spent as fee
 }
 
 impl TxItem {

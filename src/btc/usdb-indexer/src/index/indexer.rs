@@ -1,17 +1,16 @@
 use super::content::{InscriptionContentLoader, USDBInscription};
+use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::inscription::BlockInscriptionsCollector;
-use super::inscription::{InscriptionNewItem, InscriptionOperation};
+use super::inscription::{InscriptionNewItem};
+use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::sync_state::{SyncStateStorage, SyncStateStorageRef};
 use super::transfer::InscriptionTransferTracker;
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
-use crate::storage::{InscriptionsManager, InscriptionsManagerRef};
 use ord::api::Inscription;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
-use super::energy::{PassEnergyManagerRef, PassEnergyManager};
-use super::pass::{MinerPassManager, MinerPassManagerRef, MinerPassState, PassMintInscriptionInfo};
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
@@ -21,7 +20,6 @@ pub struct InscriptionIndexer {
     current_block_height: AtomicU32,
     state: SyncStateStorageRef,
 
-    inscriptions_manager: InscriptionsManagerRef,
     transfer_tracker: InscriptionTransferTracker,
 
     pass_energy_manager: PassEnergyManagerRef,
@@ -41,12 +39,6 @@ impl InscriptionIndexer {
         // Init state storage
         let state = SyncStateStorage::new(&config.data_dir())?;
 
-        let inscriptions_manager = Arc::new(InscriptionsManager::new(config.clone())?);
-        let transfer_tracker = InscriptionTransferTracker::new(
-            config.clone(),
-            inscriptions_manager.transfer_storage().clone(),
-        )?;
-
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
 
@@ -56,6 +48,11 @@ impl InscriptionIndexer {
             pass_energy_manager.clone(),
         )?);
 
+        let transfer_tracker = InscriptionTransferTracker::new(
+            config.clone(),
+            miner_pass_manager.miner_pass_storage().clone(),
+        )?;
+
         let ret = Self {
             config,
             btc_client: Arc::new(btc_client),
@@ -64,7 +61,6 @@ impl InscriptionIndexer {
             state: Arc::new(state),
             current_block_height: AtomicU32::new(0),
 
-            inscriptions_manager,
             transfer_tracker,
 
             pass_energy_manager,
@@ -177,13 +173,11 @@ impl InscriptionIndexer {
             return Ok(());
         }
 
-
         let block_range = self.current_block_height()..=height;
         if let Err(e) = self.sync_blocks(block_range.clone()).await {
             let msg = format!(
                 "Failed to sync inscriptions from block range {:?}: {}",
-                block_range,
-                e
+                block_range, e
             );
             error!("{}", msg);
             return Err(msg);
@@ -202,7 +196,8 @@ impl InscriptionIndexer {
     async fn sync_blocks(&self, block_range: std::ops::RangeInclusive<u32>) -> Result<(), String> {
         assert!(
             !block_range.is_empty(),
-            "Block range should not be empty {:?}", block_range
+            "Block range should not be empty {:?}",
+            block_range
         );
 
         for height in block_range {
@@ -232,7 +227,7 @@ impl InscriptionIndexer {
             .await?;
 
         // Then process inscription transfers
-        self.process_block_inscription_transfer(height, &mut collector)
+        self.process_block_inscription_transfer(height)
             .await?;
 
         // Check if there is anything to process
@@ -244,26 +239,6 @@ impl InscriptionIndexer {
             return Ok(());
         }
 
-        if collector.transfer_inscriptions().len() > 0 {
-            // Only remove inscriptions that is transfer op, inscribe data op should always be there!
-            let iter = collector
-                .transfer_inscriptions()
-                .iter()
-                .filter(|item| item.op == InscriptionOperation::Transfer);
-            let list = iter.collect::<Vec<_>>();
-
-            if list.len() > 0 {
-                info!(
-                    "Removing {} transferred inscriptions at block height {}",
-                    list.len(),
-                    height
-                );
-
-                self.transfer_tracker
-                    .remove_inscriptions_on_block_complete(&list)
-                    .await?;
-            }
-        }
 
         info!(
             "Finished processing inscriptions at block height {}: {} new inscriptions, {} transfers",
@@ -377,36 +352,7 @@ impl InscriptionIndexer {
     }
 
     async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
-        // First add to storage to persist
-        self.inscriptions_manager
-            .inscription_storage()
-            .add_new_inscription(
-                &item.inscription_id,
-                item.inscription_number,
-                item.block_height,
-                item.timestamp,
-                item.satpoint,
-                item.commit_txid,
-                item.value,
-                &item.content_string,
-                item.content.op(),
-                &item.address,
-            )?;
-
-        // Then record inscription transfer and track it
-        self.transfer_tracker
-            .add_new_inscription(
-                item.inscription_id.clone(),
-                item.inscription_number,
-                item.block_height,
-                item.timestamp,
-                item.address.clone(),
-                item.satpoint,
-                item.value,
-                item.content.op(),
-            )
-            .await?;
-        
+        // If it's a mint operation, process the pass minting
         let mint_content = item.content.as_mint().unwrap();
         let mint_info = PassMintInscriptionInfo {
             inscription_id: item.inscription_id.clone(),
@@ -414,12 +360,21 @@ impl InscriptionIndexer {
             mint_txid: item.txid().clone(),
             mint_block_height: item.block_height,
             mint_owner: item.address.clone(),
+            satpoint: item.satpoint.clone(),
             eth_main: mint_content.eth_main.clone(),
             eth_collab: mint_content.eth_collab.clone(),
             prev: mint_content.prev_inscription_ids(),
         };
         self.miner_pass_manager.on_mint_pass(&mint_info).await?;
 
+        // Finally, add to transfer tracker for tracking future transfers
+        self.transfer_tracker
+            .add_new_inscription(
+                mint_info.inscription_id.clone(),
+                mint_info.mint_owner,
+                mint_info.satpoint.clone(),
+            )
+            .await?;
         Ok(())
     }
 
@@ -469,24 +424,41 @@ impl InscriptionIndexer {
     async fn process_block_inscription_transfer(
         &self,
         block_height: u32,
-        collector: &mut BlockInscriptionsCollector,
     ) -> Result<(), String> {
-        let transfer_items = self
-            .transfer_tracker
-            .process_block(
-                block_height,
-                &self.inscriptions_manager.inscription_storage(),
-            )
-            .await?;
-
-        for item in &transfer_items {
-            self.inscriptions_manager
-                .inscription_storage()
-                .transfer_owner(&item.inscription_id, &item.to_address, block_height)?;
+        let transfer_items = self.transfer_tracker.process_block(block_height).await?;
+        if transfer_items.is_empty() {
+            info!(
+                "No inscription transfers found at block height {}",
+                block_height
+            );
+            return Ok(());
         }
 
-        // Add transfer items to collector for further processing
-        collector.add_transfer_inscriptions(transfer_items);
+        for item in transfer_items {
+           match item.to_address {
+                Some(addr) => {
+                    info!(
+                        "Inscription {} transferred from {} to {} at block {}",
+                        item.inscription_id, item.from_address, addr, block_height
+                    );
+
+                    self.miner_pass_manager
+                        .on_pass_transfer(
+                            &item.inscription_id,
+                            &addr,
+                            &item.satpoint,
+                            block_height,
+                        )
+                        .await?;
+                }
+                None => {
+                    info!(
+                        "Inscription {} burned from {} at block {}",
+                        item.inscription_id, item.from_address, block_height
+                    );
+                }
+            }
+        }
 
         Ok(())
     }

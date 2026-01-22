@@ -6,6 +6,7 @@ use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use std::sync::Arc;
 use usdb_util::USDBScriptHash;
+use ordinals::SatPoint;
 
 pub struct PassMintInscriptionInfo {
     pub inscription_id: InscriptionId,
@@ -15,6 +16,8 @@ pub struct PassMintInscriptionInfo {
     pub mint_txid: Txid,
     pub mint_block_height: u32,
     pub mint_owner: USDBScriptHash, // The owner address who minted the pass
+
+    pub satpoint: SatPoint,
 
     // The inscription content
     pub eth_main: String,
@@ -42,6 +45,10 @@ impl MinerPassManager {
         })
     }
 
+    pub fn miner_pass_storage(&self) -> &MinerPassStorageRef {
+        &self.storage
+    }
+
     pub async fn on_mint_pass(&self, mint_info: &PassMintInscriptionInfo) -> Result<(), String> {
         // First check if the owner already has an active pass
         self.dormant_last_pass(mint_info).await?;
@@ -53,6 +60,8 @@ impl MinerPassManager {
             mint_txid: mint_info.mint_txid.clone(),
             mint_block_height: mint_info.mint_block_height,
             mint_owner: mint_info.mint_owner.clone(),
+
+            satpoint: mint_info.satpoint.clone(),
 
             eth_main: mint_info.eth_main.clone(),
             eth_collab: mint_info.eth_collab.clone(),
@@ -247,11 +256,12 @@ impl MinerPassManager {
         &self,
         inscription_id: &InscriptionId,
         new_owner: &USDBScriptHash,
+        satpoint: &SatPoint,
         block_height: u32,
     ) -> Result<(), String> {
         info!(
-            "Miner Pass {} transferred to new owner {} at block height {}",
-            inscription_id, new_owner, block_height
+            "Miner Pass {} transferred to new owner {} at block height {}, new satpoint {}",
+            inscription_id, new_owner, block_height, satpoint
         );
 
         // First lookup the pass by inscription id
@@ -272,9 +282,20 @@ impl MinerPassManager {
                 .await?;
         }
 
-        // Update the owner and state(to Dormant) in storage
-        self.storage.transfer_owner(inscription_id, new_owner)?;
-
+        if pass.owner == *new_owner {
+            warn!(
+                "Miner Pass {} transferred to the same owner {}, skip updating owner",
+                inscription_id, new_owner
+            );
+            self.storage.update_satpoint(inscription_id, &pass.satpoint, &pass.satpoint)?;
+        } else {
+            // Transfer the ownership in storage
+            self.storage.transfer_owner(inscription_id, new_owner, satpoint)?;
+            if pass.state == MinerPassState::Active {
+                self.storage.update_state(inscription_id, MinerPassState::Dormant, MinerPassState::Active)?;
+            }
+        }
+        
         Ok(())
     }
 }

@@ -1,6 +1,8 @@
 use crate::index::MinerPassState;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
+use ord::templates::inscription;
+use ordinals::SatPoint;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -15,6 +17,9 @@ pub struct MinerPassInfo {
     pub mint_block_height: u32,
     pub mint_owner: USDBScriptHash, // The owner address who minted the pass
 
+    pub satpoint: SatPoint, // The satpoint of the inscription, maybe changed after transfer
+
+    // The content fields of the pass
     pub eth_main: String,
     pub eth_collab: Option<String>,
     pub prev: Vec<InscriptionId>,
@@ -23,6 +28,13 @@ pub struct MinerPassInfo {
     // the owner changes and state changed to Dormant by default
     pub owner: USDBScriptHash,
     pub state: MinerPassState,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidMinerPassInfo {
+    pub inscription_id: InscriptionId,
+    pub owner: USDBScriptHash,
+    pub satpoint: SatPoint,
 }
 
 pub struct MinerPassStorage {
@@ -64,7 +76,9 @@ impl MinerPassStorage {
                 mint_txid TEXT NOT NULL,
                 mint_block_height INTEGER NOT NULL,
                 mint_owner TEXT NOT NULL,
-                
+
+                satpoint TEXT NOT NULL,
+
                 eth_main TEXT NOT NULL,
                 eth_collab TEXT,
                 prev TEXT NOT NULL,
@@ -123,6 +137,8 @@ impl MinerPassStorage {
                 mint_txid,
                 mint_block_height,
                 mint_owner,
+
+                satpoint,
                 
                 eth_main,
                 eth_collab,
@@ -138,6 +154,7 @@ impl MinerPassStorage {
                 pass_info.mint_txid.to_string(),
                 pass_info.mint_block_height as i64,
                 pass_info.mint_owner.to_string(),
+                pass_info.satpoint.to_string(),
                 pass_info.eth_main,
                 pass_info.eth_collab,
                 prev_serialized,
@@ -159,11 +176,12 @@ impl MinerPassStorage {
         Ok(())
     }
 
-    /// Transfer the ownership of a miner pass to a new owner, and change its state to Dormant
+    /// Transfer the ownership of a miner pass to a new owner
     pub fn transfer_owner(
         &self,
         inscription_id: &InscriptionId,
         new_owner: &USDBScriptHash,
+        new_satpoint: &SatPoint,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
 
@@ -171,12 +189,12 @@ impl MinerPassStorage {
             .execute(
                 "
             UPDATE miner_passes
-            SET owner = ?1, state = ?2
+            SET owner = ?1, satpoint = ?2
             WHERE inscription_id = ?3;
             ",
                 rusqlite::params![
                     new_owner.to_string(),
-                    MinerPassState::Dormant.as_str(),
+                    new_satpoint.to_string(),
                     inscription_id.to_string(),
                 ],
             )
@@ -196,8 +214,53 @@ impl MinerPassStorage {
         }
 
         info!(
-            "Transferred miner pass {} ownership to {} and set state to Dormant",
+            "Transferred miner pass {} ownership to {}",
             inscription_id, new_owner
+        );
+
+        Ok(())
+    }
+
+    // Update the satpoint of a miner pass where its inscription_id and current satpoint match
+    pub fn update_satpoint(
+        &self,
+        inscription_id: &InscriptionId,
+        prev_satpoint: &SatPoint,
+        new_satpoint: &SatPoint,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+
+        let affected = conn
+            .execute(
+                "
+            UPDATE miner_passes
+            SET satpoint = ?1
+            WHERE inscription_id = ?2 AND satpoint = ?3;
+            ",
+                rusqlite::params![
+                    new_satpoint.to_string(),
+                    inscription_id.to_string(),
+                    prev_satpoint.to_string(),
+                ],
+            )
+            .map_err(|e| {
+                let msg = format!("Failed to update miner pass satpoint in database: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        if affected == 0 {
+            let msg = format!(
+                "No miner pass found with inscription_id {} and satpoint {} to update to new satpoint {}",
+                inscription_id, prev_satpoint, new_satpoint
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!(
+            "Updated miner pass {} satpoint from {} to {}",
+            inscription_id, prev_satpoint, new_satpoint
         );
 
         Ok(())
@@ -253,7 +316,7 @@ impl MinerPassStorage {
     }
 
     fn row_to_pass_item(row: &rusqlite::Row) -> Result<MinerPassInfo, String> {
-        let prev_serialized: String = row.get(7).map_err(|e| {
+        let prev_serialized: String = row.get(8).map_err(|e| {
             let msg = format!("Failed to get prev field from miner pass row: {}", e);
             error!("{}", msg);
             msg
@@ -336,12 +399,26 @@ impl MinerPassStorage {
                     msg
                 })?,
 
-            eth_main: row.get(5).map_err(|e| {
+            satpoint: row
+                .get::<_, String>(5)
+                .map_err(|e| {
+                    let msg = format!("Failed to get satpoint field from miner pass row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse satpoint from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+
+            eth_main: row.get(6).map_err(|e| {
                 let msg = format!("Failed to get eth_main field from miner pass row: {}", e);
                 error!("{}", msg);
                 msg
             })?,
-            eth_collab: row.get(6).map_err(|e| {
+            eth_collab: row.get(7).map_err(|e| {
                 let msg = format!("Failed to get eth_collab field from miner pass row: {}", e);
                 error!("{}", msg);
                 msg
@@ -350,7 +427,7 @@ impl MinerPassStorage {
             prev: prev_ids,
 
             owner: row
-                .get::<_, String>(8)
+                .get::<_, String>(9)
                 .map_err(|e| {
                     let msg = format!("Failed to get owner field from miner pass row: {}", e);
                     error!("{}", msg);
@@ -363,7 +440,7 @@ impl MinerPassStorage {
                     msg
                 })?,
             state: {
-                let state_str: String = row.get(9).map_err(|e| {
+                let state_str: String = row.get(10).map_err(|e| {
                     let msg = format!("Failed to get state field from miner pass row: {}", e);
                     error!("{}", msg);
                     msg
@@ -390,19 +467,7 @@ impl MinerPassStorage {
             .prepare(
                 "
             SELECT
-                inscription_id,
-                inscription_number,
-
-                mint_txid,
-                mint_block_height,
-                mint_owner,
-                
-                eth_main,
-                eth_collab,
-                prev,
-
-                owner,
-                state
+                *
             FROM miner_passes
             WHERE inscription_id = ?1;
             ",
@@ -454,19 +519,7 @@ impl MinerPassStorage {
             .prepare(
                 "
             SELECT
-                inscription_id,
-                inscription_number,
-
-                mint_txid,
-                mint_block_height,
-                mint_owner,
-                
-                eth_main,
-                eth_collab,
-                prev,
-
-                owner,
-                state
+                *
             FROM miner_passes
             WHERE owner = ?1 AND state = ?2
             ORDER BY mint_block_height DESC
@@ -483,7 +536,10 @@ impl MinerPassStorage {
             })?;
 
         let mut rows = stmt
-            .query(rusqlite::params![owner.to_string(), MinerPassState::Active.as_str()])
+            .query(rusqlite::params![
+                owner.to_string(),
+                MinerPassState::Active.as_str()
+            ])
             .map_err(|e| {
                 let msg = format!(
                     "Failed to query last active miner pass by owner from database: {}",
@@ -507,7 +563,118 @@ impl MinerPassStorage {
             Ok(None)
         }
     }
-}
 
+    // Get all none consumed miner passes by pagination, where state != Consumed
+    pub fn get_all_valid_pass_by_page(
+        &self,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<ValidMinerPassInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let offset = page * page_size;
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                inscription_id,
+                satpoint,
+                owner
+            FROM miner_passes
+            WHERE state <> ?1
+            ORDER BY mint_block_height DESC
+            LIMIT ?2 OFFSET ?3;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get all valid miner passes by page: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                MinerPassState::Consumed.as_str(),
+                page_size as i64,
+                offset as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query all valid miner passes by page from database: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying all valid miner passes by page: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id = row
+                .get::<_, String>(0)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to get inscription_id field from miner pass row: {}",
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse inscription_id from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let satpoint = row
+                .get::<_, String>(1)
+                .map_err(|e| {
+                    let msg = format!("Failed to get satpoint field from miner pass row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse satpoint from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let owner = row
+                .get::<_, String>(2)
+                .map_err(|e| {
+                    let msg = format!("Failed to get owner field from miner pass row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse owner from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let pass_info = ValidMinerPassInfo {
+                inscription_id,
+                satpoint,
+                owner,
+            };
+            passes.push(pass_info);
+        }
+
+        Ok(passes)
+    }
+}
 
 pub type MinerPassStorageRef = std::sync::Arc<MinerPassStorage>;
