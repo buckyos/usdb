@@ -128,3 +128,5 @@ impl RpcClient {
         })?)
     }
 }
+
+pub type RpcClientRef = std::sync::Arc<RpcClient>;

@@ -51,6 +51,7 @@ impl IndexOutput {
     pub fn start_load(&self, total: u64) {
         let bar = self.create_bar();
         bar.set_length(total);
+        self.mp.add(bar.clone());
         {
             let mut load_bar = self.load_bar.lock().unwrap();
             assert!(load_bar.is_none(), "Load bar already started");
@@ -97,16 +98,19 @@ impl IndexOutput {
     pub fn start_index(&self, total: u64, current: u64) {
         let bar: ProgressBar = self.create_bar();
         bar.set_length(total);
-
         bar.set_position(current);
         bar.reset_eta();
+        self.mp.add(bar.clone());
 
-        let mut index_bar = self.index_bar.lock().unwrap();
-        assert!(index_bar.is_none(), "Index bar already started");
-        *index_bar = Some(bar);
+        {
+            let mut index_bar = self.index_bar.lock().unwrap();
+            assert!(index_bar.is_none(), "Index bar already started");
+            *index_bar = Some(bar);
+        }
 
         self.status.update_phase(SyncPhase::Indexing, Some("Starting indexer".to_string()));
         self.status.update_total(total, None);
+        self.status.update_current(current, None);
     }
 
     pub fn is_index_started(&self) -> bool {

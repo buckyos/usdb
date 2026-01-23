@@ -4934,6 +4934,7 @@ dependencies = [
  "bincode",
  "bitcoincore-rpc",
  "dirs",
+ "indicatif",
  "log",
  "lru",
  "named-lock",
