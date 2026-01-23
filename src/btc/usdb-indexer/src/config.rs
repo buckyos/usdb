@@ -3,9 +3,22 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig, BalanceHistoryConfig};
 
+fn default_genesis_block_height() -> u32 {
+    900000
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
+    #[serde(default = "default_genesis_block_height")]
     pub genesis_block_height: u32,
+}
+
+impl Default for USDBConfig {
+    fn default() -> Self {
+        USDBConfig {
+            genesis_block_height: default_genesis_block_height(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,11 +31,21 @@ pub struct IndexerConfig {
 
     pub ordinals: OrdConfig,
 
-    pub electrs: ElectrsConfig,
-
     pub balance_history: BalanceHistoryConfig,
     
     pub usdb: USDBConfig,
+}
+
+impl Default for IndexerConfig {
+    fn default() -> Self {
+        IndexerConfig {
+            isolate: None,
+            bitcoin: BTCConfig::default(),
+            ordinals: OrdConfig::default(),
+            balance_history: BalanceHistoryConfig::default(),
+            usdb: USDBConfig::default(),
+        }
+    }
 }
 
 pub struct ConfigManager {
@@ -31,7 +54,7 @@ pub struct ConfigManager {
 }
 
 impl ConfigManager {
-    pub fn new(root_dir: Option<PathBuf>) -> Result<Self, String> {
+    pub fn load(root_dir: Option<PathBuf>) -> Result<Self, String> {
         let root_dir = if let Some(dir) = root_dir {
             dir
         } else {
@@ -52,6 +75,20 @@ impl ConfigManager {
         }
 
         let config_path = root_dir.join("config.json");
+        if !config_path.exists() {
+            let default_config = IndexerConfig::default();
+             
+            info!("Config file not found at {}. Using default config.", config_path.display());
+            info!(
+                "Default config: {}",
+                serde_json::to_string_pretty(&default_config).unwrap()
+            );
+
+            return Ok(Self {
+                root_dir,
+                config: default_config,
+            });
+        }
 
         let config_data = std::fs::read_to_string(&config_path).map_err(|e| {
             let msg = format!(

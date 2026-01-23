@@ -10,8 +10,9 @@ pub fn init_process_lock(service_name: &str) -> (NamedLock, NamedLockGuard) {
         exit(1);
     });
 
-    // Acquire application lock to prevent multiple instances
-    let lock = match NamedLock::create("usdb_indexer_lock"){
+    // Acquire application lock to prevent multiple instances\
+    let lock_name = format!("{}_lock", service_name);
+    let lock = match NamedLock::create(&lock_name){
         Ok(lock) => lock,
         Err(e) => {
             println!("Failed to acquire application lock: {}", e);

@@ -169,3 +169,9 @@ pub struct BalanceHistoryConfig {
     #[serde(default = "default_balance_history_rpc_url")]
     pub rpc_url: String,
 }
+
+impl Default for BalanceHistoryConfig {
+    fn default() -> Self {
+        Self { rpc_url: default_balance_history_rpc_url() }
+    }
+}

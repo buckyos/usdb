@@ -1,7 +1,6 @@
 use crate::index::MinerPassState;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
-use ord::templates::inscription;
 use ordinals::SatPoint;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
