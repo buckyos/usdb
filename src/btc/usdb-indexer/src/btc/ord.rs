@@ -19,8 +19,15 @@ pub struct OrdClient {
 
 impl OrdClient {
     pub fn new(server_url: &str) -> Result<Self, String> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            .default_headers(headers)
             .build()
             .map_err(|e| {
                 let msg = format!("Failed to create Ord client: {}", e);
@@ -58,10 +65,14 @@ impl OrdClient {
             msg
         })?;
 
-        if let Some(height) = block_info.get("data").and_then(|h| h.as_u64()) {
-            Ok(height as u32)
-        } else {
-            let msg = format!("Missing 'data' field in response from {}", url);
+        // Parse the block height from the JSON response as integer
+        if block_info.is_number() {
+            Ok(block_info.as_u64().unwrap_or(0) as u32)
+        }   else {
+            let msg = format!(
+                "Invalid block height format received from {}: {:?}",
+                url, block_info
+            );
             error!("{}", msg);
             Err(msg)
         }
