@@ -1112,6 +1112,11 @@ impl BalanceHistoryDB {
             cb.on_balance_history_entries(&snapshot, entries_processed)?;
         }
 
+        info!(
+            "Balance history shard {:0x} processed complete",
+            shard_index
+        );
+
         Ok(())
     }
 
@@ -1174,6 +1179,8 @@ impl BalanceHistoryDB {
             cb.on_utxo_entries(&snapshot, entries_processed)?;
         }
 
+        info!("UTXO shard {:0x} processed complete", shard_index);
+
         Ok(())
     }
 
@@ -1198,6 +1205,8 @@ impl BalanceHistoryDB {
                 )
             })?;
 
+        info!("Balance history snapshot generation complete");
+        
         Ok(())
     }
 
@@ -1215,6 +1224,8 @@ impl BalanceHistoryDB {
             .try_for_each(|shard_index| {
                 self.generate_utxo_snapshot_sharded(shard_index, BATCH_SIZE, cb.clone())
             })?;
+
+        info!("UTXO snapshot generation complete");
 
         Ok(())
     }

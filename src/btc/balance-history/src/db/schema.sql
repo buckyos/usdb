@@ -1,6 +1,8 @@
 CREATE TABLE IF NOT EXISTS meta (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     block_height    INTEGER NOT NULL,
+    balance_history_count INTEGER NOT NULL,
+    utxo_count      INTEGER NOT NULL,
     generated_at    INTEGER NOT NULL,
     version         INTEGER NOT NULL DEFAULT 1
 );
@@ -13,7 +15,7 @@ CREATE TABLE IF NOT EXISTS balance_history (
 );
 
 CREATE TABLE IF NOT EXISTS utxos (
-    outpoint       BLOB    NOT NULL PRIMARY KEY, -- 36 bytes
+    outpoint       BLOB    NOT NULL PRIMARY KEY,  -- 36 bytes
     script_hash    BLOB    NOT NULL,              -- 32 bytes
-    value          INTEGER NOT NULL,              -- u64
+    value          INTEGER NOT NULL               -- u64
 );

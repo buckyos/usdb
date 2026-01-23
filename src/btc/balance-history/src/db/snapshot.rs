@@ -12,6 +12,8 @@ pub const SNAPSHOT_DB_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub struct SnapshotMeta {
     pub block_height: u32,
+    pub balance_history_count: u64,
+    pub utxo_count: u64,
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
 }
@@ -25,6 +27,8 @@ impl SnapshotMeta {
 
         Self {
             block_height,
+            balance_history_count: 0,
+            utxo_count: 0,
             generated_at: since_the_epoch.as_secs(),
             version: SNAPSHOT_DB_VERSION,
         }
@@ -184,9 +188,11 @@ impl SnapshotDB {
     pub fn update_meta(&self, meta: &SnapshotMeta) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT INTO meta (block_height, generated_at, version) VALUES (?1, ?2, ?3)",
+                "INSERT INTO meta (block_height, balance_history_count, utxo_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5)",
                 (
                     meta.block_height as i64,
+                    meta.balance_history_count as i64,
+                    meta.utxo_count as i64,
                     meta.generated_at as i64,
                     meta.version as i64,
                 ),
@@ -204,7 +210,7 @@ impl SnapshotDB {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT block_height, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
+                "SELECT block_height, balance_history_count, utxo_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
@@ -216,8 +222,10 @@ impl SnapshotDB {
             .query_row([], |row| {
                 Ok(SnapshotMeta {
                     block_height: row.get::<_, i64>(0).map(|v| v as u32)?,
-                    generated_at: row.get::<_, i64>(1).map(|v| v as u64)?,
-                    version: row.get::<_, i64>(2).map(|v| v as u32)?,
+                    balance_history_count: row.get::<_, i64>(1).map(|v| v as u64)?,
+                    utxo_count: row.get::<_, i64>(2).map(|v| v as u64)?,
+                    generated_at: row.get::<_, i64>(3).map(|v| v as u64)?,
+                    version: row.get::<_, i64>(4).map(|v| v as u32)?,
                 })
             })
             .map_err(|e| {
@@ -311,7 +319,7 @@ impl SnapshotDB {
         Ok(())
     }
 
-    pub fn get_balance_history_entries_count(&self) -> Result<u64, String> {
+    pub fn stat_balance_history_entries_count(&self) -> Result<u64, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT COUNT(*) FROM balance_history")
@@ -547,7 +555,7 @@ impl SnapshotDB {
         Ok(entries)
     }
 
-    pub fn get_utxo_entries_count(&self) -> Result<u64, String> {
+    pub fn stat_utxo_entries_count(&self) -> Result<u64, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT COUNT(*) FROM utxos")
@@ -567,7 +575,7 @@ impl SnapshotDB {
 
         Ok(count)
     }
-    
+
     pub fn get_utxo_entries(
         &self,
         page_size: u32,
