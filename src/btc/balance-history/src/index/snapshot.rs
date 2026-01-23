@@ -7,7 +7,7 @@ use crate::output::IndexOutputRef;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use usdb_util::USDBScriptHash;
+use usdb_util::{USDBScriptHash, UTXOEntry};
 
 pub struct SnapshotIndexer {
     config: BalanceHistoryConfigRef,
@@ -24,10 +24,10 @@ impl SnapshotIndexer {
         Self { config, db, output }
     }
 
-    pub fn run(&self, target_block_height: u32) -> Result<(), String> {
+    pub fn run(&self, target_block_height: u32, with_utxo: bool) -> Result<(), String> {
         info!(
-            "Starting snapshot generation up to block height {}",
-            target_block_height
+            "Starting snapshot generation up to block height {}, with_utxo={}",
+            target_block_height, with_utxo
         );
 
         self.output.start_load(0);
@@ -35,9 +35,10 @@ impl SnapshotIndexer {
         let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
         self.output.println(&format!(
-            "Creating snapshot database at {} height {}",
+            "Creating snapshot database at {} height {}, with_utxo={}",
             root_dir.display(),
-            target_block_height
+            target_block_height,
+            with_utxo
         ));
         let snapshot_db = SnapshotDB::open_by_height(&root_dir, target_block_height, true)
             .map_err(|e| {
@@ -48,30 +49,66 @@ impl SnapshotIndexer {
 
         let snapshot_meta = SnapshotMeta::new(target_block_height);
         snapshot_db.update_meta(&snapshot_meta)?;
+        let snapshot_db = Arc::new(Mutex::new(snapshot_db));
 
-        let total = self.db.get_history_balance_count()?;
-        self.output.update_load_total_count(total);
-        self.output.println(&format!(
-            "Will generate snapshot with {} entries at block height {}",
-            total, target_block_height
-        ));
+        // First generate balance history snapshot
+        {
+            let total = self.db.get_history_balance_count()?;
+            self.output.update_load_total_count(total);
+            self.output.println(&format!(
+                "Will generate snapshot with {} entries at block height {}",
+                total, target_block_height
+            ));
 
-        let generator = SnapshotGenerator {
-            db: Arc::new(Mutex::new(snapshot_db)),
-            count: Arc::new(AtomicU64::new(0)),
-            output: self.output.clone(),
-        };
-        let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-        self.db
-            .generate_snapshot_parallel(target_block_height, cb)?;
+            let generator = SnapshotGenerator {
+                db: snapshot_db.clone(),
+                count: Arc::new(AtomicU64::new(0)),
+                output: self.output.clone(),
+            };
+            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
+            self.db
+                .generate_balance_history_snapshot_parallel(target_block_height, cb)?;
 
-        let total_count = generator.db.lock().unwrap().get_entries_count()?;
+            let total_count = generator
+                .db
+                .lock()
+                .unwrap()
+                .get_balance_history_entries_count()?;
 
-        let msg = format!(
-            "Completed snapshot generation up to block height {}, total entries: {}",
-            target_block_height, total_count
-        );
-        self.output.println(&msg);
+            let msg = format!(
+                "Completed snapshot generation up to block height {}, total entries: {}",
+                target_block_height, total_count
+            );
+            self.output.println(&msg);
+        }
+
+        // Then generate UTXO snapshot if needed
+        if with_utxo {
+            let total = self.db.get_utxo_count()?;
+            self.output.update_load_total_count(total);
+            self.output.println(&format!(
+                "Will generate UTXO snapshot with {} entries at block height {}",
+                total, target_block_height
+            ));
+
+            let generator = SnapshotGenerator {
+                db: snapshot_db.clone(),
+                count: Arc::new(AtomicU64::new(0)),
+                output: self.output.clone(),
+            };
+            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
+            self.db
+                .generate_utxo_snapshot_parallel(cb)?;
+
+            let total_count = generator.db.lock().unwrap().get_utxo_entries_count()?;
+
+            let msg = format!(
+                "Completed UTXO snapshot generation up to block height {}, total UTXOs: {}",
+                target_block_height, total_count
+            );
+
+            self.output.println(&msg);
+        }
 
         Ok(())
     }
@@ -85,12 +122,15 @@ struct SnapshotGenerator {
 }
 
 impl SnapshotCallback for SnapshotGenerator {
-    fn on_snapshot_entries(
+    fn on_balance_history_entries(
         &self,
         entries: &[BalanceHistoryEntry],
         entries_processed: u64,
     ) -> Result<(), String> {
-        self.db.lock().unwrap().put_entries(entries)?;
+        self.db
+            .lock()
+            .unwrap()
+            .put_balance_history_entries(entries)?;
 
         // Use entries_processed to update count
         let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
@@ -101,6 +141,24 @@ impl SnapshotCallback for SnapshotGenerator {
             self.output.set_load_message(&format!(
                 "{}: {} sat @ {}",
                 last_entry.script_hash, last_entry.balance, last_entry.block_height,
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn on_utxo_entries(&self, entries: &[UTXOEntry], entries_processed: u64) -> Result<(), String> {
+        self.db.lock().unwrap().put_utxo_entries(entries)?;
+
+        // Use entries_processed to update count
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+
+        // Display last entry info
+        if let Some(last_entry) = entries.last() {
+            self.output.set_load_message(&format!(
+                "{}: {} sat",
+                last_entry.script_hash, last_entry.value,
             ));
         }
 
@@ -171,7 +229,41 @@ impl SnapshotInstaller {
             msg
         })?;
 
-        let total = snapshot_db.get_entries_count()?;
+        // Install balance history entries
+        self.install_balance_history_snapshot(&snapshot_db, &meta)?;
+
+        // Install UTXO entries
+        self.install_utxo_snapshot(&snapshot_db, &meta)?;
+
+        self.db
+            .put_btc_block_height(meta.block_height)
+            .map_err(|e| {
+                let msg = format!("Failed to update BTC block height: {}", e);
+                self.output.println(&msg);
+                msg
+            })?;
+
+        self.output.println(&format!(
+            "Completed snapshot installation up to block height {}",
+            meta.block_height
+        ));
+        self.output.finish_load();
+
+        Ok(())
+    }
+
+    fn install_balance_history_snapshot(
+        &self,
+        snapshot_db: &SnapshotDB,
+        meta: &SnapshotMeta,
+    ) -> Result<(), String> {
+        let total = snapshot_db.get_balance_history_entries_count()?;
+        if total == 0 {
+            self.output
+                .println("No balance history entries in snapshot, skipping installation");
+            return Ok(());
+        }
+
         self.output.update_load_total_count(total);
         self.output.println(&format!(
             "Installing snapshot with {} entries up to block height {}",
@@ -184,7 +276,7 @@ impl SnapshotInstaller {
         let mut installed_total = 0u64;
         loop {
             let entries = snapshot_db
-                .get_entries(page_size, last_script_hash.as_ref())
+                .get_balance_history_entries(page_size, last_script_hash.as_ref())
                 .map_err(|e| {
                     let msg = format!("Failed to read snapshot entries: {}", e);
                     self.output.println(&msg);
@@ -209,26 +301,77 @@ impl SnapshotInstaller {
             }
         }
 
-        assert!(installed_total == total, "Installed total {} does not match expected total {}", installed_total, total);
+        assert!(
+            installed_total == total,
+            "Installed total {} does not match expected total {}",
+            installed_total,
+            total
+        );
+
         self.db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
             self.output.println(&msg);
             msg
         })?;
 
-        self.db
-            .put_btc_block_height(meta.block_height)
-            .map_err(|e| {
-                let msg = format!("Failed to update BTC block height: {}", e);
+        Ok(())
+    }
+
+    fn install_utxo_snapshot(
+        &self,
+        snapshot_db: &SnapshotDB,
+        meta: &SnapshotMeta,
+    ) -> Result<(), String> {
+        let total = snapshot_db.get_utxo_entries_count()?;
+        self.output.update_load_total_count(total);
+        self.output.println(&format!(
+            "Installing UTXO snapshot with {} entries up to block height {}",
+            total, meta.block_height
+        ));
+
+        // Load UTXO by batch
+        let page_size = 1024 * 256; // 256k entries per batch
+        let mut last_outpoint = None;
+        let mut installed_total = 0u64;
+        loop {
+            let utxos = snapshot_db
+                .get_utxo_entries(page_size, last_outpoint.as_ref())
+                .map_err(|e| {
+                    let msg = format!("Failed to read snapshot UTXOs: {}", e);
+                    self.output.println(&msg);
+                    msg
+                })?;
+
+            self.db.put_utxos(&utxos).map_err(|e| {
+                let msg = format!("Failed to write snapshot UTXOs to database: {}", e);
                 self.output.println(&msg);
                 msg
             })?;
+            installed_total += utxos.len() as u64;
 
-        self.output.println(&format!(
-            "Completed snapshot installation up to block height {}",
-            meta.block_height
-        ));
-        self.output.finish_load();
+            if let Some(last_utxo) = utxos.last() {
+                last_outpoint = Some(last_utxo.outpoint);
+            }
+
+            self.output.update_load_current_count(installed_total);
+
+            if utxos.len() < page_size as usize {
+                break;
+            }
+        }
+
+        assert!(
+            installed_total == total,
+            "Installed total {} does not match expected total {}",
+            installed_total,
+            total
+        );
+
+        self.db.flush_all().map_err(|e| {
+            let msg = format!("Failed to flush database: {}", e);
+            self.output.println(&msg);
+            msg
+        })?;
 
         Ok(())
     }

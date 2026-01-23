@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use rayon::slice::ParallelSliceMut;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
+use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntryRef, UTXOValue};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -247,7 +247,7 @@ impl BatchBlockPreloader {
                         vout: n as u32,
                     };
 
-                    let cache_tx_out = UTXOEntry {
+                    let cache_tx_out = UTXOValue {
                         value: vout.value.to_sat(),
                         script_hash: vout.script_pubkey.to_usdb_script_hash(),
                     };
@@ -382,7 +382,7 @@ impl BatchBlockPreloader {
             } else {
                 // Load from rpc
                 let (script, amount) = self.btc_client.get_utxo(&outpoints[i])?;
-                let entry = UTXOEntry {
+                let entry = UTXOValue {
                     value: amount.to_sat(),
                     script_hash: script.to_usdb_script_hash(),
                 };

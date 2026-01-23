@@ -67,6 +67,10 @@ enum BalanceHistoryCommands {
         /// Specify the target block height for the snapshot
         #[arg(short, long)]
         block_height: u32,
+
+        /// Include UTXO data in the snapshot, default is true
+        #[arg(short, long, default_value_t = true)]
+        with_utxo: bool,
     },
 
     VerifySnapshot {},
@@ -276,7 +280,7 @@ async fn main() {
             println!("Address index built successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::CreateSnapshot { block_height }) => {
+        Some(BalanceHistoryCommands::CreateSnapshot { block_height, with_utxo }) => {
             // Init file logging
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -315,7 +319,7 @@ async fn main() {
 
             let snapshot_indexer =
                 crate::index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
-            if let Err(e) = snapshot_indexer.run(block_height) {
+            if let Err(e) = snapshot_indexer.run(block_height, with_utxo) {
                 error!("Failed to generate snapshot: {}", e);
                 output.println(&format!("Failed to generate snapshot: {}", e));
                 std::process::exit(1);

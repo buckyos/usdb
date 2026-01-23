@@ -1,9 +1,10 @@
 use super::db::BalanceHistoryEntry;
+use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::USDBScriptHash;
+use usdb_util::{OutPointCodec, USDBScriptHash, UTXOEntry};
 
 // The version of the snapshot database schema
 pub const SNAPSHOT_DB_VERSION: u32 = 1;
@@ -228,7 +229,10 @@ impl SnapshotDB {
         Ok(meta)
     }
 
-    pub fn put_entries(&mut self, entries: &[BalanceHistoryEntry]) -> Result<(), String> {
+    pub fn put_balance_history_entries(
+        &mut self,
+        entries: &[BalanceHistoryEntry],
+    ) -> Result<(), String> {
         let tx = self.conn.transaction().map_err(|e| {
             let msg = format!("Failed to start transaction: {}", e);
             error!("{}", msg);
@@ -268,7 +272,46 @@ impl SnapshotDB {
         Ok(())
     }
 
-    pub fn get_entries_count(&self) -> Result<u64, String> {
+    pub fn put_utxo_entries(&mut self, entries: &[UTXOEntry]) -> Result<(), String> {
+        let tx = self.conn.transaction().map_err(|e| {
+            let msg = format!("Failed to start transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        {
+            let mut stmt = tx
+                .prepare("INSERT INTO utxos (outpoint, script_hash, value) VALUES (?1, ?2, ?3)")
+                .map_err(|e| {
+                    let msg = format!("Failed to prepare statement: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            for entry in entries {
+                stmt.execute((
+                    entry.outpoint_vec(),
+                    entry.script_hash.as_ref() as &[u8],
+                    entry.value as i64,
+                ))
+                .map_err(|e| {
+                    let msg = format!("Failed to insert UTXO entry: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+            }
+        }
+
+        tx.commit().map_err(|e| {
+            let msg = format!("Failed to commit transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_balance_history_entries_count(&self) -> Result<u64, String> {
         let mut stmt = self
             .conn
             .prepare("SELECT COUNT(*) FROM balance_history")
@@ -289,7 +332,7 @@ impl SnapshotDB {
         Ok(count)
     }
 
-    pub fn get_entry(
+    pub fn get_balance_history_entry(
         &self,
         script_hash: &USDBScriptHash,
     ) -> Result<Option<BalanceHistoryEntry>, String> {
@@ -349,7 +392,7 @@ impl SnapshotDB {
         }
     }
 
-     pub fn get_entries_by_page(
+    pub fn get_balance_history_entries_by_page(
         &self,
         page_offset: u32,
         page_size: u32,
@@ -366,14 +409,16 @@ impl SnapshotDB {
             error!("{}", msg);
             msg
         })?;
-        let mut entries_iter = stmt.query(rusqlite::params![
-            page_size as i64,
-            (page_offset as i64) * (page_size as i64),
-        ]).map_err(|e| {
-            let msg = format!("Failed to query map: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        let mut entries_iter = stmt
+            .query(rusqlite::params![
+                page_size as i64,
+                (page_offset as i64) * (page_size as i64),
+            ])
+            .map_err(|e| {
+                let msg = format!("Failed to query map: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
         let mut entries = Vec::with_capacity(page_size as usize);
         while let Some(row) = entries_iter.next().map_err(|e| {
             let msg = format!("Failed to get next row: {}", e);
@@ -417,7 +462,7 @@ impl SnapshotDB {
         Ok(entries)
     }
 
-    pub fn get_entries(
+    pub fn get_balance_history_entries(
         &self,
         page_size: u32,
         last_script_hash: Option<&USDBScriptHash>,
@@ -443,10 +488,9 @@ impl SnapshotDB {
         };
 
         let params = match last_script_hash {
-            Some(last_script_hash) => rusqlite::params![
-                last_script_hash.as_ref() as &[u8],
-                page_size as i64,
-            ],
+            Some(last_script_hash) => {
+                rusqlite::params![last_script_hash.as_ref() as &[u8], page_size as i64,]
+            }
             None => rusqlite::params![page_size as i64],
         };
 
@@ -502,6 +546,115 @@ impl SnapshotDB {
 
         Ok(entries)
     }
+
+    pub fn get_utxo_entries_count(&self) -> Result<u64, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM utxos")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare statement: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let count: u64 = stmt
+            .query_row([], |row| row.get::<_, i64>(0).map(|v| v as u64))
+            .map_err(|e| {
+                let msg = format!("Failed to query row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(count)
+    }
+    
+    pub fn get_utxo_entries(
+        &self,
+        page_size: u32,
+        last_outpoint: Option<&OutPoint>,
+    ) -> Result<Vec<UTXOEntry>, String> {
+        let sql = match last_outpoint {
+            Some(_) => {
+                "
+                SELECT outpoint, script_hash, value 
+                FROM utxos 
+                WHERE outpoint > ?1 
+                ORDER BY outpoint ASC 
+                LIMIT ?2
+                "
+            }
+            None => {
+                "
+                SELECT outpoint, script_hash, value 
+                FROM utxos 
+                ORDER BY outpoint ASC 
+                LIMIT ?1
+                "
+            }
+        };
+
+        let params = match last_outpoint {
+            Some(last_outpoint) => {
+                rusqlite::params![OutPointCodec::encode(last_outpoint), page_size as i64,]
+            }
+            None => rusqlite::params![page_size as i64],
+        };
+
+        let mut stmt = self.conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries_iter = stmt.query(params).map_err(|e| {
+            let msg = format!("Failed to query map: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = entries_iter.next().map_err(|e| {
+            let msg = format!("Failed to get next row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let entry = UTXOEntry {
+                outpoint: {
+                    let blob: Vec<u8> = row.get(0).map_err(|e| {
+                        let msg = format!("Failed to get outpoint blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    OutPointCodec::decode(&blob).map_err(|e| {
+                        let msg = format!("Failed to convert outpoint blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?
+                },
+                script_hash: {
+                    let blob: Vec<u8> = row.get(1).map_err(|e| {
+                        let msg = format!("Failed to get script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                        let msg = format!("Failed to convert script_hash blob: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?
+                },
+                value: row.get::<_, i64>(2).map_err(|e| {
+                    let msg = format!("Failed to get value: {}", e);
+                    error!("{}", msg);
+                    msg
+                })? as u64,
+            };
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
 }
 
 pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
@@ -544,8 +697,7 @@ mod tests {
         .unwrap();
 
         let entry = snapshot_db
-            .get_entry(&script_hash)
-            .expect("Failed to get entry")
+            .get_balance_history_entry(&script_hash)
             .expect("Entry not found");
         println!(
             "Entry at height {}: balance={}, delta={}",

@@ -371,7 +371,7 @@ impl SnapshotVerifier {
     pub async fn verify(&self, index: u64) -> Result<(), String> {
         info!("Starting snapshot verification");
 
-        let entries = self.snapshot_db.get_entries_by_page(index as u32, 1)?;
+        let entries = self.snapshot_db.get_balance_history_entries_by_page(index as u32, 1)?;
         assert!(
             entries.len() == 1,
             "Expected exactly one snapshot entry for index {}, found {}",

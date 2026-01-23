@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
-use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef};
+use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOValue};
 
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
@@ -401,25 +401,11 @@ impl BalanceHistoryDB {
     }
 
     fn make_utxo_key(outpoint: &OutPoint) -> [u8; UTXO_KEY_LEN] {
-        let mut key = [0u8; UTXO_KEY_LEN];
-        key[..32].copy_from_slice(outpoint.txid.as_ref());
-        key[32..36].copy_from_slice(&outpoint.vout.to_be_bytes());
-        key
+        usdb_util::OutPointCodec::encode(outpoint)
     }
 
-    fn parse_utxo_from_value(value: &[u8]) -> UTXOEntry {
-        assert!(
-            value.len() == USDBScriptHash::LEN + 8,
-            "Invalid UTXO value length"
-        );
-
-        let script_hash_bytes = &value[0..USDBScriptHash::LEN];
-        let amount_bytes = &value[USDBScriptHash::LEN..USDBScriptHash::LEN + 8];
-
-        let script_hash = USDBScriptHash::from_slice(script_hash_bytes).unwrap();
-        let value = u64::from_be_bytes(amount_bytes.try_into().unwrap());
-
-        UTXOEntry { script_hash, value }
+    fn parse_utxo_from_value(value: &[u8]) -> UTXOValue {
+        UTXOValue::from_slice(value).unwrap()
     }
 
     fn parse_block_from_value(value: &[u8]) -> BlockEntry {
@@ -805,14 +791,40 @@ impl BalanceHistoryDB {
         ops.set_sync(false);
 
         // Value format: USDBScriptHash (32 bytes) + amount (u64)
-        let mut value = [0u8; USDBScriptHash::LEN + 8];
-        value[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref() as &[u8]);
-        value[USDBScriptHash::LEN..].copy_from_slice(&amount.to_be_bytes());
+        let value = UTXOValue::encode(script_hash, amount);
 
         let key = Self::make_utxo_key(outpoint);
 
         self.db.put_cf_opt(cf, key, value, &ops).map_err(|e| {
             let msg = format!("Failed to put UTXO: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn put_utxos(&self, utxos: &[UTXOEntry]) -> Result<(), String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut batch = WriteBatch::default();
+
+        for utxo in utxos {
+            // Value format: USDBScriptHash (32 bytes) + amount (u64)
+            let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
+            let key = Self::make_utxo_key(&utxo.outpoint);
+
+            batch.put_cf(cf, key, value);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write UTXO batch to DB: {}", e);
             error!("{}", msg);
             msg
         })?;
@@ -835,10 +847,7 @@ impl BalanceHistoryDB {
 
         for (outpoint, utxo) in new_utxos {
             // Value format: USDBScriptHash (32 bytes) + amount (u64)
-            let mut value = [0u8; USDBScriptHash::LEN + 8];
-            value[..USDBScriptHash::LEN].copy_from_slice(utxo.script_hash.as_ref() as &[u8]);
-            value[USDBScriptHash::LEN..].copy_from_slice(&utxo.value.to_be_bytes());
-
+            let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
             let key = Self::make_utxo_key(outpoint);
 
             batch.put_cf(cf, key, value);
@@ -861,7 +870,7 @@ impl BalanceHistoryDB {
     }
 
     // Just get the UTXO without removing it
-    pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
+    pub fn get_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOValue>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
             error!("{}", msg);
@@ -887,7 +896,7 @@ impl BalanceHistoryDB {
     pub fn get_utxos_bulk(
         &self,
         outpoints: &[OutPointRef],
-    ) -> Result<Vec<Option<UTXOEntry>>, String> {
+    ) -> Result<Vec<Option<UTXOValue>>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
             error!("{}", msg);
@@ -924,7 +933,7 @@ impl BalanceHistoryDB {
 
     /*
     // Remove and return the UTXO entry for the given outpoint
-    pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOEntry>, String> {
+    pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOValue>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
             error!("{}", msg);
@@ -965,7 +974,7 @@ impl BalanceHistoryDB {
     pub fn spend_utxos(
         &self,
         outpoints: &Vec<OutPoint>,
-    ) -> Result<Vec<(OutPoint, UTXOEntry)>, String> {
+    ) -> Result<Vec<(OutPoint, UTXOValue)>, String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", UTXO_CF);
             error!("{}", msg);
@@ -1014,7 +1023,11 @@ impl BalanceHistoryDB {
         get_approx_cf_key_count(&self.db, BALANCE_HISTORY_CF)
     }
 
-    fn generate_snapshot_sharded(
+    pub fn get_utxo_count(&self) -> Result<u64, String> {
+        get_approx_cf_key_count(&self.db, UTXO_CF)
+    }
+
+    fn generate_balance_history_snapshot_sharded(
         &self,
         target_block_height: u32,
         shard_index: u8,
@@ -1082,7 +1095,7 @@ impl BalanceHistoryDB {
 
                     if snapshot.len() >= batch_size {
                         // Flush snapshot batch
-                        cb.on_snapshot_entries(&snapshot, entries_processed)?;
+                        cb.on_balance_history_entries(&snapshot, entries_processed)?;
                         snapshot.clear();
                         entries_processed = 0;
                     }
@@ -1096,13 +1109,75 @@ impl BalanceHistoryDB {
 
         // Flush remaining snapshot entries
         if !snapshot.is_empty() {
-            cb.on_snapshot_entries(&snapshot, entries_processed)?;
+            cb.on_balance_history_entries(&snapshot, entries_processed)?;
         }
 
         Ok(())
     }
 
-    pub fn generate_snapshot_parallel(
+    fn generate_utxo_snapshot_sharded(
+        &self,
+        shard_index: u8,
+        batch_size: usize,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut seek_key = vec![shard_index];
+        seek_key.resize(UTXO_KEY_LEN, 0xFF); // max UTXO key
+        let seek_key = seek_key;
+
+        let mut iter = self
+            .db
+            .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
+
+        let mut snapshot = Vec::with_capacity(batch_size);
+        let mut entries_processed = 0u64;
+
+        while let Some(Ok((key, value))) = iter.next() {
+            if key.len() != UTXO_KEY_LEN {
+                continue;
+            }
+
+            //info!("Shard {:0x} processing key {:x?}", shard_index, key);
+            if key[0] != shard_index {
+                // Moved to a new shard
+                break;
+            }
+
+            entries_processed += 1;
+
+            let outpoint = usdb_util::OutPointCodec::decode(&key).unwrap();
+            let utxo_value = Self::parse_utxo_from_value(&value);
+
+            let entry = UTXOEntry {
+                outpoint,
+                script_hash: utxo_value.script_hash,
+                value: utxo_value.value,
+            };
+            snapshot.push(entry);
+
+            if snapshot.len() >= batch_size {
+                // Flush snapshot batch
+                cb.on_utxo_entries(&snapshot, entries_processed)?;
+                snapshot.clear();
+                entries_processed = 0;
+            }
+        }
+
+        // Flush remaining snapshot entries
+        if !snapshot.is_empty() {
+            cb.on_utxo_entries(&snapshot, entries_processed)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn generate_balance_history_snapshot_parallel(
         &self,
         target_block_height: u32,
         cb: SnapshotCallbackRef,
@@ -1115,12 +1190,30 @@ impl BalanceHistoryDB {
         (0u8..=SHARD_COUNT)
             .into_par_iter()
             .try_for_each(|shard_index| {
-                self.generate_snapshot_sharded(
+                self.generate_balance_history_snapshot_sharded(
                     target_block_height,
                     shard_index,
                     BATCH_SIZE,
                     cb.clone(),
                 )
+            })?;
+
+        Ok(())
+    }
+
+    pub fn generate_utxo_snapshot_parallel(
+        &self,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        use rayon::prelude::*;
+
+        const SHARD_COUNT: u8 = 255;
+        const BATCH_SIZE: usize = 1024 * 64;
+
+        (0u8..=SHARD_COUNT)
+            .into_par_iter()
+            .try_for_each(|shard_index| {
+                self.generate_utxo_snapshot_sharded(shard_index, BATCH_SIZE, cb.clone())
             })?;
 
         Ok(())
@@ -1489,11 +1582,13 @@ impl BalanceHistoryDB {
 pub type BalanceHistoryDBRef = std::sync::Arc<BalanceHistoryDB>;
 
 pub trait SnapshotCallback: Send + Sync {
-    fn on_snapshot_entries(
+    fn on_balance_history_entries(
         &self,
         entries: &[BalanceHistoryEntry],
         entries_processed: u64,
     ) -> Result<(), String>;
+
+    fn on_utxo_entries(&self, entries: &[UTXOEntry], entries_processed: u64) -> Result<(), String>;
 }
 
 pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;

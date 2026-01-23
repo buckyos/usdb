@@ -5,10 +5,10 @@ use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::Txid;
 use lru::LruCache;
 use std::sync::Mutex;
-use usdb_util::{OutPointRef, UTXOEntry, UTXOEntryRef};
+use usdb_util::{OutPointRef, UTXOEntryRef, UTXOValue};
 
-// Cache item size estimate: OutPoint (32 + 4 bytes) + UTXOEntry (8 + 32 bytes) ~ 76 bytes
-const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<UTXOEntry>();
+// Cache item size estimate: OutPoint (32 + 4 bytes) + UTXOValue (8 + 32 bytes) ~ 76 bytes
+const CACHE_ITEM_SIZE: usize = std::mem::size_of::<OutPoint>() + std::mem::size_of::<UTXOValue>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 const NORMAL_CACHE_MAX_ENTRIES: usize = 1024 * 16; // 16K entries for normal strategy
 
@@ -152,7 +152,7 @@ mod tests {
         let mut cache = LruCache::new(std::num::NonZeroUsize::new(count + 1000).unwrap());
 
         // Append random entries up to count
-        let value = UTXOEntry {
+        let value = UTXOValue {
             script_hash: USDBScriptHash::from_slice(&[0u8; 32]).unwrap(),
             value: 1000,
         };

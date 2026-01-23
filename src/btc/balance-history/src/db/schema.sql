@@ -11,3 +11,9 @@ CREATE TABLE IF NOT EXISTS balance_history (
     balance     INTEGER NOT NULL,    -- u64
     delta       INTEGER NOT NULL     -- i64
 );
+
+CREATE TABLE IF NOT EXISTS utxos (
+    outpoint       BLOB    NOT NULL PRIMARY KEY, -- 36 bytes
+    script_hash    BLOB    NOT NULL,              -- 32 bytes
+    value          INTEGER NOT NULL,              -- u64
+);
