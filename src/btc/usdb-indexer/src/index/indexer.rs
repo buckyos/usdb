@@ -456,6 +456,10 @@ impl InscriptionIndexer {
                         "Inscription {} burned from {} at block {}",
                         item.inscription_id, item.from_address, block_height
                     );
+
+                    self.miner_pass_manager
+                        .on_pass_burned(&item.inscription_id, block_height)
+                        .await?;
                 }
             }
         }

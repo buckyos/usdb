@@ -298,6 +298,41 @@ impl MinerPassManager {
         
         Ok(())
     }
+
+    pub async fn on_pass_burned(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<(), String> {
+        info!(
+            "Miner Pass {} burned at block height {}",
+            inscription_id, block_height
+        );
+
+        // First lookup the pass by inscription id
+        let pass = self.storage.get_pass_by_inscription_id(inscription_id)?;
+        let pass = pass.ok_or_else(|| {
+            let msg = format!(
+                "Miner Pass {} not found for burning at block height {}",
+                inscription_id, block_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        // Update energy record for the pass before burning if the pass is active
+        if pass.state == MinerPassState::Active {
+            self.energy_manager
+                .update_pass_energy(inscription_id, block_height)
+                .await?;
+        }
+
+        // Update the pass state to burned
+        self.storage
+            .update_state(inscription_id, pass.state, MinerPassState::Burned)?;
+
+        Ok(())
+    }
 }
 
 pub type MinerPassManagerRef = Arc<MinerPassManager>;

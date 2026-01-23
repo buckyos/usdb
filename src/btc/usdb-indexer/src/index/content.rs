@@ -31,6 +31,7 @@ pub enum MinerPassState {
     Active = 0,
     Dormant = 1,
     Consumed = 2,
+    Burned = 3,
 }
 
 impl MinerPassState {
@@ -39,6 +40,7 @@ impl MinerPassState {
             MinerPassState::Active => "active",
             MinerPassState::Dormant => "dormant",
             MinerPassState::Consumed => "consumed",
+            MinerPassState::Burned => "burned",
         }
     }
 
@@ -47,6 +49,7 @@ impl MinerPassState {
             MinerPassState::Active => 0,
             MinerPassState::Dormant => 1,
             MinerPassState::Consumed => 2,
+            MinerPassState::Burned => 3,
         }
     }
 }
@@ -59,6 +62,7 @@ impl FromStr for MinerPassState {
             "active" => Ok(MinerPassState::Active),
             "dormant" => Ok(MinerPassState::Dormant),
             "consumed" => Ok(MinerPassState::Consumed),
+            "burned" => Ok(MinerPassState::Burned),
             _ => Err(format!("Invalid MinerPassState string: {}", s)),
         }
     }
@@ -72,6 +76,7 @@ impl TryFrom<u32> for MinerPassState {
             0 => Ok(MinerPassState::Active),
             1 => Ok(MinerPassState::Dormant),
             2 => Ok(MinerPassState::Consumed),
+            3 => Ok(MinerPassState::Burned),
             _ => Err(format!("Invalid MinerPassState integer: {}", value)),
         }
     }
