@@ -47,11 +47,16 @@ impl BalanceHistoryIndexer {
         // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
         let btc_rpc_client = create_btc_rpc_client(&config)?;
-        let latest_block_height = btc_rpc_client.get_latest_block_height().map_err(|e| {
+        let rpc_latest_block_height = btc_rpc_client.get_latest_block_height().map_err(|e| {
             let msg = format!("Failed to get latest block height from BTC client: {}", e);
             error!("{}", msg);
             msg
         })?;
+        let latest_block_height = config
+            .sync
+            .max_sync_block_height
+            .min(rpc_latest_block_height);
+
         output.println(&format!(
             "Latest BTC block height: {}, Last synced block height: {}",
             latest_block_height, last_synced_block_height
@@ -137,6 +142,16 @@ impl BalanceHistoryIndexer {
             shutdown_tx: Arc::new(Mutex::new(None)),
             shutdown_rx: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn get_latest_block_height(&self) -> Result<u32, String> {
+        let rpc_latest_block_height = self.btc_client.get_latest_block_height().map(|h| h as u32)?;
+        let latest_block_height = self.config
+            .sync
+            .max_sync_block_height
+            .min(rpc_latest_block_height);
+
+        Ok(latest_block_height)
     }
 
     pub fn db(&self) -> &BalanceHistoryDBRef {
@@ -356,7 +371,7 @@ impl BalanceHistoryIndexer {
 
     fn wait_for_new_blocks(&self, last_height: u32) -> Result<u32, String> {
         loop {
-            let latest_height = self.btc_client.get_latest_block_height()? as u32;
+            let latest_height = self.get_latest_block_height()?;
             if latest_height > last_height {
                 info!("New block detected: {} > {}", latest_height, last_height);
                 return Ok(latest_height);
@@ -375,7 +390,7 @@ impl BalanceHistoryIndexer {
     // Return the last synced block height
     fn sync_once(&self) -> Result<u32, String> {
         // Get latest block height from BTC node
-        let latest_btc_height = self.btc_client.get_latest_block_height()? as u32;
+        let latest_btc_height = self.get_latest_block_height()?;
         info!("Latest BTC block height: {}", latest_btc_height);
 
         // Get last synced block height from DB

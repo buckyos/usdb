@@ -61,6 +61,15 @@ pub struct IndexConfig {
     // Value can be 10-100
     #[serde(default = "default_max_memory_percent")]
     pub max_memory_percent: usize,
+
+    #[serde(default = "default_max_sync_block_height")]
+    pub max_sync_block_height: u32,
+}
+
+// By default, no limit on max sync block height
+// But if we need to create snapshot at some specific height, we can set this value
+fn default_max_sync_block_height() -> u32 {
+    u32::MAX
 }
 
 impl Default for IndexConfig {
@@ -71,6 +80,7 @@ impl Default for IndexConfig {
             utxo_max_cache_bytes: default_utxo_cache_bytes(),
             balance_max_cache_bytes: default_balance_cache_bytes(),
             max_memory_percent: default_max_memory_percent(),
+            max_sync_block_height: default_max_sync_block_height(),
         }
     }
 }

@@ -60,7 +60,11 @@ enum BalanceHistoryCommands {
     // #[command(alias = "c")]
     ClearDb {},
 
-    IndexAddress {},
+    IndexAddress {
+        /// Specify the maximum block height to index addresses up to, defaults to the latest block height
+        #[arg(short, long)]
+        max_block_height: Option<u32>,
+    },
 
     /// Create a snapshot of the specified block height
     CreateSnapshot {
@@ -245,7 +249,7 @@ async fn main() {
             println!("Database files cleared successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::IndexAddress {}) => {
+        Some(BalanceHistoryCommands::IndexAddress { max_block_height }) => {
             // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -255,7 +259,7 @@ async fn main() {
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Indexing addresses in directory: {:?}", root_dir);
-            let config = match BalanceHistoryConfig::load(&root_dir) {
+            let mut config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
@@ -263,6 +267,14 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
+
+            if let Some(max_height) = max_block_height {
+                config.sync.max_sync_block_height = max_height;
+                println!("Indexing addresses up to block height: {}", max_height);
+            } else {
+                println!("Indexing addresses up to the latest block height.");
+            }
+            
             let config = Arc::new(config);
             let status = status::SyncStatusManager::new();
             let status = Arc::new(status);
