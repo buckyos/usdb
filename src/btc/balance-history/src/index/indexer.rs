@@ -1,9 +1,11 @@
 use super::block::BatchBlockProcessor;
 use crate::btc::{BTCClientRef, BTCClientType, create_btc_rpc_client, create_local_btc_client};
-use crate::cache::{AddressBalanceCache, AddressBalanceCacheRef, MemoryCacheMonitor, MemoryCacheMonitorRef};
+use crate::cache::{
+    AddressBalanceCache, AddressBalanceCacheRef, MemoryCacheMonitor, MemoryCacheMonitorRef,
+};
 use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
-use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry, BalanceHistoryDB, BalanceHistoryDBMode};
+use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,10 +30,7 @@ pub struct BalanceHistoryIndexer {
 }
 
 impl BalanceHistoryIndexer {
-    pub fn new(
-        config: BalanceHistoryConfigRef,
-        output: IndexOutputRef,
-    ) -> Result<Self, String> {
+    pub fn new(config: BalanceHistoryConfigRef, output: IndexOutputRef) -> Result<Self, String> {
         // First open in normal mode to get last synced block height
         output.println("Initializing database in normal mode... this may take a while.");
         let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal) {
@@ -58,19 +57,25 @@ impl BalanceHistoryIndexer {
             latest_block_height, last_synced_block_height
         ));
 
-        let (db, btc_client) =if latest_block_height - last_synced_block_height > config.sync.local_loader_threshold as u32 {
-            let msg = format!("Using LocalLoader BTC client as we are behind by more than {} blocks", config.sync.local_loader_threshold);
+        let (db, btc_client) = if latest_block_height - last_synced_block_height
+            > config.sync.local_loader_threshold as u32
+        {
+            let msg = format!(
+                "Using LocalLoader BTC client as we are behind by more than {} blocks",
+                config.sync.local_loader_threshold
+            );
             output.println(&msg);
 
             drop(db); // Close the normal mode db
 
             output.println("Reinitializing database in best effort mode... this may take a while.");
-            let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::BestEffort) {
+            let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::BestEffort)
+            {
                 Ok(database) => database,
                 Err(e) => {
                     let msg = format!("Failed to initialize database: {}", e);
                     output.eprintln(&msg);
-                    
+
                     return Err(msg);
                 }
             };
@@ -226,6 +231,7 @@ impl BalanceHistoryIndexer {
         info!("Starting Balance History Indexer...");
 
         let mut failed_attempts = 0;
+        let mut output_mode_warning = false;
         loop {
             match self.sync_once() {
                 Ok(latest_height) => {
@@ -246,12 +252,26 @@ impl BalanceHistoryIndexer {
 
                     // Clear some caches after sync is complete
                     self.cache_monitor.on_sync_complete();
-                    self.btc_client.on_sync_complete(latest_height).unwrap_or_else(|e| {
-                        error!("Error during BTC client on_sync_complete: {}", e);
-                    });
+                    self.btc_client
+                        .on_sync_complete(latest_height)
+                        .unwrap_or_else(|e| {
+                            error!("Error during BTC client on_sync_complete: {}", e);
+                        });
+
+                    /*
+                    // We just don't need to switch back to normal mode here, which may cause extra overhead or deadlock
+                    // We will stay in best effort mode until the indexer is restarted
                     if let Err(e) = self.db.switch_mode(BalanceHistoryDBMode::Normal) {
                         error!("Error switching DB to Normal mode: {}", e);
                         break;
+                    }
+                    */
+
+                    if self.db.get_mode() == BalanceHistoryDBMode::BestEffort
+                        && !output_mode_warning
+                    {
+                        self.output.println("Staying in Best Effort mode until indexer restart(you can restart the indexer when close to sync to switch back to Normal mode).");
+                        output_mode_warning = true;
                     }
 
                     // Wait for new blocks
@@ -365,8 +385,10 @@ impl BalanceHistoryIndexer {
         // Update output to current status
         if !self.output.is_index_started() {
             self.output.println("Starting indexer...");
-            self.output
-                .println(&format!("Latest BTC block height: {}, Last synced block height: {}", latest_btc_height, last_synced_height));
+            self.output.println(&format!(
+                "Latest BTC block height: {}, Last synced block height: {}",
+                latest_btc_height, last_synced_height
+            ));
             self.output
                 .start_index(latest_btc_height as u64, last_synced_height as u64);
         } else {

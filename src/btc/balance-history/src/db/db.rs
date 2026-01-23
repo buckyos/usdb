@@ -97,6 +97,11 @@ impl BalanceHistoryDB {
         })
     }
 
+    pub fn get_mode(&self) -> BalanceHistoryDBMode {
+        let guard = self.mode.lock().unwrap();
+        *guard
+    }
+    
     pub fn switch_mode(&self, mode: BalanceHistoryDBMode) -> Result<(), String> {
         let old_mode;
         {
@@ -158,7 +163,7 @@ impl BalanceHistoryDB {
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect();
             self.db.set_options_cf(cf, &new_opts).map_err(|e| {
-                let msg = format!("Failed to set new options for UTXOCF: {}", e);
+                let msg = format!("Failed to set new options for UTXO CF: {}", e);
                 error!("{}", msg);
                 msg
             })?;
@@ -1206,7 +1211,7 @@ impl BalanceHistoryDB {
             })?;
 
         info!("Balance history snapshot generation complete");
-        
+
         Ok(())
     }
 
