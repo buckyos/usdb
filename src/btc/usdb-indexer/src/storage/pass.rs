@@ -2,11 +2,17 @@ use crate::index::MinerPassState;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 use usdb_util::USDBScriptHash;
+
+// Key for storing the last synced BTC block height
+const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
+
+// Default savepoint name for miner pass operations
+const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
 
 pub struct MinerPassInfo {
     pub inscription_id: InscriptionId,
@@ -68,6 +74,11 @@ impl MinerPassStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(
             "
+            CREATE TABLE IF NOT EXISTS state {
+                name TEXT PRIMARY KEY,
+                value INTEGER
+            };
+
             CREATE TABLE IF NOT EXISTS miner_passes (
                 inscription_id TEXT NOT NULL PRIMARY KEY,
                 inscription_number INTEGER NOT NULL,
@@ -102,6 +113,88 @@ impl MinerPassStorage {
         })?;
 
         Ok(())
+    }
+
+    pub fn savepoint_begin(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(&format!("SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
+            let msg = format!("Failed to begin savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
+            error!("{}", msg);
+            msg
+        })?;
+        
+        Ok(())
+    }
+
+    pub fn savepoint_commit(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(&format!("RELEASE SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
+            let msg = format!("Failed to commit savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
+            error!("{}", msg);
+            msg
+        })?;
+        Ok(())
+    }
+
+    pub fn savepoint_rollback(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(&format!("ROLLBACK TO SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
+            let msg = format!("Failed to rollback savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    // Update btc synced block height
+    pub fn update_synced_btc_block_height(&self, height: u32) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "
+            INSERT INTO state (name, value)
+            VALUES (?1, ?2)
+            ON CONFLICT(name) DO UPDATE SET value = excluded.value;
+            ",
+            rusqlite::params![BTC_SYNCED_BLOCK_HEIGHT_KEY, height as i64],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to update btc_synced_block_height in database: {}",
+                e
+            );
+            log::error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    // Get last synced btc block height
+    pub fn get_synced_btc_block_height(&self) -> Result<Option<u32>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare statement: {}", e);
+                log::error!("{}", msg);
+                msg
+            })?;
+
+        let height: Option<i64> = stmt
+            .query_row([BTC_SYNCED_BLOCK_HEIGHT_KEY], |row| {
+                row.get::<usize, i64>(0)
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to query btc_synced_block_height: {}", e);
+                log::error!("{}", msg);
+                msg
+            })?;
+
+        Ok(height.map(|h| h as u32))
     }
 
     pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
@@ -677,3 +770,43 @@ impl MinerPassStorage {
 }
 
 pub type MinerPassStorageRef = std::sync::Arc<MinerPassStorage>;
+
+
+pub struct MinePassStorageSavePointGuard<'a> {
+    storage: &'a MinerPassStorage,
+    committed: bool,
+}
+
+impl<'a> MinePassStorageSavePointGuard<'a> {
+    pub fn new(storage: &'a MinerPassStorage) -> Result<Self, String> {
+        storage.savepoint_begin()?;
+        Ok(Self {
+            storage,
+            committed: false,
+        })
+    }
+
+    pub fn commit(mut self) -> Result<(), String> {
+        assert!(!self.committed, "Savepoint already committed");
+        self.storage.savepoint_commit()?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
+    fn drop(&mut self) {
+        if !self.committed {
+            match self.storage.savepoint_rollback() {
+                Ok(_) => {
+                    self.storage.savepoint_commit().unwrap_or_else(|e| {
+                        error!("Failed to commit after rollback savepoint: {}", e);
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to rollback savepoint: {}", e);
+                }
+            }
+        }
+    }
+}

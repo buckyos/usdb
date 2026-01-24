@@ -11,5 +11,7 @@
         "rocksdb",
         "bitcoind",
         "bitcoincore",
+        "savepoint",
+        "rusqlite",
     ]
 }

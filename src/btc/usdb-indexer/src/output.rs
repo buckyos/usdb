@@ -1,5 +1,4 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ord::Index;
 
 const BAR_PREFIX: &[&str] = &["BTC", "Ordinals", "Balance History", "Index"];
 

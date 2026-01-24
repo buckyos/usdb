@@ -30,6 +30,26 @@ impl SnapshotIndexer {
             target_block_height, with_utxo
         );
 
+        // Check that target block height is not greater than last synced BTC block height
+        let last_synced_height = self.db.get_btc_block_height()?;
+        if target_block_height > last_synced_height {
+            let msg = format!(
+                "Target block height {} is greater than last synced BTC block height {}",
+                target_block_height, last_synced_height
+            );
+            self.output.eprintln(&msg);
+            return Err(msg);
+        }
+
+        // If target block height is less than last synced height, some UTXO data may be missing, so we show a warning
+        if with_utxo && target_block_height != last_synced_height {
+            let msg = format!(
+                "Target block height {} is less than last synced BTC block height {}. UTXO data may be incomplete.",
+                target_block_height, last_synced_height
+            );
+            self.output.eprintln(&msg);
+        }
+
         self.output.start_load(0);
 
         let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
@@ -43,7 +63,7 @@ impl SnapshotIndexer {
         let snapshot_db = SnapshotDB::open_by_height(&root_dir, target_block_height, true)
             .map_err(|e| {
                 let msg = format!("Failed to create snapshot database: {}", e);
-                error!("{}", msg);
+                self.output.eprintln(&msg);
                 msg
             })?;
 
@@ -104,7 +124,7 @@ impl SnapshotIndexer {
             "Snapshot database created at {}",
             db_path.display()
         ));
-        
+
         // Finally, update snapshot meta with counts
         snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
 

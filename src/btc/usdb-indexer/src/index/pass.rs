@@ -1,12 +1,12 @@
 use super::content::MinerPassState;
 use super::energy::PassEnergyManagerRef;
 use crate::config::ConfigManagerRef;
-use crate::storage::{MinerPassInfo, MinerPassStorage, MinerPassStorageRef};
+use crate::storage::{MinerPassInfo, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
+use ordinals::SatPoint;
 use std::sync::Arc;
 use usdb_util::USDBScriptHash;
-use ordinals::SatPoint;
 
 pub struct PassMintInscriptionInfo {
     pub inscription_id: InscriptionId,
@@ -34,13 +34,12 @@ pub struct MinerPassManager {
 impl MinerPassManager {
     pub fn new(
         config: ConfigManagerRef,
+        miner_pass_storage: MinerPassStorageRef,
         energy_manager: PassEnergyManagerRef,
     ) -> Result<Self, String> {
-        let storage = MinerPassStorage::new(&config.data_dir())?;
-
         Ok(Self {
             config,
-            storage: Arc::new(storage),
+            storage: miner_pass_storage,
             energy_manager,
         })
     }
@@ -287,15 +286,21 @@ impl MinerPassManager {
                 "Miner Pass {} transferred to the same owner {}, skip updating owner",
                 inscription_id, new_owner
             );
-            self.storage.update_satpoint(inscription_id, &pass.satpoint, &pass.satpoint)?;
+            self.storage
+                .update_satpoint(inscription_id, &pass.satpoint, &pass.satpoint)?;
         } else {
             // Transfer the ownership in storage
-            self.storage.transfer_owner(inscription_id, new_owner, satpoint)?;
+            self.storage
+                .transfer_owner(inscription_id, new_owner, satpoint)?;
             if pass.state == MinerPassState::Active {
-                self.storage.update_state(inscription_id, MinerPassState::Dormant, MinerPassState::Active)?;
+                self.storage.update_state(
+                    inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                )?;
             }
         }
-        
+
         Ok(())
     }
 

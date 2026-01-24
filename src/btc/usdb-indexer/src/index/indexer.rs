@@ -3,24 +3,23 @@ use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::inscription::BlockInscriptionsCollector;
 use super::inscription::InscriptionNewItem;
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
-use super::sync_state::{SyncStateStorage, SyncStateStorageRef};
 use super::transfer::InscriptionTransferTracker;
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
 use crate::status::StatusManagerRef;
+use crate::storage::{MinerPassStorage, MinerPassStorageRef, MinePassStorageSavePointGuard};
 use ord::api::Inscription;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
-
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
     btc_client: BTCRpcClientRef,
     ord_client: OrdClientRef,
 
-    index_state: SyncStateStorageRef,
     transfer_tracker: InscriptionTransferTracker,
+    miner_pass_storage: MinerPassStorageRef,
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
@@ -41,15 +40,16 @@ impl InscriptionIndexer {
 
         let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
 
-        // Init index_state storage
-        let index_state = SyncStateStorage::new(&config.data_dir())?;
-
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
 
         // Init pass storage
+        let miner_pass_storage = MinerPassStorage::new(&config.data_dir())?;
+        let miner_pass_storage = Arc::new(miner_pass_storage);
+
         let miner_pass_manager = Arc::new(MinerPassManager::new(
             config.clone(),
+            miner_pass_storage.clone(),
             pass_energy_manager.clone(),
         )?);
 
@@ -63,12 +63,11 @@ impl InscriptionIndexer {
             btc_client: Arc::new(btc_client),
             ord_client: Arc::new(ord_client),
 
-            index_state: Arc::new(index_state),
-
             transfer_tracker,
 
             pass_energy_manager,
             miner_pass_manager,
+            miner_pass_storage,
             status,
 
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -134,11 +133,14 @@ impl InscriptionIndexer {
         loop {
             let latest_height = self.status.latest_depend_synced_block_height();
             if latest_height > last_synced_height {
-                info!("New block detected: {} > {}", latest_height, last_synced_height);
+                info!(
+                    "New block detected: {} > {}",
+                    latest_height, last_synced_height
+                );
                 return latest_height;
             }
 
-            // Sleep for a while before checking again  
+            // Sleep for a while before checking again
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
             // Check for shutdown signal while waiting
@@ -153,7 +155,7 @@ impl InscriptionIndexer {
     async fn sync_once(&self) -> Result<u32, String> {
         let latest_height = self.get_latest_block_height();
 
-        let current_height = self.index_state.get_synced_btc_block_height()?.unwrap_or(0);
+        let current_height = self.miner_pass_storage.get_synced_btc_block_height()?.unwrap_or(0);
         if current_height >= latest_height {
             info!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
@@ -192,11 +194,18 @@ impl InscriptionIndexer {
         for height in block_range {
             info!("Syncing inscriptions at block height {}", height);
 
+            // Use savepoint to allow partial rollback on failure
+            let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
+
             // Sync this block
             self.sync_block(height).await?;
 
             // Update the sync storage to save progress
-            self.index_state.update_synced_btc_block_height(height)?;
+            self.miner_pass_storage.update_synced_btc_block_height(height)?;
+
+            // Commit the savepoint on sync success
+            savepoint_guard.commit()?;
+
             current_height = height;
         }
 
