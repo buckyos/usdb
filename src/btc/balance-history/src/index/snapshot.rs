@@ -99,6 +99,12 @@ impl SnapshotIndexer {
             self.output.println(&msg);
         }
 
+        let db_path = snapshot_db.lock().unwrap().path().to_owned();
+        self.output.println(&format!(
+            "Snapshot database created at {}",
+            db_path.display()
+        ));
+        
         // Finally, update snapshot meta with counts
         snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
 

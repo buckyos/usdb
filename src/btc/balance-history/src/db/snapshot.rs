@@ -162,6 +162,11 @@ impl SnapshotDB {
         Self::open(&db_path)
     }
 
+    /// Get the path of the snapshot database
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Get the current block height of the snapshot (returns None if no snapshot exists)
     pub fn current_block_height(&self) -> Result<Option<u64>, String> {
         let mut stmt = self
