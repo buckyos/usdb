@@ -41,6 +41,10 @@ impl StatusManager {
         })
     }
 
+    pub fn latest_depend_synced_block_height(&self) -> u32 {
+        self.latest_depend_synced_block_height
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
 
     pub fn run_monitor(&self) {
         tokio::spawn({
@@ -48,7 +52,7 @@ impl StatusManager {
             async move {
                 loop {
                     if let Err(e) = status_manager.update_status().await {
-                        log::error!("Failed to update status: {}", e);
+                        error!("Failed to update status: {}", e);
                         // status_manager.output.println(&format!("Failed to update status: {}", e));
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -126,7 +130,7 @@ impl StatusManager {
         self.latest_depend_synced_block_height
             .store(latest_synced_height, std::sync::atomic::Ordering::SeqCst);
 
-        Ok(())  
+        Ok(())
     }
 }
 

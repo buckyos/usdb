@@ -2,7 +2,7 @@ use crate::index::MinerPassState;
 use bitcoincore_rpc::bitcoin::{Txid, hashes::Hash};
 use ord::InscriptionId;
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
-use rust_rocksdb as rocksdb;
+use rust_rocksdb::{self as rocksdb};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use usdb_util::USDBScriptHash;

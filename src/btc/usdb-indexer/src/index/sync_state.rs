@@ -1,6 +1,8 @@
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
+
+const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
 
 pub struct SyncStateStorage {
     db_path: PathBuf,
@@ -39,11 +41,12 @@ impl SyncStateStorage {
         Ok(storage)
     }
 
-    pub fn get_btc_latest_block_height(&self) -> Result<Option<u32>, String> {
+    // Get last synced btc block height
+    pub fn get_synced_btc_block_height(&self) -> Result<Option<u32>, String> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn
-            .prepare("SELECT value FROM state WHERE name = 'btc_latest_block_height'")
+            .prepare("SELECT value FROM state WHERE name = ?1")
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
                 log::error!("{}", msg);
@@ -51,10 +54,12 @@ impl SyncStateStorage {
             })?;
 
         let height: Option<i64> = stmt
-            .query_row([], |row| row.get::<usize, i64>(0))
+            .query_row([BTC_SYNCED_BLOCK_HEIGHT_KEY], |row| {
+                row.get::<usize, i64>(0)
+            })
             .optional()
             .map_err(|e| {
-                let msg = format!("Failed to query btc_latest_block_height: {}", e);
+                let msg = format!("Failed to query btc_synced_block_height: {}", e);
                 log::error!("{}", msg);
                 msg
             })?;
@@ -62,8 +67,8 @@ impl SyncStateStorage {
         Ok(height.map(|h| h as u32))
     }
 
-    // Update btc latest block height only block_height = current_block_height + 1 or current_block_height = 0
-    pub fn update_btc_latest_block_height(&self, height: u32) -> Result<(), String> {
+    // Update btc synced block height only if block_height = current_block_height + 1 or current_block_height = 0
+    pub fn update_synced_btc_block_height(&self, height: u32) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
 
         let tx = conn.transaction().map_err(|e| {
@@ -74,10 +79,13 @@ impl SyncStateStorage {
 
         // First get the current height
         let current_height: Option<i64> = tx
-            .prepare("SELECT value FROM state WHERE name = 'btc_latest_block_height'")
-            .and_then(|mut stmt| stmt.query_row([], |row| row.get(0)).optional())
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .and_then(|mut stmt| {
+                stmt.query_row([BTC_SYNCED_BLOCK_HEIGHT_KEY], |row| row.get(0))
+                    .optional()
+            })
             .map_err(|e| {
-                let msg = format!("Failed to query current btc_latest_block_height: {}", e);
+                let msg = format!("Failed to query current btc_synced_block_height: {}", e);
                 log::error!("{}", msg);
                 msg
             })?;
@@ -95,12 +103,12 @@ impl SyncStateStorage {
 
         // Insert or update the height
         tx.execute(
-            "INSERT INTO state (name, value) VALUES ('btc_latest_block_height', ?1)
+            "INSERT INTO state (name, value) VALUES (?1, ?2)
              ON CONFLICT(name) DO UPDATE SET value = excluded.value",
-            [height as i64],
+            rusqlite::params![BTC_SYNCED_BLOCK_HEIGHT_KEY, height as i64],
         )
         .map_err(|e| {
-            let msg = format!("Failed to update btc_latest_block_height: {}", e);
+            let msg = format!("Failed to update btc_synced_block_height: {}", e);
             error!("{}", msg);
             msg
         })?;

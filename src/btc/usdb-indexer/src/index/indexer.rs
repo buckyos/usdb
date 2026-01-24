@@ -1,33 +1,38 @@
 use super::content::{InscriptionContentLoader, USDBInscription};
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::inscription::BlockInscriptionsCollector;
-use super::inscription::{InscriptionNewItem};
+use super::inscription::InscriptionNewItem;
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::sync_state::{SyncStateStorage, SyncStateStorageRef};
 use super::transfer::InscriptionTransferTracker;
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
+use crate::status::StatusManagerRef;
 use ord::api::Inscription;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
+
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
     btc_client: BTCRpcClientRef,
     ord_client: OrdClientRef,
 
-    current_block_height: AtomicU32,
-    state: SyncStateStorageRef,
-
+    index_state: SyncStateStorageRef,
     transfer_tracker: InscriptionTransferTracker,
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
+
+    status: StatusManagerRef,
+
+    // Shutdown signal
+    should_stop: Arc<AtomicBool>,
 }
 
 impl InscriptionIndexer {
-    pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
+    pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
         // Init btc client
         let btc_client = BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
@@ -36,8 +41,8 @@ impl InscriptionIndexer {
 
         let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
 
-        // Init state storage
-        let state = SyncStateStorage::new(&config.data_dir())?;
+        // Init index_state storage
+        let index_state = SyncStateStorage::new(&config.data_dir())?;
 
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
@@ -58,21 +63,18 @@ impl InscriptionIndexer {
             btc_client: Arc::new(btc_client),
             ord_client: Arc::new(ord_client),
 
-            state: Arc::new(state),
-            current_block_height: AtomicU32::new(0),
+            index_state: Arc::new(index_state),
 
             transfer_tracker,
 
             pass_energy_manager,
             miner_pass_manager,
+            status,
+
+            should_stop: Arc::new(AtomicBool::new(false)),
         };
 
         Ok(ret)
-    }
-
-    // Get current block height should be processed(last processed block height + 1)
-    pub fn current_block_height(&self) -> u32 {
-        self.current_block_height.load(Ordering::SeqCst)
     }
 
     pub async fn init(&self) -> Result<(), String> {
@@ -83,98 +85,88 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    async fn run(&self) -> Result<(), String> {
+    pub fn stop(&self) {
+        let prev_value = self.should_stop.swap(true, Ordering::SeqCst);
+        if !prev_value {
+            info!("Shutdown signal sent to InscriptionIndexer");
+        }
+    }
+
+    fn check_shutdown(&self) -> bool {
+        self.should_stop.load(Ordering::SeqCst)
+    }
+
+    pub async fn run(&self) -> Result<(), String> {
         loop {
-            if self.current_block_height() == 0 {
-                match self.state.get_btc_latest_block_height() {
-                    Ok(height) => {
-                        // Should skip the last processed block, so we add 1 here
-                        let height = height.unwrap_or(0) + 1;
+            if self.check_shutdown() {
+                info!("Indexer shutdown requested. Exiting run loop.");
+                break;
+            }
 
-                        let now = if height > self.config.config().usdb.genesis_block_height {
-                            height
-                        } else {
-                            self.config.config().usdb.genesis_block_height
-                        };
-
-                        self.current_block_height.store(now, Ordering::SeqCst);
-
-                        info!("Inscription indexer starting from block height {}", now);
-                    }
-                    Err(e) => {
-                        error!("Failed to get latest block height: {}", e);
-
-                        // Sleep and retry
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        continue;
-                    }
+            match self.sync_once().await {
+                Ok(last_synced_height) => {
+                    // Successfully synced once, and sleep for a while before next sync
+                    let new_height = self.wait_for_new_blocks(last_synced_height).await;
+                    info!(
+                        "New blocks detected. Last synced height: {}, new height: {}",
+                        last_synced_height, new_height
+                    );
                 }
+                Err(e) => {
+                    error!("Failed to sync inscriptions: {}", e);
 
-                assert!(
-                    self.current_block_height() > 0,
-                    "Current block height should be greater than 0"
-                );
-
-                match self.sync_once().await {
-                    Ok(_) => {
-                        // Successfully synced once, and sleep for a while before next sync
-                        tokio::time::sleep(std::time::Duration::from_secs(10)).await
-                    }
-                    Err(e) => {
-                        error!("Failed to sync inscriptions: {}", e);
-
-                        // Sleep and retry
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        continue;
-                    }
+                    // Sleep and retry
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    // Get latest block height from depended services
+    fn get_latest_block_height(&self) -> u32 {
+        self.status.latest_depend_synced_block_height()
+    }
+
+    async fn wait_for_new_blocks(&self, last_synced_height: u32) -> u32 {
+        loop {
+            let latest_height = self.status.latest_depend_synced_block_height();
+            if latest_height > last_synced_height {
+                info!("New block detected: {} > {}", latest_height, last_synced_height);
+                return latest_height;
+            }
+
+            // Sleep for a while before checking again  
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            // Check for shutdown signal while waiting
+            if self.check_shutdown() {
+                info!("Indexer shutdown requested. Exiting wait for new blocks.");
+                return last_synced_height;
             }
         }
     }
 
-    // Get latest block height from BTC and ord, use the smaller one!
-    async fn get_latest_block_height(&self) -> Result<u32, String> {
-        let height = self.btc_client.get_latest_block_height()?;
+    // Returns the latest synced block height after this sync
+    async fn sync_once(&self) -> Result<u32, String> {
+        let latest_height = self.get_latest_block_height();
 
-        let ord_height = self.ord_client.get_latest_block_height().await?;
-
-        // Check the difference between two heights, if the difference is too large, log a warning
-        if height > ord_height + 10 {
-            warn!(
-                "BTC latest block height {} is significantly ahead of Ord latest block height {}",
-                height, ord_height
+        let current_height = self.index_state.get_synced_btc_block_height()?.unwrap_or(0);
+        if current_height >= latest_height {
+            info!(
+                "No new blocks to sync. Current height: {}, Latest height: {}",
+                current_height, latest_height
             );
-        } else if ord_height > height + 10 {
-            warn!(
-                "Ord latest block height {} is significantly ahead of BTC latest block height {}",
-                ord_height, height
-            );
+
+            return Ok(current_height);
         }
 
-        if height < ord_height {
-            Ok(height)
-        } else {
-            Ok(ord_height)
-        }
-    }
-
-    async fn sync_once(&self) -> Result<(), String> {
-        let height = self.get_latest_block_height().await?;
-
-        if self.current_block_height() > height {
-            if self.current_block_height() > height + 1 {
-                warn!(
-                    "Current sync block height {} is ahead of latest block height {}",
-                    self.current_block_height(),
-                    height
-                );
-            }
-
-            return Ok(());
-        }
-
-        let block_range = self.current_block_height()..=height;
-        if let Err(e) = self.sync_blocks(block_range.clone()).await {
+        let next_height = current_height + 1;
+        let block_range = next_height..=latest_height;
+        let ret = self.sync_blocks(block_range.clone()).await;
+        if let Err(e) = ret {
             let msg = format!(
                 "Failed to sync inscriptions from block range {:?}: {}",
                 block_range, e
@@ -183,38 +175,32 @@ impl InscriptionIndexer {
             return Err(msg);
         }
 
-        assert_eq!(
-            self.current_block_height(),
-            height + 1,
-            "After syncing, current block height should be latest block height + 1"
-        );
+        let current_height = ret.unwrap();
 
-        Ok(())
+        Ok(current_height)
     }
 
-    // Sync blocks from begin to end, inclusive: [begin, end]
-    async fn sync_blocks(&self, block_range: std::ops::RangeInclusive<u32>) -> Result<(), String> {
+    // Sync blocks in range, returns the latest synced block height
+    async fn sync_blocks(&self, block_range: std::ops::RangeInclusive<u32>) -> Result<u32, String> {
         assert!(
             !block_range.is_empty(),
             "Block range should not be empty {:?}",
             block_range
         );
 
+        let mut current_height = *block_range.start();
         for height in block_range {
             info!("Syncing inscriptions at block height {}", height);
 
             // Sync this block
             self.sync_block(height).await?;
 
-            // Update the sync storage
-            self.state.update_btc_latest_block_height(height)?;
-
-            // Update current block height
-            self.current_block_height
-                .store(height + 1, Ordering::SeqCst);
+            // Update the sync storage to save progress
+            self.index_state.update_synced_btc_block_height(height)?;
+            current_height = height;
         }
 
-        Ok(())
+        Ok(current_height)
     }
 
     async fn sync_block(&self, height: u32) -> Result<(), String> {
@@ -227,8 +213,7 @@ impl InscriptionIndexer {
             .await?;
 
         // Then process inscription transfers
-        self.process_block_inscription_transfer(height)
-            .await?;
+        self.process_block_inscription_transfer(height).await?;
 
         // Check if there is anything to process
         if collector.is_empty() {
@@ -238,7 +223,6 @@ impl InscriptionIndexer {
             );
             return Ok(());
         }
-
 
         info!(
             "Finished processing inscriptions at block height {}: {} new inscriptions, {} transfers",
@@ -421,10 +405,7 @@ impl InscriptionIndexer {
         Ok(contents)
     }
 
-    async fn process_block_inscription_transfer(
-        &self,
-        block_height: u32,
-    ) -> Result<(), String> {
+    async fn process_block_inscription_transfer(&self, block_height: u32) -> Result<(), String> {
         let transfer_items = self.transfer_tracker.process_block(block_height).await?;
         if transfer_items.is_empty() {
             info!(
@@ -435,7 +416,7 @@ impl InscriptionIndexer {
         }
 
         for item in transfer_items {
-           match item.to_address {
+            match item.to_address {
                 Some(addr) => {
                     info!(
                         "Inscription {} transferred from {} to {} at block {}",
@@ -443,12 +424,7 @@ impl InscriptionIndexer {
                     );
 
                     self.miner_pass_manager
-                        .on_pass_transfer(
-                            &item.inscription_id,
-                            &addr,
-                            &item.satpoint,
-                            block_height,
-                        )
+                        .on_pass_transfer(&item.inscription_id, &addr, &item.satpoint, block_height)
                         .await?;
                 }
                 None => {

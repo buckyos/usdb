@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::{BTCConfig, ElectrsConfig, OrdConfig, BalanceHistoryConfig};
+use usdb_util::{BTCConfig, OrdConfig, BalanceHistoryConfig};
 
 fn default_genesis_block_height() -> u32 {
     900000
