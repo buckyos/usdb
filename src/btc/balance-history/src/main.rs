@@ -36,9 +36,13 @@ struct BalanceHistoryCli {
     /// Run the service in daemon mode
     #[arg(short, long)]
     daemon: bool,
+
+    /// Specify the maximum block height to index addresses up to, defaults to the latest block height
+    #[arg(short, long)]
+    max_block_height: Option<u32>,
 }
 
-use clap::{Args};
+use clap::Args;
 
 #[derive(Args, Debug, Clone)]
 #[group(required = true, multiple = false)]
@@ -60,11 +64,7 @@ enum BalanceHistoryCommands {
     // #[command(alias = "c")]
     ClearDb {},
 
-    IndexAddress {
-        /// Specify the maximum block height to index addresses up to, defaults to the latest block height
-        #[arg(short, long)]
-        max_block_height: Option<u32>,
-    },
+    IndexAddress {},
 
     /// Create a snapshot of the specified block height
     CreateSnapshot {
@@ -80,7 +80,7 @@ enum BalanceHistoryCommands {
     VerifySnapshot {},
 
     InstallSnapshot {
-       #[clap(flatten)]
+        #[clap(flatten)]
         source: InstallSnapshotSource,
 
         /// Specify the expected hash of the snapshot file for verification
@@ -107,7 +107,7 @@ enum BalanceHistoryCommands {
     },
 }
 
-async fn main_run() {
+async fn main_run(max_block_height: Option<u32>) {
     let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
 
     // Init console output
@@ -124,14 +124,23 @@ async fn main_run() {
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration
-    let config = match BalanceHistoryConfig::load(&root_dir) {
+    let mut config = match BalanceHistoryConfig::load(&root_dir) {
         Ok(cfg) => cfg,
         Err(e) => {
             error!("Failed to load config: {}", e);
-            println!("Failed to load config: {}", e);
+            output.eprintln(&format!("Failed to load config: {}", e));
             std::process::exit(1);
         }
     };
+
+    
+    if let Some(max_height) = max_block_height {
+        config.sync.max_sync_block_height = max_height;
+        output.println(&format!("Indexing balance history up to block height: {}", max_height));
+    } else {
+        output.println("Indexing balance history up to the latest block height.");
+    }
+
     let config = Arc::new(config);
 
     // Start the indexer
@@ -249,7 +258,7 @@ async fn main() {
             println!("Database files cleared successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::IndexAddress { max_block_height }) => {
+        Some(BalanceHistoryCommands::IndexAddress { }) => {
             // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -259,7 +268,7 @@ async fn main() {
 
             let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Indexing addresses in directory: {:?}", root_dir);
-            let mut config = match BalanceHistoryConfig::load(&root_dir) {
+            let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
@@ -267,15 +276,8 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-
-            if let Some(max_height) = max_block_height {
-                config.sync.max_sync_block_height = max_height;
-                println!("Indexing addresses up to block height: {}", max_height);
-            } else {
-                println!("Indexing addresses up to the latest block height.");
-            }
-            
             let config = Arc::new(config);
+            
             let status = status::SyncStatusManager::new();
             let status = Arc::new(status);
             let output = IndexOutput::new(status);
@@ -292,7 +294,10 @@ async fn main() {
             println!("Address index built successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::CreateSnapshot { block_height, with_utxo }) => {
+        Some(BalanceHistoryCommands::CreateSnapshot {
+            block_height,
+            with_utxo,
+        }) => {
             // Init file logging
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -377,7 +382,7 @@ async fn main() {
                 println!("No snapshot file or block height specified for installation.");
                 std::process::exit(1);
             };
-            
+
             if !file_path.exists() {
                 error!("Snapshot file does not exist: {:?}", file_path);
                 println!("Snapshot file does not exist: {:?}", file_path);
@@ -398,8 +403,10 @@ async fn main() {
             let output = IndexOutput::new(status);
             let output = Arc::new(output);
 
-            let db = match BalanceHistoryDB::open(config.clone(), db::BalanceHistoryDBMode::BestEffort)
-            {
+            let db = match BalanceHistoryDB::open(
+                config.clone(),
+                db::BalanceHistoryDBMode::BestEffort,
+            ) {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to initialize database: {}", e));
@@ -554,7 +561,8 @@ async fn main() {
                 match usdb_util::address_string_to_script_hash(&addr_str, &config.btc.network) {
                     Ok(sh) => Some(sh),
                     Err(e) => {
-                        output.eprintln(&format!("Failed to convert address to script hash: {}", e));
+                        output
+                            .eprintln(&format!("Failed to convert address to script hash: {}", e));
                         std::process::exit(1);
                     }
                 }
@@ -640,6 +648,6 @@ async fn main() {
         crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     }
 
-    main_run().await;
+    main_run(cli.max_block_height).await;
     println!("Balance History service exited.");
 }
