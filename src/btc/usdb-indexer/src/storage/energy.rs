@@ -247,4 +247,47 @@ impl PassEnergyStorage {
 
         Ok(last_record)
     }
+
+    // Clear all pass energy records from given block height (inclusive)
+    pub fn clear_records_from_height(&self, from_block_height: u32) -> Result<(), String> {
+        let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", PASS_ENERGY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut iter = self.db.iterator_cf(
+            cf,
+            rocksdb::IteratorMode::Start,
+        );
+
+        let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+
+        while let Some(item) = iter.next() {
+            let (key_bytes, _value_bytes) = item.map_err(|e| {
+                let msg = format!("Failed to iterate pass energy records: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            let key = Self::parse_energy_key(&key_bytes)?;
+
+            if key.block_height >= from_block_height {
+                keys_to_delete.push(key_bytes.to_vec());
+            }
+        }
+
+        let mut delete_batch = rocksdb::WriteBatch::default();
+        for key in keys_to_delete {
+            delete_batch.delete_cf(cf, key);
+        }
+
+        self.db.write(&delete_batch).map_err(|e| {
+            let msg = format!("Failed to delete pass energy records: {}", e);
+            error!("{}", msg);
+            msg
+        })?;    
+           
+        Ok(())
+    }
 }

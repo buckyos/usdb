@@ -131,6 +131,12 @@ impl InscriptionIndexer {
 
     async fn wait_for_new_blocks(&self, last_synced_height: u32) -> u32 {
         loop {
+            let msg = format!(
+                "Waiting for new blocks... Last synced height: {}",
+                last_synced_height
+            );
+            self.status.update_index_status(None, None, Some(msg));
+
             let latest_height = self.status.latest_depend_synced_block_height();
             if latest_height > last_synced_height {
                 info!(
@@ -155,15 +161,33 @@ impl InscriptionIndexer {
     async fn sync_once(&self) -> Result<u32, String> {
         let latest_height = self.get_latest_block_height();
 
-        let current_height = self.miner_pass_storage.get_synced_btc_block_height()?.unwrap_or(0);
+        // Ensure we don't go below genesis block height
+        let genesis_block_height = self.config.config().usdb.genesis_block_height;
+        if latest_height < genesis_block_height {
+            let msg = format!(
+                "Latest block height {} is below genesis block height {}",
+                latest_height, genesis_block_height
+            );
+            self.status.update_index_status(Some(latest_height), Some(latest_height), Some(msg.clone()));
+            return Ok(latest_height);
+        }
+
+        // Get current synced height, ensure it's at least genesis_block_height - 1
+        let mut current_height = self.miner_pass_storage.get_synced_btc_block_height()?.unwrap_or(0);
+        if current_height < genesis_block_height - 1 {
+            current_height = genesis_block_height - 1;
+        }
+
         if current_height >= latest_height {
-            info!(
+            let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
             );
-
+            self.status.update_index_status(Some(current_height), Some(latest_height), Some(msg.clone()));
             return Ok(current_height);
         }
+
+        self.status.update_index_status(Some(current_height), Some(latest_height), Some("Syncing inscriptions...".to_string()));
 
         let next_height = current_height + 1;
         let block_range = next_height..=latest_height;
@@ -174,6 +198,8 @@ impl InscriptionIndexer {
                 block_range, e
             );
             error!("{}", msg);
+            self.status.update_index_status(None, None, Some(msg.clone()));
+
             return Err(msg);
         }
 
@@ -197,6 +223,9 @@ impl InscriptionIndexer {
             // Use savepoint to allow partial rollback on failure
             let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
 
+            let msg = format!("Syncing block {}", height);
+            self.status.update_index_status(None, None, Some(msg));
+
             // Sync this block
             self.sync_block(height).await?;
 
@@ -207,6 +236,7 @@ impl InscriptionIndexer {
             savepoint_guard.commit()?;
 
             current_height = height;
+            self.status.update_index_status(Some(current_height), None, None);
         }
 
         Ok(current_height)

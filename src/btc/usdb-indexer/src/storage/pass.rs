@@ -74,10 +74,10 @@ impl MinerPassStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(
             "
-            CREATE TABLE IF NOT EXISTS state {
+            CREATE TABLE IF NOT EXISTS state (
                 name TEXT PRIMARY KEY,
                 value INTEGER
-            };
+            );
 
             CREATE TABLE IF NOT EXISTS miner_passes (
                 inscription_id TEXT NOT NULL PRIMARY KEY,

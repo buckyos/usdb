@@ -1,12 +1,30 @@
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
+use crate::output::IndexOutputRef;
 use balance_history::{
     RpcClient as BalanceHistoryRpcClient, RpcClientRef as BalanceHistoryClientRef,
 };
-use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
+use std::sync::{Arc, Mutex};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
-use crate::output::IndexOutputRef;
+
+pub struct USDBInscriptionIndexStatus {
+    pub genesis_block_height: u32,
+    pub current: u32,
+    pub total: u32,
+    pub message: Option<String>,
+}
+
+impl USDBInscriptionIndexStatus {
+    pub fn new(genesis_block_height: u32) -> Self {
+        USDBInscriptionIndexStatus {
+            genesis_block_height,
+            current: 0,
+            total: 0,
+            message: None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct StatusManager {
@@ -14,6 +32,8 @@ pub struct StatusManager {
     ord_client: OrdClientRef,
     balance_history_client: BalanceHistoryClientRef,
     output: IndexOutputRef,
+
+    usdb_status: Arc<Mutex<USDBInscriptionIndexStatus>>,
 
     // The latest block height that has been synced by all dependent services: BTC, Ordinals, Balance History
     latest_depend_synced_block_height: Arc<AtomicU32>,
@@ -32,18 +52,42 @@ impl StatusManager {
         let balance_history_client =
             BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?;
 
+        let usdb_status =
+            USDBInscriptionIndexStatus::new(config.config().usdb.genesis_block_height);
+        let usdb_status = Arc::new(Mutex::new(usdb_status));
+
         Ok(Self {
             btc_client: Arc::new(btc_client),
             ord_client: Arc::new(ord_client),
             balance_history_client: Arc::new(balance_history_client),
             output,
             latest_depend_synced_block_height: Arc::new(AtomicU32::new(0)),
+            usdb_status,
         })
     }
 
     pub fn latest_depend_synced_block_height(&self) -> u32 {
         self.latest_depend_synced_block_height
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn update_index_status(&self, current: Option<u32>, total: Option<u32>, message: Option<String>) {
+        let mut status = self.usdb_status.lock().unwrap();
+        
+        if let Some(total) = total {
+            status.total = total;
+            self.output.index_bar().set_length(total as u64);
+        }
+
+        if let Some(current) = current {
+            status.current = current;
+            self.output.index_bar().set_position(current as u64);
+        }
+        
+        if let Some(msg) = message {
+            status.message = Some(msg.clone());
+            self.output.index_bar().set_message(msg);
+        }
     }
 
     pub fn run_monitor(&self) {
@@ -78,12 +122,16 @@ impl StatusManager {
             btc_bar.reset_eta();
         }
 
-        let ord_height = self.ord_client.get_latest_block_height().await.map_err(|e| {
-            let msg = format!("Failed to get Ordinals block height: {}", e);
-            error!("{}", msg);
-            self.output.ord_bar().set_message(msg.clone());
-            msg
-        })?;
+        let ord_height = self
+            .ord_client
+            .get_latest_block_height()
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to get Ordinals block height: {}", e);
+                error!("{}", msg);
+                self.output.ord_bar().set_message(msg.clone());
+                msg
+            })?;
 
         // Update Ordinals bar
         let ord_bar = self.output.ord_bar();
@@ -113,16 +161,14 @@ impl StatusManager {
         if current == 0 {
             balance_history_bar.reset_eta();
         }
-        
+
         if let Some(msg) = &status.message {
             balance_history_bar.set_message(msg.clone());
         }
 
         // Determine the latest synced block height among dependent services
-        let balance_history_height = self.balance_history_client
-            .get_block_height()
-            .await? as u32;
-            
+        let balance_history_height = self.balance_history_client.get_block_height().await? as u32;
+
         let latest_synced_height = *[btc_height, ord_height, balance_history_height]
             .iter()
             .min()
