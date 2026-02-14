@@ -42,6 +42,12 @@ pub struct ValidMinerPassInfo {
     pub satpoint: SatPoint,
 }
 
+#[derive(Clone, Debug)]
+pub struct ActiveMinerPassInfo {
+    pub inscription_id: InscriptionId,
+    pub owner: USDBScriptHash,
+}
+
 pub struct MinerPassStorage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
@@ -765,6 +771,101 @@ impl MinerPassStorage {
             passes.push(pass_info);
         }
 
+        Ok(passes)
+    }
+
+    pub fn get_all_active_pass_by_page(
+        &self,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let offset = page * page_size;
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                inscription_id,
+                owner
+            FROM miner_passes
+            WHERE state = ?1
+            ORDER BY mint_block_height DESC
+            LIMIT ?2 OFFSET ?3;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get all active miner passes by page: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                MinerPassState::Active.as_str(),
+                page_size as i64,
+                offset as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query all active miner passes by page from database: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying all active miner passes by page: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id = row
+                .get::<_, String>(0)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to get inscription_id field from miner pass row: {}",
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse inscription_id from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let owner = row
+                .get::<_, String>(1)
+                .map_err(|e| {
+                    let msg = format!("Failed to get owner field from miner pass row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse owner from string: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            let pass_info = ActiveMinerPassInfo {
+                inscription_id,
+                owner,
+            };
+            passes.push(pass_info);
+        }
+        
         Ok(passes)
     }
 }
