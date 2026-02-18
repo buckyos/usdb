@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Balance History Explorer</title>
+    <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+    <div class="bg-layer"></div>
+    <main class="app-shell">
+        <header class="hero">
+            <div>
+                <p class="eyebrow">USDB TOOLING</p>
+                <h1>Balance History Explorer</h1>
+                <p class="subtitle">面向 balance-history RPC 的首版浏览器：状态监控、地址查询、批量汇总。</p>
+            </div>
+            <form id="rpc-config" class="rpc-config">
+                <label for="rpc-url">RPC Endpoint</label>
+                <div class="input-row">
+                    <input id="rpc-url" name="rpc-url" type="url" value="http://127.0.0.1:8099" />
+                    <button type="submit">连接</button>
+                </div>
+                <p id="rpc-hint" class="hint">浏览器将直接调用 JSON-RPC 接口。</p>
+            </form>
+        </header>
+
+        <section class="grid status-grid">
+            <article class="card metric-card">
+                <h2>网络类型</h2>
+                <p id="metric-network" class="metric-value">-</p>
+            </article>
+            <article class="card metric-card">
+                <h2>同步高度</h2>
+                <p id="metric-height" class="metric-value">-</p>
+            </article>
+            <article class="card metric-card">
+                <h2>同步阶段</h2>
+                <p id="metric-phase" class="metric-value">-</p>
+            </article>
+            <article class="card metric-card">
+                <h2>RPC 延迟</h2>
+                <p id="metric-latency" class="metric-value">-</p>
+            </article>
+        </section>
+
+        <section class="grid main-grid">
+            <article class="card">
+                <div class="card-head">
+                    <h2>服务状态</h2>
+                    <button id="refresh-status" class="ghost" type="button">刷新</button>
+                </div>
+                <p id="status-message" class="status-message">等待加载...</p>
+                <div class="progress-wrap">
+                    <div id="status-progress" class="progress-bar"></div>
+                </div>
+                <dl class="kv">
+                    <dt>Current</dt><dd id="status-current">-</dd>
+                    <dt>Total</dt><dd id="status-total">-</dd>
+                    <dt>Phase</dt><dd id="status-phase">-</dd>
+                </dl>
+            </article>
+
+            <article class="card">
+                <div class="card-head">
+                    <h2>快速查询</h2>
+                    <span class="pill">Single Address</span>
+                </div>
+                <form id="single-query" class="form-stack">
+                    <label>
+                        Script Hash
+                        <input id="single-script-hash" required placeholder="输入 USDBScriptHash" />
+                    </label>
+                    <div class="inline-options">
+                        <label><input type="radio" name="single-mode" value="latest" checked /> Latest</label>
+                        <label><input type="radio" name="single-mode" value="height" /> Height</label>
+                        <label><input type="radio" name="single-mode" value="range" /> Range</label>
+                    </div>
+                    <div class="input-row">
+                        <input id="single-height" type="number" min="0" placeholder="height" />
+                        <input id="single-range-start" type="number" min="0" placeholder="start" />
+                        <input id="single-range-end" type="number" min="0" placeholder="end" />
+                    </div>
+                    <button type="submit">查询</button>
+                </form>
+                <p id="single-query-hint" class="hint"></p>
+            </article>
+        </section>
+
+        <section class="grid analytics-grid">
+            <article class="card">
+                <h2>地址余额趋势</h2>
+                <canvas id="balance-chart" height="240"></canvas>
+            </article>
+            <article class="card">
+                <h2>变化量分布</h2>
+                <canvas id="delta-chart" height="240"></canvas>
+            </article>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>查询结果</h2>
+                <p id="single-summary" class="hint"></p>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Block Height</th>
+                            <th>Delta (sat)</th>
+                            <th>Balance (sat)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="single-table"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>批量查询与汇总</h2>
+                <span class="pill">Batch</span>
+            </div>
+            <form id="batch-query" class="form-stack">
+                <label>
+                    Script Hashes (one per line)
+                    <textarea id="batch-script-hashes" rows="5" placeholder="每行一个 USDBScriptHash"></textarea>
+                </label>
+                <div class="inline-options">
+                    <label><input type="radio" name="batch-mode" value="latest" checked /> Latest</label>
+                    <label><input type="radio" name="batch-mode" value="height" /> Height</label>
+                    <label><input type="radio" name="batch-mode" value="range" /> Range</label>
+                </div>
+                <div class="input-row">
+                    <input id="batch-height" type="number" min="0" placeholder="height" />
+                    <input id="batch-range-start" type="number" min="0" placeholder="start" />
+                    <input id="batch-range-end" type="number" min="0" placeholder="end" />
+                    <button type="submit">批量查询</button>
+                </div>
+            </form>
+            <p id="batch-summary" class="hint"></p>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Script Hash</th>
+                            <th>Records</th>
+                            <th>Latest Height</th>
+                            <th>Latest Balance</th>
+                            <th>Net Delta</th>
+                        </tr>
+                    </thead>
+                    <tbody id="batch-table"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <script src="./app.js"></script>
+</body>
+</html>

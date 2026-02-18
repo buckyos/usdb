@@ -10,6 +10,7 @@ mod output;
 mod service;
 mod status;
 mod tool;
+mod web_server;
 
 #[macro_use]
 extern crate log;
@@ -104,6 +105,17 @@ enum BalanceHistoryCommands {
         /// Specify the starting address or script hash to verify from
         #[arg(long, alias = "start")]
         from: Option<String>,
+    },
+
+    /// Serve balance-history browser static web files
+    ServeWeb {
+        /// HTTP listen port for the web server
+        #[arg(long, default_value_t = 8098)]
+        port: u16,
+
+        /// Web root directory for static assets
+        #[arg(long, default_value = "web/balance-history-browser")]
+        web_root: String,
     },
 }
 
@@ -638,6 +650,22 @@ async fn main() {
             .unwrap();
 
             println!("Balance history verified successfully.");
+            return;
+        }
+        Some(BalanceHistoryCommands::ServeWeb { port, web_root }) => {
+            let file_name = format!("{}_web", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_file_name(&file_name)
+                .enable_console(true);
+            usdb_util::init_log(config);
+
+            let web_root = std::path::PathBuf::from(web_root);
+            if let Err(e) = crate::web_server::serve_static_files(port, &web_root) {
+                error!("Failed to start web server: {}", e);
+                println!("Failed to start web server: {}", e);
+                std::process::exit(1);
+            }
+
             return;
         }
         None => {}
