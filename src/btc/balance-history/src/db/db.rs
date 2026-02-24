@@ -721,6 +721,41 @@ impl BalanceHistoryDB {
         Ok(results)
     }
 
+    /// Get the balance delta for a given script_hash at the target block height if exists, otherwise return None
+    pub fn get_balance_delta_at_block_height(
+        &self,
+        script_hash: &USDBScriptHash,
+        target_height: u32,
+    ) -> Result<Option<BalanceHistoryData>, String> {
+        // Make the target key
+        let target_key = Self::make_balance_history_key(script_hash, target_height);
+
+        let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        // Just do a direct get without iterator since we only want to check if there is a record for the exact block height
+        match self.db.get_cf(cf, target_key) {
+            Ok(Some(value)) => {
+                let (delta, balance) = Self::parse_balance_from_value(&value);
+                let entry = BalanceHistoryData {
+                    block_height: target_height,
+                    delta,
+                    balance,
+                };
+                Ok(Some(entry))
+            }
+            Ok(None) => Ok(None), // No record found for this height, return None
+            Err(e) => {
+                let msg = format!("Failed to get balance delta: {}", e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+    
     pub fn get_all_balance(
         &self,
         script_hash: &USDBScriptHash,

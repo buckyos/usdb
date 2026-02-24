@@ -54,13 +54,11 @@ impl BalanceHistoryRpcServer {
                 msg
             })?;
 
-
         let ret = Self::new(config.clone(), addr, status, db, shutdown_tx.clone());
 
         let mut io = IoHandler::new();
         io.extend_with(ret.clone().to_delegate());
 
-        
         let server = ServerBuilder::new(io)
             .cors(DomainsValidation::AllowOnly(vec![
                 AccessControlAllowOrigin::Any,
@@ -92,8 +90,10 @@ impl BalanceHistoryRpcServer {
             info!("Closing RPC server.");
             tokio::task::spawn_blocking(move || {
                 handle.close();
-            }).await.unwrap();
-            
+            })
+            .await
+            .unwrap();
+
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             info!("RPC server closed.");
         } else {
@@ -194,11 +194,14 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
             Ok(balances)
         } else {
-            let ret = self.db.get_latest_balance(&params.script_hash).map_err(|e| JsonError {
-                code: ErrorCode::InternalError,
-                message: format!("Failed to get latest balance: {}", e),
-                data: None,
-            })?;
+            let ret = self
+                .db
+                .get_latest_balance(&params.script_hash)
+                .map_err(|e| JsonError {
+                    code: ErrorCode::InternalError,
+                    message: format!("Failed to get latest balance: {}", e),
+                    data: None,
+                })?;
             let ret = AddressBalance {
                 block_height: ret.block_height,
                 balance: ret.balance,
@@ -225,6 +228,91 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
                     block_range: params.block_range.clone(),
                 };
                 self.get_address_balance(single_params)
+            })
+            .collect();
+
+        results
+    }
+
+    fn get_address_balance_delta(
+        &self,
+        params: GetBalanceParams,
+    ) -> JsonResult<Vec<Option<AddressBalance>>> {
+        if let Some(height) = params.block_height {
+            let ret = self
+                .db
+                .get_balance_delta_at_block_height(&params.script_hash, height)
+                .map_err(|e| JsonError {
+                    code: ErrorCode::InternalError,
+                    message: format!(
+                        "Failed to get balance delta at block height {}: {}",
+                        height, e
+                    ),
+                    data: None,
+                })?;
+
+            let ret = ret.map(|b| AddressBalance {
+                block_height: b.block_height,
+                balance: b.balance,
+                delta: b.delta,
+            });
+
+            Ok(vec![ret])
+        } else if let Some(range) = params.block_range {
+            // Handle empty range
+            if range.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let ret = self
+                .db
+                .get_balance_in_range(&params.script_hash, range.start, range.end)
+                .map_err(|e| JsonError {
+                    code: ErrorCode::InternalError,
+                    message: format!("Failed to get balance in block range: {}", e),
+                    data: None,
+                })?;
+
+            let balances: Vec<Option<AddressBalance>> = ret
+                .into_iter()
+                .map(|b| {
+                    Some(AddressBalance {
+                        block_height: b.block_height,
+                        balance: b.balance,
+                        delta: b.delta,
+                    })
+                })
+                .collect();
+
+            Ok(balances)
+        } else {
+            let msg =
+                "Block height or block range must be specified to get balance delta".to_string();
+            error!("{}", msg);
+            Err(JsonError {
+                code: ErrorCode::InvalidParams,
+                message: msg,
+                data: None,
+            })
+        }
+    }
+
+    fn get_addresses_balances_delta(
+        &self,
+        params: GetBalancesParams,
+    ) -> JsonResult<Vec<Vec<AddressBalance>>> {
+        use rayon::prelude::*;
+
+        let results: JsonResult<Vec<Vec<AddressBalance>>> = params
+            .script_hashes
+            .par_iter()
+            .map(|script_hash| {
+                let single_params = GetBalanceParams {
+                    script_hash: *script_hash,
+                    block_height: params.block_height,
+                    block_range: params.block_range.clone(),
+                };
+                self.get_address_balance_delta(single_params)
             })
             .collect();
 

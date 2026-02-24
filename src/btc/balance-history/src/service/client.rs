@@ -83,6 +83,45 @@ impl RpcClient {
         .await
     }
 
+    pub async fn get_address_balance_delta(
+        &self,
+        script_hash: USDBScriptHash,
+        block_height: Option<u32>,
+        block_range: Option<Range<u32>>,
+    ) -> Result<Vec<Option<AddressBalance>>, String> {
+        let params = json!([{
+            "script_hash": script_hash,
+            "block_height": block_height,
+            "block_range": block_range,
+        }]);
+        self.rpc_call::<Vec<Option<AddressBalance>>>(
+            &self.url,
+            "get_address_balance_delta",
+            params,
+        )
+        .await
+    }
+
+    pub async fn get_addresses_balances_delta(
+        &self,
+        script_hashes: Vec<USDBScriptHash>,
+        block_height: Option<u32>,
+        block_range: Option<Range<u32>>,
+    ) -> Result<Vec<Vec<Option<AddressBalance>>>, String> {
+        let params = json!([{
+            "script_hashes": script_hashes,
+            "block_height": block_height,
+            "block_range": block_range,
+        }]);
+
+        self.rpc_call::<Vec<Vec<Option<AddressBalance>>>>(
+            &self.url,
+            "get_addresses_balances_delta",
+            params,
+        )
+        .await
+    }
+    
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,

@@ -57,6 +57,12 @@ pub trait BalanceHistoryRpc {
     #[rpc(name = "get_addresses_balances")]
     fn get_addresses_balances(&self, params: GetBalancesParams) -> JsonResult<Vec<Vec<AddressBalance>>>;
 
+    #[rpc(name = "get_address_balance_delta")]
+    fn get_address_balance_delta(&self, params: GetBalanceParams) -> JsonResult<Vec<Option<AddressBalance>>>;
+
+    #[rpc(name = "get_addresses_balances_delta")]
+    fn get_addresses_balances_delta(&self, params: GetBalancesParams) -> JsonResult<Vec<Vec<Option<AddressBalance>>>>;
+    
     #[rpc(name = "stop")]
     fn stop(&self) -> JsonResult<()>;
 } 
