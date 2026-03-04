@@ -71,7 +71,7 @@ impl TxItem {
                 );
 
                 return Ok(Some(SatPointResult {
-                    satpoint,
+                    satpoint: point,
                     value: vout_item.value,
                     address: Some(address),
                 }));

@@ -172,8 +172,8 @@ impl MinerPassManager {
             // Mark the last pass as dormant
             self.storage.update_state(
                 &last_pass.inscription_id,
-                MinerPassState::Active,
                 MinerPassState::Dormant,
+                MinerPassState::Active,
             )?;
 
             info!(
@@ -219,7 +219,7 @@ impl MinerPassManager {
         );
 
         self.storage
-            .update_state(inscription_id, pass.state, MinerPassState::Consumed)?;
+            .update_state(inscription_id, MinerPassState::Consumed, pass.state)?;
 
         // Get the energy record at this block height
         // The energy record must exist at this block height, which is updated when the pass is marked as dormant
@@ -291,7 +291,7 @@ impl MinerPassManager {
                 inscription_id, new_owner
             );
             self.storage
-                .update_satpoint(inscription_id, &pass.satpoint, &pass.satpoint)?;
+                .update_satpoint(inscription_id, &pass.satpoint, satpoint)?;
         } else {
             // Transfer the ownership in storage
             self.storage
@@ -299,8 +299,8 @@ impl MinerPassManager {
             if pass.state == MinerPassState::Active {
                 self.storage.update_state(
                     inscription_id,
-                    MinerPassState::Dormant,
                     MinerPassState::Active,
+                    MinerPassState::Dormant,
                 )?;
             }
         }
@@ -338,7 +338,7 @@ impl MinerPassManager {
 
         // Update the pass state to burned
         self.storage
-            .update_state(inscription_id, pass.state, MinerPassState::Burned)?;
+            .update_state(inscription_id, MinerPassState::Burned, pass.state)?;
 
         Ok(())
     }
