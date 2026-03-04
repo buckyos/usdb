@@ -138,9 +138,9 @@ impl MinerPassManager {
         Ok(())
     }
 
-    // Dormant the last active pass for the same owner if exists, and update energy record for the dormant pass. 
-    // This is called when minting a new pass, to ensure there is only one active pass for each owner at any time. 
-    // The new minted pass will be active, and the existing active pass will be marked as dormant. 
+    // Dormant the last active pass for the same owner if exists, and update energy record for the dormant pass.
+    // This is called when minting a new pass, to ensure there is only one active pass for each owner at any time.
+    // The new minted pass will be active, and the existing active pass will be marked as dormant.
     // The dormant pass can still be consumed later to inherit energy to the new minted pass, but it cannot be consumed together with the new minted pass
     async fn dormant_last_pass(&self, mint_info: &PassMintInscriptionInfo) -> Result<(), String> {
         // First check the pass already exists on the same address
@@ -345,3 +345,129 @@ impl MinerPassManager {
 }
 
 pub type MinerPassManagerRef = Arc<MinerPassManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigManager;
+    use crate::index::energy::PassEnergyManager;
+    use crate::storage::MinerPassStorage;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::ToUSDBScriptHash;
+
+    fn test_root_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("usdb_indexer_pass_test_{}_{}", test_name, nanos))
+    }
+
+    fn test_script_hash(tag: u8) -> USDBScriptHash {
+        let script = ScriptBuf::from(vec![tag; 32]);
+        script.to_usdb_script_hash()
+    }
+
+    fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
+        let txid = Txid::from_slice(&[tag; 32]).unwrap();
+        InscriptionId { txid, index }
+    }
+
+    fn test_satpoint(tag: u8, vout: u32, offset: u64) -> SatPoint {
+        SatPoint {
+            outpoint: OutPoint {
+                txid: Txid::from_slice(&[tag; 32]).unwrap(),
+                vout,
+            },
+            offset,
+        }
+    }
+
+    fn setup_manager(
+        test_name: &str,
+    ) -> (
+        PathBuf,
+        MinerPassStorageRef,
+        MinerPassManager,
+        InscriptionId,
+        USDBScriptHash,
+        SatPoint,
+    ) {
+        let root_dir = test_root_dir(test_name);
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
+        let energy_manager = Arc::new(PassEnergyManager::new(config.clone()).unwrap());
+        let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
+
+        let inscription_id = test_inscription_id(1, 0);
+        let owner = test_script_hash(7);
+        let satpoint = test_satpoint(2, 0, 0);
+
+        let pass = MinerPassInfo {
+            inscription_id: inscription_id.clone(),
+            inscription_number: 1,
+            mint_txid: Txid::from_slice(&[3; 32]).unwrap(),
+            mint_block_height: 100,
+            mint_owner: owner,
+            satpoint: satpoint.clone(),
+            eth_main: "0x1111111111111111111111111111111111111111".to_string(),
+            eth_collab: None,
+            prev: Vec::new(),
+            owner,
+            state: MinerPassState::Active,
+        };
+        storage.add_new_mint_pass(&pass).unwrap();
+        storage
+            .update_state(
+                &inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+            )
+            .unwrap();
+
+        (root_dir, storage, manager, inscription_id, owner, satpoint)
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_transfer_same_owner_updates_satpoint() {
+        let (root_dir, storage, manager, inscription_id, owner, old_satpoint) =
+            setup_manager("transfer_same_owner");
+
+        let new_satpoint = test_satpoint(9, 1, 42);
+        manager
+            .on_pass_transfer(&inscription_id, &owner, &new_satpoint, 101)
+            .await
+            .unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.owner, owner);
+        assert_eq!(updated.state, MinerPassState::Dormant);
+        assert_eq!(updated.satpoint, new_satpoint);
+        assert_ne!(updated.satpoint, old_satpoint);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_burned_from_dormant_updates_state() {
+        let (root_dir, storage, manager, inscription_id, _owner, _satpoint) =
+            setup_manager("burn_dormant");
+
+        manager.on_pass_burned(&inscription_id, 101).await.unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Burned);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+}

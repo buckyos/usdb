@@ -123,19 +123,30 @@ impl MinerPassStorage {
 
     pub fn savepoint_begin(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(&format!("SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
-            let msg = format!("Failed to begin savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
-            error!("{}", msg);
-            msg
-        })?;
-        
+        conn.execute(&format!("SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), [])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to begin savepoint {}: {}",
+                    SAVEPOINT_MINER_PASS_OPS, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
         Ok(())
     }
 
     pub fn savepoint_commit(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(&format!("RELEASE SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
-            let msg = format!("Failed to commit savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
+        conn.execute(
+            &format!("RELEASE SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS),
+            [],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to commit savepoint {}: {}",
+                SAVEPOINT_MINER_PASS_OPS, e
+            );
             error!("{}", msg);
             msg
         })?;
@@ -144,8 +155,15 @@ impl MinerPassStorage {
 
     pub fn savepoint_rollback(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(&format!("ROLLBACK TO SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS), []).map_err(|e| {
-            let msg = format!("Failed to rollback savepoint {}: {}", SAVEPOINT_MINER_PASS_OPS, e);
+        conn.execute(
+            &format!("ROLLBACK TO SAVEPOINT {}", SAVEPOINT_MINER_PASS_OPS),
+            [],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to rollback savepoint {}: {}",
+                SAVEPOINT_MINER_PASS_OPS, e
+            );
             error!("{}", msg);
             msg
         })?;
@@ -244,7 +262,7 @@ impl MinerPassStorage {
 
                 owner,
                 state
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);
             ",
             rusqlite::params![
                 pass_info.inscription_id.to_string(),
@@ -865,13 +883,12 @@ impl MinerPassStorage {
             };
             passes.push(pass_info);
         }
-        
+
         Ok(passes)
     }
 }
 
 pub type MinerPassStorageRef = std::sync::Arc<MinerPassStorage>;
-
 
 pub struct MinePassStorageSavePointGuard<'a> {
     storage: &'a MinerPassStorage,
