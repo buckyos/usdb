@@ -7,6 +7,7 @@ mod index;
 mod output;
 mod status;
 mod storage;
+mod balance;
 
 #[macro_use]
 extern crate log;

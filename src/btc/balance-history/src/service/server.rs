@@ -300,10 +300,10 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     fn get_addresses_balances_delta(
         &self,
         params: GetBalancesParams,
-    ) -> JsonResult<Vec<Vec<AddressBalance>>> {
+    ) -> JsonResult<Vec<Vec<Option<AddressBalance>>>> {
         use rayon::prelude::*;
 
-        let results: JsonResult<Vec<Vec<AddressBalance>>> = params
+        let results: JsonResult<Vec<Vec<Option<AddressBalance>>>> = params
             .script_hashes
             .par_iter()
             .map(|script_hash| {

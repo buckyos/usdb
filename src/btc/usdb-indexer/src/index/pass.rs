@@ -138,6 +138,10 @@ impl MinerPassManager {
         Ok(())
     }
 
+    // Dormant the last active pass for the same owner if exists, and update energy record for the dormant pass. 
+    // This is called when minting a new pass, to ensure there is only one active pass for each owner at any time. 
+    // The new minted pass will be active, and the existing active pass will be marked as dormant. 
+    // The dormant pass can still be consumed later to inherit energy to the new minted pass, but it cannot be consumed together with the new minted pass
     async fn dormant_last_pass(&self, mint_info: &PassMintInscriptionInfo) -> Result<(), String> {
         // First check the pass already exists on the same address
         let existing_pass = self

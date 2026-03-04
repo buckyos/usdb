@@ -721,7 +721,7 @@ impl BalanceHistoryDB {
         Ok(results)
     }
 
-    /// Get the balance delta for a given script_hash at the target block height if exists, otherwise return None
+    /// Get the balance delta for a given script_hash at the target block height if it exists, otherwise return None
     pub fn get_balance_delta_at_block_height(
         &self,
         script_hash: &USDBScriptHash,
