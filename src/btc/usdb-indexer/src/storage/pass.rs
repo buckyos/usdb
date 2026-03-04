@@ -928,3 +928,187 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::ToUSDBScriptHash;
+
+    fn test_data_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("usdb_pass_storage_{tag}_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn script_hash(tag: u8) -> USDBScriptHash {
+        let script = ScriptBuf::from(vec![tag; 32]);
+        script.to_usdb_script_hash()
+    }
+
+    fn inscription_id(tag: u8, index: u32) -> InscriptionId {
+        InscriptionId {
+            txid: Txid::from_slice(&[tag; 32]).unwrap(),
+            index,
+        }
+    }
+
+    fn satpoint(tag: u8, vout: u32, offset: u64) -> SatPoint {
+        SatPoint {
+            outpoint: bitcoincore_rpc::bitcoin::OutPoint {
+                txid: Txid::from_slice(&[tag; 32]).unwrap(),
+                vout,
+            },
+            offset,
+        }
+    }
+
+    fn make_pass(
+        ins_tag: u8,
+        index: u32,
+        owner: USDBScriptHash,
+        state: MinerPassState,
+        height: u32,
+    ) -> MinerPassInfo {
+        MinerPassInfo {
+            inscription_id: inscription_id(ins_tag, index),
+            inscription_number: index as i32 + 1,
+            mint_txid: Txid::from_slice(&[ins_tag.wrapping_add(1); 32]).unwrap(),
+            mint_block_height: height,
+            mint_owner: owner,
+            satpoint: satpoint(ins_tag, index, 0),
+            eth_main: "0x1111111111111111111111111111111111111111".to_string(),
+            eth_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
+            prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
+            owner,
+            state,
+        }
+    }
+
+    #[test]
+    fn test_pass_storage_crud_and_state_transition() {
+        let dir = test_data_dir("crud");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(1);
+        let owner2 = script_hash(2);
+
+        let pass = make_pass(10, 0, owner1, MinerPassState::Active, 100);
+        let id = pass.inscription_id;
+        storage.add_new_mint_pass(&pass).unwrap();
+
+        let loaded = storage.get_pass_by_inscription_id(&id).unwrap().unwrap();
+        assert_eq!(loaded.owner, owner1);
+        assert_eq!(loaded.state, MinerPassState::Active);
+        assert_eq!(loaded.prev.len(), 1);
+
+        storage
+            .update_state(&id, MinerPassState::Dormant, MinerPassState::Active)
+            .unwrap();
+        let loaded = storage.get_pass_by_inscription_id(&id).unwrap().unwrap();
+        assert_eq!(loaded.state, MinerPassState::Dormant);
+
+        let new_satpoint = satpoint(99, 1, 33);
+        storage.transfer_owner(&id, &owner2, &new_satpoint).unwrap();
+        let loaded = storage.get_pass_by_inscription_id(&id).unwrap().unwrap();
+        assert_eq!(loaded.owner, owner2);
+        assert_eq!(loaded.satpoint, new_satpoint);
+
+        let newest_satpoint = satpoint(100, 2, 44);
+        storage
+            .update_satpoint(&id, &new_satpoint, &newest_satpoint)
+            .unwrap();
+        let loaded = storage.get_pass_by_inscription_id(&id).unwrap().unwrap();
+        assert_eq!(loaded.satpoint, newest_satpoint);
+
+        let err = storage.update_state(&id, MinerPassState::Burned, MinerPassState::Active);
+        assert!(err.is_err());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_storage_paging_and_active_lookup() {
+        let dir = test_data_dir("paging");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(7);
+
+        let p1 = make_pass(21, 0, owner, MinerPassState::Active, 100);
+        let p2 = make_pass(22, 1, owner, MinerPassState::Active, 200);
+        let p3 = make_pass(23, 2, owner, MinerPassState::Active, 300);
+        storage.add_new_mint_pass(&p1).unwrap();
+        storage.add_new_mint_pass(&p2).unwrap();
+        storage.add_new_mint_pass(&p3).unwrap();
+
+        storage
+            .update_state(
+                &p1.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+            )
+            .unwrap();
+        storage
+            .update_state(
+                &p2.inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Active,
+            )
+            .unwrap();
+
+        let last_active = storage
+            .get_last_active_mint_pass_by_owner(&owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(last_active.inscription_id, p3.inscription_id);
+
+        let active = storage.get_all_active_pass_by_page(0, 10).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].inscription_id, p3.inscription_id);
+
+        let valid = storage.get_all_valid_pass_by_page(0, 10).unwrap();
+        let ids: Vec<_> = valid.iter().map(|v| v.inscription_id).collect();
+        assert!(ids.contains(&p1.inscription_id));
+        assert!(ids.contains(&p3.inscription_id));
+        assert!(!ids.contains(&p2.inscription_id));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_storage_savepoint_guard_rollback_and_commit() {
+        let dir = test_data_dir("savepoint");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(9);
+
+        let base_pass = make_pass(31, 0, owner, MinerPassState::Active, 100);
+        storage.add_new_mint_pass(&base_pass).unwrap();
+
+        let rollback_pass = make_pass(32, 1, owner, MinerPassState::Active, 101);
+        {
+            let _guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage.add_new_mint_pass(&rollback_pass).unwrap();
+        }
+        let rolled_back = storage
+            .get_pass_by_inscription_id(&rollback_pass.inscription_id)
+            .unwrap();
+        assert!(rolled_back.is_none());
+
+        let commit_pass = make_pass(33, 2, owner, MinerPassState::Active, 102);
+        {
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage.add_new_mint_pass(&commit_pass).unwrap();
+            guard.commit().unwrap();
+        }
+        let committed = storage
+            .get_pass_by_inscription_id(&commit_pass.inscription_id)
+            .unwrap();
+        assert!(committed.is_some());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

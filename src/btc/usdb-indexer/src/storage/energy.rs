@@ -1,7 +1,7 @@
 use crate::index::MinerPassState;
-use bitcoincore_rpc::bitcoin::{Txid, hashes::Hash};
+use bitcoincore_rpc::bitcoin::{hashes::Hash, Txid};
 use ord::InscriptionId;
-use rocksdb::{ColumnFamilyDescriptor, DB, Options};
+use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use rust_rocksdb::{self as rocksdb};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -90,8 +90,8 @@ impl PassEnergyStorage {
     ) -> Result<Vec<u8>, String> {
         let mut bytes = [0u8; Txid::LEN + 4 + 4];
         bytes[..32].copy_from_slice(inscription_id.txid.as_byte_array());
-        bytes[32..].copy_from_slice(&inscription_id.index.to_be_bytes());
-        bytes[36..].copy_from_slice(&block_height.to_be_bytes());
+        bytes[32..36].copy_from_slice(&inscription_id.index.to_be_bytes());
+        bytes[36..40].copy_from_slice(&block_height.to_be_bytes());
         Ok(bytes.to_vec())
     }
 
@@ -242,6 +242,7 @@ impl PassEnergyStorage {
                     owner_delta: value.owner_delta,
                     energy: value.energy,
                 });
+                break;
             }
         }
 
@@ -256,10 +257,7 @@ impl PassEnergyStorage {
             msg
         })?;
 
-        let mut iter = self.db.iterator_cf(
-            cf,
-            rocksdb::IteratorMode::Start,
-        );
+        let mut iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
 
         let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
 
@@ -286,8 +284,151 @@ impl PassEnergyStorage {
             let msg = format!("Failed to delete pass energy records: {}", e);
             error!("{}", msg);
             msg
-        })?;    
-           
+        })?;
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::ToUSDBScriptHash;
+
+    fn test_data_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("usdb_pass_energy_storage_{tag}_{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn script_hash(tag: u8) -> USDBScriptHash {
+        let script = ScriptBuf::from(vec![tag; 32]);
+        script.to_usdb_script_hash()
+    }
+
+    fn inscription_id(tag: u8, index: u32) -> InscriptionId {
+        InscriptionId {
+            txid: Txid::from_slice(&[tag; 32]).unwrap(),
+            index,
+        }
+    }
+
+    fn make_record(
+        ins_tag: u8,
+        index: u32,
+        block_height: u32,
+        owner_tag: u8,
+        energy: u64,
+    ) -> PassEnergyRecord {
+        PassEnergyRecord {
+            inscription_id: inscription_id(ins_tag, index),
+            block_height,
+            state: MinerPassState::Active,
+            active_block_height: block_height,
+            owner_address: script_hash(owner_tag),
+            owner_balance: 10_000 + block_height as u64,
+            owner_delta: block_height as i64,
+            energy,
+        }
+    }
+
+    #[test]
+    fn test_pass_energy_insert_and_get_roundtrip() {
+        let dir = test_data_dir("roundtrip");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let record = make_record(10, 0, 120, 1, 777);
+        storage.insert_pass_energy_record(&record).unwrap();
+
+        let loaded = storage
+            .get_pass_energy_record(&record.inscription_id, record.block_height)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, MinerPassState::Active);
+        assert_eq!(loaded.active_block_height, 120);
+        assert_eq!(loaded.owner_address, script_hash(1));
+        assert_eq!(loaded.owner_balance, 10_120);
+        assert_eq!(loaded.owner_delta, 120);
+        assert_eq!(loaded.energy, 777);
+
+        let missing = storage
+            .get_pass_energy_record(&record.inscription_id, record.block_height + 1)
+            .unwrap();
+        assert!(missing.is_none());
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_find_last_pass_energy_record_returns_latest_before_height() {
+        let dir = test_data_dir("last_record");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let record_100 = make_record(20, 0, 100, 2, 1000);
+        let record_120 = make_record(20, 0, 120, 2, 1200);
+        let record_140 = make_record(20, 0, 140, 2, 1400);
+        storage.insert_pass_energy_record(&record_100).unwrap();
+        storage.insert_pass_energy_record(&record_120).unwrap();
+        storage.insert_pass_energy_record(&record_140).unwrap();
+
+        let last = storage
+            .find_last_pass_energy_record(&record_100.inscription_id, 130)
+            .unwrap()
+            .unwrap();
+        assert_eq!(last.block_height, 120);
+        assert_eq!(last.energy, 1200);
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_clear_records_from_height_inclusive() {
+        let dir = test_data_dir("clear_height");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let keep_150 = make_record(30, 0, 150, 3, 1500);
+        let clear_160 = make_record(30, 0, 160, 3, 1600);
+        let clear_200 = make_record(30, 0, 200, 3, 2000);
+        let other_clear_170 = make_record(31, 1, 170, 4, 1700);
+        storage.insert_pass_energy_record(&keep_150).unwrap();
+        storage.insert_pass_energy_record(&clear_160).unwrap();
+        storage.insert_pass_energy_record(&clear_200).unwrap();
+        storage.insert_pass_energy_record(&other_clear_170).unwrap();
+
+        storage.clear_records_from_height(160).unwrap();
+
+        let kept = storage
+            .get_pass_energy_record(&keep_150.inscription_id, keep_150.block_height)
+            .unwrap();
+        assert!(kept.is_some());
+
+        let removed_160 = storage
+            .get_pass_energy_record(&clear_160.inscription_id, clear_160.block_height)
+            .unwrap();
+        assert!(removed_160.is_none());
+
+        let removed_200 = storage
+            .get_pass_energy_record(&clear_200.inscription_id, clear_200.block_height)
+            .unwrap();
+        assert!(removed_200.is_none());
+
+        let removed_other = storage
+            .get_pass_energy_record(
+                &other_clear_170.inscription_id,
+                other_clear_170.block_height,
+            )
+            .unwrap();
+        assert!(removed_other.is_none());
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
