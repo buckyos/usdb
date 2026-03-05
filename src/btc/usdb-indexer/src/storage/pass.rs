@@ -48,6 +48,13 @@ pub struct ActiveMinerPassInfo {
     pub owner: USDBScriptHash,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveBalanceSnapshot {
+    pub block_height: u32,
+    pub total_balance: u64,
+    pub active_address_count: u32,
+}
+
 pub struct MinerPassStorage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
@@ -110,6 +117,13 @@ impl MinerPassStorage {
 
             CREATE INDEX IF NOT EXISTS idx_miner_pass_eth_main
             ON miner_passes (eth_main);
+
+            CREATE TABLE IF NOT EXISTS active_balance_snapshots (
+                block_height INTEGER PRIMARY KEY,
+                total_balance INTEGER NOT NULL,
+                active_address_count INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             ",
         )
         .map_err(|e| {
@@ -219,6 +233,165 @@ impl MinerPassStorage {
             })?;
 
         Ok(height.map(|h| h as u32))
+    }
+
+    pub fn upsert_active_balance_snapshot(
+        &self,
+        block_height: u32,
+        total_balance: u64,
+        active_address_count: u32,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "
+            INSERT INTO active_balance_snapshots (block_height, total_balance, active_address_count)
+            VALUES (?1, ?2, ?3)
+            ON CONFLICT(block_height) DO UPDATE SET
+                total_balance = excluded.total_balance,
+                active_address_count = excluded.active_address_count;
+            ",
+            rusqlite::params![
+                block_height as i64,
+                total_balance as i64,
+                active_address_count as i64,
+            ],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to upsert active balance snapshot at block height {}: {}",
+                block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_active_balance_snapshot(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<ActiveBalanceSnapshot>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                block_height,
+                total_balance,
+                active_address_count
+            FROM active_balance_snapshots
+            WHERE block_height = ?1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get active balance snapshot by block height: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query active balance snapshot at block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying active balance snapshot by block height: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let item = Self::row_to_active_balance_snapshot(&row)?;
+            Ok(Some(item))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_latest_active_balance_snapshot(
+        &self,
+    ) -> Result<Option<ActiveBalanceSnapshot>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                block_height,
+                total_balance,
+                active_address_count
+            FROM active_balance_snapshots
+            ORDER BY block_height DESC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get latest active balance snapshot: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt.query([]).map_err(|e| {
+            let msg = format!("Failed to query latest active balance snapshot: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying latest active balance snapshot: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let item = Self::row_to_active_balance_snapshot(&row)?;
+            Ok(Some(item))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn clear_active_balance_snapshots_from_height(
+        &self,
+        from_block_height: u32,
+    ) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let affected = conn
+            .execute(
+                "
+            DELETE FROM active_balance_snapshots
+            WHERE block_height >= ?1;
+            ",
+                rusqlite::params![from_block_height as i64],
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to clear active balance snapshots from block height {}: {}",
+                    from_block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(affected)
     }
 
     pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
@@ -570,6 +743,50 @@ impl MinerPassStorage {
                     msg
                 })?
             },
+        })
+    }
+
+    fn row_to_active_balance_snapshot(
+        row: &rusqlite::Row,
+    ) -> Result<ActiveBalanceSnapshot, String> {
+        let block_height = row.get::<_, i64>(0).map_err(|e| {
+            let msg = format!(
+                "Failed to get block_height field from active balance snapshot row: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let total_balance = row.get::<_, i64>(1).map_err(|e| {
+            let msg = format!(
+                "Failed to get total_balance field from active balance snapshot row: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let active_address_count = row.get::<_, i64>(2).map_err(|e| {
+            let msg = format!(
+                "Failed to get active_address_count field from active balance snapshot row: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        if block_height < 0 || total_balance < 0 || active_address_count < 0 {
+            let msg = format!(
+                "Invalid negative field in active balance snapshot row: block_height={}, total_balance={}, active_address_count={}",
+                block_height, total_balance, active_address_count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(ActiveBalanceSnapshot {
+            block_height: block_height as u32,
+            total_balance: total_balance as u64,
+            active_address_count: active_address_count as u32,
         })
     }
 
@@ -932,8 +1149,8 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
 
@@ -1108,6 +1325,103 @@ mod tests {
             .get_pass_by_inscription_id(&commit_pass.inscription_id)
             .unwrap();
         assert!(committed.is_some());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_active_balance_snapshot_crud_and_latest() {
+        let dir = test_data_dir("snapshot_crud");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(100, 1_000, 2)
+            .unwrap();
+        storage
+            .upsert_active_balance_snapshot(101, 2_000, 3)
+            .unwrap();
+
+        let snap_100 = storage.get_active_balance_snapshot(100).unwrap().unwrap();
+        assert_eq!(
+            snap_100,
+            ActiveBalanceSnapshot {
+                block_height: 100,
+                total_balance: 1_000,
+                active_address_count: 2,
+            }
+        );
+
+        let latest = storage
+            .get_latest_active_balance_snapshot()
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.block_height, 101);
+        assert_eq!(latest.total_balance, 2_000);
+        assert_eq!(latest.active_address_count, 3);
+
+        storage
+            .upsert_active_balance_snapshot(101, 2_500, 4)
+            .unwrap();
+        let updated = storage.get_active_balance_snapshot(101).unwrap().unwrap();
+        assert_eq!(updated.total_balance, 2_500);
+        assert_eq!(updated.active_address_count, 4);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_active_balance_snapshot_clear_from_height() {
+        let dir = test_data_dir("snapshot_clear");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage.upsert_active_balance_snapshot(100, 100, 1).unwrap();
+        storage.upsert_active_balance_snapshot(101, 200, 2).unwrap();
+        storage.upsert_active_balance_snapshot(102, 300, 3).unwrap();
+
+        let removed = storage
+            .clear_active_balance_snapshots_from_height(101)
+            .unwrap();
+        assert_eq!(removed, 2);
+
+        assert!(storage.get_active_balance_snapshot(100).unwrap().is_some());
+        assert!(storage.get_active_balance_snapshot(101).unwrap().is_none());
+        assert!(storage.get_active_balance_snapshot(102).unwrap().is_none());
+
+        let latest = storage
+            .get_latest_active_balance_snapshot()
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.block_height, 100);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_active_balance_snapshot_savepoint_guard_rollback_and_commit() {
+        let dir = test_data_dir("snapshot_savepoint");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(200, 1_000, 2)
+            .unwrap();
+
+        {
+            let _guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage
+                .upsert_active_balance_snapshot(201, 2_000, 3)
+                .unwrap();
+        }
+        assert!(storage.get_active_balance_snapshot(201).unwrap().is_none());
+
+        {
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage
+                .upsert_active_balance_snapshot(202, 3_000, 4)
+                .unwrap();
+            guard.commit().unwrap();
+        }
+        let snap_202 = storage.get_active_balance_snapshot(202).unwrap();
+        assert!(snap_202.is_some());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
