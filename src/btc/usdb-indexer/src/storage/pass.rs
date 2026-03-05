@@ -132,6 +132,83 @@ impl MinerPassStorage {
             msg
         })?;
 
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                owner,
+                COUNT(*) AS active_count
+            FROM miner_passes
+            WHERE state = ?1
+            GROUP BY owner
+            HAVING COUNT(*) > 1
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare duplicate active owner check statement: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![MinerPassState::Active.as_str()])
+            .map_err(|e| {
+                let msg = format!("Failed to query duplicate active owners: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to read duplicate active owner row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let owner: String = row.get(0).map_err(|e| {
+                let msg = format!(
+                    "Failed to get owner field from duplicate active owner row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let active_count: i64 = row.get(1).map_err(|e| {
+                let msg = format!(
+                    "Failed to get active_count field from duplicate active owner row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            let msg = format!(
+                "Duplicate active miner pass owners detected before enforcing unique constraint: owner={}, active_count={}",
+                owner, active_count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        conn.execute(
+            "
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_miner_pass_owner_active_unique
+            ON miner_passes (owner)
+            WHERE state = 'active';
+            ",
+            [],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to create unique index for active miner pass owner: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
         Ok(())
     }
 
@@ -1263,11 +1340,13 @@ mod tests {
     fn test_pass_storage_paging_and_active_lookup() {
         let dir = test_data_dir("paging");
         let storage = MinerPassStorage::new(&dir).unwrap();
-        let owner = script_hash(7);
+        let owner1 = script_hash(7);
+        let owner2 = script_hash(8);
+        let owner3 = script_hash(9);
 
-        let p1 = make_pass(21, 0, owner, MinerPassState::Active, 100);
-        let p2 = make_pass(22, 1, owner, MinerPassState::Active, 200);
-        let p3 = make_pass(23, 2, owner, MinerPassState::Active, 300);
+        let p1 = make_pass(21, 0, owner1, MinerPassState::Active, 100);
+        let p2 = make_pass(22, 1, owner2, MinerPassState::Active, 200);
+        let p3 = make_pass(23, 2, owner3, MinerPassState::Active, 300);
         storage.add_new_mint_pass(&p1).unwrap();
         storage.add_new_mint_pass(&p2).unwrap();
         storage.add_new_mint_pass(&p3).unwrap();
@@ -1288,7 +1367,7 @@ mod tests {
             .unwrap();
 
         let last_active = storage
-            .get_last_active_mint_pass_by_owner(&owner)
+            .get_last_active_mint_pass_by_owner(&owner3)
             .unwrap()
             .unwrap();
         assert_eq!(last_active.inscription_id, p3.inscription_id);
@@ -1302,6 +1381,38 @@ mod tests {
         assert!(ids.contains(&p1.inscription_id));
         assert!(ids.contains(&p3.inscription_id));
         assert!(!ids.contains(&p2.inscription_id));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_storage_enforce_unique_active_owner() {
+        let dir = test_data_dir("unique_active_owner");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(21);
+
+        let p1 = make_pass(51, 0, owner, MinerPassState::Active, 100);
+        let p2 = make_pass(52, 1, owner, MinerPassState::Active, 200);
+        storage.add_new_mint_pass(&p1).unwrap();
+
+        let err = storage.add_new_mint_pass(&p2);
+        assert!(err.is_err());
+
+        storage
+            .update_state(
+                &p1.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+            )
+            .unwrap();
+
+        storage.add_new_mint_pass(&p2).unwrap();
+
+        let last_active = storage
+            .get_last_active_mint_pass_by_owner(&owner)
+            .unwrap()
+            .unwrap();
+        assert_eq!(last_active.inscription_id, p2.inscription_id);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1346,12 +1457,14 @@ mod tests {
     fn test_pass_storage_savepoint_guard_rollback_and_commit() {
         let dir = test_data_dir("savepoint");
         let storage = MinerPassStorage::new(&dir).unwrap();
-        let owner = script_hash(9);
+        let owner = script_hash(31);
+        let owner2 = script_hash(32);
+        let owner3 = script_hash(33);
 
         let base_pass = make_pass(31, 0, owner, MinerPassState::Active, 100);
         storage.add_new_mint_pass(&base_pass).unwrap();
 
-        let rollback_pass = make_pass(32, 1, owner, MinerPassState::Active, 101);
+        let rollback_pass = make_pass(32, 1, owner2, MinerPassState::Active, 101);
         {
             let _guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
             storage.add_new_mint_pass(&rollback_pass).unwrap();
@@ -1361,7 +1474,7 @@ mod tests {
             .unwrap();
         assert!(rolled_back.is_none());
 
-        let commit_pass = make_pass(33, 2, owner, MinerPassState::Active, 102);
+        let commit_pass = make_pass(33, 2, owner3, MinerPassState::Active, 102);
         {
             let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
             storage.add_new_mint_pass(&commit_pass).unwrap();
