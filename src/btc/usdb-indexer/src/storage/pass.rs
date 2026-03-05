@@ -312,6 +312,167 @@ impl MinerPassStorage {
         Ok(height.map(|h| h as u32))
     }
 
+    // Defensive guard for historical reads: fail fast if local state contains
+    // any record beyond the target height, which usually indicates incomplete rollback.
+    pub fn assert_no_data_after_block_height(&self, block_height: u32) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+
+        // Check 1: synced height must not be ahead of the target block height.
+        let mut synced_stmt = conn
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate synced block height: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let synced_height: Option<i64> = synced_stmt
+            .query_row([BTC_SYNCED_BLOCK_HEIGHT_KEY], |row| {
+                row.get::<usize, i64>(0)
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query synced block height when validating future data: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(synced_height) = synced_height {
+            if synced_height < 0 {
+                let msg = format!("Invalid negative synced block height: {}", synced_height);
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            if synced_height as u32 > block_height {
+                let msg = format!(
+                    "Future synced height detected: target_block_height={}, synced_block_height={}",
+                    block_height, synced_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        // Check 2: there must be no miner pass minted after the target block height.
+        let mut pass_stmt = conn
+            .prepare(
+                "
+            SELECT
+                inscription_id,
+                mint_block_height
+            FROM miner_passes
+            WHERE mint_block_height > ?1
+            ORDER BY mint_block_height ASC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future miner pass data: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let mut pass_rows = pass_stmt
+            .query(rusqlite::params![block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future miner pass data for block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(row) = pass_rows.next().map_err(|e| {
+            let msg = format!("Failed to read future miner pass row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id: String = row.get(0).map_err(|e| {
+                let msg = format!(
+                    "Failed to get inscription_id from future miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let mint_block_height: i64 = row.get(1).map_err(|e| {
+                let msg = format!(
+                    "Failed to get mint_block_height from future miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let msg = format!(
+                "Future miner pass data exists: target_block_height={}, inscription_id={}, mint_block_height={}",
+                block_height, inscription_id, mint_block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        // Check 3: there must be no active balance snapshot after the target block height.
+        let mut snapshot_stmt = conn
+            .prepare(
+                "
+            SELECT
+                block_height
+            FROM active_balance_snapshots
+            WHERE block_height > ?1
+            ORDER BY block_height ASC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future active balance snapshots: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let mut snapshot_rows = snapshot_stmt
+            .query(rusqlite::params![block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future active balance snapshots for block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(row) = snapshot_rows.next().map_err(|e| {
+            let msg = format!("Failed to read future active balance snapshot row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let snapshot_height: i64 = row.get(0).map_err(|e| {
+                let msg = format!(
+                    "Failed to get block_height from future active balance snapshot row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let msg = format!(
+                "Future active balance snapshot exists: target_block_height={}, snapshot_block_height={}",
+                block_height, snapshot_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(())
+    }
+
     pub fn upsert_active_balance_snapshot(
         &self,
         block_height: u32,
@@ -1581,6 +1742,49 @@ mod tests {
         }
         let snap_202 = storage.get_active_balance_snapshot(202).unwrap();
         assert!(snap_202.is_some());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_no_data_after_block_height_detect_future_pass() {
+        let dir = test_data_dir("guard_future_pass");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(41);
+
+        let p = make_pass(61, 0, owner, MinerPassState::Active, 150);
+        storage.add_new_mint_pass(&p).unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future miner pass data exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_no_data_after_block_height_detect_future_snapshot() {
+        let dir = test_data_dir("guard_future_snapshot");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(120, 1_000, 1)
+            .unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future active balance snapshot exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_no_data_after_block_height_detect_future_synced_height() {
+        let dir = test_data_dir("guard_future_synced");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage.update_synced_btc_block_height(130).unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future synced height detected"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
