@@ -1,22 +1,38 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::{BTCConfig, OrdConfig, BalanceHistoryConfig};
+use usdb_util::{BTCConfig, BalanceHistoryConfig, OrdConfig};
 
 fn default_genesis_block_height() -> u32 {
     900000
+}
+
+fn default_active_address_page_size() -> usize {
+    1024
+}
+
+fn default_balance_query_batch_size() -> usize {
+    1024
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     #[serde(default = "default_genesis_block_height")]
     pub genesis_block_height: u32,
+
+    #[serde(default = "default_active_address_page_size")]
+    pub active_address_page_size: usize,
+
+    #[serde(default = "default_balance_query_batch_size")]
+    pub balance_query_batch_size: usize,
 }
 
 impl Default for USDBConfig {
     fn default() -> Self {
         USDBConfig {
             genesis_block_height: default_genesis_block_height(),
+            active_address_page_size: default_active_address_page_size(),
+            balance_query_batch_size: default_balance_query_batch_size(),
         }
     }
 }
@@ -32,7 +48,7 @@ pub struct IndexerConfig {
     pub ordinals: OrdConfig,
 
     pub balance_history: BalanceHistoryConfig,
-    
+
     pub usdb: USDBConfig,
 }
 
@@ -77,8 +93,11 @@ impl ConfigManager {
         let config_path = root_dir.join("config.json");
         if !config_path.exists() {
             let default_config = IndexerConfig::default();
-             
-            info!("Config file not found at {}. Using default config.", config_path.display());
+
+            info!(
+                "Config file not found at {}. Using default config.",
+                config_path.display()
+            );
             info!(
                 "Default config: {}",
                 serde_json::to_string_pretty(&default_config).unwrap()

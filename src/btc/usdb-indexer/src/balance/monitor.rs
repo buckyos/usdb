@@ -6,9 +6,6 @@ use std::future::Future;
 use std::pin::Pin;
 use usdb_util::USDBScriptHash;
 
-const ACTIVE_ADDRESS_PAGE_SIZE: usize = 1024;
-const BALANCE_QUERY_BATCH_SIZE: usize = 1024;
-
 pub(crate) trait BalanceHistoryClient {
     fn get_addresses_balances<'a>(
         &'a self,
@@ -35,6 +32,8 @@ impl BalanceHistoryClient for BalanceHistoryRpcClient {
 pub struct BalanceMonitor<C: BalanceHistoryClient = BalanceHistoryRpcClient> {
     miner_pass_storage: MinerPassStorageRef,
     balance_history_client: C,
+    active_address_page_size: usize,
+    balance_query_batch_size: usize,
 }
 
 impl BalanceMonitor<BalanceHistoryRpcClient> {
@@ -42,6 +41,20 @@ impl BalanceMonitor<BalanceHistoryRpcClient> {
         config: ConfigManagerRef,
         miner_pass_storage: MinerPassStorageRef,
     ) -> Result<Self, String> {
+        let active_address_page_size = config.config().usdb.active_address_page_size;
+        if active_address_page_size == 0 {
+            let msg = "Invalid config: usdb.active_address_page_size must be > 0".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let balance_query_batch_size = config.config().usdb.balance_query_batch_size;
+        if balance_query_batch_size == 0 {
+            let msg = "Invalid config: usdb.balance_query_batch_size must be > 0".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         let balance_history_client = BalanceHistoryRpcClient::new(
             &config.config().balance_history.rpc_url,
         )
@@ -54,16 +67,27 @@ impl BalanceMonitor<BalanceHistoryRpcClient> {
         Ok(Self {
             miner_pass_storage,
             balance_history_client,
+            active_address_page_size,
+            balance_query_batch_size,
         })
     }
 }
 
 impl<C: BalanceHistoryClient> BalanceMonitor<C> {
     #[cfg(test)]
-    fn new_with_client(miner_pass_storage: MinerPassStorageRef, balance_history_client: C) -> Self {
+    fn new_with_client(
+        miner_pass_storage: MinerPassStorageRef,
+        balance_history_client: C,
+        active_address_page_size: usize,
+        balance_query_batch_size: usize,
+    ) -> Self {
+        assert!(active_address_page_size > 0);
+        assert!(balance_query_batch_size > 0);
         Self {
             miner_pass_storage,
             balance_history_client,
+            active_address_page_size,
+            balance_query_batch_size,
         }
     }
 
@@ -76,7 +100,7 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
                 .miner_pass_storage
                 .get_all_active_pass_by_page_at_height(
                     page,
-                    ACTIVE_ADDRESS_PAGE_SIZE,
+                    self.active_address_page_size,
                     block_height,
                 )?;
             if active_passes.is_empty() {
@@ -96,7 +120,7 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
                 }
             }
 
-            if active_passes.len() < ACTIVE_ADDRESS_PAGE_SIZE {
+            if active_passes.len() < self.active_address_page_size {
                 break;
             }
 
@@ -117,7 +141,7 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
         let mut total_balance = 0u64;
 
         for (batch_index, batch) in active_addresses
-            .chunks(BALANCE_QUERY_BATCH_SIZE)
+            .chunks(self.balance_query_batch_size)
             .enumerate()
         {
             let batch_addresses = batch.to_vec();
@@ -322,7 +346,7 @@ mod tests {
         let dir = test_data_dir("empty");
         let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
         let mock = Arc::new(MockBalanceHistoryClient::new(vec![]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone());
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.block_height, 100);
@@ -361,7 +385,7 @@ mod tests {
                 delta: 20,
             }],
         ])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone());
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.active_address_count, 2);
@@ -389,7 +413,7 @@ mod tests {
             .unwrap();
 
         let mock = Arc::new(MockBalanceHistoryClient::new(vec![Ok(vec![])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock);
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock, 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Address balance batch size mismatch"));
@@ -409,7 +433,7 @@ mod tests {
             .unwrap();
 
         let mock = Arc::new(MockBalanceHistoryClient::new(vec![Ok(vec![vec![]])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock);
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock, 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Expected exactly one balance item"));
@@ -429,7 +453,7 @@ mod tests {
             .unwrap();
 
         let mock = Arc::new(MockBalanceHistoryClient::new(vec![]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone());
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Future miner pass data exists"));
