@@ -220,12 +220,11 @@ impl InscriptionContentLoader {
         let value = match serde_json::from_str::<serde_json::Value>(content) {
             Ok(v) => v,
             Err(e) => {
-                let msg = format!(
-                    "Failed to parse content for inscription {} as JSON: {}",
+                debug!(
+                    "Skipping non-JSON inscription content: module=content_loader, inscription_id={}, error={}",
                     inscription_id, e
                 );
-                error!("{}", msg);
-                return Err(msg);
+                return Ok(None);
             }
         };
 

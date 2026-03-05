@@ -1,15 +1,46 @@
-use ord::{
-    InscriptionId,
-    api::{Inscription, Inscriptions},
-};
+use ord::InscriptionId;
+use ordinals::SatPoint;
 use reqwest::Client;
-use std::time::Duration;
 use reqwest::header::CONTENT_TYPE;
+use serde::{Deserialize, de::DeserializeOwned};
+use std::str::FromStr;
+use std::time::Duration;
+
+const JSON_ERROR_PREVIEW_BYTES: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub enum ContentBody {
     Text(String),
     Binary(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
+pub struct OrdInscriptionItem {
+    pub id: InscriptionId,
+    pub number: i32,
+    pub timestamp: u32,
+    pub satpoint: SatPoint,
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrdInscriptionResponse {
+    id: String,
+    number: i64,
+    timestamp: i64,
+    satpoint: String,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    effective_content_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrdBlockInscriptionsResponse {
+    #[serde(default)]
+    ids: Vec<InscriptionId>,
+    #[serde(default)]
+    more: bool,
 }
 
 pub struct OrdClient {
@@ -18,6 +49,99 @@ pub struct OrdClient {
 }
 
 impl OrdClient {
+    fn parse_inscription_item(
+        url: &str,
+        item: OrdInscriptionResponse,
+    ) -> Result<OrdInscriptionItem, String> {
+        let id = InscriptionId::from_str(&item.id).map_err(|e| {
+            let msg = format!(
+                "Failed to parse inscription id from ord response: url={}, id={}, error={}",
+                url, item.id, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let satpoint = SatPoint::from_str(&item.satpoint).map_err(|e| {
+            let msg = format!(
+                "Failed to parse satpoint from ord response: url={}, inscription_id={}, satpoint={}, error={}",
+                url, id, item.satpoint, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let number = i32::try_from(item.number).map_err(|e| {
+            let msg = format!(
+                "Inscription number out of range from ord response: url={}, inscription_id={}, number={}, error={}",
+                url, id, item.number, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let timestamp_u64 = u64::try_from(item.timestamp).map_err(|e| {
+            let msg = format!(
+                "Inscription timestamp out of range from ord response: url={}, inscription_id={}, timestamp={}, error={}",
+                url, id, item.timestamp, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let timestamp = u32::try_from(timestamp_u64).map_err(|e| {
+            let msg = format!(
+                "Inscription timestamp too large from ord response: url={}, inscription_id={}, timestamp={}, error={}",
+                url, id, item.timestamp, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(OrdInscriptionItem {
+            id,
+            number,
+            timestamp,
+            satpoint,
+            content_type: item.content_type.or(item.effective_content_type),
+        })
+    }
+
+    fn build_response_preview(body: &[u8]) -> String {
+        let preview_len = body.len().min(JSON_ERROR_PREVIEW_BYTES);
+        let preview = String::from_utf8_lossy(&body[..preview_len]).replace('\n', "\\n");
+        if body.len() > preview_len {
+            format!("{}...(truncated, total_bytes={})", preview, body.len())
+        } else {
+            preview
+        }
+    }
+
+    async fn parse_json_response<T: DeserializeOwned>(
+        resp: reqwest::Response,
+        url: &str,
+    ) -> Result<T, String> {
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("<missing>")
+            .to_string();
+
+        let body = resp.bytes().await.map_err(|e| {
+            let msg = format!("Failed to read response body from {}: {}", url, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        serde_json::from_slice::<T>(&body).map_err(|e| {
+            let preview = Self::build_response_preview(body.as_ref());
+            let msg = format!(
+                "Failed to parse JSON response from {}: {}, status={}, content_type={}, body_preview={}",
+                url, e, status, content_type, preview
+            );
+            error!("{}", msg);
+            msg
+        })
+    }
+
     pub fn new(server_url: &str) -> Result<Self, String> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -59,16 +183,12 @@ impl OrdClient {
             return Err(msg);
         }
 
-        let block_info: serde_json::Value = resp.json().await.map_err(|e| {
-            let msg = format!("Failed to parse JSON response from {}: {}", url, e);
-            error!("{}", msg);
-            msg
-        })?;
+        let block_info: serde_json::Value = Self::parse_json_response(resp, &url).await?;
 
         // Parse the block height from the JSON response as integer
         if block_info.is_number() {
             Ok(block_info.as_u64().unwrap_or(0) as u32)
-        }   else {
+        } else {
             let msg = format!(
                 "Invalid block height format received from {}: {:?}",
                 url, block_info
@@ -90,7 +210,7 @@ impl OrdClient {
 
     return {Inscription}
      */
-    pub async fn get_inscription(&self, inscription_id: &str) -> Result<Inscription, String> {
+    pub async fn get_inscription(&self, inscription_id: &str) -> Result<OrdInscriptionItem, String> {
         let url = format!("{}/inscription/{}", self.server_url, inscription_id);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             let msg = format!("Failed to send request to {}: {}", url, e);
@@ -108,11 +228,8 @@ impl OrdClient {
             return Err(msg);
         }
 
-        let inscription: Inscription = resp.json().await.map_err(|e| {
-            let msg = format!("Failed to parse JSON response from {}: {}", url, e);
-            error!("{}", msg);
-            msg
-        })?;
+        let item: OrdInscriptionResponse = Self::parse_json_response(resp, &url).await?;
+        let inscription = Self::parse_inscription_item(&url, item)?;
 
         Ok(inscription)
     }
@@ -135,7 +252,7 @@ impl OrdClient {
     pub async fn get_inscriptions(
         &self,
         inscription_ids: &[InscriptionId],
-    ) -> Result<Vec<Inscription>, String> {
+    ) -> Result<Vec<OrdInscriptionItem>, String> {
         let url = format!("{}/inscriptions", self.server_url);
         let resp = self
             .client
@@ -159,11 +276,20 @@ impl OrdClient {
             return Err(msg);
         }
 
-        let inscriptions: Vec<Inscription> = resp.json().await.map_err(|e| {
-            let msg = format!("Failed to parse JSON response from {}: {}", url, e);
-            error!("{}", msg);
-            msg
-        })?;
+        let items: Vec<OrdInscriptionResponse> =
+            Self::parse_json_response(resp, &url).await.map_err(|e| {
+                format!(
+                    "Failed to parse inscriptions payload: url={}, ids_count={}, error={}",
+                    url,
+                    inscription_ids.len(),
+                    e
+                )
+            })?;
+
+        let mut inscriptions = Vec::with_capacity(items.len());
+        for item in items {
+            inscriptions.push(Self::parse_inscription_item(&url, item)?);
+        }
 
         Ok(inscriptions)
     }
@@ -216,11 +342,8 @@ impl OrdClient {
                 return Err(msg);
             }
 
-            let block_inscriptions: Inscriptions = resp.json().await.map_err(|e| {
-                let msg = format!("Failed to parse JSON response from {}: {}", url, e);
-                error!("{}", msg);
-                msg
-            })?;
+            let block_inscriptions: OrdBlockInscriptionsResponse =
+                Self::parse_json_response(resp, &url).await?;
 
             inscription_ids.extend(block_inscriptions.ids);
 

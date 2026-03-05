@@ -142,6 +142,7 @@ impl InscriptionSource for CompareInscriptionSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::btc::OrdClient;
     use crate::config::ConfigManager;
     use crate::inscription::{BitcoindInscriptionSource, OrdInscriptionSource};
     use std::ops::RangeInclusive;
@@ -201,6 +202,63 @@ mod tests {
         start_height..=end_height
     }
 
+    fn load_compare_config(config_root: Option<PathBuf>) -> Arc<ConfigManager> {
+        Arc::new(ConfigManager::load(config_root).expect("Failed to load config for compare test"))
+    }
+
+    async fn check_btc_service_alive(btc_client: &BTCRpcClient) -> Result<u32, String> {
+        let latest_height = btc_client.get_latest_block_height()?;
+        println!(
+            "BTC service health check: latest block height = {}, module=inscription_source_compare_test",
+            latest_height
+        );
+        Ok(latest_height)
+    }
+
+    async fn check_ord_service_alive(ord_client: &OrdClient) -> Result<u32, String> {
+        let latest_height = ord_client.get_latest_block_height().await?;
+        println!(
+            "ORD service health check: latest block height = {}, module=inscription_source_compare_test",
+            latest_height
+        );
+
+        // Prefer probing with a real inscription id to validate non-empty /inscriptions payload.
+        let mut probe_ids = Vec::new();
+        let search_depth = 64u32;
+        for offset in 0..search_depth {
+            let probe_height = latest_height.saturating_sub(offset);
+            let ids = ord_client.get_inscription_by_block(probe_height).await?;
+            if !ids.is_empty() {
+                probe_ids = ids;
+                break;
+            }
+        }
+
+        if probe_ids.is_empty() {
+            // Fallback: empty payload still validates endpoint JSON behavior in minimal mode.
+            let _ = ord_client.get_inscriptions(&[]).await?;
+        } else {
+            let sample = vec![probe_ids[0]];
+            let _ = ord_client.get_inscriptions(&sample).await?;
+        }
+        Ok(latest_height)
+    }
+
+    async fn check_compare_services_ready(
+        config: &ConfigManager,
+        btc_client: &BTCRpcClient,
+    ) -> Result<(), String> {
+        let btc_height = check_btc_service_alive(btc_client).await?;
+        let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
+        let ord_height = check_ord_service_alive(&ord_client).await?;
+
+        info!(
+            "Compare service health check passed: module=inscription_source_compare_test, btc_height={}, ord_height={}",
+            btc_height, ord_height
+        );
+        Ok(())
+    }
+
     async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions) {
         let height_range = resolve_height_range(&options);
         let start_height = *height_range.start();
@@ -218,9 +276,7 @@ mod tests {
             .fail_fast
             .unwrap_or_else(|| optional_env_bool("USDB_COMPARE_FAIL_FAST", true));
 
-        let config = Arc::new(
-            ConfigManager::load(config_root).expect("Failed to load config for compare test"),
-        );
+        let config = load_compare_config(config_root);
 
         let btc_client = Arc::new(
             BTCRpcClient::new(
@@ -229,6 +285,9 @@ mod tests {
             )
             .expect("Failed to create BTC RPC client for compare test"),
         );
+        check_compare_services_ready(&config, &btc_client)
+            .await
+            .unwrap_or_else(|e| panic!("Compare service health check failed: {}", e));
 
         let ord_source: Arc<dyn InscriptionSource> = Arc::new(
             OrdInscriptionSource::new(config.clone())
@@ -292,9 +351,50 @@ mod tests {
     #[ignore = "Requires running bitcoind and ord service with reachable RPC endpoints"]
     async fn test_compare_ord_and_bitcoind_on_height_range() {
         // Default mode: read block range from env vars.
-        run_compare_ord_and_bitcoind_with_options(CompareRangeOptions::default()).await;
+        //run_compare_ord_and_bitcoind_with_options(CompareRangeOptions::default()).await;
 
         // Optional manual mode example:
-        // run_compare_ord_and_bitcoind_on_range(900_000..=900_100).await;
+        run_compare_ord_and_bitcoind_on_range(900_000..=900_100).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running bitcoind RPC endpoint"]
+    async fn test_btc_service_health_check() {
+        let config_root = std::env::var("USDB_COMPARE_CONFIG_ROOT")
+            .ok()
+            .map(PathBuf::from);
+        let config = load_compare_config(config_root);
+        let btc_client = BTCRpcClient::new(
+            config.config().bitcoin.rpc_url(),
+            config.config().bitcoin.auth(),
+        )
+        .expect("Failed to create BTC RPC client for health check");
+
+        let height = check_btc_service_alive(&btc_client)
+            .await
+            .unwrap_or_else(|e| panic!("BTC service health check failed: {}", e));
+        assert!(
+            height > 0,
+            "BTC latest block height should be greater than 0"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running ord RPC endpoint"]
+    async fn test_ord_service_health_check() {
+        let config_root = std::env::var("USDB_COMPARE_CONFIG_ROOT")
+            .ok()
+            .map(PathBuf::from);
+        let config = load_compare_config(config_root);
+        let ord_client = OrdClient::new(config.config().ordinals.rpc_url())
+            .expect("Failed to create ord client for health check");
+
+        let height = check_ord_service_alive(&ord_client)
+            .await
+            .unwrap_or_else(|e| panic!("ORD service health check failed: {}", e));
+        assert!(
+            height > 0,
+            "ORD latest block height should be greater than 0"
+        );
     }
 }

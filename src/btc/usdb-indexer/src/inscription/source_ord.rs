@@ -1,9 +1,8 @@
 use super::{DiscoveredMint, InscriptionSource, InscriptionSourceFuture};
-use crate::btc::{OrdClient, OrdClientRef};
+use crate::btc::{OrdClient, OrdClientRef, OrdInscriptionItem};
 use crate::config::ConfigManagerRef;
 use crate::index::{InscriptionContentLoader, USDBInscription};
 use bitcoincore_rpc::bitcoin::Block;
-use ord::api::Inscription;
 use std::sync::Arc;
 
 pub struct OrdInscriptionSource {
@@ -23,8 +22,8 @@ impl OrdInscriptionSource {
 
     async fn load_inscriptions_content(
         &self,
-        inscriptions: &[Inscription],
-    ) -> Result<Vec<Option<(Inscription, String, USDBInscription)>>, String> {
+        inscriptions: &[OrdInscriptionItem],
+    ) -> Result<Vec<Option<(OrdInscriptionItem, String, USDBInscription)>>, String> {
         const BATCH_SIZE: usize = 64;
 
         let mut contents = Vec::with_capacity(inscriptions.len());
