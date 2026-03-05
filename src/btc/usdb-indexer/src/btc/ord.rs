@@ -7,6 +7,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 const JSON_ERROR_PREVIEW_BYTES: usize = 1024;
+const INSCRIPTIONS_BATCH_SIZE: usize = 200;
+const INSCRIPTIONS_BATCH_MAX_RETRIES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub enum ContentBody {
@@ -254,44 +256,100 @@ impl OrdClient {
         inscription_ids: &[InscriptionId],
     ) -> Result<Vec<OrdInscriptionItem>, String> {
         let url = format!("{}/inscriptions", self.server_url);
-        let resp = self
-            .client
-            .post(&url)
-            .json(&inscription_ids)
-            .send()
-            .await
-            .map_err(|e| {
-                let msg = format!("Failed to send request to {}: {}", url, e);
-                error!("{}", msg);
-                msg
-            })?;
-
-        if !resp.status().is_success() {
-            let msg = format!(
-                "Received non-success status code {} from {}",
-                resp.status(),
-                url
-            );
-            error!("{}", msg);
-            return Err(msg);
+        if inscription_ids.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let items: Vec<OrdInscriptionResponse> =
-            Self::parse_json_response(resp, &url).await.map_err(|e| {
-                format!(
-                    "Failed to parse inscriptions payload: url={}, ids_count={}, error={}",
+        let mut inscriptions = Vec::with_capacity(inscription_ids.len());
+        for (chunk_index, chunk) in inscription_ids.chunks(INSCRIPTIONS_BATCH_SIZE).enumerate() {
+            let chunk_items = self.post_inscriptions_batch(&url, chunk).await?;
+            if chunk_items.len() != chunk.len() {
+                let msg = format!(
+                    "Inscription batch size mismatch: url={}, chunk_index={}, request_size={}, response_size={}",
                     url,
-                    inscription_ids.len(),
-                    e
-                )
-            })?;
-
-        let mut inscriptions = Vec::with_capacity(items.len());
-        for item in items {
-            inscriptions.push(Self::parse_inscription_item(&url, item)?);
+                    chunk_index,
+                    chunk.len(),
+                    chunk_items.len()
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            inscriptions.extend(chunk_items);
         }
 
         Ok(inscriptions)
+    }
+
+    async fn post_inscriptions_batch(
+        &self,
+        url: &str,
+        batch: &[InscriptionId],
+    ) -> Result<Vec<OrdInscriptionItem>, String> {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+
+            let resp = self.client.post(url).json(&batch).send().await;
+            let resp = match resp {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let retryable = attempt <= INSCRIPTIONS_BATCH_MAX_RETRIES;
+                    let msg = format!(
+                        "Failed to send request to {}: attempt={}, batch_size={}, error={}",
+                        url,
+                        attempt,
+                        batch.len(),
+                        e
+                    );
+                    if retryable {
+                        warn!("{}; retrying...", msg);
+                        tokio::time::sleep(Duration::from_millis((attempt as u64) * 300)).await;
+                        continue;
+                    }
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            };
+
+            if !resp.status().is_success() {
+                let msg = format!(
+                    "Received non-success status code {} from {}: attempt={}, batch_size={}",
+                    resp.status(),
+                    url,
+                    attempt,
+                    batch.len()
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let items: Vec<OrdInscriptionResponse> = match Self::parse_json_response(resp, url).await
+            {
+                Ok(items) => items,
+                Err(e) => {
+                    let retryable = attempt <= INSCRIPTIONS_BATCH_MAX_RETRIES;
+                    let msg = format!(
+                        "Failed to parse inscriptions payload: url={}, attempt={}, batch_size={}, error={}",
+                        url,
+                        attempt,
+                        batch.len(),
+                        e
+                    );
+                    if retryable {
+                        warn!("{}; retrying...", msg);
+                        tokio::time::sleep(Duration::from_millis((attempt as u64) * 300)).await;
+                        continue;
+                    }
+                    return Err(msg);
+                }
+            };
+
+            let mut inscriptions = Vec::with_capacity(items.len());
+            for item in items {
+                inscriptions.push(Self::parse_inscription_item(url, item)?);
+            }
+            return Ok(inscriptions);
+        }
     }
 
     /*

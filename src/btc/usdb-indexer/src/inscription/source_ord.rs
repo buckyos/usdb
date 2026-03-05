@@ -102,14 +102,6 @@ impl InscriptionSource for OrdInscriptionSource {
 
             for (i, item) in parsed.into_iter().enumerate() {
                 let (inscription, content_string) = item;
-                if inscription.number < 0 {
-                    warn!(
-                        "Skipping negative inscription number from ord source: module=inscription_source_ord, block_height={}, inscription_id={}, number={}",
-                        block_height, inscription.id, inscription.number
-                    );
-                    continue;
-                }
-
                 if content_string.is_none() {
                     debug!(
                         "Inscription has no text content from ord source: module=inscription_source_ord, block_height={}, inscription_id={}",
