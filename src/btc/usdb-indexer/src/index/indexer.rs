@@ -1,14 +1,15 @@
-use super::content::{InscriptionContentLoader, USDBInscription};
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
-use super::inscription::InscriptionNewItem;
+use super::inscription::{
+    BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
+    OrdInscriptionSource,
+};
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::transfer::InscriptionTransferTracker;
 use crate::balance::BalanceMonitor;
-use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
-use ord::api::Inscription;
+use bitcoincore_rpc::bitcoin::Block;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -17,7 +18,7 @@ use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
     btc_client: BTCRpcClientRef,
-    ord_client: OrdClientRef,
+    inscription_source: Arc<dyn InscriptionSource>,
 
     transfer_tracker: InscriptionTransferTracker,
     miner_pass_storage: MinerPassStorageRef,
@@ -35,12 +36,12 @@ pub struct InscriptionIndexer {
 impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
         // Init btc client
-        let btc_client = BTCRpcClient::new(
+        let btc_client = Arc::new(BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
             config.config().bitcoin.auth(),
-        )?;
-
-        let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
+        )?);
+        let inscription_source =
+            Self::build_inscription_source(config.clone(), btc_client.clone())?;
 
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
@@ -64,8 +65,8 @@ impl InscriptionIndexer {
 
         let ret = Self {
             config,
-            btc_client: Arc::new(btc_client),
-            ord_client: Arc::new(ord_client),
+            btc_client,
+            inscription_source,
 
             transfer_tracker,
 
@@ -79,6 +80,67 @@ impl InscriptionIndexer {
         };
 
         Ok(ret)
+    }
+
+    fn create_inscription_source_by_name(
+        source_name: &str,
+        config: ConfigManagerRef,
+        btc_client: BTCRpcClientRef,
+    ) -> Result<Arc<dyn InscriptionSource>, String> {
+        match source_name {
+            "ord" => Ok(Arc::new(OrdInscriptionSource::new(config)?)),
+            "bitcoind" => Ok(Arc::new(BitcoindInscriptionSource::new(btc_client))),
+            _ => Err(format!(
+                "Unsupported inscription source: {} (supported: ord, bitcoind)",
+                source_name
+            )),
+        }
+    }
+
+    fn build_inscription_source(
+        config: ConfigManagerRef,
+        btc_client: BTCRpcClientRef,
+    ) -> Result<Arc<dyn InscriptionSource>, String> {
+        let source_name = config
+            .config()
+            .usdb
+            .inscription_source
+            .trim()
+            .to_ascii_lowercase();
+        let primary = Self::create_inscription_source_by_name(
+            &source_name,
+            config.clone(),
+            btc_client.clone(),
+        )?;
+
+        if !config.config().usdb.inscription_source_shadow_compare {
+            info!(
+                "Inscription source selected: module=indexer, source={}",
+                source_name
+            );
+            return Ok(primary);
+        }
+
+        let shadow_source_name = if source_name == "ord" {
+            "bitcoind"
+        } else {
+            "ord"
+        };
+        let shadow = Self::create_inscription_source_by_name(
+            shadow_source_name,
+            config.clone(),
+            btc_client.clone(),
+        )?;
+
+        let fail_fast = config.config().usdb.inscription_source_shadow_fail_fast;
+        info!(
+            "Inscription source shadow compare enabled: module=indexer, primary_source={}, shadow_source={}, fail_fast={}",
+            source_name, shadow_source_name, fail_fast
+        );
+
+        Ok(Arc::new(CompareInscriptionSource::new(
+            primary, shadow, fail_fast,
+        )))
     }
 
     pub async fn init(&self) -> Result<(), String> {
@@ -303,15 +365,20 @@ impl InscriptionIndexer {
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
+        let block_hint = Arc::new(self.btc_client.get_block(height)?);
 
         // First process block inscriptions
         let process_inscriptions_begin = Instant::now();
-        let new_inscriptions_count = self.process_block_inscriptions(height).await?;
+        let new_inscriptions_count = self
+            .process_block_inscriptions(height, Some(block_hint.clone()))
+            .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
         // Then process inscription transfers
         let process_transfers_begin = Instant::now();
-        let transfer_count = self.process_block_inscription_transfer(height).await?;
+        let transfer_count = self
+            .process_block_inscription_transfer(height, Some(block_hint))
+            .await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
@@ -342,90 +409,63 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    async fn process_block_inscriptions(&self, block_height: u32) -> Result<usize, String> {
-        let inscription_ids = self
-            .ord_client
-            .get_inscription_by_block(block_height)
+    async fn process_block_inscriptions(
+        &self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> Result<usize, String> {
+        let discovered_mints = self
+            .inscription_source
+            .load_block_mints(block_height, block_hint)
             .await?;
-        if inscription_ids.is_empty() {
+        if discovered_mints.is_empty() {
             info!("No inscriptions found at block height {}", block_height);
             return Ok(0);
         }
 
-        let begin_tick = std::time::Instant::now();
-        let inscriptions = self.ord_client.get_inscriptions(&inscription_ids).await?;
-
-        debug!(
-            "Fetched {} inscriptions at block {} in {:?}",
-            inscriptions.len(),
-            block_height,
-            begin_tick.elapsed()
-        );
-
-        assert_eq!(
-            inscriptions.len(),
-            inscription_ids.len(),
-            "Number of inscriptions fetched should match number of inscription IDs"
-        );
-
-        let usdb_inscriptions = self
-            .load_inscriptions_content(&inscriptions)
-            .await
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to load inscriptions content at block {}: {}",
-                    block_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-
         let mut new_inscriptions_count = 0usize;
-        for (i, item) in usdb_inscriptions.into_iter().enumerate() {
-            if item.is_none() {
-                debug!(
-                    "Inscription {} at block {} is None, skipping",
-                    inscription_ids[i], block_height
-                );
-                continue;
-            }
-
-            let (inscription, content, usdb_inscription) = item.unwrap();
-            if inscription.number < 0 {
-                warn!(
-                    "Inscription {} at block {} has negative number {}, skipping",
-                    inscription.id, block_height, inscription.number
-                );
-                continue;
-            }
-
+        for mint in discovered_mints {
             let create_info = self
                 .transfer_tracker
-                .calc_create_satpoint(&inscription.id)
+                .calc_create_satpoint(&mint.inscription_id)
                 .await?;
 
             // FXIME: Should not happen? But just in case, we check here
             if create_info.address.is_none() {
                 let msg = format!(
                     "Inscription {} at block {} has no creator address",
-                    inscription.id, block_height
+                    mint.inscription_id, block_height
                 );
                 error!("{}", msg);
                 return Err(msg);
             }
 
+            if let Some(source_satpoint) = mint.satpoint {
+                if source_satpoint != create_info.satpoint {
+                    warn!(
+                        "Inscription satpoint mismatch between source and local calc: module=indexer, source={}, block_height={}, inscription_id={}, source_satpoint={}, calc_satpoint={}",
+                        self.inscription_source.source_name(),
+                        block_height,
+                        mint.inscription_id,
+                        source_satpoint,
+                        create_info.satpoint
+                    );
+                }
+            }
+
+            let op = mint.content.op();
             let inscription_new_item = InscriptionNewItem {
-                inscription_id: inscription.id.clone(),
-                inscription_number: inscription.number,
-                block_height,
-                timestamp: inscription.timestamp as u32,
+                inscription_id: mint.inscription_id.clone(),
+                inscription_number: mint.inscription_number,
+                block_height: mint.block_height,
+                timestamp: mint.timestamp,
                 address: create_info.address.unwrap(), // The creator address
-                satpoint: inscription.satpoint,
+                satpoint: create_info.satpoint,
                 value: create_info.value,
 
-                op: usdb_inscription.op(),
-                content: usdb_inscription,
-                content_string: content,
+                op,
+                content: mint.content,
+                content_string: mint.content_string,
 
                 commit_txid: create_info.commit_txid,
             };
@@ -465,51 +505,15 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    async fn load_inscriptions_content(
+    async fn process_block_inscription_transfer(
         &self,
-        inscriptions: &Vec<Inscription>,
-    ) -> Result<Vec<Option<(Inscription, String, USDBInscription)>>, String> {
-        const BATCH_SIZE: usize = 64;
-        let mut contents = Vec::with_capacity(inscriptions.len());
-
-        for chunk in inscriptions.chunks(BATCH_SIZE) {
-            let mut handles = Vec::with_capacity(chunk.len());
-
-            for inscription in chunk {
-                let ord_client = self.ord_client.clone();
-                let inscription = inscription.clone();
-                let config = self.config.clone();
-
-                let handle = tokio::spawn(async move {
-                    InscriptionContentLoader::load_content(
-                        &ord_client,
-                        &inscription.id,
-                        inscription.content_type.as_deref(),
-                        &config,
-                    )
-                    .await
-                    .map(|opt| opt.map(|(content, usdb)| (inscription, content, usdb)))
-                });
-
-                handles.push(handle);
-            }
-
-            for handle in handles {
-                let content = handle.await.map_err(|e| {
-                    let msg = format!("Failed to join task for loading inscription content: {}", e);
-                    error!("{}", msg);
-                    msg
-                })??;
-
-                contents.push(content);
-            }
-        }
-
-        Ok(contents)
-    }
-
-    async fn process_block_inscription_transfer(&self, block_height: u32) -> Result<usize, String> {
-        let transfer_items = self.transfer_tracker.process_block(block_height).await?;
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> Result<usize, String> {
+        let transfer_items = self
+            .transfer_tracker
+            .process_block_with_hint(block_height, block_hint)
+            .await?;
         if transfer_items.is_empty() {
             info!(
                 "No inscription transfers found at block height {}",

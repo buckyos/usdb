@@ -27,25 +27,55 @@ fn default_balance_query_max_retries() -> u32 {
     2
 }
 
+fn default_inscription_source() -> String {
+    "ord".to_string()
+}
+
+fn default_inscription_source_shadow_compare() -> bool {
+    false
+}
+
+fn default_inscription_source_shadow_fail_fast() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
+    // First BTC block height that the indexer should process for USDB protocol data.
     #[serde(default = "default_genesis_block_height")]
     pub genesis_block_height: u32,
 
+    // Number of active pass records loaded per storage page when scanning owners.
     #[serde(default = "default_active_address_page_size")]
     pub active_address_page_size: usize,
 
+    // Number of addresses included in each balance-history RPC request batch.
     #[serde(default = "default_balance_query_batch_size")]
     pub balance_query_batch_size: usize,
 
+    // Maximum number of in-flight balance-history RPC batches.
     #[serde(default = "default_balance_query_concurrency")]
     pub balance_query_concurrency: usize,
 
+    // Per-batch balance-history RPC timeout in milliseconds.
     #[serde(default = "default_balance_query_timeout_ms")]
     pub balance_query_timeout_ms: u64,
 
+    // Maximum retry attempts for a failed balance-history RPC batch.
     #[serde(default = "default_balance_query_max_retries")]
     pub balance_query_max_retries: u32,
+
+    // Primary inscription source backend: supported values are "ord" and "bitcoind".
+    #[serde(default = "default_inscription_source")]
+    pub inscription_source: String,
+
+    // Enable primary-vs-shadow inscription source comparison for diagnostics.
+    #[serde(default = "default_inscription_source_shadow_compare")]
+    pub inscription_source_shadow_compare: bool,
+
+    // Stop block processing immediately when shadow comparison finds mismatches.
+    #[serde(default = "default_inscription_source_shadow_fail_fast")]
+    pub inscription_source_shadow_fail_fast: bool,
 }
 
 impl Default for USDBConfig {
@@ -57,22 +87,28 @@ impl Default for USDBConfig {
             balance_query_concurrency: default_balance_query_concurrency(),
             balance_query_timeout_ms: default_balance_query_timeout_ms(),
             balance_query_max_retries: default_balance_query_max_retries(),
+            inscription_source: default_inscription_source(),
+            inscription_source_shadow_compare: default_inscription_source_shadow_compare(),
+            inscription_source_shadow_fail_fast: default_inscription_source_shadow_fail_fast(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexerConfig {
-    // Used for store data and logs separately, default is none,
-    // So data and logs are stored in the root dir directly, or {isolate}/data and {isolate}/logs if set
+    // Optional namespace to isolate runtime data and logs under <root>/<isolate>/.
     pub isolate: Option<String>,
 
+    // Bitcoin RPC connectivity settings.
     pub bitcoin: BTCConfig,
 
+    // Ord service RPC settings.
     pub ordinals: OrdConfig,
 
+    // Balance-history service RPC settings.
     pub balance_history: BalanceHistoryConfig,
 
+    // USDB indexer behavior and performance tuning settings.
     pub usdb: USDBConfig,
 }
 

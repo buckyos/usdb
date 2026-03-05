@@ -1,4 +1,4 @@
-use super::content::USDBInscription;
+use super::super::content::USDBInscription;
 use bitcoincore_rpc::bitcoin::{Amount, Txid};
 use ord::InscriptionId;
 use ordinals::SatPoint;

@@ -3,6 +3,7 @@ use crate::btc::{TxItem, UTXOValueManager, UTXOValueManagerRef};
 use crate::config::ConfigManagerRef;
 use crate::storage::MinerPassStorageRef;
 use crate::storage::ValidMinerPassInfo;
+use bitcoincore_rpc::bitcoin::Block;
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
 use ord::InscriptionId;
@@ -261,16 +262,27 @@ impl InscriptionTransferTracker {
         &self,
         block_height: u32,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
+        self.process_block_with_hint(block_height, None).await
+    }
+
+    pub async fn process_block_with_hint(
+        &self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> Result<Vec<InscriptionTransferItem>, String> {
         info!(
             "Processing block {} for inscription transfers",
             block_height,
         );
 
-        let block = self.btc_client.get_block(block_height)?;
+        let block = match block_hint {
+            Some(block) => block,
+            None => Arc::new(self.btc_client.get_block(block_height)?),
+        };
 
         let mut transfer_items = Vec::new();
-        for tx in block.txdata {
-            let tx_item = TxItem::from_tx(tx);
+        for tx in &block.txdata {
+            let tx_item = TxItem::from_tx(tx.clone());
 
             // Check all input in current tx if match any inscription outpoint
             for vin in &tx_item.tx.input {

@@ -1,10 +1,10 @@
 use std::str::FromStr;
 
+use super::inscription::InscriptionOperation;
 use crate::btc::{ContentBody, OrdClient};
 use crate::config::ConfigManager;
 use ord::InscriptionId;
 use serde::{Deserialize, Serialize};
-use super::inscription::InscriptionOperation;
 
 // check content type at first
 const VALID_CONTENT_TYPES: [&str; 3] = [
@@ -101,10 +101,10 @@ impl USDBMint {
                         prev, e
                     );
                     continue;
-                },
+                }
             }
         }
-        
+
         ids
     }
 }
@@ -136,6 +136,14 @@ impl USDBInscription {
 pub struct InscriptionContentLoader {}
 
 impl InscriptionContentLoader {
+    pub fn is_supported_content_type(content_type: Option<&str>) -> bool {
+        if let Some(ct) = content_type {
+            return VALID_CONTENT_TYPES.contains(&ct.to_ascii_lowercase().as_str());
+        }
+
+        true
+    }
+
     pub async fn load_content(
         ord_client: &OrdClient,
         inscription_id: &InscriptionId,
@@ -177,14 +185,13 @@ impl InscriptionContentLoader {
         content_type: Option<&str>,
     ) -> Result<Option<String>, String> {
         // Check content type at first
-        if let Some(ct) = content_type {
-            if !VALID_CONTENT_TYPES.contains(&ct.to_ascii_lowercase().as_str()) {
-                debug!(
-                    "Skipping content load for inscription {} due to unsupported content type: {}",
-                    inscription_id, ct
-                );
-                return Ok(None);
-            }
+        if !Self::is_supported_content_type(content_type) {
+            debug!(
+                "Skipping content load for inscription {} due to unsupported content type: {}",
+                inscription_id,
+                content_type.unwrap_or_default()
+            );
+            return Ok(None);
         }
 
         let content_opt = ord_client
@@ -225,7 +232,10 @@ impl InscriptionContentLoader {
         Self::parse_content(inscription_id, &value)
     }
 
-    pub fn parse_content(inscription_id: &InscriptionId, content: &serde_json::Value) -> Result<Option<USDBInscription>, String> {
+    pub fn parse_content(
+        inscription_id: &InscriptionId,
+        content: &serde_json::Value,
+    ) -> Result<Option<USDBInscription>, String> {
         if !content.is_object() {
             return Ok(None);
         }
@@ -250,17 +260,18 @@ impl InscriptionContentLoader {
         }
 
         // Parse the fields for USDBMint
-        let mint_inscription: USDBMint = match serde_json::from_value(serde_json::Value::Object(content.clone())) {
-            Ok(mint) => mint,
-            Err(e) => {
-                let msg = format!(
-                    "Failed to parse USDBMint content for inscription {}: {}",
-                    inscription_id, e
-                );
-                error!("{}", msg);
-                return Ok(None);
-            }
-        };
+        let mint_inscription: USDBMint =
+            match serde_json::from_value(serde_json::Value::Object(content.clone())) {
+                Ok(mint) => mint,
+                Err(e) => {
+                    let msg = format!(
+                        "Failed to parse USDBMint content for inscription {}: {}",
+                        inscription_id, e
+                    );
+                    error!("{}", msg);
+                    return Ok(None);
+                }
+            };
 
         Ok(Some(USDBInscription::Mint(mint_inscription)))
     }
