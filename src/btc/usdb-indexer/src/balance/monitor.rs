@@ -375,6 +375,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_settle_active_balance_balance_item_count_mismatch_multiple_items() {
+        let dir = test_data_dir("item_mismatch_multiple_items");
+        let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+        storage
+            .add_new_mint_pass(&make_pass(71, 0, script_hash(14), 80))
+            .unwrap();
+
+        let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+            vec![vec![
+                balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 1_000,
+                    delta: 10,
+                },
+                balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 1_200,
+                    delta: 20,
+                },
+            ]],
+        ))]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+        let err = monitor.settle_active_balance(100).await.unwrap_err();
+        assert!(err.contains("Expected exactly one balance item"));
+        assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
+
+        drop(monitor);
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_settle_active_balance_sum_across_multiple_batches() {
+        let dir = test_data_dir("sum_multi_batch");
+        let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+        storage
+            .add_new_mint_pass(&make_pass(81, 0, script_hash(21), 90))
+            .unwrap();
+        storage
+            .add_new_mint_pass(&make_pass(82, 1, script_hash(22), 91))
+            .unwrap();
+        storage
+            .add_new_mint_pass(&make_pass(83, 2, script_hash(23), 92))
+            .unwrap();
+        storage
+            .add_new_mint_pass(&make_pass(84, 3, script_hash(24), 93))
+            .unwrap();
+        storage
+            .add_new_mint_pass(&make_pass(85, 4, script_hash(25), 94))
+            .unwrap();
+
+        let backend = Arc::new(MockBalanceBackend::new(vec![
+            MockResponse::Immediate(Ok(vec![
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 100,
+                    delta: 1,
+                }],
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 200,
+                    delta: 2,
+                }],
+            ])),
+            MockResponse::Immediate(Ok(vec![
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 300,
+                    delta: 3,
+                }],
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 400,
+                    delta: 4,
+                }],
+            ])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 500,
+                delta: 5,
+            }]])),
+        ]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 2).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 2);
+
+        let snapshot = monitor.settle_active_balance(100).await.unwrap();
+        assert_eq!(snapshot.active_address_count, 5);
+        assert_eq!(snapshot.total_balance, 1_500);
+        assert_eq!(backend.call_count(), 3);
+
+        let stored = storage.get_active_balance_snapshot(100).unwrap().unwrap();
+        assert_eq!(stored.total_balance, 1_500);
+        assert_eq!(stored.active_address_count, 5);
+
+        drop(monitor);
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_settle_active_balance_fail_on_future_data_guard() {
         let dir = test_data_dir("future_data_guard");
         let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
