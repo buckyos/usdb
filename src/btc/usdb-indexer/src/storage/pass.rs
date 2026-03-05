@@ -1014,6 +1014,15 @@ impl MinerPassStorage {
         page: usize,
         page_size: usize,
     ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        self.get_all_active_pass_by_page_at_height(page, page_size, u32::MAX)
+    }
+
+    pub fn get_all_active_pass_by_page_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+    ) -> Result<Vec<ActiveMinerPassInfo>, String> {
         let conn = self.conn.lock().unwrap();
 
         let offset = page * page_size;
@@ -1025,14 +1034,14 @@ impl MinerPassStorage {
                 inscription_id,
                 owner
             FROM miner_passes
-            WHERE state = ?1
+            WHERE state = ?1 AND mint_block_height <= ?2
             ORDER BY mint_block_height DESC
-            LIMIT ?2 OFFSET ?3;
+            LIMIT ?3 OFFSET ?4;
             ",
             )
             .map_err(|e| {
                 let msg = format!(
-                    "Failed to prepare statement to get all active miner passes by page: {}",
+                    "Failed to prepare statement to get all active miner passes by page and block height: {}",
                     e
                 );
                 error!("{}", msg);
@@ -1042,13 +1051,14 @@ impl MinerPassStorage {
         let mut rows = stmt
             .query(rusqlite::params![
                 MinerPassState::Active.as_str(),
+                block_height as i64,
                 page_size as i64,
                 offset as i64
             ])
             .map_err(|e| {
                 let msg = format!(
-                    "Failed to query all active miner passes by page from database: {}",
-                    e
+                    "Failed to query all active miner passes by page from database at block height {}: {}",
+                    block_height, e
                 );
                 error!("{}", msg);
                 msg
@@ -1149,8 +1159,8 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
 
@@ -1292,6 +1302,42 @@ mod tests {
         assert!(ids.contains(&p1.inscription_id));
         assert!(ids.contains(&p3.inscription_id));
         assert!(!ids.contains(&p2.inscription_id));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_storage_active_query_with_block_height_filter() {
+        let dir = test_data_dir("active_height");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(11);
+        let owner2 = script_hash(12);
+        let owner3 = script_hash(13);
+
+        let p1 = make_pass(41, 0, owner1, MinerPassState::Active, 100);
+        let p2 = make_pass(42, 1, owner2, MinerPassState::Active, 200);
+        let p3 = make_pass(43, 2, owner3, MinerPassState::Active, 300);
+        storage.add_new_mint_pass(&p1).unwrap();
+        storage.add_new_mint_pass(&p2).unwrap();
+        storage.add_new_mint_pass(&p3).unwrap();
+
+        let at_250 = storage
+            .get_all_active_pass_by_page_at_height(0, 10, 250)
+            .unwrap();
+        assert_eq!(at_250.len(), 2);
+        assert_eq!(at_250[0].inscription_id, p2.inscription_id);
+        assert_eq!(at_250[1].inscription_id, p1.inscription_id);
+
+        let at_100 = storage
+            .get_all_active_pass_by_page_at_height(0, 10, 100)
+            .unwrap();
+        assert_eq!(at_100.len(), 1);
+        assert_eq!(at_100[0].inscription_id, p1.inscription_id);
+
+        let at_50 = storage
+            .get_all_active_pass_by_page_at_height(0, 10, 50)
+            .unwrap();
+        assert!(at_50.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

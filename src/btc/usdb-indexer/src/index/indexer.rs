@@ -4,10 +4,11 @@ use super::inscription::BlockInscriptionsCollector;
 use super::inscription::InscriptionNewItem;
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::transfer::InscriptionTransferTracker;
+use crate::balance::BalanceMonitor;
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
 use crate::status::StatusManagerRef;
-use crate::storage::{MinerPassStorage, MinerPassStorageRef, MinePassStorageSavePointGuard};
+use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use ord::api::Inscription;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +21,7 @@ pub struct InscriptionIndexer {
 
     transfer_tracker: InscriptionTransferTracker,
     miner_pass_storage: MinerPassStorageRef,
+    balance_monitor: BalanceMonitor,
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
@@ -58,6 +60,8 @@ impl InscriptionIndexer {
             miner_pass_manager.miner_pass_storage().clone(),
         )?;
 
+        let balance_monitor = BalanceMonitor::new(config.clone(), miner_pass_storage.clone())?;
+
         let ret = Self {
             config,
             btc_client: Arc::new(btc_client),
@@ -68,6 +72,7 @@ impl InscriptionIndexer {
             pass_energy_manager,
             miner_pass_manager,
             miner_pass_storage,
+            balance_monitor,
             status,
 
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -168,12 +173,19 @@ impl InscriptionIndexer {
                 "Latest block height {} is below genesis block height {}",
                 latest_height, genesis_block_height
             );
-            self.status.update_index_status(Some(latest_height), Some(latest_height), Some(msg.clone()));
+            self.status.update_index_status(
+                Some(latest_height),
+                Some(latest_height),
+                Some(msg.clone()),
+            );
             return Ok(latest_height);
         }
 
         // Get current synced height, ensure it's at least genesis_block_height - 1
-        let mut current_height = self.miner_pass_storage.get_synced_btc_block_height()?.unwrap_or(0);
+        let mut current_height = self
+            .miner_pass_storage
+            .get_synced_btc_block_height()?
+            .unwrap_or(0);
         if current_height < genesis_block_height - 1 {
             current_height = genesis_block_height - 1;
         }
@@ -183,11 +195,19 @@ impl InscriptionIndexer {
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
             );
-            self.status.update_index_status(Some(current_height), Some(latest_height), Some(msg.clone()));
+            self.status.update_index_status(
+                Some(current_height),
+                Some(latest_height),
+                Some(msg.clone()),
+            );
             return Ok(current_height);
         }
 
-        self.status.update_index_status(Some(current_height), Some(latest_height), Some("Syncing inscriptions...".to_string()));
+        self.status.update_index_status(
+            Some(current_height),
+            Some(latest_height),
+            Some("Syncing inscriptions...".to_string()),
+        );
 
         let next_height = current_height + 1;
         let block_range = next_height..=latest_height;
@@ -198,7 +218,8 @@ impl InscriptionIndexer {
                 block_range, e
             );
             error!("{}", msg);
-            self.status.update_index_status(None, None, Some(msg.clone()));
+            self.status
+                .update_index_status(None, None, Some(msg.clone()));
 
             return Err(msg);
         }
@@ -230,13 +251,15 @@ impl InscriptionIndexer {
             self.sync_block(height).await?;
 
             // Update the sync storage to save progress
-            self.miner_pass_storage.update_synced_btc_block_height(height)?;
+            self.miner_pass_storage
+                .update_synced_btc_block_height(height)?;
 
             // Commit the savepoint on sync success
             savepoint_guard.commit()?;
 
             current_height = height;
-            self.status.update_index_status(Some(current_height), None, None);
+            self.status
+                .update_index_status(Some(current_height), None, None);
         }
 
         Ok(current_height)
@@ -254,20 +277,22 @@ impl InscriptionIndexer {
         // Then process inscription transfers
         self.process_block_inscription_transfer(height).await?;
 
-        // Check if there is anything to process
+        let balance_snapshot = self.balance_monitor.settle_active_balance(height).await?;
+
         if collector.is_empty() {
             info!(
                 "No unknown inscriptions and transfers found at block height {}",
                 height
             );
-            return Ok(());
         }
 
         info!(
-            "Finished processing inscriptions at block height {}: {} new inscriptions, {} transfers",
+            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}",
             height,
             collector.new_inscriptions().len(),
-            collector.transfer_inscriptions().len()
+            collector.transfer_inscriptions().len(),
+            balance_snapshot.active_address_count,
+            balance_snapshot.total_balance
         );
 
         Ok(())
