@@ -1,42 +1,20 @@
 use crate::config::ConfigManagerRef;
 use crate::storage::{ActiveBalanceSnapshot, MinerPassStorageRef};
-use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
 use ord::InscriptionId;
-use std::future::Future;
-use std::pin::Pin;
+use std::sync::Arc;
 use usdb_util::USDBScriptHash;
 
-pub(crate) trait BalanceHistoryClient {
-    fn get_addresses_balances<'a>(
-        &'a self,
-        script_hashes: Vec<USDBScriptHash>,
-        block_height: Option<u32>,
-        block_range: Option<std::ops::Range<u32>>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<AddressBalance>>, String>> + Send + 'a>>;
-}
+use super::{
+    BalanceHistoryBackend, BalanceRpcLoader, ConcurrentBalanceLoader, SerialBalanceLoader,
+};
 
-impl BalanceHistoryClient for BalanceHistoryRpcClient {
-    fn get_addresses_balances<'a>(
-        &'a self,
-        script_hashes: Vec<USDBScriptHash>,
-        block_height: Option<u32>,
-        block_range: Option<std::ops::Range<u32>>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<AddressBalance>>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            self.get_addresses_balances(script_hashes, block_height, block_range)
-                .await
-        })
-    }
-}
-
-pub struct BalanceMonitor<C: BalanceHistoryClient = BalanceHistoryRpcClient> {
+pub struct BalanceMonitor {
     miner_pass_storage: MinerPassStorageRef,
-    balance_history_client: C,
+    rpc_loader: Arc<dyn BalanceRpcLoader>,
     active_address_page_size: usize,
-    balance_query_batch_size: usize,
 }
 
-impl BalanceMonitor<BalanceHistoryRpcClient> {
+impl BalanceMonitor {
     pub fn new(
         config: ConfigManagerRef,
         miner_pass_storage: MinerPassStorageRef,
@@ -48,46 +26,47 @@ impl BalanceMonitor<BalanceHistoryRpcClient> {
             return Err(msg);
         }
 
-        let balance_query_batch_size = config.config().usdb.balance_query_batch_size;
-        if balance_query_batch_size == 0 {
-            let msg = "Invalid config: usdb.balance_query_batch_size must be > 0".to_string();
-            error!("{}", msg);
-            return Err(msg);
-        }
+        let batch_size = config.config().usdb.balance_query_batch_size;
+        let concurrency = config.config().usdb.balance_query_concurrency;
+        let timeout_ms = config.config().usdb.balance_query_timeout_ms;
+        let max_retries = config.config().usdb.balance_query_max_retries;
 
-        let balance_history_client = BalanceHistoryRpcClient::new(
+        let backend = Arc::new(BalanceHistoryBackend::new(
             &config.config().balance_history.rpc_url,
-        )
-        .map_err(|e| {
-            let msg = format!("Failed to create BalanceHistoryRpcClient: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+        )?);
+
+        // Prefer serial mode when concurrency=1 and no retries are needed.
+        // Otherwise use concurrent mode with timeout/retry controls.
+        let rpc_loader: Arc<dyn BalanceRpcLoader> = if concurrency == 1 && max_retries == 0 {
+            Arc::new(SerialBalanceLoader::new(backend, batch_size)?)
+        } else {
+            Arc::new(ConcurrentBalanceLoader::new(
+                backend,
+                batch_size,
+                concurrency,
+                timeout_ms,
+                max_retries,
+            )?)
+        };
 
         Ok(Self {
             miner_pass_storage,
-            balance_history_client,
+            rpc_loader,
             active_address_page_size,
-            balance_query_batch_size,
         })
     }
-}
 
-impl<C: BalanceHistoryClient> BalanceMonitor<C> {
     #[cfg(test)]
-    fn new_with_client(
+    fn new_with_loader(
         miner_pass_storage: MinerPassStorageRef,
-        balance_history_client: C,
+        rpc_loader: Arc<dyn BalanceRpcLoader>,
         active_address_page_size: usize,
-        balance_query_batch_size: usize,
     ) -> Self {
         assert!(active_address_page_size > 0);
-        assert!(balance_query_batch_size > 0);
         Self {
             miner_pass_storage,
-            balance_history_client,
+            rpc_loader,
             active_address_page_size,
-            balance_query_batch_size,
         }
     }
 
@@ -129,58 +108,7 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
 
         let mut active_addresses: Vec<_> = owner_to_pass.into_keys().collect();
         active_addresses.sort_unstable_by_key(|a| a.to_string());
-
         Ok(active_addresses)
-    }
-
-    async fn load_total_balance(
-        &self,
-        active_addresses: &[USDBScriptHash],
-        block_height: u32,
-    ) -> Result<u64, String> {
-        let mut total_balance = 0u64;
-
-        for (batch_index, batch) in active_addresses
-            .chunks(self.balance_query_batch_size)
-            .enumerate()
-        {
-            let batch_addresses = batch.to_vec();
-            let ret = self
-                .balance_history_client
-                .get_addresses_balances(batch_addresses.clone(), Some(block_height), None)
-                .await?;
-
-            if ret.len() != batch_addresses.len() {
-                let msg = format!(
-                    "Address balance batch size mismatch: module=balance_monitor, block_height={}, batch_index={}, requested={}, got={}",
-                    block_height,
-                    batch_index,
-                    batch_addresses.len(),
-                    ret.len()
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-
-            for (script_hash, balances) in batch_addresses.into_iter().zip(ret.into_iter()) {
-                if balances.len() != 1 {
-                    let msg = format!(
-                        "Expected exactly one balance item: module=balance_monitor, block_height={}, batch_index={}, script_hash={}, got={}",
-                        block_height,
-                        batch_index,
-                        script_hash,
-                        balances.len()
-                    );
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-
-                let balance = balances.into_iter().next().unwrap();
-                total_balance = total_balance.saturating_add(balance.balance);
-            }
-        }
-
-        Ok(total_balance)
     }
 
     pub async fn settle_active_balance(
@@ -202,12 +130,10 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
             msg
         })?;
 
-        let total_balance = if active_addresses.is_empty() {
-            0
-        } else {
-            self.load_total_balance(&active_addresses, block_height)
-                .await?
-        };
+        let total_balance = self
+            .rpc_loader
+            .load_total_balance(active_addresses, block_height)
+            .await?;
 
         self.miner_pass_storage.upsert_active_balance_snapshot(
             block_height,
@@ -239,55 +165,13 @@ mod tests {
     use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
     use ord::InscriptionId;
     use ordinals::SatPoint;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
-    struct MockBalanceHistoryClient {
-        responses: Mutex<VecDeque<Result<Vec<Vec<AddressBalance>>, String>>>,
-        calls: Mutex<Vec<(usize, Option<u32>)>>,
-    }
-
-    impl MockBalanceHistoryClient {
-        fn new(responses: Vec<Result<Vec<Vec<AddressBalance>>, String>>) -> Self {
-            Self {
-                responses: Mutex::new(VecDeque::from(responses)),
-                calls: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn call_count(&self) -> usize {
-            self.calls.lock().unwrap().len()
-        }
-
-        fn last_call(&self) -> Option<(usize, Option<u32>)> {
-            self.calls.lock().unwrap().last().cloned()
-        }
-    }
-
-    impl BalanceHistoryClient for Arc<MockBalanceHistoryClient> {
-        fn get_addresses_balances<'a>(
-            &'a self,
-            script_hashes: Vec<USDBScriptHash>,
-            block_height: Option<u32>,
-            _block_range: Option<std::ops::Range<u32>>,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<AddressBalance>>, String>> + Send + 'a>>
-        {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((script_hashes.len(), block_height));
-
-            let ret = self
-                .responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Err("No mock response queued".to_string()));
-            Box::pin(async move { ret })
-        }
-    }
+    use super::super::{
+        ConcurrentBalanceLoader, MockBalanceBackend, MockResponse, SerialBalanceLoader,
+    };
 
     fn test_data_dir(tag: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
@@ -345,8 +229,9 @@ mod tests {
     async fn test_settle_active_balance_empty_active_addresses() {
         let dir = test_data_dir("empty");
         let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-        let mock = Arc::new(MockBalanceHistoryClient::new(vec![]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
+        let backend = Arc::new(MockBalanceBackend::new(vec![]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.block_height, 100);
@@ -355,7 +240,7 @@ mod tests {
 
         let stored = storage.get_active_balance_snapshot(100).unwrap().unwrap();
         assert_eq!(stored, snapshot);
-        assert_eq!(mock.call_count(), 0);
+        assert_eq!(backend.call_count(), 0);
 
         drop(monitor);
         drop(storage);
@@ -373,25 +258,28 @@ mod tests {
             .add_new_mint_pass(&make_pass(12, 1, script_hash(2), 91))
             .unwrap();
 
-        let mock = Arc::new(MockBalanceHistoryClient::new(vec![Ok(vec![
-            vec![AddressBalance {
-                block_height: 100,
-                balance: 1_500,
-                delta: 10,
-            }],
-            vec![AddressBalance {
-                block_height: 100,
-                balance: 2_500,
-                delta: 20,
-            }],
-        ])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
+        let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+            vec![
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 1_500,
+                    delta: 10,
+                }],
+                vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 2_500,
+                    delta: 20,
+                }],
+            ],
+        ))]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.active_address_count, 2);
         assert_eq!(snapshot.total_balance, 4_000);
 
-        let call = mock.last_call().unwrap();
+        let call = backend.last_call().unwrap();
         assert_eq!(call.0, 2);
         assert_eq!(call.1, Some(100));
 
@@ -412,8 +300,11 @@ mod tests {
             .add_new_mint_pass(&make_pass(21, 0, script_hash(3), 80))
             .unwrap();
 
-        let mock = Arc::new(MockBalanceHistoryClient::new(vec![Ok(vec![])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock, 1024, 1024);
+        let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+            vec![],
+        ))]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Address balance batch size mismatch"));
@@ -432,8 +323,11 @@ mod tests {
             .add_new_mint_pass(&make_pass(31, 0, script_hash(4), 80))
             .unwrap();
 
-        let mock = Arc::new(MockBalanceHistoryClient::new(vec![Ok(vec![vec![]])]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock, 1024, 1024);
+        let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+            vec![vec![]],
+        ))]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Expected exactly one balance item"));
@@ -452,13 +346,79 @@ mod tests {
             .add_new_mint_pass(&make_pass(41, 0, script_hash(5), 120))
             .unwrap();
 
-        let mock = Arc::new(MockBalanceHistoryClient::new(vec![]));
-        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone(), 1024, 1024);
+        let backend = Arc::new(MockBalanceBackend::new(vec![]));
+        let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Future miner pass data exists"));
-        assert_eq!(mock.call_count(), 0);
+        assert_eq!(backend.call_count(), 0);
         assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
+
+        drop(monitor);
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_settle_active_balance_retry_on_rpc_error() {
+        let dir = test_data_dir("retry_rpc_error");
+        let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+        storage
+            .add_new_mint_pass(&make_pass(51, 0, script_hash(6), 80))
+            .unwrap();
+
+        let backend = Arc::new(MockBalanceBackend::new(vec![
+            MockResponse::Immediate(Err("temporary rpc failure".to_string())),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 3_000,
+                delta: 30,
+            }]])),
+        ]));
+        let loader =
+            Arc::new(ConcurrentBalanceLoader::new(backend.clone(), 1024, 1, 10_000, 1).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+
+        let snapshot = monitor.settle_active_balance(100).await.unwrap();
+        assert_eq!(snapshot.total_balance, 3_000);
+        assert_eq!(backend.call_count(), 2);
+
+        drop(monitor);
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_settle_active_balance_retry_on_timeout() {
+        let dir = test_data_dir("retry_timeout");
+        let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+        storage
+            .add_new_mint_pass(&make_pass(61, 0, script_hash(7), 80))
+            .unwrap();
+
+        let backend = Arc::new(MockBalanceBackend::new(vec![
+            MockResponse::Delayed {
+                delay_ms: 50,
+                result: Ok(vec![vec![balance_history::AddressBalance {
+                    block_height: 100,
+                    balance: 1_000,
+                    delta: 10,
+                }]]),
+            },
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 2_000,
+                delta: 20,
+            }]])),
+        ]));
+        let loader =
+            Arc::new(ConcurrentBalanceLoader::new(backend.clone(), 1024, 1, 10, 1).unwrap());
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+
+        let snapshot = monitor.settle_active_balance(100).await.unwrap();
+        assert_eq!(snapshot.total_balance, 2_000);
+        assert_eq!(backend.call_count(), 2);
 
         drop(monitor);
         drop(storage);

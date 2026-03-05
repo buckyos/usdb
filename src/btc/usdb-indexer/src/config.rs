@@ -15,6 +15,18 @@ fn default_balance_query_batch_size() -> usize {
     1024
 }
 
+fn default_balance_query_concurrency() -> usize {
+    4
+}
+
+fn default_balance_query_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_balance_query_max_retries() -> u32 {
+    2
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     #[serde(default = "default_genesis_block_height")]
@@ -25,6 +37,15 @@ pub struct USDBConfig {
 
     #[serde(default = "default_balance_query_batch_size")]
     pub balance_query_batch_size: usize,
+
+    #[serde(default = "default_balance_query_concurrency")]
+    pub balance_query_concurrency: usize,
+
+    #[serde(default = "default_balance_query_timeout_ms")]
+    pub balance_query_timeout_ms: u64,
+
+    #[serde(default = "default_balance_query_max_retries")]
+    pub balance_query_max_retries: u32,
 }
 
 impl Default for USDBConfig {
@@ -33,6 +54,9 @@ impl Default for USDBConfig {
             genesis_block_height: default_genesis_block_height(),
             active_address_page_size: default_active_address_page_size(),
             balance_query_batch_size: default_balance_query_batch_size(),
+            balance_query_concurrency: default_balance_query_concurrency(),
+            balance_query_timeout_ms: default_balance_query_timeout_ms(),
+            balance_query_max_retries: default_balance_query_max_retries(),
         }
     }
 }
