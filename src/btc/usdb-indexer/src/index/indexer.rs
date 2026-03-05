@@ -12,6 +12,7 @@ use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassS
 use ord::api::Inscription;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 
 pub struct InscriptionIndexer {
@@ -262,6 +263,7 @@ impl InscriptionIndexer {
         let mut current_height = *block_range.start();
         for height in block_range {
             info!("Syncing inscriptions at block height {}", height);
+            let sync_single_block_begin = Instant::now();
 
             // Use savepoint to allow partial rollback on failure
             let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
@@ -273,15 +275,27 @@ impl InscriptionIndexer {
             self.sync_block(height).await?;
 
             // Update the sync storage to save progress
+            let update_synced_height_begin = Instant::now();
             self.miner_pass_storage
                 .update_synced_btc_block_height(height)?;
+            let update_synced_height_elapsed_ms = update_synced_height_begin.elapsed().as_millis();
 
             // Commit the savepoint on sync success
+            let commit_savepoint_begin = Instant::now();
             savepoint_guard.commit()?;
+            let commit_savepoint_elapsed_ms = commit_savepoint_begin.elapsed().as_millis();
+            let sync_single_block_elapsed_ms = sync_single_block_begin.elapsed().as_millis();
 
             current_height = height;
             self.status
                 .update_index_status(Some(current_height), None, None);
+            info!(
+                "Block sync progress saved: module=indexer, block_height={}, update_synced_height_elapsed_ms={}, commit_savepoint_elapsed_ms={}, sync_single_block_elapsed_ms={}",
+                height,
+                update_synced_height_elapsed_ms,
+                commit_savepoint_elapsed_ms,
+                sync_single_block_elapsed_ms
+            );
         }
 
         Ok(current_height)
@@ -289,17 +303,25 @@ impl InscriptionIndexer {
 
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
+        let sync_block_begin = Instant::now();
 
         let mut collector = BlockInscriptionsCollector::new(height);
 
         // First process block inscriptions
+        let process_inscriptions_begin = Instant::now();
         self.process_block_inscriptions(height, &mut collector)
             .await?;
+        let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
         // Then process inscription transfers
+        let process_transfers_begin = Instant::now();
         self.process_block_inscription_transfer(height).await?;
+        let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
+        let settle_balance_begin = Instant::now();
         let balance_snapshot = self.balance_monitor.settle_active_balance(height).await?;
+        let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
+        let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
 
         if collector.is_empty() {
             info!(
@@ -309,12 +331,16 @@ impl InscriptionIndexer {
         }
 
         info!(
-            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}",
+            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
             height,
             collector.new_inscriptions().len(),
             collector.transfer_inscriptions().len(),
             balance_snapshot.active_address_count,
-            balance_snapshot.total_balance
+            balance_snapshot.total_balance,
+            process_inscriptions_elapsed_ms,
+            process_transfers_elapsed_ms,
+            settle_balance_elapsed_ms,
+            total_elapsed_ms
         );
 
         Ok(())
@@ -339,8 +365,8 @@ impl InscriptionIndexer {
 
         debug!(
             "Fetched {} inscriptions at block {} in {:?}",
-            block_height,
             inscriptions.len(),
+            block_height,
             begin_tick.elapsed()
         );
 

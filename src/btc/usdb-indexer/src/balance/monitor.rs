@@ -2,6 +2,7 @@ use crate::config::ConfigManagerRef;
 use crate::storage::{ActiveBalanceSnapshot, MinerPassStorageRef};
 use ord::InscriptionId;
 use std::sync::Arc;
+use std::time::Instant;
 use usdb_util::USDBScriptHash;
 
 use super::{
@@ -12,6 +13,7 @@ pub struct BalanceMonitor {
     miner_pass_storage: MinerPassStorageRef,
     rpc_loader: Arc<dyn BalanceRpcLoader>,
     active_address_page_size: usize,
+    balance_query_batch_size: usize,
 }
 
 impl BalanceMonitor {
@@ -27,6 +29,11 @@ impl BalanceMonitor {
         }
 
         let batch_size = config.config().usdb.balance_query_batch_size;
+        if batch_size == 0 {
+            let msg = "Invalid config: usdb.balance_query_batch_size must be > 0".to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
         let concurrency = config.config().usdb.balance_query_concurrency;
         let timeout_ms = config.config().usdb.balance_query_timeout_ms;
         let max_retries = config.config().usdb.balance_query_max_retries;
@@ -53,6 +60,7 @@ impl BalanceMonitor {
             miner_pass_storage,
             rpc_loader,
             active_address_page_size,
+            balance_query_batch_size: batch_size,
         })
     }
 
@@ -61,12 +69,15 @@ impl BalanceMonitor {
         miner_pass_storage: MinerPassStorageRef,
         rpc_loader: Arc<dyn BalanceRpcLoader>,
         active_address_page_size: usize,
+        balance_query_batch_size: usize,
     ) -> Self {
         assert!(active_address_page_size > 0);
+        assert!(balance_query_batch_size > 0);
         Self {
             miner_pass_storage,
             rpc_loader,
             active_address_page_size,
+            balance_query_batch_size,
         }
     }
 
@@ -115,10 +126,15 @@ impl BalanceMonitor {
         &self,
         block_height: u32,
     ) -> Result<ActiveBalanceSnapshot, String> {
+        let settle_begin = Instant::now();
+        let guard_begin = Instant::now();
         self.miner_pass_storage
             .assert_no_data_after_block_height(block_height)?;
+        let guard_elapsed_ms = guard_begin.elapsed().as_millis();
 
+        let load_begin = Instant::now();
         let active_addresses = self.load_active_addresses(block_height)?;
+        let load_active_addresses_elapsed_ms = load_begin.elapsed().as_millis();
         let active_address_count = u32::try_from(active_addresses.len()).map_err(|e| {
             let msg = format!(
                 "Too many active addresses to fit into u32: module=balance_monitor, block_height={}, count={}, error={}",
@@ -129,27 +145,47 @@ impl BalanceMonitor {
             error!("{}", msg);
             msg
         })?;
+        let batch_count = if active_addresses.is_empty() {
+            0usize
+        } else {
+            active_addresses
+                .len()
+                .div_ceil(self.balance_query_batch_size)
+        };
 
+        let rpc_begin = Instant::now();
         let total_balance = self
             .rpc_loader
             .load_total_balance(active_addresses, block_height)
             .await?;
+        let rpc_elapsed_ms = rpc_begin.elapsed().as_millis();
 
+        let persist_begin = Instant::now();
         self.miner_pass_storage.upsert_active_balance_snapshot(
             block_height,
             total_balance,
             active_address_count,
         )?;
+        let persist_elapsed_ms = persist_begin.elapsed().as_millis();
 
         let snapshot = ActiveBalanceSnapshot {
             block_height,
             total_balance,
             active_address_count,
         };
+        let total_elapsed_ms = settle_begin.elapsed().as_millis();
 
         info!(
-            "Active balance settled: module=balance_monitor, block_height={}, active_address_count={}, total_balance={}",
-            snapshot.block_height, snapshot.active_address_count, snapshot.total_balance
+            "Active balance settled: module=balance_monitor, block_height={}, active_address_count={}, batch_count={}, total_balance={}, total_elapsed_ms={}, guard_elapsed_ms={}, load_active_addresses_elapsed_ms={}, rpc_elapsed_ms={}, persist_elapsed_ms={}",
+            snapshot.block_height,
+            snapshot.active_address_count,
+            batch_count,
+            snapshot.total_balance,
+            total_elapsed_ms,
+            guard_elapsed_ms,
+            load_active_addresses_elapsed_ms,
+            rpc_elapsed_ms,
+            persist_elapsed_ms
         );
 
         Ok(snapshot)
@@ -231,7 +267,7 @@ mod tests {
         let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
         let backend = Arc::new(MockBalanceBackend::new(vec![]));
         let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.block_height, 100);
@@ -273,7 +309,7 @@ mod tests {
             ],
         ))]));
         let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.active_address_count, 2);
@@ -304,7 +340,7 @@ mod tests {
             vec![],
         ))]));
         let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Address balance batch size mismatch"));
@@ -327,7 +363,7 @@ mod tests {
             vec![vec![]],
         ))]));
         let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Expected exactly one balance item"));
@@ -348,7 +384,7 @@ mod tests {
 
         let backend = Arc::new(MockBalanceBackend::new(vec![]));
         let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Future miner pass data exists"));
@@ -378,7 +414,7 @@ mod tests {
         ]));
         let loader =
             Arc::new(ConcurrentBalanceLoader::new(backend.clone(), 1024, 1, 10_000, 1).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.total_balance, 3_000);
@@ -414,7 +450,7 @@ mod tests {
         ]));
         let loader =
             Arc::new(ConcurrentBalanceLoader::new(backend.clone(), 1024, 1, 10, 1).unwrap());
-        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024);
+        let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
 
         let snapshot = monitor.settle_active_balance(100).await.unwrap();
         assert_eq!(snapshot.total_balance, 2_000);
