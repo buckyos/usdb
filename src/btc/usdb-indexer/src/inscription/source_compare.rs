@@ -141,13 +141,26 @@ impl InscriptionSource for CompareInscriptionSource {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{BitcoindInscriptionSource, OrdInscriptionSource};
     use super::*;
     use crate::config::ConfigManager;
+    use crate::inscription::{BitcoindInscriptionSource, OrdInscriptionSource};
+    use std::ops::RangeInclusive;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Instant;
     use usdb_util::BTCRpcClient;
+
+    #[derive(Debug, Clone, Default)]
+    struct CompareRangeOptions {
+        // Optional explicit height range; if not set, it falls back to env vars.
+        range: Option<RangeInclusive<u32>>,
+        // Optional progress print interval; if not set, it falls back to env var or default.
+        progress_every: Option<u32>,
+        // Optional config root directory used by ConfigManager::load.
+        config_root: Option<PathBuf>,
+        // Optional fail-fast switch for compare mismatch handling.
+        fail_fast: Option<bool>,
+    }
 
     fn required_env_u32(name: &str) -> u32 {
         std::env::var(name)
@@ -163,21 +176,48 @@ mod tests {
             .unwrap_or(default)
     }
 
-    #[tokio::test]
-    #[ignore = "Requires running bitcoind and ord service with reachable RPC endpoints"]
-    async fn test_compare_ord_and_bitcoind_on_height_range() {
+    fn optional_env_bool(name: &str, default: bool) -> bool {
+        match std::env::var(name) {
+            Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "y" | "on" => true,
+                "0" | "false" | "no" | "n" | "off" => false,
+                _ => default,
+            },
+            Err(_) => default,
+        }
+    }
+
+    fn resolve_height_range(options: &CompareRangeOptions) -> RangeInclusive<u32> {
+        if let Some(range) = options.range.clone() {
+            return range;
+        }
+
         let start_height = required_env_u32("USDB_COMPARE_START_HEIGHT");
         let end_height = required_env_u32("USDB_COMPARE_END_HEIGHT");
         assert!(
             end_height >= start_height,
             "USDB_COMPARE_END_HEIGHT must be >= USDB_COMPARE_START_HEIGHT"
         );
+        start_height..=end_height
+    }
 
-        let progress_every = optional_env_u32("USDB_COMPARE_PROGRESS_EVERY", 500).max(1);
+    async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions) {
+        let height_range = resolve_height_range(&options);
+        let start_height = *height_range.start();
+        let end_height = *height_range.end();
+        let progress_every = options
+            .progress_every
+            .unwrap_or_else(|| optional_env_u32("USDB_COMPARE_PROGRESS_EVERY", 500))
+            .max(1);
+        let config_root = options.config_root.or_else(|| {
+            std::env::var("USDB_COMPARE_CONFIG_ROOT")
+                .ok()
+                .map(PathBuf::from)
+        });
+        let fail_fast = options
+            .fail_fast
+            .unwrap_or_else(|| optional_env_bool("USDB_COMPARE_FAIL_FAST", true));
 
-        let config_root = std::env::var("USDB_COMPARE_CONFIG_ROOT")
-            .ok()
-            .map(PathBuf::from);
         let config = Arc::new(
             ConfigManager::load(config_root).expect("Failed to load config for compare test"),
         );
@@ -197,14 +237,14 @@ mod tests {
         let bitcoind_source: Arc<dyn InscriptionSource> =
             Arc::new(BitcoindInscriptionSource::new(btc_client.clone()));
 
-        let compare_source = CompareInscriptionSource::new(ord_source, bitcoind_source, true);
+        let compare_source = CompareInscriptionSource::new(ord_source, bitcoind_source, fail_fast);
 
         let total_blocks = end_height - start_height + 1;
         let begin = Instant::now();
         let mut scanned = 0u32;
         let mut total_mints = 0usize;
 
-        for height in start_height..=end_height {
+        for height in height_range {
             let block = Arc::new(
                 btc_client
                     .get_block(height)
@@ -238,5 +278,23 @@ mod tests {
             total_mints,
             begin.elapsed().as_millis()
         );
+    }
+
+    async fn run_compare_ord_and_bitcoind_on_range(height_range: RangeInclusive<u32>) {
+        run_compare_ord_and_bitcoind_with_options(CompareRangeOptions {
+            range: Some(height_range),
+            ..CompareRangeOptions::default()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires running bitcoind and ord service with reachable RPC endpoints"]
+    async fn test_compare_ord_and_bitcoind_on_height_range() {
+        // Default mode: read block range from env vars.
+        run_compare_ord_and_bitcoind_with_options(CompareRangeOptions::default()).await;
+
+        // Optional manual mode example:
+        // run_compare_ord_and_bitcoind_on_range(900_000..=900_100).await;
     }
 }

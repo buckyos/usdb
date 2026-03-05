@@ -1,7 +1,6 @@
 mod content;
 mod energy;
 mod indexer;
-mod inscription;
 mod pass;
 mod transfer;
 

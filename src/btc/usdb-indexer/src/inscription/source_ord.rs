@@ -1,7 +1,7 @@
-use super::super::content::{InscriptionContentLoader, USDBInscription};
 use super::{DiscoveredMint, InscriptionSource, InscriptionSourceFuture};
 use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
+use crate::index::{InscriptionContentLoader, USDBInscription};
 use bitcoincore_rpc::bitcoin::Block;
 use ord::api::Inscription;
 use std::sync::Arc;

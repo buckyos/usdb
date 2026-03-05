@@ -1,12 +1,12 @@
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
-use super::inscription::{
-    BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
-    OrdInscriptionSource,
-};
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::transfer::InscriptionTransferTracker;
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
+use crate::inscription::{
+    BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
+    OrdInscriptionSource,
+};
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Block;

@@ -1,13 +1,14 @@
 #![allow(dead_code)]
 
+mod balance;
 mod btc;
 mod config;
 mod constants;
 mod index;
+mod inscription;
 mod output;
 mod status;
 mod storage;
-mod balance;
 
 #[macro_use]
 extern crate log;

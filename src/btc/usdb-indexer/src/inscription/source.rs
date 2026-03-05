@@ -1,4 +1,4 @@
-use super::super::content::USDBInscription;
+use crate::index::USDBInscription;
 use bitcoincore_rpc::bitcoin::Block;
 use ord::InscriptionId;
 use ordinals::SatPoint;

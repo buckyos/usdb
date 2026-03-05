@@ -1,6 +1,6 @@
-use super::inscription::InscriptionTransferItem;
 use crate::btc::{TxItem, UTXOValueManager, UTXOValueManagerRef};
 use crate::config::ConfigManagerRef;
+use crate::inscription::InscriptionTransferItem;
 use crate::storage::MinerPassStorageRef;
 use crate::storage::ValidMinerPassInfo;
 use bitcoincore_rpc::bitcoin::Block;

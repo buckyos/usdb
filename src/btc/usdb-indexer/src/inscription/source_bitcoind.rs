@@ -1,5 +1,5 @@
-use super::super::content::InscriptionContentLoader;
 use super::{DiscoveredMint, InscriptionSource, InscriptionSourceFuture};
+use crate::index::InscriptionContentLoader;
 use usdb_util::BTCRpcClientRef;
 
 use bitcoincore_rpc::bitcoin::Block;
