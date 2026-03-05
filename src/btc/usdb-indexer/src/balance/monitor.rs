@@ -163,6 +163,9 @@ impl<C: BalanceHistoryClient> BalanceMonitor<C> {
         &self,
         block_height: u32,
     ) -> Result<ActiveBalanceSnapshot, String> {
+        self.miner_pass_storage
+            .assert_no_data_after_block_height(block_height)?;
+
         let active_addresses = self.load_active_addresses(block_height)?;
         let active_address_count = u32::try_from(active_addresses.len()).map_err(|e| {
             let msg = format!(
@@ -410,6 +413,27 @@ mod tests {
 
         let err = monitor.settle_active_balance(100).await.unwrap_err();
         assert!(err.contains("Expected exactly one balance item"));
+        assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
+
+        drop(monitor);
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_settle_active_balance_fail_on_future_data_guard() {
+        let dir = test_data_dir("future_data_guard");
+        let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+        storage
+            .add_new_mint_pass(&make_pass(41, 0, script_hash(5), 120))
+            .unwrap();
+
+        let mock = Arc::new(MockBalanceHistoryClient::new(vec![]));
+        let monitor = BalanceMonitor::new_with_client(storage.clone(), mock.clone());
+
+        let err = monitor.settle_active_balance(100).await.unwrap_err();
+        assert!(err.contains("Future miner pass data exists"));
+        assert_eq!(mock.call_count(), 0);
         assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
 
         drop(monitor);
