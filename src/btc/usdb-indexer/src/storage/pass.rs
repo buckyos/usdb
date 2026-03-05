@@ -473,6 +473,50 @@ impl MinerPassStorage {
         Ok(())
     }
 
+    // Fail-fast consistency check between synced block height and balance snapshots.
+    // For synced_height < genesis, there must be no snapshots.
+    // For synced_height >= genesis, latest snapshot must exist and exactly match synced_height.
+    pub fn assert_balance_snapshot_consistency(
+        &self,
+        synced_height: u32,
+        genesis_block_height: u32,
+    ) -> Result<(), String> {
+        let latest_snapshot = self.get_latest_active_balance_snapshot()?;
+
+        if synced_height < genesis_block_height {
+            if let Some(snapshot) = latest_snapshot {
+                let msg = format!(
+                    "Unexpected balance snapshot before genesis: synced_height={}, genesis_block_height={}, latest_snapshot_height={}",
+                    synced_height, genesis_block_height, snapshot.block_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            return Ok(());
+        }
+
+        let snapshot = latest_snapshot.ok_or_else(|| {
+            let msg = format!(
+                "Missing balance snapshot at synced height: synced_height={}, genesis_block_height={}",
+                synced_height, genesis_block_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        if snapshot.block_height != synced_height {
+            let msg = format!(
+                "Balance snapshot height mismatch: synced_height={}, latest_snapshot_height={}",
+                synced_height, snapshot.block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(())
+    }
+
     pub fn upsert_active_balance_snapshot(
         &self,
         block_height: u32,
@@ -1785,6 +1829,79 @@ mod tests {
 
         let err = storage.assert_no_data_after_block_height(100).unwrap_err();
         assert!(err.contains("Future synced height detected"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_balance_snapshot_consistency_allow_no_snapshot_before_genesis() {
+        let dir = test_data_dir("snapshot_consistency_before_genesis_ok");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .assert_balance_snapshot_consistency(99, 100)
+            .unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_balance_snapshot_consistency_reject_snapshot_before_genesis() {
+        let dir = test_data_dir("snapshot_consistency_before_genesis_err");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage.upsert_active_balance_snapshot(99, 1000, 1).unwrap();
+
+        let err = storage
+            .assert_balance_snapshot_consistency(99, 100)
+            .unwrap_err();
+        assert!(err.contains("Unexpected balance snapshot before genesis"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_balance_snapshot_consistency_reject_missing_snapshot_after_genesis() {
+        let dir = test_data_dir("snapshot_consistency_missing_after_genesis");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        let err = storage
+            .assert_balance_snapshot_consistency(100, 100)
+            .unwrap_err();
+        assert!(err.contains("Missing balance snapshot at synced height"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_balance_snapshot_consistency_reject_mismatched_snapshot_height() {
+        let dir = test_data_dir("snapshot_consistency_mismatch");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(120, 1234, 2)
+            .unwrap();
+
+        let err = storage
+            .assert_balance_snapshot_consistency(121, 100)
+            .unwrap_err();
+        assert!(err.contains("Balance snapshot height mismatch"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_balance_snapshot_consistency_accept_matched_snapshot_height() {
+        let dir = test_data_dir("snapshot_consistency_match");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(130, 5678, 3)
+            .unwrap();
+
+        storage
+            .assert_balance_snapshot_consistency(130, 100)
+            .unwrap();
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

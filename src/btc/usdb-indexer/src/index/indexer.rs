@@ -190,6 +190,28 @@ impl InscriptionIndexer {
             current_height = genesis_block_height - 1;
         }
 
+        self.miner_pass_storage
+            .assert_no_data_after_block_height(current_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Data consistency check failed before syncing: module=indexer, synced_height={}, error={}. Please clean data directory and resync from genesis.",
+                    current_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        self.miner_pass_storage
+            .assert_balance_snapshot_consistency(current_height, genesis_block_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Balance snapshot consistency check failed before syncing: module=indexer, synced_height={}, genesis_block_height={}, error={}. Please clean data directory and resync from genesis.",
+                    current_height, genesis_block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
         if current_height >= latest_height {
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
