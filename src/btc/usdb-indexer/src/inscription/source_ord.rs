@@ -1,12 +1,10 @@
-use super::{DiscoveredMint, InscriptionSource, InscriptionSourceFuture};
-use crate::btc::{OrdClient, OrdClientRef, OrdInscriptionItem};
+use super::{DiscoveredInscription, InscriptionSource, InscriptionSourceFuture};
+use crate::btc::{ContentBody, OrdClient, OrdClientRef, OrdInscriptionItem};
 use crate::config::ConfigManagerRef;
-use crate::index::{InscriptionContentLoader, USDBInscription};
 use bitcoincore_rpc::bitcoin::Block;
 use std::sync::Arc;
 
 pub struct OrdInscriptionSource {
-    config: ConfigManagerRef,
     ord_client: OrdClientRef,
 }
 
@@ -15,50 +13,48 @@ impl OrdInscriptionSource {
         let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
 
         Ok(Self {
-            config,
             ord_client: Arc::new(ord_client),
         })
     }
 
-    async fn load_inscriptions_content(
+    async fn load_inscription_contents(
         &self,
         inscriptions: &[OrdInscriptionItem],
-    ) -> Result<Vec<Option<(OrdInscriptionItem, String, USDBInscription)>>, String> {
+    ) -> Result<Vec<(OrdInscriptionItem, Option<String>)>, String> {
         const BATCH_SIZE: usize = 64;
 
-        let mut contents = Vec::with_capacity(inscriptions.len());
+        let mut results = Vec::with_capacity(inscriptions.len());
         for chunk in inscriptions.chunks(BATCH_SIZE) {
             let mut handles = Vec::with_capacity(chunk.len());
 
             for inscription in chunk {
                 let ord_client = self.ord_client.clone();
-                let config = self.config.clone();
                 let inscription = inscription.clone();
 
                 let handle = tokio::spawn(async move {
-                    InscriptionContentLoader::load_content(
-                        &ord_client,
-                        &inscription.id,
-                        inscription.content_type.as_deref(),
-                        &config,
-                    )
-                    .await
-                    .map(|opt| opt.map(|(content, usdb)| (inscription, content, usdb)))
+                    let content = ord_client
+                        .get_content_by_inscription_id(&inscription.id)
+                        .await
+                        .map(|opt| match opt {
+                            Some(ContentBody::Text(text)) => Some(text),
+                            _ => None,
+                        })?;
+                    Ok::<(OrdInscriptionItem, Option<String>), String>((inscription, content))
                 });
                 handles.push(handle);
             }
 
             for handle in handles {
-                let content = handle.await.map_err(|e| {
+                let item = handle.await.map_err(|e| {
                     let msg = format!("Failed to join task for loading inscription content: {}", e);
                     error!("{}", msg);
                     msg
                 })??;
-                contents.push(content);
+                results.push(item);
             }
         }
 
-        Ok(contents)
+        Ok(results)
     }
 }
 
@@ -67,11 +63,11 @@ impl InscriptionSource for OrdInscriptionSource {
         "ord"
     }
 
-    fn load_block_mints<'a>(
+    fn load_block_inscriptions<'a>(
         &'a self,
         block_height: u32,
         _block_hint: Option<Arc<Block>>,
-    ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
+    ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredInscription>, String>> {
         Box::pin(async move {
             let inscription_ids = self
                 .ord_client
@@ -101,18 +97,11 @@ impl InscriptionSource for OrdInscriptionSource {
                 return Err(msg);
             }
 
-            let parsed = self.load_inscriptions_content(&inscriptions).await?;
-            let mut mints = Vec::new();
+            let parsed = self.load_inscription_contents(&inscriptions).await?;
+            let mut discovered = Vec::new();
 
             for (i, item) in parsed.into_iter().enumerate() {
-                let Some((inscription, content_string, content)) = item else {
-                    debug!(
-                        "Inscription skipped after content parsing: module=inscription_source_ord, block_height={}, inscription_id={}",
-                        block_height, inscription_ids[i]
-                    );
-                    continue;
-                };
-
+                let (inscription, content_string) = item;
                 if inscription.number < 0 {
                     warn!(
                         "Skipping negative inscription number from ord source: module=inscription_source_ord, block_height={}, inscription_id={}, number={}",
@@ -121,18 +110,25 @@ impl InscriptionSource for OrdInscriptionSource {
                     continue;
                 }
 
-                mints.push(DiscoveredMint {
+                if content_string.is_none() {
+                    debug!(
+                        "Inscription has no text content from ord source: module=inscription_source_ord, block_height={}, inscription_id={}",
+                        block_height, inscription_ids[i]
+                    );
+                }
+
+                discovered.push(DiscoveredInscription {
                     inscription_id: inscription.id,
                     inscription_number: inscription.number,
                     block_height,
-                    timestamp: inscription.timestamp as u32,
+                    timestamp: inscription.timestamp,
                     satpoint: Some(inscription.satpoint),
+                    content_type: inscription.content_type,
                     content_string,
-                    content,
                 });
             }
 
-            Ok(mints)
+            Ok(discovered)
         })
     }
 }

@@ -1,5 +1,4 @@
-use super::{DiscoveredMint, InscriptionSource, InscriptionSourceFuture};
-use crate::index::InscriptionContentLoader;
+use super::{DiscoveredInscription, InscriptionSource, InscriptionSourceFuture};
 use usdb_util::BTCRpcClientRef;
 
 use bitcoincore_rpc::bitcoin::Block;
@@ -21,11 +20,11 @@ impl InscriptionSource for BitcoindInscriptionSource {
         "bitcoind"
     }
 
-    fn load_block_mints<'a>(
+    fn load_block_inscriptions<'a>(
         &'a self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
-    ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
+    ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredInscription>, String>> {
         Box::pin(async move {
             let block = match block_hint {
                 Some(block) => block,
@@ -44,43 +43,20 @@ impl InscriptionSource for BitcoindInscriptionSource {
                     };
 
                     let inscription = envelope.payload;
-                    if !InscriptionContentLoader::is_supported_content_type(
-                        inscription.content_type(),
-                    ) {
-                        continue;
-                    }
+                    let content_string = inscription
+                        .body()
+                        .and_then(|body| std::str::from_utf8(body).ok())
+                        .map(|text| text.to_string());
+                    let content_type = inscription.content_type().map(|ct| ct.to_string());
 
-                    let Some(body) = inscription.body() else {
-                        continue;
-                    };
-
-                    let content_string = match std::str::from_utf8(body) {
-                        Ok(text) => text.to_string(),
-                        Err(e) => {
-                            debug!(
-                                "Skipping non-utf8 inscription body from bitcoind source: module=inscription_source_bitcoind, block_height={}, inscription_id={}, error={}",
-                                block_height, inscription_id, e
-                            );
-                            continue;
-                        }
-                    };
-
-                    let Some(content) = InscriptionContentLoader::parse_content_str(
-                        &inscription_id,
-                        &content_string,
-                    )?
-                    else {
-                        continue;
-                    };
-
-                    discovered.push(DiscoveredMint {
+                    discovered.push(DiscoveredInscription {
                         inscription_id,
                         inscription_number: inscription_id.index as i32,
                         block_height,
                         timestamp: block.header.time,
                         satpoint: None,
+                        content_type,
                         content_string,
-                        content,
                     });
                 }
             }
