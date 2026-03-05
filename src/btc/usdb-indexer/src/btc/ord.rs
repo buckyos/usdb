@@ -212,7 +212,10 @@ impl OrdClient {
 
     return {Inscription}
      */
-    pub async fn get_inscription(&self, inscription_id: &str) -> Result<OrdInscriptionItem, String> {
+    pub async fn get_inscription(
+        &self,
+        inscription_id: &str,
+    ) -> Result<OrdInscriptionItem, String> {
         let url = format!("{}/inscription/{}", self.server_url, inscription_id);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             let msg = format!("Failed to send request to {}: {}", url, e);
@@ -323,7 +326,8 @@ impl OrdClient {
                 return Err(msg);
             }
 
-            let items: Vec<OrdInscriptionResponse> = match Self::parse_json_response(resp, url).await
+            let items: Vec<OrdInscriptionResponse> = match Self::parse_json_response(resp, url)
+                .await
             {
                 Ok(items) => items,
                 Err(e) => {
@@ -441,34 +445,17 @@ impl OrdClient {
             return Err(msg);
         }
 
-        // Check if the content type is text-based
-        let content_type = resp
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|h| h.to_str().ok())
-            .map(|s| s.to_lowercase());
-        let is_text = content_type.as_ref().map_or(false, |ct| {
-            ct.starts_with("text/")
-                || ct.contains("application/json")
-                || ct.contains("application/xml")
-        });
+        let content = resp.bytes().await.map_err(|e| {
+            let msg = format!("Failed to read response bytes from {}: {}", url, e);
+            error!("{}", msg);
+            msg
+        })?;
 
-        if is_text {
-            let content = resp.text().await.map_err(|e| {
-                let msg = format!("Failed to read response text from {}: {}", url, e);
-                error!("{}", msg);
-                msg
-            })?;
-
-            Ok(Some(ContentBody::Text(content)))
-        } else {
-            let content = resp.bytes().await.map_err(|e| {
-                let msg = format!("Failed to read response bytes from {}: {}", url, e);
-                error!("{}", msg);
-                msg
-            })?;
-
-            Ok(Some(ContentBody::Binary(content.to_vec())))
+        // Keep ord and bitcoind behavior aligned for compare mode:
+        // if body bytes are valid UTF-8, treat it as text regardless of MIME type.
+        match String::from_utf8(content.to_vec()) {
+            Ok(text) => Ok(Some(ContentBody::Text(text))),
+            Err(err) => Ok(Some(ContentBody::Binary(err.into_bytes()))),
         }
     }
 }

@@ -140,6 +140,37 @@ impl CompareInscriptionSource {
                 "Inscription source mismatch details: module=inscription_source_compare, block_height={}, compare_target={}, content_mismatch_sample={:?}",
                 block_height, target_label, sample
             );
+
+            if let Some(inscription_id) = content_mismatch.first() {
+                let primary_content = primary_map.get(inscription_id).cloned().flatten();
+                let shadow_content = shadow_map.get(inscription_id).cloned().flatten();
+                let preview_len = 160usize;
+                let primary_preview = primary_content
+                    .as_deref()
+                    .map(|s| s.chars().take(preview_len).collect::<String>())
+                    .unwrap_or_else(|| "<none>".to_string())
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r");
+                let shadow_preview = shadow_content
+                    .as_deref()
+                    .map(|s| s.chars().take(preview_len).collect::<String>())
+                    .unwrap_or_else(|| "<none>".to_string())
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r");
+                let primary_len = primary_content.as_ref().map(|s| s.len()).unwrap_or(0);
+                let shadow_len = shadow_content.as_ref().map(|s| s.len()).unwrap_or(0);
+
+                warn!(
+                    "Inscription content mismatch detail: module=inscription_source_compare, block_height={}, compare_target={}, inscription_id={}, primary_len={}, shadow_len={}, primary_preview=\"{}\", shadow_preview=\"{}\"",
+                    block_height,
+                    target_label,
+                    inscription_id,
+                    primary_len,
+                    shadow_len,
+                    primary_preview,
+                    shadow_preview
+                );
+            }
         }
 
         if self.fail_fast {
