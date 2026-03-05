@@ -1,7 +1,5 @@
 use super::content::USDBInscription;
-use bitcoincore_rpc::bitcoin::{
-    Amount, Txid,
-};
+use bitcoincore_rpc::bitcoin::{Amount, Txid};
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::str::FromStr;
@@ -80,53 +78,5 @@ pub struct InscriptionTransferItem {
 impl InscriptionTransferItem {
     pub fn txid(&self) -> &Txid {
         &self.satpoint.outpoint.txid
-    }
-}
-
-pub struct BlockInscriptionsCollector {
-    block_height: u32,
-    new_inscriptions: Vec<InscriptionNewItem>,
-    transfer_inscriptions: Vec<InscriptionTransferItem>,
-}
-
-impl BlockInscriptionsCollector {
-    pub fn new(block_height: u32) -> Self {
-        Self {
-            block_height,
-            new_inscriptions: Vec::new(),
-            transfer_inscriptions: Vec::new(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.new_inscriptions.is_empty() && self.transfer_inscriptions.is_empty()
-    }
-
-    pub fn add_new_inscription(&mut self, item: InscriptionNewItem) {
-        self.new_inscriptions.push(item);
-    }
-
-    pub fn add_new_inscriptions(&mut self, items: Vec<InscriptionNewItem>) {
-        self.new_inscriptions.extend(items);
-    }
-
-    pub fn add_transfer_inscription(&mut self, item: InscriptionTransferItem) {
-        self.transfer_inscriptions.push(item);
-    }
-
-    pub fn add_transfer_inscriptions(&mut self, items: Vec<InscriptionTransferItem>) {
-        self.transfer_inscriptions.extend(items);
-    }
-
-    pub fn block_height(&self) -> u32 {
-        self.block_height
-    }
-
-    pub fn new_inscriptions(&self) -> &Vec<InscriptionNewItem> {
-        &self.new_inscriptions
-    }
-
-    pub fn transfer_inscriptions(&self) -> &Vec<InscriptionTransferItem> {
-        &self.transfer_inscriptions
     }
 }

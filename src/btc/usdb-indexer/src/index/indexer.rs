@@ -1,6 +1,5 @@
 use super::content::{InscriptionContentLoader, USDBInscription};
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
-use super::inscription::BlockInscriptionsCollector;
 use super::inscription::InscriptionNewItem;
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
 use super::transfer::InscriptionTransferTracker;
@@ -305,17 +304,14 @@ impl InscriptionIndexer {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
 
-        let mut collector = BlockInscriptionsCollector::new(height);
-
         // First process block inscriptions
         let process_inscriptions_begin = Instant::now();
-        self.process_block_inscriptions(height, &mut collector)
-            .await?;
+        let new_inscriptions_count = self.process_block_inscriptions(height).await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
         // Then process inscription transfers
         let process_transfers_begin = Instant::now();
-        self.process_block_inscription_transfer(height).await?;
+        let transfer_count = self.process_block_inscription_transfer(height).await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
@@ -323,7 +319,7 @@ impl InscriptionIndexer {
         let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
         let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
 
-        if collector.is_empty() {
+        if new_inscriptions_count == 0 && transfer_count == 0 {
             info!(
                 "No unknown inscriptions and transfers found at block height {}",
                 height
@@ -333,8 +329,8 @@ impl InscriptionIndexer {
         info!(
             "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
             height,
-            collector.new_inscriptions().len(),
-            collector.transfer_inscriptions().len(),
+            new_inscriptions_count,
+            transfer_count,
             balance_snapshot.active_address_count,
             balance_snapshot.total_balance,
             process_inscriptions_elapsed_ms,
@@ -346,18 +342,14 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    async fn process_block_inscriptions(
-        &self,
-        block_height: u32,
-        collector: &mut BlockInscriptionsCollector,
-    ) -> Result<(), String> {
+    async fn process_block_inscriptions(&self, block_height: u32) -> Result<usize, String> {
         let inscription_ids = self
             .ord_client
             .get_inscription_by_block(block_height)
             .await?;
         if inscription_ids.is_empty() {
             info!("No inscriptions found at block height {}", block_height);
-            return Ok(());
+            return Ok(0);
         }
 
         let begin_tick = std::time::Instant::now();
@@ -388,6 +380,7 @@ impl InscriptionIndexer {
                 msg
             })?;
 
+        let mut new_inscriptions_count = 0usize;
         for (i, item) in usdb_inscriptions.into_iter().enumerate() {
             if item.is_none() {
                 debug!(
@@ -439,12 +432,10 @@ impl InscriptionIndexer {
 
             // Process the new inscription
             self.on_new_inscription(&inscription_new_item).await?;
-
-            // Add to collector for further processing
-            collector.add_new_inscription(inscription_new_item);
+            new_inscriptions_count += 1;
         }
 
-        Ok(())
+        Ok(new_inscriptions_count)
     }
 
     async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
@@ -517,16 +508,17 @@ impl InscriptionIndexer {
         Ok(contents)
     }
 
-    async fn process_block_inscription_transfer(&self, block_height: u32) -> Result<(), String> {
+    async fn process_block_inscription_transfer(&self, block_height: u32) -> Result<usize, String> {
         let transfer_items = self.transfer_tracker.process_block(block_height).await?;
         if transfer_items.is_empty() {
             info!(
                 "No inscription transfers found at block height {}",
                 block_height
             );
-            return Ok(());
+            return Ok(0);
         }
 
+        let transfer_count = transfer_items.len();
         for item in transfer_items {
             match item.to_address {
                 Some(addr) => {
@@ -552,6 +544,6 @@ impl InscriptionIndexer {
             }
         }
 
-        Ok(())
+        Ok(transfer_count)
     }
 }
