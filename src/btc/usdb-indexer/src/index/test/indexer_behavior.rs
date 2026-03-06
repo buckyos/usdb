@@ -14,7 +14,10 @@ use crate::inscription::{
 };
 use crate::storage::{MinerPassInfo, MinerPassStorage, MinerPassStorageRef, PassEnergyStorage};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{Amount, Block, Txid};
+use bitcoincore_rpc::bitcoin::{
+    Amount, Block, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    absolute, constants, transaction,
+};
 use ord::InscriptionId;
 use std::collections::HashMap;
 use std::future::Future;
@@ -24,11 +27,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use usdb_util::USDBScriptHash;
 
-struct MockBlockHintProvider;
+#[derive(Default)]
+struct MockBlockHintProvider {
+    blocks_by_height: HashMap<u32, Arc<Block>>,
+}
+
+impl MockBlockHintProvider {
+    fn with_block(mut self, block_height: u32, block: Arc<Block>) -> Self {
+        self.blocks_by_height.insert(block_height, block);
+        self
+    }
+}
 
 impl BlockHintProvider for MockBlockHintProvider {
-    fn load_block_hint(&self, _block_height: u32) -> Result<Option<Arc<Block>>, String> {
-        Ok(None)
+    fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String> {
+        Ok(self.blocks_by_height.get(&block_height).cloned())
     }
 }
 
@@ -248,14 +261,16 @@ struct IndexerFixture {
     root_dir: PathBuf,
     storage: MinerPassStorageRef,
     backend: Arc<MockBalanceBackend>,
+    pass_energy_manager: Arc<PassEnergyManager>,
     status: Arc<MockStatus>,
     transfer_tracker: Arc<MockTransferTracker>,
     indexer: InscriptionIndexer,
 }
 
-fn build_indexer_fixture(
+fn build_indexer_fixture_with_hint_provider(
     test_name: &str,
     inscription_source: Arc<dyn InscriptionSource>,
+    block_hint_provider: Arc<dyn BlockHintProvider>,
     transfer_tracker: Arc<MockTransferTracker>,
     backend_responses: Vec<MockResponse>,
     energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
@@ -281,17 +296,16 @@ fn build_indexer_fixture(
 
     let status = Arc::new(MockStatus::new(1_000_000));
     let status_api: Arc<dyn IndexStatusApi> = status.clone();
-    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(MockBlockHintProvider);
     let transfer_tracker_api: Arc<dyn TransferTrackerApi> = transfer_tracker.clone();
 
     let indexer = InscriptionIndexer::new_with_deps_for_test(
         config,
-        block_hint_provider,
+        block_hint_provider.clone(),
         inscription_source,
         transfer_tracker_api,
         storage.clone(),
         balance_monitor,
-        pass_energy_manager,
+        pass_energy_manager.clone(),
         miner_pass_manager,
         status_api,
     );
@@ -300,10 +314,57 @@ fn build_indexer_fixture(
         root_dir,
         storage,
         backend,
+        pass_energy_manager,
         status,
         transfer_tracker,
         indexer,
     }
+}
+
+fn build_indexer_fixture(
+    test_name: &str,
+    inscription_source: Arc<dyn InscriptionSource>,
+    transfer_tracker: Arc<MockTransferTracker>,
+    backend_responses: Vec<MockResponse>,
+    energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
+) -> IndexerFixture {
+    let block_hint_provider: Arc<dyn BlockHintProvider> =
+        Arc::new(MockBlockHintProvider::default());
+    build_indexer_fixture_with_hint_provider(
+        test_name,
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        backend_responses,
+        energy_provider,
+    )
+}
+
+fn build_test_tx(tag: u8) -> Transaction {
+    Transaction {
+        version: transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: Txid::from_slice(&[tag; 32]).unwrap(),
+                vout: 0,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::default(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(1_000),
+            script_pubkey: ScriptBuf::new(),
+        }],
+    }
+}
+
+fn build_test_block(txs: Vec<Transaction>) -> Arc<Block> {
+    Arc::new(Block {
+        header: constants::genesis_block(Network::Bitcoin).header,
+        txdata: txs,
+    })
 }
 
 #[tokio::test]
@@ -542,6 +603,230 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
 
     assert_eq!(fixture.transfer_tracker.add_call_count(), 1);
     assert!(fixture.status.update_count() > 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_state() {
+    let block_height = 500;
+    let owner_a = test_script_hash(10);
+    let owner_b = test_script_hash(11);
+    let prev_pass_id = test_inscription_id(12, 0);
+
+    let transfer_tx = build_test_tx(21);
+    let mint_tx = build_test_tx(22);
+    let transfer_txid = transfer_tx.compute_txid();
+    let mint_txid = mint_tx.compute_txid();
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(block_height, build_test_block(vec![transfer_tx, mint_tx])),
+    );
+
+    let mint_id = InscriptionId {
+        txid: mint_txid,
+        index: 0,
+    };
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![prev_pass_id.clone()]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
+
+    let transfer_item = InscriptionTransferItem {
+        inscription_id: prev_pass_id.clone(),
+        block_height,
+        prev_satpoint: test_satpoint(7, 0, 0),
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner_a,
+        to_address: Some(owner_b),
+    };
+    let create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner_b),
+        commit_txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&mint_id, create_info)
+            .with_transfers(block_height, vec![transfer_item]),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner_a, 450, 220_000, 100)
+            .with_height(owner_b, block_height, 230_000, 100),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "same_block_transfer_then_mint",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 9_000,
+                delta: 1,
+            },
+        ]]))],
+        energy_provider,
+    );
+
+    fixture
+        .storage
+        .add_new_mint_pass(&make_active_pass(prev_pass_id.clone(), owner_a, 450))
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .on_new_pass(&prev_pass_id, &owner_a, 450, 0)
+        .await
+        .unwrap();
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let prev_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&prev_pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev_pass.owner, owner_b);
+    assert_eq!(prev_pass.state, MinerPassState::Consumed);
+
+    let new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_pass.owner, owner_b);
+    assert_eq!(new_pass.state, MinerPassState::Active);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_transfer() {
+    let block_height = 510;
+    let owner_a = test_script_hash(31);
+    let owner_b = test_script_hash(32);
+    let prev_pass_id = test_inscription_id(33, 0);
+
+    let mint_tx = build_test_tx(41);
+    let transfer_tx = build_test_tx(42);
+    let mint_txid = mint_tx.compute_txid();
+    let transfer_txid = transfer_tx.compute_txid();
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(block_height, build_test_block(vec![mint_tx, transfer_tx])),
+    );
+
+    let mint_id = InscriptionId {
+        txid: mint_txid,
+        index: 0,
+    };
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![prev_pass_id.clone()]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
+
+    let transfer_item = InscriptionTransferItem {
+        inscription_id: prev_pass_id.clone(),
+        block_height,
+        prev_satpoint: test_satpoint(7, 0, 0),
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner_a,
+        to_address: Some(owner_b),
+    };
+    let create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner_a),
+        commit_txid: Txid::from_slice(&[43u8; 32]).unwrap(),
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&mint_id, create_info)
+            .with_transfers(block_height, vec![transfer_item]),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner_a, 460, 250_000, 100)
+            .with_height(owner_a, block_height, 260_000, 100),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "same_block_mint_then_transfer",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 10_000,
+                delta: 1,
+            },
+        ]]))],
+        energy_provider,
+    );
+
+    fixture
+        .storage
+        .add_new_mint_pass(&make_active_pass(prev_pass_id.clone(), owner_a, 460))
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .on_new_pass(&prev_pass_id, &owner_a, 460, 0)
+        .await
+        .unwrap();
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let prev_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&prev_pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev_pass.owner, owner_b);
+    assert_eq!(prev_pass.state, MinerPassState::Consumed);
+
+    let new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_pass.owner, owner_a);
+    assert_eq!(new_pass.state, MinerPassState::Active);
 
     cleanup_temp_dir(&fixture.root_dir);
 }

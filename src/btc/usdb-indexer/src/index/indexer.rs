@@ -10,9 +10,10 @@ use crate::inscription::{
 use crate::status::StatusManager;
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
-use bitcoincore_rpc::bitcoin::Block;
+use bitcoincore_rpc::bitcoin::{Block, Txid};
 use ord::InscriptionId;
 use ordinals::SatPoint;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -21,6 +22,18 @@ use std::time::Instant;
 use usdb_util::{BTCRpcClient, BTCRpcClientRef, USDBScriptHash};
 
 type TransferTrackerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+#[derive(Clone)]
+enum BlockProcessEvent {
+    Mint(InscriptionNewItem),
+    Transfer(InscriptionTransferItem),
+}
+
+struct OrderedBlockProcessEvent {
+    tx_position: usize,
+    priority: u8,
+    event: BlockProcessEvent,
+}
 
 pub(crate) trait BlockHintProvider: Send + Sync {
     fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String>;
@@ -513,19 +526,29 @@ impl InscriptionIndexer {
         let sync_block_begin = Instant::now();
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
 
-        // First process block inscriptions
+        // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
-        let new_inscriptions_count = self
-            .process_block_inscriptions(height, block_hint.clone())
+        let new_inscription_items = self
+            .collect_block_inscription_mints(height, block_hint.clone())
             .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
-        // Then process inscription transfers
         let process_transfers_begin = Instant::now();
-        let transfer_count = self
-            .process_block_inscription_transfer(height, block_hint)
+        let transfer_items = self
+            .collect_block_inscription_transfer_items(height, block_hint.clone())
             .await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
+
+        let process_events_begin = Instant::now();
+        let ordered_events = self.build_ordered_block_events(
+            height,
+            block_hint,
+            new_inscription_items,
+            transfer_items,
+        )?;
+        let (new_inscriptions_count, transfer_count) =
+            self.apply_ordered_block_events(ordered_events).await?;
+        let process_events_elapsed_ms = process_events_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
         let balance_snapshot = self.balance_monitor.settle_active_balance(height).await?;
@@ -540,7 +563,7 @@ impl InscriptionIndexer {
         }
 
         info!(
-            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
+            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, process_events_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
             height,
             new_inscriptions_count,
             transfer_count,
@@ -548,6 +571,7 @@ impl InscriptionIndexer {
             balance_snapshot.total_balance,
             process_inscriptions_elapsed_ms,
             process_transfers_elapsed_ms,
+            process_events_elapsed_ms,
             settle_balance_elapsed_ms,
             total_elapsed_ms
         );
@@ -560,21 +584,157 @@ impl InscriptionIndexer {
         self.sync_block(height).await
     }
 
-    async fn process_block_inscriptions(
+    fn build_block_tx_position_map(block: &Block) -> HashMap<Txid, usize> {
+        let mut tx_positions = HashMap::with_capacity(block.txdata.len());
+        for (tx_position, tx) in block.txdata.iter().enumerate() {
+            tx_positions.insert(tx.compute_txid(), tx_position);
+        }
+        tx_positions
+    }
+
+    fn build_ordered_block_events(
         &self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
-    ) -> Result<usize, String> {
+        mint_items: Vec<InscriptionNewItem>,
+        transfer_items: Vec<InscriptionTransferItem>,
+    ) -> Result<Vec<BlockProcessEvent>, String> {
+        if mint_items.is_empty() && transfer_items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ordered_events =
+            Vec::<OrderedBlockProcessEvent>::with_capacity(mint_items.len() + transfer_items.len());
+
+        // Keep backward-compatible fallback order for tests without a block hint.
+        let Some(block_hint) = block_hint else {
+            warn!(
+                "Missing block hint when ordering block events, fallback to legacy order: module=indexer, block_height={}, mints={}, transfers={}",
+                block_height,
+                mint_items.len(),
+                transfer_items.len()
+            );
+            let mut legacy_events = Vec::with_capacity(mint_items.len() + transfer_items.len());
+            for item in mint_items {
+                legacy_events.push(BlockProcessEvent::Mint(item));
+            }
+            for item in transfer_items {
+                legacy_events.push(BlockProcessEvent::Transfer(item));
+            }
+            return Ok(legacy_events);
+        };
+
+        let tx_positions = Self::build_block_tx_position_map(&block_hint);
+
+        for item in mint_items {
+            let tx_position = tx_positions
+                .get(&item.inscription_id.txid)
+                .copied()
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Mint transaction {} not found in block {} when ordering events for inscription {}",
+                        item.inscription_id.txid, block_height, item.inscription_id
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            ordered_events.push(OrderedBlockProcessEvent {
+                tx_position,
+                priority: 1,
+                event: BlockProcessEvent::Mint(item),
+            });
+        }
+
+        for item in transfer_items {
+            let transfer_txid = *item.txid();
+            let tx_position = tx_positions.get(&transfer_txid).copied().ok_or_else(|| {
+                let msg = format!(
+                    "Transfer transaction {} not found in block {} when ordering events for inscription {}",
+                    transfer_txid, block_height, item.inscription_id
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            ordered_events.push(OrderedBlockProcessEvent {
+                tx_position,
+                priority: 0,
+                event: BlockProcessEvent::Transfer(item),
+            });
+        }
+
+        ordered_events.sort_by(|a, b| {
+            a.tx_position
+                .cmp(&b.tx_position)
+                .then(a.priority.cmp(&b.priority))
+        });
+
+        Ok(ordered_events.into_iter().map(|item| item.event).collect())
+    }
+
+    async fn apply_ordered_block_events(
+        &self,
+        ordered_events: Vec<BlockProcessEvent>,
+    ) -> Result<(usize, usize), String> {
+        let mut new_inscriptions_count = 0usize;
+        let mut transfer_count = 0usize;
+
+        for event in ordered_events {
+            match event {
+                BlockProcessEvent::Mint(item) => {
+                    self.on_new_inscription(&item).await?;
+                    new_inscriptions_count += 1;
+                }
+                BlockProcessEvent::Transfer(item) => {
+                    match item.to_address {
+                        Some(addr) => {
+                            info!(
+                                "Inscription {} transferred from {} to {} at block {}",
+                                item.inscription_id, item.from_address, addr, item.block_height
+                            );
+
+                            self.miner_pass_manager
+                                .on_pass_transfer(
+                                    &item.inscription_id,
+                                    &addr,
+                                    &item.satpoint,
+                                    item.block_height,
+                                )
+                                .await?;
+                        }
+                        None => {
+                            info!(
+                                "Inscription {} burned from {} at block {}",
+                                item.inscription_id, item.from_address, item.block_height
+                            );
+
+                            self.miner_pass_manager
+                                .on_pass_burned(&item.inscription_id, item.block_height)
+                                .await?;
+                        }
+                    }
+                    transfer_count += 1;
+                }
+            }
+        }
+
+        Ok((new_inscriptions_count, transfer_count))
+    }
+
+    async fn collect_block_inscription_mints(
+        &self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> Result<Vec<InscriptionNewItem>, String> {
         let discovered_mints = self
             .inscription_source
             .load_block_mints(block_height, block_hint)
             .await?;
         if discovered_mints.is_empty() {
             info!("No inscriptions found at block height {}", block_height);
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
-        let mut new_inscriptions_count = 0usize;
+        let mut new_inscription_items = Vec::with_capacity(discovered_mints.len());
         for mint in discovered_mints {
             let create_info = self
                 .transfer_tracker
@@ -621,12 +781,10 @@ impl InscriptionIndexer {
                 commit_txid: create_info.commit_txid,
             };
 
-            // Process the new inscription
-            self.on_new_inscription(&inscription_new_item).await?;
-            new_inscriptions_count += 1;
+            new_inscription_items.push(inscription_new_item);
         }
 
-        Ok(new_inscriptions_count)
+        Ok(new_inscription_items)
     }
 
     async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
@@ -656,11 +814,11 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    async fn process_block_inscription_transfer(
+    async fn collect_block_inscription_transfer_items(
         &self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
-    ) -> Result<usize, String> {
+    ) -> Result<Vec<InscriptionTransferItem>, String> {
         let transfer_items = self
             .transfer_tracker
             .process_block_with_hint(block_height, block_hint)
@@ -670,35 +828,9 @@ impl InscriptionIndexer {
                 "No inscription transfers found at block height {}",
                 block_height
             );
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
-        let transfer_count = transfer_items.len();
-        for item in transfer_items {
-            match item.to_address {
-                Some(addr) => {
-                    info!(
-                        "Inscription {} transferred from {} to {} at block {}",
-                        item.inscription_id, item.from_address, addr, block_height
-                    );
-
-                    self.miner_pass_manager
-                        .on_pass_transfer(&item.inscription_id, &addr, &item.satpoint, block_height)
-                        .await?;
-                }
-                None => {
-                    info!(
-                        "Inscription {} burned from {} at block {}",
-                        item.inscription_id, item.from_address, block_height
-                    );
-
-                    self.miner_pass_manager
-                        .on_pass_burned(&item.inscription_id, block_height)
-                        .await?;
-                }
-            }
-        }
-
-        Ok(transfer_count)
+        Ok(transfer_items)
     }
 }
