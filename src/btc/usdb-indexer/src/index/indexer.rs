@@ -1,33 +1,141 @@
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
-use super::transfer::InscriptionTransferTracker;
+use super::transfer::{InscriptionCreateInfo, InscriptionTransferTracker};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
 use crate::inscription::{
     BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
-    OrdInscriptionSource,
+    InscriptionTransferItem, OrdInscriptionSource,
 };
+use crate::status::StatusManager;
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Block;
+use ord::InscriptionId;
+use ordinals::SatPoint;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use usdb_util::{BTCRpcClient, BTCRpcClientRef};
+use usdb_util::{BTCRpcClient, BTCRpcClientRef, USDBScriptHash};
+
+type TransferTrackerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub(crate) trait BlockHintProvider: Send + Sync {
+    fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String>;
+}
+
+struct RpcBlockHintProvider {
+    btc_client: BTCRpcClientRef,
+}
+
+impl RpcBlockHintProvider {
+    fn new(btc_client: BTCRpcClientRef) -> Self {
+        Self { btc_client }
+    }
+}
+
+impl BlockHintProvider for RpcBlockHintProvider {
+    fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String> {
+        let block = self.btc_client.get_block(block_height)?;
+        Ok(Some(Arc::new(block)))
+    }
+}
+
+pub(crate) trait TransferTrackerApi: Send + Sync {
+    fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>>;
+
+    fn calc_create_satpoint<'a>(
+        &'a self,
+        inscription_id: &'a InscriptionId,
+    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>>;
+
+    fn add_new_inscription<'a>(
+        &'a self,
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        satpoint: SatPoint,
+    ) -> TransferTrackerFuture<'a, Result<(), String>>;
+
+    fn process_block_with_hint<'a>(
+        &'a self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>>;
+}
+
+impl TransferTrackerApi for InscriptionTransferTracker {
+    fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.init().await })
+    }
+
+    fn calc_create_satpoint<'a>(
+        &'a self,
+        inscription_id: &'a InscriptionId,
+    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>> {
+        Box::pin(async move { self.calc_create_satpoint(inscription_id).await })
+    }
+
+    fn add_new_inscription<'a>(
+        &'a self,
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        satpoint: SatPoint,
+    ) -> TransferTrackerFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.add_new_inscription(inscription_id, owner, satpoint)
+                .await
+        })
+    }
+
+    fn process_block_with_hint<'a>(
+        &'a self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>> {
+        Box::pin(async move { self.process_block_with_hint(block_height, block_hint).await })
+    }
+}
+
+pub(crate) trait IndexStatusApi: Send + Sync {
+    fn latest_depend_synced_block_height(&self) -> u32;
+    fn update_index_status(
+        &self,
+        current: Option<u32>,
+        total: Option<u32>,
+        message: Option<String>,
+    );
+}
+
+impl IndexStatusApi for StatusManager {
+    fn latest_depend_synced_block_height(&self) -> u32 {
+        self.latest_depend_synced_block_height()
+    }
+
+    fn update_index_status(
+        &self,
+        current: Option<u32>,
+        total: Option<u32>,
+        message: Option<String>,
+    ) {
+        self.update_index_status(current, total, message);
+    }
+}
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
-    btc_client: BTCRpcClientRef,
+    block_hint_provider: Arc<dyn BlockHintProvider>,
     inscription_source: Arc<dyn InscriptionSource>,
 
-    transfer_tracker: InscriptionTransferTracker,
+    transfer_tracker: Arc<dyn TransferTrackerApi>,
     miner_pass_storage: MinerPassStorageRef,
     balance_monitor: BalanceMonitor,
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
 
-    status: StatusManagerRef,
+    status: Arc<dyn IndexStatusApi>,
 
     // Shutdown signal
     should_stop: Arc<AtomicBool>,
@@ -42,6 +150,8 @@ impl InscriptionIndexer {
         )?);
         let inscription_source =
             Self::build_inscription_source(config.clone(), btc_client.clone())?;
+        let block_hint_provider: Arc<dyn BlockHintProvider> =
+            Arc::new(RpcBlockHintProvider::new(btc_client.clone()));
 
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
@@ -60,12 +170,14 @@ impl InscriptionIndexer {
             config.clone(),
             miner_pass_manager.miner_pass_storage().clone(),
         )?;
+        let transfer_tracker: Arc<dyn TransferTrackerApi> = Arc::new(transfer_tracker);
 
         let balance_monitor = BalanceMonitor::new(config.clone(), miner_pass_storage.clone())?;
+        let status: Arc<dyn IndexStatusApi> = status;
 
         let ret = Self {
             config,
-            btc_client,
+            block_hint_provider,
             inscription_source,
 
             transfer_tracker,
@@ -80,6 +192,32 @@ impl InscriptionIndexer {
         };
 
         Ok(ret)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_deps_for_test(
+        config: ConfigManagerRef,
+        block_hint_provider: Arc<dyn BlockHintProvider>,
+        inscription_source: Arc<dyn InscriptionSource>,
+        transfer_tracker: Arc<dyn TransferTrackerApi>,
+        miner_pass_storage: MinerPassStorageRef,
+        balance_monitor: BalanceMonitor,
+        pass_energy_manager: PassEnergyManagerRef,
+        miner_pass_manager: MinerPassManagerRef,
+        status: Arc<dyn IndexStatusApi>,
+    ) -> Self {
+        Self {
+            config,
+            block_hint_provider,
+            inscription_source,
+            transfer_tracker,
+            miner_pass_storage,
+            balance_monitor,
+            pass_energy_manager,
+            miner_pass_manager,
+            status,
+            should_stop: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     fn create_inscription_source_by_name(
@@ -362,22 +500,30 @@ impl InscriptionIndexer {
         Ok(current_height)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn sync_blocks_for_test(
+        &self,
+        block_range: std::ops::RangeInclusive<u32>,
+    ) -> Result<u32, String> {
+        self.sync_blocks(block_range).await
+    }
+
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
-        let block_hint = Arc::new(self.btc_client.get_block(height)?);
+        let block_hint = self.block_hint_provider.load_block_hint(height)?;
 
         // First process block inscriptions
         let process_inscriptions_begin = Instant::now();
         let new_inscriptions_count = self
-            .process_block_inscriptions(height, Some(block_hint.clone()))
+            .process_block_inscriptions(height, block_hint.clone())
             .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
         // Then process inscription transfers
         let process_transfers_begin = Instant::now();
         let transfer_count = self
-            .process_block_inscription_transfer(height, Some(block_hint))
+            .process_block_inscription_transfer(height, block_hint)
             .await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
@@ -407,6 +553,11 @@ impl InscriptionIndexer {
         );
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn sync_block_for_test(&self, height: u32) -> Result<(), String> {
+        self.sync_block(height).await
     }
 
     async fn process_block_inscriptions(
