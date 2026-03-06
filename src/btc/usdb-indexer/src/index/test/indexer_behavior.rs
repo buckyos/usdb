@@ -722,6 +722,7 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
     let mint_tx = build_test_tx(22);
     let transfer_txid = transfer_tx.compute_txid();
     let mint_txid = mint_tx.compute_txid();
+    let transfer_prev_outpoint = transfer_tx.input[0].previous_output;
     let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
         MockBlockHintProvider::default()
             .with_block(block_height, build_test_block(vec![transfer_tx, mint_tx])),
@@ -738,7 +739,10 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
     let transfer_item = InscriptionTransferItem {
         inscription_id: prev_pass_id.clone(),
         block_height,
-        prev_satpoint: test_satpoint(7, 0, 0),
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_prev_outpoint,
+            offset: 0,
+        },
         satpoint: ordinals::SatPoint {
             outpoint: OutPoint {
                 txid: transfer_txid,
@@ -836,6 +840,7 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
     let transfer_tx = build_test_tx(42);
     let mint_txid = mint_tx.compute_txid();
     let transfer_txid = transfer_tx.compute_txid();
+    let transfer_prev_outpoint = transfer_tx.input[0].previous_output;
     let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
         MockBlockHintProvider::default()
             .with_block(block_height, build_test_block(vec![mint_tx, transfer_tx])),
@@ -852,7 +857,10 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
     let transfer_item = InscriptionTransferItem {
         inscription_id: prev_pass_id.clone(),
         block_height,
-        prev_satpoint: test_satpoint(7, 0, 0),
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_prev_outpoint,
+            offset: 0,
+        },
         satpoint: ordinals::SatPoint {
             outpoint: OutPoint {
                 txid: transfer_txid,

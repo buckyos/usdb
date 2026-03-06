@@ -1,169 +1,29 @@
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
-use super::transfer::{InscriptionCreateInfo, InscriptionTransferTracker, TransferTrackSeed};
+use super::transfer::{InscriptionTransferTracker, TransferTrackSeed};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
 use crate::inscription::{
     BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
     InscriptionTransferItem, OrdInscriptionSource,
 };
-use crate::status::StatusManager;
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::{Block, Txid};
-use ord::InscriptionId;
-use ordinals::SatPoint;
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use usdb_util::{BTCRpcClient, BTCRpcClientRef, USDBScriptHash};
+use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 
-type TransferTrackerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[path = "indexer/block_events.rs"]
+mod block_events;
+#[path = "indexer/traits.rs"]
+mod traits;
 
-#[derive(Clone)]
-enum BlockProcessEvent {
-    Mint(InscriptionNewItem),
-    Transfer(InscriptionTransferItem),
-}
-
-struct OrderedBlockProcessEvent {
-    tx_position: usize,
-    priority: u8,
-    event: BlockProcessEvent,
-}
-
-pub(crate) trait BlockHintProvider: Send + Sync {
-    fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String>;
-}
-
-struct RpcBlockHintProvider {
-    btc_client: BTCRpcClientRef,
-}
-
-impl RpcBlockHintProvider {
-    fn new(btc_client: BTCRpcClientRef) -> Self {
-        Self { btc_client }
-    }
-}
-
-impl BlockHintProvider for RpcBlockHintProvider {
-    fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String> {
-        let block = self.btc_client.get_block(block_height)?;
-        Ok(Some(Arc::new(block)))
-    }
-}
-
-pub(crate) trait TransferTrackerApi: Send + Sync {
-    fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>>;
-
-    fn calc_create_satpoint<'a>(
-        &'a self,
-        inscription_id: &'a InscriptionId,
-    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>>;
-
-    fn add_new_inscription<'a>(
-        &'a self,
-        inscription_id: InscriptionId,
-        owner: USDBScriptHash,
-        satpoint: SatPoint,
-    ) -> TransferTrackerFuture<'a, Result<(), String>>;
-
-    fn process_block_with_hint<'a>(
-        &'a self,
-        block_height: u32,
-        block_hint: Option<Arc<Block>>,
-        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
-    ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>>;
-
-    fn commit_staged_block<'a>(
-        &'a self,
-        block_height: u32,
-    ) -> TransferTrackerFuture<'a, Result<(), String>>;
-
-    fn rollback_staged_block<'a>(
-        &'a self,
-        block_height: u32,
-    ) -> TransferTrackerFuture<'a, Result<(), String>>;
-}
-
-impl TransferTrackerApi for InscriptionTransferTracker {
-    fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.init().await })
-    }
-
-    fn calc_create_satpoint<'a>(
-        &'a self,
-        inscription_id: &'a InscriptionId,
-    ) -> TransferTrackerFuture<'a, Result<InscriptionCreateInfo, String>> {
-        Box::pin(async move { self.calc_create_satpoint(inscription_id).await })
-    }
-
-    fn add_new_inscription<'a>(
-        &'a self,
-        inscription_id: InscriptionId,
-        owner: USDBScriptHash,
-        satpoint: SatPoint,
-    ) -> TransferTrackerFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            self.add_new_inscription(inscription_id, owner, satpoint)
-                .await
-        })
-    }
-
-    fn process_block_with_hint<'a>(
-        &'a self,
-        block_height: u32,
-        block_hint: Option<Arc<Block>>,
-        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
-    ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>> {
-        Box::pin(async move {
-            self.process_block_with_hint(block_height, block_hint, extra_tracked_inscriptions)
-                .await
-        })
-    }
-
-    fn commit_staged_block<'a>(
-        &'a self,
-        block_height: u32,
-    ) -> TransferTrackerFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.commit_staged_block(block_height) })
-    }
-
-    fn rollback_staged_block<'a>(
-        &'a self,
-        block_height: u32,
-    ) -> TransferTrackerFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.rollback_staged_block(block_height) })
-    }
-}
-
-pub(crate) trait IndexStatusApi: Send + Sync {
-    fn latest_depend_synced_block_height(&self) -> u32;
-    fn update_index_status(
-        &self,
-        current: Option<u32>,
-        total: Option<u32>,
-        message: Option<String>,
-    );
-}
-
-impl IndexStatusApi for StatusManager {
-    fn latest_depend_synced_block_height(&self) -> u32 {
-        self.latest_depend_synced_block_height()
-    }
-
-    fn update_index_status(
-        &self,
-        current: Option<u32>,
-        total: Option<u32>,
-        message: Option<String>,
-    ) {
-        self.update_index_status(current, total, message);
-    }
-}
+use block_events::{BlockEventExecutor, BlockEventPlanner, BlockProcessEvent};
+use traits::RpcBlockHintProvider;
+pub(crate) use traits::{BlockHintProvider, IndexStatusApi, TransferTrackerApi};
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
@@ -562,12 +422,11 @@ impl InscriptionIndexer {
             error!("{}", msg);
             msg
         })?;
-        let block_hint = Some(block_hint);
 
         // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
         let new_inscription_items = self
-            .collect_block_inscription_mints(height, block_hint.clone())
+            .collect_block_inscription_mints(height, Some(block_hint.clone()))
             .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
@@ -576,14 +435,14 @@ impl InscriptionIndexer {
         let transfer_items = self
             .collect_block_inscription_transfer_items(
                 height,
-                block_hint.clone(),
+                Some(block_hint.clone()),
                 transfer_track_seeds,
             )
             .await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
         let process_events_begin = Instant::now();
-        let ordered_events = match self.build_ordered_block_events(
+        let ordered_events = match self.plan_block_events(
             height,
             block_hint.clone(),
             new_inscription_items,
@@ -596,7 +455,7 @@ impl InscriptionIndexer {
             }
         };
         let (new_inscriptions_count, transfer_count) =
-            match self.apply_ordered_block_events(ordered_events).await {
+            match self.execute_block_events(ordered_events).await {
                 Ok(value) => value,
                 Err(e) => {
                     self.transfer_tracker.rollback_staged_block(height).await?;
@@ -654,123 +513,21 @@ impl InscriptionIndexer {
         tx_positions
     }
 
-    fn build_ordered_block_events(
+    fn plan_block_events(
         &self,
         block_height: u32,
-        block_hint: Option<Arc<Block>>,
+        block_hint: Arc<Block>,
         mint_items: Vec<InscriptionNewItem>,
         transfer_items: Vec<InscriptionTransferItem>,
     ) -> Result<Vec<BlockProcessEvent>, String> {
-        if mint_items.is_empty() && transfer_items.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut ordered_events =
-            Vec::<OrderedBlockProcessEvent>::with_capacity(mint_items.len() + transfer_items.len());
-
-        let block_hint = block_hint.ok_or_else(|| {
-            let msg = format!(
-                "Missing required block hint when ordering events at block {}. Aborting for protocol safety.",
-                block_height
-            );
-            error!("{}", msg);
-            msg
-        })?;
-
-        let tx_positions = Self::build_block_tx_position_map(&block_hint);
-
-        for item in mint_items {
-            let tx_position = tx_positions
-                .get(&item.inscription_id.txid)
-                .copied()
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Mint transaction {} not found in block {} when ordering events for inscription {}",
-                        item.inscription_id.txid, block_height, item.inscription_id
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
-            ordered_events.push(OrderedBlockProcessEvent {
-                tx_position,
-                priority: 1,
-                event: BlockProcessEvent::Mint(item),
-            });
-        }
-
-        for item in transfer_items {
-            let transfer_txid = *item.txid();
-            let tx_position = tx_positions.get(&transfer_txid).copied().ok_or_else(|| {
-                let msg = format!(
-                    "Transfer transaction {} not found in block {} when ordering events for inscription {}",
-                    transfer_txid, block_height, item.inscription_id
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            ordered_events.push(OrderedBlockProcessEvent {
-                tx_position,
-                priority: 0,
-                event: BlockProcessEvent::Transfer(item),
-            });
-        }
-
-        ordered_events.sort_by(|a, b| {
-            a.tx_position
-                .cmp(&b.tx_position)
-                .then(a.priority.cmp(&b.priority))
-        });
-
-        Ok(ordered_events.into_iter().map(|item| item.event).collect())
+        BlockEventPlanner::new(block_height, block_hint, mint_items, transfer_items).plan()
     }
 
-    async fn apply_ordered_block_events(
+    async fn execute_block_events(
         &self,
         ordered_events: Vec<BlockProcessEvent>,
     ) -> Result<(usize, usize), String> {
-        let mut new_inscriptions_count = 0usize;
-        let mut transfer_count = 0usize;
-
-        for event in ordered_events {
-            match event {
-                BlockProcessEvent::Mint(item) => {
-                    self.on_new_inscription(&item).await?;
-                    new_inscriptions_count += 1;
-                }
-                BlockProcessEvent::Transfer(item) => {
-                    match item.to_address {
-                        Some(addr) => {
-                            info!(
-                                "Inscription {} transferred from {} to {} at block {}",
-                                item.inscription_id, item.from_address, addr, item.block_height
-                            );
-
-                            self.miner_pass_manager
-                                .on_pass_transfer(
-                                    &item.inscription_id,
-                                    &addr,
-                                    &item.satpoint,
-                                    item.block_height,
-                                )
-                                .await?;
-                        }
-                        None => {
-                            info!(
-                                "Inscription {} burned from {} at block {}",
-                                item.inscription_id, item.from_address, item.block_height
-                            );
-
-                            self.miner_pass_manager
-                                .on_pass_burned(&item.inscription_id, item.block_height)
-                                .await?;
-                        }
-                    }
-                    transfer_count += 1;
-                }
-            }
-        }
-
-        Ok((new_inscriptions_count, transfer_count))
+        BlockEventExecutor::new(self).execute(ordered_events).await
     }
 
     fn build_transfer_track_seeds(mint_items: &[InscriptionNewItem]) -> Vec<TransferTrackSeed> {
