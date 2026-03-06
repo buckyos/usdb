@@ -3,6 +3,10 @@ use crate::config::ConfigManagerRef;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
 use ord::InscriptionId;
+use std::future::Future;
+use std::ops::Range;
+use std::pin::Pin;
+use std::sync::Arc;
 use usdb_util::USDBScriptHash;
 
 // 0.001 btc threshold = 100_000 Satoshi
@@ -13,30 +17,90 @@ pub struct PassEnergyResult {
     pub energy: u64,
     pub state: MinerPassState,
 }
-pub struct PassEnergyManager {
-    config: ConfigManagerRef,
-    storage: PassEnergyStorage,
-    balance_history_client: BalanceHistoryRpcClient,
+
+type BalanceProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+pub(crate) trait BalanceProvider: Send + Sync {
+    fn get_balance_at_height<'a>(
+        &'a self,
+        address: USDBScriptHash,
+        block_height: u32,
+    ) -> BalanceProviderFuture<'a, Vec<AddressBalance>>;
+
+    fn get_balance_at_range<'a>(
+        &'a self,
+        address: USDBScriptHash,
+        block_range: Range<u32>,
+    ) -> BalanceProviderFuture<'a, Vec<AddressBalance>>;
 }
 
-impl PassEnergyManager {
-    pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
-        let storage = PassEnergyStorage::new(&config.data_dir())?;
+struct RpcBalanceProvider {
+    client: BalanceHistoryRpcClient,
+}
 
-        let balance_history_client = BalanceHistoryRpcClient::new(
-            &config.config().balance_history.rpc_url,
-        )
-        .map_err(|e| {
+impl RpcBalanceProvider {
+    fn new(rpc_url: &str) -> Result<Self, String> {
+        let client = BalanceHistoryRpcClient::new(rpc_url).map_err(|e| {
             let msg = format!("Failed to create Balance History RPC client: {}", e);
             error!("{}", msg);
             msg
         })?;
 
-        Ok(Self {
+        Ok(Self { client })
+    }
+}
+
+impl BalanceProvider for RpcBalanceProvider {
+    fn get_balance_at_height<'a>(
+        &'a self,
+        address: USDBScriptHash,
+        block_height: u32,
+    ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
+        Box::pin(async move {
+            self.client
+                .get_address_balance(address, Some(block_height), None)
+                .await
+        })
+    }
+
+    fn get_balance_at_range<'a>(
+        &'a self,
+        address: USDBScriptHash,
+        block_range: Range<u32>,
+    ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
+        Box::pin(async move {
+            self.client
+                .get_address_balance(address, None, Some(block_range))
+                .await
+        })
+    }
+}
+
+pub struct PassEnergyManager {
+    config: ConfigManagerRef,
+    storage: PassEnergyStorage,
+    balance_provider: Arc<dyn BalanceProvider>,
+}
+
+impl PassEnergyManager {
+    pub fn new(config: ConfigManagerRef) -> Result<Self, String> {
+        let storage = PassEnergyStorage::new(&config.data_dir())?;
+        let balance_provider =
+            Arc::new(RpcBalanceProvider::new(&config.config().balance_history.rpc_url)?);
+
+        Ok(Self::new_with_deps(config, storage, balance_provider))
+    }
+
+    pub(crate) fn new_with_deps(
+        config: ConfigManagerRef,
+        storage: PassEnergyStorage,
+        balance_provider: Arc<dyn BalanceProvider>,
+    ) -> Self {
+        Self {
             config,
             storage,
-            balance_history_client,
-        })
+            balance_provider,
+        }
     }
 
     // Get the balance of an address at a specific block height, which may changed on or before that height
@@ -46,8 +110,8 @@ impl PassEnergyManager {
         block_height: u32,
     ) -> Result<AddressBalance, String> {
         let mut balances = self
-            .balance_history_client
-            .get_address_balance(address.clone(), Some(block_height), None)
+            .balance_provider
+            .get_balance_at_height(*address, block_height)
             .await?;
 
         assert!(
@@ -79,8 +143,8 @@ impl PassEnergyManager {
         block_range: std::ops::Range<u32>,
     ) -> Result<Vec<AddressBalance>, String> {
         let balances = self
-            .balance_history_client
-            .get_address_balance(address.clone(), None, Some(block_range))
+            .balance_provider
+            .get_balance_at_range(*address, block_range)
             .await?;
         Ok(balances)
     }
