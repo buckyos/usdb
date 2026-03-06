@@ -2,6 +2,7 @@ use super::common::{cleanup_temp_dir, test_inscription_id, test_root_dir, test_s
 use crate::config::ConfigManager;
 use crate::index::content::MinerPassState;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
+use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::storage::PassEnergyStorage;
 use balance_history::AddressBalance;
 use ord::InscriptionId;
@@ -12,8 +13,6 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use usdb_util::USDBScriptHash;
-
-const ENERGY_BALANCE_THRESHOLD: u64 = 100_000;
 
 struct TimelineBalanceProvider {
     timelines: HashMap<USDBScriptHash, Vec<AddressBalance>>,
@@ -100,13 +99,11 @@ fn expected_energy_by_formula(
         }
 
         let r = point.block_height - active_block_height;
-        if owner_balance >= ENERGY_BALANCE_THRESHOLD {
-            let delta = owner_balance * 10000 * r as u64;
-            energy = energy.saturating_add(delta);
-        }
+        let delta = calc_growth_delta(owner_balance, r);
+        energy = energy.saturating_add(delta);
 
         if point.delta < 0 {
-            let penalty = point.delta.abs() as u64 * 10000 * 6 * 24 * 30;
+            let penalty = calc_penalty_from_delta(point.delta);
             energy = energy.saturating_sub(penalty);
             active_block_height = point.block_height;
         }
@@ -115,9 +112,9 @@ fn expected_energy_by_formula(
         last_processed_height = point.block_height;
     }
 
-    if last_processed_height < target_height && owner_balance >= ENERGY_BALANCE_THRESHOLD {
+    if last_processed_height < target_height {
         let r = target_height - active_block_height;
-        let delta = owner_balance * 10000 * r as u64;
+        let delta = calc_growth_delta(owner_balance, r);
         energy = energy.saturating_add(delta);
     }
 

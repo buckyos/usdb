@@ -1,4 +1,5 @@
 use super::content::MinerPassState;
+use super::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::config::ConfigManagerRef;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
@@ -8,9 +9,6 @@ use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
 use usdb_util::USDBScriptHash;
-
-// 0.001 btc threshold = 100_000 Satoshi
-const ENERGY_BALANCE_THRESHOLD: u64 = 100_000; // in Satoshi 0.001 BTC
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassEnergyResult {
@@ -368,11 +366,7 @@ impl PassEnergyManager {
             let r: u32 = balance_record.block_height - last_record.active_block_height;
             assert!(r >= 1, "R should be at least 1");
 
-            let energy_delta = if last_record.owner_balance >= ENERGY_BALANCE_THRESHOLD {
-                last_record.owner_balance * 10000 * r as u64
-            } else {
-                0u64
-            };
+            let energy_delta = calc_growth_delta(last_record.owner_balance, r);
 
             let mut new_energy = last_record.energy.saturating_add(energy_delta);
 
@@ -384,9 +378,9 @@ impl PassEnergyManager {
                 balance_record.block_height
             };
 
-            // If the balance decreased, energy decreases by D * 10000 * 6 * 24 * 30 as punishment
+            // Apply protocol-defined punishment on negative balance delta.
             if balance_record.delta < 0 {
-                let energy_delta = balance_record.delta.abs() as u64 * 10000 * 6 * 24 * 30;
+                let energy_delta = calc_penalty_from_delta(balance_record.delta);
                 new_energy = new_energy.saturating_sub(energy_delta);
             }
 
@@ -407,12 +401,8 @@ impl PassEnergyManager {
         let ret = if last_record.block_height < block_height {
             // No balance changes in between, just calculate energy up to block_height
             // This record should not save to storage, as there is no balance change record at this height
-            let energy_delta = if last_record.owner_balance >= ENERGY_BALANCE_THRESHOLD {
-                let r = block_height - last_record.active_block_height;
-                last_record.owner_balance * 10000 * r as u64
-            } else {
-                0u64
-            };
+            let r = block_height - last_record.active_block_height;
+            let energy_delta = calc_growth_delta(last_record.owner_balance, r);
             let new_energy = last_record.energy.saturating_add(energy_delta);
 
             PassEnergyResult {
