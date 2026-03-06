@@ -1,7 +1,7 @@
 use crate::index::MinerPassState;
-use bitcoincore_rpc::bitcoin::{hashes::Hash, Txid};
+use bitcoincore_rpc::bitcoin::{Txid, hashes::Hash};
 use ord::InscriptionId;
-use rocksdb::{ColumnFamilyDescriptor, Options, DB};
+use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use rust_rocksdb::{self as rocksdb};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -38,6 +38,14 @@ pub struct PassEnergyRecord {
 
 // Column family name for pass energy records
 const PASS_ENERGY_CF: &str = "pass_energy";
+const META_CF: &str = "meta";
+
+// Highest block height that has fully finalized energy writes.
+const META_KEY_SYNCED_BLOCK_HEIGHT: &[u8] = b"synced_block_height";
+// Block height currently in-progress for energy writes (crash-recovery marker).
+const META_KEY_PENDING_BLOCK_HEIGHT: &[u8] = b"pending_block_height";
+// Cached maximum block height currently present in pass_energy CF.
+const META_KEY_MAX_RECORD_BLOCK_HEIGHT: &[u8] = b"max_record_block_height";
 
 pub struct PassEnergyStorage {
     file: PathBuf,
@@ -66,10 +74,10 @@ impl PassEnergyStorage {
         options.create_missing_column_families(true);
 
         // Define column families
-        let cf_descriptors = vec![ColumnFamilyDescriptor::new(
-            PASS_ENERGY_CF,
-            Options::default(),
-        )];
+        let cf_descriptors = vec![
+            ColumnFamilyDescriptor::new(PASS_ENERGY_CF, Options::default()),
+            ColumnFamilyDescriptor::new(META_CF, Options::default()),
+        ];
 
         let db = DB::open_cf_descriptors(&options, &db_path, cf_descriptors).map_err(|e| {
             let msg = format!("Failed to open RocksDB at {}: {}", db_path.display(), e);
@@ -129,8 +137,13 @@ impl PassEnergyStorage {
     }
 
     pub fn insert_pass_energy_record(&self, record: &PassEnergyRecord) -> Result<(), String> {
-        let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
+        let energy_cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", PASS_ENERGY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let meta_cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
             error!("{}", msg);
             msg
         })?;
@@ -152,8 +165,134 @@ impl PassEnergyStorage {
                 msg
             })?;
 
-        self.db.put_cf(cf, key_bytes, value_bytes).map_err(|e| {
-            let msg = format!("Failed to insert pass energy record: {}", e);
+        // Persist record and update max block height marker in one write batch.
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(energy_cf, key_bytes, value_bytes);
+        let current_max = self.get_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT)?;
+        if match current_max {
+            Some(h) => record.block_height > h,
+            None => true,
+        } {
+            batch.put_cf(
+                meta_cf,
+                META_KEY_MAX_RECORD_BLOCK_HEIGHT,
+                record.block_height.to_be_bytes(),
+            );
+        }
+
+        self.db.write(&batch).map_err(|e| {
+            let msg = format!(
+                "Failed to insert pass energy record with metadata update: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    fn get_meta_u32(&self, key: &[u8]) -> Result<Option<u32>, String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        match self.db.get_cf(cf, key).map_err(|e| {
+            let msg = format!("Failed to read energy meta key {:?}: {}", key, e);
+            error!("{}", msg);
+            msg
+        })? {
+            Some(bytes) => {
+                if bytes.len() != 4 {
+                    let msg = format!(
+                        "Invalid energy meta value length for key {:?}: expected 4, got {}",
+                        key,
+                        bytes.len()
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                let value = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_meta_u32(&self, key: &[u8], value: u32) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.db.put_cf(cf, key, value.to_be_bytes()).map_err(|e| {
+            let msg = format!(
+                "Failed to persist energy meta key {:?} with value {}: {}",
+                key, value, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    fn delete_meta_key(&self, key: &[u8]) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.db.delete_cf(cf, key).map_err(|e| {
+            let msg = format!("Failed to delete energy meta key {:?}: {}", key, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_synced_block_height(&self) -> Result<Option<u32>, String> {
+        self.get_meta_u32(META_KEY_SYNCED_BLOCK_HEIGHT)
+    }
+
+    pub fn set_synced_block_height(&self, block_height: u32) -> Result<(), String> {
+        self.set_meta_u32(META_KEY_SYNCED_BLOCK_HEIGHT, block_height)
+    }
+
+    pub fn get_pending_block_height(&self) -> Result<Option<u32>, String> {
+        self.get_meta_u32(META_KEY_PENDING_BLOCK_HEIGHT)
+    }
+
+    pub fn set_pending_block_height(&self, block_height: u32) -> Result<(), String> {
+        self.set_meta_u32(META_KEY_PENDING_BLOCK_HEIGHT, block_height)
+    }
+
+    pub fn clear_pending_block_height(&self) -> Result<(), String> {
+        self.delete_meta_key(META_KEY_PENDING_BLOCK_HEIGHT)
+    }
+
+    pub fn finalize_block_sync(&self, block_height: u32) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(cf, META_KEY_SYNCED_BLOCK_HEIGHT, block_height.to_be_bytes());
+        batch.delete_cf(cf, META_KEY_PENDING_BLOCK_HEIGHT);
+
+        self.db.write(&batch).map_err(|e| {
+            let msg = format!(
+                "Failed to finalize energy block sync metadata at height {}: {}",
+                block_height, e
+            );
             error!("{}", msg);
             msg
         })?;
@@ -260,6 +399,7 @@ impl PassEnergyStorage {
         let mut iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
 
         let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
+        let mut max_kept_height: Option<u32> = None;
 
         while let Some(item) = iter.next() {
             let (key_bytes, _value_bytes) = item.map_err(|e| {
@@ -272,6 +412,11 @@ impl PassEnergyStorage {
 
             if key.block_height >= from_block_height {
                 keys_to_delete.push(key_bytes.to_vec());
+            } else {
+                max_kept_height = Some(match max_kept_height {
+                    Some(current) => current.max(key.block_height),
+                    None => key.block_height,
+                });
             }
         }
 
@@ -286,7 +431,58 @@ impl PassEnergyStorage {
             msg
         })?;
 
+        // The iterator above has already seen all records, so we can update max marker
+        // directly without an extra full-CF scan.
+        match max_kept_height {
+            Some(height) => self.set_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT, height)?,
+            None => self.delete_meta_key(META_KEY_MAX_RECORD_BLOCK_HEIGHT)?,
+        }
+
         Ok(())
+    }
+
+    pub fn get_max_record_block_height(&self) -> Result<Option<u32>, String> {
+        // Fast path: read cached max height from metadata.
+        if let Some(height) = self.get_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT)? {
+            return Ok(Some(height));
+        }
+
+        // Backfill path for older DB versions without metadata.
+        let scanned = self.scan_max_record_block_height()?;
+        if let Some(height) = scanned {
+            self.set_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT, height)?;
+        }
+        Ok(scanned)
+    }
+
+    fn scan_max_record_block_height(&self) -> Result<Option<u32>, String> {
+        let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", PASS_ENERGY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut iter = self
+            .db
+            .iterator_cf(cf, rocksdb::IteratorMode::Start)
+            .peekable();
+        let mut max_height: Option<u32> = None;
+
+        while let Some(item) = iter.next() {
+            let (key_bytes, _value_bytes) = item.map_err(|e| {
+                let msg = format!("Failed to iterate pass energy records: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            let key = Self::parse_energy_key(&key_bytes)?;
+            max_height = Some(match max_height {
+                Some(current) => current.max(key.block_height),
+                None => key.block_height,
+            });
+        }
+
+        Ok(max_height)
     }
 }
 
@@ -427,6 +623,53 @@ mod tests {
             )
             .unwrap();
         assert!(removed_other.is_none());
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_block_sync_meta_pending_and_finalize_roundtrip() {
+        let dir = test_data_dir("meta_roundtrip");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        assert_eq!(storage.get_pending_block_height().unwrap(), None);
+        assert_eq!(storage.get_synced_block_height().unwrap(), None);
+
+        storage.set_pending_block_height(123).unwrap();
+        assert_eq!(storage.get_pending_block_height().unwrap(), Some(123));
+
+        storage.finalize_block_sync(123).unwrap();
+        assert_eq!(storage.get_pending_block_height().unwrap(), None);
+        assert_eq!(storage.get_synced_block_height().unwrap(), Some(123));
+
+        storage.set_pending_block_height(124).unwrap();
+        assert_eq!(storage.get_pending_block_height().unwrap(), Some(124));
+        storage.clear_pending_block_height().unwrap();
+        assert_eq!(storage.get_pending_block_height().unwrap(), None);
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_max_record_block_height() {
+        let dir = test_data_dir("max_height");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        assert_eq!(storage.get_max_record_block_height().unwrap(), None);
+
+        storage
+            .insert_pass_energy_record(&make_record(40, 0, 120, 5, 1))
+            .unwrap();
+        storage
+            .insert_pass_energy_record(&make_record(41, 1, 300, 6, 2))
+            .unwrap();
+        storage
+            .insert_pass_energy_record(&make_record(42, 2, 250, 7, 3))
+            .unwrap();
+
+        assert_eq!(storage.get_max_record_block_height().unwrap(), Some(300));
 
         drop(storage);
         std::fs::remove_dir_all(&dir).unwrap();

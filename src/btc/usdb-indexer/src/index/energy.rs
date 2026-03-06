@@ -104,6 +104,91 @@ impl PassEnergyManager {
         }
     }
 
+    pub fn begin_block_sync(&self, block_height: u32) -> Result<(), String> {
+        // Mark this block as pending before any energy writes.
+        // If process crashes mid-block, startup reconcile will roll back from this height.
+        if let Some(pending_height) = self.storage.get_pending_block_height()? {
+            let msg = format!(
+                "Previous pending energy block sync found before starting new block: pending_height={}, new_block_height={}",
+                pending_height, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        self.storage.set_pending_block_height(block_height)?;
+        Ok(())
+    }
+
+    pub fn finalize_block_sync(&self, block_height: u32) -> Result<(), String> {
+        // Finalize pending -> synced in one atomic RocksDB batch.
+        let pending_height = self.storage.get_pending_block_height()?;
+        if pending_height != Some(block_height) {
+            let msg = format!(
+                "Energy pending block mismatch when finalizing block sync: pending_height={:?}, finalize_height={}",
+                pending_height, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        self.storage.finalize_block_sync(block_height)?;
+        Ok(())
+    }
+
+    pub fn reconcile_with_pass_synced_height(&self, pass_synced_height: u32) -> Result<(), String> {
+        // Step 1: recover incomplete block sync attempts from pending marker.
+        if let Some(pending_height) = self.storage.get_pending_block_height()? {
+            warn!(
+                "Recovering stale pending energy sync marker: module=energy, pending_height={}, pass_synced_height={}",
+                pending_height, pass_synced_height
+            );
+            self.storage.clear_records_from_height(pending_height)?;
+            self.storage.clear_pending_block_height()?;
+        }
+
+        // Step 2: truncate any future energy records beyond pass synced height.
+        if let Some(max_height) = self.storage.get_max_record_block_height()? {
+            if max_height > pass_synced_height {
+                warn!(
+                    "Detected future energy records beyond pass synced height, truncating: module=energy, max_energy_height={}, pass_synced_height={}",
+                    max_height, pass_synced_height
+                );
+                self.storage
+                    .clear_records_from_height(pass_synced_height.saturating_add(1))?;
+            }
+        }
+
+        // Step 3: reconcile synced height marker.
+        match self.storage.get_synced_block_height()? {
+            Some(energy_synced_height) if energy_synced_height > pass_synced_height => {
+                warn!(
+                    "Energy synced height is ahead of pass synced height, correcting marker: module=energy, energy_synced_height={}, pass_synced_height={}",
+                    energy_synced_height, pass_synced_height
+                );
+                self.storage.set_synced_block_height(pass_synced_height)?;
+            }
+            Some(energy_synced_height) if energy_synced_height < pass_synced_height => {
+                let msg = format!(
+                    "Energy synced height is behind pass synced height: module=energy, energy_synced_height={}, pass_synced_height={}. Please clear energy storage and resync from genesis.",
+                    energy_synced_height, pass_synced_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            Some(_) => {}
+            None => {
+                warn!(
+                    "Energy synced height marker is missing, initializing from pass synced height: module=energy, pass_synced_height={}",
+                    pass_synced_height
+                );
+                self.storage.set_synced_block_height(pass_synced_height)?;
+            }
+        }
+
+        Ok(())
+    }
+
     // Get the balance of an address at a specific block height, which may changed on or before that height
     async fn get_balance_at_height(
         &self,
@@ -519,6 +604,61 @@ mod tests {
             .await
             .unwrap();
         assert!(e80.is_none());
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_reconcile_truncates_pending_and_future_records() {
+        let root_dir = test_root_dir("reconcile_truncate");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(8, 0);
+        let owner = test_script_hash(9);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 120,
+                state: MinerPassState::Active,
+                active_block_height: 120,
+                owner_address: owner,
+                owner_balance: 10_000,
+                owner_delta: 1,
+                energy: 123,
+            })
+            .unwrap();
+        manager.storage.set_pending_block_height(120).unwrap();
+        manager.storage.set_synced_block_height(120).unwrap();
+
+        manager.reconcile_with_pass_synced_height(100).unwrap();
+
+        assert!(
+            manager
+                .storage
+                .get_pass_energy_record(&inscription_id, 120)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(manager.storage.get_pending_block_height().unwrap(), None);
+        assert_eq!(
+            manager.storage.get_synced_block_height().unwrap(),
+            Some(100)
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_reconcile_fails_when_energy_synced_height_lags_pass_synced_height() {
+        let root_dir = test_root_dir("reconcile_lagging_marker");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        manager.storage.set_synced_block_height(90).unwrap();
+        let err = manager.reconcile_with_pass_synced_height(100).unwrap_err();
+        assert!(err.contains("Energy synced height is behind pass synced height"));
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

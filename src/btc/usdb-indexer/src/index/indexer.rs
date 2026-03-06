@@ -314,6 +314,18 @@ impl InscriptionIndexer {
                 msg
             })?;
 
+        // Reconcile energy store against pass synced height before scanning new blocks.
+        self.pass_energy_manager
+            .reconcile_with_pass_synced_height(current_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Energy consistency check failed before syncing: module=indexer, synced_height={}, error={}",
+                    current_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
         if current_height >= latest_height {
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
@@ -407,12 +419,21 @@ impl InscriptionIndexer {
         &self,
         block_range: std::ops::RangeInclusive<u32>,
     ) -> Result<u32, String> {
+        let current_height = self
+            .miner_pass_storage
+            .get_synced_btc_block_height()?
+            .unwrap_or(0);
+        self.pass_energy_manager
+            .reconcile_with_pass_synced_height(current_height)?;
         self.sync_blocks(block_range).await
     }
 
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
+        
+        // Mark energy sync as pending at block start for crash recovery.
+        self.pass_energy_manager.begin_block_sync(height)?;
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
         let block_hint = block_hint.ok_or_else(|| {
             let msg = format!(
@@ -472,6 +493,11 @@ impl InscriptionIndexer {
                 return Err(e);
             }
         };
+        if let Err(e) = self.pass_energy_manager.finalize_block_sync(height) {
+            self.transfer_tracker.rollback_staged_block(height).await?;
+            return Err(e);
+        }
+        // Commit transfer tracker staged state only after energy metadata finalize succeeds.
         self.transfer_tracker.commit_staged_block(height).await?;
         let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
         let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
