@@ -149,6 +149,24 @@ impl PassEnergyManager {
         Ok(value)
     }
 
+    // Get the latest energy and state snapshot for the pass at or before block_height.
+    pub async fn get_pass_energy_at_or_before(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<PassEnergyResult>, String> {
+        let ret = self
+            .storage
+            .find_last_pass_energy_record(inscription_id, block_height)?;
+
+        let value = ret.map(|v| PassEnergyResult {
+            energy: v.energy,
+            state: v.state,
+        });
+
+        Ok(value)
+    }
+
     // Kernel function to update the energy of a Miner Pass at given block height
     pub async fn update_pass_energy(
         &self,
@@ -262,25 +280,56 @@ impl PassEnergyManager {
         inscription_id: &InscriptionId,
         block_height: u32,
     ) -> Result<(), String> {
-        // Update the energy record as well for the last time
-        let ret = self
+        // Finalize active energy first, then persist a Dormant snapshot at block_height.
+        let finalized = self
             .update_pass_energy(&inscription_id, block_height)
             .await?;
 
-        // Just for debugging, verify the last pass energy
-        let last_pass_energy = self.get_pass_energy(&inscription_id, block_height).await?;
+        let last_record = self
+            .storage
+            .find_last_pass_energy_record(inscription_id, block_height)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "No energy record found for dormant transition: inscription_id={}, block_height={}",
+                    inscription_id, block_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
-        assert_eq!(
-            last_pass_energy.as_ref(),
-            Some(&ret),
-            "Last pass energy should match after update {} at {}",
-            inscription_id,
-            block_height
-        );
+        let dormant_record = PassEnergyRecord {
+            inscription_id: inscription_id.clone(),
+            block_height,
+            state: MinerPassState::Dormant,
+            active_block_height: last_record.active_block_height,
+            owner_address: last_record.owner_address.clone(),
+            owner_balance: last_record.owner_balance,
+            owner_delta: if last_record.block_height == block_height {
+                last_record.owner_delta
+            } else {
+                0
+            },
+            energy: finalized.energy,
+        };
+        self.storage.insert_pass_energy_record(&dormant_record)?;
+
+        let stored = self.get_pass_energy(inscription_id, block_height).await?;
+        let expected = PassEnergyResult {
+            energy: finalized.energy,
+            state: MinerPassState::Dormant,
+        };
+        if stored.as_ref() != Some(&expected) {
+            let msg = format!(
+                "Dormant energy snapshot mismatch: inscription_id={}, block_height={}, stored={:?}, expected={:?}",
+                inscription_id, block_height, stored, expected
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         info!(
             "Miner Pass {} marked as Dormant at block height {}, final energy: {}",
-            inscription_id, block_height, ret.energy
+            inscription_id, block_height, finalized.energy
         );
 
         Ok(())
@@ -311,3 +360,96 @@ impl PassEnergyManager {
 }
 
 pub type PassEnergyManagerRef = std::sync::Arc<PassEnergyManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigManager;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{ScriptBuf, Txid};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::ToUSDBScriptHash;
+
+    fn test_root_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("usdb_indexer_energy_test_{}_{}", test_name, nanos))
+    }
+
+    fn test_script_hash(tag: u8) -> USDBScriptHash {
+        let script = ScriptBuf::from(vec![tag; 32]);
+        script.to_usdb_script_hash()
+    }
+
+    fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
+        InscriptionId {
+            txid: Txid::from_slice(&[tag; 32]).unwrap(),
+            index,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_pass_energy_at_or_before_returns_latest_snapshot() {
+        let root_dir = test_root_dir("at_or_before");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(1, 0);
+        let owner = test_script_hash(2);
+
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Dormant,
+                active_block_height: 90,
+                owner_address: owner,
+                owner_balance: 1_000,
+                owner_delta: 10,
+                energy: 111,
+            })
+            .unwrap();
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 120,
+                state: MinerPassState::Dormant,
+                active_block_height: 90,
+                owner_address: owner,
+                owner_balance: 1_500,
+                owner_delta: 20,
+                energy: 222,
+            })
+            .unwrap();
+
+        let e115 = manager
+            .get_pass_energy_at_or_before(&inscription_id, 115)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(e115.state, MinerPassState::Dormant);
+        assert_eq!(e115.energy, 111);
+
+        let e120 = manager
+            .get_pass_energy_at_or_before(&inscription_id, 120)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(e120.state, MinerPassState::Dormant);
+        assert_eq!(e120.energy, 222);
+
+        let e80 = manager
+            .get_pass_energy_at_or_before(&inscription_id, 80)
+            .await
+            .unwrap();
+        assert!(e80.is_none());
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+}

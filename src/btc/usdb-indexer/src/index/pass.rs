@@ -221,15 +221,15 @@ impl MinerPassManager {
         self.storage
             .update_state(inscription_id, MinerPassState::Consumed, pass.state)?;
 
-        // Get the energy record at this block height
-        // The energy record must exist at this block height, which is updated when the pass is marked as dormant
+        // Get the latest energy record at or before block_height.
+        // The pass may become dormant at an earlier height, so exact-height lookup is not reliable.
         let ret = self
             .energy_manager
-            .get_pass_energy(inscription_id, block_height)
+            .get_pass_energy_at_or_before(inscription_id, block_height)
             .await?;
         if ret.is_none() {
             let msg = format!(
-                "Miner Pass {} energy record not found for consuming at block height {}",
+                "Miner Pass {} energy record not found at or before block height {} for consuming",
                 inscription_id, block_height
             );
             error!("{}", msg);
@@ -293,16 +293,21 @@ impl MinerPassManager {
             self.storage
                 .update_satpoint(inscription_id, &pass.satpoint, satpoint)?;
         } else {
+            if pass.state == MinerPassState::Active {
+                // Freeze active energy at transfer height and mark pass state as Dormant first.
+                self.energy_manager
+                    .on_pass_dormant(inscription_id, block_height)
+                    .await?;
+                self.storage.update_state(
+                    inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                )?;
+            }
+
             // Transfer the ownership in storage
             self.storage
                 .transfer_owner(inscription_id, new_owner, satpoint)?;
-            if pass.state == MinerPassState::Active {
-                self.storage.update_state(
-                    inscription_id,
-                    MinerPassState::Active,
-                    MinerPassState::Dormant,
-                )?;
-            }
         }
 
         Ok(())

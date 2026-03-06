@@ -1623,6 +1623,44 @@ mod tests {
     }
 
     #[test]
+    fn test_transfer_active_to_owner_with_active_requires_dormant_first() {
+        let dir = test_data_dir("transfer_active_requires_dormant");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner_a = script_hash(61);
+        let owner_b = script_hash(62);
+
+        let p1 = make_pass(71, 0, owner_a, MinerPassState::Active, 100);
+        let p2 = make_pass(72, 1, owner_b, MinerPassState::Active, 101);
+        storage.add_new_mint_pass(&p1).unwrap();
+        storage.add_new_mint_pass(&p2).unwrap();
+
+        let new_satpoint = satpoint(73, 2, 33);
+        let err = storage.transfer_owner(&p1.inscription_id, &owner_b, &new_satpoint);
+        assert!(err.is_err());
+
+        storage
+            .update_state(
+                &p1.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+            )
+            .unwrap();
+        storage
+            .transfer_owner(&p1.inscription_id, &owner_b, &new_satpoint)
+            .unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&p1.inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.owner, owner_b);
+        assert_eq!(updated.state, MinerPassState::Dormant);
+        assert_eq!(updated.satpoint, new_satpoint);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_storage_active_query_with_block_height_filter() {
         let dir = test_data_dir("active_height");
         let storage = MinerPassStorage::new(&dir).unwrap();
