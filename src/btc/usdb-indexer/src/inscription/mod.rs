@@ -2,6 +2,8 @@ mod source;
 mod source_bitcoind;
 mod source_compare;
 mod source_ord;
+#[cfg(test)]
+mod test;
 mod types;
 
 pub use source::*;
