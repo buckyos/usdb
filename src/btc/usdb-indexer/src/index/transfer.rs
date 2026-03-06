@@ -19,6 +19,14 @@ pub struct InscriptionCreateInfo {
     pub commit_txid: Txid,
 }
 
+#[derive(Clone)]
+pub struct TransferTrackSeed {
+    pub inscription_id: InscriptionId,
+    pub owner: USDBScriptHash,
+    pub satpoint: SatPoint,
+}
+
+#[derive(Clone)]
 struct MultiMap {
     map: HashMap<OutPoint, Vec<ValidMinerPassInfo>>,
 }
@@ -79,6 +87,7 @@ impl MultiMap {
 pub struct InscriptionTransferTracker {
     config: ConfigManagerRef,
     inscriptions: Mutex<MultiMap>,
+    staged_blocks: Mutex<HashMap<u32, MultiMap>>,
     miner_pass_storage: MinerPassStorageRef,
 
     btc_client: BTCRpcClientRef,
@@ -102,6 +111,7 @@ impl InscriptionTransferTracker {
         let ret = Self {
             config,
             inscriptions: Mutex::new(MultiMap::new()),
+            staged_blocks: Mutex::new(HashMap::new()),
             miner_pass_storage,
             btc_client,
             utxo_manager,
@@ -262,23 +272,53 @@ impl InscriptionTransferTracker {
         &self,
         block_height: u32,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
-        self.process_block_with_hint(block_height, None).await
+        self.process_block_with_hint(block_height, None, Vec::new())
+            .await
     }
 
     pub async fn process_block_with_hint(
         &self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
         info!(
             "Processing block {} for inscription transfers",
             block_height,
         );
 
+        {
+            let staged_blocks = self.staged_blocks.lock().unwrap();
+            if !staged_blocks.is_empty() {
+                let msg = format!(
+                    "Uncommitted staged transfer state exists before processing block {}: staged_block_count={}",
+                    block_height,
+                    staged_blocks.len()
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
         let block = match block_hint {
             Some(block) => block,
             None => Arc::new(self.btc_client.get_block(block_height)?),
         };
+
+        let mut working_inscriptions = {
+            let coll = self.inscriptions.lock().unwrap();
+            coll.clone()
+        };
+        for seed in extra_tracked_inscriptions {
+            working_inscriptions.insert(
+                seed.satpoint.outpoint.clone(),
+                ValidMinerPassInfo {
+                    inscription_id: seed.inscription_id,
+                    owner: seed.owner,
+                    satpoint: seed.satpoint,
+                },
+            );
+        }
 
         let mut transfer_items = Vec::new();
         for tx in &block.txdata {
@@ -288,10 +328,7 @@ impl InscriptionTransferTracker {
             for vin in &tx_item.tx.input {
                 // Check if current outpoint is included in this tx's input, if exists,
                 // then it's a transfer, we should update the transfer record and remove it from monitor list
-                let existing_items = {
-                    let coll = self.inscriptions.lock().unwrap();
-                    coll.get(&vin.previous_output).cloned()
-                };
+                let existing_items = working_inscriptions.get(&vin.previous_output).cloned();
 
                 if existing_items.is_none() {
                     continue;
@@ -341,13 +378,12 @@ impl InscriptionTransferTracker {
                                 );
                             }
 
-                            // Update tracked inscription info
-                            let mut passes = self.inscriptions.lock().unwrap();
-                            passes.delete_value(
+                            // Update tracked inscription info in the working copy.
+                            working_inscriptions.delete_value(
                                 &existing_item.satpoint.outpoint,
                                 &existing_item.inscription_id,
                             );
-                            passes.insert(
+                            working_inscriptions.insert(
                                 ret.satpoint.outpoint.clone(),
                                 ValidMinerPassInfo {
                                     inscription_id: existing_item.inscription_id.clone(),
@@ -362,9 +398,8 @@ impl InscriptionTransferTracker {
                                 existing_item.inscription_id, ret.satpoint
                             );
 
-                            // Remove from tracked inscription info
-                            let mut passes = self.inscriptions.lock().unwrap();
-                            passes.delete_value(
+                            // Remove from tracked inscription info in the working copy.
+                            working_inscriptions.delete_value(
                                 &existing_item.satpoint.outpoint,
                                 &existing_item.inscription_id,
                             );
@@ -385,6 +420,55 @@ impl InscriptionTransferTracker {
             }
         }
 
+        let mut staged_blocks = self.staged_blocks.lock().unwrap();
+        if let Some(prev) = staged_blocks.insert(block_height, working_inscriptions) {
+            let msg = format!(
+                "Staged transfer state for block {} already exists when processing the block, this should not happen, previous staged state will be overwritten, prev_staged_block_height={}",
+                block_height,
+                prev.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         Ok(transfer_items)
+    }
+
+    pub fn commit_staged_block(&self, block_height: u32) -> Result<(), String> {
+        let staged_map = {
+            let mut staged_blocks = self.staged_blocks.lock().unwrap();
+            staged_blocks.remove(&block_height).ok_or_else(|| {
+                let msg = format!(
+                    "No staged transfer state found for commit at block {}",
+                    block_height
+                );
+                error!("{}", msg);
+                msg
+            })?
+        };
+
+        let mut inscriptions = self.inscriptions.lock().unwrap();
+        *inscriptions = staged_map;
+
+        info!("Committed staged transfer state at block {}", block_height);
+        Ok(())
+    }
+
+    pub fn rollback_staged_block(&self, block_height: u32) -> Result<(), String> {
+        let mut staged_blocks = self.staged_blocks.lock().unwrap();
+        if staged_blocks.remove(&block_height).is_none() {
+            let msg = format!(
+                "No staged transfer state found for rollback at block {}",
+                block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!(
+            "Rolled back staged transfer state at block {}",
+            block_height
+        );
+        Ok(())
     }
 }

@@ -7,7 +7,7 @@ use crate::config::ConfigManager;
 use crate::index::content::{MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
 use crate::index::pass::MinerPassManager;
-use crate::index::transfer::InscriptionCreateInfo;
+use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
 use crate::index::{BlockHintProvider, IndexStatusApi, InscriptionIndexer, TransferTrackerApi};
 use crate::inscription::{
     DiscoveredInscription, DiscoveredMint, InscriptionSource, InscriptionTransferItem,
@@ -20,6 +20,7 @@ use bitcoincore_rpc::bitcoin::{
 };
 use ord::InscriptionId;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -93,6 +94,9 @@ struct MockTransferTracker {
     transfers_by_height: HashMap<u32, Vec<InscriptionTransferItem>>,
     added: Mutex<Vec<(InscriptionId, USDBScriptHash, ordinals::SatPoint)>>,
     init_called: AtomicBool,
+    staged_blocks: Mutex<HashSet<u32>>,
+    commit_calls: AtomicU32,
+    rollback_calls: AtomicU32,
 }
 
 impl MockTransferTracker {
@@ -108,6 +112,14 @@ impl MockTransferTracker {
 
     fn add_call_count(&self) -> usize {
         self.added.lock().unwrap().len()
+    }
+
+    fn commit_call_count(&self) -> u32 {
+        self.commit_calls.load(Ordering::SeqCst)
+    }
+
+    fn rollback_call_count(&self) -> u32 {
+        self.rollback_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -162,14 +174,50 @@ impl TransferTrackerApi for MockTransferTracker {
         &'a self,
         block_height: u32,
         _block_hint: Option<Arc<Block>>,
+        _extra_tracked_inscriptions: Vec<TransferTrackSeed>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<InscriptionTransferItem>, String>> + Send + 'a>>
     {
         Box::pin(async move {
+            self.staged_blocks.lock().unwrap().insert(block_height);
             Ok(self
                 .transfers_by_height
                 .get(&block_height)
                 .cloned()
                 .unwrap_or_default())
+        })
+    }
+
+    fn commit_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let removed = self.staged_blocks.lock().unwrap().remove(&block_height);
+            if !removed {
+                return Err(format!(
+                    "Missing staged block {} when committing mock transfer tracker",
+                    block_height
+                ));
+            }
+            self.commit_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    fn rollback_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let removed = self.staged_blocks.lock().unwrap().remove(&block_height);
+            if !removed {
+                return Err(format!(
+                    "Missing staged block {} when rolling back mock transfer tracker",
+                    block_height
+                ));
+            }
+            self.rollback_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         })
     }
 }
@@ -371,17 +419,22 @@ fn build_test_block(txs: Vec<Transaction>) -> Arc<Block> {
 async fn test_sync_block_without_events_still_settles_balance_snapshot() {
     let owner = test_script_hash(1);
     let existing_pass_id = test_inscription_id(1, 0);
+    let block_height = 120;
 
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![])),
+    );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
     let transfer_tracker = Arc::new(MockTransferTracker::default());
 
-    let fixture = build_indexer_fixture(
+    let fixture = build_indexer_fixture_with_hint_provider(
         "sync_block_empty_still_settle",
         inscription_source,
+        block_hint_provider,
         transfer_tracker,
         vec![MockResponse::Immediate(Ok(vec![vec![
             balance_history::AddressBalance {
-                block_height: 120,
+                block_height,
                 balance: 5_000,
                 delta: 0,
             },
@@ -394,17 +447,23 @@ async fn test_sync_block_without_events_still_settles_balance_snapshot() {
         .add_new_mint_pass(&make_active_pass(existing_pass_id, owner, 100))
         .unwrap();
 
-    fixture.indexer.sync_block_for_test(120).await.unwrap();
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
 
     let snapshot = fixture
         .storage
-        .get_active_balance_snapshot(120)
+        .get_active_balance_snapshot(block_height)
         .unwrap()
         .unwrap();
-    assert_eq!(snapshot.block_height, 120);
+    assert_eq!(snapshot.block_height, block_height);
     assert_eq!(snapshot.active_address_count, 1);
     assert_eq!(snapshot.total_balance, 5_000);
     assert_eq!(fixture.backend.call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -412,11 +471,19 @@ async fn test_sync_block_without_events_still_settles_balance_snapshot() {
 #[tokio::test]
 async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advance() {
     let owner = test_script_hash(2);
-    let mint_id = test_inscription_id(2, 0);
+    let block_height = 200;
+    let mint_tx = build_test_tx(52);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
 
-    let mint = make_discovered_mint(mint_id, 200, vec![]);
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
-        Arc::new(MockInscriptionSource::default().with_mints(200, vec![mint]));
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
     let create_info = MockCreateInfo {
         satpoint: test_satpoint(9, 0, 0),
@@ -427,17 +494,18 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
 
-    let fixture = build_indexer_fixture(
+    let fixture = build_indexer_fixture_with_hint_provider(
         "sync_blocks_settle_fail_rollback",
         inscription_source,
+        block_hint_provider,
         transfer_tracker,
         vec![MockResponse::Immediate(Ok(vec![]))],
-        Arc::new(MockBalanceProvider::default().with_height(owner, 200, 200_000, 100)),
+        Arc::new(MockBalanceProvider::default().with_height(owner, block_height, 200_000, 100)),
     );
 
     let err = fixture
         .indexer
-        .sync_blocks_for_test(200..=200)
+        .sync_blocks_for_test(block_height..=block_height)
         .await
         .unwrap_err();
     assert!(err.contains("Address balance batch size mismatch"));
@@ -451,8 +519,13 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
         .unwrap();
     assert!(pass.is_none());
 
-    let snapshot = fixture.storage.get_active_balance_snapshot(200).unwrap();
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap();
     assert!(snapshot.is_none());
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -460,11 +533,22 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
 #[tokio::test]
 async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result() {
     let owner = test_script_hash(3);
-    let mint_id = test_inscription_id(3, 0);
+    let commit_block_height = 300;
+    let mint_block_height = 301;
+    let mint_tx = build_test_tx(53);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(commit_block_height, build_test_block(vec![]))
+            .with_block(mint_block_height, build_test_block(vec![mint_tx])),
+    );
 
-    let mint = make_discovered_mint(mint_id, 301, vec![]);
+    let mint = make_discovered_mint(mint_id.clone(), mint_block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
-        Arc::new(MockInscriptionSource::default().with_mints(301, vec![mint]));
+        Arc::new(MockInscriptionSource::default().with_mints(mint_block_height, vec![mint]));
 
     let create_info = MockCreateInfo {
         satpoint: test_satpoint(10, 0, 0),
@@ -475,34 +559,40 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
 
-    let fixture = build_indexer_fixture(
+    let fixture = build_indexer_fixture_with_hint_provider(
         "sync_blocks_partial_commit_then_retry",
         inscription_source,
+        block_hint_provider,
         transfer_tracker,
         vec![
             MockResponse::Immediate(Ok(vec![])),
             MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
-                block_height: 301,
+                block_height: mint_block_height,
                 balance: 7_777,
                 delta: 1,
             }]])),
         ],
-        Arc::new(MockBalanceProvider::default().with_height(owner, 301, 200_000, 100)),
+        Arc::new(MockBalanceProvider::default().with_height(
+            owner,
+            mint_block_height,
+            200_000,
+            100,
+        )),
     );
 
     let first_err = fixture
         .indexer
-        .sync_blocks_for_test(300..=301)
+        .sync_blocks_for_test(commit_block_height..=mint_block_height)
         .await
         .unwrap_err();
     assert!(first_err.contains("Address balance batch size mismatch"));
 
     let synced_after_first = fixture.storage.get_synced_btc_block_height().unwrap();
-    assert_eq!(synced_after_first, Some(300));
+    assert_eq!(synced_after_first, Some(commit_block_height));
 
     let snapshot_300 = fixture
         .storage
-        .get_active_balance_snapshot(300)
+        .get_active_balance_snapshot(commit_block_height)
         .unwrap()
         .unwrap();
     assert_eq!(snapshot_300.total_balance, 0);
@@ -513,16 +603,18 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
         .get_pass_by_inscription_id(&mint_id)
         .unwrap();
     assert!(pass_after_first.is_none());
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
     let second_ok = fixture
         .indexer
-        .sync_blocks_for_test(301..=301)
+        .sync_blocks_for_test(mint_block_height..=mint_block_height)
         .await
         .unwrap();
-    assert_eq!(second_ok, 301);
+    assert_eq!(second_ok, mint_block_height);
 
     let synced_after_second = fixture.storage.get_synced_btc_block_height().unwrap();
-    assert_eq!(synced_after_second, Some(301));
+    assert_eq!(synced_after_second, Some(mint_block_height));
 
     let pass_after_second = fixture
         .storage
@@ -534,11 +626,13 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
 
     let snapshot_301 = fixture
         .storage
-        .get_active_balance_snapshot(301)
+        .get_active_balance_snapshot(mint_block_height)
         .unwrap()
         .unwrap();
     assert_eq!(snapshot_301.total_balance, 7_777);
     assert_eq!(snapshot_301.active_address_count, 1);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 2);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -546,11 +640,19 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
 #[tokio::test]
 async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
     let owner = test_script_hash(4);
-    let mint_id = test_inscription_id(4, 0);
+    let block_height = 400;
+    let mint_tx = build_test_tx(54);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
 
-    let mint = make_discovered_mint(mint_id, 400, vec![]);
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
-        Arc::new(MockInscriptionSource::default().with_mints(400, vec![mint]));
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
     let create_info = MockCreateInfo {
         satpoint: test_satpoint(11, 0, 0),
@@ -561,29 +663,30 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
 
-    let fixture = build_indexer_fixture(
+    let fixture = build_indexer_fixture_with_hint_provider(
         "sync_blocks_single_mint_success",
         inscription_source,
+        block_hint_provider,
         transfer_tracker,
         vec![MockResponse::Immediate(Ok(vec![vec![
             balance_history::AddressBalance {
-                block_height: 400,
+                block_height,
                 balance: 8_888,
                 delta: 1,
             },
         ]]))],
-        Arc::new(MockBalanceProvider::default().with_height(owner, 400, 220_000, 100)),
+        Arc::new(MockBalanceProvider::default().with_height(owner, block_height, 220_000, 100)),
     );
 
     let synced = fixture
         .indexer
-        .sync_blocks_for_test(400..=400)
+        .sync_blocks_for_test(block_height..=block_height)
         .await
         .unwrap();
-    assert_eq!(synced, 400);
+    assert_eq!(synced, block_height);
 
     let synced_height = fixture.storage.get_synced_btc_block_height().unwrap();
-    assert_eq!(synced_height, Some(400));
+    assert_eq!(synced_height, Some(block_height));
 
     let pass = fixture
         .storage
@@ -595,14 +698,15 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
 
     let snapshot = fixture
         .storage
-        .get_active_balance_snapshot(400)
+        .get_active_balance_snapshot(block_height)
         .unwrap()
         .unwrap();
     assert_eq!(snapshot.total_balance, 8_888);
     assert_eq!(snapshot.active_address_count, 1);
 
-    assert_eq!(fixture.transfer_tracker.add_call_count(), 1);
     assert!(fixture.status.update_count() > 0);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -715,6 +819,8 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
         .unwrap();
     assert_eq!(new_pass.owner, owner_b);
     assert_eq!(new_pass.state, MinerPassState::Active);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -827,6 +933,8 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
         .unwrap();
     assert_eq!(new_pass.owner, owner_a);
     assert_eq!(new_pass.state, MinerPassState::Active);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }

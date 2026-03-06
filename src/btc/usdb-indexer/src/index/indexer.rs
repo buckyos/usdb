@@ -1,6 +1,6 @@
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
-use super::transfer::{InscriptionCreateInfo, InscriptionTransferTracker};
+use super::transfer::{InscriptionCreateInfo, InscriptionTransferTracker, TransferTrackSeed};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
 use crate::inscription::{
@@ -75,7 +75,18 @@ pub(crate) trait TransferTrackerApi: Send + Sync {
         &'a self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
     ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>>;
+
+    fn commit_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> TransferTrackerFuture<'a, Result<(), String>>;
+
+    fn rollback_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> TransferTrackerFuture<'a, Result<(), String>>;
 }
 
 impl TransferTrackerApi for InscriptionTransferTracker {
@@ -106,8 +117,26 @@ impl TransferTrackerApi for InscriptionTransferTracker {
         &'a self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
     ) -> TransferTrackerFuture<'a, Result<Vec<InscriptionTransferItem>, String>> {
-        Box::pin(async move { self.process_block_with_hint(block_height, block_hint).await })
+        Box::pin(async move {
+            self.process_block_with_hint(block_height, block_hint, extra_tracked_inscriptions)
+                .await
+        })
+    }
+
+    fn commit_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> TransferTrackerFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.commit_staged_block(block_height) })
+    }
+
+    fn rollback_staged_block<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> TransferTrackerFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.rollback_staged_block(block_height) })
     }
 }
 
@@ -525,6 +554,15 @@ impl InscriptionIndexer {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
+        let block_hint = block_hint.ok_or_else(|| {
+            let msg = format!(
+                "Missing required block hint at block height {}. Aborting for protocol safety.",
+                height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let block_hint = Some(block_hint);
 
         // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
@@ -533,25 +571,49 @@ impl InscriptionIndexer {
             .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
+        let transfer_track_seeds = Self::build_transfer_track_seeds(&new_inscription_items);
         let process_transfers_begin = Instant::now();
         let transfer_items = self
-            .collect_block_inscription_transfer_items(height, block_hint.clone())
+            .collect_block_inscription_transfer_items(
+                height,
+                block_hint.clone(),
+                transfer_track_seeds,
+            )
             .await?;
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
         let process_events_begin = Instant::now();
-        let ordered_events = self.build_ordered_block_events(
+        let ordered_events = match self.build_ordered_block_events(
             height,
-            block_hint,
+            block_hint.clone(),
             new_inscription_items,
             transfer_items,
-        )?;
+        ) {
+            Ok(value) => value,
+            Err(e) => {
+                self.transfer_tracker.rollback_staged_block(height).await?;
+                return Err(e);
+            }
+        };
         let (new_inscriptions_count, transfer_count) =
-            self.apply_ordered_block_events(ordered_events).await?;
+            match self.apply_ordered_block_events(ordered_events).await {
+                Ok(value) => value,
+                Err(e) => {
+                    self.transfer_tracker.rollback_staged_block(height).await?;
+                    return Err(e);
+                }
+            };
         let process_events_elapsed_ms = process_events_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
-        let balance_snapshot = self.balance_monitor.settle_active_balance(height).await?;
+        let balance_snapshot = match self.balance_monitor.settle_active_balance(height).await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                self.transfer_tracker.rollback_staged_block(height).await?;
+                return Err(e);
+            }
+        };
+        self.transfer_tracker.commit_staged_block(height).await?;
         let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
         let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
 
@@ -606,23 +668,14 @@ impl InscriptionIndexer {
         let mut ordered_events =
             Vec::<OrderedBlockProcessEvent>::with_capacity(mint_items.len() + transfer_items.len());
 
-        // Keep backward-compatible fallback order for tests without a block hint.
-        let Some(block_hint) = block_hint else {
-            warn!(
-                "Missing block hint when ordering block events, fallback to legacy order: module=indexer, block_height={}, mints={}, transfers={}",
-                block_height,
-                mint_items.len(),
-                transfer_items.len()
+        let block_hint = block_hint.ok_or_else(|| {
+            let msg = format!(
+                "Missing required block hint when ordering events at block {}. Aborting for protocol safety.",
+                block_height
             );
-            let mut legacy_events = Vec::with_capacity(mint_items.len() + transfer_items.len());
-            for item in mint_items {
-                legacy_events.push(BlockProcessEvent::Mint(item));
-            }
-            for item in transfer_items {
-                legacy_events.push(BlockProcessEvent::Transfer(item));
-            }
-            return Ok(legacy_events);
-        };
+            error!("{}", msg);
+            msg
+        })?;
 
         let tx_positions = Self::build_block_tx_position_map(&block_hint);
 
@@ -720,6 +773,17 @@ impl InscriptionIndexer {
         Ok((new_inscriptions_count, transfer_count))
     }
 
+    fn build_transfer_track_seeds(mint_items: &[InscriptionNewItem]) -> Vec<TransferTrackSeed> {
+        mint_items
+            .iter()
+            .map(|item| TransferTrackSeed {
+                inscription_id: item.inscription_id.clone(),
+                owner: item.address.clone(),
+                satpoint: item.satpoint.clone(),
+            })
+            .collect()
+    }
+
     async fn collect_block_inscription_mints(
         &self,
         block_height: u32,
@@ -803,14 +867,8 @@ impl InscriptionIndexer {
         };
         self.miner_pass_manager.on_mint_pass(&mint_info).await?;
 
-        // Finally, add to transfer tracker for tracking future transfers
-        self.transfer_tracker
-            .add_new_inscription(
-                mint_info.inscription_id.clone(),
-                mint_info.mint_owner,
-                mint_info.satpoint.clone(),
-            )
-            .await?;
+        // Transfer tracking is handled by block-level staged state. We do not mutate
+        // tracker cache directly here to keep commit/rollback consistent with DB savepoints.
         Ok(())
     }
 
@@ -818,10 +876,11 @@ impl InscriptionIndexer {
         &self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        extra_tracked_inscriptions: Vec<TransferTrackSeed>,
     ) -> Result<Vec<InscriptionTransferItem>, String> {
         let transfer_items = self
             .transfer_tracker
-            .process_block_with_hint(block_height, block_hint)
+            .process_block_with_hint(block_height, block_hint, extra_tracked_inscriptions)
             .await?;
         if transfer_items.is_empty() {
             info!(
