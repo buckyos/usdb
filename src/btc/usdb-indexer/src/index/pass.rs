@@ -82,7 +82,9 @@ impl MinerPassManager {
             state: MinerPassState::Active,
             owner: mint_info.mint_owner.clone(),
         };
-        self.storage.add_new_mint_pass(&info)?;
+        // Persist current snapshot and append pass history event at mint height.
+        self.storage
+            .add_new_mint_pass_at_height(&info, mint_info.mint_block_height)?;
 
         info!(
             "New Miner Pass {} minted at block height {} for owner {}",
@@ -170,7 +172,9 @@ impl MinerPassManager {
             owner: invalid_info.mint_owner,
             state: MinerPassState::Invalid,
         };
-        self.storage.add_invalid_mint_pass(&info)?;
+        // Invalid mint should also be visible in history timeline at inscription height.
+        self.storage
+            .add_invalid_mint_pass_at_height(&info, invalid_info.mint_block_height)?;
 
         warn!(
             "Invalid mint inscription recorded: module=pass_manager, inscription_id={}, block_height={}, owner={}, error_code={}, error_reason={}",
@@ -215,10 +219,12 @@ impl MinerPassManager {
             );
 
             // Mark the last pass as dormant
-            self.storage.update_state(
+            // Use height-aware state transition so historical active-set reconstruction stays deterministic.
+            self.storage.update_state_at_height(
                 &last_pass.inscription_id,
                 MinerPassState::Dormant,
                 MinerPassState::Active,
+                mint_info.mint_block_height,
             )?;
 
             info!(
@@ -263,8 +269,12 @@ impl MinerPassManager {
             pass.state
         );
 
-        self.storage
-            .update_state(inscription_id, MinerPassState::Consumed, pass.state)?;
+        self.storage.update_state_at_height(
+            inscription_id,
+            MinerPassState::Consumed,
+            pass.state,
+            block_height,
+        )?;
 
         // Get the latest energy record at or before block_height.
         // The pass may become dormant at an earlier height, so exact-height lookup is not reliable.
@@ -335,24 +345,33 @@ impl MinerPassManager {
                 "Miner Pass {} transferred to the same owner {}, skip updating owner",
                 inscription_id, new_owner
             );
-            self.storage
-                .update_satpoint(inscription_id, &pass.satpoint, satpoint)?;
+            self.storage.update_satpoint_at_height(
+                inscription_id,
+                &pass.satpoint,
+                satpoint,
+                block_height,
+            )?;
         } else {
             if pass.state == MinerPassState::Active {
                 // Freeze active energy at transfer height and mark pass state as Dormant first.
                 self.energy_manager
                     .on_pass_dormant(inscription_id, block_height)
                     .await?;
-                self.storage.update_state(
+                self.storage.update_state_at_height(
                     inscription_id,
                     MinerPassState::Dormant,
                     MinerPassState::Active,
+                    block_height,
                 )?;
             }
 
             // Transfer the ownership in storage
-            self.storage
-                .transfer_owner(inscription_id, new_owner, satpoint)?;
+            self.storage.transfer_owner_at_height(
+                inscription_id,
+                new_owner,
+                satpoint,
+                block_height,
+            )?;
         }
 
         Ok(())
@@ -387,8 +406,12 @@ impl MinerPassManager {
         }
 
         // Update the pass state to burned
-        self.storage
-            .update_state(inscription_id, MinerPassState::Burned, pass.state)?;
+        self.storage.update_state_at_height(
+            inscription_id,
+            MinerPassState::Burned,
+            pass.state,
+            block_height,
+        )?;
 
         Ok(())
     }

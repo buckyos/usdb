@@ -86,9 +86,11 @@ impl BalanceMonitor {
         let mut owner_to_pass = std::collections::HashMap::<USDBScriptHash, InscriptionId>::new();
 
         loop {
+            // Load active owners from pass history snapshot at target height.
+            // This avoids using current-state rows when replaying historical blocks.
             let active_passes = self
                 .miner_pass_storage
-                .get_all_active_pass_by_page_at_height(
+                .get_all_active_pass_by_page_from_history_at_height(
                     page,
                     self.active_address_page_size,
                     block_height,

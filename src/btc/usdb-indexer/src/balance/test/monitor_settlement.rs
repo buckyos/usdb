@@ -4,6 +4,20 @@ use crate::balance::{
 };
 use crate::storage::MinerPassStorage;
 use std::sync::Arc;
+use usdb_util::USDBScriptHash;
+
+fn add_active_pass_with_history(
+    storage: &MinerPassStorage,
+    tag: u8,
+    index: u32,
+    owner: USDBScriptHash,
+    mint_block_height: u32,
+) {
+    let pass = make_pass(tag, index, owner, mint_block_height);
+    storage
+        .add_new_mint_pass_at_height(&pass, mint_block_height)
+        .unwrap();
+}
 
 #[tokio::test]
 async fn test_settle_active_balance_empty_active_addresses() {
@@ -31,12 +45,8 @@ async fn test_settle_active_balance_empty_active_addresses() {
 async fn test_settle_active_balance_sum_and_snapshot_written() {
     let dir = test_data_dir("sum");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(11, 0, script_hash(1), 90))
-        .unwrap();
-    storage
-        .add_new_mint_pass(&make_pass(12, 1, script_hash(2), 91))
-        .unwrap();
+    add_active_pass_with_history(&storage, 11, 0, script_hash(1), 90);
+    add_active_pass_with_history(&storage, 12, 1, script_hash(2), 91);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
         vec![
@@ -76,9 +86,7 @@ async fn test_settle_active_balance_sum_and_snapshot_written() {
 async fn test_settle_active_balance_rpc_batch_size_mismatch() {
     let dir = test_data_dir("batch_mismatch");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(21, 0, script_hash(3), 80))
-        .unwrap();
+    add_active_pass_with_history(&storage, 21, 0, script_hash(3), 80);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
         vec![],
@@ -99,9 +107,7 @@ async fn test_settle_active_balance_rpc_batch_size_mismatch() {
 async fn test_settle_active_balance_balance_item_count_mismatch() {
     let dir = test_data_dir("item_mismatch");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(31, 0, script_hash(4), 80))
-        .unwrap();
+    add_active_pass_with_history(&storage, 31, 0, script_hash(4), 80);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
         vec![vec![]],
@@ -122,9 +128,7 @@ async fn test_settle_active_balance_balance_item_count_mismatch() {
 async fn test_settle_active_balance_balance_item_count_mismatch_multiple_items() {
     let dir = test_data_dir("item_mismatch_multiple_items");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(71, 0, script_hash(14), 80))
-        .unwrap();
+    add_active_pass_with_history(&storage, 71, 0, script_hash(14), 80);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
         vec![vec![
@@ -156,21 +160,11 @@ async fn test_settle_active_balance_balance_item_count_mismatch_multiple_items()
 async fn test_settle_active_balance_sum_across_multiple_batches() {
     let dir = test_data_dir("sum_multi_batch");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(81, 0, script_hash(21), 90))
-        .unwrap();
-    storage
-        .add_new_mint_pass(&make_pass(82, 1, script_hash(22), 91))
-        .unwrap();
-    storage
-        .add_new_mint_pass(&make_pass(83, 2, script_hash(23), 92))
-        .unwrap();
-    storage
-        .add_new_mint_pass(&make_pass(84, 3, script_hash(24), 93))
-        .unwrap();
-    storage
-        .add_new_mint_pass(&make_pass(85, 4, script_hash(25), 94))
-        .unwrap();
+    add_active_pass_with_history(&storage, 81, 0, script_hash(21), 90);
+    add_active_pass_with_history(&storage, 82, 1, script_hash(22), 91);
+    add_active_pass_with_history(&storage, 83, 2, script_hash(23), 92);
+    add_active_pass_with_history(&storage, 84, 3, script_hash(24), 93);
+    add_active_pass_with_history(&storage, 85, 4, script_hash(25), 94);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![
         MockResponse::Immediate(Ok(vec![
@@ -224,9 +218,7 @@ async fn test_settle_active_balance_sum_across_multiple_batches() {
 async fn test_settle_active_balance_fail_on_future_data_guard() {
     let dir = test_data_dir("future_data_guard");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(41, 0, script_hash(5), 120))
-        .unwrap();
+    add_active_pass_with_history(&storage, 41, 0, script_hash(5), 120);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![]));
     let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
@@ -246,9 +238,7 @@ async fn test_settle_active_balance_fail_on_future_data_guard() {
 async fn test_settle_active_balance_retry_on_rpc_error() {
     let dir = test_data_dir("retry_rpc_error");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(51, 0, script_hash(6), 80))
-        .unwrap();
+    add_active_pass_with_history(&storage, 51, 0, script_hash(6), 80);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![
         MockResponse::Immediate(Err("temporary rpc failure".to_string())),
@@ -275,9 +265,7 @@ async fn test_settle_active_balance_retry_on_rpc_error() {
 async fn test_settle_active_balance_retry_on_timeout() {
     let dir = test_data_dir("retry_timeout");
     let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
-    storage
-        .add_new_mint_pass(&make_pass(61, 0, script_hash(7), 80))
-        .unwrap();
+    add_active_pass_with_history(&storage, 61, 0, script_hash(7), 80);
 
     let backend = Arc::new(MockBalanceBackend::new(vec![
         MockResponse::Delayed {

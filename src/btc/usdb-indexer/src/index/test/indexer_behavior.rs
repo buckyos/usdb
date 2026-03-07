@@ -499,9 +499,10 @@ async fn test_sync_block_without_events_still_settles_balance_snapshot() {
         Arc::new(MockBalanceProvider::default()),
     );
 
+    let existing_pass = make_active_pass(existing_pass_id, owner, 100);
     fixture
         .storage
-        .add_new_mint_pass(&make_active_pass(existing_pass_id, owner, 100))
+        .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
         .unwrap();
 
     fixture
@@ -865,9 +866,10 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
         energy_provider,
     );
 
+    let prev_pass = make_active_pass(prev_pass_id.clone(), owner_a, 450);
     fixture
         .storage
-        .add_new_mint_pass(&make_active_pass(prev_pass_id.clone(), owner_a, 450))
+        .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
         .unwrap();
     fixture
         .pass_energy_manager
@@ -987,9 +989,10 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
         energy_provider,
     );
 
+    let prev_pass = make_active_pass(prev_pass_id.clone(), owner_a, 460);
     fixture
         .storage
-        .add_new_mint_pass(&make_active_pass(prev_pass_id.clone(), owner_a, 460))
+        .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
         .unwrap();
     fixture
         .pass_energy_manager
