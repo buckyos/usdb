@@ -6,7 +6,7 @@ use crate::storage::ValidMinerPassInfo;
 use bitcoincore_rpc::bitcoin::Block;
 use bitcoincore_rpc::bitcoin::Txid;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
-use ord::InscriptionId;
+use ord::{InscriptionId, ParsedEnvelope};
 use ordinals::SatPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ pub struct InscriptionCreateInfo {
     pub value: Amount,
     pub address: Option<USDBScriptHash>,
     pub commit_txid: Txid,
+    pub commit_outpoint: OutPoint,
 }
 
 #[derive(Clone)]
@@ -219,13 +220,27 @@ impl InscriptionTransferTracker {
     ) -> Result<InscriptionCreateInfo, String> {
         // First get reveal tx by inscription id
         let tx = self.btc_client.get_transaction(&inscription_id.txid)?;
-
-        // FIXME: There maybe multiple inscriptions in one tx input
+        let envelopes = ParsedEnvelope::from_transaction(&tx);
         let index = inscription_id.index as usize;
-        if index >= tx.input.len() {
+        if index >= envelopes.len() {
             let msg = format!(
-                "Invalid vout index {} for transaction {}, vin length {}",
+                "Invalid inscription index {} for transaction {}, envelope length {}",
                 index,
+                inscription_id.txid,
+                envelopes.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let envelope = &envelopes[index];
+        // Use envelope.input instead of inscription index to map to the actual reveal vin.
+        // Multiple inscriptions may exist on one input, so index->vin is not always valid.
+        let input_index = envelope.input as usize;
+        if input_index >= tx.input.len() {
+            let msg = format!(
+                "Invalid envelope input index {} for inscription {} in transaction {}, vin length {}",
+                input_index,
+                inscription_id,
                 inscription_id.txid,
                 tx.input.len()
             );
@@ -233,13 +248,14 @@ impl InscriptionTransferTracker {
             return Err(msg);
         }
 
-        let vin = &tx.input[index];
+        let vin = &tx.input[input_index];
+        let commit_outpoint = vin.previous_output;
 
-        let commit_txid = vin.previous_output.txid.clone();
+        let commit_txid = commit_outpoint.txid;
         let satpoint = SatPoint {
             outpoint: OutPoint {
                 txid: commit_txid.clone(),
-                vout: vin.previous_output.vout,
+                vout: commit_outpoint.vout,
             },
             offset: 0,
         };
@@ -263,6 +279,7 @@ impl InscriptionTransferTracker {
             value: ret.value,
             address: ret.address,
             commit_txid,
+            commit_outpoint,
         };
 
         Ok(info)
@@ -290,6 +307,7 @@ impl InscriptionTransferTracker {
         {
             let staged_blocks = self.staged_blocks.lock().unwrap();
             if !staged_blocks.is_empty() {
+                // We process one block-at-a-time; leftover staged state indicates previous flow broke.
                 let msg = format!(
                     "Uncommitted staged transfer state exists before processing block {}: staged_block_count={}",
                     block_height,
@@ -309,6 +327,7 @@ impl InscriptionTransferTracker {
             let coll = self.inscriptions.lock().unwrap();
             coll.clone()
         };
+        // Track tentative transfer result in a working copy; commit/rollback controls visibility.
         for seed in extra_tracked_inscriptions {
             working_inscriptions.insert(
                 seed.satpoint.outpoint.clone(),
@@ -448,6 +467,7 @@ impl InscriptionTransferTracker {
         };
 
         let mut inscriptions = self.inscriptions.lock().unwrap();
+        // Atomic swap publishes the staged snapshot only after upper-layer block processing succeeds.
         *inscriptions = staged_map;
 
         info!("Committed staged transfer state at block {}", block_height);
@@ -456,6 +476,7 @@ impl InscriptionTransferTracker {
 
     pub fn rollback_staged_block(&self, block_height: u32) -> Result<(), String> {
         let mut staged_blocks = self.staged_blocks.lock().unwrap();
+        // Rollback only discards staged copy; committed in-memory tracking state remains unchanged.
         if staged_blocks.remove(&block_height).is_none() {
             let msg = format!(
                 "No staged transfer state found for rollback at block {}",

@@ -93,6 +93,7 @@ pub enum MintValidationErrorCode {
     InvalidEthMain,
     InvalidEthCollab,
     InvalidPrevId,
+    AmbiguousRevealInput,
 }
 
 impl MintValidationErrorCode {
@@ -102,6 +103,7 @@ impl MintValidationErrorCode {
             MintValidationErrorCode::InvalidEthMain => "INVALID_ETH_MAIN",
             MintValidationErrorCode::InvalidEthCollab => "INVALID_ETH_COLLAB",
             MintValidationErrorCode::InvalidPrevId => "INVALID_PREV_ID",
+            MintValidationErrorCode::AmbiguousRevealInput => "AMBIGUOUS_REVEAL_INPUT",
         }
     }
 }

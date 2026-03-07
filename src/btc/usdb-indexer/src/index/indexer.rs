@@ -1,3 +1,4 @@
+use super::MintValidationErrorCode;
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{
     InvalidPassMintInscriptionInfo, MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo,
@@ -302,6 +303,7 @@ impl InscriptionIndexer {
         self.miner_pass_storage
             .assert_no_data_after_block_height(current_height)
             .map_err(|e| {
+                // Guard historical replay safety: any data above synced height means state drift.
                 let msg = format!(
                     "Data consistency check failed before syncing: module=indexer, synced_height={}, error={}. Please clean data directory and resync from genesis.",
                     current_height, e
@@ -313,6 +315,7 @@ impl InscriptionIndexer {
         self.miner_pass_storage
             .assert_balance_snapshot_consistency(current_height, genesis_block_height)
             .map_err(|e| {
+                // Snapshot consistency is mandatory because balance settlement is block-height keyed.
                 let msg = format!(
                     "Balance snapshot consistency check failed before syncing: module=indexer, synced_height={}, genesis_block_height={}, error={}. Please clean data directory and resync from genesis.",
                     current_height, genesis_block_height, e
@@ -325,6 +328,7 @@ impl InscriptionIndexer {
         self.pass_energy_manager
             .reconcile_with_pass_synced_height(current_height)
             .map_err(|e| {
+                // Energy storage must not run ahead/behind pass storage before new block processing.
                 let msg = format!(
                     "Energy consistency check failed before syncing: module=indexer, synced_height={}, error={}",
                     current_height, e
@@ -385,22 +389,22 @@ impl InscriptionIndexer {
             info!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
 
-            // Use savepoint to allow partial rollback on failure
+            // Use savepoint to keep pass+balance sqlite state atomic at per-block granularity.
             let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
 
             let msg = format!("Syncing block {}", height);
             self.status.update_index_status(None, None, Some(msg));
 
-            // Sync this block
+            // Any error in sync_block should abort this block and keep previous committed height intact.
             self.sync_block(height).await?;
 
-            // Update the sync storage to save progress
+            // Persist synced height before committing savepoint so crash-recovery starts from durable progress.
             let update_synced_height_begin = Instant::now();
             self.miner_pass_storage
                 .update_synced_btc_block_height(height)?;
             let update_synced_height_elapsed_ms = update_synced_height_begin.elapsed().as_millis();
 
-            // Commit the savepoint on sync success
+            // Commit only after all block writes and synced-height update succeed.
             let commit_savepoint_begin = Instant::now();
             savepoint_guard.commit()?;
             let commit_savepoint_elapsed_ms = commit_savepoint_begin.elapsed().as_millis();
@@ -439,7 +443,7 @@ impl InscriptionIndexer {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
 
-        // Mark energy sync as pending at block start for crash recovery.
+        // Mark energy sync as pending first so crashes can be detected and repaired on restart.
         self.pass_energy_manager.begin_block_sync(height)?;
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
         let block_hint = block_hint.ok_or_else(|| {
@@ -478,6 +482,7 @@ impl InscriptionIndexer {
         ) {
             Ok(value) => value,
             Err(e) => {
+                // Drop staged transfer mutations when event planning fails to avoid stale staged state.
                 self.transfer_tracker.rollback_staged_block(height).await?;
                 return Err(e);
             }
@@ -486,6 +491,7 @@ impl InscriptionIndexer {
             match self.execute_block_events(ordered_events).await {
                 Ok(value) => value,
                 Err(e) => {
+                    // Event execution failed after transfer staging; staged state must be discarded.
                     self.transfer_tracker.rollback_staged_block(height).await?;
                     return Err(e);
                 }
@@ -499,6 +505,7 @@ impl InscriptionIndexer {
         {
             Ok(value) => value,
             Err(e) => {
+                // Invalid mint recording is part of the same block transaction boundary.
                 self.transfer_tracker.rollback_staged_block(height).await?;
                 return Err(e);
             }
@@ -509,11 +516,13 @@ impl InscriptionIndexer {
         let balance_snapshot = match self.balance_monitor.settle_active_balance(height).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
+                // Balance settlement failure means block is not complete; rollback staged transfer state.
                 self.transfer_tracker.rollback_staged_block(height).await?;
                 return Err(e);
             }
         };
         if let Err(e) = self.pass_energy_manager.finalize_block_sync(height) {
+            // Energy finalize must succeed before transfer staging commit to keep cross-store ordering.
             self.transfer_tracker.rollback_staged_block(height).await?;
             return Err(e);
         }
@@ -606,14 +615,16 @@ impl InscriptionIndexer {
             });
         }
 
-        let mut new_inscription_items = Vec::with_capacity(discovered_batch.valid_mints.len());
+        // Build create-info upfront so we can run block-level validation on reveal inputs.
+        let mut valid_candidates = Vec::with_capacity(discovered_batch.valid_mints.len());
+        let mut reveal_input_to_inscriptions = HashMap::new();
         for mint in discovered_batch.valid_mints {
             let create_info = self
                 .transfer_tracker
                 .calc_create_satpoint(&mint.inscription_id)
                 .await?;
 
-            // FXIME: Should not happen? But just in case, we check here
+            // Creator address is required to build pass ownership; missing address is unrecoverable.
             if create_info.address.is_none() {
                 let msg = format!(
                     "Inscription {} at block {} has no creator address",
@@ -636,6 +647,56 @@ impl InscriptionIndexer {
                 }
             }
 
+            // Index by reveal input outpoint so we can detect ambiguous mint ownership later.
+            // Under USDB protocol assumptions, one reveal input must not produce multiple USDB mints.
+            reveal_input_to_inscriptions
+                .entry(create_info.commit_outpoint)
+                .or_insert_with(Vec::new)
+                .push(mint.inscription_id.clone());
+
+            valid_candidates.push((mint, create_info));
+        }
+
+        let mut new_inscription_items = Vec::with_capacity(valid_candidates.len());
+        let mut invalid_items = Vec::with_capacity(discovered_batch.invalid_mints.len());
+        for (mint, create_info) in valid_candidates {
+            let conflicted_inscriptions = reveal_input_to_inscriptions
+                .get(&create_info.commit_outpoint)
+                .cloned()
+                .unwrap_or_default();
+
+            // Reject ambiguous reveal-input groups to avoid non-deterministic ownership mapping.
+            // If this check is removed, multiple mints could incorrectly inherit from the same origin sat.
+            if conflicted_inscriptions.len() > 1 {
+                let reason = format!(
+                    "Multiple usdb mints share the same reveal input outpoint {} in block {}, inscription_id={}, conflicted_inscriptions={:?}",
+                    create_info.commit_outpoint,
+                    block_height,
+                    mint.inscription_id,
+                    conflicted_inscriptions
+                );
+                warn!(
+                    "Ambiguous reveal input detected for usdb mint: module=indexer, block_height={}, inscription_id={}, reveal_input_outpoint={}, conflict_size={}",
+                    block_height,
+                    mint.inscription_id,
+                    create_info.commit_outpoint,
+                    conflicted_inscriptions.len()
+                );
+                invalid_items.push(InvalidPassMintInscriptionInfo {
+                    inscription_id: mint.inscription_id,
+                    inscription_number: mint.inscription_number,
+                    mint_txid: create_info.satpoint.outpoint.txid,
+                    mint_block_height: mint.block_height,
+                    mint_owner: create_info.address.unwrap(),
+                    satpoint: create_info.satpoint,
+                    error_code: MintValidationErrorCode::AmbiguousRevealInput
+                        .as_str()
+                        .to_string(),
+                    error_reason: reason,
+                });
+                continue;
+            }
+
             let op = mint.content.op();
             let inscription_new_item = InscriptionNewItem {
                 inscription_id: mint.inscription_id.clone(),
@@ -656,7 +717,6 @@ impl InscriptionIndexer {
             new_inscription_items.push(inscription_new_item);
         }
 
-        let mut invalid_items = Vec::with_capacity(discovered_batch.invalid_mints.len());
         for invalid_mint in discovered_batch.invalid_mints {
             let create_info = self
                 .transfer_tracker

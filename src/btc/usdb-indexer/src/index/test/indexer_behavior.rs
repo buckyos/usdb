@@ -88,6 +88,7 @@ struct MockCreateInfo {
     value: Amount,
     address: Option<USDBScriptHash>,
     commit_txid: Txid,
+    commit_outpoint: OutPoint,
 }
 
 #[derive(Default)]
@@ -153,6 +154,7 @@ impl TransferTrackerApi for MockTransferTracker {
                 value: info.value,
                 address: info.address,
                 commit_txid: info.commit_txid,
+                commit_outpoint: info.commit_outpoint,
             })
         })
     }
@@ -545,6 +547,10 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
         value: Amount::from_sat(10_000),
         address: Some(owner),
         commit_txid: Txid::from_slice(&[9u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[9u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
@@ -610,6 +616,10 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
         value: Amount::from_sat(10_000),
         address: Some(owner),
         commit_txid: Txid::from_slice(&[10u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[10u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
@@ -714,6 +724,10 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
         value: Amount::from_sat(10_000),
         address: Some(owner),
         commit_txid: Txid::from_slice(&[11u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[11u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
@@ -819,6 +833,10 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
         value: Amount::from_sat(10_000),
         address: Some(owner_b),
         commit_txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker = Arc::new(
         MockTransferTracker::default()
@@ -937,6 +955,10 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
         value: Amount::from_sat(10_000),
         address: Some(owner_a),
         commit_txid: Txid::from_slice(&[43u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[43u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker = Arc::new(
         MockTransferTracker::default()
@@ -1038,6 +1060,10 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
         value: Amount::from_sat(10_000),
         address: Some(owner),
         commit_txid: Txid::from_slice(&[62u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[62u8; 32]).unwrap(),
+            vout: 0,
+        },
     };
     let transfer_tracker =
         Arc::new(MockTransferTracker::default().with_create_info(&invalid_id, create_info));
@@ -1074,6 +1100,112 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
             .as_deref()
             .unwrap_or_default()
             .contains("Invalid eth_main format")
+    );
+
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.active_address_count, 0);
+    assert_eq!(snapshot.total_balance, 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_marks_mints_invalid_when_reveal_input_is_ambiguous() {
+    let block_height = 530;
+    let owner = test_script_hash(50);
+    let mint_tx = build_test_tx(71);
+    let mint_txid = mint_tx.compute_txid();
+    let mint_id0 = InscriptionId {
+        txid: mint_txid,
+        index: 0,
+    };
+    let mint_id1 = InscriptionId {
+        txid: mint_txid,
+        index: 1,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
+
+    let mint0 = make_discovered_mint(mint_id0.clone(), block_height, vec![]);
+    let mint1 = make_discovered_mint(mint_id1.clone(), block_height, vec![]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint0, mint1]));
+
+    let shared_commit_outpoint = OutPoint {
+        txid: Txid::from_slice(&[72u8; 32]).unwrap(),
+        vout: 0,
+    };
+    let create_info0 = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: shared_commit_outpoint.txid,
+        commit_outpoint: shared_commit_outpoint,
+    };
+    let create_info1 = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_txid,
+                vout: 0,
+            },
+            offset: 1,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: shared_commit_outpoint.txid,
+        commit_outpoint: shared_commit_outpoint,
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&mint_id0, create_info0)
+            .with_create_info(&mint_id1, create_info1),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "ambiguous_reveal_input_invalid",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let stored0 = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id0)
+        .unwrap()
+        .unwrap();
+    let stored1 = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored0.state, MinerPassState::Invalid);
+    assert_eq!(stored1.state, MinerPassState::Invalid);
+    assert_eq!(
+        stored0.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::AmbiguousRevealInput.as_str())
+    );
+    assert_eq!(
+        stored1.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::AmbiguousRevealInput.as_str())
     );
 
     let snapshot = fixture
