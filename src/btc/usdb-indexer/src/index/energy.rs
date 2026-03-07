@@ -370,12 +370,12 @@ impl PassEnergyManager {
 
             let mut new_energy = last_record.energy.saturating_add(energy_delta);
 
-            // The balance increased, so the active_block_height should not change,
-            let active_block_height = if balance_record.delta > 0 {
-                last_record.active_block_height
-            } else {
-                // The balance decreased, so we need to update active_block_height to this block height
+            // Keep active height for non-negative deltas.
+            // Only negative delta starts a new growth window after penalty is applied.
+            let active_block_height = if balance_record.delta < 0 {
                 balance_record.block_height
+            } else {
+                last_record.active_block_height
             };
 
             // Apply protocol-defined punishment on negative balance delta.

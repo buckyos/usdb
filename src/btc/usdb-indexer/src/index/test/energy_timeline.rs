@@ -242,6 +242,48 @@ async fn test_energy_timeline_mixed_deltas_matches_formula_and_is_idempotent() {
 }
 
 #[tokio::test]
+async fn test_energy_timeline_zero_delta_does_not_reset_active_height() {
+    let owner = test_script_hash(14);
+    let timeline = vec![
+        AddressBalance {
+            block_height: 100,
+            balance: 200_000,
+            delta: 100,
+        },
+        AddressBalance {
+            block_height: 103,
+            balance: 200_000,
+            delta: 0,
+        },
+        AddressBalance {
+            block_height: 107,
+            balance: 210_000,
+            delta: 10_000,
+        },
+    ];
+    let (root_dir, manager, inscription_id) = setup_manager_with_timeline(
+        "zero_delta_keeps_active_height",
+        owner,
+        timeline.clone(),
+        100,
+        0,
+    )
+    .await;
+
+    for height in 100..=110 {
+        let got = manager
+            .update_pass_energy(&inscription_id, height)
+            .await
+            .unwrap();
+        let expected = expected_energy_by_formula(100, 200_000, 0, &timeline, height);
+        assert_eq!(got.state, MinerPassState::Active);
+        assert_eq!(got.energy, expected, "height={}", height);
+    }
+
+    cleanup_temp_dir(&root_dir);
+}
+
+#[tokio::test]
 async fn test_energy_timeline_dormant_then_consumed_freezes_and_zeroes_energy() {
     let owner = test_script_hash(13);
     let timeline = vec![
