@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -34,6 +35,7 @@ class RunnerArgs:
     rpc_max_time_sec: float
     mining_address: str | None
     enable_transfer_check: bool
+    scenario_file: str | None
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -51,6 +53,7 @@ class RegtestScenarioRunner:
 
     def __init__(self, args: RunnerArgs) -> None:
         self.args = args
+        self.vars: dict[str, Any] = {}
 
     @staticmethod
     def log(message: str) -> None:
@@ -161,6 +164,20 @@ class RegtestScenarioRunner:
 
         raise ScenarioError(f"usdb-indexer sync timeout: target_height={target_height}")
 
+    def get_balance_history_height(self) -> int:
+        result = self.rpc_result(
+            self.rpc_call(self.args.balance_history_rpc_url, "get_block_height", []),
+            "get_block_height",
+        )
+        return int(result or 0)
+
+    def get_usdb_synced_height(self) -> int:
+        result = self.rpc_result(
+            self.rpc_call(self.args.usdb_rpc_url, "get_synced_block_height", []),
+            "get_synced_block_height",
+        )
+        return 0 if result is None else int(result)
+
     @staticmethod
     def btc_amount_to_sat(amount_btc: str) -> int:
         amount = Decimal(amount_btc)
@@ -171,6 +188,94 @@ class RegtestScenarioRunner:
         script_pubkey = address_info["scriptPubKey"]
         script_bytes = bytes.fromhex(script_pubkey)
         return hashlib.sha256(script_bytes).digest()[::-1].hex()
+
+    def resolve_value(self, value: Any) -> Any:
+        if isinstance(value, str) and value.startswith("$"):
+            return self.resolve_ref(value[1:])
+        return value
+
+    def resolve_ref(self, path: str) -> Any:
+        parts = path.split(".")
+        if not parts:
+            raise ScenarioError(f"Invalid reference path: {path}")
+        if parts[0] not in self.vars:
+            raise ScenarioError(
+                f"Unknown scenario variable: {parts[0]}, available={sorted(self.vars.keys())}"
+            )
+        current: Any = self.vars[parts[0]]
+        for part in parts[1:]:
+            if isinstance(current, dict):
+                if part not in current:
+                    raise ScenarioError(
+                        f"Invalid scenario reference path: {path}, missing key={part}"
+                    )
+                current = current[part]
+            else:
+                raise ScenarioError(
+                    f"Invalid scenario reference path: {path}, non-dict node at {part}"
+                )
+        return current
+
+    @staticmethod
+    def to_int(value: Any, field: str) -> int:
+        try:
+            return int(value)
+        except Exception as e:  # noqa: BLE001
+            raise ScenarioError(f"Invalid integer for {field}: value={value}, error={e}") from e
+
+    def assert_balance_history_balance(
+        self, script_hash: str, height: int, expected_sat: int
+    ) -> None:
+        rows = self.rpc_result(
+            self.rpc_call(
+                self.args.balance_history_rpc_url,
+                "get_address_balance",
+                [{"script_hash": script_hash, "block_height": height, "block_range": None}],
+            ),
+            "get_address_balance",
+        )
+        got_balance = int(rows[0]["balance"]) if rows else 0
+        self.log(
+            f"Balance assertion: height={height}, script_hash={script_hash}, expected={expected_sat}, got={got_balance}"
+        )
+        if got_balance != expected_sat:
+            raise ScenarioError(
+                f"Balance mismatch at height={height}: expected={expected_sat}, got={got_balance}"
+            )
+
+    def send_to_new_address_and_confirm(
+        self, amount_btc: str, mine_blocks: int, var_name: str | None
+    ) -> dict[str, Any]:
+        receiver_address = self.run_btc_cli(["getnewaddress"])
+        self.log(f"Sending {amount_btc} BTC to receiver address={receiver_address}")
+        txid = self.run_btc_cli(["sendtoaddress", receiver_address, amount_btc])
+        self.log(f"Created txid={txid}")
+
+        mining_address = self.args.mining_address or self.run_btc_cli(["getnewaddress"])
+        before_height = self.get_balance_history_height()
+        self.log(
+            f"Mining {mine_blocks} block(s) for confirmation: mining_address={mining_address}"
+        )
+        self.run_btc_cli(["generatetoaddress", str(mine_blocks), mining_address])
+        expected_height = before_height + mine_blocks
+        self.wait_balance_history_synced(expected_height)
+        self.wait_usdb_synced(expected_height)
+
+        script_hash = self.address_to_script_hash(receiver_address)
+        amount_sat = self.btc_amount_to_sat(amount_btc)
+        transfer_info = {
+            "receiver_address": receiver_address,
+            "txid": txid,
+            "script_hash": script_hash,
+            "amount_btc": amount_btc,
+            "amount_sat": amount_sat,
+            "confirmed_height": expected_height,
+            "mine_blocks": mine_blocks,
+        }
+        if var_name:
+            self.vars[var_name] = transfer_info
+            self.log(f"Stored scenario variable: {var_name}")
+        return transfer_info
 
     def assert_networks(self) -> None:
         bh_network = self.rpc_result(
@@ -318,10 +423,132 @@ class RegtestScenarioRunner:
 
         self.log(f"usdb-indexer state assertion passed at height={expected_height}.")
 
+    def run_scenario_file(self, path: Path) -> None:
+        if not path.exists():
+            raise ScenarioError(f"Scenario file does not exist: {path}")
+        if not path.is_file():
+            raise ScenarioError(f"Scenario file path is not a file: {path}")
+
+        try:
+            scenario = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            raise ScenarioError(f"Failed to load scenario file {path}: {e}") from e
+
+        if not isinstance(scenario, dict):
+            raise ScenarioError(f"Scenario file must be a JSON object: {path}")
+
+        scenario_name = scenario.get("name", path.name)
+        steps = scenario.get("steps")
+        if not isinstance(steps, list):
+            raise ScenarioError(
+                f"Scenario file requires list field 'steps': path={path}"
+            )
+
+        self.log(f"Running scenario file: name={scenario_name}, steps={len(steps)}")
+
+        for idx, step in enumerate(steps, start=1):
+            if not isinstance(step, dict):
+                raise ScenarioError(
+                    f"Invalid step format at index={idx}: expected object, got={step}"
+                )
+            step_type = step.get("type")
+            if not isinstance(step_type, str):
+                raise ScenarioError(f"Missing step type at index={idx}: step={step}")
+
+            if step_type == "log":
+                message = str(self.resolve_value(step.get("message", "")))
+                self.log(f"scenario-step[{idx}] log: {message}")
+                continue
+
+            if step_type == "wait_balance_history_synced":
+                height = self.to_int(
+                    self.resolve_value(step.get("height")), "wait_balance_history_synced.height"
+                )
+                self.log(f"scenario-step[{idx}] wait_balance_history_synced height={height}")
+                self.wait_balance_history_synced(height)
+                continue
+
+            if step_type == "wait_usdb_synced":
+                height = self.to_int(
+                    self.resolve_value(step.get("height")), "wait_usdb_synced.height"
+                )
+                self.log(f"scenario-step[{idx}] wait_usdb_synced height={height}")
+                self.wait_usdb_synced(height)
+                continue
+
+            if step_type == "assert_usdb_state":
+                height = self.to_int(
+                    self.resolve_value(step.get("height")), "assert_usdb_state.height"
+                )
+                expected_total = self.to_int(
+                    self.resolve_value(step.get("expected_total_balance", 0)),
+                    "assert_usdb_state.expected_total_balance",
+                )
+                expected_count = self.to_int(
+                    self.resolve_value(step.get("expected_active_count", 0)),
+                    "assert_usdb_state.expected_active_count",
+                )
+                self.log(
+                    "scenario-step[%s] assert_usdb_state height=%s total=%s active_count=%s"
+                    % (idx, height, expected_total, expected_count)
+                )
+                self.assert_usdb_state_at_height(height, expected_total, expected_count)
+                continue
+
+            if step_type == "send_and_confirm":
+                amount_btc = str(self.resolve_value(step.get("amount_btc", "0")))
+                mine_blocks = self.to_int(
+                    self.resolve_value(step.get("mine_blocks", 1)),
+                    "send_and_confirm.mine_blocks",
+                )
+                var_name = step.get("var")
+                if var_name is not None and not isinstance(var_name, str):
+                    raise ScenarioError(
+                        f"send_and_confirm.var must be string when provided: step={step}"
+                    )
+                self.log(
+                    f"scenario-step[{idx}] send_and_confirm amount_btc={amount_btc} mine_blocks={mine_blocks} var={var_name}"
+                )
+                self.send_to_new_address_and_confirm(amount_btc, mine_blocks, var_name)
+                continue
+
+            if step_type == "assert_balance_history_balance":
+                script_hash = str(
+                    self.resolve_value(step.get("script_hash"))
+                )
+                height = self.to_int(
+                    self.resolve_value(step.get("height")),
+                    "assert_balance_history_balance.height",
+                )
+
+                if "expected_sat" in step:
+                    expected_sat = self.to_int(
+                        self.resolve_value(step.get("expected_sat")),
+                        "assert_balance_history_balance.expected_sat",
+                    )
+                elif "expected_amount_btc" in step:
+                    expected_sat = self.btc_amount_to_sat(
+                        str(self.resolve_value(step.get("expected_amount_btc")))
+                    )
+                else:
+                    raise ScenarioError(
+                        "assert_balance_history_balance requires expected_sat or expected_amount_btc"
+                    )
+
+                self.log(
+                    f"scenario-step[{idx}] assert_balance_history_balance script_hash={script_hash} height={height} expected_sat={expected_sat}"
+                )
+                self.assert_balance_history_balance(script_hash, height, expected_sat)
+                continue
+
+            raise ScenarioError(f"Unsupported scenario step type: {step_type}")
+
+        self.log(f"Scenario file completed: name={scenario_name}")
+
     def run(self) -> None:
         effective_target_height = self.args.target_height
         if (
-            self.args.enable_transfer_check
+            (self.args.enable_transfer_check or self.args.scenario_file is not None)
             and self.args.target_height < self.args.min_spendable_block_height
         ):
             effective_target_height = self.args.min_spendable_block_height
@@ -329,6 +556,13 @@ class RegtestScenarioRunner:
                 f"target_height={self.args.target_height} is lower than min_spendable_block_height={self.args.min_spendable_block_height}; "
                 f"using effective_target_height={effective_target_height}"
             )
+
+        self.vars["target_height"] = self.args.target_height
+        self.vars["effective_target_height"] = effective_target_height
+        self.vars["min_spendable_block_height"] = self.args.min_spendable_block_height
+        self.vars["send_amount_btc"] = self.args.send_amount_btc
+        if self.args.mining_address:
+            self.vars["mining_address"] = self.args.mining_address
 
         self.wait_rpc_ready(
             "balance-history", self.args.balance_history_rpc_url, "get_network_type"
@@ -339,9 +573,15 @@ class RegtestScenarioRunner:
 
         self.wait_balance_history_synced(effective_target_height)
         self.wait_usdb_synced(effective_target_height)
+        self.vars["synced_height"] = effective_target_height
         self.assert_usdb_state_at_height(
             effective_target_height, expected_total_balance=0, expected_active_count=0
         )
+
+        if self.args.scenario_file:
+            self.run_scenario_file(Path(self.args.scenario_file))
+            self.log("Scenario finished from scenario file.")
+            return
 
         if not self.args.enable_transfer_check:
             self.log("Scenario finished without transfer check.")
@@ -413,6 +653,7 @@ def parse_args() -> RunnerArgs:
     parser.add_argument("--rpc-max-time-sec", default=5.0, type=float)
     parser.add_argument("--mining-address")
     parser.add_argument("--enable-transfer-check", action="store_true")
+    parser.add_argument("--scenario-file")
     parsed = parser.parse_args()
 
     return RunnerArgs(
@@ -430,6 +671,7 @@ def parse_args() -> RunnerArgs:
         rpc_max_time_sec=parsed.rpc_max_time_sec,
         mining_address=parsed.mining_address,
         enable_transfer_check=parsed.enable_transfer_check,
+        scenario_file=parsed.scenario_file,
     )
 
 

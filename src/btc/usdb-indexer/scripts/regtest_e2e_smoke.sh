@@ -9,6 +9,7 @@ BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
 USDB_INDEXER_ROOT="${USDB_INDEXER_ROOT:-$WORK_DIR/usdb-indexer}"
 SCENARIO_RUNNER="${SCENARIO_RUNNER:-$REPO_ROOT/src/btc/usdb-indexer/scripts/regtest_scenario_runner.py}"
+SCENARIO_FILE="${SCENARIO_FILE:-}"
 
 BTC_RPC_PORT="${BTC_RPC_PORT:-19453}"
 BH_RPC_PORT="${BH_RPC_PORT:-18090}"
@@ -290,7 +291,7 @@ main() {
 
   local effective_target_height
   effective_target_height="$TARGET_HEIGHT"
-  if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]] && (( TARGET_HEIGHT < MIN_SPENDABLE_BLOCK_HEIGHT )); then
+  if [[ ( "$ENABLE_TRANSFER_CHECK" == "1" || -n "$SCENARIO_FILE" ) && TARGET_HEIGHT -lt MIN_SPENDABLE_BLOCK_HEIGHT ]]; then
     effective_target_height="$MIN_SPENDABLE_BLOCK_HEIGHT"
     log "TARGET_HEIGHT=${TARGET_HEIGHT} is lower than spendable requirement ${MIN_SPENDABLE_BLOCK_HEIGHT}; using effective target ${effective_target_height} for transfer check."
   fi
@@ -387,6 +388,10 @@ main() {
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
     transfer_args+=(--enable-transfer-check)
   fi
+  local scenario_file_args=()
+  if [[ -n "$SCENARIO_FILE" ]]; then
+    scenario_file_args+=(--scenario-file "$SCENARIO_FILE")
+  fi
 
   python3 "$SCENARIO_RUNNER" \
     --btc-cli "$BITCOIN_CLI_BIN" \
@@ -402,6 +407,7 @@ main() {
     --rpc-connect-timeout-sec "$CURL_CONNECT_TIMEOUT_SEC" \
     --rpc-max-time-sec "$CURL_MAX_TIME_SEC" \
     --mining-address "$mining_address" \
+    "${scenario_file_args[@]}" \
     "${transfer_args[@]}"
 
   log "E2E smoke test succeeded."

@@ -1,0 +1,33 @@
+{
+  "name": "transfer-balance-assert",
+  "steps": [
+    {
+      "type": "log",
+      "message": "Scenario starts from effective target height."
+    },
+    {
+      "type": "assert_usdb_state",
+      "height": "$effective_target_height",
+      "expected_total_balance": 0,
+      "expected_active_count": 0
+    },
+    {
+      "type": "send_and_confirm",
+      "amount_btc": "$send_amount_btc",
+      "mine_blocks": 1,
+      "var": "tx1"
+    },
+    {
+      "type": "assert_balance_history_balance",
+      "script_hash": "$tx1.script_hash",
+      "height": "$tx1.confirmed_height",
+      "expected_sat": "$tx1.amount_sat"
+    },
+    {
+      "type": "assert_usdb_state",
+      "height": "$tx1.confirmed_height",
+      "expected_total_balance": 0,
+      "expected_active_count": 0
+    }
+  ]
+}
