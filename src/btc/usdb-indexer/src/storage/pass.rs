@@ -14,6 +14,13 @@ const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
 // Default savepoint name for miner pass operations
 const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
 
+// Event types for miner pass history
+const PASS_HISTORY_EVENT_MINT: &str = "mint";
+const PASS_HISTORY_EVENT_INVALID_MINT: &str = "invalid_mint";
+const PASS_HISTORY_EVENT_STATE_UPDATE: &str = "state_update";
+const PASS_HISTORY_EVENT_OWNER_TRANSFER: &str = "owner_transfer";
+const PASS_HISTORY_EVENT_SATPOINT_UPDATE: &str = "satpoint_update";
+
 pub struct MinerPassInfo {
     pub inscription_id: InscriptionId,
     pub inscription_number: i32,
@@ -48,6 +55,17 @@ pub struct ValidMinerPassInfo {
 pub struct ActiveMinerPassInfo {
     pub inscription_id: InscriptionId,
     pub owner: USDBScriptHash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MinerPassHistoryInfo {
+    pub event_id: i64,
+    pub inscription_id: InscriptionId,
+    pub block_height: u32,
+    pub event_type: String,
+    pub state: MinerPassState,
+    pub owner: USDBScriptHash,
+    pub satpoint: SatPoint,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,6 +146,26 @@ impl MinerPassStorage {
                 active_address_count INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS miner_pass_state_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                inscription_id TEXT NOT NULL,
+                block_height INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                prev_state TEXT,
+                new_state TEXT NOT NULL,
+                prev_owner TEXT,
+                new_owner TEXT NOT NULL,
+                prev_satpoint TEXT,
+                new_satpoint TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_pass_history_height_id
+            ON miner_pass_state_history (block_height, id);
+
+            CREATE INDEX IF NOT EXISTS idx_pass_history_inscription_height_id
+            ON miner_pass_state_history (inscription_id, block_height, id);
             ",
         )
         .map_err(|e| {
@@ -512,6 +550,75 @@ impl MinerPassStorage {
             return Err(msg);
         }
 
+        // Check 4: there must be no pass state history entry after target height.
+        let mut history_stmt = conn
+            .prepare(
+                "
+            SELECT
+                inscription_id,
+                block_height,
+                event_type
+            FROM miner_pass_state_history
+            WHERE block_height > ?1
+            ORDER BY block_height ASC, id ASC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future miner pass history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let mut history_rows = history_stmt
+            .query(rusqlite::params![block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future miner pass history for block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(row) = history_rows.next().map_err(|e| {
+            let msg = format!("Failed to read future miner pass history row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id: String = row.get(0).map_err(|e| {
+                let msg = format!(
+                    "Failed to get inscription_id from future miner pass history row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let history_height: i64 = row.get(1).map_err(|e| {
+                let msg = format!(
+                    "Failed to get block_height from future miner pass history row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let event_type: String = row.get(2).map_err(|e| {
+                let msg = format!(
+                    "Failed to get event_type from future miner pass history row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let msg = format!(
+                "Future miner pass history exists: target_block_height={}, inscription_id={}, history_block_height={}, event_type={}",
+                block_height, inscription_id, history_height, event_type
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         Ok(())
     }
 
@@ -780,6 +887,61 @@ impl MinerPassStorage {
         Ok(())
     }
 
+    fn append_pass_history_event(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+        event_type: &str,
+        prev_state: Option<MinerPassState>,
+        new_state: MinerPassState,
+        prev_owner: Option<USDBScriptHash>,
+        new_owner: USDBScriptHash,
+        prev_satpoint: Option<SatPoint>,
+        new_satpoint: SatPoint,
+    ) -> Result<(), String> {
+        let prev_state = prev_state.map(|s| s.as_str().to_string());
+        let prev_owner = prev_owner.map(|o| o.to_string());
+        let prev_satpoint = prev_satpoint.map(|s| s.to_string());
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "
+            INSERT INTO miner_pass_state_history (
+                inscription_id,
+                block_height,
+                event_type,
+                prev_state,
+                new_state,
+                prev_owner,
+                new_owner,
+                prev_satpoint,
+                new_satpoint
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);
+            ",
+            rusqlite::params![
+                inscription_id.to_string(),
+                block_height as i64,
+                event_type,
+                prev_state,
+                new_state.as_str(),
+                prev_owner,
+                new_owner.to_string(),
+                prev_satpoint,
+                new_satpoint.to_string(),
+            ],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to append miner pass history event: inscription_id={}, block_height={}, event_type={}, error={}",
+                inscription_id, block_height, event_type, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
     pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
         assert!(
             pass_info.state == MinerPassState::Active,
@@ -802,6 +964,26 @@ impl MinerPassStorage {
         self.insert_pass_record(pass_info)
     }
 
+    pub fn add_new_mint_pass_at_height(
+        &self,
+        pass_info: &MinerPassInfo,
+        block_height: u32,
+    ) -> Result<(), String> {
+        self.add_new_mint_pass(pass_info)?;
+        self.append_pass_history_event(
+            &pass_info.inscription_id,
+            block_height,
+            PASS_HISTORY_EVENT_MINT,
+            None,
+            pass_info.state.clone(),
+            None,
+            pass_info.owner.clone(),
+            None,
+            pass_info.satpoint.clone(),
+        )?;
+        Ok(())
+    }
+
     pub fn add_invalid_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
         assert!(
             pass_info.state == MinerPassState::Invalid,
@@ -822,6 +1004,26 @@ impl MinerPassStorage {
         );
 
         self.insert_pass_record(pass_info)
+    }
+
+    pub fn add_invalid_mint_pass_at_height(
+        &self,
+        pass_info: &MinerPassInfo,
+        block_height: u32,
+    ) -> Result<(), String> {
+        self.add_invalid_mint_pass(pass_info)?;
+        self.append_pass_history_event(
+            &pass_info.inscription_id,
+            block_height,
+            PASS_HISTORY_EVENT_INVALID_MINT,
+            None,
+            pass_info.state.clone(),
+            None,
+            pass_info.owner.clone(),
+            None,
+            pass_info.satpoint.clone(),
+        )?;
+        Ok(())
     }
 
     /// Transfer the ownership of a miner pass to a new owner
@@ -865,6 +1067,40 @@ impl MinerPassStorage {
             "Transferred miner pass {} ownership to {}",
             inscription_id, new_owner
         );
+
+        Ok(())
+    }
+
+    pub fn transfer_owner_at_height(
+        &self,
+        inscription_id: &InscriptionId,
+        new_owner: &USDBScriptHash,
+        new_satpoint: &SatPoint,
+        block_height: u32,
+    ) -> Result<(), String> {
+        let current = self
+            .get_pass_by_inscription_id(inscription_id)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Miner pass not found before transfer history append: inscription_id={}",
+                    inscription_id
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        self.transfer_owner(inscription_id, new_owner, new_satpoint)?;
+        self.append_pass_history_event(
+            inscription_id,
+            block_height,
+            PASS_HISTORY_EVENT_OWNER_TRANSFER,
+            Some(current.state.clone()),
+            current.state,
+            Some(current.owner.clone()),
+            new_owner.clone(),
+            Some(current.satpoint.clone()),
+            new_satpoint.clone(),
+        )?;
 
         Ok(())
     }
@@ -914,6 +1150,40 @@ impl MinerPassStorage {
         Ok(())
     }
 
+    pub fn update_satpoint_at_height(
+        &self,
+        inscription_id: &InscriptionId,
+        prev_satpoint: &SatPoint,
+        new_satpoint: &SatPoint,
+        block_height: u32,
+    ) -> Result<(), String> {
+        let current = self
+            .get_pass_by_inscription_id(inscription_id)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Miner pass not found before satpoint history append: inscription_id={}",
+                    inscription_id
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        self.update_satpoint(inscription_id, prev_satpoint, new_satpoint)?;
+        self.append_pass_history_event(
+            inscription_id,
+            block_height,
+            PASS_HISTORY_EVENT_SATPOINT_UPDATE,
+            Some(current.state.clone()),
+            current.state,
+            Some(current.owner.clone()),
+            current.owner.clone(),
+            Some(current.satpoint.clone()),
+            new_satpoint.clone(),
+        )?;
+
+        Ok(())
+    }
+
     /// Update the state of a miner pass, only if its current state matches prev_state
     pub fn update_state(
         &self,
@@ -959,6 +1229,40 @@ impl MinerPassStorage {
             prev_state.as_str(),
             new_state.as_str()
         );
+
+        Ok(())
+    }
+
+    pub fn update_state_at_height(
+        &self,
+        inscription_id: &InscriptionId,
+        new_state: MinerPassState,
+        prev_state: MinerPassState,
+        block_height: u32,
+    ) -> Result<(), String> {
+        let current = self
+            .get_pass_by_inscription_id(inscription_id)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Miner pass not found before state history append: inscription_id={}",
+                    inscription_id
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        self.update_state(inscription_id, new_state.clone(), prev_state)?;
+        self.append_pass_history_event(
+            inscription_id,
+            block_height,
+            PASS_HISTORY_EVENT_STATE_UPDATE,
+            Some(current.state.clone()),
+            new_state,
+            Some(current.owner.clone()),
+            current.owner,
+            Some(current.satpoint.clone()),
+            current.satpoint,
+        )?;
 
         Ok(())
     }
@@ -1118,6 +1422,86 @@ impl MinerPassStorage {
                     msg
                 })?
             },
+        })
+    }
+
+    fn row_to_pass_history_item(row: &rusqlite::Row) -> Result<MinerPassHistoryInfo, String> {
+        let event_id = row.get::<_, i64>(0).map_err(|e| {
+            let msg = format!("Failed to get event_id from miner pass history row: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let inscription_id = row
+            .get::<_, String>(1)
+            .map_err(|e| {
+                let msg = format!("Failed to get inscription_id from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?
+            .parse::<InscriptionId>()
+            .map_err(|e| {
+                let msg = format!("Failed to parse inscription_id from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        let block_height = row.get::<_, i64>(2).map_err(|e| {
+            let msg = format!("Failed to get block_height from history row: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        if block_height < 0 {
+            let msg = format!(
+                "Invalid negative block_height in miner pass history row: {}",
+                block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let event_type = row.get::<_, String>(3).map_err(|e| {
+            let msg = format!("Failed to get event_type from history row: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let state = MinerPassState::from_str(&row.get::<_, String>(4).map_err(|e| {
+            let msg = format!("Failed to get new_state from history row: {}", e);
+            error!("{}", msg);
+            msg
+        })?)?;
+        let owner = row
+            .get::<_, String>(5)
+            .map_err(|e| {
+                let msg = format!("Failed to get new_owner from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?
+            .parse::<USDBScriptHash>()
+            .map_err(|e| {
+                let msg = format!("Failed to parse new_owner from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        let satpoint = row
+            .get::<_, String>(6)
+            .map_err(|e| {
+                let msg = format!("Failed to get new_satpoint from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?
+            .parse::<SatPoint>()
+            .map_err(|e| {
+                let msg = format!("Failed to parse new_satpoint from history row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(MinerPassHistoryInfo {
+            event_id,
+            inscription_id,
+            block_height: block_height as u32,
+            event_type,
+            state,
+            owner,
+            satpoint,
         })
     }
 
@@ -1489,6 +1873,161 @@ impl MinerPassStorage {
 
         Ok(passes)
     }
+
+    pub fn get_last_pass_history_at_or_before_height(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<MinerPassHistoryInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                id,
+                inscription_id,
+                block_height,
+                event_type,
+                new_state,
+                new_owner,
+                new_satpoint
+            FROM miner_pass_state_history
+            WHERE inscription_id = ?1 AND block_height <= ?2
+            ORDER BY block_height DESC, id DESC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get pass history snapshot at or before height: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![inscription_id.to_string(), block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query pass history snapshot for inscription {} at block height {}: {}",
+                    inscription_id, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to read pass history snapshot row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let item = Self::row_to_pass_history_item(row)?;
+            return Ok(Some(item));
+        }
+
+        Ok(None)
+    }
+
+    pub fn get_all_active_pass_by_page_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+    ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+
+        let mut stmt = conn
+            .prepare(
+                "
+            WITH latest AS (
+                SELECT
+                    inscription_id,
+                    MAX(id) AS max_id
+                FROM miner_pass_state_history
+                WHERE block_height <= ?1
+                GROUP BY inscription_id
+            )
+            SELECT
+                h.inscription_id,
+                h.new_owner
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.max_id
+            WHERE h.new_state = ?2
+            ORDER BY h.block_height DESC, h.id DESC
+            LIMIT ?3 OFFSET ?4;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get active pass snapshot from history by page: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                block_height as i64,
+                MinerPassState::Active.as_str(),
+                page_size as i64,
+                offset as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query active pass snapshot from history at block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying active pass snapshot from history: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id = row
+                .get::<_, String>(0)
+                .map_err(|e| {
+                    let msg = format!("Failed to get inscription_id from history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse::<InscriptionId>()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse inscription_id from history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+            let owner = row
+                .get::<_, String>(1)
+                .map_err(|e| {
+                    let msg = format!("Failed to get owner from history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse::<USDBScriptHash>()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse owner from history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            passes.push(ActiveMinerPassInfo {
+                inscription_id,
+                owner,
+            });
+        }
+
+        Ok(passes)
+    }
 }
 
 pub type MinerPassStorageRef = std::sync::Arc<MinerPassStorage>;
@@ -1823,6 +2362,74 @@ mod tests {
     }
 
     #[test]
+    fn test_pass_history_snapshot_query_tracks_state_timeline() {
+        let dir = test_data_dir("history_snapshot_timeline");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(51);
+        let owner2 = script_hash(52);
+
+        let p = make_pass(81, 0, owner1, MinerPassState::Active, 100);
+        storage.add_new_mint_pass_at_height(&p, 100).unwrap();
+
+        let at_100 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 100)
+            .unwrap();
+        assert_eq!(at_100.len(), 1);
+        assert_eq!(at_100[0].inscription_id, p.inscription_id);
+        assert_eq!(at_100[0].owner, owner1);
+
+        storage
+            .update_state_at_height(
+                &p.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                110,
+            )
+            .unwrap();
+        let at_105 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 105)
+            .unwrap();
+        assert_eq!(at_105.len(), 1);
+        assert_eq!(at_105[0].owner, owner1);
+        let at_110 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 110)
+            .unwrap();
+        assert!(at_110.is_empty());
+
+        let moved_satpoint = satpoint(82, 1, 7);
+        storage
+            .transfer_owner_at_height(&p.inscription_id, &owner2, &moved_satpoint, 120)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &p.inscription_id,
+                MinerPassState::Active,
+                MinerPassState::Dormant,
+                130,
+            )
+            .unwrap();
+
+        let at_125 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 125)
+            .unwrap();
+        assert!(at_125.is_empty());
+        let at_130 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 130)
+            .unwrap();
+        assert_eq!(at_130.len(), 1);
+        assert_eq!(at_130[0].owner, owner2);
+
+        let history_at_129 = storage
+            .get_last_pass_history_at_or_before_height(&p.inscription_id, 129)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history_at_129.state, MinerPassState::Dormant);
+        assert_eq!(history_at_129.owner, owner2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_storage_savepoint_guard_rollback_and_commit() {
         let dir = test_data_dir("savepoint");
         let storage = MinerPassStorage::new(&dir).unwrap();
@@ -1980,6 +2587,29 @@ mod tests {
 
         let err = storage.assert_no_data_after_block_height(100).unwrap_err();
         assert!(err.contains("Future active balance snapshot exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_no_data_after_block_height_detect_future_history() {
+        let dir = test_data_dir("guard_future_history");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(43);
+
+        let p = make_pass(63, 0, owner, MinerPassState::Active, 100);
+        storage.add_new_mint_pass_at_height(&p, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &p.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future miner pass history exists"));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
