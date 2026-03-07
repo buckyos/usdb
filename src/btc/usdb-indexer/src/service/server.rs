@@ -603,3 +603,271 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigManager;
+    use crate::index::{InscriptionIndexer, MinerPassState};
+    use crate::output::IndexOutput;
+    use crate::status::StatusManager;
+    use crate::storage::MinerPassInfo;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use ord::InscriptionId;
+    use ordinals::SatPoint;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+
+    fn test_root_dir(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("usdb_rpc_server_test_{}_{}", tag, nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_script_hash(tag: u8) -> USDBScriptHash {
+        ScriptBuf::from(vec![tag; 32]).to_usdb_script_hash()
+    }
+
+    fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
+        InscriptionId {
+            txid: Txid::from_slice(&[tag; 32]).unwrap(),
+            index,
+        }
+    }
+
+    fn test_satpoint(tag: u8, vout: u32, offset: u64) -> SatPoint {
+        SatPoint {
+            outpoint: OutPoint {
+                txid: Txid::from_slice(&[tag; 32]).unwrap(),
+                vout,
+            },
+            offset,
+        }
+    }
+
+    fn make_active_pass(ins_tag: u8, owner_tag: u8, mint_height: u32) -> MinerPassInfo {
+        let owner = test_script_hash(owner_tag);
+        let inscription_id = test_inscription_id(ins_tag, 0);
+        MinerPassInfo {
+            inscription_id: inscription_id.clone(),
+            inscription_number: ins_tag as i32,
+            mint_txid: inscription_id.txid,
+            mint_block_height: mint_height,
+            mint_owner: owner,
+            satpoint: test_satpoint(ins_tag, 0, 0),
+            eth_main: "0x1111111111111111111111111111111111111111".to_string(),
+            eth_collab: None,
+            prev: Vec::new(),
+            invalid_code: None,
+            invalid_reason: None,
+            owner,
+            state: MinerPassState::Active,
+        }
+    }
+
+    fn make_invalid_pass(
+        ins_tag: u8,
+        owner_tag: u8,
+        mint_height: u32,
+        code: &str,
+    ) -> MinerPassInfo {
+        let mut pass = make_active_pass(ins_tag, owner_tag, mint_height);
+        pass.state = MinerPassState::Invalid;
+        pass.invalid_code = Some(code.to_string());
+        pass.invalid_reason = Some(format!("mock reason for {}", code));
+        pass
+    }
+
+    fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
+        let root_dir = test_root_dir(tag);
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let output = Arc::new(IndexOutput::new());
+        let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
+        let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
+
+        indexer
+            .miner_pass_storage()
+            .update_synced_btc_block_height(synced_height)
+            .unwrap();
+
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(());
+        let server = UsdbIndexerRpcServer::new(
+            config,
+            status,
+            indexer,
+            "127.0.0.1:0".parse().unwrap(),
+            shutdown_tx,
+        );
+        (server, root_dir)
+    }
+
+    #[test]
+    fn test_get_pass_snapshot_and_history_success() {
+        let (server, root_dir) = build_server("snapshot_history", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(1, 10, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                101,
+            )
+            .unwrap();
+
+        let snapshot = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(101),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.inscription_id, pass.inscription_id.to_string());
+        assert_eq!(snapshot.state, MinerPassState::Dormant.as_str());
+        assert_eq!(snapshot.resolved_height, 101);
+
+        let history = server
+            .get_pass_history(GetPassHistoryParams {
+                inscription_id: pass.inscription_id.to_string(),
+                from_height: 100,
+                to_height: 101,
+                order: Some("asc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(history.resolved_height, 101);
+        assert_eq!(history.items.len(), 2);
+        assert_eq!(history.items[0].event_type, "mint");
+        assert_eq!(history.items[1].event_type, "state_update");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_owner_active_pass_duplicate_owner_error() {
+        let (server, root_dir) = build_server("duplicate_owner", 200);
+        let storage = server.indexer.miner_pass_storage();
+        let owner = test_script_hash(33);
+
+        let mut pass1 = make_active_pass(2, 33, 100);
+        pass1.owner = owner;
+        pass1.mint_owner = owner;
+        let ins2 = test_inscription_id(3, 0);
+
+        storage.add_new_mint_pass_at_height(&pass1, 100).unwrap();
+        // Inject a second active history snapshot for the same owner to emulate
+        // corrupted history state and assert RPC defensive behavior.
+        storage
+            .append_pass_history_event_for_test(
+                &ins2,
+                101,
+                "mint",
+                None,
+                MinerPassState::Active,
+                None,
+                owner,
+                None,
+                test_satpoint(3, 0, 0),
+            )
+            .unwrap();
+
+        let err = server
+            .get_owner_active_pass_at_height(GetOwnerActivePassAtHeightParams {
+                owner: owner.to_string(),
+                at_height: Some(200),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => assert_eq!(code, ERR_DUPLICATE_ACTIVE_OWNER),
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, "DUPLICATE_ACTIVE_OWNER");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_invalid_passes_success() {
+        let (server, root_dir) = build_server("invalid_passes", 150);
+        let storage = server.indexer.miner_pass_storage();
+
+        let invalid = make_invalid_pass(4, 44, 110, "INVALID_ETH_MAIN");
+        storage
+            .add_invalid_mint_pass_at_height(&invalid, 110)
+            .unwrap();
+
+        let page = server
+            .get_invalid_passes(GetInvalidPassesParams {
+                error_code: Some("INVALID_ETH_MAIN".to_string()),
+                from_height: 100,
+                to_height: 120,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+
+        assert_eq!(page.resolved_height, 120);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(
+            page.items[0].inscription_id,
+            invalid.inscription_id.to_string()
+        );
+        assert_eq!(
+            page.items[0].invalid_code.as_deref(),
+            Some("INVALID_ETH_MAIN")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pagination_and_height_range_errors() {
+        let (server, root_dir) = build_server("params_error", 300);
+
+        let pagination_err = server
+            .get_active_passes_at_height(GetActivePassesAtHeightParams {
+                at_height: Some(200),
+                page: 0,
+                page_size: 0,
+            })
+            .unwrap_err();
+        match pagination_err.code {
+            ErrorCode::ServerError(code) => assert_eq!(code, ERR_INVALID_PAGINATION),
+            _ => panic!("unexpected error code: {:?}", pagination_err.code),
+        }
+        assert_eq!(pagination_err.message, "INVALID_PAGINATION");
+
+        let range_err = server
+            .get_pass_history(GetPassHistoryParams {
+                inscription_id: test_inscription_id(9, 0).to_string(),
+                from_height: 201,
+                to_height: 200,
+                order: Some("asc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+        match range_err.code {
+            ErrorCode::ServerError(code) => assert_eq!(code, ERR_INVALID_HEIGHT_RANGE),
+            _ => panic!("unexpected error code: {:?}", range_err.code),
+        }
+        assert_eq!(range_err.message, "INVALID_HEIGHT_RANGE");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+}
