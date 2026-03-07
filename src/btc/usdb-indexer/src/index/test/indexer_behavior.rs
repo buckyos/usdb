@@ -7,6 +7,7 @@ use crate::config::ConfigManager;
 use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
+use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
 use crate::index::{BlockHintProvider, IndexStatusApi, InscriptionIndexer, TransferTrackerApi};
@@ -470,6 +471,35 @@ fn build_test_block(txs: Vec<Transaction>) -> Arc<Block> {
         header: constants::genesis_block(Network::Bitcoin).header,
         txdata: txs,
     })
+}
+
+fn active_owner_set_at_height(
+    storage: &MinerPassStorageRef,
+    block_height: u32,
+) -> HashSet<USDBScriptHash> {
+    let mut owners = HashSet::new();
+    let mut page = 0usize;
+    loop {
+        let rows = storage
+            .get_all_active_pass_by_page_from_history_at_height(page, 128, block_height)
+            .unwrap();
+        if rows.is_empty() {
+            break;
+        }
+
+        for row in rows {
+            assert!(
+                owners.insert(row.owner),
+                "Duplicate active owner found in history snapshot: block_height={}, owner={}",
+                block_height,
+                row.owner
+            );
+        }
+
+        page += 1;
+    }
+
+    owners
 }
 
 #[tokio::test]
@@ -1218,6 +1248,405 @@ async fn test_sync_block_marks_mints_invalid_when_reveal_input_is_ambiguous() {
         .unwrap();
     assert_eq!(snapshot.active_address_count, 0);
     assert_eq!(snapshot.total_balance, 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
+    // End-to-end timeline:
+    // h100 mint(A, owner1)
+    // h101 transfer(A, owner1 -> owner1)
+    // h102 transfer(A, owner1 -> owner2)
+    // h103 burn(A)
+    // h104 mint(B, owner2, prev=[A])
+    let h100 = 100u32;
+    let h101 = 101u32;
+    let h102 = 102u32;
+    let h103 = 103u32;
+    let h104 = 104u32;
+    let owner1 = test_script_hash(61);
+    let owner2 = test_script_hash(62);
+
+    let mint_a_tx = build_test_tx(81);
+    let transfer_same_tx = build_test_tx(82);
+    let transfer_cross_tx = build_test_tx(83);
+    let burn_tx = build_test_tx(84);
+    let mint_b_tx = build_test_tx(85);
+
+    let mint_a_txid = mint_a_tx.compute_txid();
+    let transfer_same_txid = transfer_same_tx.compute_txid();
+    let transfer_cross_txid = transfer_cross_tx.compute_txid();
+    let burn_txid = burn_tx.compute_txid();
+    let mint_b_txid = mint_b_tx.compute_txid();
+
+    let transfer_same_prev_outpoint = transfer_same_tx.input[0].previous_output;
+    let transfer_cross_prev_outpoint = transfer_cross_tx.input[0].previous_output;
+    let burn_prev_outpoint = burn_tx.input[0].previous_output;
+
+    let pass_a_id = InscriptionId {
+        txid: mint_a_txid,
+        index: 0,
+    };
+    let pass_b_id = InscriptionId {
+        txid: mint_b_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h100, build_test_block(vec![mint_a_tx]))
+            .with_block(h101, build_test_block(vec![transfer_same_tx]))
+            .with_block(h102, build_test_block(vec![transfer_cross_tx]))
+            .with_block(h103, build_test_block(vec![burn_tx]))
+            .with_block(h104, build_test_block(vec![mint_b_tx])),
+    );
+
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                h100,
+                vec![make_discovered_mint(pass_a_id.clone(), h100, vec![])],
+            )
+            .with_mints(
+                h104,
+                vec![make_discovered_mint(
+                    pass_b_id.clone(),
+                    h104,
+                    vec![pass_a_id.clone()],
+                )],
+            ),
+    );
+
+    let create_info_a = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_a_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner1),
+        commit_txid: Txid::from_slice(&[91u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[91u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_b = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_b_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner2),
+        commit_txid: Txid::from_slice(&[92u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[92u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+
+    let transfer_same_item = InscriptionTransferItem {
+        inscription_id: pass_a_id.clone(),
+        block_height: h101,
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_same_prev_outpoint,
+            offset: 0,
+        },
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_same_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner1,
+        to_address: Some(owner1),
+    };
+    let transfer_cross_item = InscriptionTransferItem {
+        inscription_id: pass_a_id.clone(),
+        block_height: h102,
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_cross_prev_outpoint,
+            offset: 0,
+        },
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_cross_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner1,
+        to_address: Some(owner2),
+    };
+    let burn_item = InscriptionTransferItem {
+        inscription_id: pass_a_id.clone(),
+        block_height: h103,
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: burn_prev_outpoint,
+            offset: 0,
+        },
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: burn_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner2,
+        to_address: None,
+    };
+
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&pass_a_id, create_info_a)
+            .with_create_info(&pass_b_id, create_info_b)
+            .with_transfers(h101, vec![transfer_same_item])
+            .with_transfers(h102, vec![transfer_cross_item])
+            .with_transfers(h103, vec![burn_item]),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner1, h100, 200_000, 100)
+            .with_range(
+                owner1,
+                (h100 + 1)..(h101 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h101,
+                    balance: 201_000,
+                    delta: 1_000,
+                }],
+            )
+            .with_range(
+                owner1,
+                (h101 + 1)..(h102 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h102,
+                    balance: 180_000,
+                    delta: -21_000,
+                }],
+            )
+            .with_height(owner2, h104, 250_000, 500),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "timeline_mint_transfer_burn_remint_replay",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h100,
+                balance: 5_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h101,
+                balance: 5_500,
+                delta: 500,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h104,
+                balance: 8_000,
+                delta: 2_500,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h100..=h104)
+        .await
+        .unwrap();
+    assert_eq!(synced, h104);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 5);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // Check 1: active owner set at each height.
+    let expected_active_100 = HashSet::from([owner1]);
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h100),
+        expected_active_100
+    );
+    let expected_active_101 = HashSet::from([owner1]);
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h101),
+        expected_active_101
+    );
+    assert!(active_owner_set_at_height(&fixture.storage, h102).is_empty());
+    assert!(active_owner_set_at_height(&fixture.storage, h103).is_empty());
+    let expected_active_104 = HashSet::from([owner2]);
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h104),
+        expected_active_104
+    );
+
+    // Check 2: pass state timeline from history snapshots.
+    let pass_a_100 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_a_id, h100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a_100.state, MinerPassState::Active);
+    assert_eq!(pass_a_100.owner, owner1);
+    let pass_a_101 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_a_id, h101)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a_101.state, MinerPassState::Active);
+    assert_eq!(pass_a_101.owner, owner1);
+    let pass_a_102 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_a_id, h102)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a_102.state, MinerPassState::Dormant);
+    assert_eq!(pass_a_102.owner, owner2);
+    let pass_a_103 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_a_id, h103)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a_103.state, MinerPassState::Burned);
+    assert_eq!(pass_a_103.owner, owner2);
+    let pass_a_104 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_a_id, h104)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a_104.state, MinerPassState::Burned);
+    assert_eq!(pass_a_104.owner, owner2);
+
+    assert!(
+        fixture
+            .storage
+            .get_last_pass_history_at_or_before_height(&pass_b_id, h103)
+            .unwrap()
+            .is_none()
+    );
+    let pass_b_104 = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&pass_b_id, h104)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_b_104.state, MinerPassState::Active);
+    assert_eq!(pass_b_104.owner, owner2);
+
+    // Check 3: energy snapshots at each height.
+    let expected_a_101 = calc_growth_delta(200_000, 1);
+    let expected_a_102 = expected_a_101
+        .saturating_add(calc_growth_delta(201_000, 2))
+        .saturating_sub(calc_penalty_from_delta(-21_000));
+
+    let energy_a_100 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_100.state, MinerPassState::Active);
+    assert_eq!(energy_a_100.energy, 0);
+    let energy_a_101 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h101)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_101.state, MinerPassState::Active);
+    assert_eq!(energy_a_101.energy, expected_a_101);
+    let energy_a_102 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h102)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_102.state, MinerPassState::Dormant);
+    assert_eq!(energy_a_102.energy, expected_a_102);
+    let energy_a_103 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h103)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_103.state, MinerPassState::Dormant);
+    assert_eq!(energy_a_103.energy, expected_a_102);
+    let energy_a_104 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h104)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_104.state, MinerPassState::Dormant);
+    assert_eq!(energy_a_104.energy, expected_a_102);
+
+    let energy_b_104 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_b_id, h104)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_b_104.state, MinerPassState::Active);
+    assert_eq!(energy_b_104.energy, 0);
+
+    // Burned prev should not be consumed/inherited by remint.
+    let current_a = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_a_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_a.state, MinerPassState::Burned);
+    let current_b = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_b_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_b.state, MinerPassState::Active);
+
+    // Balance settlement snapshots by height.
+    let snap_100 = fixture
+        .storage
+        .get_active_balance_snapshot(h100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_100.active_address_count, 1);
+    assert_eq!(snap_100.total_balance, 5_000);
+    let snap_101 = fixture
+        .storage
+        .get_active_balance_snapshot(h101)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_101.active_address_count, 1);
+    assert_eq!(snap_101.total_balance, 5_500);
+    let snap_102 = fixture
+        .storage
+        .get_active_balance_snapshot(h102)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_102.active_address_count, 0);
+    assert_eq!(snap_102.total_balance, 0);
+    let snap_103 = fixture
+        .storage
+        .get_active_balance_snapshot(h103)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_103.active_address_count, 0);
+    assert_eq!(snap_103.total_balance, 0);
+    let snap_104 = fixture
+        .storage
+        .get_active_balance_snapshot(h104)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_104.active_address_count, 1);
+    assert_eq!(snap_104.total_balance, 8_000);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
