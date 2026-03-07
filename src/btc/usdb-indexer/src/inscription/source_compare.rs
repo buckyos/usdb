@@ -1,6 +1,6 @@
 use super::{
-    DiscoveredInscription, DiscoveredMint, InscriptionSource, InscriptionSourceFuture,
-    map_usdb_mints_from_inscriptions,
+    DiscoveredInscription, DiscoveredMint, DiscoveredMintBatch, InscriptionSource,
+    InscriptionSourceFuture, classify_usdb_mints_from_inscriptions,
 };
 use bitcoincore_rpc::bitcoin::Block;
 use std::collections::BTreeMap;
@@ -259,21 +259,17 @@ impl InscriptionSource for CompareInscriptionSource {
         block_hint: Option<Arc<Block>>,
     ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
         Box::pin(async move {
-            if self.target == CompareTarget::UsdbMint {
-                let primary_mints = self
-                    .primary
-                    .load_block_mints(block_height, block_hint.clone())
-                    .await?;
-                let shadow_mints = self
-                    .shadow
-                    .load_block_mints(block_height, block_hint)
-                    .await?;
+            let batch = self.load_block_mint_batch(block_height, block_hint).await?;
+            Ok(batch.valid_mints)
+        })
+    }
 
-                self.compare_block_mints(block_height, &primary_mints, &shadow_mints)?;
-
-                return Ok(primary_mints);
-            }
-
+    fn load_block_mint_batch<'a>(
+        &'a self,
+        block_height: u32,
+        block_hint: Option<Arc<Block>>,
+    ) -> InscriptionSourceFuture<'a, Result<DiscoveredMintBatch, String>> {
+        Box::pin(async move {
             let primary_inscriptions = self
                 .primary
                 .load_block_inscriptions(block_height, block_hint.clone())
@@ -283,13 +279,25 @@ impl InscriptionSource for CompareInscriptionSource {
                 .load_block_inscriptions(block_height, block_hint)
                 .await?;
 
-            self.compare_block_inscriptions(
-                block_height,
-                &primary_inscriptions,
-                &shadow_inscriptions,
-            )?;
+            if self.target == CompareTarget::RawInscription {
+                self.compare_block_inscriptions(
+                    block_height,
+                    &primary_inscriptions,
+                    &shadow_inscriptions,
+                )?;
+            }
 
-            map_usdb_mints_from_inscriptions(primary_inscriptions)
+            let primary_batch = classify_usdb_mints_from_inscriptions(primary_inscriptions)?;
+            if self.target == CompareTarget::UsdbMint {
+                let shadow_batch = classify_usdb_mints_from_inscriptions(shadow_inscriptions)?;
+                self.compare_block_mints(
+                    block_height,
+                    &primary_batch.valid_mints,
+                    &shadow_batch.valid_mints,
+                )?;
+            }
+
+            Ok(primary_batch)
         })
     }
 }

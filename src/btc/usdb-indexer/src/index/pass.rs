@@ -25,6 +25,17 @@ pub struct PassMintInscriptionInfo {
     pub prev: Vec<InscriptionId>,
 }
 
+pub struct InvalidPassMintInscriptionInfo {
+    pub inscription_id: InscriptionId,
+    pub inscription_number: i32,
+    pub mint_txid: Txid,
+    pub mint_block_height: u32,
+    pub mint_owner: USDBScriptHash,
+    pub satpoint: SatPoint,
+    pub error_code: String,
+    pub error_reason: String,
+}
+
 pub struct MinerPassManager {
     config: ConfigManagerRef,
     storage: MinerPassStorageRef,
@@ -65,6 +76,8 @@ impl MinerPassManager {
             eth_main: mint_info.eth_main.clone(),
             eth_collab: mint_info.eth_collab.clone(),
             prev: mint_info.prev.clone(),
+            invalid_code: None,
+            invalid_reason: None,
 
             state: MinerPassState::Active,
             owner: mint_info.mint_owner.clone(),
@@ -135,6 +148,38 @@ impl MinerPassManager {
             )
             .await?;
 
+        Ok(())
+    }
+
+    pub async fn on_invalid_mint_pass(
+        &self,
+        invalid_info: &InvalidPassMintInscriptionInfo,
+    ) -> Result<(), String> {
+        let info = MinerPassInfo {
+            inscription_id: invalid_info.inscription_id.clone(),
+            inscription_number: invalid_info.inscription_number,
+            mint_txid: invalid_info.mint_txid,
+            mint_block_height: invalid_info.mint_block_height,
+            mint_owner: invalid_info.mint_owner,
+            satpoint: invalid_info.satpoint,
+            eth_main: "".to_string(),
+            eth_collab: None,
+            prev: Vec::new(),
+            invalid_code: Some(invalid_info.error_code.clone()),
+            invalid_reason: Some(invalid_info.error_reason.clone()),
+            owner: invalid_info.mint_owner,
+            state: MinerPassState::Invalid,
+        };
+        self.storage.add_invalid_mint_pass(&info)?;
+
+        warn!(
+            "Invalid mint inscription recorded: module=pass_manager, inscription_id={}, block_height={}, owner={}, error_code={}, error_reason={}",
+            invalid_info.inscription_id,
+            invalid_info.mint_block_height,
+            invalid_info.mint_owner,
+            invalid_info.error_code,
+            invalid_info.error_reason
+        );
         Ok(())
     }
 
@@ -422,6 +467,8 @@ mod tests {
             eth_main: "0x1111111111111111111111111111111111111111".to_string(),
             eth_collab: None,
             prev: Vec::new(),
+            invalid_code: None,
+            invalid_reason: None,
             owner,
             state: MinerPassState::Active,
         };

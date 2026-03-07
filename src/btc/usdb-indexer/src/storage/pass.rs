@@ -28,6 +28,8 @@ pub struct MinerPassInfo {
     pub eth_main: String,
     pub eth_collab: Option<String>,
     pub prev: Vec<InscriptionId>,
+    pub invalid_code: Option<String>,
+    pub invalid_reason: Option<String>,
 
     // Current owner address of the pass, when the pass is transferred,
     // the owner changes and state changed to Dormant by default
@@ -108,6 +110,8 @@ impl MinerPassStorage {
 
                 owner TEXT NOT NULL,
                 state TEXT NOT NULL,
+                invalid_code TEXT,
+                invalid_reason TEXT,
 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -131,6 +135,9 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })?;
+
+        Self::ensure_column_exists(&conn, "miner_passes", "invalid_code", "TEXT")?;
+        Self::ensure_column_exists(&conn, "miner_passes", "invalid_reason", "TEXT")?;
 
         let mut stmt = conn
             .prepare(
@@ -210,6 +217,41 @@ impl MinerPassStorage {
         })?;
 
         Ok(())
+    }
+
+    fn ensure_column_exists(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        column_def: &str,
+    ) -> Result<(), String> {
+        let sql = format!(
+            "ALTER TABLE {} ADD COLUMN {} {};",
+            table, column, column_def
+        );
+
+        match conn.execute(&sql, []) {
+            Ok(_) => {
+                info!(
+                    "Added missing column to sqlite table: table={}, column={}",
+                    table, column
+                );
+                Ok(())
+            }
+            Err(e) => {
+                let err = e.to_string();
+                if err.contains("duplicate column name") {
+                    return Ok(());
+                }
+
+                let msg = format!(
+                    "Failed to ensure sqlite column exists: table={}, column={}, error={}",
+                    table, column, e
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
     }
 
     pub fn savepoint_begin(&self) -> Result<(), String> {
@@ -676,20 +718,7 @@ impl MinerPassStorage {
         Ok(affected)
     }
 
-    pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
-        assert!(
-            pass_info.state == MinerPassState::Active,
-            "Newly minted pass must be in Active state: id {}, state: {:?}",
-            pass_info.inscription_id,
-            pass_info.state.as_str()
-        );
-        assert!(
-            pass_info.owner == pass_info.mint_owner,
-            "Newly minted pass owner must be the mint owner {} != {}",
-            pass_info.owner,
-            pass_info.mint_owner
-        );
-
+    fn insert_pass_record(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
         let prev_serialized = pass_info
             .prev
             .iter()
@@ -716,8 +745,10 @@ impl MinerPassStorage {
                 prev,
 
                 owner,
-                state
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);
+                state,
+                invalid_code,
+                invalid_reason
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);
             ",
             rusqlite::params![
                 pass_info.inscription_id.to_string(),
@@ -731,6 +762,8 @@ impl MinerPassStorage {
                 prev_serialized,
                 pass_info.owner.to_string(),
                 pass_info.state.as_str(),
+                pass_info.invalid_code,
+                pass_info.invalid_reason,
             ],
         )
         .map_err(|e| {
@@ -745,6 +778,50 @@ impl MinerPassStorage {
         );
 
         Ok(())
+    }
+
+    pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
+        assert!(
+            pass_info.state == MinerPassState::Active,
+            "Newly minted pass must be in Active state: id {}, state: {:?}",
+            pass_info.inscription_id,
+            pass_info.state.as_str()
+        );
+        assert!(
+            pass_info.owner == pass_info.mint_owner,
+            "Newly minted pass owner must be the mint owner {} != {}",
+            pass_info.owner,
+            pass_info.mint_owner
+        );
+        assert!(
+            pass_info.invalid_code.is_none() && pass_info.invalid_reason.is_none(),
+            "Active mint pass should not carry invalid reason metadata: id {}",
+            pass_info.inscription_id
+        );
+
+        self.insert_pass_record(pass_info)
+    }
+
+    pub fn add_invalid_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
+        assert!(
+            pass_info.state == MinerPassState::Invalid,
+            "Invalid mint pass must be in Invalid state: id {}, state: {:?}",
+            pass_info.inscription_id,
+            pass_info.state.as_str()
+        );
+        assert!(
+            pass_info.owner == pass_info.mint_owner,
+            "Invalid mint pass owner must be the mint owner {} != {}",
+            pass_info.owner,
+            pass_info.mint_owner
+        );
+        assert!(
+            pass_info.invalid_code.is_some() && pass_info.invalid_reason.is_some(),
+            "Invalid mint pass must include invalid code and reason: id {}",
+            pass_info.inscription_id
+        );
+
+        self.insert_pass_record(pass_info)
     }
 
     /// Transfer the ownership of a miner pass to a new owner
@@ -996,6 +1073,22 @@ impl MinerPassStorage {
             })?,
 
             prev: prev_ids,
+            invalid_code: row.get(11).map_err(|e| {
+                let msg = format!(
+                    "Failed to get invalid_code field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?,
+            invalid_reason: row.get(12).map_err(|e| {
+                let msg = format!(
+                    "Failed to get invalid_reason field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?,
 
             owner: row
                 .get::<_, String>(9)
@@ -1179,7 +1272,7 @@ impl MinerPassStorage {
         }
     }
 
-    // Get all none consumed miner passes by pagination, where state != Consumed
+    // Get all transfer-trackable miner passes by pagination.
     pub fn get_all_valid_pass_by_page(
         &self,
         page: usize,
@@ -1197,9 +1290,9 @@ impl MinerPassStorage {
                 satpoint,
                 owner
             FROM miner_passes
-            WHERE state <> ?1
+            WHERE state NOT IN (?1, ?2)
             ORDER BY mint_block_height DESC
-            LIMIT ?2 OFFSET ?3;
+            LIMIT ?3 OFFSET ?4;
             ",
             )
             .map_err(|e| {
@@ -1214,6 +1307,7 @@ impl MinerPassStorage {
         let mut rows = stmt
             .query(rusqlite::params![
                 MinerPassState::Consumed.as_str(),
+                MinerPassState::Invalid.as_str(),
                 page_size as i64,
                 offset as i64
             ])
@@ -1495,6 +1589,8 @@ mod tests {
             eth_main: "0x1111111111111111111111111111111111111111".to_string(),
             eth_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
             prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
+            invalid_code: None,
+            invalid_reason: None,
             owner,
             state,
         }
@@ -1656,6 +1752,36 @@ mod tests {
         assert_eq!(updated.owner, owner_b);
         assert_eq!(updated.state, MinerPassState::Dormant);
         assert_eq!(updated.satpoint, new_satpoint);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_add_invalid_mint_pass_and_exclude_from_valid_tracking_query() {
+        let dir = test_data_dir("invalid_pass_tracking");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(91);
+
+        let mut invalid_pass = make_pass(92, 0, owner, MinerPassState::Invalid, 123);
+        invalid_pass.prev = Vec::new();
+        invalid_pass.invalid_code = Some("INVALID_ETH_MAIN".to_string());
+        invalid_pass.invalid_reason = Some("Invalid eth_main format".to_string());
+
+        storage.add_invalid_mint_pass(&invalid_pass).unwrap();
+
+        let loaded = storage
+            .get_pass_by_inscription_id(&invalid_pass.inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.state, MinerPassState::Invalid);
+        assert_eq!(loaded.invalid_code.as_deref(), Some("INVALID_ETH_MAIN"));
+        assert_eq!(
+            loaded.invalid_reason.as_deref(),
+            Some("Invalid eth_main format")
+        );
+
+        let valid_passes = storage.get_all_valid_pass_by_page(0, 10).unwrap();
+        assert!(valid_passes.is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -61,6 +61,8 @@ pub(super) fn make_pass(
         eth_main: "0x1111111111111111111111111111111111111111".to_string(),
         eth_collab: None,
         prev: Vec::new(),
+        invalid_code: None,
+        invalid_reason: None,
         owner,
         state: MinerPassState::Active,
     }

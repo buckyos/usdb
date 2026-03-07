@@ -4,13 +4,15 @@ use super::common::{
 };
 use crate::balance::{BalanceMonitor, MockBalanceBackend, MockResponse, SerialBalanceLoader};
 use crate::config::ConfigManager;
+use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
 use crate::index::{BlockHintProvider, IndexStatusApi, InscriptionIndexer, TransferTrackerApi};
 use crate::inscription::{
-    DiscoveredInscription, DiscoveredMint, InscriptionSource, InscriptionTransferItem,
+    DiscoveredInscription, DiscoveredInvalidMint, DiscoveredMint, DiscoveredMintBatch,
+    InscriptionSource, InscriptionTransferItem,
 };
 use crate::storage::{MinerPassInfo, MinerPassStorage, MinerPassStorageRef, PassEnergyStorage};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
@@ -225,11 +227,22 @@ impl TransferTrackerApi for MockTransferTracker {
 #[derive(Default)]
 struct MockInscriptionSource {
     mints_by_height: HashMap<u32, Vec<DiscoveredMint>>,
+    invalid_mints_by_height: HashMap<u32, Vec<DiscoveredInvalidMint>>,
 }
 
 impl MockInscriptionSource {
     fn with_mints(mut self, block_height: u32, mints: Vec<DiscoveredMint>) -> Self {
         self.mints_by_height.insert(block_height, mints);
+        self
+    }
+
+    fn with_invalid_mints(
+        mut self,
+        block_height: u32,
+        invalid_mints: Vec<DiscoveredInvalidMint>,
+    ) -> Self {
+        self.invalid_mints_by_height
+            .insert(block_height, invalid_mints);
         self
     }
 }
@@ -260,6 +273,27 @@ impl InscriptionSource for MockInscriptionSource {
                 .unwrap_or_default())
         })
     }
+
+    fn load_block_mint_batch<'a>(
+        &'a self,
+        block_height: u32,
+        _block_hint: Option<Arc<Block>>,
+    ) -> Pin<Box<dyn Future<Output = Result<DiscoveredMintBatch, String>> + Send + 'a>> {
+        Box::pin(async move {
+            Ok(DiscoveredMintBatch {
+                valid_mints: self
+                    .mints_by_height
+                    .get(&block_height)
+                    .cloned()
+                    .unwrap_or_default(),
+                invalid_mints: self
+                    .invalid_mints_by_height
+                    .get(&block_height)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+        })
+    }
 }
 
 fn make_active_pass(
@@ -277,6 +311,8 @@ fn make_active_pass(
         eth_main: "0x1111111111111111111111111111111111111111".to_string(),
         eth_collab: None,
         prev: Vec::new(),
+        invalid_code: None,
+        invalid_reason: None,
         owner,
         state: MinerPassState::Active,
     }
@@ -302,6 +338,25 @@ fn make_discovered_mint(
         satpoint: Some(test_satpoint(8, 0, 0)),
         content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"eth_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
         content,
+    }
+}
+
+fn make_discovered_invalid_mint(
+    inscription_id: InscriptionId,
+    block_height: u32,
+    content_string: &str,
+    error_code: MintValidationErrorCode,
+    error_reason: &str,
+) -> DiscoveredInvalidMint {
+    DiscoveredInvalidMint {
+        inscription_id,
+        inscription_number: 1,
+        block_height,
+        timestamp: 0,
+        satpoint: Some(test_satpoint(18, 0, 0)),
+        content_string: content_string.to_string(),
+        error_code,
+        error_reason: error_reason.to_string(),
     }
 }
 
@@ -943,6 +998,91 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
     assert_eq!(new_pass.state, MinerPassState::Active);
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_records_invalid_mint_with_error_code() {
+    let block_height = 520;
+    let owner = test_script_hash(40);
+    let invalid_tx = build_test_tx(61);
+    let invalid_id = InscriptionId {
+        txid: invalid_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(block_height, build_test_block(vec![invalid_tx])),
+    );
+
+    let invalid_mint = make_discovered_invalid_mint(
+        invalid_id.clone(),
+        block_height,
+        "{\"p\":\"usdb\",\"op\":\"mint\",\"eth_main\":\"0x123\"}",
+        MintValidationErrorCode::InvalidEthMain,
+        "Invalid eth_main format",
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default().with_invalid_mints(block_height, vec![invalid_mint]),
+    );
+
+    let create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: invalid_id.txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[62u8; 32]).unwrap(),
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&invalid_id, create_info));
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "invalid_mint_recorded",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let stored = fixture
+        .storage
+        .get_pass_by_inscription_id(&invalid_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, MinerPassState::Invalid);
+    assert_eq!(stored.owner, owner);
+    assert_eq!(
+        stored.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::InvalidEthMain.as_str())
+    );
+    assert!(
+        stored
+            .invalid_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Invalid eth_main format")
+    );
+
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.active_address_count, 0);
+    assert_eq!(snapshot.total_balance, 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }

@@ -1,5 +1,7 @@
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
-use super::pass::{MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo};
+use super::pass::{
+    InvalidPassMintInscriptionInfo, MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo,
+};
 use super::transfer::{InscriptionTransferTracker, TransferTrackSeed};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
@@ -41,6 +43,11 @@ pub struct InscriptionIndexer {
 
     // Shutdown signal
     should_stop: Arc<AtomicBool>,
+}
+
+struct CollectedMintItems {
+    valid_items: Vec<InscriptionNewItem>,
+    invalid_items: Vec<InvalidPassMintInscriptionInfo>,
 }
 
 impl InscriptionIndexer {
@@ -431,7 +438,7 @@ impl InscriptionIndexer {
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
-        
+
         // Mark energy sync as pending at block start for crash recovery.
         self.pass_energy_manager.begin_block_sync(height)?;
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
@@ -446,12 +453,12 @@ impl InscriptionIndexer {
 
         // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
-        let new_inscription_items = self
+        let collected_mints = self
             .collect_block_inscription_mints(height, Some(block_hint.clone()))
             .await?;
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
-        let transfer_track_seeds = Self::build_transfer_track_seeds(&new_inscription_items);
+        let transfer_track_seeds = Self::build_transfer_track_seeds(&collected_mints.valid_items);
         let process_transfers_begin = Instant::now();
         let transfer_items = self
             .collect_block_inscription_transfer_items(
@@ -466,7 +473,7 @@ impl InscriptionIndexer {
         let ordered_events = match self.plan_block_events(
             height,
             block_hint.clone(),
-            new_inscription_items,
+            collected_mints.valid_items,
             transfer_items,
         ) {
             Ok(value) => value,
@@ -484,6 +491,19 @@ impl InscriptionIndexer {
                 }
             };
         let process_events_elapsed_ms = process_events_begin.elapsed().as_millis();
+
+        let process_invalid_mints_begin = Instant::now();
+        let invalid_mints_count = match self
+            .process_invalid_mints(collected_mints.invalid_items)
+            .await
+        {
+            Ok(value) => value,
+            Err(e) => {
+                self.transfer_tracker.rollback_staged_block(height).await?;
+                return Err(e);
+            }
+        };
+        let process_invalid_mints_elapsed_ms = process_invalid_mints_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
         let balance_snapshot = match self.balance_monitor.settle_active_balance(height).await {
@@ -510,15 +530,17 @@ impl InscriptionIndexer {
         }
 
         info!(
-            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, process_events_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
+            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, invalid_mints={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, process_events_elapsed_ms={}, process_invalid_mints_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
             height,
             new_inscriptions_count,
+            invalid_mints_count,
             transfer_count,
             balance_snapshot.active_address_count,
             balance_snapshot.total_balance,
             process_inscriptions_elapsed_ms,
             process_transfers_elapsed_ms,
             process_events_elapsed_ms,
+            process_invalid_mints_elapsed_ms,
             settle_balance_elapsed_ms,
             total_elapsed_ms
         );
@@ -571,18 +593,21 @@ impl InscriptionIndexer {
         &self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
-    ) -> Result<Vec<InscriptionNewItem>, String> {
-        let discovered_mints = self
+    ) -> Result<CollectedMintItems, String> {
+        let discovered_batch = self
             .inscription_source
-            .load_block_mints(block_height, block_hint)
+            .load_block_mint_batch(block_height, block_hint)
             .await?;
-        if discovered_mints.is_empty() {
+        if discovered_batch.valid_mints.is_empty() && discovered_batch.invalid_mints.is_empty() {
             info!("No inscriptions found at block height {}", block_height);
-            return Ok(Vec::new());
+            return Ok(CollectedMintItems {
+                valid_items: Vec::new(),
+                invalid_items: Vec::new(),
+            });
         }
 
-        let mut new_inscription_items = Vec::with_capacity(discovered_mints.len());
-        for mint in discovered_mints {
+        let mut new_inscription_items = Vec::with_capacity(discovered_batch.valid_mints.len());
+        for mint in discovered_batch.valid_mints {
             let create_info = self
                 .transfer_tracker
                 .calc_create_satpoint(&mint.inscription_id)
@@ -631,7 +656,39 @@ impl InscriptionIndexer {
             new_inscription_items.push(inscription_new_item);
         }
 
-        Ok(new_inscription_items)
+        let mut invalid_items = Vec::with_capacity(discovered_batch.invalid_mints.len());
+        for invalid_mint in discovered_batch.invalid_mints {
+            let create_info = self
+                .transfer_tracker
+                .calc_create_satpoint(&invalid_mint.inscription_id)
+                .await?;
+
+            if create_info.address.is_none() {
+                let msg = format!(
+                    "Invalid inscription {} at block {} has no creator address",
+                    invalid_mint.inscription_id, block_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let invalid_item = InvalidPassMintInscriptionInfo {
+                inscription_id: invalid_mint.inscription_id,
+                inscription_number: invalid_mint.inscription_number,
+                mint_txid: create_info.satpoint.outpoint.txid,
+                mint_block_height: invalid_mint.block_height,
+                mint_owner: create_info.address.unwrap(),
+                satpoint: create_info.satpoint,
+                error_code: invalid_mint.error_code.as_str().to_string(),
+                error_reason: invalid_mint.error_reason,
+            };
+            invalid_items.push(invalid_item);
+        }
+
+        Ok(CollectedMintItems {
+            valid_items: new_inscription_items,
+            invalid_items,
+        })
     }
 
     async fn on_new_inscription(&self, item: &InscriptionNewItem) -> Result<(), String> {
@@ -646,13 +703,32 @@ impl InscriptionIndexer {
             satpoint: item.satpoint.clone(),
             eth_main: mint_content.eth_main.clone(),
             eth_collab: mint_content.eth_collab.clone(),
-            prev: mint_content.prev_inscription_ids(),
+            prev: mint_content.prev_inscription_ids().map_err(|e| {
+                let msg = format!(
+                    "Failed to parse prev inscription ids for inscription {}: {}",
+                    item.inscription_id, e
+                );
+                error!("{}", msg);
+                msg
+            })?,
         };
         self.miner_pass_manager.on_mint_pass(&mint_info).await?;
 
         // Transfer tracking is handled by block-level staged state. We do not mutate
         // tracker cache directly here to keep commit/rollback consistent with DB savepoints.
         Ok(())
+    }
+
+    async fn process_invalid_mints(
+        &self,
+        invalid_mints: Vec<InvalidPassMintInscriptionInfo>,
+    ) -> Result<usize, String> {
+        let mut processed = 0usize;
+        for item in invalid_mints {
+            self.miner_pass_manager.on_invalid_mint_pass(&item).await?;
+            processed += 1;
+        }
+        Ok(processed)
     }
 
     async fn collect_block_inscription_transfer_items(
