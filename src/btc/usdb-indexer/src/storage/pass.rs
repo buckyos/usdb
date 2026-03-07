@@ -1955,6 +1955,86 @@ impl MinerPassStorage {
         Ok(None)
     }
 
+    pub fn get_pass_history_by_page_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_height: u32,
+        to_height: u32,
+        page: usize,
+        page_size: usize,
+        desc: bool,
+    ) -> Result<Vec<MinerPassHistoryInfo>, String> {
+        if from_height > to_height {
+            let msg = format!(
+                "Invalid history height range: from_height {} > to_height {}",
+                from_height, to_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+        let order = if desc { "DESC" } else { "ASC" };
+        let sql = format!(
+            "
+            SELECT
+                id,
+                inscription_id,
+                block_height,
+                event_type,
+                new_state,
+                new_owner,
+                new_satpoint
+            FROM miner_pass_state_history
+            WHERE inscription_id = ?1 AND block_height >= ?2 AND block_height <= ?3
+            ORDER BY block_height {}, id {}
+            LIMIT ?4 OFFSET ?5;
+            ",
+            order, order
+        );
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            let msg = format!(
+                "Failed to prepare statement to get pass history in range: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                inscription_id.to_string(),
+                from_height as i64,
+                to_height as i64,
+                page_size as i64,
+                offset as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query pass history in range: inscription_id={}, from_height={}, to_height={}, error={}",
+                    inscription_id, from_height, to_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying pass history in range: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            events.push(Self::row_to_pass_history_item(row)?);
+        }
+
+        Ok(events)
+    }
+
     pub fn get_all_active_pass_by_page_from_history_at_height(
         &self,
         page: usize,
@@ -2053,6 +2133,208 @@ impl MinerPassStorage {
         }
 
         Ok(passes)
+    }
+
+    pub fn get_owner_active_pass_from_history_at_height(
+        &self,
+        owner: &USDBScriptHash,
+        block_height: u32,
+    ) -> Result<Option<ActiveMinerPassInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "
+            WITH latest AS (
+                SELECT
+                    inscription_id,
+                    MAX(id) AS max_id
+                FROM miner_pass_state_history
+                WHERE block_height <= ?1
+                GROUP BY inscription_id
+            )
+            SELECT
+                h.inscription_id,
+                h.new_owner
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.max_id
+            WHERE h.new_state = ?2 AND h.new_owner = ?3
+            ORDER BY h.block_height DESC, h.id DESC
+            LIMIT 2;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get owner active pass from history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                block_height as i64,
+                MinerPassState::Active.as_str(),
+                owner.to_string()
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query owner active pass from history: owner={}, block_height={}, error={}",
+                    owner, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut results = Vec::<ActiveMinerPassInfo>::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read owner active pass row from history query: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let inscription_id = row
+                .get::<_, String>(0)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to get inscription_id from owner active history row: {}",
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse::<InscriptionId>()
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to parse inscription_id from owner active history row: {}",
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            let owner = row
+                .get::<_, String>(1)
+                .map_err(|e| {
+                    let msg = format!("Failed to get owner from owner active history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+                .parse::<USDBScriptHash>()
+                .map_err(|e| {
+                    let msg = format!("Failed to parse owner from owner active history row: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+            results.push(ActiveMinerPassInfo {
+                inscription_id,
+                owner,
+            });
+        }
+
+        if results.len() > 1 {
+            let msg = format!(
+                "Duplicate active owner detected in history snapshot: owner={}, block_height={}",
+                owner, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(results.into_iter().next())
+    }
+
+    pub fn get_invalid_passes_by_page_in_height_range(
+        &self,
+        from_height: u32,
+        to_height: u32,
+        error_code: Option<&str>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<MinerPassInfo>, String> {
+        if from_height > to_height {
+            let msg = format!(
+                "Invalid invalid-pass height range: from_height {} > to_height {}",
+                from_height, to_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+
+        let (sql, params): (&str, Vec<rusqlite::types::Value>) = if let Some(code) = error_code {
+            (
+                "
+                SELECT *
+                FROM miner_passes
+                WHERE state = ?1
+                  AND mint_block_height >= ?2
+                  AND mint_block_height <= ?3
+                  AND invalid_code = ?4
+                ORDER BY mint_block_height DESC, inscription_number DESC
+                LIMIT ?5 OFFSET ?6;
+                ",
+                vec![
+                    MinerPassState::Invalid.as_str().to_string().into(),
+                    (from_height as i64).into(),
+                    (to_height as i64).into(),
+                    code.to_string().into(),
+                    (page_size as i64).into(),
+                    (offset as i64).into(),
+                ],
+            )
+        } else {
+            (
+                "
+                SELECT *
+                FROM miner_passes
+                WHERE state = ?1
+                  AND mint_block_height >= ?2
+                  AND mint_block_height <= ?3
+                ORDER BY mint_block_height DESC, inscription_number DESC
+                LIMIT ?4 OFFSET ?5;
+                ",
+                vec![
+                    MinerPassState::Invalid.as_str().to_string().into(),
+                    (from_height as i64).into(),
+                    (to_height as i64).into(),
+                    (page_size as i64).into(),
+                    (offset as i64).into(),
+                ],
+            )
+        };
+
+        let mut stmt = conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement to query invalid passes: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query invalid passes: from_height={}, to_height={}, error_code={:?}, error={}",
+                    from_height, to_height, error_code, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut ret = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to get next row when querying invalid passes: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            ret.push(Self::row_to_pass_item(row)?);
+        }
+
+        Ok(ret)
     }
 }
 

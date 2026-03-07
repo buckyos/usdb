@@ -1,7 +1,7 @@
 use super::content::MinerPassState;
 use super::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::config::ConfigManagerRef;
-use crate::storage::{PassEnergyRecord, PassEnergyStorage};
+use crate::storage::{PassEnergyRecord, PassEnergyStorage, PassEnergyValue};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
 use ord::InscriptionId;
 use std::future::Future;
@@ -300,6 +300,53 @@ impl PassEnergyManager {
         });
 
         Ok(value)
+    }
+
+    pub fn get_pass_energy_record_exact(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<PassEnergyRecord>, String> {
+        let value = self
+            .storage
+            .get_pass_energy_record(inscription_id, block_height)?;
+        Ok(value.map(|v: PassEnergyValue| PassEnergyRecord {
+            inscription_id: inscription_id.clone(),
+            block_height,
+            state: v.state,
+            active_block_height: v.active_block_height,
+            owner_address: v.owner_address,
+            owner_balance: v.owner_balance,
+            owner_delta: v.owner_delta,
+            energy: v.energy,
+        }))
+    }
+
+    pub fn get_pass_energy_record_at_or_before(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<PassEnergyRecord>, String> {
+        self.storage
+            .find_last_pass_energy_record(inscription_id, block_height)
+    }
+
+    pub fn get_pass_energy_records_by_page_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_block_height: u32,
+        to_block_height: u32,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<PassEnergyRecord>, String> {
+        self.storage
+            .get_pass_energy_records_by_page_in_height_range(
+                inscription_id,
+                from_block_height,
+                to_block_height,
+                page,
+                page_size,
+            )
     }
 
     // Get the latest energy and state snapshot for the pass at or before block_height.

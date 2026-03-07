@@ -7,6 +7,7 @@ mod constants;
 mod index;
 mod inscription;
 mod output;
+mod service;
 mod status;
 mod storage;
 
@@ -63,6 +64,26 @@ async fn main() {
         })
         .unwrap();
     let indexer = Arc::new(indexer);
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+
+    let rpc_server = if config.config().usdb.rpc_server_enabled {
+        match service::UsdbIndexerRpcServer::start(
+            config.clone(),
+            status_manager.clone(),
+            indexer.clone(),
+            shutdown_tx.clone(),
+        ) {
+            Ok(server) => Some(server),
+            Err(e) => {
+                error!("Failed to start usdb-indexer RPC server: {}", e);
+                println!("Failed to start usdb-indexer RPC server: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        info!("USDB indexer RPC server is disabled by config");
+        None
+    };
 
     // Create a Future to wait for Ctrl+C (SIGINT) signal
     use tokio::signal;
@@ -91,6 +112,10 @@ async fn main() {
             output.println("Received SIGTERM, shutting down...");
             indexer.stop();
         }
+        _ = shutdown_rx.changed() => {
+            output.println("Received RPC stop signal, shutting down...");
+            indexer.stop();
+        }
         ret = indexer.run() => {
             output.println("Indexer run loop exited.");
             if let Err(e) = ret {
@@ -99,6 +124,10 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    if let Some(server) = &rpc_server {
+        server.close().await;
     }
 
     output.println("Indexer has shut down gracefully.");

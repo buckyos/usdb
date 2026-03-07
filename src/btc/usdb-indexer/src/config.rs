@@ -39,6 +39,14 @@ fn default_inscription_source_shadow_fail_fast() -> bool {
     false
 }
 
+fn default_rpc_server_port() -> u16 {
+    8100
+}
+
+fn default_rpc_server_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     // First BTC block height that the indexer should process for USDB protocol data.
@@ -76,6 +84,14 @@ pub struct USDBConfig {
     // Stop block processing immediately when shadow comparison finds mismatches.
     #[serde(default = "default_inscription_source_shadow_fail_fast")]
     pub inscription_source_shadow_fail_fast: bool,
+
+    // JSON-RPC server listen port for usdb-indexer external query APIs.
+    #[serde(default = "default_rpc_server_port")]
+    pub rpc_server_port: u16,
+
+    // Enable or disable JSON-RPC server startup.
+    #[serde(default = "default_rpc_server_enabled")]
+    pub rpc_server_enabled: bool,
 }
 
 impl Default for USDBConfig {
@@ -90,6 +106,8 @@ impl Default for USDBConfig {
             inscription_source: default_inscription_source(),
             inscription_source_shadow_compare: default_inscription_source_shadow_compare(),
             inscription_source_shadow_fail_fast: default_inscription_source_shadow_fail_fast(),
+            rpc_server_port: default_rpc_server_port(),
+            rpc_server_enabled: default_rpc_server_enabled(),
         }
     }
 }

@@ -206,6 +206,14 @@ impl InscriptionIndexer {
         }
     }
 
+    pub fn miner_pass_storage(&self) -> &MinerPassStorageRef {
+        &self.miner_pass_storage
+    }
+
+    pub fn pass_energy_manager(&self) -> &PassEnergyManagerRef {
+        &self.pass_energy_manager
+    }
+
     fn check_shutdown(&self) -> bool {
         self.should_stop.load(Ordering::SeqCst)
     }

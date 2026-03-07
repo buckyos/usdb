@@ -388,6 +388,98 @@ impl PassEnergyStorage {
         Ok(last_record)
     }
 
+    pub fn get_pass_energy_records_by_page_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_block_height: u32,
+        to_block_height: u32,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<PassEnergyRecord>, String> {
+        if from_block_height > to_block_height {
+            let msg = format!(
+                "Invalid energy height range: from_block_height {} > to_block_height {}",
+                from_block_height, to_block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", PASS_ENERGY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let offset = page.checked_mul(page_size).ok_or_else(|| {
+            let msg = format!(
+                "Pagination overflow when querying pass energy range: page={}, page_size={}",
+                page, page_size
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let start_key = Self::make_energy_key(inscription_id, from_block_height)?;
+        let mut iter = self.db.iterator_cf(
+            cf,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
+        );
+
+        let mut skipped = 0usize;
+        let mut records = Vec::new();
+
+        while let Some(item) = iter.next() {
+            let (key_bytes, value_bytes) = item.map_err(|e| {
+                let msg = format!("Failed to iterate pass energy records by range: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            let key = Self::parse_energy_key(&key_bytes)?;
+
+            // Records are ordered by (inscription_id, block_height). Once inscription changes,
+            // all following records are out of this query scope.
+            if key.inscription_id != *inscription_id {
+                break;
+            }
+
+            if key.block_height > to_block_height {
+                break;
+            }
+
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+
+            let (value, _): (PassEnergyValue, _) =
+                bincode::serde::decode_from_slice(&value_bytes, bincode::config::standard())
+                    .map_err(|e| {
+                        let msg = format!("Failed to deserialize PassEnergyValue: {}", e);
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+            records.push(PassEnergyRecord {
+                inscription_id: key.inscription_id.clone(),
+                block_height: key.block_height,
+                state: value.state,
+                active_block_height: value.active_block_height,
+                owner_address: value.owner_address,
+                owner_balance: value.owner_balance,
+                owner_delta: value.owner_delta,
+                energy: value.energy,
+            });
+
+            if records.len() >= page_size {
+                break;
+            }
+        }
+
+        Ok(records)
+    }
+
     // Clear all pass energy records from given block height (inclusive)
     pub fn clear_records_from_height(&self, from_block_height: u32) -> Result<(), String> {
         let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
@@ -670,6 +762,68 @@ mod tests {
             .unwrap();
 
         assert_eq!(storage.get_max_record_block_height().unwrap(), Some(300));
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_records_by_page_in_height_range() {
+        let dir = test_data_dir("range_page");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let target = inscription_id(50, 0);
+        let other = inscription_id(51, 1);
+        for height in [100, 110, 120, 130] {
+            storage
+                .insert_pass_energy_record(&PassEnergyRecord {
+                    inscription_id: target.clone(),
+                    block_height: height,
+                    state: MinerPassState::Active,
+                    active_block_height: height,
+                    owner_address: script_hash(8),
+                    owner_balance: 1_000 + height as u64,
+                    owner_delta: 1,
+                    energy: height as u64,
+                })
+                .unwrap();
+        }
+        storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: other,
+                block_height: 115,
+                state: MinerPassState::Active,
+                active_block_height: 115,
+                owner_address: script_hash(9),
+                owner_balance: 2_000,
+                owner_delta: 2,
+                energy: 115,
+            })
+            .unwrap();
+
+        let page0 = storage
+            .get_pass_energy_records_by_page_in_height_range(&target, 100, 130, 0, 2)
+            .unwrap();
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0[0].block_height, 100);
+        assert_eq!(page0[1].block_height, 110);
+
+        let page1 = storage
+            .get_pass_energy_records_by_page_in_height_range(&target, 100, 130, 1, 2)
+            .unwrap();
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1[0].block_height, 120);
+        assert_eq!(page1[1].block_height, 130);
+
+        let page2 = storage
+            .get_pass_energy_records_by_page_in_height_range(&target, 100, 130, 2, 2)
+            .unwrap();
+        assert!(page2.is_empty());
+
+        let err = storage
+            .get_pass_energy_records_by_page_in_height_range(&target, 130, 100, 0, 10)
+            .unwrap_err();
+        assert!(err.contains("Invalid energy height range"));
 
         drop(storage);
         std::fs::remove_dir_all(&dir).unwrap();

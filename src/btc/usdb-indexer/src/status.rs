@@ -4,6 +4,7 @@ use crate::output::IndexOutputRef;
 use balance_history::{
     RpcClient as BalanceHistoryRpcClient, RpcClientRef as BalanceHistoryClientRef,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
@@ -39,6 +40,15 @@ pub struct StatusManager {
     latest_depend_synced_block_height: Arc<AtomicU32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexerSyncStatusSnapshot {
+    pub genesis_block_height: u32,
+    pub current: u32,
+    pub total: u32,
+    pub message: Option<String>,
+    pub latest_depend_synced_block_height: u32,
+}
+
 impl StatusManager {
     pub fn new(config: ConfigManagerRef, output: IndexOutputRef) -> Result<Self, String> {
         // Init btc client
@@ -71,9 +81,14 @@ impl StatusManager {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub fn update_index_status(&self, current: Option<u32>, total: Option<u32>, message: Option<String>) {
+    pub fn update_index_status(
+        &self,
+        current: Option<u32>,
+        total: Option<u32>,
+        message: Option<String>,
+    ) {
         let mut status = self.usdb_status.lock().unwrap();
-        
+
         if let Some(total) = total {
             status.total = total;
             self.output.index_bar().set_length(total as u64);
@@ -83,10 +98,21 @@ impl StatusManager {
             status.current = current;
             self.output.index_bar().set_position(current as u64);
         }
-        
+
         if let Some(msg) = message {
             status.message = Some(msg.clone());
             self.output.index_bar().set_message(msg);
+        }
+    }
+
+    pub fn get_index_status_snapshot(&self) -> IndexerSyncStatusSnapshot {
+        let status = self.usdb_status.lock().unwrap();
+        IndexerSyncStatusSnapshot {
+            genesis_block_height: status.genesis_block_height,
+            current: status.current,
+            total: status.total,
+            message: status.message.clone(),
+            latest_depend_synced_block_height: self.latest_depend_synced_block_height(),
         }
     }
 
