@@ -10,7 +10,8 @@
 
 1. 两个 RPC 服务都返回 `regtest`
 2. `balance-history` 与 `usdb-indexer` 同步高度达到目标高度
-3. 可选转账断言：`get_address_balance` 返回值与发送金额一致
+3. `usdb-indexer` RPC 语义断言（`get_rpc_info`、`get_sync_status`、`get_active_passes_at_height`、`get_invalid_passes`、`get_active_balance_snapshot`）
+4. 可选转账断言：`get_address_balance` 返回值与发送金额一致
 
 脚本位置：
 
@@ -70,3 +71,7 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
    - `balance-history` RPC `stop`
    - `bitcoind` RPC `stop`
 4. 当开启转账断言且 `TARGET_HEIGHT < MIN_SPENDABLE_BLOCK_HEIGHT` 时，脚本会自动提高有效出块高度，确保 coinbase 可花费。
+5. 当前 smoke 场景未构造 USDB 铭文，预期断言为：
+   - active pass 列表为空
+   - invalid pass 列表为空
+   - active balance snapshot 为 `0/0`

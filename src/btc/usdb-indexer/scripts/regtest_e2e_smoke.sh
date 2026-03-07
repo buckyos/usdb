@@ -110,6 +110,179 @@ parse_json_string_result() {
   sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
+assert_usdb_rpc_info() {
+  local resp="$1"
+  local expected_network="$2"
+
+  python3 - "$expected_network" "$resp" <<'PY'
+import json
+import sys
+
+expected_network = sys.argv[1]
+payload = json.loads(sys.argv[2])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_rpc_info returned error: {payload['error']}")
+
+result = payload.get("result") or {}
+if result.get("service") != "usdb-indexer":
+    raise SystemExit(f"Unexpected service field in get_rpc_info: {result}")
+if result.get("network") != expected_network:
+    raise SystemExit(
+        f"Unexpected network in get_rpc_info: got={result.get('network')}, expected={expected_network}"
+    )
+
+features = set(result.get("features") or [])
+required = {
+    "pass_snapshot",
+    "active_passes_at_height",
+    "invalid_passes",
+    "active_balance_snapshot",
+    "latest_active_balance_snapshot",
+}
+missing = sorted(required - features)
+if missing:
+    raise SystemExit(f"Missing required get_rpc_info features: {missing}")
+PY
+}
+
+assert_usdb_state_at_height() {
+  local expected_height="$1"
+  local expected_total_balance="$2"
+  local expected_active_count="$3"
+  local sync_resp active_pass_resp invalid_resp latest_snapshot_resp exact_snapshot_resp
+
+  if ! sync_resp="$(must_rpc_call_usdb_indexer_json "get_sync_status" "[]")"; then
+    exit 1
+  fi
+  python3 - "$expected_height" "$sync_resp" <<'PY'
+import json
+import sys
+
+expected_height = int(sys.argv[1])
+payload = json.loads(sys.argv[2])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_sync_status returned error: {payload['error']}")
+
+result = payload.get("result") or {}
+synced_height = result.get("synced_block_height")
+depend_height = result.get("latest_depend_synced_block_height")
+if synced_height is None or int(synced_height) < expected_height:
+    raise SystemExit(
+        f"Synced block height too low: got={synced_height}, expected_at_least={expected_height}"
+    )
+if depend_height is None or int(depend_height) < expected_height:
+    raise SystemExit(
+        f"Dependent synced height too low: got={depend_height}, expected_at_least={expected_height}"
+    )
+PY
+
+  if ! active_pass_resp="$(must_rpc_call_usdb_indexer_json "get_active_passes_at_height" "[{\"at_height\":${expected_height},\"page\":0,\"page_size\":64}]")"; then
+    exit 1
+  fi
+  python3 - "$expected_height" "$active_pass_resp" <<'PY'
+import json
+import sys
+
+expected_height = int(sys.argv[1])
+payload = json.loads(sys.argv[2])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_active_passes_at_height returned error: {payload['error']}")
+
+result = payload.get("result") or {}
+resolved = result.get("resolved_height")
+items = result.get("items") or []
+if resolved != expected_height:
+    raise SystemExit(
+        f"Unexpected resolved_height in get_active_passes_at_height: got={resolved}, expected={expected_height}"
+    )
+if len(items) != 0:
+    raise SystemExit(f"Expected no active passes at height {expected_height}, got {len(items)}")
+PY
+
+  if ! invalid_resp="$(must_rpc_call_usdb_indexer_json "get_invalid_passes" "[{\"error_code\":null,\"from_height\":0,\"to_height\":${expected_height},\"page\":0,\"page_size\":64}]")"; then
+    exit 1
+  fi
+  python3 - "$expected_height" "$invalid_resp" <<'PY'
+import json
+import sys
+
+expected_height = int(sys.argv[1])
+payload = json.loads(sys.argv[2])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_invalid_passes returned error: {payload['error']}")
+
+result = payload.get("result") or {}
+resolved = result.get("resolved_height")
+items = result.get("items") or []
+if resolved != expected_height:
+    raise SystemExit(
+        f"Unexpected resolved_height in get_invalid_passes: got={resolved}, expected={expected_height}"
+    )
+if len(items) != 0:
+    raise SystemExit(f"Expected no invalid passes, got {len(items)}")
+PY
+
+  if ! latest_snapshot_resp="$(must_rpc_call_usdb_indexer_json "get_latest_active_balance_snapshot" "[]")"; then
+    exit 1
+  fi
+  python3 - "$expected_height" "$expected_total_balance" "$expected_active_count" "$latest_snapshot_resp" <<'PY'
+import json
+import sys
+
+expected_height = int(sys.argv[1])
+expected_total = int(sys.argv[2])
+expected_count = int(sys.argv[3])
+payload = json.loads(sys.argv[4])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_latest_active_balance_snapshot returned error: {payload['error']}")
+
+result = payload.get("result")
+if result is None:
+    raise SystemExit("Expected latest active balance snapshot, got null")
+if int(result.get("block_height", -1)) < expected_height:
+    raise SystemExit(
+        f"Latest active balance snapshot height too low: got={result.get('block_height')}, expected_at_least={expected_height}"
+    )
+if int(result.get("total_balance", -1)) != expected_total:
+    raise SystemExit(
+        f"Unexpected latest active balance total_balance: got={result.get('total_balance')}, expected={expected_total}"
+    )
+if int(result.get("active_address_count", -1)) != expected_count:
+    raise SystemExit(
+        f"Unexpected latest active balance active_address_count: got={result.get('active_address_count')}, expected={expected_count}"
+    )
+PY
+
+  if ! exact_snapshot_resp="$(must_rpc_call_usdb_indexer_json "get_active_balance_snapshot" "[{\"block_height\":${expected_height}}]")"; then
+    exit 1
+  fi
+  python3 - "$expected_height" "$expected_total_balance" "$expected_active_count" "$exact_snapshot_resp" <<'PY'
+import json
+import sys
+
+expected_height = int(sys.argv[1])
+expected_total = int(sys.argv[2])
+expected_count = int(sys.argv[3])
+payload = json.loads(sys.argv[4])
+if payload.get("error") is not None:
+    raise SystemExit(f"get_active_balance_snapshot returned error: {payload['error']}")
+
+result = payload.get("result") or {}
+if int(result.get("block_height", -1)) != expected_height:
+    raise SystemExit(
+        f"Unexpected exact snapshot block_height: got={result.get('block_height')}, expected={expected_height}"
+    )
+if int(result.get("total_balance", -1)) != expected_total:
+    raise SystemExit(
+        f"Unexpected exact snapshot total_balance: got={result.get('total_balance')}, expected={expected_total}"
+    )
+if int(result.get("active_address_count", -1)) != expected_count:
+    raise SystemExit(
+        f"Unexpected exact snapshot active_address_count: got={result.get('active_address_count')}, expected={expected_count}"
+    )
+PY
+}
+
 rpc_call_balance_history() {
   local method="$1"
   local params="${2:-[]}"
@@ -126,6 +299,44 @@ rpc_call_usdb_indexer() {
     -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
     -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+}
+
+rpc_call_usdb_indexer_json_retry() {
+  local method="$1"
+  local params="${2:-[]}"
+  local attempts="${3:-20}"
+  local sleep_sec="${4:-0.2}"
+  local resp=""
+
+  for _ in $(seq 1 "$attempts"); do
+    resp="$(rpc_call_usdb_indexer "$method" "$params" || true)"
+    if [[ -n "$resp" ]] && printf '%s' "$resp" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1; then
+      echo "$resp"
+      return 0
+    fi
+    sleep "$sleep_sec"
+  done
+
+  echo "$resp"
+  return 1
+}
+
+must_rpc_call_usdb_indexer_json() {
+  local method="$1"
+  local params="${2:-[]}"
+  local resp
+
+  if ! resp="$(rpc_call_usdb_indexer_json_retry "$method" "$params" 20 0.2)"; then
+    log "Failed to get valid JSON response from usdb-indexer: method=${method}, params=${params}, last_response=${resp:-<empty>}"
+    return 1
+  fi
+
+  if [[ -z "$resp" ]]; then
+    log "Received empty JSON response from usdb-indexer: method=${method}, params=${params}"
+    return 1
+  fi
+
+  echo "$resp"
 }
 
 wait_rpc_ready() {
@@ -385,8 +596,10 @@ main() {
 
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
 
-  local usdb_network_resp usdb_network
-  usdb_network_resp="$(rpc_call_usdb_indexer "get_network_type" "[]")"
+  local usdb_network_resp usdb_network usdb_rpc_info_resp
+  if ! usdb_network_resp="$(must_rpc_call_usdb_indexer_json "get_network_type" "[]")"; then
+    exit 1
+  fi
   usdb_network="$(echo "$usdb_network_resp" | parse_json_string_result)"
   log "usdb-indexer network=${usdb_network}"
   if [[ "$usdb_network" != "regtest" ]]; then
@@ -394,7 +607,15 @@ main() {
     exit 1
   fi
 
+  if ! usdb_rpc_info_resp="$(must_rpc_call_usdb_indexer_json "get_rpc_info" "[]")"; then
+    exit 1
+  fi
+  assert_usdb_rpc_info "$usdb_rpc_info_resp" "regtest"
+  log "usdb-indexer rpc_info assertion passed."
+
   wait_until_usdb_synced "$effective_target_height"
+  assert_usdb_state_at_height "$effective_target_height" "0" "0"
+  log "usdb-indexer state assertion passed at height=${effective_target_height}."
 
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
     local receiver_address txid expected_height expected_sat script_hash bh_balance_resp got_balance
@@ -421,6 +642,11 @@ main() {
       log "Balance assertion failed, response: ${bh_balance_resp}"
       exit 1
     fi
+
+    # In this smoke scenario there is no USDB mint/transfer inscription,
+    # so active-pass set and active-balance snapshot should remain empty/zero.
+    assert_usdb_state_at_height "$expected_height" "0" "0"
+    log "usdb-indexer state assertion passed at height=${expected_height}."
   fi
 
   log "E2E smoke test succeeded."
