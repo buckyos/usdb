@@ -2,246 +2,385 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 
+/// Service metadata returned by `get_rpc_info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcInfo {
+    /// Fixed service name, currently `usdb-indexer`.
     pub service: String,
+    /// Public API version, for example `1.0.0`.
     pub api_version: String,
+    /// Bitcoin network type, for example `mainnet` or `testnet`.
     pub network: String,
+    /// Advertised capability list supported by this server instance.
     pub features: Vec<String>,
 }
 
+/// Runtime synchronization status of the indexer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexerSyncStatus {
+    /// First block height included by protocol indexing.
     pub genesis_block_height: u32,
+    /// Last block height fully committed by the indexer.
     pub synced_block_height: Option<u32>,
+    /// Minimum synced height among dependency services.
     pub latest_depend_synced_block_height: u32,
+    /// Current progress position for status display.
     pub current: u32,
+    /// Total progress target for status display.
     pub total: u32,
+    /// Optional human-readable status message.
     pub message: Option<String>,
 }
 
+/// Parameters for `get_pass_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassSnapshotParams {
+    /// Target inscription id, for example `txidi0`.
     pub inscription_id: String,
+    /// Optional query height; `None` resolves to synced height.
     pub at_height: Option<u32>,
 }
 
+/// Pass snapshot resolved at a target height.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassSnapshot {
+    /// Pass inscription id.
     pub inscription_id: String,
+    /// Global inscription number from ordinals.
     pub inscription_number: i32,
+    /// Mint transaction id.
     pub mint_txid: String,
+    /// Mint block height.
     pub mint_block_height: u32,
+    /// Mint owner script hash.
     pub mint_owner: String,
+    /// Primary ETH address declared in mint content.
     pub eth_main: String,
+    /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Previous pass references used for inheritance.
     pub prev: Vec<String>,
+    /// Invalid error code when pass is marked invalid.
     pub invalid_code: Option<String>,
+    /// Human-readable invalid reason.
     pub invalid_reason: Option<String>,
+    /// Owner script hash at resolved height.
     pub owner: String,
+    /// Pass state at resolved height.
     pub state: String,
+    /// Pass satpoint at resolved height.
     pub satpoint: String,
+    /// Last history event id used to derive this snapshot.
     pub last_event_id: i64,
+    /// Last history event type used to derive this snapshot.
     pub last_event_type: String,
+    /// Final query height resolved by the server.
     pub resolved_height: u32,
 }
 
+/// Parameters for `get_active_passes_at_height`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetActivePassesAtHeightParams {
+    /// Optional query height; `None` resolves to synced height.
     pub at_height: Option<u32>,
+    /// Zero-based page index.
     pub page: usize,
+    /// Number of rows per page.
     pub page_size: usize,
 }
 
+/// Single active pass item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivePassItem {
+    /// Pass inscription id.
     pub inscription_id: String,
+    /// Current owner script hash.
     pub owner: String,
 }
 
+/// Paged active-pass response for a target height.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivePassesAtHeight {
+    /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Active pass rows in the requested page.
     pub items: Vec<ActivePassItem>,
 }
 
+/// Parameters for `get_pass_history`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassHistoryParams {
+    /// Target inscription id.
     pub inscription_id: String,
+    /// Inclusive range start height.
     pub from_height: u32,
+    /// Inclusive range end height.
     pub to_height: u32,
+    /// Optional order, `asc` or `desc`.
     pub order: Option<String>,
+    /// Zero-based page index.
     pub page: usize,
+    /// Number of rows per page.
     pub page_size: usize,
 }
 
+/// One pass history event row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassHistoryEvent {
+    /// Monotonic history event id.
     pub event_id: i64,
+    /// Pass inscription id.
     pub inscription_id: String,
+    /// Block height where this event happened.
     pub block_height: u32,
+    /// Event type, for example `mint` or `owner_transfer`.
     pub event_type: String,
+    /// Pass state after this event is applied.
     pub state: String,
+    /// Pass owner after this event is applied.
     pub owner: String,
+    /// Pass satpoint after this event is applied.
     pub satpoint: String,
 }
 
+/// Paged pass history response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassHistoryPage {
+    /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// History rows in requested page.
     pub items: Vec<PassHistoryEvent>,
 }
 
+/// Parameters for `get_owner_active_pass_at_height`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetOwnerActivePassAtHeightParams {
+    /// Target owner script hash.
     pub owner: String,
+    /// Optional query height; `None` resolves to synced height.
     pub at_height: Option<u32>,
 }
 
+/// Parameters for `get_pass_energy`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassEnergyParams {
+    /// Target inscription id.
     pub inscription_id: String,
+    /// Optional query height; `None` resolves to synced height.
     pub block_height: Option<u32>,
+    /// Query mode, `exact` or `at_or_before`.
     pub mode: Option<String>,
 }
 
+/// Energy snapshot of one pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassEnergySnapshot {
+    /// Pass inscription id.
     pub inscription_id: String,
+    /// Height used by this query after resolution.
     pub query_block_height: u32,
+    /// Height of the stored energy record returned.
     pub record_block_height: u32,
+    /// Pass state in this energy record.
     pub state: String,
+    /// Active base height used by energy formula.
     pub active_block_height: u32,
+    /// Owner script hash in this energy record.
     pub owner_address: String,
+    /// Owner BTC balance in satoshis for this record.
     pub owner_balance: u64,
+    /// Balance delta in satoshis for this record.
     pub owner_delta: i64,
+    /// Energy value in this record.
     pub energy: u64,
 }
 
+/// Parameters for `get_pass_energy_range`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassEnergyRangeParams {
+    /// Target inscription id.
     pub inscription_id: String,
+    /// Inclusive range start height.
     pub from_height: u32,
+    /// Inclusive range end height.
     pub to_height: u32,
+    /// Zero-based page index.
     pub page: usize,
+    /// Number of rows per page.
     pub page_size: usize,
 }
 
+/// One row in pass energy range response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassEnergyRangeItem {
+    /// Pass inscription id.
     pub inscription_id: String,
+    /// Block height of this energy record.
     pub record_block_height: u32,
+    /// Pass state in this record.
     pub state: String,
+    /// Active base height used by formula.
     pub active_block_height: u32,
+    /// Owner script hash in this record.
     pub owner_address: String,
+    /// Owner balance in satoshis.
     pub owner_balance: u64,
+    /// Owner balance delta in satoshis.
     pub owner_delta: i64,
+    /// Energy value for this record.
     pub energy: u64,
 }
 
+/// Paged pass energy range response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassEnergyRangePage {
+    /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Energy rows in requested page.
     pub items: Vec<PassEnergyRangeItem>,
 }
 
+/// Parameters for `get_active_balance_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetActiveBalanceSnapshotParams {
+    /// Exact block height of the requested snapshot.
     pub block_height: u32,
 }
 
+/// Active address total-balance snapshot at one height.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcActiveBalanceSnapshot {
+    /// Snapshot block height.
     pub block_height: u32,
+    /// Sum of balances of all active owners in satoshis.
     pub total_balance: u64,
+    /// Number of active owners included in the snapshot.
     pub active_address_count: u32,
 }
 
+/// Parameters for `get_invalid_passes`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetInvalidPassesParams {
+    /// Optional invalid code filter.
     pub error_code: Option<String>,
+    /// Inclusive range start height based on mint height.
     pub from_height: u32,
+    /// Inclusive range end height based on mint height.
     pub to_height: u32,
+    /// Zero-based page index.
     pub page: usize,
+    /// Number of rows per page.
     pub page_size: usize,
 }
 
+/// One invalid pass row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvalidPassItem {
+    /// Invalid pass inscription id.
     pub inscription_id: String,
+    /// Global inscription number.
     pub inscription_number: i32,
+    /// Mint transaction id.
     pub mint_txid: String,
+    /// Mint block height.
     pub mint_block_height: u32,
+    /// Mint owner script hash.
     pub mint_owner: String,
+    /// Primary ETH address in mint content.
     pub eth_main: String,
+    /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Previous pass references from mint content.
     pub prev: Vec<String>,
+    /// Invalid error code.
     pub invalid_code: Option<String>,
+    /// Invalid reason message.
     pub invalid_reason: Option<String>,
+    /// Current owner script hash.
     pub owner: String,
+    /// Current state, expected to be `invalid`.
     pub state: String,
+    /// Current satpoint.
     pub satpoint: String,
 }
 
+/// Paged invalid-pass response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvalidPassesPage {
+    /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Invalid pass rows in requested page.
     pub items: Vec<InvalidPassItem>,
 }
 
+/// JSON-RPC interface exposed by `usdb-indexer`.
 #[rpc(server)]
 pub trait UsdbIndexerRpc {
+    /// Returns service metadata and feature flags.
     #[rpc(name = "get_rpc_info")]
     fn get_rpc_info(&self) -> JsonResult<RpcInfo>;
 
+    /// Returns current network type.
     #[rpc(name = "get_network_type")]
     fn get_network_type(&self) -> JsonResult<String>;
 
+    /// Returns indexer sync progress and dependency status.
     #[rpc(name = "get_sync_status")]
     fn get_sync_status(&self) -> JsonResult<IndexerSyncStatus>;
 
+    /// Returns latest fully committed sync height.
     #[rpc(name = "get_synced_block_height")]
     fn get_synced_block_height(&self) -> JsonResult<Option<u64>>;
 
+    /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>>;
 
+    /// Returns active pass list at a target height with pagination.
     #[rpc(name = "get_active_passes_at_height")]
     fn get_active_passes_at_height(
         &self,
         params: GetActivePassesAtHeightParams,
     ) -> JsonResult<ActivePassesAtHeight>;
 
+    /// Returns pass history events in a height range.
     #[rpc(name = "get_pass_history")]
     fn get_pass_history(&self, params: GetPassHistoryParams) -> JsonResult<PassHistoryPage>;
 
+    /// Returns owner's active pass snapshot at a target height.
     #[rpc(name = "get_owner_active_pass_at_height")]
     fn get_owner_active_pass_at_height(
         &self,
         params: GetOwnerActivePassAtHeightParams,
     ) -> JsonResult<Option<PassSnapshot>>;
 
+    /// Returns one pass energy snapshot.
     #[rpc(name = "get_pass_energy")]
     fn get_pass_energy(&self, params: GetPassEnergyParams) -> JsonResult<PassEnergySnapshot>;
 
+    /// Returns pass energy timeline records in a height range.
     #[rpc(name = "get_pass_energy_range")]
     fn get_pass_energy_range(
         &self,
         params: GetPassEnergyRangeParams,
     ) -> JsonResult<PassEnergyRangePage>;
 
+    /// Returns invalid passes with optional code filter.
     #[rpc(name = "get_invalid_passes")]
     fn get_invalid_passes(&self, params: GetInvalidPassesParams) -> JsonResult<InvalidPassesPage>;
 
+    /// Returns active-balance snapshot at exact height.
     #[rpc(name = "get_active_balance_snapshot")]
     fn get_active_balance_snapshot(
         &self,
         params: GetActiveBalanceSnapshotParams,
     ) -> JsonResult<RpcActiveBalanceSnapshot>;
 
+    /// Returns latest available active-balance snapshot.
     #[rpc(name = "get_latest_active_balance_snapshot")]
     fn get_latest_active_balance_snapshot(&self) -> JsonResult<Option<RpcActiveBalanceSnapshot>>;
 
+    /// Triggers graceful shutdown of the indexer process.
     #[rpc(name = "stop")]
     fn stop(&self) -> JsonResult<()>;
 }
