@@ -19,12 +19,15 @@ USDB_RPC_PORT="${USDB_RPC_PORT:-18113}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-18094}"
 
 MINER_WALLET_NAME="${MINER_WALLET_NAME:-usdb-live-miner}"
-ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-live}"
+ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-live-a}"
+ORD_WALLET_NAME_B="${ORD_WALLET_NAME_B:-ord-live-b}"
 PREMINE_BLOCKS="${PREMINE_BLOCKS:-130}"
 ORD_FEE_RATE="${ORD_FEE_RATE:-1}"
 FUND_ORD_AMOUNT_BTC="${FUND_ORD_AMOUNT_BTC:-5.0}"
 FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
+TRANSFER_CONFIRM_BLOCKS="${TRANSFER_CONFIRM_BLOCKS:-1}"
+REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -261,6 +264,26 @@ wait_until_ord_server_synced_to_bitcoind() {
   done
 }
 
+wait_until_ord_wallet_has_inscription() {
+  local wallet_name="$1"
+  local inscription_id="$2"
+  local start_ts now resp
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(run_ord_wallet_named "$wallet_name" inscriptions 2>/dev/null || true)"
+    if [[ "$resp" == *"$inscription_id"* ]]; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      log "ord wallet sync timeout: wallet=${wallet_name}, inscription_id=${inscription_id}, last_response=${resp}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 extract_first_match() {
   local pattern="$1"
   python3 - "$pattern" <<'PY'
@@ -373,6 +396,28 @@ run_ord_wallet() {
     "$@"
 }
 
+run_ord_wallet_named() {
+  local wallet_name="$1"
+  shift
+  run_ord wallet \
+    --no-sync \
+    --server-url "http://127.0.0.1:${ORD_SERVER_PORT}" \
+    --name "$wallet_name" \
+    "$@"
+}
+
+extract_txid() {
+  local raw="$1"
+  python3 - "$raw" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+match = re.search(r"\b([0-9a-f]{64})\b", raw)
+print(match.group(1) if match else "")
+PY
+}
+
 create_balance_history_config() {
   mkdir -p "$BALANCE_HISTORY_ROOT"
   cat >"${BALANCE_HISTORY_ROOT}/config.toml" <<EOF
@@ -436,19 +481,26 @@ EOF
 
 build_live_scenario() {
   local scenario_file="$1"
-  local inscription_id="$2"
-  local block_height="$3"
+  local inscription_id_1="$2"
+  local inscription_id_2="$3"
+  local height_mint="$4"
+  local height_transfer="$5"
+  local height_remint="$6"
   cat >"$scenario_file" <<EOF
 {
-  "name": "live-ord-mint-assert",
+  "name": "live-ord-transfer-remint-assert",
   "steps": [
     {
       "type": "wait_balance_history_synced",
-      "height": ${block_height}
+      "height": ${height_remint}
     },
     {
       "type": "wait_usdb_synced",
-      "height": ${block_height}
+      "height": ${height_remint}
+    },
+    {
+      "type": "log",
+      "message": "Check mint height snapshot and energy"
     },
     {
       "type": "rpc_call",
@@ -456,21 +508,21 @@ build_live_scenario() {
       "method": "get_pass_snapshot",
       "params": [
         {
-          "inscription_id": "${inscription_id}",
-          "at_height": ${block_height}
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_mint}
         }
       ],
       "result_only": true,
-      "var": "pass_snapshot"
+      "var": "pass1_mint"
     },
     {
       "type": "assert_eq",
-      "left": "\$pass_snapshot.inscription_id",
-      "right": "${inscription_id}"
+      "left": "\$pass1_mint.inscription_id",
+      "right": "${inscription_id_1}"
     },
     {
       "type": "assert_eq",
-      "left": "\$pass_snapshot.state",
+      "left": "\$pass1_mint.state",
       "right": "active"
     },
     {
@@ -479,17 +531,17 @@ build_live_scenario() {
       "method": "get_pass_energy",
       "params": [
         {
-          "inscription_id": "${inscription_id}",
-          "block_height": ${block_height},
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_mint},
           "mode": "at_or_before"
         }
       ],
       "result_only": true,
-      "var": "pass_energy"
+      "var": "pass1_energy_mint"
     },
     {
       "type": "assert_eq",
-      "left": "\$pass_energy.state",
+      "left": "\$pass1_energy_mint.state",
       "right": "active"
     },
     {
@@ -498,20 +550,188 @@ build_live_scenario() {
       "method": "get_active_balance_snapshot",
       "params": [
         {
-          "block_height": ${block_height}
+          "block_height": ${height_mint}
         }
       ],
       "result_only": true,
-      "var": "balance_snapshot"
+      "var": "snapshot_mint"
     },
     {
       "type": "assert_ge",
-      "left": "\$balance_snapshot.active_address_count",
+      "left": "\$snapshot_mint.active_address_count",
       "right": 1
     },
     {
       "type": "assert_gt",
-      "left": "\$balance_snapshot.total_balance",
+      "left": "\$snapshot_mint.total_balance",
+      "right": 0
+    },
+    {
+      "type": "log",
+      "message": "Check transfer height snapshot and energy"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_transfer.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_transfer},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_transfer.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "snapshot_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$snapshot_transfer.active_address_count",
+      "right": 0
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$snapshot_transfer.total_balance",
+      "right": 0
+    },
+    {
+      "type": "log",
+      "message": "Check remint(prev) height snapshot and energy"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_remint}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_remint"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_remint.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_remint},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_remint"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_remint.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_remint}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_remint"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_remint.inscription_id",
+      "right": "${inscription_id_2}"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_remint.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_remint},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_remint"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_remint.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${height_remint}
+        }
+      ],
+      "result_only": true,
+      "var": "snapshot_remint"
+    },
+    {
+      "type": "assert_ge",
+      "left": "\$snapshot_remint.active_address_count",
+      "right": 1
+    },
+    {
+      "type": "assert_gt",
+      "left": "\$snapshot_remint.total_balance",
       "right": 0
     },
     {
@@ -521,7 +741,7 @@ build_live_scenario() {
       "params": [
         {
           "from_height": 1,
-          "to_height": ${block_height},
+          "to_height": ${height_remint},
           "page": 0,
           "page_size": 20
         }
@@ -532,7 +752,7 @@ build_live_scenario() {
     {
       "type": "assert_eq",
       "left": "\$invalid_page.resolved_height",
-      "right": ${block_height}
+      "right": ${height_remint}
     },
     {
       "type": "assert_len",
@@ -588,24 +808,37 @@ main() {
     generatetoaddress "$PREMINE_BLOCKS" "$miner_address" >/dev/null
 
   log "Starting temporary ord server for wallet operations on http://127.0.0.1:${ORD_SERVER_PORT}"
-  run_ord --index-addresses server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
+  run_ord --index-addresses --index-transactions server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
     >"${WORK_DIR}/ord-server.log" 2>&1 &
   ORD_SERVER_PID=$!
   wait_http_ready "ord-server" "http://127.0.0.1:${ORD_SERVER_PORT}/blockcount"
   wait_until_ord_server_synced_to_bitcoind
 
-  log "Preparing ord wallet: ${ORD_WALLET_NAME}"
-  run_ord_wallet create >/dev/null 2>&1 || true
-  local ord_receive_output ord_receive_address
-  ord_receive_output="$(run_ord_wallet receive 2>&1 || true)"
-  ord_receive_address="$(extract_bech32_address "$ord_receive_output")"
-  if [[ -z "$ord_receive_address" ]]; then
-    log "Failed to parse ord wallet receive address from output: ${ord_receive_output}"
+  log "Preparing ord wallets: ${ORD_WALLET_NAME}, ${ORD_WALLET_NAME_B}"
+  run_ord_wallet_named "$ORD_WALLET_NAME" create >/dev/null 2>&1 || true
+  run_ord_wallet_named "$ORD_WALLET_NAME_B" create >/dev/null 2>&1 || true
+
+  local ord_receive_output_a ord_receive_address_a
+  local ord_receive_output_b ord_receive_address_b
+  ord_receive_output_a="$(run_ord_wallet_named "$ORD_WALLET_NAME" receive 2>&1 || true)"
+  ord_receive_address_a="$(extract_bech32_address "$ord_receive_output_a")"
+  if [[ -z "$ord_receive_address_a" ]]; then
+    log "Failed to parse ord wallet A receive address from output: ${ord_receive_output_a}"
     exit 1
   fi
-  log "Funding ord wallet address: ${ord_receive_address}"
+  ord_receive_output_b="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" receive 2>&1 || true)"
+  ord_receive_address_b="$(extract_bech32_address "$ord_receive_output_b")"
+  if [[ -z "$ord_receive_address_b" ]]; then
+    log "Failed to parse ord wallet B receive address from output: ${ord_receive_output_b}"
+    exit 1
+  fi
+
+  log "Funding ord wallet A address: ${ord_receive_address_a}"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    sendtoaddress "$ord_receive_address" "$FUND_ORD_AMOUNT_BTC" >/dev/null
+    sendtoaddress "$ord_receive_address_a" "$FUND_ORD_AMOUNT_BTC" >/dev/null
+  log "Funding ord wallet B address: ${ord_receive_address_b}"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+    sendtoaddress "$ord_receive_address_b" "$FUND_ORD_AMOUNT_BTC" >/dev/null
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
     generatetoaddress "$FUND_CONFIRM_BLOCKS" "$miner_address" >/dev/null
   wait_until_ord_server_synced_to_bitcoind
@@ -621,22 +854,62 @@ EOF
     exit 1
   fi
 
-  log "Inscribe mint via ord CLI: fee_rate=${ORD_FEE_RATE}, content_file=${ORD_CONTENT_FILE}"
-  local inscribe_output inscription_id
-  inscribe_output="$(run_ord_wallet inscribe --fee-rate "$ORD_FEE_RATE" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
-  inscription_id="$(extract_inscription_id "$inscribe_output")"
-  if [[ -z "$inscription_id" ]]; then
-    log "Failed to parse inscription id from ord output: ${inscribe_output}"
+  log "Inscribe first mint via ord CLI: wallet=${ORD_WALLET_NAME}, fee_rate=${ORD_FEE_RATE}, content_file=${ORD_CONTENT_FILE}"
+  local inscribe_output_1 inscription_id_1
+  inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
+  inscription_id_1="$(extract_inscription_id "$inscribe_output_1")"
+  if [[ -z "$inscription_id_1" ]]; then
+    log "Failed to parse first inscription id from ord output: ${inscribe_output_1}"
     exit 1
   fi
-  log "Inscribe created inscription_id=${inscription_id}"
+  log "First mint inscription_id=${inscription_id_1}"
 
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
     generatetoaddress "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address" >/dev/null
   wait_until_ord_server_synced_to_bitcoind
+  local height_mint_1
+  height_mint_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  log "Chain height after first mint confirmations: ${height_mint_1}"
+
+  log "Transfer first inscription from wallet A to wallet B: inscription_id=${inscription_id_1}"
+  local transfer_output transfer_txid
+  transfer_output="$(run_ord_wallet_named "$ORD_WALLET_NAME" send --fee-rate "$ORD_FEE_RATE" "$ord_receive_address_b" "$inscription_id_1" 2>&1 || true)"
+  transfer_txid="$(extract_txid "$transfer_output")"
+  if [[ -z "$transfer_txid" ]]; then
+    log "Failed to parse transfer txid from ord output: ${transfer_output}"
+    exit 1
+  fi
+  log "Transfer txid=${transfer_txid}"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+    generatetoaddress "$TRANSFER_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+  wait_until_ord_server_synced_to_bitcoind
+  wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$inscription_id_1"
+  local height_transfer_1
+  height_transfer_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  log "Chain height after transfer confirmations: ${height_transfer_1}"
+
+  local remint_content_file
+  remint_content_file="$WORK_DIR/usdb_live_remint.json"
+  cat >"$remint_content_file" <<EOF
+{"p":"usdb","op":"mint","eth_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+EOF
+
+  log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
+  local inscribe_output_2 inscription_id_2
+  inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --file "$remint_content_file" 2>&1 || true)"
+  inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
+  if [[ -z "$inscription_id_2" ]]; then
+    log "Failed to parse remint inscription id from ord output: ${inscribe_output_2}"
+    exit 1
+  fi
+  log "Remint inscription_id=${inscription_id_2}"
+
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+    generatetoaddress "$REMINT_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+  wait_until_ord_server_synced_to_bitcoind
   local target_height
   target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  log "Current chain height after inscribe confirmations: ${target_height}"
+  log "Chain height after remint confirmations: ${target_height}"
 
   create_balance_history_config
   create_usdb_indexer_config
@@ -663,8 +936,8 @@ EOF
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
 
   local scenario_file
-  scenario_file="$WORK_DIR/live_ord_mint_assert.json"
-  build_live_scenario "$scenario_file" "$inscription_id" "$target_height"
+  scenario_file="$WORK_DIR/live_ord_transfer_remint_assert.json"
+  build_live_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_1" "$height_transfer_1" "$target_height"
 
   python3 "$SCENARIO_RUNNER" \
     --btc-cli "$BITCOIN_CLI_BIN" \
@@ -683,7 +956,7 @@ EOF
     --skip-initial-usdb-state-assert \
     --scenario-file "$scenario_file"
 
-  log "Live ord mint e2e succeeded: inscription_id=${inscription_id}, target_height=${target_height}"
+  log "Live ord transfer/remint e2e succeeded: pass1=${inscription_id_1}, pass2=${inscription_id_2}, target_height=${target_height}"
   log "Logs: ${WORK_DIR}/balance-history.log, ${WORK_DIR}/usdb-indexer.log"
 }
 

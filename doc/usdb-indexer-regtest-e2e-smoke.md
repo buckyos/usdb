@@ -72,7 +72,11 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 18. `RUN_LIVE_ORD_E2E`：`run_regression.sh` 是否执行 live ord 铸造 e2e（默认 `0`）
 19. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
 20. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
-21. `ORD_CONTENT_FILE`：live ord 铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
+21. `ORD_WALLET_NAME`：live e2e 首个 ord 钱包名称（默认 `ord-live-a`）
+22. `ORD_WALLET_NAME_B`：live e2e 第二个 ord 钱包名称（默认 `ord-live-b`）
+23. `TRANSFER_CONFIRM_BLOCKS`：铭文转移后的确认块数（默认 `1`）
+24. `REMINT_CONFIRM_BLOCKS`：`remint(prev)` 后的确认块数（默认 `2`）
+25. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
 
 示例：
 
