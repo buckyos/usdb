@@ -65,7 +65,7 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 11. `SEND_AMOUNT_BTC`：转账断言金额（默认 `1.0`）
 12. `MIN_SPENDABLE_BLOCK_HEIGHT`：转账断言所需最小可花费高度（默认 `101`）
 13. `CURL_CONNECT_TIMEOUT_SEC`：RPC 连接超时秒数（默认 `2`）
-14. `CURL_MAX_TIME_SEC`：单个 RPC 请求最大耗时秒数（默认 `5`）
+14. `CURL_MAX_TIME_SEC`：单个 RPC 请求最大耗时秒数（默认 `8`）
 15. `INSCRIPTION_SOURCE`：铭文源类型（默认 `bitcoind`，可选 `ord`/`fixture`）
 16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
 17. `RUN_REGTEST_SMOKE`：`run_regression.sh` 是否执行 regtest smoke（默认 `1`）
@@ -77,6 +77,7 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 23. `TRANSFER_CONFIRM_BLOCKS`：铭文转移后的确认块数（默认 `1`）
 24. `REMINT_CONFIRM_BLOCKS`：`remint(prev)` 后的确认块数（默认 `2`）
 25. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
+26. `DIAG_TAIL_LINES`：失败诊断时每个关键日志打印的尾部行数（默认 `120`）
 
 示例：
 

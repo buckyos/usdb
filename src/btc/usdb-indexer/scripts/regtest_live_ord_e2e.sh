@@ -31,6 +31,7 @@ REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
+DIAG_TAIL_LINES="${DIAG_TAIL_LINES:-120}"
 
 ORD_CONTENT_FILE="${ORD_CONTENT_FILE:-}"
 
@@ -40,9 +41,66 @@ BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
 USDB_INDEXER_PID=""
 ORD_SERVER_PID=""
+SCENARIO_FILE_PATH=""
+DIAGNOSTIC_PRINTED=0
+LAST_ERROR_LINE="unknown"
+LAST_ERROR_COMMAND="script_exit"
 
 log() {
   echo "[usdb-live-ord-e2e] $*"
+}
+
+print_tail_if_exists() {
+  local label="$1"
+  local file_path="$2"
+  if [[ -f "$file_path" ]]; then
+    log "---- ${label} (tail -n ${DIAG_TAIL_LINES}) ----"
+    tail -n "$DIAG_TAIL_LINES" "$file_path" || true
+    log "---- end ${label} ----"
+  else
+    log "Diagnostic file not found: ${label} path=${file_path}"
+  fi
+}
+
+print_failure_diagnostics() {
+  local exit_code="$1"
+  local line_no="$2"
+  local command_text="$3"
+
+  if [[ "$DIAGNOSTIC_PRINTED" == "1" ]]; then
+    return
+  fi
+  DIAGNOSTIC_PRINTED=1
+
+  log "Failure diagnostics: exit_code=${exit_code}, line=${line_no}, command=${command_text}"
+  log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_rpc_port=${USDB_RPC_PORT}"
+  log "Wallet context: miner_wallet=${MINER_WALLET_NAME}, ord_wallet_a=${ORD_WALLET_NAME}, ord_wallet_b=${ORD_WALLET_NAME_B}"
+
+  print_tail_if_exists "ord-server.log" "${WORK_DIR}/ord-server.log"
+  print_tail_if_exists "balance-history.log" "${WORK_DIR}/balance-history.log"
+  print_tail_if_exists "usdb-indexer.log" "${WORK_DIR}/usdb-indexer.log"
+  print_tail_if_exists "bitcoind-debug.log" "${BITCOIN_DIR}/regtest/debug.log"
+
+  if [[ -n "$SCENARIO_FILE_PATH" ]]; then
+    print_tail_if_exists "scenario-file" "$SCENARIO_FILE_PATH"
+  fi
+}
+
+on_error() {
+  local exit_code="$1"
+  local line_no="$2"
+  local command_text="$3"
+  LAST_ERROR_LINE="$line_no"
+  LAST_ERROR_COMMAND="$command_text"
+  print_failure_diagnostics "$exit_code" "$line_no" "$command_text"
+}
+
+on_exit() {
+  local exit_code=$?
+  if [[ "$exit_code" -ne 0 ]]; then
+    print_failure_diagnostics "$exit_code" "$LAST_ERROR_LINE" "$LAST_ERROR_COMMAND"
+  fi
+  cleanup
 }
 
 require_cmd() {
@@ -765,7 +823,8 @@ EOF
 }
 
 main() {
-  trap cleanup EXIT
+  trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
+  trap on_exit EXIT
 
   resolve_bitcoin_binaries
   require_cmd "$ORD_BIN"
@@ -937,6 +996,7 @@ EOF
 
   local scenario_file
   scenario_file="$WORK_DIR/live_ord_transfer_remint_assert.json"
+  SCENARIO_FILE_PATH="$scenario_file"
   build_live_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_1" "$height_transfer_1" "$target_height"
 
   python3 "$SCENARIO_RUNNER" \
