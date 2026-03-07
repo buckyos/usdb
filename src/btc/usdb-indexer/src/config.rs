@@ -47,6 +47,10 @@ fn default_rpc_server_enabled() -> bool {
     true
 }
 
+fn default_monitor_ord_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     // First BTC block height that the indexer should process for USDB protocol data.
@@ -92,6 +96,11 @@ pub struct USDBConfig {
     // Enable or disable JSON-RPC server startup.
     #[serde(default = "default_rpc_server_enabled")]
     pub rpc_server_enabled: bool,
+
+    // Enable ord service health monitoring in StatusManager dependency check.
+    // Disable this when running high-level tests without ord service.
+    #[serde(default = "default_monitor_ord_enabled")]
+    pub monitor_ord_enabled: bool,
 }
 
 impl Default for USDBConfig {
@@ -108,6 +117,7 @@ impl Default for USDBConfig {
             inscription_source_shadow_fail_fast: default_inscription_source_shadow_fail_fast(),
             rpc_server_port: default_rpc_server_port(),
             rpc_server_enabled: default_rpc_server_enabled(),
+            monitor_ord_enabled: default_monitor_ord_enabled(),
         }
     }
 }

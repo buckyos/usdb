@@ -30,7 +30,7 @@ impl USDBInscriptionIndexStatus {
 #[derive(Clone)]
 pub struct StatusManager {
     btc_client: BTCRpcClientRef,
-    ord_client: OrdClientRef,
+    ord_client: Option<OrdClientRef>,
     balance_history_client: BalanceHistoryClientRef,
     output: IndexOutputRef,
 
@@ -57,7 +57,13 @@ impl StatusManager {
             config.config().bitcoin.auth(),
         )?;
 
-        let ord_client = OrdClient::new(config.config().ordinals.rpc_url())?;
+        let ord_client = if config.config().usdb.monitor_ord_enabled {
+            let client = OrdClient::new(config.config().ordinals.rpc_url())?;
+            Some(Arc::new(client))
+        } else {
+            warn!("ORD monitor is disabled by config: module=status, monitor_ord_enabled=false");
+            None
+        };
 
         let balance_history_client =
             BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?;
@@ -68,7 +74,7 @@ impl StatusManager {
 
         Ok(Self {
             btc_client: Arc::new(btc_client),
-            ord_client: Arc::new(ord_client),
+            ord_client,
             balance_history_client: Arc::new(balance_history_client),
             output,
             latest_depend_synced_block_height: Arc::new(AtomicU32::new(0)),
@@ -148,25 +154,36 @@ impl StatusManager {
             btc_bar.reset_eta();
         }
 
-        let ord_height = self
-            .ord_client
-            .get_latest_block_height()
-            .await
-            .map_err(|e| {
+        let ord_height = if let Some(ord_client) = &self.ord_client {
+            let ord_height = ord_client.get_latest_block_height().await.map_err(|e| {
                 let msg = format!("Failed to get Ordinals block height: {}", e);
                 error!("{}", msg);
                 self.output.ord_bar().set_message(msg.clone());
                 msg
             })?;
 
-        // Update Ordinals bar
-        let ord_bar = self.output.ord_bar();
-        let current = ord_bar.length().unwrap_or(0);
-        ord_bar.set_length(btc_height as u64);
-        ord_bar.set_position(ord_height as u64);
-        if current == 0 {
-            ord_bar.reset_eta();
-        }
+            // Update Ordinals bar
+            let ord_bar = self.output.ord_bar();
+            let current = ord_bar.length().unwrap_or(0);
+            ord_bar.set_length(btc_height as u64);
+            ord_bar.set_position(ord_height as u64);
+            if current == 0 {
+                ord_bar.reset_eta();
+            }
+
+            ord_height
+        } else {
+            // Keep ord bar aligned with BTC when ord monitor is explicitly disabled.
+            let ord_bar = self.output.ord_bar();
+            let current = ord_bar.length().unwrap_or(0);
+            ord_bar.set_length(btc_height as u64);
+            ord_bar.set_position(btc_height as u64);
+            if current == 0 {
+                ord_bar.reset_eta();
+            }
+            ord_bar.set_message("ORD monitor disabled".to_string());
+            btc_height
+        };
 
         let status = self
             .balance_history_client
