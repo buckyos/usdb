@@ -5,6 +5,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-bh-regtest-XXXXXX)}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
+# Prefer local Bitcoin Core binaries if available (can be overridden by env).
+BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-19443}"
 BH_RPC_PORT="${BH_RPC_PORT:-18080}"
@@ -16,6 +18,8 @@ SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.25}"
 
 BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
+BITCOIND_BIN=""
+BITCOIN_CLI_BIN=""
 
 log() {
   echo "[regtest-smoke] $*"
@@ -40,8 +44,8 @@ cleanup() {
     kill -9 "$BALANCE_HISTORY_PID" 2>/dev/null || true
   fi
 
-  if command -v bitcoin-cli >/dev/null 2>&1; then
-    bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
+  if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
   fi
 
   if [[ -n "$BITCOIND_PID" ]] && kill -0 "$BITCOIND_PID" 2>/dev/null; then
@@ -60,6 +64,31 @@ require_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   fi
+}
+
+resolve_bitcoin_binaries() {
+  local candidate_bitcoind=""
+  local candidate_bitcoin_cli=""
+
+  if [[ -n "$BITCOIN_BIN_DIR" ]]; then
+    candidate_bitcoind="${BITCOIN_BIN_DIR}/bitcoind"
+    candidate_bitcoin_cli="${BITCOIN_BIN_DIR}/bitcoin-cli"
+    if [[ -x "$candidate_bitcoind" ]] && [[ -x "$candidate_bitcoin_cli" ]]; then
+      BITCOIND_BIN="$candidate_bitcoind"
+      BITCOIN_CLI_BIN="$candidate_bitcoin_cli"
+      log "Using Bitcoin Core binaries from BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR}"
+      return
+    fi
+  fi
+
+  BITCOIND_BIN="$(command -v bitcoind || true)"
+  BITCOIN_CLI_BIN="$(command -v bitcoin-cli || true)"
+  if [[ -z "$BITCOIND_BIN" || -z "$BITCOIN_CLI_BIN" ]]; then
+    echo "Missing required commands bitcoind/bitcoin-cli. Tried BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR} and PATH." >&2
+    exit 1
+  fi
+
+  log "Using Bitcoin Core binaries from PATH"
 }
 
 rpc_call() {
@@ -98,7 +127,7 @@ PY
 address_to_script_hash() {
   local address="$1"
   local script_pubkey
-  script_pubkey="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+  script_pubkey="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
     getaddressinfo "$address" | json_extract_python 'import json,sys; print(json.load(sys.stdin)["scriptPubKey"])')"
 
   python3 - "$script_pubkey" <<'PY'
@@ -167,8 +196,7 @@ EOF
 main() {
   trap cleanup EXIT
 
-  require_cmd bitcoind
-  require_cmd bitcoin-cli
+  resolve_bitcoin_binaries
   require_cmd cargo
   require_cmd curl
   require_cmd python3
@@ -176,8 +204,8 @@ main() {
   mkdir -p "$WORK_DIR" "$BITCOIN_DIR" "$BALANCE_HISTORY_ROOT"
   log "Workspace directory: $WORK_DIR"
 
-  log "Starting bitcoind regtest on rpcport=${BTC_RPC_PORT}"
-  bitcoind \
+  log "Starting bitcoind regtest on rpcport=${BTC_RPC_PORT}, bin=${BITCOIND_BIN}"
+  "$BITCOIND_BIN" \
     -regtest \
     -server=1 \
     -txindex=1 \
@@ -194,13 +222,23 @@ main() {
   log "bitcoind pid=${BITCOIND_PID}"
 
   log "Creating/Loading wallet ${WALLET_NAME}"
-  bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
-    -named createwallet wallet_name="$WALLET_NAME" descriptors=false load_on_startup=true >/dev/null 2>&1 || true
+  if ! "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getwalletinfo >/dev/null 2>&1; then
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      -named createwallet wallet_name="$WALLET_NAME" load_on_startup=true >/dev/null 2>&1 || true
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      loadwallet "$WALLET_NAME" >/dev/null 2>&1 || true
+  fi
+  if ! "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getwalletinfo >/dev/null 2>&1; then
+    log "Failed to create/load wallet: ${WALLET_NAME}"
+    exit 1
+  fi
 
   local mining_address
-  mining_address="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
+  mining_address="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
   log "Mining ${TARGET_HEIGHT} blocks to address=${mining_address}"
-  bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
     generatetoaddress "$TARGET_HEIGHT" "$mining_address" >/dev/null
 
   create_balance_history_config
@@ -243,13 +281,13 @@ main() {
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
     local receiver_address txid expected_height script_hash balance_resp got_balance expected_sat
 
-    receiver_address="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
+    receiver_address="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
     log "Sending ${SEND_AMOUNT_BTC} BTC to receiver address=${receiver_address}"
-    txid="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$receiver_address" "$SEND_AMOUNT_BTC")"
+    txid="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$receiver_address" "$SEND_AMOUNT_BTC")"
     log "Created txid=${txid}"
 
     log "Mining 1 block to confirm transfer"
-    bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
       generatetoaddress 1 "$mining_address" >/dev/null
 
     expected_height=$((TARGET_HEIGHT + 1))
