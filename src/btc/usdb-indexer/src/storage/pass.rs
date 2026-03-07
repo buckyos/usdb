@@ -942,6 +942,32 @@ impl MinerPassStorage {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn append_pass_history_event_for_test(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+        event_type: &str,
+        prev_state: Option<MinerPassState>,
+        new_state: MinerPassState,
+        prev_owner: Option<USDBScriptHash>,
+        new_owner: USDBScriptHash,
+        prev_satpoint: Option<SatPoint>,
+        new_satpoint: SatPoint,
+    ) -> Result<(), String> {
+        self.append_pass_history_event(
+            inscription_id,
+            block_height,
+            event_type,
+            prev_state,
+            new_state,
+            prev_owner,
+            new_owner,
+            prev_satpoint,
+            new_satpoint,
+        )
+    }
+
     pub fn add_new_mint_pass(&self, pass_info: &MinerPassInfo) -> Result<(), String> {
         assert!(
             pass_info.state == MinerPassState::Active,
@@ -2430,6 +2456,59 @@ mod tests {
     }
 
     #[test]
+    fn test_pass_history_same_height_multi_event_order_keeps_last_state() {
+        let dir = test_data_dir("history_same_height_event_order");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(61);
+        let owner2 = script_hash(62);
+        let pass = make_pass(91, 0, owner1, MinerPassState::Active, 100);
+
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+
+        // Apply multiple state/owner transitions at the same block height.
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        let moved_satpoint = satpoint(92, 1, 3);
+        storage
+            .transfer_owner_at_height(&pass.inscription_id, &owner2, &moved_satpoint, 120)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Active,
+                MinerPassState::Dormant,
+                120,
+            )
+            .unwrap();
+
+        // At height 120, snapshot should resolve to the last event (state_update -> Active).
+        let latest = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.block_height, 120);
+        assert_eq!(latest.state, MinerPassState::Active);
+        assert_eq!(latest.owner, owner2);
+        assert_eq!(latest.satpoint, moved_satpoint);
+        assert_eq!(latest.event_type, PASS_HISTORY_EVENT_STATE_UPDATE);
+
+        let active = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 120)
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].inscription_id, pass.inscription_id);
+        assert_eq!(active[0].owner, owner2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_storage_savepoint_guard_rollback_and_commit() {
         let dir = test_data_dir("savepoint");
         let storage = MinerPassStorage::new(&dir).unwrap();
@@ -2460,6 +2539,296 @@ mod tests {
             .get_pass_by_inscription_id(&commit_pass.inscription_id)
             .unwrap();
         assert!(committed.is_some());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_savepoint_guard_rollback_and_commit() {
+        let dir = test_data_dir("history_savepoint");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(41);
+        let owner2 = script_hash(42);
+
+        let base_pass = make_pass(101, 0, owner1, MinerPassState::Active, 100);
+        storage
+            .add_new_mint_pass_at_height(&base_pass, base_pass.mint_block_height)
+            .unwrap();
+
+        // Roll back newly inserted pass + history entries in one savepoint scope.
+        let rollback_pass = make_pass(102, 1, owner2, MinerPassState::Active, 101);
+        {
+            let _guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage
+                .add_new_mint_pass_at_height(&rollback_pass, rollback_pass.mint_block_height)
+                .unwrap();
+            storage
+                .update_state_at_height(
+                    &rollback_pass.inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    101,
+                )
+                .unwrap();
+        }
+        assert!(
+            storage
+                .get_pass_by_inscription_id(&rollback_pass.inscription_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_last_pass_history_at_or_before_height(&rollback_pass.inscription_id, u32::MAX)
+                .unwrap()
+                .is_none()
+        );
+
+        // Roll back history update on existing pass, ensure latest snapshot stays unchanged.
+        {
+            let _guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage
+                .update_state_at_height(
+                    &base_pass.inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    102,
+                )
+                .unwrap();
+        }
+        let after_rollback = storage
+            .get_last_pass_history_at_or_before_height(&base_pass.inscription_id, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_rollback.block_height, 100);
+        assert_eq!(after_rollback.state, MinerPassState::Active);
+        assert_eq!(after_rollback.event_type, PASS_HISTORY_EVENT_MINT);
+
+        // Commit history update, then latest snapshot should move to committed height.
+        {
+            let guard = MinePassStorageSavePointGuard::new(&storage).unwrap();
+            storage
+                .update_state_at_height(
+                    &base_pass.inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    103,
+                )
+                .unwrap();
+            guard.commit().unwrap();
+        }
+        let after_commit = storage
+            .get_last_pass_history_at_or_before_height(&base_pass.inscription_id, u32::MAX)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_commit.block_height, 103);
+        assert_eq!(after_commit.state, MinerPassState::Dormant);
+        assert_eq!(after_commit.event_type, PASS_HISTORY_EVENT_STATE_UPDATE);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_active_pagination_is_stable_without_duplicates_or_gaps() {
+        let dir = test_data_dir("history_active_paging_stable");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        let page_size = 17usize;
+        let total_active = 73usize; // > 2 pages
+        let inactive_count = 11usize;
+        let base_height = 1_000u32;
+
+        // Build many active passes in history.
+        let mut expected_active_ids = std::collections::HashSet::<InscriptionId>::new();
+        for i in 0..total_active {
+            let tag = ((i % 200) as u8).wrapping_add(1);
+            let owner = script_hash((i % 240) as u8 + 1);
+            let pass = make_pass(
+                tag,
+                i as u32,
+                owner,
+                MinerPassState::Active,
+                base_height + i as u32,
+            );
+            storage
+                .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+                .unwrap();
+            expected_active_ids.insert(pass.inscription_id);
+        }
+
+        // Add some non-active passes to ensure query filter correctness.
+        for i in 0..inactive_count {
+            let tag = ((i % 200) as u8).wrapping_add(120);
+            let owner = script_hash((i % 240) as u8 + 120);
+            let pass = make_pass(
+                tag,
+                (total_active + i) as u32,
+                owner,
+                MinerPassState::Active,
+                base_height + total_active as u32 + i as u32,
+            );
+            storage
+                .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+                .unwrap();
+            storage
+                .update_state_at_height(
+                    &pass.inscription_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    pass.mint_block_height + 1,
+                )
+                .unwrap();
+        }
+
+        let query_height = base_height + total_active as u32 + inactive_count as u32 + 10;
+        let mut paged_ids = std::collections::HashSet::<InscriptionId>::new();
+        let mut total_rows = 0usize;
+        let mut page = 0usize;
+        loop {
+            let rows = storage
+                .get_all_active_pass_by_page_from_history_at_height(page, page_size, query_height)
+                .unwrap();
+            if rows.is_empty() {
+                break;
+            }
+
+            for row in rows {
+                assert!(
+                    paged_ids.insert(row.inscription_id),
+                    "Duplicate inscription id returned across pages: {}",
+                    row.inscription_id
+                );
+                total_rows += 1;
+            }
+
+            page += 1;
+        }
+
+        assert_eq!(total_rows, total_active);
+        assert_eq!(paged_ids, expected_active_ids);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_height_boundary_semantics_h_minus_1_h_h_plus_1() {
+        // Purpose: lock the history snapshot boundary contract.
+        // A query at height `h` must include events written at `h` (inclusive),
+        // while `h-1` must still observe the previous state.
+        let dir = test_data_dir("history_height_boundary_semantics");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(71);
+        let owner2 = script_hash(72);
+        let pass = make_pass(111, 0, owner1, MinerPassState::Active, 100);
+
+        storage
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        let moved_satpoint = satpoint(112, 1, 9);
+        storage
+            .transfer_owner_at_height(&pass.inscription_id, &owner2, &moved_satpoint, 140)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Active,
+                MinerPassState::Dormant,
+                150,
+            )
+            .unwrap();
+
+        // state update boundary at height 120
+        let at_119 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 119)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_119.state, MinerPassState::Active);
+        assert_eq!(at_119.owner, owner1);
+        let at_120 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_120.state, MinerPassState::Dormant);
+        assert_eq!(at_120.owner, owner1);
+        let at_121 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 121)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_121.state, MinerPassState::Dormant);
+        assert_eq!(at_121.owner, owner1);
+
+        // owner transfer boundary at height 140
+        let at_139 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 139)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_139.state, MinerPassState::Dormant);
+        assert_eq!(at_139.owner, owner1);
+        let at_140 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 140)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_140.state, MinerPassState::Dormant);
+        assert_eq!(at_140.owner, owner2);
+        let at_141 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 141)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_141.state, MinerPassState::Dormant);
+        assert_eq!(at_141.owner, owner2);
+
+        // re-activation boundary at height 150
+        let at_149 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 149)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_149.state, MinerPassState::Dormant);
+        assert_eq!(at_149.owner, owner2);
+        let at_150 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 150)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_150.state, MinerPassState::Active);
+        assert_eq!(at_150.owner, owner2);
+        let at_151 = storage
+            .get_last_pass_history_at_or_before_height(&pass.inscription_id, 151)
+            .unwrap()
+            .unwrap();
+        assert_eq!(at_151.state, MinerPassState::Active);
+        assert_eq!(at_151.owner, owner2);
+
+        // Also verify the active-pass set follows the same inclusive boundary semantics.
+        let active_119 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 119)
+            .unwrap();
+        assert_eq!(active_119.len(), 1);
+        assert_eq!(active_119[0].inscription_id, pass.inscription_id);
+        assert_eq!(active_119[0].owner, owner1);
+
+        let active_120 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 120)
+            .unwrap();
+        assert!(active_120.is_empty());
+
+        let active_149 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 149)
+            .unwrap();
+        assert!(active_149.is_empty());
+
+        let active_150 = storage
+            .get_all_active_pass_by_page_from_history_at_height(0, 10, 150)
+            .unwrap();
+        assert_eq!(active_150.len(), 1);
+        assert_eq!(active_150[0].inscription_id, pass.inscription_id);
+        assert_eq!(active_150[0].owner, owner2);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

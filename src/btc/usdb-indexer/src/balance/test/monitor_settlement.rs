@@ -293,3 +293,50 @@ async fn test_settle_active_balance_retry_on_timeout() {
     drop(storage);
     cleanup_data_dir(&dir);
 }
+
+#[tokio::test]
+async fn test_settle_active_balance_fail_on_duplicate_owner_in_history_view() {
+    // Purpose: ensure duplicate-owner protection still works in history-based active loading.
+    // Expected behavior: settlement fails fast, does not call balance RPC, and writes no snapshot.
+    let dir = test_data_dir("duplicate_owner_history_guard");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+
+    let owner = script_hash(11);
+    let pass1 = make_pass(91, 0, owner, 90);
+    let pass2 = make_pass(92, 1, script_hash(12), 91);
+    storage
+        .add_new_mint_pass_at_height(&pass1, pass1.mint_block_height)
+        .unwrap();
+    storage
+        .add_new_mint_pass_at_height(&pass2, pass2.mint_block_height)
+        .unwrap();
+
+    // Inject abnormal history: pass2 also becomes active on owner=owner at height=100.
+    storage
+        .append_pass_history_event_for_test(
+            &pass2.inscription_id,
+            100,
+            "test_corrupt_owner_overlap",
+            Some(crate::index::MinerPassState::Active),
+            crate::index::MinerPassState::Active,
+            Some(pass2.owner),
+            owner,
+            Some(pass2.satpoint),
+            pass2.satpoint,
+        )
+        .unwrap();
+
+    let backend = Arc::new(MockBalanceBackend::new(vec![]));
+    let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    // Duplicate active owner is a hard invariant violation and must stop processing.
+    let err = monitor.settle_active_balance(100).await.unwrap_err();
+    assert!(err.contains("Duplicate active owner detected"));
+    assert_eq!(backend.call_count(), 0);
+    assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}
