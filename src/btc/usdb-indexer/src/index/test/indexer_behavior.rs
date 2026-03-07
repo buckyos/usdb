@@ -1811,3 +1811,1207 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
 
     cleanup_temp_dir(&fixture.root_dir);
 }
+
+#[tokio::test]
+async fn test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred_pass_dormant() {
+    // Scenario:
+    // h600 mint(B, owner_b)
+    // h601 mint(A, owner_a)
+    // h602 transfer(A, owner_a -> owner_b)
+    //
+    // Expected:
+    // - owner_b keeps the original active pass B
+    // - transferred pass A becomes Dormant under owner_b (passive receive)
+    // - active owner set at h602 contains only owner_b
+    let h600 = 600u32;
+    let h601 = 601u32;
+    let h602 = 602u32;
+    let owner_a = test_script_hash(71);
+    let owner_b = test_script_hash(72);
+
+    let mint_b_tx = build_test_tx(101);
+    let mint_a_tx = build_test_tx(102);
+    let transfer_tx = build_test_tx(103);
+    let mint_b_txid = mint_b_tx.compute_txid();
+    let mint_a_txid = mint_a_tx.compute_txid();
+    let transfer_txid = transfer_tx.compute_txid();
+    let transfer_prev_outpoint = transfer_tx.input[0].previous_output;
+
+    let pass_b_id = InscriptionId {
+        txid: mint_b_txid,
+        index: 0,
+    };
+    let pass_a_id = InscriptionId {
+        txid: mint_a_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h600, build_test_block(vec![mint_b_tx]))
+            .with_block(h601, build_test_block(vec![mint_a_tx]))
+            .with_block(h602, build_test_block(vec![transfer_tx])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                h600,
+                vec![make_discovered_mint(pass_b_id.clone(), h600, vec![])],
+            )
+            .with_mints(
+                h601,
+                vec![make_discovered_mint(pass_a_id.clone(), h601, vec![])],
+            ),
+    );
+
+    let create_info_b = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_b_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner_b),
+        commit_txid: Txid::from_slice(&[111u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[111u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_a = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_a_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner_a),
+        commit_txid: Txid::from_slice(&[112u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[112u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_item = InscriptionTransferItem {
+        inscription_id: pass_a_id.clone(),
+        block_height: h602,
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_prev_outpoint,
+            offset: 0,
+        },
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner_a,
+        to_address: Some(owner_b),
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&pass_b_id, create_info_b)
+            .with_create_info(&pass_a_id, create_info_a)
+            .with_transfers(h602, vec![transfer_item]),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner_b, h600, 240_000, 0)
+            .with_height(owner_a, h601, 230_000, 0)
+            .with_range(
+                owner_a,
+                h602..(h602 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h602,
+                    balance: 231_000,
+                    delta: 1_000,
+                }],
+            ),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "passive_transfer_keeps_receiver_active",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h600,
+                balance: 7_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![
+                vec![balance_history::AddressBalance {
+                    block_height: h601,
+                    balance: 3_000,
+                    delta: 0,
+                }],
+                vec![balance_history::AddressBalance {
+                    block_height: h601,
+                    balance: 7_000,
+                    delta: 0,
+                }],
+            ])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h602,
+                balance: 8_000,
+                delta: 1_000,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h600..=h602)
+        .await
+        .unwrap();
+    assert_eq!(synced, h602);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 3);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // 1) pass state assertion
+    let pass_b = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_b_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_b.owner, owner_b);
+    assert_eq!(pass_b.state, MinerPassState::Active);
+
+    let pass_a = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_a_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass_a.owner, owner_b);
+    assert_eq!(pass_a.state, MinerPassState::Dormant);
+
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h600),
+        HashSet::from([owner_b])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h601),
+        HashSet::from([owner_a, owner_b])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h602),
+        HashSet::from([owner_b])
+    );
+
+    // 2) energy assertion
+    let energy_b_602 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_b_id, h602)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_b_602.state, MinerPassState::Active);
+    assert_eq!(energy_b_602.energy, 0);
+
+    let energy_a_602 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_a_id, h602)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_602.state, MinerPassState::Dormant);
+    assert_eq!(energy_a_602.energy, calc_growth_delta(230_000, 1));
+
+    // 3) active balance snapshot assertion
+    let snap_600 = fixture
+        .storage
+        .get_active_balance_snapshot(h600)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_600.active_address_count, 1);
+    assert_eq!(snap_600.total_balance, 7_000);
+
+    let snap_601 = fixture
+        .storage
+        .get_active_balance_snapshot(h601)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_601.active_address_count, 2);
+    assert_eq!(snap_601.total_balance, 10_000);
+
+    let snap_602 = fixture
+        .storage
+        .get_active_balance_snapshot(h602)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_602.active_address_count, 1);
+    assert_eq!(snap_602.total_balance, 8_000);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active() {
+    // Scenario:
+    // h610 mint(old, owner)
+    // h611 mint(new, owner)
+    //
+    // Expected:
+    // - old pass becomes Dormant
+    // - new pass is Active
+    // - active owner set remains a single owner across heights
+    let h610 = 610u32;
+    let h611 = 611u32;
+    let owner = test_script_hash(81);
+
+    let mint_old_tx = build_test_tx(121);
+    let mint_new_tx = build_test_tx(122);
+    let mint_old_txid = mint_old_tx.compute_txid();
+    let mint_new_txid = mint_new_tx.compute_txid();
+    let old_pass_id = InscriptionId {
+        txid: mint_old_txid,
+        index: 0,
+    };
+    let new_pass_id = InscriptionId {
+        txid: mint_new_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h610, build_test_block(vec![mint_old_tx]))
+            .with_block(h611, build_test_block(vec![mint_new_tx])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                h610,
+                vec![make_discovered_mint(old_pass_id.clone(), h610, vec![])],
+            )
+            .with_mints(
+                h611,
+                vec![make_discovered_mint(new_pass_id.clone(), h611, vec![])],
+            ),
+    );
+
+    let create_info_old = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_old_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[123u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[123u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_new = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_new_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[124u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[124u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&old_pass_id, create_info_old)
+            .with_create_info(&new_pass_id, create_info_new),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner, h610, 220_000, 0)
+            .with_height(owner, h611, 221_000, 1_000)
+            .with_range(
+                owner,
+                h611..(h611 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h611,
+                    balance: 221_000,
+                    delta: 1_000,
+                }],
+            ),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "same_owner_multiple_mints_keep_latest_active",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h610,
+                balance: 4_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h611,
+                balance: 4_500,
+                delta: 500,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h610..=h611)
+        .await
+        .unwrap();
+    assert_eq!(synced, h611);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 2);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // 1) pass state assertion
+    let old_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&old_pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(old_pass.owner, owner);
+    assert_eq!(old_pass.state, MinerPassState::Dormant);
+
+    let new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&new_pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_pass.owner, owner);
+    assert_eq!(new_pass.state, MinerPassState::Active);
+
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h610),
+        HashSet::from([owner])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h611),
+        HashSet::from([owner])
+    );
+
+    // 2) energy assertion
+    let old_energy_611 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&old_pass_id, h611)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(old_energy_611.state, MinerPassState::Dormant);
+    assert_eq!(old_energy_611.energy, calc_growth_delta(220_000, 1));
+
+    let new_energy_611 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&new_pass_id, h611)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_energy_611.state, MinerPassState::Active);
+    assert_eq!(new_energy_611.energy, 0);
+
+    // 3) active balance snapshot assertion
+    let snap_610 = fixture
+        .storage
+        .get_active_balance_snapshot(h610)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_610.active_address_count, 1);
+    assert_eq!(snap_610.total_balance, 4_000);
+
+    let snap_611 = fixture
+        .storage
+        .get_active_balance_snapshot(h611)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_611.active_address_count, 1);
+    assert_eq!(snap_611.total_balance, 4_500);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev() {
+    // Scenario:
+    // h620 mint(prev1, owner)
+    // h621 mint(prev2, owner)        -> prev1 dormant
+    // h622 mint(new, owner, prev=[prev1, prev2])
+    //
+    // Expected:
+    // - prev1/prev2 are consumed
+    // - new pass is active
+    // - inherited energy = dormant(prev1@621) + dormant(prev2@622)
+    let h620 = 620u32;
+    let h621 = 621u32;
+    let h622 = 622u32;
+    let owner = test_script_hash(91);
+
+    let mint_prev1_tx = build_test_tx(131);
+    let mint_prev2_tx = build_test_tx(132);
+    let mint_new_tx = build_test_tx(133);
+    let mint_prev1_txid = mint_prev1_tx.compute_txid();
+    let mint_prev2_txid = mint_prev2_tx.compute_txid();
+    let mint_new_txid = mint_new_tx.compute_txid();
+    let prev1_id = InscriptionId {
+        txid: mint_prev1_txid,
+        index: 0,
+    };
+    let prev2_id = InscriptionId {
+        txid: mint_prev2_txid,
+        index: 0,
+    };
+    let new_id = InscriptionId {
+        txid: mint_new_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h620, build_test_block(vec![mint_prev1_tx]))
+            .with_block(h621, build_test_block(vec![mint_prev2_tx]))
+            .with_block(h622, build_test_block(vec![mint_new_tx])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                h620,
+                vec![make_discovered_mint(prev1_id.clone(), h620, vec![])],
+            )
+            .with_mints(
+                h621,
+                vec![make_discovered_mint(prev2_id.clone(), h621, vec![])],
+            )
+            .with_mints(
+                h622,
+                vec![make_discovered_mint(
+                    new_id.clone(),
+                    h622,
+                    vec![prev1_id.clone(), prev2_id.clone()],
+                )],
+            ),
+    );
+
+    let create_info_prev1 = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_prev1_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[141u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[141u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_prev2 = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_prev2_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[142u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[142u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_new = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_new_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[143u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[143u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&prev1_id, create_info_prev1)
+            .with_create_info(&prev2_id, create_info_prev2)
+            .with_create_info(&new_id, create_info_new),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner, h620, 220_000, 0)
+            .with_height(owner, h621, 230_000, 10_000)
+            .with_height(owner, h622, 240_000, 10_000)
+            .with_range(
+                owner,
+                h621..(h621 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h621,
+                    balance: 230_000,
+                    delta: 10_000,
+                }],
+            )
+            .with_range(
+                owner,
+                h622..(h622 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h622,
+                    balance: 240_000,
+                    delta: 10_000,
+                }],
+            ),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "multi_prev_inherit_sums_energy",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h620,
+                balance: 6_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h621,
+                balance: 6_500,
+                delta: 500,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h622,
+                balance: 7_000,
+                delta: 500,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h620..=h622)
+        .await
+        .unwrap();
+    assert_eq!(synced, h622);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 3);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // 1) pass state assertion
+    let prev1 = fixture
+        .storage
+        .get_pass_by_inscription_id(&prev1_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev1.state, MinerPassState::Consumed);
+    let prev2 = fixture
+        .storage
+        .get_pass_by_inscription_id(&prev2_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev2.state, MinerPassState::Consumed);
+    let new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&new_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_pass.state, MinerPassState::Active);
+    assert_eq!(new_pass.owner, owner);
+
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h620),
+        HashSet::from([owner])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h621),
+        HashSet::from([owner])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h622),
+        HashSet::from([owner])
+    );
+
+    // 2) energy assertion
+    let expected_prev1_dormant = calc_growth_delta(220_000, 1);
+    let expected_prev2_dormant = calc_growth_delta(230_000, 1);
+    let expected_inherited = expected_prev1_dormant.saturating_add(expected_prev2_dormant);
+
+    let prev1_energy_621 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&prev1_id, h621)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev1_energy_621.state, MinerPassState::Dormant);
+    assert_eq!(prev1_energy_621.energy, expected_prev1_dormant);
+
+    let prev1_energy_622 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&prev1_id, h622)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev1_energy_622.state, MinerPassState::Consumed);
+    assert_eq!(prev1_energy_622.energy, 0);
+
+    let prev2_energy_622 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&prev2_id, h622)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev2_energy_622.state, MinerPassState::Consumed);
+    assert_eq!(prev2_energy_622.energy, 0);
+
+    let new_energy_622 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&new_id, h622)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(new_energy_622.state, MinerPassState::Active);
+    assert_eq!(new_energy_622.energy, expected_inherited);
+
+    // 3) active balance snapshot assertion
+    let snap_620 = fixture
+        .storage
+        .get_active_balance_snapshot(h620)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_620.active_address_count, 1);
+    assert_eq!(snap_620.total_balance, 6_000);
+    let snap_621 = fixture
+        .storage
+        .get_active_balance_snapshot(h621)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_621.active_address_count, 1);
+    assert_eq!(snap_621.total_balance, 6_500);
+    let snap_622 = fixture
+        .storage
+        .get_active_balance_snapshot(h622)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_622.active_address_count, 1);
+    assert_eq!(snap_622.total_balance, 7_000);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
+    // Scenario:
+    // h630 mint(prev, owner)
+    // h631 mint(first_new, owner, prev=[prev])   -> consume prev, inherit energy
+    // h632 mint(second_new, owner, prev=[prev])  -> prev already consumed, no inheritance
+    let h630 = 630u32;
+    let h631 = 631u32;
+    let h632 = 632u32;
+    let owner = test_script_hash(101);
+
+    let mint_prev_tx = build_test_tx(151);
+    let mint_first_new_tx = build_test_tx(152);
+    let mint_second_new_tx = build_test_tx(153);
+    let mint_prev_txid = mint_prev_tx.compute_txid();
+    let mint_first_new_txid = mint_first_new_tx.compute_txid();
+    let mint_second_new_txid = mint_second_new_tx.compute_txid();
+    let prev_id = InscriptionId {
+        txid: mint_prev_txid,
+        index: 0,
+    };
+    let first_new_id = InscriptionId {
+        txid: mint_first_new_txid,
+        index: 0,
+    };
+    let second_new_id = InscriptionId {
+        txid: mint_second_new_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h630, build_test_block(vec![mint_prev_tx]))
+            .with_block(h631, build_test_block(vec![mint_first_new_tx]))
+            .with_block(h632, build_test_block(vec![mint_second_new_tx])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                h630,
+                vec![make_discovered_mint(prev_id.clone(), h630, vec![])],
+            )
+            .with_mints(
+                h631,
+                vec![make_discovered_mint(
+                    first_new_id.clone(),
+                    h631,
+                    vec![prev_id.clone()],
+                )],
+            )
+            .with_mints(
+                h632,
+                vec![make_discovered_mint(
+                    second_new_id.clone(),
+                    h632,
+                    vec![prev_id.clone()],
+                )],
+            ),
+    );
+
+    let create_info_prev = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_prev_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[161u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[161u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_first_new = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_first_new_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[162u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[162u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info_second_new = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_second_new_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[163u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[163u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&prev_id, create_info_prev)
+            .with_create_info(&first_new_id, create_info_first_new)
+            .with_create_info(&second_new_id, create_info_second_new),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner, h630, 230_000, 0)
+            .with_height(owner, h631, 240_000, 10_000)
+            .with_height(owner, h632, 245_000, 5_000)
+            .with_range(
+                owner,
+                h631..(h631 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h631,
+                    balance: 240_000,
+                    delta: 10_000,
+                }],
+            )
+            .with_range(
+                owner,
+                h632..(h632 + 1),
+                vec![balance_history::AddressBalance {
+                    block_height: h632,
+                    balance: 245_000,
+                    delta: 5_000,
+                }],
+            ),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "double_inherit_same_prev",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h630,
+                balance: 8_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h631,
+                balance: 8_500,
+                delta: 500,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h632,
+                balance: 9_000,
+                delta: 500,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h630..=h632)
+        .await
+        .unwrap();
+    assert_eq!(synced, h632);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 3);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // 1) pass state assertion
+    let prev_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&prev_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev_pass.state, MinerPassState::Consumed);
+
+    let first_new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&first_new_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_new_pass.state, MinerPassState::Dormant);
+    let second_new_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&second_new_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second_new_pass.state, MinerPassState::Active);
+
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h630),
+        HashSet::from([owner])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h631),
+        HashSet::from([owner])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h632),
+        HashSet::from([owner])
+    );
+
+    // 2) energy assertion
+    let expected_prev_dormant = calc_growth_delta(230_000, 1);
+    let expected_first_new_dormant =
+        expected_prev_dormant.saturating_add(calc_growth_delta(240_000, 1));
+
+    let prev_energy_631 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&prev_id, h631)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prev_energy_631.state, MinerPassState::Consumed);
+    assert_eq!(prev_energy_631.energy, 0);
+
+    let first_new_energy_631 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&first_new_id, h631)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_new_energy_631.state, MinerPassState::Active);
+    assert_eq!(first_new_energy_631.energy, expected_prev_dormant);
+
+    let first_new_energy_632 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&first_new_id, h632)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_new_energy_632.state, MinerPassState::Dormant);
+    assert_eq!(first_new_energy_632.energy, expected_first_new_dormant);
+
+    let second_new_energy_632 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&second_new_id, h632)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second_new_energy_632.state, MinerPassState::Active);
+    assert_eq!(second_new_energy_632.energy, 0);
+
+    // 3) active balance snapshot assertion
+    let snap_630 = fixture
+        .storage
+        .get_active_balance_snapshot(h630)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_630.active_address_count, 1);
+    assert_eq!(snap_630.total_balance, 8_000);
+    let snap_631 = fixture
+        .storage
+        .get_active_balance_snapshot(h631)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_631.active_address_count, 1);
+    assert_eq!(snap_631.total_balance, 8_500);
+    let snap_632 = fixture
+        .storage
+        .get_active_balance_snapshot(h632)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_632.active_address_count, 1);
+    assert_eq!(snap_632.total_balance, 9_000);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_transfer() {
+    // Scenario:
+    // h640 mint(pass, owner_a)
+    // h643 transfer(pass, owner_a -> owner_b) triggers energy finalize to h643
+    //
+    // owner_a balance timeline for update range [641, 643]:
+    // - h641: negative delta (penalty + reset active height)
+    // - h642: balance below threshold in previous record (no growth)
+    // - h643: growth resumes from above-threshold balance with r=2
+    let h640 = 640u32;
+    let h641 = 641u32;
+    let h642 = 642u32;
+    let h643 = 643u32;
+    let owner_a = test_script_hash(111);
+    let owner_b = test_script_hash(112);
+
+    let mint_tx = build_test_tx(171);
+    let transfer_tx = build_test_tx(172);
+    let mint_txid = mint_tx.compute_txid();
+    let transfer_txid = transfer_tx.compute_txid();
+    let transfer_prev_outpoint = transfer_tx.input[0].previous_output;
+    let pass_id = InscriptionId {
+        txid: mint_txid,
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h640, build_test_block(vec![mint_tx]))
+            .with_block(h641, build_test_block(vec![]))
+            .with_block(h642, build_test_block(vec![]))
+            .with_block(h643, build_test_block(vec![transfer_tx])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(
+            h640,
+            vec![make_discovered_mint(pass_id.clone(), h640, vec![])],
+        ));
+
+    let create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: mint_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(owner_a),
+        commit_txid: Txid::from_slice(&[181u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[181u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_item = InscriptionTransferItem {
+        inscription_id: pass_id.clone(),
+        block_height: h643,
+        prev_satpoint: ordinals::SatPoint {
+            outpoint: transfer_prev_outpoint,
+            offset: 0,
+        },
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: transfer_txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        from_address: owner_a,
+        to_address: Some(owner_b),
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&pass_id, create_info)
+            .with_transfers(h643, vec![transfer_item]),
+    );
+
+    let energy_provider = Arc::new(
+        MockBalanceProvider::default()
+            .with_height(owner_a, h640, 150_000, 0)
+            .with_range(
+                owner_a,
+                h641..(h643 + 1),
+                vec![
+                    balance_history::AddressBalance {
+                        block_height: h641,
+                        balance: 90_000,
+                        delta: -60_000,
+                    },
+                    balance_history::AddressBalance {
+                        block_height: h642,
+                        balance: 120_000,
+                        delta: 30_000,
+                    },
+                    balance_history::AddressBalance {
+                        block_height: h643,
+                        balance: 120_001,
+                        delta: 1,
+                    },
+                ],
+            ),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "balance_threshold_and_penalty_before_dormant_transfer",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h640,
+                balance: 4_000,
+                delta: 0,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h641,
+                balance: 4_100,
+                delta: 100,
+            }]])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: h642,
+                balance: 4_200,
+                delta: 100,
+            }]])),
+        ],
+        energy_provider,
+    );
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(h640..=h643)
+        .await
+        .unwrap();
+    assert_eq!(synced, h643);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 4);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // 1) pass state assertion
+    let pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass.owner, owner_b);
+    assert_eq!(pass.state, MinerPassState::Dormant);
+
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h640),
+        HashSet::from([owner_a])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h641),
+        HashSet::from([owner_a])
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, h642),
+        HashSet::from([owner_a])
+    );
+    assert!(active_owner_set_at_height(&fixture.storage, h643).is_empty());
+
+    // 2) energy assertion
+    let expected_h641 =
+        calc_growth_delta(150_000, 1).saturating_sub(calc_penalty_from_delta(-60_000));
+    assert_eq!(expected_h641, 0);
+    let expected_h642 = expected_h641.saturating_add(calc_growth_delta(90_000, 1));
+    assert_eq!(expected_h642, 0);
+    let expected_h643 = expected_h642.saturating_add(calc_growth_delta(120_000, 2));
+
+    let energy_642 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_id, h642)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_642.state, MinerPassState::Active);
+    assert_eq!(energy_642.energy, expected_h642);
+
+    let energy_643 = fixture
+        .pass_energy_manager
+        .get_pass_energy_at_or_before(&pass_id, h643)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_643.state, MinerPassState::Dormant);
+    assert_eq!(energy_643.energy, expected_h643);
+
+    // 3) active balance snapshot assertion
+    let snap_640 = fixture
+        .storage
+        .get_active_balance_snapshot(h640)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_640.active_address_count, 1);
+    assert_eq!(snap_640.total_balance, 4_000);
+    let snap_641 = fixture
+        .storage
+        .get_active_balance_snapshot(h641)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_641.active_address_count, 1);
+    assert_eq!(snap_641.total_balance, 4_100);
+    let snap_642 = fixture
+        .storage
+        .get_active_balance_snapshot(h642)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_642.active_address_count, 1);
+    assert_eq!(snap_642.total_balance, 4_200);
+    let snap_643 = fixture
+        .storage
+        .get_active_balance_snapshot(h643)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snap_643.active_address_count, 0);
+    assert_eq!(snap_643.total_balance, 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
