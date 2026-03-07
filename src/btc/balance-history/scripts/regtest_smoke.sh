@@ -11,6 +11,8 @@ BH_RPC_PORT="${BH_RPC_PORT:-18080}"
 WALLET_NAME="${WALLET_NAME:-bhitest}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-120}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
+ENABLE_TRANSFER_CHECK="${ENABLE_TRANSFER_CHECK:-1}"
+SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.25}"
 
 BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
@@ -76,6 +78,65 @@ parse_json_string_result() {
   sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
+json_extract_python() {
+  local script="$1"
+  python3 -c "$script"
+}
+
+btc_amount_to_sat() {
+  local amount_btc="$1"
+  python3 - "$amount_btc" <<'PY'
+from decimal import Decimal, ROUND_DOWN
+import sys
+
+amount = Decimal(sys.argv[1])
+sat = int((amount * Decimal("100000000")).to_integral_value(rounding=ROUND_DOWN))
+print(sat)
+PY
+}
+
+address_to_script_hash() {
+  local address="$1"
+  local script_pubkey
+  script_pubkey="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getaddressinfo "$address" | json_extract_python 'import json,sys; print(json.load(sys.stdin)["scriptPubKey"])')"
+
+  python3 - "$script_pubkey" <<'PY'
+import hashlib
+import sys
+
+script_hex = sys.argv[1]
+script = bytes.fromhex(script_hex)
+digest = hashlib.sha256(script).digest()[::-1].hex()
+print(digest)
+PY
+}
+
+wait_until_synced_height() {
+  local target_height="$1"
+  log "Waiting until synced block height >= ${target_height}"
+
+  local start_ts now synced height_resp
+  start_ts="$(date +%s)"
+  while true; do
+    height_resp="$(rpc_call "get_block_height" "[]")"
+    synced="$(echo "$height_resp" | parse_json_number_result)"
+    synced="${synced:-0}"
+    if [[ "$synced" -ge "$target_height" ]]; then
+      log "Sync reached height=${synced}"
+      break
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      log "Sync timeout, last response: ${height_resp}"
+      log "See log file: ${WORK_DIR}/balance-history.log"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 create_balance_history_config() {
   mkdir -p "$BALANCE_HISTORY_ROOT"
 
@@ -110,6 +171,7 @@ main() {
   require_cmd bitcoin-cli
   require_cmd cargo
   require_cmd curl
+  require_cmd python3
 
   mkdir -p "$WORK_DIR" "$BITCOIN_DIR" "$BALANCE_HISTORY_ROOT"
   log "Workspace directory: $WORK_DIR"
@@ -176,26 +238,34 @@ main() {
     exit 1
   fi
 
-  log "Waiting until synced block height >= ${TARGET_HEIGHT}"
-  local start_ts now synced height_resp
-  start_ts="$(date +%s)"
-  while true; do
-    height_resp="$(rpc_call "get_block_height" "[]")"
-    synced="$(echo "$height_resp" | parse_json_number_result)"
-    synced="${synced:-0}"
-    if [[ "$synced" -ge "$TARGET_HEIGHT" ]]; then
-      log "Sync reached height=${synced}"
-      break
-    fi
+  wait_until_synced_height "$TARGET_HEIGHT"
 
-    now="$(date +%s)"
-    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      log "Sync timeout, last response: ${height_resp}"
-      log "See log file: ${WORK_DIR}/balance-history.log"
+  if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
+    local receiver_address txid expected_height script_hash balance_resp got_balance expected_sat
+
+    receiver_address="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
+    log "Sending ${SEND_AMOUNT_BTC} BTC to receiver address=${receiver_address}"
+    txid="$(bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$receiver_address" "$SEND_AMOUNT_BTC")"
+    log "Created txid=${txid}"
+
+    log "Mining 1 block to confirm transfer"
+    bitcoin-cli -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+      generatetoaddress 1 "$mining_address" >/dev/null
+
+    expected_height=$((TARGET_HEIGHT + 1))
+    wait_until_synced_height "$expected_height"
+
+    script_hash="$(address_to_script_hash "$receiver_address")"
+    balance_resp="$(rpc_call "get_address_balance" "[{\"script_hash\":\"${script_hash}\",\"block_height\":${expected_height},\"block_range\":null}]")"
+    got_balance="$(echo "$balance_resp" | json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result",[]); print(r[0]["balance"] if r else 0)')"
+    expected_sat="$(btc_amount_to_sat "$SEND_AMOUNT_BTC")"
+
+    log "Transfer balance check: height=${expected_height}, script_hash=${script_hash}, expected=${expected_sat}, got=${got_balance}"
+    if [[ "$got_balance" != "$expected_sat" ]]; then
+      log "Transfer balance mismatch, response: ${balance_resp}"
       exit 1
     fi
-    sleep 1
-  done
+  fi
 
   log "Smoke test succeeded."
   log "Logs: ${WORK_DIR}/balance-history.log"

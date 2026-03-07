@@ -4,7 +4,8 @@
 
 1. 启动本地 `bitcoind -regtest` 单节点；
 2. 启动真实 `balance-history` 服务；
-3. 通过 RPC 验证服务网络类型与同步高度。
+3. 通过 RPC 验证服务网络类型与同步高度；
+4. 构造一笔真实转账并校验 `get_address_balance` 返回值。
 
 脚本位置：
 
@@ -32,7 +33,8 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 
 1. `get_network_type` 返回 `regtest`；
 2. `get_block_height` 达到脚本设置的目标高度（默认 `120`）；
-3. 输出 `Smoke test succeeded.`。
+3. 转账校验开启时（默认开启）`get_address_balance` 的余额与发送金额严格一致；
+4. 输出 `Smoke test succeeded.`。
 
 ## 可调参数（环境变量）
 
@@ -46,6 +48,8 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 6. `WALLET_NAME`：regtest 钱包名（默认 `bhitest`）。
 7. `TARGET_HEIGHT`：要挖的区块高度（默认 `120`）。
 8. `SYNC_TIMEOUT_SEC`：等待同步超时秒数（默认 `120`）。
+9. `ENABLE_TRANSFER_CHECK`：是否执行真实转账与余额断言（`1` 开启，默认 `1`）。
+10. `SEND_AMOUNT_BTC`：转账校验金额（BTC，默认 `1.25`）。
 
 示例：
 
@@ -54,6 +58,7 @@ WORK_DIR=/tmp/usdb-bh-test \
 BTC_RPC_PORT=29443 \
 BH_RPC_PORT=28080 \
 TARGET_HEIGHT=150 \
+SEND_AMOUNT_BTC=1.0 \
 src/btc/balance-history/scripts/regtest_smoke.sh
 ```
 
@@ -66,10 +71,14 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 2. 启动 `balance-history` 时使用：
    - `--root-dir <BALANCE_HISTORY_ROOT>`
    - `--skip-process-lock`
-3. 退出时会自动尝试关闭 `balance-history` 与 `bitcoind`。
+3. 可选转账断言步骤会：
+   - 创建接收地址并发送 `SEND_AMOUNT_BTC`
+   - 出块确认后按该高度调用 `get_address_balance`
+   - 断言余额与发送金额对应 satoshi 严格一致
+4. 退出时会自动尝试关闭 `balance-history` 与 `bitcoind`。
 
 ## 已知限制
 
-1. 这是 smoke 测试，不覆盖地址级余额精确性断言。
-2. 目前只验证基础可用性（服务可启动、可同步、RPC 可读）。
-3. 更深入的场景测试建议基于此脚本扩展（如构造转账交易并校验 `get_address_balance`）。
+1. 该脚本只覆盖单地址单笔转账的正确性，不覆盖复杂交易图（多输入/多输出/找零策略差异）。
+2. 不覆盖重组（reorg）与异常恢复场景。
+3. 更深入场景（如多地址批量、范围查询、回滚恢复）建议在此脚本基础上扩展。
