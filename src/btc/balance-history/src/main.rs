@@ -21,6 +21,7 @@ use crate::index::BalanceHistoryIndexer;
 use crate::output::IndexOutput;
 use crate::service::BalanceHistoryRpcServer;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::sync::Arc;
 use usdb_util::LogConfig;
 
@@ -33,6 +34,14 @@ use usdb_util::LogConfig;
 struct BalanceHistoryCli {
     #[command(subcommand)]
     command: Option<BalanceHistoryCommands>,
+
+    /// Override service root directory (default: ~/.usdb/balance-history)
+    #[arg(long)]
+    root_dir: Option<PathBuf>,
+
+    /// Skip process lock acquisition (for isolated integration tests)
+    #[arg(long, default_value_t = false)]
+    skip_process_lock: bool,
 
     /// Run the service in daemon mode
     #[arg(short, long)]
@@ -119,8 +128,23 @@ enum BalanceHistoryCommands {
     },
 }
 
-async fn main_run(max_block_height: Option<u32>) {
-    let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+async fn main_run(root_dir: PathBuf, max_block_height: Option<u32>, skip_process_lock: bool) {
+    let _lock_guard = if skip_process_lock {
+        None
+    } else {
+        Some(usdb_util::init_process_lock(
+            usdb_util::BALANCE_HISTORY_SERVICE_NAME,
+        ))
+    };
+
+    std::fs::create_dir_all(&root_dir).unwrap_or_else(|e| {
+        println!(
+            "Failed to create balance-history root directory {}: {}",
+            root_dir.display(),
+            e
+        );
+        std::process::exit(1);
+    });
 
     // Init console output
     let status = status::SyncStatusManager::new();
@@ -132,7 +156,6 @@ async fn main_run(max_block_height: Option<u32>) {
     let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME).enable_console(false);
     usdb_util::init_log(config);
 
-    let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration
@@ -244,6 +267,10 @@ async fn main_run(max_block_height: Option<u32>) {
 #[tokio::main]
 async fn main() {
     let cli = BalanceHistoryCli::parse();
+    let root_dir = cli
+        .root_dir
+        .clone()
+        .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME));
 
     match cli.command {
         Some(BalanceHistoryCommands::ClearDb {}) => {
@@ -254,7 +281,6 @@ async fn main() {
                 .enable_console(true);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Will clear database files in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
@@ -280,7 +306,6 @@ async fn main() {
                 .enable_console(false);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Indexing addresses in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
@@ -319,7 +344,6 @@ async fn main() {
                 .enable_console(false);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Generating snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
@@ -370,7 +394,6 @@ async fn main() {
                 .enable_console(false);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Installing snapshot in directory: {:?}", root_dir);
 
             let file_path = if let Some(ref f) = source.file {
@@ -454,7 +477,6 @@ async fn main() {
                 .enable_console(false);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Verifying snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
@@ -526,7 +548,6 @@ async fn main() {
                 .enable_console(true);
             usdb_util::init_log(config);
 
-            let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             println!("Verifying balance history in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
@@ -678,6 +699,6 @@ async fn main() {
         crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     }
 
-    main_run(cli.max_block_height).await;
+    main_run(root_dir, cli.max_block_height, cli.skip_process_lock).await;
     println!("Balance History service exited.");
 }

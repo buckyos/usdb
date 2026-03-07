@@ -138,7 +138,8 @@ impl BalanceHistoryConfig {
     pub fn load(root_dir: &Path) -> Result<Self, String> {
         let path = root_dir.join("config.toml");
         if !path.exists() {
-            let default_config = BalanceHistoryConfig::default();
+            let mut default_config = BalanceHistoryConfig::default();
+            default_config.root_dir = root_dir.to_path_buf();
             info!(
                 "Config file {} does not exist. Using default configuration.",
                 path.display()
@@ -177,3 +178,28 @@ impl BalanceHistoryConfig {
 }
 
 pub type BalanceHistoryConfigRef = Arc<BalanceHistoryConfig>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("balance_history_cfg_{}_{}", tag, nanos));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn test_load_missing_config_uses_given_root_dir() {
+        let root = temp_root("missing_cfg");
+        let cfg = BalanceHistoryConfig::load(&root).unwrap();
+        assert_eq!(cfg.root_dir, root);
+
+        std::fs::remove_dir_all(&cfg.root_dir).unwrap();
+    }
+}
