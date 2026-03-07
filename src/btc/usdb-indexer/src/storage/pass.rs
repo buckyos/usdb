@@ -2102,6 +2102,7 @@ mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
 
@@ -2159,6 +2160,89 @@ mod tests {
             owner,
             state,
         }
+    }
+
+    #[derive(Clone)]
+    struct ModelPassEvent {
+        block_height: u32,
+        event_type: &'static str,
+        state: MinerPassState,
+        owner: USDBScriptHash,
+        satpoint: SatPoint,
+    }
+
+    fn model_last_event_at_or_before(
+        events: &[ModelPassEvent],
+        block_height: u32,
+    ) -> Option<&ModelPassEvent> {
+        events
+            .iter()
+            .rev()
+            .find(|event| event.block_height <= block_height)
+    }
+
+    fn load_all_active_from_history(
+        storage: &MinerPassStorage,
+        block_height: u32,
+        page_size: usize,
+    ) -> Vec<ActiveMinerPassInfo> {
+        let mut page = 0usize;
+        let mut rows = Vec::new();
+        loop {
+            let current = storage
+                .get_all_active_pass_by_page_from_history_at_height(page, page_size, block_height)
+                .unwrap();
+            if current.is_empty() {
+                break;
+            }
+            rows.extend(current);
+            page += 1;
+        }
+        rows
+    }
+
+    // Deterministic pseudo-random generator (LCG) for reproducible property-like tests.
+    fn lcg_next(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *seed
+    }
+
+    fn random_owner(seed: &mut u64) -> USDBScriptHash {
+        let tag = ((lcg_next(seed) % 16) as u8).wrapping_add(10);
+        script_hash(tag)
+    }
+
+    fn has_other_active_owner(
+        snapshots: &HashMap<InscriptionId, ModelPassEvent>,
+        owner: USDBScriptHash,
+        self_pass: Option<&InscriptionId>,
+    ) -> bool {
+        snapshots.iter().any(|(id, event)| {
+            event.state == MinerPassState::Active
+                && event.owner == owner
+                && self_pass.map(|v| v != id).unwrap_or(true)
+        })
+    }
+
+    fn random_owner_without_active_conflict(
+        seed: &mut u64,
+        snapshots: &HashMap<InscriptionId, ModelPassEvent>,
+        self_pass: Option<&InscriptionId>,
+    ) -> Option<USDBScriptHash> {
+        for _ in 0..64 {
+            let owner = random_owner(seed);
+            if !has_other_active_owner(snapshots, owner, self_pass) {
+                return Some(owner);
+            }
+        }
+        None
+    }
+
+    fn random_satpoint(seed: &mut u64, nonce: u32) -> SatPoint {
+        let tag = ((lcg_next(seed) & 0xff) as u8).wrapping_add((nonce & 0xff) as u8);
+        let vout = (lcg_next(seed) % 4) as u32;
+        let offset = lcg_next(seed) % 10_000;
+        satpoint(tag, vout, offset)
     }
 
     #[test]
@@ -2383,6 +2467,310 @@ mod tests {
             .get_all_active_pass_by_page_at_height(0, 10, 50)
             .unwrap();
         assert!(at_50.is_empty());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_random_sequence_matches_reference_model_by_height() {
+        // Purpose: generate a long deterministic random operation sequence and verify
+        // history queries match an in-memory reference model at every height.
+        let dir = test_data_dir("history_random_sequence_reference_model");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        let pass_specs: Vec<(u8, u32)> = vec![
+            (131, 0),
+            (132, 1),
+            (133, 2),
+            (134, 3),
+            (135, 4),
+            (136, 5),
+            (137, 6),
+            (138, 7),
+        ];
+        let pass_ids: Vec<InscriptionId> = pass_specs
+            .iter()
+            .map(|(tag, index)| inscription_id(*tag, *index))
+            .collect();
+
+        let mut model_events: HashMap<InscriptionId, Vec<ModelPassEvent>> = HashMap::new();
+        let mut current_snapshot: HashMap<InscriptionId, ModelPassEvent> = HashMap::new();
+        let mut minted = vec![false; pass_specs.len()];
+
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let base_height = 1_000u32;
+        let mut current_height = base_height;
+
+        // Ensure the sequence starts with at least one minted pass.
+        let owner0 =
+            random_owner_without_active_conflict(&mut seed, &current_snapshot, None).unwrap();
+        let pass0 = make_pass(
+            pass_specs[0].0,
+            pass_specs[0].1,
+            owner0,
+            MinerPassState::Active,
+            base_height,
+        );
+        storage
+            .add_new_mint_pass_at_height(&pass0, base_height)
+            .unwrap();
+        let first_event = ModelPassEvent {
+            block_height: base_height,
+            event_type: PASS_HISTORY_EVENT_MINT,
+            state: MinerPassState::Active,
+            owner: pass0.owner,
+            satpoint: pass0.satpoint,
+        };
+        minted[0] = true;
+        model_events
+            .entry(pass0.inscription_id)
+            .or_default()
+            .push(first_event.clone());
+        current_snapshot.insert(pass0.inscription_id, first_event);
+
+        let operation_steps = 300usize;
+        for step in 0..operation_steps {
+            current_height = current_height.saturating_add((lcg_next(&mut seed) % 3) as u32);
+            let op_kind = (lcg_next(&mut seed) % 4) as usize;
+
+            // Prefer mint while there are still unminted passes.
+            let has_unminted = minted.iter().any(|v| !*v);
+            if op_kind == 0 || (!has_unminted && current_snapshot.is_empty()) {
+                if has_unminted {
+                    let candidates: Vec<usize> = minted
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, is_minted)| if !*is_minted { Some(idx) } else { None })
+                        .collect();
+                    let pick = (lcg_next(&mut seed) % candidates.len() as u64) as usize;
+                    let idx = candidates[pick];
+                    let Some(owner) =
+                        random_owner_without_active_conflict(&mut seed, &current_snapshot, None)
+                    else {
+                        continue;
+                    };
+                    let pass = make_pass(
+                        pass_specs[idx].0,
+                        pass_specs[idx].1,
+                        owner,
+                        MinerPassState::Active,
+                        current_height,
+                    );
+                    storage
+                        .add_new_mint_pass_at_height(&pass, current_height)
+                        .unwrap();
+
+                    let event = ModelPassEvent {
+                        block_height: current_height,
+                        event_type: PASS_HISTORY_EVENT_MINT,
+                        state: MinerPassState::Active,
+                        owner: pass.owner,
+                        satpoint: pass.satpoint,
+                    };
+                    minted[idx] = true;
+                    model_events
+                        .entry(pass.inscription_id)
+                        .or_default()
+                        .push(event.clone());
+                    current_snapshot.insert(pass.inscription_id, event);
+                    continue;
+                }
+            }
+
+            if current_snapshot.is_empty() {
+                continue;
+            }
+
+            let active_ids: Vec<InscriptionId> = current_snapshot.keys().cloned().collect();
+            let chosen_index = (lcg_next(&mut seed) % active_ids.len() as u64) as usize;
+            let chosen_id = active_ids[chosen_index];
+            let current = current_snapshot.get(&chosen_id).unwrap().clone();
+
+            match op_kind {
+                // Mint was already handled in the branch above; keep as explicit no-op here.
+                0 => continue,
+                // Random legal state transition (active/dormant only) keeps sequence valid.
+                1 => {
+                    let next_state = match current.state {
+                        MinerPassState::Active => MinerPassState::Dormant,
+                        MinerPassState::Dormant => {
+                            if (lcg_next(&mut seed) & 1) == 0
+                                && !has_other_active_owner(
+                                    &current_snapshot,
+                                    current.owner,
+                                    Some(&chosen_id),
+                                )
+                            {
+                                MinerPassState::Active
+                            } else {
+                                MinerPassState::Burned
+                            }
+                        }
+                        MinerPassState::Burned
+                        | MinerPassState::Consumed
+                        | MinerPassState::Invalid => {
+                            continue;
+                        }
+                    };
+
+                    storage
+                        .update_state_at_height(
+                            &chosen_id,
+                            next_state.clone(),
+                            current.state.clone(),
+                            current_height,
+                        )
+                        .unwrap();
+
+                    let event = ModelPassEvent {
+                        block_height: current_height,
+                        event_type: PASS_HISTORY_EVENT_STATE_UPDATE,
+                        state: next_state,
+                        owner: current.owner,
+                        satpoint: current.satpoint,
+                    };
+                    model_events
+                        .entry(chosen_id)
+                        .or_default()
+                        .push(event.clone());
+                    current_snapshot.insert(chosen_id, event);
+                }
+                // Owner transfer (state unchanged).
+                2 => {
+                    let new_owner = if current.state == MinerPassState::Active {
+                        let Some(owner) = random_owner_without_active_conflict(
+                            &mut seed,
+                            &current_snapshot,
+                            Some(&chosen_id),
+                        ) else {
+                            continue;
+                        };
+                        owner
+                    } else {
+                        random_owner(&mut seed)
+                    };
+                    let new_satpoint = random_satpoint(&mut seed, step as u32);
+                    storage
+                        .transfer_owner_at_height(
+                            &chosen_id,
+                            &new_owner,
+                            &new_satpoint,
+                            current_height,
+                        )
+                        .unwrap();
+
+                    let event = ModelPassEvent {
+                        block_height: current_height,
+                        event_type: PASS_HISTORY_EVENT_OWNER_TRANSFER,
+                        state: current.state,
+                        owner: new_owner,
+                        satpoint: new_satpoint,
+                    };
+                    model_events
+                        .entry(chosen_id)
+                        .or_default()
+                        .push(event.clone());
+                    current_snapshot.insert(chosen_id, event);
+                }
+                // Satpoint update (state/owner unchanged).
+                3 => {
+                    let new_satpoint = random_satpoint(&mut seed, step as u32 + 7_000);
+                    storage
+                        .update_satpoint_at_height(
+                            &chosen_id,
+                            &current.satpoint,
+                            &new_satpoint,
+                            current_height,
+                        )
+                        .unwrap();
+
+                    let event = ModelPassEvent {
+                        block_height: current_height,
+                        event_type: PASS_HISTORY_EVENT_SATPOINT_UPDATE,
+                        state: current.state,
+                        owner: current.owner,
+                        satpoint: new_satpoint,
+                    };
+                    model_events
+                        .entry(chosen_id)
+                        .or_default()
+                        .push(event.clone());
+                    current_snapshot.insert(chosen_id, event);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for query_height in base_height..=current_height {
+            // Compare per-pass latest snapshot at or before query height.
+            for pass_id in &pass_ids {
+                let expected = model_events
+                    .get(pass_id)
+                    .and_then(|events| model_last_event_at_or_before(events, query_height));
+                let actual = storage
+                    .get_last_pass_history_at_or_before_height(pass_id, query_height)
+                    .unwrap();
+
+                match (expected, actual) {
+                    (None, None) => {}
+                    (Some(expected), Some(actual)) => {
+                        assert_eq!(actual.block_height, expected.block_height);
+                        assert_eq!(actual.event_type, expected.event_type);
+                        assert_eq!(actual.state, expected.state);
+                        assert_eq!(actual.owner, expected.owner);
+                        assert_eq!(actual.satpoint, expected.satpoint);
+                    }
+                    (None, Some(actual)) => {
+                        panic!(
+                            "Unexpected history snapshot at height {} for pass {}: {:?}",
+                            query_height, pass_id, actual
+                        );
+                    }
+                    (Some(expected), None) => {
+                        panic!(
+                            "Missing history snapshot at height {} for pass {}: expected event_type={}, state={:?}",
+                            query_height, pass_id, expected.event_type, expected.state
+                        );
+                    }
+                }
+            }
+
+            // Compare active-pass snapshot page query vs reference model.
+            let expected_active: HashMap<InscriptionId, USDBScriptHash> = pass_ids
+                .iter()
+                .filter_map(|pass_id| {
+                    model_events
+                        .get(pass_id)
+                        .and_then(|events| model_last_event_at_or_before(events, query_height))
+                        .and_then(|event| {
+                            if event.state == MinerPassState::Active {
+                                Some((pass_id.clone(), event.owner))
+                            } else {
+                                None
+                            }
+                        })
+                })
+                .collect();
+
+            let actual_rows = load_all_active_from_history(&storage, query_height, 3);
+            let mut actual_active = HashMap::<InscriptionId, USDBScriptHash>::new();
+            let mut seen_pass = HashSet::<InscriptionId>::new();
+            for row in actual_rows {
+                assert!(
+                    seen_pass.insert(row.inscription_id),
+                    "Duplicate active pass row returned across pages: height={}, inscription_id={}",
+                    query_height,
+                    row.inscription_id
+                );
+                actual_active.insert(row.inscription_id, row.owner);
+            }
+
+            assert_eq!(
+                actual_active, expected_active,
+                "Active snapshot mismatch at height {}",
+                query_height
+            );
+        }
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

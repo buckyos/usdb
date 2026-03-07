@@ -734,6 +734,167 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
 }
 
 #[tokio::test]
+async fn test_sync_blocks_failed_settle_keeps_pass_history_and_snapshot_atomic() {
+    // Purpose: verify failed block does not advance sqlite state.
+    // We first commit block h-1, then force settle failure at block h and assert:
+    // miner_passes / miner_pass_state_history / active_balance_snapshot all stay at h-1.
+    let owner1 = test_script_hash(14);
+    let owner2 = test_script_hash(15);
+    let committed_height = 320;
+    let failed_height = 321;
+
+    let mint_tx1 = build_test_tx(55);
+    let mint_tx2 = build_test_tx(56);
+    let mint_id1 = InscriptionId {
+        txid: mint_tx1.compute_txid(),
+        index: 0,
+    };
+    let mint_id2 = InscriptionId {
+        txid: mint_tx2.compute_txid(),
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(committed_height, build_test_block(vec![mint_tx1]))
+            .with_block(failed_height, build_test_block(vec![mint_tx2])),
+    );
+
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(
+                committed_height,
+                vec![make_discovered_mint(
+                    mint_id1.clone(),
+                    committed_height,
+                    vec![],
+                )],
+            )
+            .with_mints(
+                failed_height,
+                vec![make_discovered_mint(
+                    mint_id2.clone(),
+                    failed_height,
+                    vec![],
+                )],
+            ),
+    );
+
+    let create_info1 = MockCreateInfo {
+        satpoint: test_satpoint(12, 0, 0),
+        value: Amount::from_sat(10_000),
+        address: Some(owner1),
+        commit_txid: Txid::from_slice(&[12u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[12u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let create_info2 = MockCreateInfo {
+        satpoint: test_satpoint(13, 0, 0),
+        value: Amount::from_sat(10_000),
+        address: Some(owner2),
+        commit_txid: Txid::from_slice(&[13u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[13u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&mint_id1, create_info1)
+            .with_create_info(&mint_id2, create_info2),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_failed_settle_keeps_atomic",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            // block=320 settle succeeds for owner1
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height: committed_height,
+                balance: 6_000,
+                delta: 10,
+            }]])),
+            // block=321 settle fails by returning mismatched batch length
+            MockResponse::Immediate(Ok(vec![])),
+        ],
+        Arc::new(
+            MockBalanceProvider::default()
+                .with_height(owner1, committed_height, 210_000, 100)
+                .with_height(owner2, failed_height, 220_000, 100),
+        ),
+    );
+
+    let err = fixture
+        .indexer
+        .sync_blocks_for_test(committed_height..=failed_height)
+        .await
+        .unwrap_err();
+    assert!(err.contains("Address balance batch size mismatch"));
+
+    // synced_height must remain at committed block.
+    let synced = fixture.storage.get_synced_btc_block_height().unwrap();
+    assert_eq!(synced, Some(committed_height));
+
+    // miner_passes must not include failed block mint.
+    let pass1 = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass1.owner, owner1);
+    assert_eq!(pass1.state, MinerPassState::Active);
+    let pass2 = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id2)
+        .unwrap();
+    assert!(pass2.is_none());
+
+    // history must not include failed block mint event.
+    let history1_at_failed = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&mint_id1, failed_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(history1_at_failed.block_height, committed_height);
+    assert_eq!(history1_at_failed.state, MinerPassState::Active);
+    let history2_at_failed = fixture
+        .storage
+        .get_last_pass_history_at_or_before_height(&mint_id2, failed_height)
+        .unwrap();
+    assert!(history2_at_failed.is_none());
+
+    // active owner set at failed height must remain same as committed height.
+    let expected_active = HashSet::from([owner1]);
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, failed_height),
+        expected_active
+    );
+
+    // snapshot must exist only for committed block.
+    let snapshot_committed = fixture
+        .storage
+        .get_active_balance_snapshot(committed_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot_committed.active_address_count, 1);
+    assert_eq!(snapshot_committed.total_balance, 6_000);
+    let snapshot_failed = fixture
+        .storage
+        .get_active_balance_snapshot(failed_height)
+        .unwrap();
+    assert!(snapshot_failed.is_none());
+
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
 async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
     let owner = test_script_hash(4);
     let block_height = 400;
