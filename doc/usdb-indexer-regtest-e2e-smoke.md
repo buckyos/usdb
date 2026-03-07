@@ -20,6 +20,7 @@
 - [transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/transfer_balance_assert.json)
 - [multi_transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json)
 - [run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
+- [regtest_live_ord_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh)
 
 ## 前置条件
 
@@ -42,6 +43,13 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 src/btc/usdb-indexer/scripts/run_regression.sh
 ```
 
+运行 live ord 铸造 e2e（ord CLI 仅用于铸造，解析仍走 bitcoind source）：
+
+```bash
+ORD_BIN=/path/to/ord \
+src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
+```
+
 ## 常用环境变量
 
 1. `SCENARIO_RUNNER`：Python 场景执行器路径（默认仓库内 `regtest_scenario_runner.py`）
@@ -61,6 +69,10 @@ src/btc/usdb-indexer/scripts/run_regression.sh
 15. `INSCRIPTION_SOURCE`：铭文源类型（默认 `bitcoind`，可选 `ord`/`fixture`）
 16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
 17. `RUN_REGTEST_SMOKE`：`run_regression.sh` 是否执行 regtest smoke（默认 `1`）
+18. `RUN_LIVE_ORD_E2E`：`run_regression.sh` 是否执行 live ord 铸造 e2e（默认 `0`）
+19. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
+20. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
+21. `ORD_CONTENT_FILE`：live ord 铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
 
 示例：
 

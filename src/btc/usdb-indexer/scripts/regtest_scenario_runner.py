@@ -36,6 +36,7 @@ class RunnerArgs:
     mining_address: str | None
     enable_transfer_check: bool
     scenario_file: str | None
+    skip_initial_usdb_state_assert: bool
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -882,9 +883,10 @@ class RegtestScenarioRunner:
         self.wait_balance_history_synced(effective_target_height)
         self.wait_usdb_synced(effective_target_height)
         self.vars["synced_height"] = effective_target_height
-        self.assert_usdb_state_at_height(
-            effective_target_height, expected_total_balance=0, expected_active_count=0
-        )
+        if not self.args.skip_initial_usdb_state_assert:
+            self.assert_usdb_state_at_height(
+                effective_target_height, expected_total_balance=0, expected_active_count=0
+            )
 
         if self.args.scenario_file:
             self.run_scenario_file(Path(self.args.scenario_file))
@@ -962,6 +964,7 @@ def parse_args() -> RunnerArgs:
     parser.add_argument("--mining-address")
     parser.add_argument("--enable-transfer-check", action="store_true")
     parser.add_argument("--scenario-file")
+    parser.add_argument("--skip-initial-usdb-state-assert", action="store_true")
     parsed = parser.parse_args()
 
     return RunnerArgs(
@@ -980,6 +983,7 @@ def parse_args() -> RunnerArgs:
         mining_address=parsed.mining_address,
         enable_transfer_check=parsed.enable_transfer_check,
         scenario_file=parsed.scenario_file,
+        skip_initial_usdb_state_assert=parsed.skip_initial_usdb_state_assert,
     )
 
 

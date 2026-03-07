@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 
 MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/src/btc/Cargo.toml}"
 RUN_REGTEST_SMOKE="${RUN_REGTEST_SMOKE:-1}"
+RUN_LIVE_ORD_E2E="${RUN_LIVE_ORD_E2E:-0}"
 
 log() {
   echo "[usdb-regression] $*"
@@ -59,6 +60,12 @@ main() {
     run_regtest_smoke_scenarios
   else
     log "Skipping regtest smoke scenarios: RUN_REGTEST_SMOKE=${RUN_REGTEST_SMOKE}"
+  fi
+
+  if [[ "${RUN_LIVE_ORD_E2E}" == "1" ]]; then
+    run_cmd "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+  else
+    log "Skipping live ord e2e: RUN_LIVE_ORD_E2E=${RUN_LIVE_ORD_E2E}"
   fi
 
   log "Regression suite succeeded."
