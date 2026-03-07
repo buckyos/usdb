@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/src/btc/Cargo.toml}"
 RUN_REGTEST_SMOKE="${RUN_REGTEST_SMOKE:-1}"
 RUN_LIVE_ORD_E2E="${RUN_LIVE_ORD_E2E:-0}"
+RUN_LIVE_ORD_REALWORLD_SUITE="${RUN_LIVE_ORD_REALWORLD_SUITE:-0}"
 
 log() {
   echo "[usdb-regression] $*"
@@ -50,6 +51,38 @@ run_regtest_smoke_scenarios() {
     "${SCRIPT_DIR}/regtest_e2e_smoke.sh"
 }
 
+run_live_ord_realworld_suite() {
+  local btc_rpc_port_1="${BTC_RPC_PORT:-19473}"
+  local btc_p2p_port_1="${BTC_P2P_PORT:-19474}"
+  local bh_rpc_port_1="${BH_RPC_PORT:-18093}"
+  local usdb_rpc_port_1="${USDB_RPC_PORT:-18113}"
+  local ord_server_port_1="${ORD_SERVER_PORT:-18094}"
+
+  local btc_rpc_port_2="${LIVE_SUITE_BTC_RPC_PORT_2:-$((btc_rpc_port_1 + 1000))}"
+  local btc_p2p_port_2="${LIVE_SUITE_BTC_P2P_PORT_2:-$((btc_p2p_port_1 + 1000))}"
+  local bh_rpc_port_2="${LIVE_SUITE_BH_RPC_PORT_2:-$((bh_rpc_port_1 + 1000))}"
+  local usdb_rpc_port_2="${LIVE_SUITE_USDB_RPC_PORT_2:-$((usdb_rpc_port_1 + 1000))}"
+  local ord_server_port_2="${LIVE_SUITE_ORD_SERVER_PORT_2:-$((ord_server_port_1 + 1000))}"
+
+  run_cmd env \
+    LIVE_SCENARIO=transfer_remint \
+    BTC_RPC_PORT="${btc_rpc_port_1}" \
+    BTC_P2P_PORT="${btc_p2p_port_1}" \
+    BH_RPC_PORT="${bh_rpc_port_1}" \
+    USDB_RPC_PORT="${usdb_rpc_port_1}" \
+    ORD_SERVER_PORT="${ord_server_port_1}" \
+    "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+
+  run_cmd env \
+    LIVE_SCENARIO=invalid_mint \
+    BTC_RPC_PORT="${btc_rpc_port_2}" \
+    BTC_P2P_PORT="${btc_p2p_port_2}" \
+    BH_RPC_PORT="${bh_rpc_port_2}" \
+    USDB_RPC_PORT="${usdb_rpc_port_2}" \
+    ORD_SERVER_PORT="${ord_server_port_2}" \
+    "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+}
+
 main() {
   log "Repo root: ${REPO_ROOT}"
   log "Manifest path: ${MANIFEST_PATH}"
@@ -62,10 +95,12 @@ main() {
     log "Skipping regtest smoke scenarios: RUN_REGTEST_SMOKE=${RUN_REGTEST_SMOKE}"
   fi
 
-  if [[ "${RUN_LIVE_ORD_E2E}" == "1" ]]; then
+  if [[ "${RUN_LIVE_ORD_REALWORLD_SUITE}" == "1" ]]; then
+    run_live_ord_realworld_suite
+  elif [[ "${RUN_LIVE_ORD_E2E}" == "1" ]]; then
     run_cmd "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
   else
-    log "Skipping live ord e2e: RUN_LIVE_ORD_E2E=${RUN_LIVE_ORD_E2E}"
+    log "Skipping live ord e2e: RUN_LIVE_ORD_E2E=${RUN_LIVE_ORD_E2E}, RUN_LIVE_ORD_REALWORLD_SUITE=${RUN_LIVE_ORD_REALWORLD_SUITE}"
   fi
 
   log "Regression suite succeeded."

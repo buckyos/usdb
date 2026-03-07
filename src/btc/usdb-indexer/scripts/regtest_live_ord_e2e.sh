@@ -32,6 +32,7 @@ SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
 DIAG_TAIL_LINES="${DIAG_TAIL_LINES:-120}"
+LIVE_SCENARIO="${LIVE_SCENARIO:-transfer_remint}"
 
 ORD_CONTENT_FILE="${ORD_CONTENT_FILE:-}"
 
@@ -537,7 +538,7 @@ create_usdb_indexer_config() {
 EOF
 }
 
-build_live_scenario() {
+build_live_transfer_remint_scenario() {
   local scenario_file="$1"
   local inscription_id_1="$2"
   local inscription_id_2="$3"
@@ -822,6 +823,111 @@ build_live_scenario() {
 EOF
 }
 
+build_live_invalid_mint_scenario() {
+  local scenario_file="$1"
+  local inscription_id="$2"
+  local block_height="$3"
+  cat >"$scenario_file" <<EOF
+{
+  "name": "live-ord-invalid-mint-assert",
+  "steps": [
+    {
+      "type": "wait_balance_history_synced",
+      "height": ${block_height}
+    },
+    {
+      "type": "wait_usdb_synced",
+      "height": ${block_height}
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id}",
+          "at_height": ${block_height}
+        }
+      ],
+      "result_only": true,
+      "var": "invalid_pass_snapshot"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_pass_snapshot.inscription_id",
+      "right": "${inscription_id}"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_pass_snapshot.state",
+      "right": "invalid"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_pass_snapshot.invalid_code",
+      "right": "INVALID_ETH_MAIN"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_invalid_passes",
+      "params": [
+        {
+          "from_height": 1,
+          "to_height": ${block_height},
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "invalid_page"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.resolved_height",
+      "right": ${block_height}
+    },
+    {
+      "type": "assert_len",
+      "value": "\$invalid_page.items",
+      "expected_len": 1
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.items.0.inscription_id",
+      "right": "${inscription_id}"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.items.0.invalid_code",
+      "right": "INVALID_ETH_MAIN"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${block_height}
+        }
+      ],
+      "result_only": true,
+      "var": "balance_snapshot"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$balance_snapshot.active_address_count",
+      "right": 0
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$balance_snapshot.total_balance",
+      "right": 0
+    }
+  ]
+}
+EOF
+}
 main() {
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   trap on_exit EXIT
@@ -904,9 +1010,15 @@ main() {
 
   if [[ -z "$ORD_CONTENT_FILE" ]]; then
     ORD_CONTENT_FILE="$WORK_DIR/usdb_live_mint.json"
-    cat >"$ORD_CONTENT_FILE" <<'EOF'
+    if [[ "$LIVE_SCENARIO" == "invalid_mint" ]]; then
+      cat >"$ORD_CONTENT_FILE" <<'EOF'
+{"p":"usdb","op":"mint","eth_main":"0x123","prev":[]}
+EOF
+    else
+      cat >"$ORD_CONTENT_FILE" <<'EOF'
 {"p":"usdb","op":"mint","eth_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
+    fi
   fi
   if [[ ! -f "$ORD_CONTENT_FILE" ]]; then
     log "ORD_CONTENT_FILE does not exist: $ORD_CONTENT_FILE"
@@ -930,45 +1042,62 @@ EOF
   height_mint_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
   log "Chain height after first mint confirmations: ${height_mint_1}"
 
-  log "Transfer first inscription from wallet A to wallet B: inscription_id=${inscription_id_1}"
-  local transfer_output transfer_txid
-  transfer_output="$(run_ord_wallet_named "$ORD_WALLET_NAME" send --fee-rate "$ORD_FEE_RATE" "$ord_receive_address_b" "$inscription_id_1" 2>&1 || true)"
-  transfer_txid="$(extract_txid "$transfer_output")"
-  if [[ -z "$transfer_txid" ]]; then
-    log "Failed to parse transfer txid from ord output: ${transfer_output}"
-    exit 1
-  fi
-  log "Transfer txid=${transfer_txid}"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    generatetoaddress "$TRANSFER_CONFIRM_BLOCKS" "$miner_address" >/dev/null
-  wait_until_ord_server_synced_to_bitcoind
-  wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$inscription_id_1"
-  local height_transfer_1
-  height_transfer_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  log "Chain height after transfer confirmations: ${height_transfer_1}"
+  local target_height
+  local scenario_file
+  local scenario_summary
+  scenario_summary="scenario=${LIVE_SCENARIO}, pass1=${inscription_id_1}"
+  if [[ "$LIVE_SCENARIO" == "transfer_remint" ]]; then
+    log "Transfer first inscription from wallet A to wallet B: inscription_id=${inscription_id_1}"
+    local transfer_output transfer_txid
+    transfer_output="$(run_ord_wallet_named "$ORD_WALLET_NAME" send --fee-rate "$ORD_FEE_RATE" "$ord_receive_address_b" "$inscription_id_1" 2>&1 || true)"
+    transfer_txid="$(extract_txid "$transfer_output")"
+    if [[ -z "$transfer_txid" ]]; then
+      log "Failed to parse transfer txid from ord output: ${transfer_output}"
+      exit 1
+    fi
+    log "Transfer txid=${transfer_txid}"
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$TRANSFER_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$inscription_id_1"
+    local height_transfer_1
+    height_transfer_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after transfer confirmations: ${height_transfer_1}"
 
-  local remint_content_file
-  remint_content_file="$WORK_DIR/usdb_live_remint.json"
-  cat >"$remint_content_file" <<EOF
+    local remint_content_file
+    remint_content_file="$WORK_DIR/usdb_live_remint.json"
+    cat >"$remint_content_file" <<EOF
 {"p":"usdb","op":"mint","eth_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
 
-  log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
-  local inscribe_output_2 inscription_id_2
-  inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --file "$remint_content_file" 2>&1 || true)"
-  inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
-  if [[ -z "$inscription_id_2" ]]; then
-    log "Failed to parse remint inscription id from ord output: ${inscribe_output_2}"
+    log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
+    local inscribe_output_2 inscription_id_2
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --file "$remint_content_file" 2>&1 || true)"
+    inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
+    if [[ -z "$inscription_id_2" ]]; then
+      log "Failed to parse remint inscription id from ord output: ${inscribe_output_2}"
+      exit 1
+    fi
+    log "Remint inscription_id=${inscription_id_2}"
+
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$REMINT_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after remint confirmations: ${target_height}"
+
+    scenario_file="$WORK_DIR/live_ord_transfer_remint_assert.json"
+    build_live_transfer_remint_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_1" "$height_transfer_1" "$target_height"
+    scenario_summary="${scenario_summary}, pass2=${inscription_id_2}"
+  elif [[ "$LIVE_SCENARIO" == "invalid_mint" ]]; then
+    target_height="$height_mint_1"
+    scenario_file="$WORK_DIR/live_ord_invalid_mint_assert.json"
+    build_live_invalid_mint_scenario "$scenario_file" "$inscription_id_1" "$target_height"
+    log "Invalid mint scenario selected: target_height=${target_height}, inscription_id=${inscription_id_1}"
+  else
+    log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint or invalid_mint"
     exit 1
   fi
-  log "Remint inscription_id=${inscription_id_2}"
-
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    generatetoaddress "$REMINT_CONFIRM_BLOCKS" "$miner_address" >/dev/null
-  wait_until_ord_server_synced_to_bitcoind
-  local target_height
-  target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  log "Chain height after remint confirmations: ${target_height}"
 
   create_balance_history_config
   create_usdb_indexer_config
@@ -994,10 +1123,7 @@ EOF
 
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
 
-  local scenario_file
-  scenario_file="$WORK_DIR/live_ord_transfer_remint_assert.json"
   SCENARIO_FILE_PATH="$scenario_file"
-  build_live_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_1" "$height_transfer_1" "$target_height"
 
   python3 "$SCENARIO_RUNNER" \
     --btc-cli "$BITCOIN_CLI_BIN" \
@@ -1016,7 +1142,7 @@ EOF
     --skip-initial-usdb-state-assert \
     --scenario-file "$scenario_file"
 
-  log "Live ord transfer/remint e2e succeeded: pass1=${inscription_id_1}, pass2=${inscription_id_2}, target_height=${target_height}"
+  log "Live ord e2e succeeded: ${scenario_summary}, target_height=${target_height}"
   log "Logs: ${WORK_DIR}/balance-history.log, ${WORK_DIR}/usdb-indexer.log"
 }
 

@@ -50,6 +50,14 @@ ORD_BIN=/path/to/ord \
 src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 ```
 
+运行 live invalid mint 场景：
+
+```bash
+LIVE_SCENARIO=invalid_mint \
+ORD_BIN=/path/to/ord \
+src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
+```
+
 ## 常用环境变量
 
 1. `SCENARIO_RUNNER`：Python 场景执行器路径（默认仓库内 `regtest_scenario_runner.py`）
@@ -70,14 +78,16 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
 17. `RUN_REGTEST_SMOKE`：`run_regression.sh` 是否执行 regtest smoke（默认 `1`）
 18. `RUN_LIVE_ORD_E2E`：`run_regression.sh` 是否执行 live ord 铸造 e2e（默认 `0`）
-19. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
-20. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
-21. `ORD_WALLET_NAME`：live e2e 首个 ord 钱包名称（默认 `ord-live-a`）
-22. `ORD_WALLET_NAME_B`：live e2e 第二个 ord 钱包名称（默认 `ord-live-b`）
-23. `TRANSFER_CONFIRM_BLOCKS`：铭文转移后的确认块数（默认 `1`）
-24. `REMINT_CONFIRM_BLOCKS`：`remint(prev)` 后的确认块数（默认 `2`）
-25. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
-26. `DIAG_TAIL_LINES`：失败诊断时每个关键日志打印的尾部行数（默认 `120`）
+19. `RUN_LIVE_ORD_REALWORLD_SUITE`：`run_regression.sh` 是否执行 live realworld 场景集（默认 `0`）
+20. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
+21. `LIVE_SCENARIO`：live ord 场景名称（默认 `transfer_remint`，可选 `invalid_mint`）
+22. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
+23. `ORD_WALLET_NAME`：live e2e 首个 ord 钱包名称（默认 `ord-live-a`）
+24. `ORD_WALLET_NAME_B`：live e2e 第二个 ord 钱包名称（默认 `ord-live-b`）
+25. `TRANSFER_CONFIRM_BLOCKS`：铭文转移后的确认块数（默认 `1`）
+26. `REMINT_CONFIRM_BLOCKS`：`remint(prev)` 后的确认块数（默认 `2`）
+27. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
+28. `DIAG_TAIL_LINES`：失败诊断时每个关键日志打印的尾部行数（默认 `120`）
 
 示例：
 
