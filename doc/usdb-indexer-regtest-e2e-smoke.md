@@ -19,6 +19,7 @@
 - [regtest_scenario_runner.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_scenario_runner.py)
 - [transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/transfer_balance_assert.json)
 - [multi_transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json)
+- [run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
 
 ## 前置条件
 
@@ -33,6 +34,12 @@
 
 ```bash
 src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
+```
+
+一键运行“核心协议场景 + smoke 场景”回归：
+
+```bash
+src/btc/usdb-indexer/scripts/run_regression.sh
 ```
 
 ## 常用环境变量
@@ -53,6 +60,7 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 14. `CURL_MAX_TIME_SEC`：单个 RPC 请求最大耗时秒数（默认 `5`）
 15. `INSCRIPTION_SOURCE`：铭文源类型（默认 `bitcoind`，可选 `ord`/`fixture`）
 16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
+17. `RUN_REGTEST_SMOKE`：`run_regression.sh` 是否执行 regtest smoke（默认 `1`）
 
 示例：
 

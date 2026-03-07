@@ -373,15 +373,15 @@ struct IndexerFixture {
     indexer: InscriptionIndexer,
 }
 
-fn build_indexer_fixture_with_hint_provider(
-    test_name: &str,
+fn build_indexer_fixture_with_hint_provider_at_root(
+    root_dir: PathBuf,
     inscription_source: Arc<dyn InscriptionSource>,
     block_hint_provider: Arc<dyn BlockHintProvider>,
     transfer_tracker: Arc<MockTransferTracker>,
     backend_responses: Vec<MockResponse>,
     energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
 ) -> IndexerFixture {
-    let root_dir = test_root_dir("indexer_behavior", test_name);
+    std::fs::create_dir_all(&root_dir).unwrap();
     let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
 
     let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
@@ -425,6 +425,25 @@ fn build_indexer_fixture_with_hint_provider(
         transfer_tracker,
         indexer,
     }
+}
+
+fn build_indexer_fixture_with_hint_provider(
+    test_name: &str,
+    inscription_source: Arc<dyn InscriptionSource>,
+    block_hint_provider: Arc<dyn BlockHintProvider>,
+    transfer_tracker: Arc<MockTransferTracker>,
+    backend_responses: Vec<MockResponse>,
+    energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
+) -> IndexerFixture {
+    let root_dir = test_root_dir("indexer_behavior", test_name);
+    build_indexer_fixture_with_hint_provider_at_root(
+        root_dir,
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        backend_responses,
+        energy_provider,
+    )
 }
 
 fn build_indexer_fixture(
@@ -731,6 +750,238 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
     cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() {
+    // Purpose:
+    // 1) Simulate block failure at h701 after h700 committed.
+    // 2) Recreate indexer (restart) and replay h701.
+    // 3) Compare final state with a fresh successful run over h700..h701.
+    let owner = test_script_hash(22);
+    let h700 = 700u32;
+    let h701 = 701u32;
+    let mint_tx = build_test_tx(57);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(h700, build_test_block(vec![]))
+            .with_block(h701, build_test_block(vec![mint_tx])),
+    );
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(23, 0, 0),
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+
+    let restart_root = test_root_dir("indexer_behavior", "restart_replay_consistency");
+    let restart_energy_provider =
+        Arc::new(MockBalanceProvider::default().with_height(owner, h701, 260_000, 100));
+
+    // First run: commit h700, fail at h701 during balance settle.
+    {
+        let inscription_source: Arc<dyn InscriptionSource> =
+            Arc::new(MockInscriptionSource::default().with_mints(
+                h701,
+                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
+            ));
+        let transfer_tracker = Arc::new(
+            MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
+        );
+        let fixture = build_indexer_fixture_with_hint_provider_at_root(
+            restart_root.clone(),
+            inscription_source,
+            block_hint_provider.clone(),
+            transfer_tracker,
+            vec![
+                // h701: force settle failure by returning mismatched batch length
+                MockResponse::Immediate(Ok(vec![])),
+            ],
+            restart_energy_provider.clone(),
+        );
+
+        let err = fixture
+            .indexer
+            .sync_blocks_for_test(h700..=h701)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Address balance batch size mismatch"));
+
+        assert_eq!(
+            fixture.storage.get_synced_btc_block_height().unwrap(),
+            Some(h700)
+        );
+        assert!(
+            fixture
+                .storage
+                .get_pass_by_inscription_id(&mint_id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+        assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+    }
+
+    // Restart run: rebuild indexer from same root and replay h701.
+    let (restart_pass, restart_energy, restart_snap_700, restart_snap_701) = {
+        let inscription_source: Arc<dyn InscriptionSource> =
+            Arc::new(MockInscriptionSource::default().with_mints(
+                h701,
+                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
+            ));
+        let transfer_tracker = Arc::new(
+            MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
+        );
+        let fixture = build_indexer_fixture_with_hint_provider_at_root(
+            restart_root.clone(),
+            inscription_source,
+            block_hint_provider.clone(),
+            transfer_tracker,
+            vec![
+                // h701 replay succeeds
+                MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                    block_height: h701,
+                    balance: 9_999,
+                    delta: 999,
+                }]])),
+            ],
+            restart_energy_provider.clone(),
+        );
+
+        let synced = fixture
+            .indexer
+            .sync_blocks_for_test(h701..=h701)
+            .await
+            .unwrap();
+        assert_eq!(synced, h701);
+        assert_eq!(
+            fixture.storage.get_synced_btc_block_height().unwrap(),
+            Some(h701)
+        );
+        assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+        assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+        let pass = fixture
+            .storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .unwrap();
+        let energy = fixture
+            .pass_energy_manager
+            .get_pass_energy_at_or_before(&mint_id, h701)
+            .await
+            .unwrap()
+            .unwrap();
+        let snap_700 = fixture
+            .storage
+            .get_active_balance_snapshot(h700)
+            .unwrap()
+            .unwrap();
+        let snap_701 = fixture
+            .storage
+            .get_active_balance_snapshot(h701)
+            .unwrap()
+            .unwrap();
+        (pass, energy, snap_700, snap_701)
+    };
+
+    // Fresh baseline run over same blocks should produce identical final state.
+    let baseline_root = test_root_dir("indexer_behavior", "restart_replay_baseline");
+    let baseline_energy_provider =
+        Arc::new(MockBalanceProvider::default().with_height(owner, h701, 260_000, 100));
+    let (baseline_pass, baseline_energy, baseline_snap_700, baseline_snap_701) = {
+        let inscription_source: Arc<dyn InscriptionSource> =
+            Arc::new(MockInscriptionSource::default().with_mints(
+                h701,
+                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
+            ));
+        let transfer_tracker = Arc::new(
+            MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
+        );
+        let fixture = build_indexer_fixture_with_hint_provider_at_root(
+            baseline_root.clone(),
+            inscription_source,
+            block_hint_provider,
+            transfer_tracker,
+            vec![
+                // h701
+                MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                    block_height: h701,
+                    balance: 9_999,
+                    delta: 999,
+                }]])),
+            ],
+            baseline_energy_provider,
+        );
+
+        let synced = fixture
+            .indexer
+            .sync_blocks_for_test(h700..=h701)
+            .await
+            .unwrap();
+        assert_eq!(synced, h701);
+
+        let pass = fixture
+            .storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .unwrap();
+        let energy = fixture
+            .pass_energy_manager
+            .get_pass_energy_at_or_before(&mint_id, h701)
+            .await
+            .unwrap()
+            .unwrap();
+        let snap_700 = fixture
+            .storage
+            .get_active_balance_snapshot(h700)
+            .unwrap()
+            .unwrap();
+        let snap_701 = fixture
+            .storage
+            .get_active_balance_snapshot(h701)
+            .unwrap()
+            .unwrap();
+        (pass, energy, snap_700, snap_701)
+    };
+
+    assert_eq!(restart_pass.owner, baseline_pass.owner);
+    assert_eq!(restart_pass.state, baseline_pass.state);
+    assert_eq!(restart_pass.satpoint, baseline_pass.satpoint);
+    assert_eq!(restart_energy.state, baseline_energy.state);
+    assert_eq!(restart_energy.energy, baseline_energy.energy);
+    assert_eq!(
+        (
+            restart_snap_700.total_balance,
+            restart_snap_700.active_address_count
+        ),
+        (
+            baseline_snap_700.total_balance,
+            baseline_snap_700.active_address_count
+        )
+    );
+    assert_eq!(
+        (
+            restart_snap_701.total_balance,
+            restart_snap_701.active_address_count
+        ),
+        (
+            baseline_snap_701.total_balance,
+            baseline_snap_701.active_address_count
+        )
+    );
+
+    cleanup_temp_dir(&restart_root);
+    cleanup_temp_dir(&baseline_root);
 }
 
 #[tokio::test]
