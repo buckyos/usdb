@@ -342,6 +342,94 @@ class RegtestScenarioRunner:
                 detail = f"{message}: {detail}"
             raise ScenarioError(detail)
 
+    def assert_gt(self, left: Any, right: Any, message: str | None = None) -> None:
+        if not left > right:
+            detail = f"assert_gt failed: left={left}, right={right}"
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+    def assert_ge(self, left: Any, right: Any, message: str | None = None) -> None:
+        if not left >= right:
+            detail = f"assert_ge failed: left={left}, right={right}"
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+    def assert_len(self, value: Any, expected_len: int, message: str | None = None) -> None:
+        try:
+            actual_len = len(value)
+        except Exception as e:  # noqa: BLE001
+            raise ScenarioError(f"assert_len failed: value has no len(), error={e}") from e
+        if actual_len != expected_len:
+            detail = (
+                f"assert_len failed: actual_len={actual_len}, expected_len={expected_len}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+    def assert_contains(
+        self, container: Any, item: Any, message: str | None = None
+    ) -> None:
+        if isinstance(container, dict):
+            ok = item in container
+        else:
+            try:
+                ok = item in container
+            except Exception as e:  # noqa: BLE001
+                raise ScenarioError(
+                    f"assert_contains failed: non-iterable container, error={e}"
+                ) from e
+
+        if not ok:
+            detail = f"assert_contains failed: item={item} not found in container={container}"
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+    def rpc_call_by_service(
+        self, service: str, method: str, params: Any
+    ) -> dict[str, Any]:
+        normalized = service.strip().lower()
+        if normalized in {"usdb", "usdb-indexer", "usdb_indexer"}:
+            url = self.args.usdb_rpc_url
+        elif normalized in {"balance-history", "balance_history", "bh"}:
+            url = self.args.balance_history_rpc_url
+        else:
+            raise ScenarioError(
+                f"Unsupported service in assert_rpc_error_code: {service}"
+            )
+        return self.rpc_call(url, method, params)
+
+    def assert_rpc_error_code(
+        self,
+        service: str,
+        method: str,
+        params: Any,
+        expected_code: int,
+        message_contains: str | None = None,
+    ) -> None:
+        payload = self.rpc_call_by_service(service, method, params)
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            raise ScenarioError(
+                f"assert_rpc_error_code failed: expected error response, got payload={payload}"
+            )
+
+        code = error.get("code")
+        if int(code) != int(expected_code):
+            raise ScenarioError(
+                f"assert_rpc_error_code failed: code={code}, expected_code={expected_code}, error={error}"
+            )
+
+        if message_contains:
+            text = str(error.get("message", ""))
+            if message_contains not in text:
+                raise ScenarioError(
+                    f"assert_rpc_error_code failed: error message does not contain expected text '{message_contains}', message='{text}'"
+                )
+
     def assert_networks(self) -> None:
         bh_network = self.rpc_result(
             self.rpc_call(self.args.balance_history_rpc_url, "get_network_type", []),
@@ -603,6 +691,29 @@ class RegtestScenarioRunner:
                 self.run_btc_cli_step(cli_args, parse_json, var_name)
                 continue
 
+            if step_type == "rpc_call":
+                service = str(self.resolve_value(step.get("service", "usdb")))
+                method_raw = step.get("method")
+                if method_raw is None:
+                    raise ScenarioError(f"rpc_call step requires field 'method': {step}")
+                method = str(self.resolve_value(method_raw))
+                params = self.resolve_value(step.get("params", []))
+                result_only = bool(self.resolve_value(step.get("result_only", False)))
+                var_name = step.get("var")
+                if var_name is not None and not isinstance(var_name, str):
+                    raise ScenarioError(
+                        f"rpc_call.var must be string when provided: step={step}"
+                    )
+                self.log(
+                    f"scenario-step[{idx}] rpc_call service={service} method={method} result_only={result_only} var={var_name}"
+                )
+                payload = self.rpc_call_by_service(service, method, params)
+                value = self.rpc_result(payload, method) if result_only else payload
+                if var_name:
+                    self.vars[var_name] = value
+                    self.log(f"Stored scenario variable: {var_name}")
+                continue
+
             if step_type == "send_and_confirm":
                 amount_btc = str(self.resolve_value(step.get("amount_btc", "0")))
                 mine_blocks = self.to_int(
@@ -659,6 +770,83 @@ class RegtestScenarioRunner:
                 )
                 self.log(f"scenario-step[{idx}] assert_eq")
                 self.assert_eq(left, right, message)
+                continue
+
+            if step_type == "assert_gt":
+                left = self.resolve_value(step.get("left"))
+                right = self.resolve_value(step.get("right"))
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_gt")
+                self.assert_gt(left, right, message)
+                continue
+
+            if step_type == "assert_ge":
+                left = self.resolve_value(step.get("left"))
+                right = self.resolve_value(step.get("right"))
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_ge")
+                self.assert_ge(left, right, message)
+                continue
+
+            if step_type == "assert_len":
+                value = self.resolve_value(step.get("value"))
+                expected_len = self.to_int(
+                    self.resolve_value(step.get("expected_len")),
+                    "assert_len.expected_len",
+                )
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_len expected_len={expected_len}")
+                self.assert_len(value, expected_len, message)
+                continue
+
+            if step_type == "assert_contains":
+                container = self.resolve_value(step.get("container"))
+                item = self.resolve_value(step.get("item"))
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_contains")
+                self.assert_contains(container, item, message)
+                continue
+
+            if step_type == "assert_rpc_error_code":
+                service = str(self.resolve_value(step.get("service", "usdb")))
+                method_raw = step.get("method")
+                if method_raw is None:
+                    raise ScenarioError(
+                        f"assert_rpc_error_code requires field 'method': {step}"
+                    )
+                method = str(self.resolve_value(method_raw))
+                params = self.resolve_value(step.get("params", []))
+                expected_code = self.to_int(
+                    self.resolve_value(step.get("expected_code")),
+                    "assert_rpc_error_code.expected_code",
+                )
+                message_contains = (
+                    str(self.resolve_value(step.get("message_contains")))
+                    if step.get("message_contains") is not None
+                    else None
+                )
+                self.log(
+                    f"scenario-step[{idx}] assert_rpc_error_code service={service} method={method} expected_code={expected_code}"
+                )
+                self.assert_rpc_error_code(
+                    service, method, params, expected_code, message_contains
+                )
                 continue
 
             raise ScenarioError(f"Unsupported scenario step type: {step_type}")

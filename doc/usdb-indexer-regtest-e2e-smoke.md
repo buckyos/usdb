@@ -51,6 +51,8 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 12. `MIN_SPENDABLE_BLOCK_HEIGHT`：转账断言所需最小可花费高度（默认 `101`）
 13. `CURL_CONNECT_TIMEOUT_SEC`：RPC 连接超时秒数（默认 `2`）
 14. `CURL_MAX_TIME_SEC`：单个 RPC 请求最大耗时秒数（默认 `5`）
+15. `INSCRIPTION_SOURCE`：铭文源类型（默认 `bitcoind`，可选 `ord`/`fixture`）
+16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
 
 示例：
 
@@ -77,11 +79,20 @@ SEND_AMOUNT_BTC=0.25 \
 src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 ```
 
+使用 fixture 铭文源（后续可扩展 pass 协议场景）：
+
+```bash
+INSCRIPTION_SOURCE=fixture \
+INSCRIPTION_FIXTURE_FILE=/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/fixtures/empty_inscriptions.json \
+src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
+```
+
 ## 关键实现说明
 
-1. `usdb-indexer` 使用 `bitcoind` 铭文源，并关闭 ord 依赖监控：
+1. 默认配置下 `usdb-indexer` 使用 `bitcoind` 铭文源，并关闭 ord 依赖监控：
    - `usdb.inscription_source = "bitcoind"`
    - `usdb.monitor_ord_enabled = false`
+   - 可通过 `INSCRIPTION_SOURCE=fixture` + `INSCRIPTION_FIXTURE_FILE` 切换到 fixture 铭文源
 2. shell 脚本仅负责服务编排（启动/停止/配置），核心链上断言由 Python 场景脚本执行。
 3. Python 场景支持步骤类型：
    - `log`
@@ -91,9 +102,15 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
    - `assert_usdb_state`
    - `mine_blocks`
    - `btc_cli`
+   - `rpc_call`
    - `send_and_confirm`
    - `assert_balance_history_balance`
    - `assert_eq`
+   - `assert_gt`
+   - `assert_ge`
+   - `assert_len`
+   - `assert_contains`
+   - `assert_rpc_error_code`
 4. 脚本启动 `usdb-indexer` 时显式传入：
    - `--root-dir <USDB_INDEXER_ROOT>`
    - `--skip-process-lock`
@@ -106,3 +123,24 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
    - active pass 列表为空
    - invalid pass 列表为空
    - active balance snapshot 为 `0/0`
+
+## 场景步骤示例
+
+```json
+{
+  "type": "rpc_call",
+  "service": "usdb",
+  "method": "get_sync_status",
+  "params": [],
+  "result_only": true,
+  "var": "sync_status"
+}
+```
+
+```json
+{
+  "type": "assert_ge",
+  "left": "$sync_status.synced_block_height",
+  "right": "$effective_target_height"
+}
+```

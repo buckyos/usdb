@@ -23,6 +23,8 @@ SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.0}"
 MIN_SPENDABLE_BLOCK_HEIGHT="${MIN_SPENDABLE_BLOCK_HEIGHT:-101}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
+INSCRIPTION_SOURCE="${INSCRIPTION_SOURCE:-bitcoind}"
+INSCRIPTION_FIXTURE_FILE="${INSCRIPTION_FIXTURE_FILE:-}"
 
 BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
@@ -106,6 +108,14 @@ cleanup() {
 json_extract_python() {
   local script="$1"
   python3 -c "$script"
+}
+
+json_quote() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+print(json.dumps(sys.argv[1]))
+PY
 }
 
 parse_json_string_result() {
@@ -246,6 +256,11 @@ EOF
 
 create_usdb_indexer_config() {
   mkdir -p "$USDB_INDEXER_ROOT"
+  local fixture_json="null"
+  if [[ -n "$INSCRIPTION_FIXTURE_FILE" ]]; then
+    fixture_json="$(json_quote "$INSCRIPTION_FIXTURE_FILE")"
+  fi
+
   cat >"${USDB_INDEXER_ROOT}/config.json" <<EOF
 {
   "isolate": null,
@@ -267,7 +282,8 @@ create_usdb_indexer_config() {
     "balance_query_concurrency": 4,
     "balance_query_timeout_ms": 10000,
     "balance_query_max_retries": 2,
-    "inscription_source": "bitcoind",
+    "inscription_source": "${INSCRIPTION_SOURCE}",
+    "inscription_fixture_file": ${fixture_json},
     "inscription_source_shadow_compare": false,
     "inscription_source_shadow_fail_fast": false,
     "rpc_server_port": ${USDB_RPC_PORT},

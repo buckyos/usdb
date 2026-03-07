@@ -31,6 +31,10 @@ fn default_inscription_source() -> String {
     "ord".to_string()
 }
 
+fn default_inscription_fixture_file() -> Option<String> {
+    None
+}
+
 fn default_inscription_source_shadow_compare() -> bool {
     false
 }
@@ -81,6 +85,11 @@ pub struct USDBConfig {
     #[serde(default = "default_inscription_source")]
     pub inscription_source: String,
 
+    // Optional fixture JSON file path used when inscription_source is "fixture".
+    // Relative paths are resolved from usdb-indexer root directory.
+    #[serde(default = "default_inscription_fixture_file")]
+    pub inscription_fixture_file: Option<String>,
+
     // Enable primary-vs-shadow inscription source comparison for diagnostics.
     #[serde(default = "default_inscription_source_shadow_compare")]
     pub inscription_source_shadow_compare: bool,
@@ -113,6 +122,7 @@ impl Default for USDBConfig {
             balance_query_timeout_ms: default_balance_query_timeout_ms(),
             balance_query_max_retries: default_balance_query_max_retries(),
             inscription_source: default_inscription_source(),
+            inscription_fixture_file: default_inscription_fixture_file(),
             inscription_source_shadow_compare: default_inscription_source_shadow_compare(),
             inscription_source_shadow_fail_fast: default_inscription_source_shadow_fail_fast(),
             rpc_server_port: default_rpc_server_port(),

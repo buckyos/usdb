@@ -7,8 +7,8 @@ use super::transfer::{InscriptionTransferTracker, TransferTrackSeed};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
 use crate::inscription::{
-    BitcoindInscriptionSource, CompareInscriptionSource, InscriptionNewItem, InscriptionSource,
-    InscriptionTransferItem, OrdInscriptionSource,
+    BitcoindInscriptionSource, CompareInscriptionSource, FixtureInscriptionSource,
+    InscriptionNewItem, InscriptionSource, InscriptionTransferItem, OrdInscriptionSource,
 };
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
@@ -138,8 +138,9 @@ impl InscriptionIndexer {
         match source_name {
             "ord" => Ok(Arc::new(OrdInscriptionSource::new(config)?)),
             "bitcoind" => Ok(Arc::new(BitcoindInscriptionSource::new(btc_client))),
+            "fixture" => Ok(Arc::new(FixtureInscriptionSource::new(config)?)),
             _ => Err(format!(
-                "Unsupported inscription source: {} (supported: ord, bitcoind)",
+                "Unsupported inscription source: {} (supported: ord, bitcoind, fixture)",
                 source_name
             )),
         }
