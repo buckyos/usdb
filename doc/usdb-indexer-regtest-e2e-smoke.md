@@ -18,6 +18,7 @@
 - [regtest_e2e_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh)
 - [regtest_scenario_runner.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_scenario_runner.py)
 - [transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/transfer_balance_assert.json)
+- [multi_transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json)
 
 ## 前置条件
 
@@ -70,6 +71,12 @@ SEND_AMOUNT_BTC=0.25 \
 src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 ```
 
+```bash
+SCENARIO_FILE=/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json \
+SEND_AMOUNT_BTC=0.25 \
+src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
+```
+
 ## 关键实现说明
 
 1. `usdb-indexer` 使用 `bitcoind` 铭文源，并关闭 ord 依赖监控：
@@ -78,11 +85,15 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 2. shell 脚本仅负责服务编排（启动/停止/配置），核心链上断言由 Python 场景脚本执行。
 3. Python 场景支持步骤类型：
    - `log`
+   - `set_var`
    - `wait_balance_history_synced`
    - `wait_usdb_synced`
    - `assert_usdb_state`
+   - `mine_blocks`
+   - `btc_cli`
    - `send_and_confirm`
    - `assert_balance_history_balance`
+   - `assert_eq`
 4. 脚本启动 `usdb-indexer` 时显式传入：
    - `--root-dir <USDB_INDEXER_ROOT>`
    - `--skip-process-lock`

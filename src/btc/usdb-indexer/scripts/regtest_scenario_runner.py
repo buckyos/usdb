@@ -210,6 +210,18 @@ class RegtestScenarioRunner:
                         f"Invalid scenario reference path: {path}, missing key={part}"
                     )
                 current = current[part]
+            elif isinstance(current, list):
+                try:
+                    idx = int(part)
+                except ValueError as e:
+                    raise ScenarioError(
+                        f"Invalid scenario reference path: {path}, list index must be integer, got={part}"
+                    ) from e
+                if idx < 0 or idx >= len(current):
+                    raise ScenarioError(
+                        f"Invalid scenario reference path: {path}, list index out of range={idx}"
+                    )
+                current = current[idx]
             else:
                 raise ScenarioError(
                     f"Invalid scenario reference path: {path}, non-dict node at {part}"
@@ -276,6 +288,59 @@ class RegtestScenarioRunner:
             self.vars[var_name] = transfer_info
             self.log(f"Stored scenario variable: {var_name}")
         return transfer_info
+
+    def mine_blocks(self, blocks: int, var_name: str | None) -> dict[str, Any]:
+        if blocks <= 0:
+            raise ScenarioError(f"mine_blocks requires blocks > 0, got={blocks}")
+
+        mining_address = self.args.mining_address or self.run_btc_cli(["getnewaddress"])
+        before_height = self.get_balance_history_height()
+        self.log(f"Mining {blocks} block(s): mining_address={mining_address}")
+        self.run_btc_cli(["generatetoaddress", str(blocks), mining_address])
+
+        expected_height = before_height + blocks
+        self.wait_balance_history_synced(expected_height)
+        self.wait_usdb_synced(expected_height)
+
+        info = {
+            "blocks": blocks,
+            "mining_address": mining_address,
+            "before_height": before_height,
+            "after_height": expected_height,
+        }
+        if var_name:
+            self.vars[var_name] = info
+            self.log(f"Stored scenario variable: {var_name}")
+        return info
+
+    def run_btc_cli_step(
+        self,
+        cli_args: list[str],
+        parse_json: bool,
+        var_name: str | None,
+    ) -> Any:
+        if not cli_args:
+            raise ScenarioError("btc_cli step requires non-empty args")
+        output = self.run_btc_cli(cli_args)
+        result: Any = output
+        if parse_json:
+            try:
+                result = json.loads(output)
+            except Exception as e:  # noqa: BLE001
+                raise ScenarioError(
+                    f"btc_cli step failed to parse JSON output: args={cli_args}, output={output}, error={e}"
+                ) from e
+        if var_name:
+            self.vars[var_name] = result
+            self.log(f"Stored scenario variable: {var_name}")
+        return result
+
+    def assert_eq(self, left: Any, right: Any, message: str | None = None) -> None:
+        if left != right:
+            detail = f"assert_eq failed: left={left}, right={right}"
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
 
     def assert_networks(self) -> None:
         bh_network = self.rpc_result(
@@ -460,6 +525,17 @@ class RegtestScenarioRunner:
                 self.log(f"scenario-step[{idx}] log: {message}")
                 continue
 
+            if step_type == "set_var":
+                var_name = step.get("var")
+                if not isinstance(var_name, str) or not var_name:
+                    raise ScenarioError(
+                        f"set_var requires non-empty string field 'var': step={step}"
+                    )
+                value = self.resolve_value(step.get("value"))
+                self.vars[var_name] = value
+                self.log(f"scenario-step[{idx}] set_var var={var_name}")
+                continue
+
             if step_type == "wait_balance_history_synced":
                 height = self.to_int(
                     self.resolve_value(step.get("height")), "wait_balance_history_synced.height"
@@ -493,6 +569,38 @@ class RegtestScenarioRunner:
                     % (idx, height, expected_total, expected_count)
                 )
                 self.assert_usdb_state_at_height(height, expected_total, expected_count)
+                continue
+
+            if step_type == "mine_blocks":
+                blocks = self.to_int(
+                    self.resolve_value(step.get("blocks", 1)), "mine_blocks.blocks"
+                )
+                var_name = step.get("var")
+                if var_name is not None and not isinstance(var_name, str):
+                    raise ScenarioError(
+                        f"mine_blocks.var must be string when provided: step={step}"
+                    )
+                self.log(
+                    f"scenario-step[{idx}] mine_blocks blocks={blocks} var={var_name}"
+                )
+                self.mine_blocks(blocks, var_name)
+                continue
+
+            if step_type == "btc_cli":
+                raw_args = step.get("args")
+                if not isinstance(raw_args, list):
+                    raise ScenarioError(f"btc_cli step requires list field 'args': {step}")
+                cli_args = [str(self.resolve_value(item)) for item in raw_args]
+                parse_json = bool(self.resolve_value(step.get("parse_json", False)))
+                var_name = step.get("var")
+                if var_name is not None and not isinstance(var_name, str):
+                    raise ScenarioError(
+                        f"btc_cli.var must be string when provided: step={step}"
+                    )
+                self.log(
+                    f"scenario-step[{idx}] btc_cli args={cli_args} parse_json={parse_json} var={var_name}"
+                )
+                self.run_btc_cli_step(cli_args, parse_json, var_name)
                 continue
 
             if step_type == "send_and_confirm":
@@ -539,6 +647,18 @@ class RegtestScenarioRunner:
                     f"scenario-step[{idx}] assert_balance_history_balance script_hash={script_hash} height={height} expected_sat={expected_sat}"
                 )
                 self.assert_balance_history_balance(script_hash, height, expected_sat)
+                continue
+
+            if step_type == "assert_eq":
+                left = self.resolve_value(step.get("left"))
+                right = self.resolve_value(step.get("right"))
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_eq")
+                self.assert_eq(left, right, message)
                 continue
 
             raise ScenarioError(f"Unsupported scenario step type: {step_type}")
