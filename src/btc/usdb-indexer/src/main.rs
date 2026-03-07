@@ -14,15 +14,40 @@ mod storage;
 #[macro_use]
 extern crate log;
 
+use clap::Parser;
 use config::ConfigManager;
 use index::InscriptionIndexer;
+use std::path::PathBuf;
 use std::sync::Arc;
 use usdb_util::LogConfig;
 
+#[derive(Parser, Debug)]
+#[command(name = "usdb-indexer")]
+#[command(author = "buckyos")]
+#[command(version = "0.1.0")]
+#[command(about = "USDB Indexer", long_about = None)]
+struct UsdbIndexerCli {
+    /// Override service root directory (default: ~/.usdb/usdb-indexer)
+    #[arg(long)]
+    root_dir: Option<PathBuf>,
+
+    /// Skip process lock acquisition (for isolated integration tests)
+    #[arg(long, default_value_t = false)]
+    skip_process_lock: bool,
+}
+
 #[tokio::main]
 async fn main() {
-    // Acquire application lock to prevent multiple instances
-    let (_lock, _guard) = usdb_util::init_process_lock(usdb_util::USDB_INDEXER_SERVICE_NAME);
+    let cli = UsdbIndexerCli::parse();
+
+    // Acquire application lock to prevent multiple instances unless explicitly disabled.
+    let _lock_guard = if cli.skip_process_lock {
+        None
+    } else {
+        Some(usdb_util::init_process_lock(
+            usdb_util::USDB_INDEXER_SERVICE_NAME,
+        ))
+    };
 
     // Init file logging
     let config = LogConfig::new(usdb_util::USDB_INDEXER_SERVICE_NAME).enable_console(false);
@@ -31,7 +56,9 @@ async fn main() {
     let output = output::IndexOutput::new();
     let output = Arc::new(output);
 
-    let root_dir = usdb_util::get_service_dir(usdb_util::USDB_INDEXER_SERVICE_NAME);
+    let root_dir = cli
+        .root_dir
+        .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::USDB_INDEXER_SERVICE_NAME));
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration

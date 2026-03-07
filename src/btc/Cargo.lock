@@ -4988,6 +4988,7 @@ dependencies = [
  "balance-history",
  "bincode",
  "bitcoincore-rpc",
+ "clap",
  "dirs",
  "indicatif",
  "jsonrpc-core",
