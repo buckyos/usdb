@@ -8,6 +8,7 @@ BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
 USDB_INDEXER_ROOT="${USDB_INDEXER_ROOT:-$WORK_DIR/usdb-indexer}"
+SCENARIO_RUNNER="${SCENARIO_RUNNER:-$REPO_ROOT/src/btc/usdb-indexer/scripts/regtest_scenario_runner.py}"
 
 BTC_RPC_PORT="${BTC_RPC_PORT:-19453}"
 BH_RPC_PORT="${BH_RPC_PORT:-18090}"
@@ -108,179 +109,6 @@ json_extract_python() {
 
 parse_json_string_result() {
   sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
-}
-
-assert_usdb_rpc_info() {
-  local resp="$1"
-  local expected_network="$2"
-
-  python3 - "$expected_network" "$resp" <<'PY'
-import json
-import sys
-
-expected_network = sys.argv[1]
-payload = json.loads(sys.argv[2])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_rpc_info returned error: {payload['error']}")
-
-result = payload.get("result") or {}
-if result.get("service") != "usdb-indexer":
-    raise SystemExit(f"Unexpected service field in get_rpc_info: {result}")
-if result.get("network") != expected_network:
-    raise SystemExit(
-        f"Unexpected network in get_rpc_info: got={result.get('network')}, expected={expected_network}"
-    )
-
-features = set(result.get("features") or [])
-required = {
-    "pass_snapshot",
-    "active_passes_at_height",
-    "invalid_passes",
-    "active_balance_snapshot",
-    "latest_active_balance_snapshot",
-}
-missing = sorted(required - features)
-if missing:
-    raise SystemExit(f"Missing required get_rpc_info features: {missing}")
-PY
-}
-
-assert_usdb_state_at_height() {
-  local expected_height="$1"
-  local expected_total_balance="$2"
-  local expected_active_count="$3"
-  local sync_resp active_pass_resp invalid_resp latest_snapshot_resp exact_snapshot_resp
-
-  if ! sync_resp="$(must_rpc_call_usdb_indexer_json "get_sync_status" "[]")"; then
-    exit 1
-  fi
-  python3 - "$expected_height" "$sync_resp" <<'PY'
-import json
-import sys
-
-expected_height = int(sys.argv[1])
-payload = json.loads(sys.argv[2])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_sync_status returned error: {payload['error']}")
-
-result = payload.get("result") or {}
-synced_height = result.get("synced_block_height")
-depend_height = result.get("latest_depend_synced_block_height")
-if synced_height is None or int(synced_height) < expected_height:
-    raise SystemExit(
-        f"Synced block height too low: got={synced_height}, expected_at_least={expected_height}"
-    )
-if depend_height is None or int(depend_height) < expected_height:
-    raise SystemExit(
-        f"Dependent synced height too low: got={depend_height}, expected_at_least={expected_height}"
-    )
-PY
-
-  if ! active_pass_resp="$(must_rpc_call_usdb_indexer_json "get_active_passes_at_height" "[{\"at_height\":${expected_height},\"page\":0,\"page_size\":64}]")"; then
-    exit 1
-  fi
-  python3 - "$expected_height" "$active_pass_resp" <<'PY'
-import json
-import sys
-
-expected_height = int(sys.argv[1])
-payload = json.loads(sys.argv[2])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_active_passes_at_height returned error: {payload['error']}")
-
-result = payload.get("result") or {}
-resolved = result.get("resolved_height")
-items = result.get("items") or []
-if resolved != expected_height:
-    raise SystemExit(
-        f"Unexpected resolved_height in get_active_passes_at_height: got={resolved}, expected={expected_height}"
-    )
-if len(items) != 0:
-    raise SystemExit(f"Expected no active passes at height {expected_height}, got {len(items)}")
-PY
-
-  if ! invalid_resp="$(must_rpc_call_usdb_indexer_json "get_invalid_passes" "[{\"error_code\":null,\"from_height\":0,\"to_height\":${expected_height},\"page\":0,\"page_size\":64}]")"; then
-    exit 1
-  fi
-  python3 - "$expected_height" "$invalid_resp" <<'PY'
-import json
-import sys
-
-expected_height = int(sys.argv[1])
-payload = json.loads(sys.argv[2])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_invalid_passes returned error: {payload['error']}")
-
-result = payload.get("result") or {}
-resolved = result.get("resolved_height")
-items = result.get("items") or []
-if resolved != expected_height:
-    raise SystemExit(
-        f"Unexpected resolved_height in get_invalid_passes: got={resolved}, expected={expected_height}"
-    )
-if len(items) != 0:
-    raise SystemExit(f"Expected no invalid passes, got {len(items)}")
-PY
-
-  if ! latest_snapshot_resp="$(must_rpc_call_usdb_indexer_json "get_latest_active_balance_snapshot" "[]")"; then
-    exit 1
-  fi
-  python3 - "$expected_height" "$expected_total_balance" "$expected_active_count" "$latest_snapshot_resp" <<'PY'
-import json
-import sys
-
-expected_height = int(sys.argv[1])
-expected_total = int(sys.argv[2])
-expected_count = int(sys.argv[3])
-payload = json.loads(sys.argv[4])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_latest_active_balance_snapshot returned error: {payload['error']}")
-
-result = payload.get("result")
-if result is None:
-    raise SystemExit("Expected latest active balance snapshot, got null")
-if int(result.get("block_height", -1)) < expected_height:
-    raise SystemExit(
-        f"Latest active balance snapshot height too low: got={result.get('block_height')}, expected_at_least={expected_height}"
-    )
-if int(result.get("total_balance", -1)) != expected_total:
-    raise SystemExit(
-        f"Unexpected latest active balance total_balance: got={result.get('total_balance')}, expected={expected_total}"
-    )
-if int(result.get("active_address_count", -1)) != expected_count:
-    raise SystemExit(
-        f"Unexpected latest active balance active_address_count: got={result.get('active_address_count')}, expected={expected_count}"
-    )
-PY
-
-  if ! exact_snapshot_resp="$(must_rpc_call_usdb_indexer_json "get_active_balance_snapshot" "[{\"block_height\":${expected_height}}]")"; then
-    exit 1
-  fi
-  python3 - "$expected_height" "$expected_total_balance" "$expected_active_count" "$exact_snapshot_resp" <<'PY'
-import json
-import sys
-
-expected_height = int(sys.argv[1])
-expected_total = int(sys.argv[2])
-expected_count = int(sys.argv[3])
-payload = json.loads(sys.argv[4])
-if payload.get("error") is not None:
-    raise SystemExit(f"get_active_balance_snapshot returned error: {payload['error']}")
-
-result = payload.get("result") or {}
-if int(result.get("block_height", -1)) != expected_height:
-    raise SystemExit(
-        f"Unexpected exact snapshot block_height: got={result.get('block_height')}, expected={expected_height}"
-    )
-if int(result.get("total_balance", -1)) != expected_total:
-    raise SystemExit(
-        f"Unexpected exact snapshot total_balance: got={result.get('total_balance')}, expected={expected_total}"
-    )
-if int(result.get("active_address_count", -1)) != expected_count:
-    raise SystemExit(
-        f"Unexpected exact snapshot active_address_count: got={result.get('active_address_count')}, expected={expected_count}"
-    )
-PY
 }
 
 rpc_call_balance_history() {
@@ -387,63 +215,6 @@ print(d.get("result", 0))' 2>/dev/null || true)"
     fi
     sleep 1
   done
-}
-
-wait_until_usdb_synced() {
-  local target_height="$1"
-  local start_ts now resp synced
-  log "Waiting until usdb-indexer synced height >= ${target_height}"
-
-  start_ts="$(date +%s)"
-  while true; do
-    resp="$(rpc_call_usdb_indexer "get_synced_block_height" "[]" || true)"
-    synced="$(echo "$resp" | json_extract_python 'import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print(0)
-    raise SystemExit(0)
-r = d.get("result")
-print(0 if r is None else r)' 2>/dev/null || true)"
-    synced="${synced:-0}"
-    if [[ "$synced" -ge "$target_height" ]]; then
-      log "usdb-indexer synced height=${synced}"
-      return
-    fi
-
-    now="$(date +%s)"
-    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      log "usdb-indexer sync timeout, last response: ${resp}"
-      exit 1
-    fi
-    sleep 1
-  done
-}
-
-btc_amount_to_sat() {
-  local amount_btc="$1"
-  python3 - "$amount_btc" <<'PY'
-from decimal import Decimal, ROUND_DOWN
-import sys
-amount = Decimal(sys.argv[1])
-sat = int((amount * Decimal("100000000")).to_integral_value(rounding=ROUND_DOWN))
-print(sat)
-PY
-}
-
-address_to_script_hash() {
-  local address="$1"
-  local script_pubkey
-  script_pubkey="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
-    getaddressinfo "$address" | json_extract_python 'import json,sys; print(json.load(sys.stdin)["scriptPubKey"])')"
-
-  python3 - "$script_pubkey" <<'PY'
-import hashlib
-import sys
-script_hex = sys.argv[1]
-script = bytes.fromhex(script_hex)
-print(hashlib.sha256(script).digest()[::-1].hex())
-PY
 }
 
 create_balance_history_config() {
@@ -596,7 +367,7 @@ main() {
 
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
 
-  local usdb_network_resp usdb_network usdb_rpc_info_resp
+  local usdb_network_resp usdb_network
   if ! usdb_network_resp="$(must_rpc_call_usdb_indexer_json "get_network_type" "[]")"; then
     exit 1
   fi
@@ -607,47 +378,31 @@ main() {
     exit 1
   fi
 
-  if ! usdb_rpc_info_resp="$(must_rpc_call_usdb_indexer_json "get_rpc_info" "[]")"; then
+  if [[ ! -f "$SCENARIO_RUNNER" ]]; then
+    log "Scenario runner not found: ${SCENARIO_RUNNER}"
     exit 1
   fi
-  assert_usdb_rpc_info "$usdb_rpc_info_resp" "regtest"
-  log "usdb-indexer rpc_info assertion passed."
 
-  wait_until_usdb_synced "$effective_target_height"
-  assert_usdb_state_at_height "$effective_target_height" "0" "0"
-  log "usdb-indexer state assertion passed at height=${effective_target_height}."
-
+  local transfer_args=()
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
-    local receiver_address txid expected_height expected_sat script_hash bh_balance_resp got_balance
-    receiver_address="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress)"
-    log "Sending ${SEND_AMOUNT_BTC} BTC to receiver address=${receiver_address}"
-    txid="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$receiver_address" "$SEND_AMOUNT_BTC")"
-    log "Created txid=${txid}"
-
-    log "Mining 1 block to confirm transfer"
-    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
-      generatetoaddress 1 "$mining_address" >/dev/null
-
-    expected_height=$((effective_target_height + 1))
-    wait_until_balance_history_synced "$expected_height"
-    wait_until_usdb_synced "$expected_height"
-
-    script_hash="$(address_to_script_hash "$receiver_address")"
-    expected_sat="$(btc_amount_to_sat "$SEND_AMOUNT_BTC")"
-    bh_balance_resp="$(rpc_call_balance_history "get_address_balance" "[{\"script_hash\":\"${script_hash}\",\"block_height\":${expected_height},\"block_range\":null}]")"
-    got_balance="$(echo "$bh_balance_resp" | json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result",[]); print(r[0]["balance"] if r else 0)')"
-
-    log "Balance assertion: height=${expected_height}, script_hash=${script_hash}, expected=${expected_sat}, got=${got_balance}"
-    if [[ "$got_balance" != "$expected_sat" ]]; then
-      log "Balance assertion failed, response: ${bh_balance_resp}"
-      exit 1
-    fi
-
-    # In this smoke scenario there is no USDB mint/transfer inscription,
-    # so active-pass set and active-balance snapshot should remain empty/zero.
-    assert_usdb_state_at_height "$expected_height" "0" "0"
-    log "usdb-indexer state assertion passed at height=${expected_height}."
+    transfer_args+=(--enable-transfer-check)
   fi
+
+  python3 "$SCENARIO_RUNNER" \
+    --btc-cli "$BITCOIN_CLI_BIN" \
+    --bitcoin-dir "$BITCOIN_DIR" \
+    --btc-rpc-port "$BTC_RPC_PORT" \
+    --wallet-name "$WALLET_NAME" \
+    --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
+    --usdb-rpc-url "http://127.0.0.1:${USDB_RPC_PORT}" \
+    --target-height "$TARGET_HEIGHT" \
+    --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
+    --send-amount-btc "$SEND_AMOUNT_BTC" \
+    --min-spendable-block-height "$MIN_SPENDABLE_BLOCK_HEIGHT" \
+    --rpc-connect-timeout-sec "$CURL_CONNECT_TIMEOUT_SEC" \
+    --rpc-max-time-sec "$CURL_MAX_TIME_SEC" \
+    --mining-address "$mining_address" \
+    "${transfer_args[@]}"
 
   log "E2E smoke test succeeded."
   log "Logs: ${WORK_DIR}/balance-history.log, ${WORK_DIR}/usdb-indexer.log"
