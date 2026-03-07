@@ -145,10 +145,12 @@ async fn main_run(max_block_height: Option<u32>) {
         }
     };
 
-    
     if let Some(max_height) = max_block_height {
         config.sync.max_sync_block_height = max_height;
-        output.println(&format!("Indexing balance history up to block height: {}", max_height));
+        output.println(&format!(
+            "Indexing balance history up to block height: {}",
+            max_height
+        ));
     } else {
         output.println("Indexing balance history up to the latest block height.");
     }
@@ -270,7 +272,7 @@ async fn main() {
             println!("Database files cleared successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::IndexAddress { }) => {
+        Some(BalanceHistoryCommands::IndexAddress {}) => {
             // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
@@ -289,7 +291,7 @@ async fn main() {
                 }
             };
             let config = Arc::new(config);
-            
+
             let status = status::SyncStatusManager::new();
             let status = Arc::new(status);
             let output = IndexOutput::new(status);

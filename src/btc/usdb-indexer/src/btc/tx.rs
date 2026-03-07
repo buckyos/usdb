@@ -3,7 +3,6 @@ use bitcoincore_rpc::bitcoin::{Amount, OutPoint, Transaction, Txid};
 use ordinals::SatPoint;
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
-
 pub struct TxItem {
     pub txid: Txid,
     pub tx: Transaction,
@@ -99,5 +98,4 @@ impl TxItem {
             address: None,
         }))
     }
-
 }

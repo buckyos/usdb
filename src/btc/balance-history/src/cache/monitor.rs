@@ -26,17 +26,21 @@ impl MemoryCacheMonitor {
 
     pub fn start(&self) {
         let monitor = self.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(10));
-            monitor.check();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                monitor.check();
+            }
         });
     }
 
     // Called when sync is complete to shrink caches
     // This maybe called multiple times
     pub fn on_sync_complete(&self) {
-        self.utxo_cache.update_strategy(super::CacheStrategy::Normal);
-        self.address_balance_cache.update_strategy(super::CacheStrategy::Normal);
+        self.utxo_cache
+            .update_strategy(super::CacheStrategy::Normal);
+        self.address_balance_cache
+            .update_strategy(super::CacheStrategy::Normal);
     }
 
     fn check(&self) {
@@ -76,6 +80,5 @@ impl MemoryCacheMonitor {
         self.address_balance_cache.shrink(target_balance_count);
     }
 }
-
 
 pub type MemoryCacheMonitorRef = std::sync::Arc<MemoryCacheMonitor>;

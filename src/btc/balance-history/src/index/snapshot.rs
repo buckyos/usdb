@@ -358,7 +358,8 @@ impl SnapshotInstaller {
             msg
         })?;
 
-        self.output.println("Balance history snapshot installation completed");
+        self.output
+            .println("Balance history snapshot installation completed");
 
         Ok(())
     }
@@ -374,7 +375,7 @@ impl SnapshotInstaller {
                 .println("No UTXO entries in snapshot, skipping installation");
             return Ok(());
         }
-        
+
         self.output.update_load_total_count(total);
         self.output.println(&format!(
             "Installing UTXO snapshot with {} entries up to block height {}",

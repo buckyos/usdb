@@ -1,11 +1,11 @@
+use bitcoincore_rpc::bitcoin::Address;
 use bitcoincore_rpc::bitcoin::Network;
 use bitcoincore_rpc::bitcoin::address::NetworkUnchecked;
-use bitcoincore_rpc::bitcoin::{Address};
-use usdb_util::{USDBScriptHash, ToUSDBScriptHash};
-use clap::{Parser, Subcommand, Args};
+use clap::{Args, Parser, Subcommand};
 use std::ops::Range;
 use std::str::FromStr;
 use usdb_util::BALANCE_HISTORY_SERVICE_HTTP_PORT;
+use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Parser)]
 #[command(name = "btc-rpc-cli")]

@@ -2,10 +2,10 @@
 #![allow(unused_imports)]
 
 mod config;
+mod db;
 mod output;
 mod service;
 mod status;
-mod db;
 
 #[macro_use]
 extern crate log;

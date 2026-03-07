@@ -101,7 +101,7 @@ impl BalanceHistoryDB {
         let guard = self.mode.lock().unwrap();
         *guard
     }
-    
+
     pub fn switch_mode(&self, mode: BalanceHistoryDBMode) -> Result<(), String> {
         let old_mode;
         {
@@ -755,7 +755,7 @@ impl BalanceHistoryDB {
             }
         }
     }
-    
+
     pub fn get_all_balance(
         &self,
         script_hash: &USDBScriptHash,
@@ -1250,10 +1250,7 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn generate_utxo_snapshot_parallel(
-        &self,
-        cb: SnapshotCallbackRef,
-    ) -> Result<(), String> {
+    pub fn generate_utxo_snapshot_parallel(&self, cb: SnapshotCallbackRef) -> Result<(), String> {
         use rayon::prelude::*;
 
         const SHARD_COUNT: u8 = 255;

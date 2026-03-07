@@ -2,7 +2,6 @@ use crate::btc::{
     self, BTCClientRef, BlockFileIndexer, BlockFileIndexerCallback, BlockFileReader,
     BlockRecordCache,
 };
-use usdb_util::BTCRpcClient;
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{AddressDB, AddressDBRef, BlockEntry};
 use crate::output::IndexOutputRef;
@@ -11,6 +10,7 @@ use bloomfilter::Bloom;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use usdb_util::BTCRpcClient;
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 
 #[derive(Clone)]
@@ -60,7 +60,7 @@ impl AddressIndexer {
             config,
             output,
             filter: Arc::new(Mutex::new(bloom)),
-            block_cache: Arc::new(Mutex::new(BlockRecordCache::new( btc_client.clone()))),
+            block_cache: Arc::new(Mutex::new(BlockRecordCache::new(btc_client.clone()))),
             total_addresses: Arc::new(AtomicU64::new(0)),
             should_stop: Arc::new(AtomicBool::new(false)),
             btc_client,

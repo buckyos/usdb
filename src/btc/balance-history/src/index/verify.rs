@@ -48,7 +48,9 @@ impl BalanceHistoryVerifier {
 
             if script_hashes.len() >= BATCH_SIZE {
                 // Verify batch
-                if let Err(e) = self.verify_address_latest_balance_batch_sync(&script_hashes, &balances) {
+                if let Err(e) =
+                    self.verify_address_latest_balance_batch_sync(&script_hashes, &balances)
+                {
                     warn!("Failed to verify address batch: {}", e);
                     self.db.flush_with_primary()?;
 
@@ -108,10 +110,7 @@ impl BalanceHistoryVerifier {
             })
     }
 
-    pub fn verify_address_latest(
-        &self,
-        script_hash: &USDBScriptHash,
-    ) -> Result<(), String> {
+    pub fn verify_address_latest(&self, script_hash: &USDBScriptHash) -> Result<(), String> {
         self.output.println(&format!(
             "Starting latest balance history verification for script_hash: {}",
             script_hash
@@ -265,8 +264,10 @@ impl BalanceHistoryVerifier {
         latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
-        tokio::runtime::Handle::current()
-            .block_on(async { self.verify_address_latest_balance(script_hash, latest_block_height, balance).await })
+        tokio::runtime::Handle::current().block_on(async {
+            self.verify_address_latest_balance(script_hash, latest_block_height, balance)
+                .await
+        })
     }
 
     async fn verify_address_latest_balance(
@@ -371,7 +372,9 @@ impl SnapshotVerifier {
     pub async fn verify(&self, index: u64) -> Result<(), String> {
         info!("Starting snapshot verification");
 
-        let entries = self.snapshot_db.get_balance_history_entries_by_page(index as u32, 1)?;
+        let entries = self
+            .snapshot_db
+            .get_balance_history_entries_by_page(index as u32, 1)?;
         assert!(
             entries.len() == 1,
             "Expected exactly one snapshot entry for index {}, found {}",

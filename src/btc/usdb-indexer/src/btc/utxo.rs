@@ -1,7 +1,7 @@
-use usdb_util::BTCRpcClientRef;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use usdb_util::BTCRpcClientRef;
 
 type UTXOValueCache = HashMap<String, Amount>;
 
@@ -39,6 +39,5 @@ impl UTXOValueManager {
         Ok(amount)
     }
 }
-
 
 pub type UTXOValueManagerRef = Arc<UTXOValueManager>;

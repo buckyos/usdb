@@ -44,7 +44,10 @@ pub fn parse_script_hash(s: &str) -> Result<USDBScriptHash, String> {
     USDBScriptHash::from_str(s).map_err(|e| format!("Invalid script hash {}: {}", s, e))
 }
 
-pub fn parse_script_hash_any(s: &str, network: &bitcoincore_rpc::bitcoin::Network) -> Result<USDBScriptHash, String> {
+pub fn parse_script_hash_any(
+    s: &str,
+    network: &bitcoincore_rpc::bitcoin::Network,
+) -> Result<USDBScriptHash, String> {
     // Try to parse as USDBScriptHash first
     if let Ok(sh) = parse_script_hash(s) {
         return Ok(sh);

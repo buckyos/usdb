@@ -1,10 +1,9 @@
-use serde::{Deserialize, Serialize};
+use crate::status::SyncStatus;
 use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
+use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use crate::status::SyncStatus;
 use usdb_util::USDBScriptHash;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBalanceParams {
@@ -28,12 +27,11 @@ pub struct GetBalancesParams {
     pub block_range: Option<Range<u32>>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressBalance {
     pub block_height: u32,
     pub balance: u64, // in Satoshi
-    pub delta: i64, // in Satoshi
+    pub delta: i64,   // in Satoshi
 }
 
 #[rpc(server)]
@@ -41,7 +39,7 @@ pub trait BalanceHistoryRpc {
     /// Gets the current bitcoin chain network type
     #[rpc(name = "get_network_type")]
     fn get_network_type(&self) -> JsonResult<String>;
-    
+
     /// Gets the current synced block height in the database
     #[rpc(name = "get_block_height")]
     fn get_block_height(&self) -> JsonResult<u64>;
@@ -55,14 +53,23 @@ pub trait BalanceHistoryRpc {
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>>;
 
     #[rpc(name = "get_addresses_balances")]
-    fn get_addresses_balances(&self, params: GetBalancesParams) -> JsonResult<Vec<Vec<AddressBalance>>>;
+    fn get_addresses_balances(
+        &self,
+        params: GetBalancesParams,
+    ) -> JsonResult<Vec<Vec<AddressBalance>>>;
 
     #[rpc(name = "get_address_balance_delta")]
-    fn get_address_balance_delta(&self, params: GetBalanceParams) -> JsonResult<Vec<Option<AddressBalance>>>;
+    fn get_address_balance_delta(
+        &self,
+        params: GetBalanceParams,
+    ) -> JsonResult<Vec<Option<AddressBalance>>>;
 
     #[rpc(name = "get_addresses_balances_delta")]
-    fn get_addresses_balances_delta(&self, params: GetBalancesParams) -> JsonResult<Vec<Vec<Option<AddressBalance>>>>;
-    
+    fn get_addresses_balances_delta(
+        &self,
+        params: GetBalancesParams,
+    ) -> JsonResult<Vec<Vec<Option<AddressBalance>>>>;
+
     #[rpc(name = "stop")]
     fn stop(&self) -> JsonResult<()>;
-} 
+}

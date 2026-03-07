@@ -15,7 +15,7 @@ pub fn get_smart_memory_limit() -> u64 {
     // 2. If not in a container, or the container has no limit set, return the total physical memory
     let mut sys = sysinfo::System::new_all();
     sys.refresh_memory();
-    
+
     let bytes = sys.total_memory(); // TODO: consider using total_memory vs available_memory?
     info!("Physical total memory: {} bytes", bytes);
 

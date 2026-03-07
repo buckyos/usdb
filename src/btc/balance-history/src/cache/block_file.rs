@@ -43,7 +43,6 @@ impl BlockFileCache {
             let mut cache = self.cache.lock().unwrap();
             cache
                 .try_get_or_insert(file_index, || {
-            
                     // Try to get from prefetch first
                     if let Some(blocks) = self.prefetch_manager.fetch_by_index(file_index) {
                         // println!("Prefetch hit for blk file index {}, record {}", file_index, record_index);
@@ -80,7 +79,7 @@ impl BlockFileCache {
         info!("Clearing BlockFileCache, current count: {}", cache.len());
         cache.clear();
     }
-    
+
     /*
     pub fn get_block_by_file_index(
         &self,
@@ -174,7 +173,8 @@ impl PrefetchManager {
         // Find the latest file index in local blk files
         // And we should not prefetch beyond that
         let latest_blk_file_index = self.reader.find_latest_blk_file()?;
-        self.latest_blk_file_index.store(latest_blk_file_index, Ordering::SeqCst);
+        self.latest_blk_file_index
+            .store(latest_blk_file_index, Ordering::SeqCst);
 
         let manager = self.clone();
         std::thread::spawn(move || {
@@ -277,8 +277,8 @@ impl PrefetchManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BalanceHistoryConfig;
     use crate::btc::BlockFileReader;
+    use crate::config::BalanceHistoryConfig;
     use usdb_util::LogConfig;
 
     #[test]

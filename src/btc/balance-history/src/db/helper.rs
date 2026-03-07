@@ -1,5 +1,5 @@
-use rust_rocksdb as rocksdb;
 use rocksdb::properties::ESTIMATE_NUM_KEYS;
+use rust_rocksdb as rocksdb;
 
 pub fn get_approx_cf_key_count(db: &rocksdb::DB, cf: &str) -> Result<u64, String> {
     let cf = db.cf_handle(cf).ok_or_else(|| {

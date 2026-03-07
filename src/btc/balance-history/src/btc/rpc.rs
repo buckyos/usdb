@@ -3,7 +3,6 @@ use super::client::BTCClientType;
 use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
 use usdb_util::BTCRpcClient;
 
-
 #[async_trait::async_trait]
 impl BTCClient for BTCRpcClient {
     fn get_type(&self) -> BTCClientType {

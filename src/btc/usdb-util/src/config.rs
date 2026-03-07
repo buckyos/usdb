@@ -133,7 +133,9 @@ impl OrdConfig {
 
 impl Default for OrdConfig {
     fn default() -> Self {
-        Self { rpc_url: default_ord_rpc_url() }
+        Self {
+            rpc_url: default_ord_rpc_url(),
+        }
     }
 }
 
@@ -155,13 +157,17 @@ impl ElectrsConfig {
 
 impl Default for ElectrsConfig {
     fn default() -> Self {
-        Self { rpc_url: default_electrs_rpc_url() }
+        Self {
+            rpc_url: default_electrs_rpc_url(),
+        }
     }
 }
 
-
 fn default_balance_history_rpc_url() -> String {
-    format!("http://127.0.0.1:{}", crate::constants::BALANCE_HISTORY_SERVICE_HTTP_PORT)
+    format!(
+        "http://127.0.0.1:{}",
+        crate::constants::BALANCE_HISTORY_SERVICE_HTTP_PORT
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +178,8 @@ pub struct BalanceHistoryConfig {
 
 impl Default for BalanceHistoryConfig {
     fn default() -> Self {
-        Self { rpc_url: default_balance_history_rpc_url() }
+        Self {
+            rpc_url: default_balance_history_rpc_url(),
+        }
     }
 }

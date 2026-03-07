@@ -1,6 +1,6 @@
-use indicatif::{ProgressBar, ProgressStyle, MultiProgress};
+use crate::status::{SyncPhase, SyncStatusManagerRef};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::Mutex;
-use crate::status::{SyncStatusManagerRef, SyncPhase};
 
 pub struct IndexOutput {
     mp: MultiProgress,
@@ -13,7 +13,12 @@ impl IndexOutput {
     pub fn new(status: SyncStatusManagerRef) -> Self {
         let mp = MultiProgress::new();
 
-        Self { mp, load_bar: Mutex::new(None), index_bar: Mutex::new(None), status }
+        Self {
+            mp,
+            load_bar: Mutex::new(None),
+            index_bar: Mutex::new(None),
+            status,
+        }
     }
 
     pub fn status(&self) -> &SyncStatusManagerRef {
@@ -58,7 +63,8 @@ impl IndexOutput {
             *load_bar = Some(bar);
         }
 
-        self.status.update_phase(SyncPhase::Loading, Some("Starting block load".to_string()));
+        self.status
+            .update_phase(SyncPhase::Loading, Some("Starting block load".to_string()));
         self.status.update_total(total, None);
     }
 
@@ -69,13 +75,13 @@ impl IndexOutput {
         }
         self.status.update_total(total, None);
     }
-    
+
     pub fn update_load_current_count(&self, current: u64) {
         let load_bar = self.load_bar.lock().unwrap();
         if let Some(bar) = load_bar.as_ref() {
             bar.set_position(current);
         }
-        self.status.update_current(current, None); 
+        self.status.update_current(current, None);
     }
 
     pub fn set_load_message(&self, msg: &str) {
@@ -91,7 +97,8 @@ impl IndexOutput {
         if let Some(bar) = load_bar.take() {
             bar.finish_with_message("Loading complete");
         }
-        self.status.update_message(Some("Loading complete".to_string()));
+        self.status
+            .update_message(Some("Loading complete".to_string()));
     }
 
     // Index methods
@@ -108,7 +115,8 @@ impl IndexOutput {
             *index_bar = Some(bar);
         }
 
-        self.status.update_phase(SyncPhase::Indexing, Some("Starting indexer".to_string()));
+        self.status
+            .update_phase(SyncPhase::Indexing, Some("Starting indexer".to_string()));
         self.status.update_total(total, None);
         self.status.update_current(current, None);
     }
@@ -151,9 +159,9 @@ impl IndexOutput {
             bar.finish_with_message("Indexing complete");
         }
 
-        self.status.update_phase(SyncPhase::Synced, Some("Indexed complete".to_string()));
+        self.status
+            .update_phase(SyncPhase::Synced, Some("Indexed complete".to_string()));
     }
 }
-
 
 pub type IndexOutputRef = std::sync::Arc<IndexOutput>;

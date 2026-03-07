@@ -17,7 +17,7 @@ pub trait BTCClient: Send + Sync {
     // Called when sync is complete
     // This may be called multiple times
     fn on_sync_complete(&self, block_height: u32) -> Result<(), String>;
-    
+
     fn get_latest_block_height(&self) -> Result<u32, String>;
     fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String>;
     fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block, String>;

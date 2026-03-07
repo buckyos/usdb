@@ -1,10 +1,10 @@
-mod indexer;
 mod address;
+mod block;
+mod indexer;
 mod snapshot;
 mod verify;
-mod block;
 
-pub use indexer::*;
 pub use address::*;
+pub use indexer::*;
 pub use snapshot::*;
 pub use verify::*;

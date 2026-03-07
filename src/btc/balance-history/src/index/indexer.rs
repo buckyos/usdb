@@ -145,8 +145,12 @@ impl BalanceHistoryIndexer {
     }
 
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
-        let rpc_latest_block_height = self.btc_client.get_latest_block_height().map(|h| h as u32)?;
-        let latest_block_height = self.config
+        let rpc_latest_block_height = self
+            .btc_client
+            .get_latest_block_height()
+            .map(|h| h as u32)?;
+        let latest_block_height = self
+            .config
             .sync
             .max_sync_block_height
             .min(rpc_latest_block_height);

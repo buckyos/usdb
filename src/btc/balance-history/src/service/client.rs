@@ -55,12 +55,8 @@ impl RpcClient {
             "block_height": block_height,
             "block_range": block_range,
         }]);
-        self.rpc_call::<Vec<AddressBalance>>(
-            &self.url,
-            "get_address_balance",
-            params,
-        )
-        .await
+        self.rpc_call::<Vec<AddressBalance>>(&self.url, "get_address_balance", params)
+            .await
     }
 
     pub async fn get_addresses_balances(
@@ -75,12 +71,8 @@ impl RpcClient {
             "block_range": block_range,
         }]);
 
-        self.rpc_call::<Vec<Vec<AddressBalance>>>(
-            &self.url,
-            "get_addresses_balances",
-            params,
-        )
-        .await
+        self.rpc_call::<Vec<Vec<AddressBalance>>>(&self.url, "get_addresses_balances", params)
+            .await
     }
 
     pub async fn get_address_balance_delta(
@@ -94,12 +86,8 @@ impl RpcClient {
             "block_height": block_height,
             "block_range": block_range,
         }]);
-        self.rpc_call::<Vec<Option<AddressBalance>>>(
-            &self.url,
-            "get_address_balance_delta",
-            params,
-        )
-        .await
+        self.rpc_call::<Vec<Option<AddressBalance>>>(&self.url, "get_address_balance_delta", params)
+            .await
     }
 
     pub async fn get_addresses_balances_delta(
@@ -121,7 +109,7 @@ impl RpcClient {
         )
         .await
     }
-    
+
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
         &self,
         url: &str,
