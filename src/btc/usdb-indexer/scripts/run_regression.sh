@@ -73,6 +73,11 @@ run_live_ord_realworld_suite() {
   local bh_rpc_port_4="${LIVE_SUITE_BH_RPC_PORT_4:-$((bh_rpc_port_1 + 3000))}"
   local usdb_rpc_port_4="${LIVE_SUITE_USDB_RPC_PORT_4:-$((usdb_rpc_port_1 + 3000))}"
   local ord_server_port_4="${LIVE_SUITE_ORD_SERVER_PORT_4:-$((ord_server_port_1 + 3000))}"
+  local btc_rpc_port_5="${LIVE_SUITE_BTC_RPC_PORT_5:-$((btc_rpc_port_1 + 4000))}"
+  local btc_p2p_port_5="${LIVE_SUITE_BTC_P2P_PORT_5:-$((btc_p2p_port_1 + 4000))}"
+  local bh_rpc_port_5="${LIVE_SUITE_BH_RPC_PORT_5:-$((bh_rpc_port_1 + 4000))}"
+  local usdb_rpc_port_5="${LIVE_SUITE_USDB_RPC_PORT_5:-$((usdb_rpc_port_1 + 4000))}"
+  local ord_server_port_5="${LIVE_SUITE_ORD_SERVER_PORT_5:-$((ord_server_port_1 + 4000))}"
 
   run_cmd env \
     LIVE_SCENARIO=transfer_remint \
@@ -102,12 +107,21 @@ run_live_ord_realworld_suite() {
     "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
 
   run_cmd env \
-    LIVE_SCENARIO=duplicate_prev_inherit \
+    LIVE_SCENARIO=same_owner_multi_mint \
     BTC_RPC_PORT="${btc_rpc_port_4}" \
     BTC_P2P_PORT="${btc_p2p_port_4}" \
     BH_RPC_PORT="${bh_rpc_port_4}" \
     USDB_RPC_PORT="${usdb_rpc_port_4}" \
     ORD_SERVER_PORT="${ord_server_port_4}" \
+    "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+
+  run_cmd env \
+    LIVE_SCENARIO=duplicate_prev_inherit \
+    BTC_RPC_PORT="${btc_rpc_port_5}" \
+    BTC_P2P_PORT="${btc_p2p_port_5}" \
+    BH_RPC_PORT="${bh_rpc_port_5}" \
+    USDB_RPC_PORT="${usdb_rpc_port_5}" \
+    ORD_SERVER_PORT="${ord_server_port_5}" \
     "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
 }
 

@@ -1086,6 +1086,163 @@ build_live_passive_transfer_scenario() {
 EOF
 }
 
+build_live_same_owner_multi_mint_scenario() {
+  local scenario_file="$1"
+  local inscription_id_1="$2"
+  local inscription_id_2="$3"
+  local height_mint_1="$4"
+  local height_mint_2="$5"
+  cat >"$scenario_file" <<EOF
+{
+  "name": "live-ord-same-owner-multi-mint-assert",
+  "steps": [
+    {
+      "type": "wait_balance_history_synced",
+      "height": ${height_mint_2}
+    },
+    {
+      "type": "wait_usdb_synced",
+      "height": ${height_mint_2}
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_mint_1}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_mint1"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_mint1.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_mint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_mint2.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_mint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_mint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_mint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_mint2.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_mint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_mint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${height_mint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "balance_snapshot"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$balance_snapshot.active_address_count",
+      "right": 1
+    },
+    {
+      "type": "assert_gt",
+      "left": "\$balance_snapshot.total_balance",
+      "right": 0
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_invalid_passes",
+      "params": [
+        {
+          "from_height": 1,
+          "to_height": ${height_mint_2},
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "invalid_page"
+    },
+    {
+      "type": "assert_len",
+      "value": "\$invalid_page.items",
+      "expected_len": 0
+    }
+  ]
+}
+EOF
+}
+
 build_live_duplicate_prev_inherit_scenario() {
   local scenario_file="$1"
   local inscription_id_1="$2"
@@ -1415,9 +1572,19 @@ EOF
     exit 1
   fi
 
-  log "Inscribe first mint via ord CLI: wallet=${ORD_WALLET_NAME}, fee_rate=${ORD_FEE_RATE}, content_file=${ORD_CONTENT_FILE}"
+  local first_mint_destination=""
+  if [[ "$LIVE_SCENARIO" == "same_owner_multi_mint" ]]; then
+    # Keep owner identity stable across repeated mints by pinning both inscriptions to the same destination address.
+    first_mint_destination="$ord_receive_address_a"
+  fi
+
+  log "Inscribe first mint via ord CLI: wallet=${ORD_WALLET_NAME}, fee_rate=${ORD_FEE_RATE}, content_file=${ORD_CONTENT_FILE}, destination=${first_mint_destination:-<default>}"
   local inscribe_output_1 inscription_id_1
-  inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
+  if [[ -n "$first_mint_destination" ]]; then
+    inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$first_mint_destination" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
+  else
+    inscribe_output_1="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --file "$ORD_CONTENT_FILE" 2>&1 || true)"
+  fi
   inscription_id_1="$(extract_inscription_id "$inscribe_output_1")"
   if [[ -z "$inscription_id_1" ]]; then
     log "Failed to parse first inscription id from ord output: ${inscribe_output_1}"
@@ -1527,6 +1694,32 @@ EOF
     scenario_file="$WORK_DIR/live_ord_passive_transfer_assert.json"
     build_live_passive_transfer_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_2" "$target_height"
     scenario_summary="${scenario_summary}, pass2=${inscription_id_2}"
+  elif [[ "$LIVE_SCENARIO" == "same_owner_multi_mint" ]]; then
+    local second_mint_content_file
+    second_mint_content_file="$WORK_DIR/usdb_live_second_mint_same_owner.json"
+    cat >"$second_mint_content_file" <<'EOF'
+{"p":"usdb","op":"mint","eth_main":"0x5555555555555555555555555555555555555555","prev":[]}
+EOF
+
+    log "Inscribe second mint via ord CLI with same owner wallet: wallet=${ORD_WALLET_NAME}, destination=${ord_receive_address_a}"
+    local inscribe_output_2 inscription_id_2
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_a" --file "$second_mint_content_file" 2>&1 || true)"
+    inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
+    if [[ -z "$inscription_id_2" ]]; then
+      log "Failed to parse second same-owner inscription id from ord output: ${inscribe_output_2}"
+      exit 1
+    fi
+    log "Second same-owner mint inscription_id=${inscription_id_2}"
+
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after same-owner second mint confirmations: ${target_height}"
+
+    scenario_file="$WORK_DIR/live_ord_same_owner_multi_mint_assert.json"
+    build_live_same_owner_multi_mint_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_1" "$target_height"
+    scenario_summary="${scenario_summary}, pass2=${inscription_id_2}"
   elif [[ "$LIVE_SCENARIO" == "duplicate_prev_inherit" ]]; then
     log "Transfer first inscription from wallet A to wallet B for inherit-precondition: inscription_id=${inscription_id_1}"
     local transfer_output transfer_txid
@@ -1592,7 +1785,7 @@ EOF
     build_live_duplicate_prev_inherit_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$inscription_id_3" "$height_transfer_1" "$height_remint_1" "$target_height"
     scenario_summary="${scenario_summary}, pass2=${inscription_id_2}, pass3=${inscription_id_3}"
   else
-    log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint/invalid_mint/passive_transfer/duplicate_prev_inherit"
+    log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint/invalid_mint/passive_transfer/same_owner_multi_mint/duplicate_prev_inherit"
     exit 1
   fi
 

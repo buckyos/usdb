@@ -66,6 +66,14 @@ ORD_BIN=/path/to/ord \
 src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 ```
 
+运行 live 同 owner 多次 mint 场景（同地址连续 mint，仅最后一个保持 active）：
+
+```bash
+LIVE_SCENARIO=same_owner_multi_mint \
+ORD_BIN=/path/to/ord \
+src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
+```
+
 运行 live 重复继承场景（同一 prev 被连续继承两次）：
 
 ```bash
@@ -94,9 +102,9 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 16. `INSCRIPTION_FIXTURE_FILE`：当 `INSCRIPTION_SOURCE=fixture` 时的 fixture JSON 文件路径
 17. `RUN_REGTEST_SMOKE`：`run_regression.sh` 是否执行 regtest smoke（默认 `1`）
 18. `RUN_LIVE_ORD_E2E`：`run_regression.sh` 是否执行 live ord 铸造 e2e（默认 `0`）
-19. `RUN_LIVE_ORD_REALWORLD_SUITE`：`run_regression.sh` 是否执行 live realworld 场景集（默认 `0`，包含 `transfer_remint`、`invalid_mint`、`passive_transfer`、`duplicate_prev_inherit`）
+19. `RUN_LIVE_ORD_REALWORLD_SUITE`：`run_regression.sh` 是否执行 live realworld 场景集（默认 `0`，包含 `transfer_remint`、`invalid_mint`、`passive_transfer`、`same_owner_multi_mint`、`duplicate_prev_inherit`）
 20. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
-21. `LIVE_SCENARIO`：live ord 场景名称（默认 `transfer_remint`，可选 `invalid_mint`、`passive_transfer`、`duplicate_prev_inherit`）
+21. `LIVE_SCENARIO`：live ord 场景名称（默认 `transfer_remint`，可选 `invalid_mint`、`passive_transfer`、`same_owner_multi_mint`、`duplicate_prev_inherit`）
 22. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
 23. `ORD_WALLET_NAME`：live e2e 首个 ord 钱包名称（默认 `ord-live-a`）
 24. `ORD_WALLET_NAME_B`：live e2e 第二个 ord 钱包名称（默认 `ord-live-b`）
