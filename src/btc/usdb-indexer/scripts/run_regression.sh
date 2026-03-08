@@ -63,6 +63,16 @@ run_live_ord_realworld_suite() {
   local bh_rpc_port_2="${LIVE_SUITE_BH_RPC_PORT_2:-$((bh_rpc_port_1 + 1000))}"
   local usdb_rpc_port_2="${LIVE_SUITE_USDB_RPC_PORT_2:-$((usdb_rpc_port_1 + 1000))}"
   local ord_server_port_2="${LIVE_SUITE_ORD_SERVER_PORT_2:-$((ord_server_port_1 + 1000))}"
+  local btc_rpc_port_3="${LIVE_SUITE_BTC_RPC_PORT_3:-$((btc_rpc_port_1 + 2000))}"
+  local btc_p2p_port_3="${LIVE_SUITE_BTC_P2P_PORT_3:-$((btc_p2p_port_1 + 2000))}"
+  local bh_rpc_port_3="${LIVE_SUITE_BH_RPC_PORT_3:-$((bh_rpc_port_1 + 2000))}"
+  local usdb_rpc_port_3="${LIVE_SUITE_USDB_RPC_PORT_3:-$((usdb_rpc_port_1 + 2000))}"
+  local ord_server_port_3="${LIVE_SUITE_ORD_SERVER_PORT_3:-$((ord_server_port_1 + 2000))}"
+  local btc_rpc_port_4="${LIVE_SUITE_BTC_RPC_PORT_4:-$((btc_rpc_port_1 + 3000))}"
+  local btc_p2p_port_4="${LIVE_SUITE_BTC_P2P_PORT_4:-$((btc_p2p_port_1 + 3000))}"
+  local bh_rpc_port_4="${LIVE_SUITE_BH_RPC_PORT_4:-$((bh_rpc_port_1 + 3000))}"
+  local usdb_rpc_port_4="${LIVE_SUITE_USDB_RPC_PORT_4:-$((usdb_rpc_port_1 + 3000))}"
+  local ord_server_port_4="${LIVE_SUITE_ORD_SERVER_PORT_4:-$((ord_server_port_1 + 3000))}"
 
   run_cmd env \
     LIVE_SCENARIO=transfer_remint \
@@ -80,6 +90,24 @@ run_live_ord_realworld_suite() {
     BH_RPC_PORT="${bh_rpc_port_2}" \
     USDB_RPC_PORT="${usdb_rpc_port_2}" \
     ORD_SERVER_PORT="${ord_server_port_2}" \
+    "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+
+  run_cmd env \
+    LIVE_SCENARIO=passive_transfer \
+    BTC_RPC_PORT="${btc_rpc_port_3}" \
+    BTC_P2P_PORT="${btc_p2p_port_3}" \
+    BH_RPC_PORT="${bh_rpc_port_3}" \
+    USDB_RPC_PORT="${usdb_rpc_port_3}" \
+    ORD_SERVER_PORT="${ord_server_port_3}" \
+    "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
+
+  run_cmd env \
+    LIVE_SCENARIO=duplicate_prev_inherit \
+    BTC_RPC_PORT="${btc_rpc_port_4}" \
+    BTC_P2P_PORT="${btc_p2p_port_4}" \
+    BH_RPC_PORT="${bh_rpc_port_4}" \
+    USDB_RPC_PORT="${usdb_rpc_port_4}" \
+    ORD_SERVER_PORT="${ord_server_port_4}" \
     "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
 }
 

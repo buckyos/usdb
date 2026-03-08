@@ -928,6 +928,396 @@ build_live_invalid_mint_scenario() {
 }
 EOF
 }
+
+build_live_passive_transfer_scenario() {
+  local scenario_file="$1"
+  local inscription_id_1="$2"
+  local inscription_id_2="$3"
+  local height_mint_2="$4"
+  local height_transfer="$5"
+  cat >"$scenario_file" <<EOF
+{
+  "name": "live-ord-passive-transfer-assert",
+  "steps": [
+    {
+      "type": "wait_balance_history_synced",
+      "height": ${height_transfer}
+    },
+    {
+      "type": "wait_usdb_synced",
+      "height": ${height_transfer}
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_mint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_mint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_transfer.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_transfer.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_transfer},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_transfer.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_transfer},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_transfer.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "balance_snapshot"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$balance_snapshot.active_address_count",
+      "right": 1
+    },
+    {
+      "type": "assert_gt",
+      "left": "\$balance_snapshot.total_balance",
+      "right": 0
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_invalid_passes",
+      "params": [
+        {
+          "from_height": 1,
+          "to_height": ${height_transfer},
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "invalid_page"
+    },
+    {
+      "type": "assert_len",
+      "value": "\$invalid_page.items",
+      "expected_len": 0
+    }
+  ]
+}
+EOF
+}
+
+build_live_duplicate_prev_inherit_scenario() {
+  local scenario_file="$1"
+  local inscription_id_1="$2"
+  local inscription_id_2="$3"
+  local inscription_id_3="$4"
+  local height_transfer="$5"
+  local height_remint_1="$6"
+  local height_remint_2="$7"
+  cat >"$scenario_file" <<EOF
+{
+  "name": "live-ord-duplicate-prev-inherit-assert",
+  "steps": [
+    {
+      "type": "wait_balance_history_synced",
+      "height": ${height_remint_2}
+    },
+    {
+      "type": "wait_usdb_synced",
+      "height": ${height_remint_2}
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_transfer}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_transfer"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_transfer.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_remint_1}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_remint1"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_remint1.state",
+      "right": "consumed"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_remint_1}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_remint1"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_remint1.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "at_height": ${height_remint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_remint2.state",
+      "right": "consumed"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "at_height": ${height_remint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_remint2.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_snapshot",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_3}",
+          "at_height": ${height_remint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "pass3_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass3_remint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_remint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_remint2.state",
+      "right": "consumed"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_remint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_remint2.state",
+      "right": "dormant"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_3}",
+          "block_height": ${height_remint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass3_energy_remint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass3_energy_remint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_active_balance_snapshot",
+      "params": [
+        {
+          "block_height": ${height_remint_2}
+        }
+      ],
+      "result_only": true,
+      "var": "balance_snapshot"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$balance_snapshot.active_address_count",
+      "right": 1
+    },
+    {
+      "type": "assert_gt",
+      "left": "\$balance_snapshot.total_balance",
+      "right": 0
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_invalid_passes",
+      "params": [
+        {
+          "from_height": 1,
+          "to_height": ${height_remint_2},
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "invalid_page"
+    },
+    {
+      "type": "assert_len",
+      "value": "\$invalid_page.items",
+      "expected_len": 0
+    }
+  ]
+}
+EOF
+}
+
 main() {
   trap 'on_error $? $LINENO "$BASH_COMMAND"' ERR
   trap on_exit EXIT
@@ -1094,8 +1484,115 @@ EOF
     scenario_file="$WORK_DIR/live_ord_invalid_mint_assert.json"
     build_live_invalid_mint_scenario "$scenario_file" "$inscription_id_1" "$target_height"
     log "Invalid mint scenario selected: target_height=${target_height}, inscription_id=${inscription_id_1}"
+  elif [[ "$LIVE_SCENARIO" == "passive_transfer" ]]; then
+    local second_mint_content_file
+    second_mint_content_file="$WORK_DIR/usdb_live_second_mint.json"
+    cat >"$second_mint_content_file" <<'EOF'
+{"p":"usdb","op":"mint","eth_main":"0x3333333333333333333333333333333333333333","prev":[]}
+EOF
+
+    log "Inscribe second mint via ord CLI: wallet=${ORD_WALLET_NAME_B}, destination=${ord_receive_address_b}"
+    local inscribe_output_2 inscription_id_2
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$second_mint_content_file" 2>&1 || true)"
+    inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
+    if [[ -z "$inscription_id_2" ]]; then
+      log "Failed to parse second inscription id from ord output: ${inscribe_output_2}"
+      exit 1
+    fi
+    log "Second mint inscription_id=${inscription_id_2}"
+
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$INSCRIBE_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    local height_mint_2
+    height_mint_2="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after second mint confirmations: ${height_mint_2}"
+
+    log "Transfer first inscription to wallet B receive address for passive transfer validation: inscription_id=${inscription_id_1}"
+    local transfer_output transfer_txid
+    transfer_output="$(run_ord_wallet_named "$ORD_WALLET_NAME" send --fee-rate "$ORD_FEE_RATE" "$ord_receive_address_b" "$inscription_id_1" 2>&1 || true)"
+    transfer_txid="$(extract_txid "$transfer_output")"
+    if [[ -z "$transfer_txid" ]]; then
+      log "Failed to parse transfer txid from ord output: ${transfer_output}"
+      exit 1
+    fi
+    log "Transfer txid=${transfer_txid}"
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$TRANSFER_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$inscription_id_1"
+    target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after passive transfer confirmations: ${target_height}"
+
+    scenario_file="$WORK_DIR/live_ord_passive_transfer_assert.json"
+    build_live_passive_transfer_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$height_mint_2" "$target_height"
+    scenario_summary="${scenario_summary}, pass2=${inscription_id_2}"
+  elif [[ "$LIVE_SCENARIO" == "duplicate_prev_inherit" ]]; then
+    log "Transfer first inscription from wallet A to wallet B for inherit-precondition: inscription_id=${inscription_id_1}"
+    local transfer_output transfer_txid
+    transfer_output="$(run_ord_wallet_named "$ORD_WALLET_NAME" send --fee-rate "$ORD_FEE_RATE" "$ord_receive_address_b" "$inscription_id_1" 2>&1 || true)"
+    transfer_txid="$(extract_txid "$transfer_output")"
+    if [[ -z "$transfer_txid" ]]; then
+      log "Failed to parse transfer txid from ord output: ${transfer_output}"
+      exit 1
+    fi
+    log "Transfer txid=${transfer_txid}"
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$TRANSFER_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    wait_until_ord_wallet_has_inscription "$ORD_WALLET_NAME_B" "$inscription_id_1"
+    local height_transfer_1
+    height_transfer_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after transfer confirmations: ${height_transfer_1}"
+
+    local remint_content_file_1
+    remint_content_file_1="$WORK_DIR/usdb_live_remint_first.json"
+    cat >"$remint_content_file_1" <<EOF
+{"p":"usdb","op":"mint","eth_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+EOF
+    log "Inscribe first remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
+    local inscribe_output_2 inscription_id_2
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file_1" 2>&1 || true)"
+    inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
+    if [[ -z "$inscription_id_2" ]]; then
+      log "Failed to parse first remint inscription id from ord output: ${inscribe_output_2}"
+      exit 1
+    fi
+    log "First remint inscription_id=${inscription_id_2}"
+
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$REMINT_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    local height_remint_1
+    height_remint_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after first remint confirmations: ${height_remint_1}"
+
+    local remint_content_file_2
+    remint_content_file_2="$WORK_DIR/usdb_live_remint_second.json"
+    cat >"$remint_content_file_2" <<EOF
+{"p":"usdb","op":"mint","eth_main":"0x4444444444444444444444444444444444444444","prev":["${inscription_id_1}"]}
+EOF
+    log "Inscribe duplicate remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
+    local inscribe_output_3 inscription_id_3
+    inscribe_output_3="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file_2" 2>&1 || true)"
+    inscription_id_3="$(extract_inscription_id "$inscribe_output_3")"
+    if [[ -z "$inscription_id_3" ]]; then
+      log "Failed to parse duplicate remint inscription id from ord output: ${inscribe_output_3}"
+      exit 1
+    fi
+    log "Duplicate remint inscription_id=${inscription_id_3}"
+
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$REMINT_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after duplicate remint confirmations: ${target_height}"
+
+    scenario_file="$WORK_DIR/live_ord_duplicate_prev_inherit_assert.json"
+    build_live_duplicate_prev_inherit_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$inscription_id_3" "$height_transfer_1" "$height_remint_1" "$target_height"
+    scenario_summary="${scenario_summary}, pass2=${inscription_id_2}, pass3=${inscription_id_3}"
   else
-    log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint or invalid_mint"
+    log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint/invalid_mint/passive_transfer/duplicate_prev_inherit"
     exit 1
   fi
 
