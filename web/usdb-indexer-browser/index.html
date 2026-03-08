@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>USDB Indexer Dashboard v1</title>
+    <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+    <div class="bg fx-a"></div>
+    <div class="bg fx-b"></div>
+
+    <main class="shell">
+        <header class="hero">
+            <div class="hero-copy">
+                <p class="eyebrow">USDB INDEXER OBSERVATORY</p>
+                <h1>Protocol Control Surface</h1>
+                <p class="subtitle">面向 USDB 协议首版运营面板：系统状态、矿工证查询、能量排行与时间线。</p>
+            </div>
+            <form id="rpc-form" class="rpc-box">
+                <label for="rpc-url">RPC Endpoint</label>
+                <div class="row">
+                    <input id="rpc-url" type="url" value="http://127.0.0.1:8100" />
+                    <button type="submit">连接</button>
+                </div>
+                <p id="rpc-hint" class="hint">浏览器将直接访问 JSON-RPC 服务。</p>
+            </form>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab active" data-tab="home">首页</button>
+            <button class="tab" data-tab="pass">矿工证</button>
+            <button class="tab" data-tab="energy">能量</button>
+        </nav>
+
+        <section class="panel active" data-panel="home">
+            <section class="grid grid-4">
+                <article class="card metric">
+                    <h2>当前时间</h2>
+                    <p id="home-now" class="value">-</p>
+                </article>
+                <article class="card metric">
+                    <h2>BTC 网络</h2>
+                    <p id="home-network" class="value">-</p>
+                </article>
+                <article class="card metric">
+                    <h2>同步高度</h2>
+                    <p id="home-synced-height" class="value">-</p>
+                </article>
+                <article class="card metric">
+                    <h2>依赖高度</h2>
+                    <p id="home-depend-height" class="value">-</p>
+                </article>
+            </section>
+
+            <section class="grid grid-3">
+                <article class="card metric">
+                    <h2>活跃矿工证</h2>
+                    <p id="home-active-pass" class="value">-</p>
+                </article>
+                <article class="card metric">
+                    <h2>矿工证总量</h2>
+                    <p id="home-total-pass" class="value">-</p>
+                </article>
+                <article class="card metric">
+                    <h2>活跃地址 BTC 总额</h2>
+                    <p id="home-active-balance" class="value">-</p>
+                </article>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>同步状态</h2>
+                    <button id="home-refresh" class="ghost" type="button">刷新</button>
+                </div>
+                <p id="home-sync-message" class="status">-</p>
+                <div class="progress-wrap"><div id="home-sync-progress" class="progress"></div></div>
+                <div class="kv">
+                    <div><span>Current</span><strong id="home-sync-current">-</strong></div>
+                    <div><span>Total</span><strong id="home-sync-total">-</strong></div>
+                    <div><span>RPC 延迟</span><strong id="home-rpc-latency">-</strong></div>
+                    <div><span>更新时间</span><strong id="home-updated-at">-</strong></div>
+                </div>
+                <p id="home-error" class="error"></p>
+            </section>
+        </section>
+
+        <section class="panel" data-panel="pass">
+            <section class="card">
+                <div class="card-head">
+                    <h2>矿工证查询</h2>
+                </div>
+                <form id="pass-query-form" class="query">
+                    <input id="pass-id-input" placeholder="输入 inscription id（例如 txidi0）" required />
+                    <input id="pass-height-input" type="number" min="0" placeholder="可选高度 at_height" />
+                    <button type="submit">查询</button>
+                </form>
+                <p id="pass-query-hint" class="hint"></p>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>矿工证详情</h2>
+                </div>
+                <div id="pass-snapshot-empty" class="empty">等待查询矿工证。</div>
+                <div id="pass-snapshot-box" class="detail hidden">
+                    <div class="detail-grid" id="pass-snapshot-grid"></div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>历史记录</h2>
+                    <div class="pager">
+                        <button id="pass-history-prev" class="ghost" type="button">上一页</button>
+                        <span id="pass-history-page">-</span>
+                        <button id="pass-history-next" class="ghost" type="button">下一页</button>
+                    </div>
+                </div>
+                <p id="pass-history-summary" class="hint">-</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>event_id</th>
+                                <th>height</th>
+                                <th>event_type</th>
+                                <th>state</th>
+                                <th>owner</th>
+                                <th>satpoint</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pass-history-table"></tbody>
+                    </table>
+                </div>
+                <p id="pass-history-error" class="error"></p>
+            </section>
+        </section>
+
+        <section class="panel" data-panel="energy">
+            <section class="grid grid-2">
+                <article class="card">
+                    <div class="card-head">
+                        <h2>能量排行</h2>
+                        <div class="pager">
+                            <button id="energy-leaderboard-prev" class="ghost" type="button">上一页</button>
+                            <span id="energy-leaderboard-page">-</span>
+                            <button id="energy-leaderboard-next" class="ghost" type="button">下一页</button>
+                        </div>
+                    </div>
+                    <p id="energy-leaderboard-summary" class="hint">-</p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>rank</th>
+                                    <th>inscription_id</th>
+                                    <th>energy</th>
+                                    <th>state</th>
+                                    <th>height</th>
+                                </tr>
+                            </thead>
+                            <tbody id="energy-leaderboard-table"></tbody>
+                        </table>
+                    </div>
+                </article>
+
+                <article class="card">
+                    <div class="card-head">
+                        <h2>能量详情</h2>
+                    </div>
+                    <form id="energy-query-form" class="query">
+                        <input id="energy-id-input" placeholder="输入 inscription id" required />
+                        <input id="energy-height-input" type="number" min="0" placeholder="可选 block_height" />
+                        <button type="submit">查询</button>
+                    </form>
+                    <p id="energy-query-hint" class="hint"></p>
+                    <div id="energy-snapshot-empty" class="empty">点击排行或输入 inscription 查询。</div>
+                    <div id="energy-snapshot-box" class="detail hidden">
+                        <div id="energy-snapshot-grid" class="detail-grid"></div>
+                    </div>
+                </article>
+            </section>
+
+            <section class="card">
+                <div class="card-head">
+                    <h2>能量变化记录</h2>
+                    <div class="pager">
+                        <button id="energy-range-prev" class="ghost" type="button">上一页</button>
+                        <span id="energy-range-page">-</span>
+                        <button id="energy-range-next" class="ghost" type="button">下一页</button>
+                    </div>
+                </div>
+                <form id="energy-range-form" class="query">
+                    <input id="energy-range-from" type="number" min="0" placeholder="from_height" />
+                    <input id="energy-range-to" type="number" min="0" placeholder="to_height" />
+                    <button type="submit">更新区间</button>
+                </form>
+                <p id="energy-range-summary" class="hint">-</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>height</th>
+                                <th>state</th>
+                                <th>owner_balance</th>
+                                <th>owner_delta</th>
+                                <th>energy</th>
+                            </tr>
+                        </thead>
+                        <tbody id="energy-range-table"></tbody>
+                    </table>
+                </div>
+                <p id="energy-range-error" class="error"></p>
+            </section>
+        </section>
+    </main>
+
+    <script src="./app.js"></script>
+</body>
+</html>
