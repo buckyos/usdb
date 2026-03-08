@@ -84,6 +84,8 @@ class Args:
     agent_growth_step: int
     policy_mode: str
     scripted_cycle: list[str]
+    report_file: str | None
+    report_flush_every: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -158,6 +160,52 @@ class RegtestWorldSimulator:
             "verify_fail": 0,
             "skip": 0,
         }
+
+        self.report_path: Path | None = None
+        self.report_fp: Any | None = None
+        self.report_event_since_flush = 0
+        self._init_reporter()
+
+    def _init_reporter(self) -> None:
+        report_file = self.args.report_file
+        if report_file is None or str(report_file).strip() == "":
+            return
+        self.report_path = Path(report_file)
+        self.report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.report_fp = self.report_path.open("a", encoding="utf-8")
+        self.emit_report(
+            "session_start",
+            {
+                "seed": self.args.seed,
+                "blocks": self.args.blocks,
+                "total_agents": self.total_agents,
+                "initial_active_agents": self.active_agent_count,
+                "policy_mode": self.args.policy_mode,
+                "scripted_cycle": self.args.scripted_cycle,
+            },
+        )
+
+    def emit_report(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self.report_fp is None:
+            return
+        line = {
+            "event": event_type,
+            "ts_ms": int(time.time() * 1000),
+        }
+        line.update(payload)
+        self.report_fp.write(json.dumps(line, separators=(",", ":")) + "\n")
+        self.report_event_since_flush += 1
+        flush_every = max(1, self.args.report_flush_every)
+        if self.report_event_since_flush >= flush_every:
+            self.report_fp.flush()
+            self.report_event_since_flush = 0
+
+    def close_report(self) -> None:
+        if self.report_fp is None:
+            return
+        self.report_fp.flush()
+        self.report_fp.close()
+        self.report_fp = None
 
     @staticmethod
     def log(message: str) -> None:
@@ -1030,6 +1078,8 @@ class RegtestWorldSimulator:
             f"initial_active_agents={self.active_agent_count}, policy_mode={self.args.policy_mode}, "
             f"scripted_cycle={self.args.scripted_cycle}"
         )
+        if self.report_path is not None:
+            self.log(f"Structured tick report enabled: path={self.report_path}")
 
         tick = 0
         while True:
@@ -1048,6 +1098,9 @@ class RegtestWorldSimulator:
             action_results: list[str] = []
             expectations: list[ActionExpectation] = []
             action_failed = 0
+            action_fail_samples: list[str] = []
+            verify_failed = 0
+            verify_fail_samples: list[str] = []
 
             for _ in range(action_slots):
                 if not available_ids:
@@ -1073,6 +1126,9 @@ class RegtestWorldSimulator:
                 except Exception as e:  # noqa: BLE001
                     action_failed += 1
                     self.on_action_failed(action)
+                    action_fail_samples.append(
+                        f"actor={actor.wallet_name},action={action},error={e}"
+                    )
                     self.log(
                         f"WARN action failed: tick={tick}, actor={actor.wallet_name}, action={action}, error={e}"
                     )
@@ -1091,6 +1147,10 @@ class RegtestWorldSimulator:
                     self.metrics["verify_ok"] += 1
                 except Exception as e:  # noqa: BLE001
                     self.metrics["verify_fail"] += 1
+                    verify_failed += 1
+                    verify_fail_samples.append(
+                        f"action={expectation.action},actor_id={expectation.actor_id},error={e}"
+                    )
                     self.log(
                         "WARN verification failed: "
                         f"tick={tick}, action={expectation.action}, error={e}"
@@ -1136,6 +1196,29 @@ class RegtestWorldSimulator:
                     + ("; ..." if len(action_results) > 6 else "")
                 )
 
+            self.emit_report(
+                "tick",
+                {
+                    "tick": tick,
+                    "block_height": block_height,
+                    "synced_height": synced_height,
+                    "active_agent_count": self.active_agent_count,
+                    "actions": action_slots,
+                    "action_failed": action_failed,
+                    "verify_failed": verify_failed,
+                    "known_passes": len(self.pass_owner_by_id),
+                    "pass_total": total_count,
+                    "pass_active": active_count,
+                    "pass_invalid": invalid_count,
+                    "active_addresses": active_addresses,
+                    "active_total_balance": total_balance,
+                    "top_energy": top_energy,
+                    "action_results": action_results,
+                    "action_fail_samples": action_fail_samples[:8],
+                    "verify_fail_samples": verify_fail_samples[:8],
+                },
+            )
+
             exact_balance = summary["active_balance_exact"]
             if isinstance(exact_balance, dict):
                 exact_active = int(exact_balance.get("active_address_count", 0))
@@ -1151,6 +1234,7 @@ class RegtestWorldSimulator:
 
         self.log("World simulation completed.")
         self.log(f"final_metrics={json.dumps(self.metrics, sort_keys=True)}")
+        self.emit_report("session_end", {"final_metrics": self.metrics})
 
 
 def parse_args() -> Args:
@@ -1192,6 +1276,8 @@ def parse_args() -> Args:
         "--scripted-cycle",
         default="mint,send_balance,transfer,remint,spend_balance,noop",
     )
+    parser.add_argument("--report-file")
+    parser.add_argument("--report-flush-every", type=int, default=1)
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
@@ -1230,6 +1316,8 @@ def parse_args() -> Args:
         agent_growth_step=parsed.agent_growth_step,
         policy_mode=parsed.policy_mode,
         scripted_cycle=scripted_cycle,
+        report_file=parsed.report_file,
+        report_flush_every=parsed.report_flush_every,
     )
 
 
@@ -1247,6 +1335,8 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         RegtestWorldSimulator.log(f"Unexpected exception: {e}")
         return 1
+    finally:
+        simulator.close_report()
     return 0
 
 
