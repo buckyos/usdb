@@ -1126,6 +1126,167 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_active_balance_change_fails_without_previous_record() {
+        // A balance delta cannot be applied without a previous energy baseline record.
+        let root_dir = test_root_dir("apply_without_previous_record");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(13, 0);
+        let owner = test_script_hash(13);
+        let err = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 100_000, 10_000)
+            .unwrap_err();
+        assert!(
+            err.contains("No previous energy record found when applying active balance change")
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_fails_when_last_record_not_active() {
+        // Only active pass records are eligible for active balance delta application.
+        let root_dir = test_root_dir("apply_state_mismatch");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(14, 0);
+        let owner = test_script_hash(14);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Dormant,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 200_000,
+                owner_delta: 0,
+                energy: 1234,
+            })
+            .unwrap();
+
+        let err = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 210_000, 10_000)
+            .unwrap_err();
+        assert!(err.contains("Energy state mismatch when applying active balance change"));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_fails_when_owner_mismatch() {
+        // Owner must exactly match last active energy record owner.
+        let root_dir = test_root_dir("apply_owner_mismatch");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(15, 0);
+        let owner = test_script_hash(15);
+        let another_owner = test_script_hash(16);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 250_000,
+                owner_delta: 0,
+                energy: 4321,
+            })
+            .unwrap();
+
+        let err = manager
+            .apply_active_balance_change(&inscription_id, &another_owner, 120, 260_000, 10_000)
+            .unwrap_err();
+        assert!(err.contains("Energy owner mismatch when applying active balance change"));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_fails_when_update_height_is_before_first_record() {
+        // Querying at a height lower than the first record yields no baseline record.
+        // The `record_height > update_height` branch in apply_active_balance_change_internal
+        // is a defensive guard for unexpected storage behavior.
+        let root_dir = test_root_dir("apply_before_first_record");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(17, 0);
+        let owner = test_script_hash(17);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 130,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 260_000,
+                owner_delta: 0,
+                energy: 5432,
+            })
+            .unwrap();
+
+        let err = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 270_000, 10_000)
+            .unwrap_err();
+        assert!(err.contains("No previous energy record found when applying active balance change"));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_same_height_same_values_is_idempotent() {
+        // Same-height same-value update should be accepted as idempotent no-op.
+        let root_dir = test_root_dir("apply_same_height_idempotent");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(18, 0);
+        let owner = test_script_hash(18);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 120,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 333_000,
+                owner_delta: 33_000,
+                energy: 7777,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change_internal(
+                &inscription_id,
+                &owner,
+                120,
+                333_000,
+                33_000,
+                true,
+            )
+            .unwrap();
+        assert!(!changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.owner_balance, 333_000);
+        assert_eq!(record.owner_delta, 33_000);
+        assert_eq!(record.energy, 7777);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_reconcile_truncates_pending_and_future_records() {
         let root_dir = test_root_dir("reconcile_truncate");
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
