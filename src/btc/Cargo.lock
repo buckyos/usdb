@@ -5010,6 +5010,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "usdb-indexer-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "log",
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "usdb-util",
+]
+
+[[package]]
 name = "usdb-util"
 version = "0.1.0"
 dependencies = [

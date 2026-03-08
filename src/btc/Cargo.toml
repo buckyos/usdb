@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "usdb-indexer",
+    "usdb-indexer-cli",
     "balance-history",
     "balance-history-cli",
     "usdb-util",
