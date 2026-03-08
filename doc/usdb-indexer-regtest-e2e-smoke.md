@@ -21,6 +21,8 @@
 - [multi_transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json)
 - [run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
 - [regtest_live_ord_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh)
+- [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- [usdb-indexer-regtest-world-sim.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim.md)
 
 ## 前置条件
 

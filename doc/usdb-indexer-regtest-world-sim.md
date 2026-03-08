@@ -1,0 +1,93 @@
+# USDB-Indexer Regtest World Simulation
+
+该文档说明如何运行“持续随机仿真”模式：
+
+1. 启动本地 regtest `bitcoind`
+2. 启动 `ord` 临时服务（仅用于构造铭文交易）
+3. 启动 `balance-history`
+4. 启动 `usdb-indexer`
+5. 每个区块随机执行一组现实化操作并持续出块
+
+## 脚本位置
+
+- [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
+
+## 核心能力
+
+- 随机操作类型（按概率）：
+  - `mint`
+  - `invalid_mint`
+  - `transfer`
+  - `remint(prev)`
+  - `send_balance`
+  - `spend_balance`
+  - `noop`
+- 每个 tick（每个新区块）会输出：
+  - 当前链高度与 usdb 同步高度
+  - 本块执行动作与失败数
+  - pass 总量 / active / invalid
+  - active address 总余额
+  - 能量榜首摘要
+- 支持固定 `seed`，保证场景可复现。
+
+## 运行示例
+
+```bash
+src/btc/usdb-indexer/scripts/regtest_world_sim.sh
+```
+
+运行期间可同时打开前端页面观察动态变化：
+
+1. `python3 -m http.server 8088`
+2. `http://127.0.0.1:8088/web/usdb-indexer-browser/`
+3. 页面 RPC endpoint 设置为当前 `USDB_RPC_PORT`（默认 `http://127.0.0.1:18143`）
+
+## 常用环境变量
+
+### 基础编排
+
+- `WORK_DIR`：运行目录（默认临时目录）
+- `BITCOIN_BIN_DIR`：Bitcoin Core 二进制目录
+- `ORD_BIN`：ord 可执行文件
+- `BTC_RPC_PORT`、`BTC_P2P_PORT`
+- `BH_RPC_PORT`
+- `USDB_RPC_PORT`
+- `ORD_SERVER_PORT`
+
+### 钱包与链参数
+
+- `AGENT_COUNT`：仿真代理数量（默认 `5`）
+- `PREMINE_BLOCKS`：预挖块数（默认 `140`）
+- `FUND_AGENT_AMOUNT_BTC`：每个 agent 初始资金（默认 `4.0`）
+- `FUND_CONFIRM_BLOCKS`：资金确认块数（默认 `2`）
+
+### 仿真参数
+
+- `SIM_BLOCKS`：仿真区块数（默认 `300`；设置 `0` 可无限运行）
+- `SIM_SEED`：随机种子（默认 `42`）
+- `SIM_FEE_RATE`：铭文与转移费率（默认 `1`）
+- `SIM_MAX_ACTIONS_PER_BLOCK`：每块最大动作数（默认 `2`）
+- `SIM_MINT_PROBABILITY`（默认 `0.20`）
+- `SIM_INVALID_MINT_PROBABILITY`（默认 `0.02`）
+- `SIM_TRANSFER_PROBABILITY`（默认 `0.20`）
+- `SIM_REMINT_PROBABILITY`（默认 `0.10`）
+- `SIM_SEND_PROBABILITY`（默认 `0.30`）
+- `SIM_SPEND_PROBABILITY`（默认 `0.15`）
+- `SIM_SLEEP_MS_BETWEEN_BLOCKS`：每块间隔毫秒（默认 `0`）
+- `SIM_FAIL_FAST`：动作失败是否立刻退出（`1` 开启）
+
+## 示例：长时间持续运行
+
+```bash
+SIM_BLOCKS=0 \
+SIM_SEED=20260308 \
+SIM_SLEEP_MS_BETWEEN_BLOCKS=300 \
+AGENT_COUNT=8 \
+src/btc/usdb-indexer/scripts/regtest_world_sim.sh
+```
+
+## 说明
+
+- 该模式优先用于“持续行为观测”与“协议回归压力验证”，不是严格确定性单测替代。
+- 若需要严格断言，请继续使用 `run_regression.sh` 与固定场景脚本。
