@@ -1,4 +1,5 @@
 use crate::cmd::{Cli, Commands};
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -215,21 +216,58 @@ impl UsdbIndexerService {
     }
 
     async fn watch_sync_status(&self, interval_ms: u64) -> Result<(), String> {
-        let interval = Duration::from_millis(interval_ms.max(100));
-        let mut last_snapshot = String::new();
+        let interval = Duration::from_millis(interval_ms.max(500));
+        let progress = ProgressBar::new(1);
+        let style = ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:<7} {msg}",
+        )
+        .map_err(|e| format!("Failed to build progress style: {}", e))?
+        .progress_chars("=>-");
+        progress.set_style(style);
+        progress.enable_steady_tick(Duration::from_millis(120));
 
         loop {
             let status = self.client.call("get_sync_status", json!([])).await?;
-            let rendered = serde_json::to_string(&status)
-                .map_err(|e| format!("Failed to render get_sync_status response: {}", e))?;
+            let status: IndexerSyncStatus = serde_json::from_value(status)
+                .map_err(|e| format!("Failed to decode get_sync_status response: {}", e))?;
 
-            if rendered != last_snapshot {
-                print_pretty_json(&status)?;
-                last_snapshot = rendered;
+            let total = u64::from(status.total.max(1));
+            if progress.length() != Some(total) {
+                progress.set_length(total);
+            }
+            let current = u64::from(status.current.min(status.total));
+            progress.set_position(current.min(total));
+
+            let synced_height = status
+                .synced_block_height
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            let message = status.message.unwrap_or_else(|| "syncing".to_string());
+
+            progress.set_message(format!(
+                "synced={} depend={} genesis={} {}",
+                synced_height,
+                status.latest_depend_synced_block_height,
+                status.genesis_block_height,
+                message
+            ));
+
+            if status
+                .synced_block_height
+                .is_some_and(|h| h >= status.latest_depend_synced_block_height)
+                && status.current >= status.total
+            {
+                progress.finish_with_message(format!(
+                    "synced={} depend={} completed",
+                    synced_height, status.latest_depend_synced_block_height
+                ));
+                break;
             }
 
             sleep(interval).await;
         }
+
+        Ok(())
     }
 }
 
@@ -237,6 +275,16 @@ impl UsdbIndexerService {
 struct JsonRpcResponse {
     result: Option<Value>,
     error: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IndexerSyncStatus {
+    genesis_block_height: u32,
+    synced_block_height: Option<u32>,
+    latest_depend_synced_block_height: u32,
+    current: u32,
+    total: u32,
+    message: Option<String>,
 }
 
 struct RpcClient {
