@@ -213,7 +213,7 @@ async fn test_scenario_transfer_then_remint_prev_inherits_and_consumes() {
     assert_eq!(new_pass.state, MinerPassState::Active);
 
     let old_dormant_110 = energy_manager
-        .get_pass_energy_at_or_before(&pass_old, 110)
+        .get_pass_energy(&pass_old, 110)
         .await
         .unwrap()
         .unwrap();
@@ -511,12 +511,12 @@ async fn test_scenario_mint_with_multiple_prev_inherits_sum_and_consumes_all() {
         .unwrap();
 
     let prev_1_dormant = energy_manager
-        .get_pass_energy_at_or_before(&pass_prev_1, 110)
+        .get_pass_energy(&pass_prev_1, 110)
         .await
         .unwrap()
         .unwrap();
     let prev_2_dormant = energy_manager
-        .get_pass_energy_at_or_before(&pass_prev_2, 130)
+        .get_pass_energy(&pass_prev_2, 130)
         .await
         .unwrap()
         .unwrap();
@@ -696,7 +696,7 @@ async fn test_scenario_double_inherit_same_prev_only_first_gets_energy() {
         .unwrap();
 
     let prev_dormant = energy_manager
-        .get_pass_energy_at_or_before(&pass_prev, 110)
+        .get_pass_energy(&pass_prev, 110)
         .await
         .unwrap()
         .unwrap();

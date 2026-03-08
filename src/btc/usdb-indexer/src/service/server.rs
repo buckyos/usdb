@@ -700,14 +700,16 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 }),
             ));
         };
-        let (effective_state, effective_energy) = if mode == "at_or_before" {
-            let projected = self
-                .indexer
-                .pass_energy_manager()
-                .project_energy_record_no_balance_change(&record, query_height);
-            (projected.state, projected.energy)
-        } else {
-            (record.state.clone(), record.energy)
+        let (effective_state, effective_energy) = match mode.as_str() {
+            "exact" => (record.state.clone(), record.energy),
+            "at_or_before" => {
+                let projected = self
+                    .indexer
+                    .pass_energy_manager()
+                    .project_energy_record_no_balance_change(&record, query_height);
+                (projected.state, projected.energy)
+            }
+            _ => unreachable!(),
         };
 
         Ok(PassEnergySnapshot {

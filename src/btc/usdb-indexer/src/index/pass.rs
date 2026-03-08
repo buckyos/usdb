@@ -276,15 +276,15 @@ impl MinerPassManager {
             block_height,
         )?;
 
-        // Get the latest energy record at or before block_height.
+        // Get the latest energy at block_height.
         // The pass may become dormant at an earlier height, so exact-height lookup is not reliable.
         let ret = self
             .energy_manager
-            .get_pass_energy_at_or_before(inscription_id, block_height)
+            .get_pass_energy(inscription_id, block_height)
             .await?;
         if ret.is_none() {
             let msg = format!(
-                "Miner Pass {} energy record not found at or before block height {} for consuming",
+                "Miner Pass {} energy not found at block height {} for consuming",
                 inscription_id, block_height
             );
             error!("{}", msg);

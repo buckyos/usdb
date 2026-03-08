@@ -198,7 +198,10 @@ pub struct GetPassEnergyParams {
     pub inscription_id: String,
     /// Optional query height; `None` resolves to synced height.
     pub block_height: Option<u32>,
-    /// Query mode, `exact` or `at_or_before`.
+    /// Query mode:
+    /// - `exact`: read only the record exactly at `block_height`.
+    /// - `at_or_before`: read latest record at or before `block_height`,
+    ///   then return projected latest energy at query height.
     pub mode: Option<String>,
 }
 
@@ -211,7 +214,9 @@ pub struct PassEnergySnapshot {
     pub query_block_height: u32,
     /// Height of the stored energy record returned.
     pub record_block_height: u32,
-    /// Pass state in this energy record.
+    /// Effective pass state at query height.
+    /// For `mode=exact`, this equals record state.
+    /// For `mode=at_or_before`, this is derived from latest record <= query height.
     pub state: String,
     /// Active base height used by energy formula.
     pub active_block_height: u32,
@@ -221,7 +226,9 @@ pub struct PassEnergySnapshot {
     pub owner_balance: u64,
     /// Balance delta in satoshis for this record.
     pub owner_delta: i64,
-    /// Energy value in this record.
+    /// Effective energy at query height.
+    /// For `mode=exact`, this equals record energy.
+    /// For `mode=at_or_before`, this is projected from the latest record <= query height.
     pub energy: u64,
 }
 

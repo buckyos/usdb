@@ -877,7 +877,7 @@ async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() 
             .unwrap();
         let energy = fixture
             .pass_energy_manager
-            .get_pass_energy_at_or_before(&mint_id, h701)
+            .get_pass_energy(&mint_id, h701)
             .await
             .unwrap()
             .unwrap();
@@ -937,7 +937,7 @@ async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() 
             .unwrap();
         let energy = fixture
             .pass_energy_manager
-            .get_pass_energy_at_or_before(&mint_id, h701)
+            .get_pass_energy(&mint_id, h701)
             .await
             .unwrap()
             .unwrap();
@@ -1961,7 +1961,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
 
     let energy_a_100 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h100)
+        .get_pass_energy(&pass_a_id, h100)
         .await
         .unwrap()
         .unwrap();
@@ -1969,7 +1969,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     assert_eq!(energy_a_100.energy, 0);
     let energy_a_101 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h101)
+        .get_pass_energy(&pass_a_id, h101)
         .await
         .unwrap()
         .unwrap();
@@ -1977,7 +1977,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     assert_eq!(energy_a_101.energy, expected_a_101);
     let energy_a_102 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h102)
+        .get_pass_energy(&pass_a_id, h102)
         .await
         .unwrap()
         .unwrap();
@@ -1985,7 +1985,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     assert_eq!(energy_a_102.energy, expected_a_102);
     let energy_a_103 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h103)
+        .get_pass_energy(&pass_a_id, h103)
         .await
         .unwrap()
         .unwrap();
@@ -1993,7 +1993,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     assert_eq!(energy_a_103.energy, expected_a_102);
     let energy_a_104 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h104)
+        .get_pass_energy(&pass_a_id, h104)
         .await
         .unwrap()
         .unwrap();
@@ -2002,7 +2002,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
 
     let energy_b_104 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_b_id, h104)
+        .get_pass_energy(&pass_b_id, h104)
         .await
         .unwrap()
         .unwrap();
@@ -2260,16 +2260,25 @@ async fn test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred
     // 2) energy assertion
     let energy_b_602 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_b_id, h602)
+        .get_pass_energy(&pass_b_id, h602)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(energy_b_602.state, MinerPassState::Active);
-    assert_eq!(energy_b_602.energy, 0);
+    assert_eq!(energy_b_602.energy, calc_growth_delta(240_000, 2));
+
+    // Record query still returns the last persisted snapshot.
+    let energy_b_record_602 = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_at_or_before(&pass_b_id, h602)
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_b_record_602.block_height, h600);
+    assert_eq!(energy_b_record_602.energy, 0);
 
     let energy_a_602 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_a_id, h602)
+        .get_pass_energy(&pass_a_id, h602)
         .await
         .unwrap()
         .unwrap();
@@ -2459,7 +2468,7 @@ async fn test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active() {
     // 2) energy assertion
     let old_energy_611 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&old_pass_id, h611)
+        .get_pass_energy(&old_pass_id, h611)
         .await
         .unwrap()
         .unwrap();
@@ -2468,7 +2477,7 @@ async fn test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active() {
 
     let new_energy_611 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&new_pass_id, h611)
+        .get_pass_energy(&new_pass_id, h611)
         .await
         .unwrap()
         .unwrap();
@@ -2711,7 +2720,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
 
     let prev1_energy_621 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&prev1_id, h621)
+        .get_pass_energy(&prev1_id, h621)
         .await
         .unwrap()
         .unwrap();
@@ -2720,7 +2729,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
 
     let prev1_energy_622 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&prev1_id, h622)
+        .get_pass_energy(&prev1_id, h622)
         .await
         .unwrap()
         .unwrap();
@@ -2729,7 +2738,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
 
     let prev2_energy_622 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&prev2_id, h622)
+        .get_pass_energy(&prev2_id, h622)
         .await
         .unwrap()
         .unwrap();
@@ -2738,7 +2747,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
 
     let new_energy_622 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&new_id, h622)
+        .get_pass_energy(&new_id, h622)
         .await
         .unwrap()
         .unwrap();
@@ -2986,7 +2995,7 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
 
     let prev_energy_631 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&prev_id, h631)
+        .get_pass_energy(&prev_id, h631)
         .await
         .unwrap()
         .unwrap();
@@ -2995,7 +3004,7 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
 
     let first_new_energy_631 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&first_new_id, h631)
+        .get_pass_energy(&first_new_id, h631)
         .await
         .unwrap()
         .unwrap();
@@ -3004,7 +3013,7 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
 
     let first_new_energy_632 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&first_new_id, h632)
+        .get_pass_energy(&first_new_id, h632)
         .await
         .unwrap()
         .unwrap();
@@ -3013,7 +3022,7 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
 
     let second_new_energy_632 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&second_new_id, h632)
+        .get_pass_energy(&second_new_id, h632)
         .await
         .unwrap()
         .unwrap();
@@ -3218,7 +3227,7 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
 
     let energy_642 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_id, h642)
+        .get_pass_energy(&pass_id, h642)
         .await
         .unwrap()
         .unwrap();
@@ -3227,7 +3236,7 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
 
     let energy_643 = fixture
         .pass_energy_manager
-        .get_pass_energy_at_or_before(&pass_id, h643)
+        .get_pass_energy(&pass_id, h643)
         .await
         .unwrap()
         .unwrap();

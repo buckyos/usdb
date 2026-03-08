@@ -283,25 +283,20 @@ impl PassEnergyManager {
         Ok(())
     }
 
-    // Get the energy and state of the pass at given block height
-    // The record must exist for the pass at the block height
+    // Get pass energy/state at query block height.
+    // This query always returns deterministic energy at the target height:
+    // - It reads latest record <= query height.
+    // - For active passes, it projects growth to query height.
     pub async fn get_pass_energy(
         &self,
         inscription_id: &InscriptionId,
         block_height: u32,
     ) -> Result<Option<PassEnergyResult>, String> {
-        let ret = self
-            .storage
-            .get_pass_energy_record(inscription_id, block_height)?;
-
-        let value = ret.map(|v| PassEnergyResult {
-            energy: v.energy,
-            state: v.state,
-        });
-
-        Ok(value)
+        let record = self.get_pass_energy_record_at_or_before(inscription_id, block_height)?;
+        Ok(record.map(|r| self.project_energy_record_no_balance_change(&r, block_height)))
     }
 
+    // Record-query API: exact stored record at block height.
     pub fn get_pass_energy_record_exact(
         &self,
         inscription_id: &InscriptionId,
@@ -322,6 +317,7 @@ impl PassEnergyManager {
         }))
     }
 
+    // Record-query API: latest stored record at or before block height.
     pub fn get_pass_energy_record_at_or_before(
         &self,
         inscription_id: &InscriptionId,
@@ -400,24 +396,6 @@ impl PassEnergyManager {
         record: &PassEnergyRecord,
     ) -> Result<(), String> {
         self.storage.insert_pass_energy_record(record)
-    }
-
-    // Get the latest energy and state snapshot for the pass at or before block_height.
-    pub async fn get_pass_energy_at_or_before(
-        &self,
-        inscription_id: &InscriptionId,
-        block_height: u32,
-    ) -> Result<Option<PassEnergyResult>, String> {
-        let ret = self
-            .storage
-            .find_last_pass_energy_record(inscription_id, block_height)?;
-
-        let value = ret.map(|v| PassEnergyResult {
-            energy: v.energy,
-            state: v.state,
-        });
-
-        Ok(value)
     }
 
     // Kernel function to update the energy of a Miner Pass at given block height
@@ -558,15 +536,17 @@ impl PassEnergyManager {
         };
         self.storage.insert_pass_energy_record(&dormant_record)?;
 
-        let stored = self.get_pass_energy(inscription_id, block_height).await?;
-        let expected = PassEnergyResult {
-            energy: finalized.energy,
-            state: MinerPassState::Dormant,
-        };
-        if stored.as_ref() != Some(&expected) {
+        let stored = self.get_pass_energy_record_exact(inscription_id, block_height)?;
+        let expected_state = MinerPassState::Dormant;
+        let expected_energy = finalized.energy;
+        if stored.as_ref().map(|v| (&v.state, v.energy)) != Some((&expected_state, expected_energy))
+        {
             let msg = format!(
                 "Dormant energy snapshot mismatch: inscription_id={}, block_height={}, stored={:?}, expected={:?}",
-                inscription_id, block_height, stored, expected
+                inscription_id,
+                block_height,
+                stored,
+                (expected_state, expected_energy)
             );
             error!("{}", msg);
             return Err(msg);
@@ -638,7 +618,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_pass_energy_at_or_before_returns_latest_snapshot() {
+    async fn test_get_pass_energy_returns_latest_value_at_height() {
         let root_dir = test_root_dir("at_or_before");
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let manager = PassEnergyManager::new(config).unwrap();
@@ -674,7 +654,7 @@ mod tests {
             .unwrap();
 
         let e115 = manager
-            .get_pass_energy_at_or_before(&inscription_id, 115)
+            .get_pass_energy(&inscription_id, 115)
             .await
             .unwrap()
             .unwrap();
@@ -682,18 +662,56 @@ mod tests {
         assert_eq!(e115.energy, 111);
 
         let e120 = manager
-            .get_pass_energy_at_or_before(&inscription_id, 120)
+            .get_pass_energy(&inscription_id, 120)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(e120.state, MinerPassState::Dormant);
         assert_eq!(e120.energy, 222);
 
-        let e80 = manager
-            .get_pass_energy_at_or_before(&inscription_id, 80)
-            .await
-            .unwrap();
+        let e80 = manager.get_pass_energy(&inscription_id, 80).await.unwrap();
         assert!(e80.is_none());
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_pass_energy_projects_active_energy_to_query_height() {
+        let root_dir = test_root_dir("at_or_before_project_active");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(3, 0);
+        let owner = test_script_hash(4);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 200_000,
+                owner_delta: 0,
+                energy: 500,
+            })
+            .unwrap();
+
+        let projected = manager
+            .get_pass_energy(&inscription_id, 105)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected = 500 + calc_growth_delta(200_000, 5);
+        assert_eq!(projected.state, MinerPassState::Active);
+        assert_eq!(projected.energy, expected);
+
+        let via_same_api = manager
+            .get_pass_energy(&inscription_id, 105)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(via_same_api, projected);
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }
