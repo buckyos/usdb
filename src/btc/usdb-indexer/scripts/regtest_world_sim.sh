@@ -42,6 +42,8 @@ SIM_FAIL_FAST="${SIM_FAIL_FAST:-0}"
 SIM_INITIAL_ACTIVE_AGENTS="${SIM_INITIAL_ACTIVE_AGENTS:-3}"
 SIM_AGENT_GROWTH_INTERVAL_BLOCKS="${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}"
 SIM_AGENT_GROWTH_STEP="${SIM_AGENT_GROWTH_STEP:-1}"
+SIM_POLICY_MODE="${SIM_POLICY_MODE:-adaptive}"
+SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}"
 
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -539,6 +541,8 @@ main() {
     --initial-active-agents "$SIM_INITIAL_ACTIVE_AGENTS" \
     --agent-growth-interval-blocks "$SIM_AGENT_GROWTH_INTERVAL_BLOCKS" \
     --agent-growth-step "$SIM_AGENT_GROWTH_STEP" \
+    --policy-mode "$SIM_POLICY_MODE" \
+    --scripted-cycle "$SIM_SCRIPTED_CYCLE" \
     --temp-dir "$WORK_DIR" \
     "${fail_fast_arg[@]}"
 

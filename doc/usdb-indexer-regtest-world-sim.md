@@ -17,7 +17,9 @@
 
 - 真实 agent 模型（有状态）：
   - 每个 agent 有独立钱包、BTC 地址、script hash、persona（`holder`/`trader`/`farmer`/`adversary`）
-  - 动作选择基于上一个状态与最近动作（Markov 风格偏置），不是纯盲随机
+  - 支持两种策略模式：
+    - `adaptive`：动作选择基于上一个状态与最近动作（Markov 风格偏置）
+    - `scripted`：按固定动作序列轮转（用于稳定复现与排障）
   - 每个区块内限制“单 agent 最多一次参与”，避免同块多动作互相覆盖
   - 支持按区块逐步扩容 active agents，模拟用户增长
 - 随机操作类型（按概率）：
@@ -85,6 +87,8 @@ src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 - `SIM_INITIAL_ACTIVE_AGENTS`：初始 active agents 数（默认 `3`）
 - `SIM_AGENT_GROWTH_INTERVAL_BLOCKS`：每隔多少块扩容一次 active agents（默认 `30`）
 - `SIM_AGENT_GROWTH_STEP`：每次扩容增加的 agent 数（默认 `1`）
+- `SIM_POLICY_MODE`：策略模式（`adaptive` 或 `scripted`，默认 `adaptive`）
+- `SIM_SCRIPTED_CYCLE`：`scripted` 模式的动作序列（逗号分隔）
 
 ## 示例：长时间持续运行
 
@@ -93,6 +97,14 @@ SIM_BLOCKS=0 \
 SIM_SEED=20260308 \
 SIM_SLEEP_MS_BETWEEN_BLOCKS=300 \
 AGENT_COUNT=8 \
+src/btc/usdb-indexer/scripts/regtest_world_sim.sh
+```
+
+固定动作序列模式示例（便于复现）：
+
+```bash
+SIM_POLICY_MODE=scripted \
+SIM_SCRIPTED_CYCLE=mint,send_balance,transfer,remint,spend_balance,noop \
 src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 ```
 

@@ -35,6 +35,7 @@ class Agent:
     invalid_passes: set[str] = field(default_factory=set)
     last_action: str = "init"
     cooldown: int = 0
+    scripted_index: int = 0
 
 
 @dataclass
@@ -81,6 +82,8 @@ class Args:
     initial_active_agents: int
     agent_growth_interval_blocks: int
     agent_growth_step: int
+    policy_mode: str
+    scripted_cycle: list[str]
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -90,6 +93,15 @@ class Args:
 class RegtestWorldSimulator:
     INSCRIPTION_ID_PATTERN = re.compile(r"([0-9a-f]{64}i\d+)")
     TXID_PATTERN = re.compile(r"\b([0-9a-f]{64})\b")
+    SUPPORTED_ACTIONS = {
+        "mint",
+        "invalid_mint",
+        "transfer",
+        "remint",
+        "send_balance",
+        "spend_balance",
+        "noop",
+    }
 
     def __init__(self, args: Args) -> None:
         if len(args.agent_wallets) != len(args.agent_addresses):
@@ -101,6 +113,20 @@ class RegtestWorldSimulator:
             raise WorldSimError("at least one agent is required")
 
         self.args = args
+        if self.args.policy_mode not in {"adaptive", "scripted"}:
+            raise WorldSimError(
+                f"unsupported policy_mode={self.args.policy_mode}, expected adaptive or scripted"
+            )
+        if not self.args.scripted_cycle:
+            raise WorldSimError("scripted_cycle must not be empty")
+        unknown_actions = [
+            action for action in self.args.scripted_cycle if action not in self.SUPPORTED_ACTIONS
+        ]
+        if unknown_actions:
+            raise WorldSimError(
+                f"unsupported action(s) in scripted_cycle: {unknown_actions}"
+            )
+
         self.rng = random.Random(args.seed)
         self.temp_dir = Path(args.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -275,8 +301,13 @@ class RegtestWorldSimulator:
         return match.group(1)
 
     def address_to_script_hash(self, address: str) -> str:
-        address_info = json.loads(self.run_btc_cli(None, ["getaddressinfo", address]))
-        script_pubkey = address_info["scriptPubKey"]
+        # `validateaddress` is a non-wallet RPC, avoiding wallet selection errors.
+        address_info = json.loads(self.run_btc_cli(None, ["validateaddress", address]))
+        script_pubkey = address_info.get("scriptPubKey")
+        if not isinstance(script_pubkey, str) or not script_pubkey:
+            raise WorldSimError(
+                f"validateaddress missing scriptPubKey: address={address}, payload={address_info}"
+            )
         script_bytes = bytes.fromhex(script_pubkey)
         return hashlib.sha256(script_bytes).digest()[::-1].hex()
 
@@ -507,6 +538,11 @@ class RegtestWorldSimulator:
     def choose_action_for_agent(
         self, agent: Agent, available_agent_ids: set[int], pre_height: int
     ) -> str:
+        if self.args.policy_mode == "scripted":
+            return self.choose_scripted_action_for_agent(
+                agent, available_agent_ids, pre_height
+            )
+
         weights = self.action_weight_map(agent, available_agent_ids, pre_height)
         positive = [(name, w) for name, w in weights.items() if w > 0]
         if not positive:
@@ -520,6 +556,37 @@ class RegtestWorldSimulator:
             if x <= cursor:
                 return action
         return positive[-1][0]
+
+    def is_action_viable(
+        self, agent: Agent, action: str, available_agent_ids: set[int], pre_height: int
+    ) -> bool:
+        if action == "transfer":
+            return len(agent.owned_passes) > 0 and len(available_agent_ids) >= 2
+        if action == "remint":
+            return len(self.pass_owner_by_id) > 0
+        if action == "spend_balance":
+            try:
+                return self.get_balance_at_height(agent.owner_script_hash, pre_height) >= 200_000
+            except Exception:
+                return False
+        return True
+
+    def choose_scripted_action_for_agent(
+        self, agent: Agent, available_agent_ids: set[int], pre_height: int
+    ) -> str:
+        cycle = self.args.scripted_cycle
+        cycle_len = len(cycle)
+        start_idx = agent.scripted_index
+
+        for offset in range(cycle_len):
+            idx = (start_idx + offset) % cycle_len
+            candidate = cycle[idx]
+            if self.is_action_viable(agent, candidate, available_agent_ids, pre_height):
+                agent.scripted_index = (idx + 1) % cycle_len
+                return candidate
+
+        agent.scripted_index = (start_idx + 1) % cycle_len
+        return "noop"
 
     def op_mint(
         self,
@@ -960,7 +1027,8 @@ class RegtestWorldSimulator:
         self.log(
             "World simulation started: "
             f"seed={self.args.seed}, blocks={self.args.blocks}, total_agents={self.total_agents}, "
-            f"initial_active_agents={self.active_agent_count}"
+            f"initial_active_agents={self.active_agent_count}, policy_mode={self.args.policy_mode}, "
+            f"scripted_cycle={self.args.scripted_cycle}"
         )
 
         tick = 0
@@ -1119,10 +1187,16 @@ def parse_args() -> Args:
     parser.add_argument("--initial-active-agents", type=int, default=3)
     parser.add_argument("--agent-growth-interval-blocks", type=int, default=30)
     parser.add_argument("--agent-growth-step", type=int, default=1)
+    parser.add_argument("--policy-mode", default="adaptive")
+    parser.add_argument(
+        "--scripted-cycle",
+        default="mint,send_balance,transfer,remint,spend_balance,noop",
+    )
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
     agent_addresses = [v for v in parsed.agent_addresses.split(",") if v]
+    scripted_cycle = [v.strip() for v in parsed.scripted_cycle.split(",") if v.strip()]
 
     return Args(
         btc_cli=parsed.btc_cli,
@@ -1154,6 +1228,8 @@ def parse_args() -> Args:
         initial_active_agents=parsed.initial_active_agents,
         agent_growth_interval_blocks=parsed.agent_growth_interval_blocks,
         agent_growth_step=parsed.agent_growth_step,
+        policy_mode=parsed.policy_mode,
+        scripted_cycle=scripted_cycle,
     )
 
 
