@@ -15,6 +15,11 @@
 
 ## 核心能力
 
+- 真实 agent 模型（有状态）：
+  - 每个 agent 有独立钱包、BTC 地址、script hash、persona（`holder`/`trader`/`farmer`/`adversary`）
+  - 动作选择基于上一个状态与最近动作（Markov 风格偏置），不是纯盲随机
+  - 每个区块内限制“单 agent 最多一次参与”，避免同块多动作互相覆盖
+  - 支持按区块逐步扩容 active agents，模拟用户增长
 - 随机操作类型（按概率）：
   - `mint`
   - `invalid_mint`
@@ -26,6 +31,7 @@
 - 每个 tick（每个新区块）会输出：
   - 当前链高度与 usdb 同步高度
   - 本块执行动作与失败数
+  - 动作后 RPC 验证成功/失败
   - pass 总量 / active / invalid
   - active address 总余额
   - 能量榜首摘要
@@ -76,6 +82,9 @@ src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 - `SIM_SPEND_PROBABILITY`（默认 `0.15`）
 - `SIM_SLEEP_MS_BETWEEN_BLOCKS`：每块间隔毫秒（默认 `0`）
 - `SIM_FAIL_FAST`：动作失败是否立刻退出（`1` 开启）
+- `SIM_INITIAL_ACTIVE_AGENTS`：初始 active agents 数（默认 `3`）
+- `SIM_AGENT_GROWTH_INTERVAL_BLOCKS`：每隔多少块扩容一次 active agents（默认 `30`）
+- `SIM_AGENT_GROWTH_STEP`：每次扩容增加的 agent 数（默认 `1`）
 
 ## 示例：长时间持续运行
 

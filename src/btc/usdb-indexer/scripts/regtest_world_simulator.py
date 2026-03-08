@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -11,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,29 @@ class WorldSimError(Exception):
 
 @dataclass
 class Agent:
+    agent_id: int
     wallet_name: str
     receive_address: str
+    owner_script_hash: str
+    persona: str
+    owned_passes: set[str] = field(default_factory=set)
+    active_pass_id: str | None = None
+    invalid_passes: set[str] = field(default_factory=set)
+    last_action: str = "init"
+    cooldown: int = 0
+
+
+@dataclass
+class ActionExpectation:
+    action: str
+    actor_id: int
+    actor_pre_balance: int | None = None
+    amount_sat: int | None = None
+    inscription_id: str | None = None
+    target_id: int | None = None
+    target_had_active_before: bool | None = None
+    prev_inscription_id: str | None = None
+    expect_invalid: bool = False
 
 
 @dataclass
@@ -56,6 +78,9 @@ class Args:
     sleep_ms_between_blocks: int
     fail_fast: bool
     temp_dir: str
+    initial_active_agents: int
+    agent_growth_interval_blocks: int
+    agent_growth_step: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -77,11 +102,19 @@ class RegtestWorldSimulator:
 
         self.args = args
         self.rng = random.Random(args.seed)
-        self.agents = [
-            Agent(wallet_name=w, receive_address=a)
-            for w, a in zip(args.agent_wallets, args.agent_addresses)
-        ]
-        self.pass_owner_by_id: dict[str, str] = {}
+        self.temp_dir = Path(args.temp_dir)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        self.agents: list[Agent] = []
+        self._init_agents()
+        self.total_agents = len(self.agents)
+        self.active_agent_count = min(
+            self.total_agents, max(1, self.args.initial_active_agents)
+        )
+
+        # Global pass ownership index used for candidate selection.
+        self.pass_owner_by_id: dict[str, int] = {}
+
         self.metrics = {
             "mint_ok": 0,
             "mint_fail": 0,
@@ -95,14 +128,37 @@ class RegtestWorldSimulator:
             "send_fail": 0,
             "spend_ok": 0,
             "spend_fail": 0,
+            "verify_ok": 0,
+            "verify_fail": 0,
             "skip": 0,
         }
-        self.temp_dir = Path(args.temp_dir)
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def log(message: str) -> None:
         print(f"[usdb-world-sim] {message}", flush=True)
+
+    def _persona_for_agent(self, index: int) -> str:
+        if index % 7 == 0:
+            return "adversary"
+        if index % 3 == 0:
+            return "trader"
+        if index % 2 == 0:
+            return "farmer"
+        return "holder"
+
+    def _init_agents(self) -> None:
+        for idx, (wallet, address) in enumerate(
+            zip(self.args.agent_wallets, self.args.agent_addresses)
+        ):
+            script_hash = self.address_to_script_hash(address)
+            agent = Agent(
+                agent_id=idx,
+                wallet_name=wallet,
+                receive_address=address,
+                owner_script_hash=script_hash,
+                persona=self._persona_for_agent(idx),
+            )
+            self.agents.append(agent)
 
     def run_cmd(self, cmd: list[str]) -> str:
         proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -198,6 +254,14 @@ class RegtestWorldSimulator:
             raise WorldSimError(f"{method} returned error: {error}")
         return payload.get("result")
 
+    def rpc_usdb(self, method: str, params: Any) -> Any:
+        return self.rpc_result(self.rpc_call(self.args.usdb_rpc_url, method, params), method)
+
+    def rpc_balance_history(self, method: str, params: Any) -> Any:
+        return self.rpc_result(
+            self.rpc_call(self.args.balance_history_rpc_url, method, params), method
+        )
+
     def extract_inscription_id(self, output: str) -> str:
         match = self.INSCRIPTION_ID_PATTERN.search(output)
         if not match:
@@ -210,22 +274,47 @@ class RegtestWorldSimulator:
             raise WorldSimError(f"failed to parse txid from output: {output}")
         return match.group(1)
 
+    def address_to_script_hash(self, address: str) -> str:
+        address_info = json.loads(self.run_btc_cli(None, ["getaddressinfo", address]))
+        script_pubkey = address_info["scriptPubKey"]
+        script_bytes = bytes.fromhex(script_pubkey)
+        return hashlib.sha256(script_bytes).digest()[::-1].hex()
+
+    @staticmethod
+    def btc_to_sat(amount_btc: str) -> int:
+        amount = Decimal(amount_btc)
+        return int((amount * Decimal("100000000")).to_integral_value())
+
+    def get_balance_at_height(self, script_hash: str, block_height: int) -> int:
+        rows = self.rpc_balance_history(
+            "get_address_balance",
+            [{"script_hash": script_hash, "block_height": block_height, "block_range": None}],
+        )
+        if not rows:
+            return 0
+        return int(rows[0].get("balance", 0))
+
+    def get_owner_active_pass_snapshot(
+        self, owner_script_hash: str, at_height: int
+    ) -> dict[str, Any] | None:
+        result = self.rpc_usdb(
+            "get_owner_active_pass_at_height",
+            [{"owner": owner_script_hash, "at_height": at_height}],
+        )
+        return result if isinstance(result, dict) else None
+
+    def get_pass_snapshot(self, inscription_id: str, at_height: int) -> dict[str, Any] | None:
+        result = self.rpc_usdb(
+            "get_pass_snapshot",
+            [{"inscription_id": inscription_id, "at_height": at_height}],
+        )
+        return result if isinstance(result, dict) else None
+
     def wait_service_synced(self, target_height: int) -> None:
         start = time.time()
         while True:
-            bh_height = int(
-                self.rpc_result(
-                    self.rpc_call(
-                        self.args.balance_history_rpc_url, "get_block_height", []
-                    ),
-                    "get_block_height",
-                )
-                or 0
-            )
-            usdb_height = self.rpc_result(
-                self.rpc_call(self.args.usdb_rpc_url, "get_synced_block_height", []),
-                "get_synced_block_height",
-            )
+            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
+            usdb_height = self.rpc_usdb("get_synced_block_height", [])
             usdb_height_num = 0 if usdb_height is None else int(usdb_height)
 
             if bh_height >= target_height and usdb_height_num >= target_height:
@@ -268,102 +357,264 @@ class RegtestWorldSimulator:
         content_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
         return content_path
 
-    def choose_action(self) -> str:
-        p_mint = self.args.mint_probability
-        p_invalid_mint = self.args.invalid_mint_probability
-        p_transfer = self.args.transfer_probability
-        p_remint = self.args.remint_probability
-        p_send = self.args.send_probability
-        p_spend = self.args.spend_probability
-        total = p_mint + p_invalid_mint + p_transfer + p_remint + p_send + p_spend
-        if total > 1.0 + 1e-9:
-            raise WorldSimError(
-                f"invalid operation probabilities, sum must be <= 1.0, got={total}"
+    def maybe_grow_agents(self, tick: int) -> None:
+        if self.active_agent_count >= self.total_agents:
+            return
+        if self.args.agent_growth_interval_blocks <= 0:
+            return
+        if tick % self.args.agent_growth_interval_blocks != 0:
+            return
+
+        before = self.active_agent_count
+        self.active_agent_count = min(
+            self.total_agents, self.active_agent_count + max(1, self.args.agent_growth_step)
+        )
+        if self.active_agent_count != before:
+            self.log(
+                "Agent pool expanded: "
+                f"tick={tick}, from={before}, to={self.active_agent_count}, total={self.total_agents}"
             )
 
-        x = self.rng.random()
+    def get_active_agent_ids(self) -> list[int]:
+        return [agent.agent_id for agent in self.agents[: self.active_agent_count]]
+
+    def choose_actor(self, available_agent_ids: set[int]) -> int:
+        # Traders and adversaries act more often.
+        weighted: list[tuple[int, float]] = []
+        for agent_id in sorted(available_agent_ids):
+            agent = self.agents[agent_id]
+            weight = 1.0
+            if agent.persona == "trader":
+                weight *= 1.3
+            elif agent.persona == "adversary":
+                weight *= 1.15
+            elif agent.persona == "holder":
+                weight *= 0.9
+            weighted.append((agent_id, weight))
+
+        total = sum(weight for _, weight in weighted)
+        if total <= 0:
+            return self.rng.choice(sorted(available_agent_ids))
+
+        x = self.rng.random() * total
         cursor = 0.0
-        for op_name, prob in [
-            ("mint", p_mint),
-            ("invalid_mint", p_invalid_mint),
-            ("transfer", p_transfer),
-            ("remint", p_remint),
-            ("send_balance", p_send),
-            ("spend_balance", p_spend),
-        ]:
-            cursor += prob
+        for agent_id, weight in weighted:
+            cursor += weight
             if x <= cursor:
-                return op_name
-        return "noop"
+                return agent_id
+        return weighted[-1][0]
 
-    def op_send_balance(self) -> str:
-        agent = self.rng.choice(self.agents)
-        amount = self.random_btc_amount("0.01000000", "0.25000000")
-        txid = self.run_btc_cli(
-            self.args.miner_wallet, ["sendtoaddress", agent.receive_address, amount]
-        )
-        self.metrics["send_ok"] += 1
-        return f"send_balance:{amount}:to={agent.wallet_name}:txid={txid[:12]}"
+    def action_weight_map(
+        self, agent: Agent, available_agent_ids: set[int], pre_height: int
+    ) -> dict[str, float]:
+        global_prob = {
+            "mint": self.args.mint_probability,
+            "invalid_mint": self.args.invalid_mint_probability,
+            "transfer": self.args.transfer_probability,
+            "remint": self.args.remint_probability,
+            "send_balance": self.args.send_probability,
+            "spend_balance": self.args.spend_probability,
+        }
+        noop_base = max(0.0001, 1.0 - sum(global_prob.values()))
 
-    def op_spend_balance(self) -> str:
-        agent = self.rng.choice(self.agents)
-        amount = self.random_btc_amount("0.00100000", "0.05000000")
-        destination = self.run_btc_cli(self.args.miner_wallet, ["getnewaddress"])
-        txid = self.run_btc_cli(
-            agent.wallet_name, ["sendtoaddress", destination, amount]
-        )
-        self.metrics["spend_ok"] += 1
-        return f"spend_balance:{amount}:from={agent.wallet_name}:txid={txid[:12]}"
+        # Persona weights keep behavioral diversity across agents.
+        persona_bias = {
+            "holder": {
+                "mint": 1.35,
+                "invalid_mint": 0.20,
+                "transfer": 0.60,
+                "remint": 1.00,
+                "send_balance": 0.95,
+                "spend_balance": 0.80,
+                "noop": 1.20,
+            },
+            "trader": {
+                "mint": 0.90,
+                "invalid_mint": 0.30,
+                "transfer": 1.60,
+                "remint": 1.25,
+                "send_balance": 1.05,
+                "spend_balance": 1.15,
+                "noop": 0.70,
+            },
+            "farmer": {
+                "mint": 1.00,
+                "invalid_mint": 0.20,
+                "transfer": 0.75,
+                "remint": 0.90,
+                "send_balance": 1.45,
+                "spend_balance": 1.30,
+                "noop": 0.85,
+            },
+            "adversary": {
+                "mint": 0.95,
+                "invalid_mint": 2.20,
+                "transfer": 1.10,
+                "remint": 1.20,
+                "send_balance": 0.90,
+                "spend_balance": 1.00,
+                "noop": 0.50,
+            },
+        }[agent.persona]
+
+        weights: dict[str, float] = {
+            "mint": global_prob["mint"] * persona_bias["mint"],
+            "invalid_mint": global_prob["invalid_mint"] * persona_bias["invalid_mint"],
+            "transfer": global_prob["transfer"] * persona_bias["transfer"],
+            "remint": global_prob["remint"] * persona_bias["remint"],
+            "send_balance": global_prob["send_balance"] * persona_bias["send_balance"],
+            "spend_balance": global_prob["spend_balance"] * persona_bias["spend_balance"],
+            "noop": noop_base * persona_bias["noop"],
+        }
+
+        has_pass = len(agent.owned_passes) > 0
+        if not has_pass:
+            weights["transfer"] = 0.0
+            weights["remint"] = 0.0
+            weights["mint"] *= 1.3
+
+        if len(available_agent_ids) < 2:
+            weights["transfer"] = 0.0
+
+        if agent.cooldown > 0:
+            weights["transfer"] *= 0.65
+            weights["remint"] *= 0.65
+            weights["mint"] *= 0.75
+
+        # Markov-style transition preference based on last action.
+        if agent.last_action == "mint":
+            weights["transfer"] *= 1.25
+            weights["send_balance"] *= 1.20
+            weights["spend_balance"] *= 1.15
+        elif agent.last_action == "transfer":
+            weights["remint"] *= 1.35
+            weights["mint"] *= 1.15
+        elif agent.last_action == "spend_balance":
+            weights["send_balance"] *= 1.35
+            weights["noop"] *= 0.70
+
+        # Basic spendability check avoids pointless spend spam.
+        try:
+            balance_now = self.get_balance_at_height(agent.owner_script_hash, pre_height)
+            if balance_now < 200_000:
+                weights["spend_balance"] *= 0.30
+        except Exception:
+            # Keep simulation moving even if one balance query is transiently unavailable.
+            weights["spend_balance"] *= 0.60
+
+        return weights
+
+    def choose_action_for_agent(
+        self, agent: Agent, available_agent_ids: set[int], pre_height: int
+    ) -> str:
+        weights = self.action_weight_map(agent, available_agent_ids, pre_height)
+        positive = [(name, w) for name, w in weights.items() if w > 0]
+        if not positive:
+            return "noop"
+
+        total = sum(w for _, w in positive)
+        x = self.rng.random() * total
+        cursor = 0.0
+        for action, weight in positive:
+            cursor += weight
+            if x <= cursor:
+                return action
+        return positive[-1][0]
 
     def op_mint(
         self,
-        invalid_eth: bool = False,
-        prev: list[str] | None = None,
+        actor: Agent,
+        pre_height: int,
+        invalid_eth: bool,
+        prev: list[str] | None,
         count_as_mint: bool = True,
-    ) -> str:
-        agent = self.rng.choice(self.agents)
-        eth_main = self.random_eth_address()
+    ) -> tuple[str, ActionExpectation]:
         content_path = self.write_mint_content(
-            eth_main=eth_main,
+            eth_main=self.random_eth_address(),
             prev=prev or [],
             invalid_eth=invalid_eth,
         )
         output = self.run_ord_wallet(
-            agent.wallet_name,
+            actor.wallet_name,
             [
                 "inscribe",
                 "--fee-rate",
                 str(self.args.fee_rate),
                 "--destination",
-                agent.receive_address,
+                actor.receive_address,
                 "--file",
                 str(content_path),
             ],
         )
         inscription_id = self.extract_inscription_id(output)
-        self.pass_owner_by_id[inscription_id] = agent.wallet_name
+        self.pass_owner_by_id[inscription_id] = actor.agent_id
+        actor.owned_passes.add(inscription_id)
         if invalid_eth:
+            actor.invalid_passes.add(inscription_id)
             self.metrics["invalid_mint_ok"] += 1
-            return f"invalid_mint:{inscription_id}:owner={agent.wallet_name}"
+            pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+            return (
+                f"invalid_mint:{inscription_id}:owner={actor.wallet_name}",
+                ActionExpectation(
+                    action="invalid_mint",
+                    actor_id=actor.agent_id,
+                    inscription_id=inscription_id,
+                    expect_invalid=True,
+                    actor_pre_balance=pre_balance,
+                ),
+            )
+
         if count_as_mint:
             self.metrics["mint_ok"] += 1
-        if prev:
-            return f"remint_like_mint:{inscription_id}:owner={agent.wallet_name}:prev={prev[0]}"
-        return f"mint:{inscription_id}:owner={agent.wallet_name}"
+        pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+        return (
+            (
+                f"remint_like_mint:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}"
+                if prev
+                else f"mint:{inscription_id}:owner={actor.wallet_name}"
+            ),
+            ActionExpectation(
+                action="remint" if prev else "mint",
+                actor_id=actor.agent_id,
+                inscription_id=inscription_id,
+                prev_inscription_id=prev[0] if prev else None,
+                actor_pre_balance=pre_balance,
+            ),
+        )
 
-    def op_transfer(self) -> str:
-        candidates = list(self.pass_owner_by_id.items())
-        if not candidates:
+    def op_transfer(
+        self,
+        actor: Agent,
+        available_agent_ids: set[int],
+        pre_height: int,
+    ) -> tuple[str, ActionExpectation, set[int]]:
+        if not actor.owned_passes:
             self.metrics["skip"] += 1
-            return "transfer:skip:no_pass"
-        inscription_id, from_wallet = self.rng.choice(candidates)
-        target_agents = [a for a in self.agents if a.wallet_name != from_wallet]
-        if not target_agents:
+            return "transfer:skip:no_pass", ActionExpectation("noop", actor.agent_id), {
+                actor.agent_id
+            }
+
+        target_candidates = [
+            self.agents[agent_id]
+            for agent_id in sorted(available_agent_ids)
+            if agent_id != actor.agent_id
+        ]
+        if not target_candidates:
             self.metrics["skip"] += 1
-            return "transfer:skip:no_target"
-        target = self.rng.choice(target_agents)
+            return (
+                "transfer:skip:no_target",
+                ActionExpectation("noop", actor.agent_id),
+                {actor.agent_id},
+            )
+
+        inscription_id = self.rng.choice(sorted(actor.owned_passes))
+        target = self.rng.choice(target_candidates)
+        target_active_before = (
+            self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
+        )
+
         output = self.run_ord_wallet(
-            from_wallet,
+            actor.wallet_name,
             [
                 "send",
                 "--fee-rate",
@@ -373,105 +624,157 @@ class RegtestWorldSimulator:
             ],
         )
         txid = self.extract_txid(output)
-        self.pass_owner_by_id[inscription_id] = target.wallet_name
+
+        # Update local ownership view immediately; chain finality is validated post-block.
+        actor.owned_passes.discard(inscription_id)
+        target.owned_passes.add(inscription_id)
+        self.pass_owner_by_id[inscription_id] = target.agent_id
+
         self.metrics["transfer_ok"] += 1
         return (
-            f"transfer:{inscription_id}:from={from_wallet}:to={target.wallet_name}:"
-            f"txid={txid[:12]}"
+            (
+                f"transfer:{inscription_id}:from={actor.wallet_name}:"
+                f"to={target.wallet_name}:txid={txid[:12]}"
+            ),
+            ActionExpectation(
+                action="transfer",
+                actor_id=actor.agent_id,
+                inscription_id=inscription_id,
+                target_id=target.agent_id,
+                target_had_active_before=target_active_before,
+            ),
+            {actor.agent_id, target.agent_id},
         )
 
-    def op_remint(self) -> str:
-        if not self.pass_owner_by_id:
-            self.metrics["skip"] += 1
-            return "remint:skip:no_prev"
-        prev_inscription_id = self.rng.choice(list(self.pass_owner_by_id.keys()))
-        result = self.op_mint(
-            invalid_eth=False, prev=[prev_inscription_id], count_as_mint=False
-        )
-        self.metrics["remint_ok"] += 1
-        return f"remint:prev={prev_inscription_id}:{result}"
-
-    def mine_one_block(self) -> int:
-        self.run_btc_cli(
+    def op_send_balance(self, actor: Agent, pre_height: int) -> tuple[str, ActionExpectation]:
+        amount_btc = self.random_btc_amount("0.01000000", "0.25000000")
+        txid = self.run_btc_cli(
             self.args.miner_wallet,
-            ["generatetoaddress", "1", self.args.mining_address],
+            ["sendtoaddress", actor.receive_address, amount_btc],
         )
-        return int(self.run_btc_cli(None, ["getblockcount"]))
-
-    def collect_summary(self, block_height: int) -> dict[str, Any]:
-        sync_status = self.rpc_result(
-            self.rpc_call(self.args.usdb_rpc_url, "get_sync_status", []),
-            "get_sync_status",
-        )
-        pass_stats = self.rpc_result(
-            self.rpc_call(
-                self.args.usdb_rpc_url,
-                "get_pass_stats_at_height",
-                [{"at_height": block_height}],
+        amount_sat = self.btc_to_sat(amount_btc)
+        pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+        self.metrics["send_ok"] += 1
+        return (
+            f"send_balance:{amount_btc}:to={actor.wallet_name}:txid={txid[:12]}",
+            ActionExpectation(
+                action="send_balance",
+                actor_id=actor.agent_id,
+                actor_pre_balance=pre_balance,
+                amount_sat=amount_sat,
             ),
-            "get_pass_stats_at_height",
-        )
-        latest_balance = self.rpc_result(
-            self.rpc_call(
-                self.args.usdb_rpc_url, "get_latest_active_balance_snapshot", []
-            ),
-            "get_latest_active_balance_snapshot",
         )
 
-        leaderboard_top = self.rpc_result(
-            self.rpc_call(
-                self.args.usdb_rpc_url,
-                "get_pass_energy_leaderboard",
-                [{"at_height": block_height, "page": 0, "page_size": 1}],
-            ),
-            "get_pass_energy_leaderboard",
-        )
+    def op_spend_balance(
+        self, actor: Agent, pre_height: int
+    ) -> tuple[str, ActionExpectation] | None:
+        pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+        if pre_balance < 200_000:
+            self.metrics["skip"] += 1
+            return None
 
-        top_item = None
-        if isinstance(leaderboard_top, dict):
-            items = leaderboard_top.get("items") or []
-            if items:
-                top_item = items[0]
-
-        active_balance_exact = None
-        active_balance_error = None
-        active_balance_resp = self.rpc_call(
-            self.args.usdb_rpc_url,
-            "get_active_balance_snapshot",
-            [{"block_height": block_height}],
-            retries=1,
-            sleep_sec=0.1,
-        )
-        if active_balance_resp.get("error") is not None:
-            active_balance_error = active_balance_resp["error"]
+        # Cap spend amount by current balance with a conservative upper bound.
+        max_sat = min(pre_balance // 2, 5_000_000)
+        min_sat = min(100_000, max_sat)
+        if max_sat <= 0 or min_sat <= 0:
+            self.metrics["skip"] += 1
+            return None
+        if max_sat < min_sat:
+            amount_sat = max_sat
         else:
-            active_balance_exact = active_balance_resp.get("result")
+            amount_sat = self.rng.randint(min_sat, max_sat)
 
-        return {
-            "sync_status": sync_status,
-            "pass_stats": pass_stats,
-            "latest_balance": latest_balance,
-            "top_item": top_item,
-            "active_balance_exact": active_balance_exact,
-            "active_balance_error": active_balance_error,
-        }
+        amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
+        txid = self.run_btc_cli(
+            actor.wallet_name,
+            ["sendtoaddress", self.args.mining_address, amount_btc],
+        )
+        self.metrics["spend_ok"] += 1
+        return (
+            (
+                f"spend_balance:{amount_btc}:from={actor.wallet_name}:"
+                f"txid={txid[:12]}"
+            ),
+            ActionExpectation(
+                action="spend_balance",
+                actor_id=actor.agent_id,
+                actor_pre_balance=pre_balance,
+                amount_sat=amount_sat,
+            ),
+        )
 
-    def execute_action(self, action: str) -> str:
+    def choose_prev_for_remint(self) -> str | None:
+        if not self.pass_owner_by_id:
+            return None
+        # Prefer non-invalid prev candidates to better reflect valid remint flow.
+        non_invalid = [
+            inscription_id
+            for inscription_id, owner_id in self.pass_owner_by_id.items()
+            if inscription_id not in self.agents[owner_id].invalid_passes
+        ]
+        candidates = non_invalid if non_invalid else list(self.pass_owner_by_id.keys())
+        if not candidates:
+            return None
+        return self.rng.choice(sorted(candidates))
+
+    def execute_agent_action(
+        self,
+        actor: Agent,
+        action: str,
+        available_agent_ids: set[int],
+        pre_height: int,
+    ) -> tuple[str, ActionExpectation | None, set[int]]:
         if action == "noop":
             self.metrics["skip"] += 1
-            return "noop"
-        if action == "send_balance":
-            return self.op_send_balance()
-        if action == "spend_balance":
-            return self.op_spend_balance()
+            return "noop", None, {actor.agent_id}
+
         if action == "mint":
-            return self.op_mint(invalid_eth=False, prev=[])
+            detail, expectation = self.op_mint(
+                actor=actor,
+                pre_height=pre_height,
+                invalid_eth=False,
+                prev=None,
+            )
+            return detail, expectation, {actor.agent_id}
+
         if action == "invalid_mint":
-            return self.op_mint(invalid_eth=True, prev=[])
+            detail, expectation = self.op_mint(
+                actor=actor,
+                pre_height=pre_height,
+                invalid_eth=True,
+                prev=None,
+            )
+            return detail, expectation, {actor.agent_id}
+
         if action == "transfer":
-            return self.op_transfer()
+            return self.op_transfer(actor, available_agent_ids, pre_height)
+
         if action == "remint":
-            return self.op_remint()
+            prev = self.choose_prev_for_remint()
+            if prev is None:
+                self.metrics["skip"] += 1
+                return "remint:skip:no_prev", None, {actor.agent_id}
+            detail, expectation = self.op_mint(
+                actor=actor,
+                pre_height=pre_height,
+                invalid_eth=False,
+                prev=[prev],
+                count_as_mint=False,
+            )
+            self.metrics["remint_ok"] += 1
+            return f"remint:prev={prev}:{detail}", expectation, {actor.agent_id}
+
+        if action == "send_balance":
+            detail, expectation = self.op_send_balance(actor, pre_height)
+            return detail, expectation, {actor.agent_id}
+
+        if action == "spend_balance":
+            result = self.op_spend_balance(actor, pre_height)
+            if result is None:
+                return "spend_balance:skip:low_balance", None, {actor.agent_id}
+            detail, expectation = result
+            return detail, expectation, {actor.agent_id}
+
         raise WorldSimError(f"unsupported action: {action}")
 
     def on_action_failed(self, action: str) -> None:
@@ -494,6 +797,158 @@ class RegtestWorldSimulator:
             self.metrics["remint_fail"] += 1
             return
 
+    def verify_expectation(self, expectation: ActionExpectation, block_height: int) -> None:
+        actor = self.agents[expectation.actor_id]
+
+        if expectation.action == "send_balance":
+            after_balance = self.get_balance_at_height(actor.owner_script_hash, block_height)
+            expected_min = int(expectation.actor_pre_balance or 0) + int(
+                expectation.amount_sat or 0
+            )
+            if after_balance < expected_min:
+                raise WorldSimError(
+                    "send_balance verification failed: "
+                    f"agent={actor.wallet_name}, pre={expectation.actor_pre_balance}, "
+                    f"amount={expectation.amount_sat}, after={after_balance}"
+                )
+            return
+
+        if expectation.action == "spend_balance":
+            after_balance = self.get_balance_at_height(actor.owner_script_hash, block_height)
+            pre_balance = int(expectation.actor_pre_balance or 0)
+            if after_balance >= pre_balance:
+                raise WorldSimError(
+                    "spend_balance verification failed: "
+                    f"agent={actor.wallet_name}, pre={pre_balance}, after={after_balance}"
+                )
+            return
+
+        if expectation.action in {"mint", "invalid_mint", "remint"}:
+            inscription_id = expectation.inscription_id
+            if inscription_id is None:
+                raise WorldSimError("mint-like expectation missing inscription_id")
+            snapshot = self.get_pass_snapshot(inscription_id, block_height)
+            if snapshot is None:
+                raise WorldSimError(
+                    f"pass snapshot not found after mint: inscription_id={inscription_id}, height={block_height}"
+                )
+
+            state = str(snapshot.get("state"))
+            owner = str(snapshot.get("owner"))
+            if owner != actor.owner_script_hash:
+                raise WorldSimError(
+                    "mint-like owner mismatch: "
+                    f"inscription_id={inscription_id}, expected_owner={actor.owner_script_hash}, got={owner}"
+                )
+
+            if expectation.expect_invalid:
+                if state != "invalid":
+                    raise WorldSimError(
+                        "invalid_mint verification failed: "
+                        f"inscription_id={inscription_id}, state={state}"
+                    )
+                return
+
+            if state not in {"active", "dormant"}:
+                raise WorldSimError(
+                    "mint/remint verification failed: "
+                    f"inscription_id={inscription_id}, state={state}"
+                )
+
+            if expectation.action == "remint" and expectation.prev_inscription_id:
+                prev = snapshot.get("prev") or []
+                if expectation.prev_inscription_id not in prev:
+                    raise WorldSimError(
+                        "remint verification failed: "
+                        f"inscription_id={inscription_id}, prev={prev}, "
+                        f"expected_prev={expectation.prev_inscription_id}"
+                    )
+            return
+
+        if expectation.action == "transfer":
+            inscription_id = expectation.inscription_id
+            target_id = expectation.target_id
+            if inscription_id is None or target_id is None:
+                raise WorldSimError("transfer expectation missing fields")
+
+            target = self.agents[target_id]
+            snapshot = self.get_pass_snapshot(inscription_id, block_height)
+            if snapshot is None:
+                raise WorldSimError(
+                    f"transfer snapshot missing: inscription_id={inscription_id}, height={block_height}"
+                )
+
+            owner = str(snapshot.get("owner"))
+            state = str(snapshot.get("state"))
+            if owner != target.owner_script_hash:
+                raise WorldSimError(
+                    "transfer owner mismatch: "
+                    f"inscription_id={inscription_id}, expected_owner={target.owner_script_hash}, got={owner}"
+                )
+            if state not in {"active", "dormant"}:
+                raise WorldSimError(
+                    "transfer state invalid: "
+                    f"inscription_id={inscription_id}, state={state}"
+                )
+            return
+
+        # noop/unknown do not require verification.
+
+    def refresh_agent_state(self, agent: Agent, block_height: int) -> None:
+        active_snapshot = self.get_owner_active_pass_snapshot(
+            agent.owner_script_hash, block_height
+        )
+        if active_snapshot is None:
+            agent.active_pass_id = None
+            return
+
+        inscription_id = str(active_snapshot.get("inscription_id"))
+        agent.active_pass_id = inscription_id
+        agent.owned_passes.add(inscription_id)
+        self.pass_owner_by_id[inscription_id] = agent.agent_id
+
+    def mine_one_block(self) -> int:
+        self.run_btc_cli(
+            self.args.miner_wallet,
+            ["generatetoaddress", "1", self.args.mining_address],
+        )
+        return int(self.run_btc_cli(None, ["getblockcount"]))
+
+    def collect_summary(self, block_height: int) -> dict[str, Any]:
+        sync_status = self.rpc_usdb("get_sync_status", [])
+        pass_stats = self.rpc_usdb(
+            "get_pass_stats_at_height",
+            [{"at_height": block_height}],
+        )
+        latest_balance = self.rpc_usdb("get_latest_active_balance_snapshot", [])
+        leaderboard_top = self.rpc_usdb(
+            "get_pass_energy_leaderboard",
+            [{"at_height": block_height, "page": 0, "page_size": 1}],
+        )
+
+        top_item = None
+        if isinstance(leaderboard_top, dict):
+            items = leaderboard_top.get("items") or []
+            if items:
+                top_item = items[0]
+
+        exact_snapshot = self.rpc_call(
+            self.args.usdb_rpc_url,
+            "get_active_balance_snapshot",
+            [{"block_height": block_height}],
+            retries=1,
+            sleep_sec=0.1,
+        )
+
+        return {
+            "sync_status": sync_status,
+            "pass_stats": pass_stats,
+            "latest_balance": latest_balance,
+            "top_item": top_item,
+            "active_balance_exact": exact_snapshot.get("result"),
+            "active_balance_error": exact_snapshot.get("error"),
+        }
+
     def format_top_energy(self, top_item: dict[str, Any] | None) -> str:
         if not top_item:
             return "-"
@@ -504,13 +959,8 @@ class RegtestWorldSimulator:
     def run(self) -> None:
         self.log(
             "World simulation started: "
-            f"seed={self.args.seed}, blocks={self.args.blocks}, agents={len(self.agents)}"
-        )
-        self.log(
-            "Action probabilities: "
-            f"mint={self.args.mint_probability}, invalid_mint={self.args.invalid_mint_probability}, "
-            f"transfer={self.args.transfer_probability}, remint={self.args.remint_probability}, "
-            f"send={self.args.send_probability}, spend={self.args.spend_probability}"
+            f"seed={self.args.seed}, blocks={self.args.blocks}, total_agents={self.total_agents}, "
+            f"initial_active_agents={self.active_agent_count}"
         )
 
         tick = 0
@@ -519,27 +969,79 @@ class RegtestWorldSimulator:
                 break
 
             tick += 1
-            action_count = self.rng.randint(0, max(0, self.args.max_actions_per_block))
+            self.maybe_grow_agents(tick)
+            pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
+
+            active_agent_ids = self.get_active_agent_ids()
+            available_ids: set[int] = set(active_agent_ids)
+            max_slots = min(self.args.max_actions_per_block, len(available_ids))
+            action_slots = self.rng.randint(0, max(0, max_slots))
+
             action_results: list[str] = []
+            expectations: list[ActionExpectation] = []
             action_failed = 0
-            for _ in range(action_count):
-                action = self.choose_action()
+
+            for _ in range(action_slots):
+                if not available_ids:
+                    break
+
+                actor_id = self.choose_actor(available_ids)
+                actor = self.agents[actor_id]
+                action = self.choose_action_for_agent(actor, available_ids, pre_height)
+
                 try:
-                    result = self.execute_action(action)
-                    action_results.append(result)
+                    detail, expectation, used_ids = self.execute_agent_action(
+                        actor=actor,
+                        action=action,
+                        available_agent_ids=available_ids,
+                        pre_height=pre_height,
+                    )
+                    action_results.append(detail)
+                    if expectation is not None and expectation.action != "noop":
+                        expectations.append(expectation)
+                    available_ids -= used_ids
+                    actor.last_action = action
+                    actor.cooldown = max(0, actor.cooldown - 1)
                 except Exception as e:  # noqa: BLE001
                     action_failed += 1
                     self.on_action_failed(action)
                     self.log(
-                        f"WARN action failed: tick={tick}, action={action}, error={e}"
+                        f"WARN action failed: tick={tick}, actor={actor.wallet_name}, action={action}, error={e}"
                     )
+                    available_ids.discard(actor_id)
+                    actor.last_action = "failed"
+                    actor.cooldown = 1
                     if self.args.fail_fast:
                         raise
 
             block_height = self.mine_one_block()
             self.wait_service_synced(block_height)
-            summary = self.collect_summary(block_height)
 
+            for expectation in expectations:
+                try:
+                    self.verify_expectation(expectation, block_height)
+                    self.metrics["verify_ok"] += 1
+                except Exception as e:  # noqa: BLE001
+                    self.metrics["verify_fail"] += 1
+                    self.log(
+                        "WARN verification failed: "
+                        f"tick={tick}, action={expectation.action}, error={e}"
+                    )
+                    if self.args.fail_fast:
+                        raise
+
+            # Refresh views only for active agent pool to keep per-block cost bounded.
+            for agent_id in active_agent_ids:
+                try:
+                    self.refresh_agent_state(self.agents[agent_id], block_height)
+                except Exception as e:  # noqa: BLE001
+                    self.log(
+                        f"WARN refresh_agent_state failed: tick={tick}, agent_id={agent_id}, error={e}"
+                    )
+                    if self.args.fail_fast:
+                        raise
+
+            summary = self.collect_summary(block_height)
             pass_stats = summary["pass_stats"] or {}
             latest_balance = summary["latest_balance"] or {}
             top_energy = self.format_top_energy(summary["top_item"])
@@ -549,15 +1051,16 @@ class RegtestWorldSimulator:
             invalid_count = int(pass_stats.get("invalid_count", 0))
             total_balance = int(latest_balance.get("total_balance", 0))
             active_addresses = int(latest_balance.get("active_address_count", 0))
+
             self.log(
                 "tick_summary: "
                 f"tick={tick}, block_height={block_height}, synced_height={synced_height}, "
-                f"actions={action_count}, action_failed={action_failed}, "
-                f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, "
-                f"pass_active={active_count}, pass_invalid={invalid_count}, "
-                f"active_addresses={active_addresses}, active_total_balance={total_balance}, "
-                f"top_energy={top_energy}"
+                f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
+                f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, pass_active={active_count}, "
+                f"pass_invalid={invalid_count}, active_addresses={active_addresses}, "
+                f"active_total_balance={total_balance}, top_energy={top_energy}"
             )
+
             if action_results:
                 self.log(
                     "tick_actions: "
@@ -613,6 +1116,9 @@ def parse_args() -> Args:
     parser.add_argument("--sleep-ms-between-blocks", type=int, default=0)
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--temp-dir", required=True)
+    parser.add_argument("--initial-active-agents", type=int, default=3)
+    parser.add_argument("--agent-growth-interval-blocks", type=int, default=30)
+    parser.add_argument("--agent-growth-step", type=int, default=1)
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
@@ -645,6 +1151,9 @@ def parse_args() -> Args:
         sleep_ms_between_blocks=parsed.sleep_ms_between_blocks,
         fail_fast=parsed.fail_fast,
         temp_dir=parsed.temp_dir,
+        initial_active_agents=parsed.initial_active_agents,
+        agent_growth_interval_blocks=parsed.agent_growth_interval_blocks,
+        agent_growth_step=parsed.agent_growth_step,
     )
 
 
