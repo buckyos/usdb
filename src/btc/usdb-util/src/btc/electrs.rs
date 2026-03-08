@@ -319,10 +319,11 @@ pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::Network;
+    use bitcoincore_rpc::bitcoin::{Address, Network, Txid};
     use std::str::FromStr;
 
     #[tokio::test]
+    #[ignore = "Requires Electrs server running at tcp://127.0.0.1:50001 and specific transactions in the history"]
     async fn test_electrs_client() {
         let server_url = "tcp://127.0.0.1:50001";
         let client = ElectrsClient::new(server_url).expect("Failed to create Electrs client");
@@ -356,11 +357,11 @@ mod tests {
         let address = Address::from_str("bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h")
             .expect("Failed to parse address");
         let address = address.require_network(Network::Bitcoin).unwrap();
-        let delta = full_tx
+        let (delta, _) = full_tx
             .amount_delta_from_tx(&address.script_pubkey().to_usdb_script_hash())
             .expect("Failed to compute amount delta");
         println!(
-            "Amount delta for address {} in tx {}: {}",
+            "Amount delta for address {} in tx {}: {:?}",
             address, txid, delta
         );
         assert!(delta == -2045555); // Example value

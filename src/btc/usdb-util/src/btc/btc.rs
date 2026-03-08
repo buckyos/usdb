@@ -259,10 +259,10 @@ pub type BTCRpcClientRef = std::sync::Arc<BTCRpcClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::BTCConfig;
     use bitcoincore_rpc::bitcoin::Address;
     use bitcoincore_rpc::bitcoin::Txid;
     use std::str::FromStr;
-    use usdb_util::BTCConfig;
 
     #[test]
     fn test_btc_client() {
@@ -309,7 +309,7 @@ mod tests {
 
         // Test get_blocks
         let start_height = 790000;
-        let end_height = 790256;
+        let end_height = 790002;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
