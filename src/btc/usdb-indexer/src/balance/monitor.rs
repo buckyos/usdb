@@ -1,5 +1,5 @@
 use crate::config::ConfigManagerRef;
-use crate::storage::{ActiveBalanceSnapshot, MinerPassStorageRef};
+use crate::storage::{ActiveBalanceSnapshot, ActiveMinerPassInfo, MinerPassStorageRef};
 use ord::InscriptionId;
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,6 +14,21 @@ pub struct BalanceMonitor {
     rpc_loader: Arc<dyn BalanceRpcLoader>,
     active_address_page_size: usize,
     balance_query_batch_size: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivePassBalance {
+    pub inscription_id: InscriptionId,
+    pub owner: USDBScriptHash,
+    pub block_height: u32,
+    pub balance: u64,
+    pub delta: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveBalanceSettlement {
+    pub snapshot: ActiveBalanceSnapshot,
+    pub active_pass_balances: Vec<ActivePassBalance>,
 }
 
 impl BalanceMonitor {
@@ -81,7 +96,7 @@ impl BalanceMonitor {
         }
     }
 
-    fn load_active_addresses(&self, block_height: u32) -> Result<Vec<USDBScriptHash>, String> {
+    fn load_active_passes(&self, block_height: u32) -> Result<Vec<ActiveMinerPassInfo>, String> {
         let mut page = 0usize;
         let mut owner_to_pass = std::collections::HashMap::<USDBScriptHash, InscriptionId>::new();
 
@@ -119,15 +134,21 @@ impl BalanceMonitor {
             page += 1;
         }
 
-        let mut active_addresses: Vec<_> = owner_to_pass.into_keys().collect();
-        active_addresses.sort_unstable_by_key(|a| a.to_string());
-        Ok(active_addresses)
+        let mut active_passes: Vec<_> = owner_to_pass
+            .into_iter()
+            .map(|(owner, inscription_id)| ActiveMinerPassInfo {
+                inscription_id,
+                owner,
+            })
+            .collect();
+        active_passes.sort_unstable_by_key(|v| v.owner.to_string());
+        Ok(active_passes)
     }
 
-    pub async fn settle_active_balance(
+    pub async fn settle_active_balance_with_details(
         &self,
         block_height: u32,
-    ) -> Result<ActiveBalanceSnapshot, String> {
+    ) -> Result<ActiveBalanceSettlement, String> {
         let settle_begin = Instant::now();
         let guard_begin = Instant::now();
         self.miner_pass_storage
@@ -135,7 +156,8 @@ impl BalanceMonitor {
         let guard_elapsed_ms = guard_begin.elapsed().as_millis();
 
         let load_begin = Instant::now();
-        let active_addresses = self.load_active_addresses(block_height)?;
+        let active_passes = self.load_active_passes(block_height)?;
+        let active_addresses: Vec<_> = active_passes.iter().map(|v| v.owner).collect();
         let load_active_addresses_elapsed_ms = load_begin.elapsed().as_millis();
         let active_address_count = u32::try_from(active_addresses.len()).map_err(|e| {
             let msg = format!(
@@ -156,11 +178,61 @@ impl BalanceMonitor {
         };
 
         let rpc_begin = Instant::now();
-        let total_balance = self
+        let balances = self
             .rpc_loader
-            .load_total_balance(active_addresses, block_height)
+            .load_balances(active_addresses, block_height)
             .await?;
         let rpc_elapsed_ms = rpc_begin.elapsed().as_millis();
+        let mut balance_by_owner = std::collections::HashMap::with_capacity(balances.len());
+        for (owner, balance) in balances {
+            if let Some(existing) = balance_by_owner.insert(owner, balance) {
+                let msg = format!(
+                    "Duplicate owner balance returned by RPC: module=balance_monitor, block_height={}, owner={}, existing_balance={}",
+                    block_height, owner, existing.balance
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        let mut active_pass_balances = Vec::with_capacity(active_passes.len());
+        let mut total_balance = 0u64;
+        for pass in active_passes {
+            let owner_balance = balance_by_owner.remove(&pass.owner).ok_or_else(|| {
+                let msg = format!(
+                    "Missing owner balance returned by RPC: module=balance_monitor, block_height={}, owner={}, inscription_id={}",
+                    block_height, pass.owner, pass.inscription_id
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if owner_balance.block_height != block_height {
+                let msg = format!(
+                    "Unexpected owner balance height returned by RPC: module=balance_monitor, query_height={}, balance_height={}, owner={}, inscription_id={}",
+                    block_height, owner_balance.block_height, pass.owner, pass.inscription_id
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            total_balance = total_balance.saturating_add(owner_balance.balance);
+            active_pass_balances.push(ActivePassBalance {
+                inscription_id: pass.inscription_id,
+                owner: pass.owner,
+                block_height,
+                balance: owner_balance.balance,
+                delta: owner_balance.delta,
+            });
+        }
+        if !balance_by_owner.is_empty() {
+            let extra_count = balance_by_owner.len();
+            let msg = format!(
+                "RPC returned extra owner balances not in active pass set: module=balance_monitor, block_height={}, extra_count={}",
+                block_height, extra_count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         let persist_begin = Instant::now();
         self.miner_pass_storage.upsert_active_balance_snapshot(
@@ -177,10 +249,12 @@ impl BalanceMonitor {
         };
         let total_elapsed_ms = settle_begin.elapsed().as_millis();
 
+        let changed_owner_count = active_pass_balances.iter().filter(|v| v.delta != 0).count();
         info!(
-            "Active balance settled: module=balance_monitor, block_height={}, active_address_count={}, batch_count={}, total_balance={}, total_elapsed_ms={}, guard_elapsed_ms={}, load_active_addresses_elapsed_ms={}, rpc_elapsed_ms={}, persist_elapsed_ms={}",
+            "Active balance settled: module=balance_monitor, block_height={}, active_address_count={}, changed_owner_count={}, batch_count={}, total_balance={}, total_elapsed_ms={}, guard_elapsed_ms={}, load_active_addresses_elapsed_ms={}, rpc_elapsed_ms={}, persist_elapsed_ms={}",
             snapshot.block_height,
             snapshot.active_address_count,
+            changed_owner_count,
             batch_count,
             snapshot.total_balance,
             total_elapsed_ms,
@@ -190,6 +264,19 @@ impl BalanceMonitor {
             persist_elapsed_ms
         );
 
-        Ok(snapshot)
+        Ok(ActiveBalanceSettlement {
+            snapshot,
+            active_pass_balances,
+        })
+    }
+
+    pub async fn settle_active_balance(
+        &self,
+        block_height: u32,
+    ) -> Result<ActiveBalanceSnapshot, String> {
+        let settled = self
+            .settle_active_balance_with_details(block_height)
+            .await?;
+        Ok(settled.snapshot)
     }
 }

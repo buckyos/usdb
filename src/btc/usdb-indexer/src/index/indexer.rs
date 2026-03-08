@@ -522,7 +522,11 @@ impl InscriptionIndexer {
         let process_invalid_mints_elapsed_ms = process_invalid_mints_begin.elapsed().as_millis();
 
         let settle_balance_begin = Instant::now();
-        let balance_snapshot = match self.balance_monitor.settle_active_balance(height).await {
+        let balance_settlement = match self
+            .balance_monitor
+            .settle_active_balance_with_details(height)
+            .await
+        {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 // Balance settlement failure means block is not complete; rollback staged transfer state.
@@ -530,6 +534,30 @@ impl InscriptionIndexer {
                 return Err(e);
             }
         };
+        let apply_energy_begin = Instant::now();
+        let mut energy_update_count = 0usize;
+        for row in &balance_settlement.active_pass_balances {
+            if row.delta == 0 {
+                continue;
+            }
+            let changed = match self.pass_energy_manager.apply_active_balance_change(
+                &row.inscription_id,
+                &row.owner,
+                row.block_height,
+                row.balance,
+                row.delta,
+            ) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    self.transfer_tracker.rollback_staged_block(height).await?;
+                    return Err(e);
+                }
+            };
+            if changed {
+                energy_update_count += 1;
+            }
+        }
+        let apply_energy_elapsed_ms = apply_energy_begin.elapsed().as_millis();
         if let Err(e) = self.pass_energy_manager.finalize_block_sync(height) {
             // Energy finalize must succeed before transfer staging commit to keep cross-store ordering.
             self.transfer_tracker.rollback_staged_block(height).await?;
@@ -548,18 +576,20 @@ impl InscriptionIndexer {
         }
 
         info!(
-            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, invalid_mints={}, transfers={}, active_address_count={}, total_active_balance={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, process_events_elapsed_ms={}, process_invalid_mints_elapsed_ms={}, settle_balance_elapsed_ms={}, total_elapsed_ms={}",
+            "Finished block processing: module=indexer, block_height={}, new_inscriptions={}, invalid_mints={}, transfers={}, active_address_count={}, total_active_balance={}, energy_update_count={}, process_inscriptions_elapsed_ms={}, process_transfers_elapsed_ms={}, process_events_elapsed_ms={}, process_invalid_mints_elapsed_ms={}, settle_balance_elapsed_ms={}, apply_energy_elapsed_ms={}, total_elapsed_ms={}",
             height,
             new_inscriptions_count,
             invalid_mints_count,
             transfer_count,
-            balance_snapshot.active_address_count,
-            balance_snapshot.total_balance,
+            balance_settlement.snapshot.active_address_count,
+            balance_settlement.snapshot.total_balance,
+            energy_update_count,
             process_inscriptions_elapsed_ms,
             process_transfers_elapsed_ms,
             process_events_elapsed_ms,
             process_invalid_mints_elapsed_ms,
             settle_balance_elapsed_ms,
+            apply_energy_elapsed_ms,
             total_elapsed_ms
         );
 

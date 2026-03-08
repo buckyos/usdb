@@ -49,6 +49,12 @@ impl BalanceRpcBackend for BalanceHistoryBackend {
 }
 
 pub trait BalanceRpcLoader: Send + Sync {
+    fn load_balances<'a>(
+        &'a self,
+        active_addresses: Vec<USDBScriptHash>,
+        block_height: u32,
+    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>>;
+
     fn load_total_balance<'a>(
         &'a self,
         active_addresses: Vec<USDBScriptHash>,
@@ -56,12 +62,12 @@ pub trait BalanceRpcLoader: Send + Sync {
     ) -> BalanceRpcFuture<'a, Result<u64, String>>;
 }
 
-fn sum_batch_balances(
+fn collect_batch_balances(
     block_height: u32,
     batch_index: usize,
     addresses: &[USDBScriptHash],
     balances: Vec<Vec<AddressBalance>>,
-) -> Result<u64, String> {
+) -> Result<Vec<(USDBScriptHash, AddressBalance)>, String> {
     if balances.len() != addresses.len() {
         let msg = format!(
             "Address balance batch size mismatch: module=balance_rpc_loader, block_height={}, batch_index={}, requested={}, got={}",
@@ -74,7 +80,7 @@ fn sum_batch_balances(
         return Err(msg);
     }
 
-    let mut total_balance = 0u64;
+    let mut entries = Vec::with_capacity(addresses.len());
     for (script_hash, items) in addresses.iter().zip(balances.into_iter()) {
         if items.len() != 1 {
             let msg = format!(
@@ -88,11 +94,10 @@ fn sum_batch_balances(
             return Err(msg);
         }
 
-        let balance = items.into_iter().next().unwrap();
-        total_balance = total_balance.saturating_add(balance.balance);
+        entries.push((*script_hash, items.into_iter().next().unwrap()));
     }
 
-    Ok(total_balance)
+    Ok(entries)
 }
 
 pub struct SerialBalanceLoader<B: BalanceRpcBackend> {
@@ -116,13 +121,13 @@ impl<B: BalanceRpcBackend> SerialBalanceLoader<B> {
 }
 
 impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for SerialBalanceLoader<B> {
-    fn load_total_balance<'a>(
+    fn load_balances<'a>(
         &'a self,
         active_addresses: Vec<USDBScriptHash>,
         block_height: u32,
-    ) -> BalanceRpcFuture<'a, Result<u64, String>> {
+    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>> {
         Box::pin(async move {
-            let mut total_balance = 0u64;
+            let mut all_entries = Vec::with_capacity(active_addresses.len());
             for (batch_index, batch) in active_addresses.chunks(self.batch_size).enumerate() {
                 let batch_addresses = batch.to_vec();
                 let balances = self
@@ -130,15 +135,25 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for SerialBalanceLoader<B>
                     .get_addresses_balances(batch_addresses.clone(), Some(block_height), None)
                     .await?;
 
-                total_balance = total_balance.saturating_add(sum_batch_balances(
-                    block_height,
-                    batch_index,
-                    &batch_addresses,
-                    balances,
-                )?);
+                let entries =
+                    collect_batch_balances(block_height, batch_index, &batch_addresses, balances)?;
+                all_entries.extend(entries);
             }
 
-            Ok(total_balance)
+            Ok(all_entries)
+        })
+    }
+
+    fn load_total_balance<'a>(
+        &'a self,
+        active_addresses: Vec<USDBScriptHash>,
+        block_height: u32,
+    ) -> BalanceRpcFuture<'a, Result<u64, String>> {
+        Box::pin(async move {
+            let entries = self.load_balances(active_addresses, block_height).await?;
+            Ok(entries
+                .into_iter()
+                .fold(0u64, |acc, (_, item)| acc.saturating_add(item.balance)))
         })
     }
 }
@@ -255,24 +270,24 @@ impl<B: BalanceRpcBackend> ConcurrentBalanceLoader<B> {
 }
 
 impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for ConcurrentBalanceLoader<B> {
-    fn load_total_balance<'a>(
+    fn load_balances<'a>(
         &'a self,
         active_addresses: Vec<USDBScriptHash>,
         block_height: u32,
-    ) -> BalanceRpcFuture<'a, Result<u64, String>> {
+    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>> {
         Box::pin(async move {
             let batches: Vec<Vec<USDBScriptHash>> = active_addresses
                 .chunks(self.batch_size)
                 .map(|chunk| chunk.to_vec())
                 .collect();
             if batches.is_empty() {
-                return Ok(0);
+                return Ok(Vec::new());
             }
 
             let max_concurrency = self.concurrency.min(batches.len()).max(1);
             let mut join_set = JoinSet::new();
             let mut next_batch_index = 0usize;
-            let mut total_balance = 0u64;
+            let mut all_entries = Vec::with_capacity(active_addresses.len());
 
             while next_batch_index < batches.len() && join_set.len() < max_concurrency {
                 let batch_index = next_batch_index;
@@ -304,12 +319,13 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for ConcurrentBalanceLoade
                     msg
                 })??;
 
-                total_balance = total_balance.saturating_add(sum_batch_balances(
+                let entries = collect_batch_balances(
                     block_height,
                     batch.batch_index,
                     &batch.addresses,
                     batch.balances,
-                )?);
+                )?;
+                all_entries.extend(entries);
 
                 if next_batch_index < batches.len() {
                     let batch_index = next_batch_index;
@@ -332,7 +348,20 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for ConcurrentBalanceLoade
                 }
             }
 
-            Ok(total_balance)
+            Ok(all_entries)
+        })
+    }
+
+    fn load_total_balance<'a>(
+        &'a self,
+        active_addresses: Vec<USDBScriptHash>,
+        block_height: u32,
+    ) -> BalanceRpcFuture<'a, Result<u64, String>> {
+        Box::pin(async move {
+            let entries = self.load_balances(active_addresses, block_height).await?;
+            Ok(entries
+                .into_iter()
+                .fold(0u64, |acc, (_, item)| acc.saturating_add(item.balance)))
         })
     }
 }

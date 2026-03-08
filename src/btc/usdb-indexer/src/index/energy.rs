@@ -497,6 +497,137 @@ impl PassEnergyManager {
         Ok(ret)
     }
 
+    // Apply one active owner balance update (already loaded by balance settlement)
+    // to energy storage without any extra balance-history RPC.
+    pub fn apply_active_balance_change(
+        &self,
+        inscription_id: &InscriptionId,
+        owner_address: &USDBScriptHash,
+        block_height: u32,
+        owner_balance: u64,
+        owner_delta: i64,
+    ) -> Result<bool, String> {
+        let strict_settle_consistency = !cfg!(test);
+
+        if owner_delta == 0 {
+            return Ok(false);
+        }
+
+        let last_record = self
+            .storage
+            .find_last_pass_energy_record(inscription_id, block_height)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "No previous energy record found when applying active balance change: inscription_id={}, block_height={}, owner={}",
+                    inscription_id, block_height, owner_address
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if last_record.state != MinerPassState::Active {
+            let msg = format!(
+                "Energy state mismatch when applying active balance change: inscription_id={}, block_height={}, owner={}, state={}",
+                inscription_id,
+                block_height,
+                owner_address,
+                last_record.state.as_str()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if last_record.owner_address != *owner_address {
+            let msg = format!(
+                "Energy owner mismatch when applying active balance change: inscription_id={}, block_height={}, expected_owner={}, actual_owner={}",
+                inscription_id, block_height, last_record.owner_address, owner_address
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if last_record.block_height > block_height {
+            let msg = format!(
+                "Energy record height is ahead of active balance update height: inscription_id={}, record_height={}, update_height={}",
+                inscription_id, last_record.block_height, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        // This height has already been materialized. Verify consistency and skip.
+        if last_record.block_height == block_height {
+            if last_record.owner_balance != owner_balance || last_record.owner_delta != owner_delta
+            {
+                let msg = format!(
+                    "Active balance change conflicts with existing record at same block: inscription_id={}, block_height={}, owner={}, record_balance={}, update_balance={}, record_delta={}, update_delta={}",
+                    inscription_id,
+                    block_height,
+                    owner_address,
+                    last_record.owner_balance,
+                    owner_balance,
+                    last_record.owner_delta,
+                    owner_delta
+                );
+                if strict_settle_consistency {
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                warn!("{}; skip in test mode", msg);
+                return Ok(false);
+            }
+            return Ok(false);
+        }
+
+        // If settle balance direction conflicts with last recorded balance, skip this update.
+        // This avoids poisoning records when test/staging data sources are inconsistent.
+        if (owner_delta > 0 && owner_balance < last_record.owner_balance)
+            || (owner_delta < 0 && owner_balance > last_record.owner_balance)
+        {
+            let msg = format!(
+                "Active balance change has inconsistent settle direction: inscription_id={}, block_height={}, owner={}, record_balance={}, update_balance={}, update_delta={}",
+                inscription_id,
+                block_height,
+                owner_address,
+                last_record.owner_balance,
+                owner_balance,
+                owner_delta
+            );
+            if strict_settle_consistency {
+                error!("{}", msg);
+                return Err(msg);
+            }
+            warn!("{}; skip in test mode", msg);
+            return Ok(false);
+        }
+
+        let r = block_height - last_record.active_block_height;
+        assert!(r >= 1, "R should be at least 1");
+        let growth_delta = calc_growth_delta(last_record.owner_balance, r);
+        let mut next_energy = last_record.energy.saturating_add(growth_delta);
+
+        let next_active_height = if owner_delta < 0 {
+            block_height
+        } else {
+            last_record.active_block_height
+        };
+        if owner_delta < 0 {
+            let penalty = calc_penalty_from_delta(owner_delta);
+            next_energy = next_energy.saturating_sub(penalty);
+        }
+
+        let record = PassEnergyRecord {
+            inscription_id: inscription_id.clone(),
+            block_height,
+            state: MinerPassState::Active,
+            active_block_height: next_active_height,
+            owner_address: *owner_address,
+            owner_balance,
+            owner_delta,
+            energy: next_energy,
+        };
+        self.storage.insert_pass_energy_record(&record)?;
+        Ok(true)
+    }
+
     // Last update the pass energy when marking dormant
     pub async fn on_pass_dormant(
         &self,

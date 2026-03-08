@@ -15,7 +15,9 @@ use crate::inscription::{
     DiscoveredInscription, DiscoveredInvalidMint, DiscoveredMint, DiscoveredMintBatch,
     InscriptionSource, InscriptionTransferItem,
 };
-use crate::storage::{MinerPassInfo, MinerPassStorage, MinerPassStorageRef, PassEnergyStorage};
+use crate::storage::{
+    MinerPassInfo, MinerPassStorage, MinerPassStorageRef, PassEnergyRecord, PassEnergyStorage,
+};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{
     Amount, Block, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
@@ -571,6 +573,171 @@ async fn test_sync_block_without_events_still_settles_balance_snapshot() {
     assert_eq!(fixture.backend.call_count(), 1);
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_without_events_updates_energy_on_positive_owner_delta() {
+    let owner = test_script_hash(21);
+    let pass_id = test_inscription_id(21, 0);
+    let base_height = 100u32;
+    let block_height = 120u32;
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
+    let transfer_tracker = Arc::new(MockTransferTracker::default());
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_block_empty_updates_energy_positive_delta",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 320_000,
+                delta: 20_000,
+            },
+        ]]))],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    fixture
+        .storage
+        .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .insert_pass_energy_record_for_test(&PassEnergyRecord {
+            inscription_id: pass_id.clone(),
+            block_height: base_height,
+            state: MinerPassState::Active,
+            active_block_height: base_height,
+            owner_address: owner,
+            owner_balance: 300_000,
+            owner_delta: 0,
+            energy: 0,
+        })
+        .unwrap();
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let energy_record = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_at_or_before(&pass_id, block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_record.block_height, block_height);
+    assert_eq!(energy_record.owner_balance, 320_000);
+    assert_eq!(energy_record.owner_delta, 20_000);
+    let expected_at_120 = calc_growth_delta(300_000, block_height - base_height);
+    assert_eq!(energy_record.energy, expected_at_120);
+
+    let energy = fixture
+        .pass_energy_manager
+        .get_pass_energy(&pass_id, block_height)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy.state, MinerPassState::Active);
+    assert_eq!(energy.energy, expected_at_120);
+
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.active_address_count, 1);
+    assert_eq!(snapshot.total_balance, 320_000);
+    assert_eq!(fixture.backend.call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_without_events_negative_delta_applies_penalty_and_resets_active_height() {
+    let owner = test_script_hash(22);
+    let pass_id = test_inscription_id(22, 0);
+    let base_height = 100u32;
+    let block_height = 120u32;
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
+    let transfer_tracker = Arc::new(MockTransferTracker::default());
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_block_empty_updates_energy_negative_delta",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 350_000,
+                delta: -50_000,
+            },
+        ]]))],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    fixture
+        .storage
+        .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .insert_pass_energy_record_for_test(&PassEnergyRecord {
+            inscription_id: pass_id.clone(),
+            block_height: base_height,
+            state: MinerPassState::Active,
+            active_block_height: base_height,
+            owner_address: owner,
+            owner_balance: 400_000,
+            owner_delta: 0,
+            energy: 10_000,
+        })
+        .unwrap();
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let energy_record = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_at_or_before(&pass_id, block_height)
+        .unwrap()
+        .unwrap();
+    let expected_at_120 = 10_000u64
+        .saturating_add(calc_growth_delta(400_000, block_height - base_height))
+        .saturating_sub(calc_penalty_from_delta(-50_000));
+    assert_eq!(energy_record.block_height, block_height);
+    assert_eq!(energy_record.owner_balance, 350_000);
+    assert_eq!(energy_record.owner_delta, -50_000);
+    assert_eq!(energy_record.active_block_height, block_height);
+    assert_eq!(energy_record.energy, expected_at_120);
+
+    let energy_125 = fixture
+        .pass_energy_manager
+        .get_pass_energy(&pass_id, 125)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected_at_125 = expected_at_120.saturating_add(calc_growth_delta(350_000, 5));
+    assert_eq!(energy_125.state, MinerPassState::Active);
+    assert_eq!(energy_125.energy, expected_at_125);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
