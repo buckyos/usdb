@@ -55,6 +55,14 @@ fn default_monitor_ord_enabled() -> bool {
     true
 }
 
+fn default_pass_energy_leaderboard_cache_enabled() -> bool {
+    true
+}
+
+fn default_pass_energy_leaderboard_cache_top_k() -> usize {
+    1000
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct USDBConfig {
     // First BTC block height that the indexer should process for USDB protocol data.
@@ -110,6 +118,14 @@ pub struct USDBConfig {
     // Disable this when running high-level tests without ord service.
     #[serde(default = "default_monitor_ord_enabled")]
     pub monitor_ord_enabled: bool,
+
+    // Enable in-memory cache for latest-height pass energy leaderboard queries.
+    #[serde(default = "default_pass_energy_leaderboard_cache_enabled")]
+    pub pass_energy_leaderboard_cache_enabled: bool,
+
+    // Maximum number of top-ranked leaderboard rows cached in memory.
+    #[serde(default = "default_pass_energy_leaderboard_cache_top_k")]
+    pub pass_energy_leaderboard_cache_top_k: usize,
 }
 
 impl Default for USDBConfig {
@@ -128,6 +144,8 @@ impl Default for USDBConfig {
             rpc_server_port: default_rpc_server_port(),
             rpc_server_enabled: default_rpc_server_enabled(),
             monitor_ord_enabled: default_monitor_ord_enabled(),
+            pass_energy_leaderboard_cache_enabled: default_pass_energy_leaderboard_cache_enabled(),
+            pass_energy_leaderboard_cache_top_k: default_pass_energy_leaderboard_cache_top_k(),
         }
     }
 }

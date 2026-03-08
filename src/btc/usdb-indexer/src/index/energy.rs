@@ -362,6 +362,14 @@ impl PassEnergyManager {
         )
     }
 
+    #[cfg(test)]
+    pub fn insert_pass_energy_record_for_test(
+        &self,
+        record: &PassEnergyRecord,
+    ) -> Result<(), String> {
+        self.storage.insert_pass_energy_record(record)
+    }
+
     // Get the latest energy and state snapshot for the pass at or before block_height.
     pub async fn get_pass_energy_at_or_before(
         &self,

@@ -9,6 +9,7 @@ use ord::InscriptionId;
 use serde_json::json;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 
@@ -21,6 +22,19 @@ const ERR_INVALID_PAGINATION: i64 = -32015;
 const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
+#[derive(Clone, Debug)]
+struct PassEnergyLeaderboardCacheEntry {
+    resolved_height: u32,
+    top_k: usize,
+    total: u64,
+    items: Vec<PassEnergyLeaderboardItem>,
+}
+
+#[derive(Debug, Default)]
+struct PassEnergyLeaderboardCache {
+    latest: Option<PassEnergyLeaderboardCacheEntry>,
+}
+
 #[derive(Clone)]
 pub struct UsdbIndexerRpcServer {
     config: ConfigManagerRef,
@@ -29,6 +43,7 @@ pub struct UsdbIndexerRpcServer {
     addr: std::net::SocketAddr,
     shutdown_tx: watch::Sender<()>,
     server_handle: Arc<Mutex<Option<jsonrpc_http_server::CloseHandle>>>,
+    pass_energy_leaderboard_cache: Arc<Mutex<PassEnergyLeaderboardCache>>,
 }
 
 impl UsdbIndexerRpcServer {
@@ -46,6 +61,9 @@ impl UsdbIndexerRpcServer {
             addr,
             shutdown_tx,
             server_handle: Arc::new(Mutex::new(None)),
+            pass_energy_leaderboard_cache: Arc::new(Mutex::new(
+                PassEnergyLeaderboardCache::default(),
+            )),
         }
     }
 
@@ -243,6 +261,195 @@ impl UsdbIndexerRpcServer {
             last_event_type: history.event_type,
             resolved_height,
         }))
+    }
+
+    fn leaderboard_cache_settings(&self) -> (bool, usize) {
+        let cfg = &self.config.config().usdb;
+        (
+            cfg.pass_energy_leaderboard_cache_enabled,
+            cfg.pass_energy_leaderboard_cache_top_k.max(1),
+        )
+    }
+
+    fn pagination_offset(page: usize, page_size: usize) -> Result<usize, JsonError> {
+        page.checked_mul(page_size).ok_or_else(|| {
+            Self::to_business_error(
+                ERR_INVALID_PAGINATION,
+                "INVALID_PAGINATION",
+                json!({"page": page, "page_size": page_size}),
+            )
+        })
+    }
+
+    fn paginate_leaderboard_items(
+        items: &[PassEnergyLeaderboardItem],
+        total: u64,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<PassEnergyLeaderboardItem>, JsonError> {
+        let offset = Self::pagination_offset(page, page_size)?;
+        if (offset as u64) >= total {
+            return Ok(Vec::new());
+        }
+
+        if offset >= items.len() {
+            return Ok(Vec::new());
+        }
+
+        let end = offset.saturating_add(page_size).min(items.len());
+        Ok(items[offset..end].to_vec())
+    }
+
+    fn try_get_cached_leaderboard_page(
+        &self,
+        resolved_height: u32,
+        top_k: usize,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Option<PassEnergyLeaderboardPage>, JsonError> {
+        let offset = Self::pagination_offset(page, page_size)?;
+        let cache = self.pass_energy_leaderboard_cache.lock().unwrap();
+        let Some(entry) = &cache.latest else {
+            return Ok(None);
+        };
+        if entry.resolved_height != resolved_height || entry.top_k != top_k {
+            return Ok(None);
+        }
+
+        if offset >= top_k {
+            return Ok(Some(PassEnergyLeaderboardPage {
+                resolved_height,
+                total: entry.total,
+                items: Vec::new(),
+            }));
+        }
+
+        if (offset as u64) >= entry.total {
+            return Ok(Some(PassEnergyLeaderboardPage {
+                resolved_height,
+                total: entry.total,
+                items: Vec::new(),
+            }));
+        }
+
+        if offset >= entry.items.len() {
+            // Cache only keeps top-k rows. Any deeper page is intentionally empty.
+            return Ok(Some(PassEnergyLeaderboardPage {
+                resolved_height,
+                total: entry.total,
+                items: Vec::new(),
+            }));
+        }
+
+        let items = Self::paginate_leaderboard_items(&entry.items, entry.total, page, page_size)?;
+        Ok(Some(PassEnergyLeaderboardPage {
+            resolved_height,
+            total: entry.total,
+            items,
+        }))
+    }
+
+    fn update_leaderboard_cache(
+        &self,
+        resolved_height: u32,
+        top_k: usize,
+        total: u64,
+        ranked: &[PassEnergyLeaderboardItem],
+    ) {
+        let mut cache = self.pass_energy_leaderboard_cache.lock().unwrap();
+        let cached_items = ranked
+            .iter()
+            .take(top_k)
+            .cloned()
+            .collect::<Vec<PassEnergyLeaderboardItem>>();
+        cache.latest = Some(PassEnergyLeaderboardCacheEntry {
+            resolved_height,
+            top_k,
+            total,
+            items: cached_items,
+        });
+    }
+
+    fn build_pass_energy_leaderboard_dataset(
+        &self,
+        resolved_height: u32,
+    ) -> Result<(u64, Vec<PassEnergyLeaderboardItem>), JsonError> {
+        let build_start = Instant::now();
+        let storage = self.indexer.miner_pass_storage();
+        let total_active = storage
+            .get_active_pass_count_from_history_at_height(resolved_height)
+            .map_err(Self::to_internal_error)?;
+
+        if total_active == 0 {
+            return Ok((0, Vec::new()));
+        }
+
+        let load_page_size = self.config.config().usdb.active_address_page_size.max(1);
+        let total_active_usize = usize::try_from(total_active).map_err(|_| {
+            Self::to_internal_error(format!(
+                "Active pass count overflow when building energy leaderboard: total_active={}",
+                total_active
+            ))
+        })?;
+        let total_pages = (total_active_usize + load_page_size - 1) / load_page_size;
+        let mut active_rows = Vec::with_capacity(total_active_usize);
+        for page in 0..total_pages {
+            let rows = storage
+                .get_all_active_pass_by_page_from_history_at_height(
+                    page,
+                    load_page_size,
+                    resolved_height,
+                )
+                .map_err(Self::to_internal_error)?;
+            if rows.is_empty() {
+                break;
+            }
+            active_rows.extend(rows);
+        }
+
+        let mut ranked = Vec::with_capacity(active_rows.len());
+        for row in active_rows {
+            let Some(record) = self
+                .indexer
+                .pass_energy_manager()
+                .get_pass_energy_record_at_or_before(&row.inscription_id, resolved_height)
+                .map_err(Self::to_internal_error)?
+            else {
+                warn!(
+                    "Missing energy record when building energy leaderboard: inscription_id={}, resolved_height={}",
+                    row.inscription_id, resolved_height
+                );
+                continue;
+            };
+
+            ranked.push(PassEnergyLeaderboardItem {
+                inscription_id: row.inscription_id.to_string(),
+                owner: row.owner.to_string(),
+                record_block_height: record.block_height,
+                state: record.state.as_str().to_string(),
+                energy: record.energy,
+            });
+        }
+
+        ranked.sort_by(|a, b| {
+            b.energy
+                .cmp(&a.energy)
+                .then_with(|| b.record_block_height.cmp(&a.record_block_height))
+                .then_with(|| a.inscription_id.cmp(&b.inscription_id))
+        });
+
+        let total = ranked.len() as u64;
+        let elapsed_ms = build_start.elapsed().as_millis();
+        info!(
+            "Pass energy leaderboard dataset built: module=rpc_server, resolved_height={}, active_count={}, ranked_count={}, missing_energy_count={}, elapsed_ms={}",
+            resolved_height,
+            total_active,
+            total,
+            total_active.saturating_sub(total),
+            elapsed_ms
+        );
+
+        Ok((total, ranked))
     }
 }
 
@@ -559,99 +766,115 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
-        let storage = self.indexer.miner_pass_storage();
-        let total_active = storage
-            .get_active_pass_count_from_history_at_height(resolved_height)
-            .map_err(Self::to_internal_error)?;
+        let call_start = Instant::now();
+        let (cache_enabled, cache_top_k) = self.leaderboard_cache_settings();
+        let offset = Self::pagination_offset(params.page, params.page_size)?;
+        let should_use_cache = cache_enabled && params.at_height.is_none();
 
-        if total_active == 0 {
+        if offset >= cache_top_k {
+            if should_use_cache {
+                if let Some(cached_page) = self.try_get_cached_leaderboard_page(
+                    resolved_height,
+                    cache_top_k,
+                    params.page,
+                    params.page_size,
+                )? {
+                    info!(
+                        "Pass energy leaderboard top-k overflow served from cache metadata: module=rpc_server, resolved_height={}, top_k={}, page={}, page_size={}, elapsed_ms={}",
+                        resolved_height,
+                        cache_top_k,
+                        params.page,
+                        params.page_size,
+                        call_start.elapsed().as_millis()
+                    );
+                    return Ok(cached_page);
+                }
+            }
+
+            info!(
+                "Pass energy leaderboard top-k overflow returned empty: module=rpc_server, resolved_height={}, top_k={}, at_height={:?}, page={}, page_size={}, elapsed_ms={}",
+                resolved_height,
+                cache_top_k,
+                params.at_height,
+                params.page,
+                params.page_size,
+                call_start.elapsed().as_millis()
+            );
             return Ok(PassEnergyLeaderboardPage {
                 resolved_height,
-                total: 0,
+                total: cache_top_k as u64,
                 items: Vec::new(),
             });
         }
 
-        let load_page_size = 1024usize;
-        let total_active_usize = usize::try_from(total_active).map_err(|_| {
-            Self::to_internal_error(format!(
-                "Active pass count overflow when building energy leaderboard: total_active={}",
-                total_active
-            ))
-        })?;
-        let total_pages = (total_active_usize + load_page_size - 1) / load_page_size;
-        let mut active_rows = Vec::with_capacity(total_active_usize);
-        for page in 0..total_pages {
-            let rows = storage
-                .get_all_active_pass_by_page_from_history_at_height(
-                    page,
-                    load_page_size,
+        if should_use_cache {
+            if let Some(cached_page) = self.try_get_cached_leaderboard_page(
+                resolved_height,
+                cache_top_k,
+                params.page,
+                params.page_size,
+            )? {
+                info!(
+                    "Pass energy leaderboard served from cache: module=rpc_server, resolved_height={}, page={}, page_size={}, total={}, elapsed_ms={}",
                     resolved_height,
-                )
-                .map_err(Self::to_internal_error)?;
-            if rows.is_empty() {
-                break;
-            }
-            active_rows.extend(rows);
-        }
-
-        let mut ranked = Vec::new();
-        for row in active_rows {
-            let Some(record) = self
-                .indexer
-                .pass_energy_manager()
-                .get_pass_energy_record_at_or_before(&row.inscription_id, resolved_height)
-                .map_err(Self::to_internal_error)?
-            else {
-                warn!(
-                    "Missing energy record when building energy leaderboard: inscription_id={}, resolved_height={}",
-                    row.inscription_id, resolved_height
+                    params.page,
+                    params.page_size,
+                    cached_page.total,
+                    call_start.elapsed().as_millis()
                 );
-                continue;
-            };
-
-            ranked.push((
-                row.inscription_id,
-                row.owner,
-                record.block_height,
-                record.state,
-                record.energy,
-            ));
+                return Ok(cached_page);
+            }
         }
 
-        ranked.sort_by(|a, b| {
-            b.4.cmp(&a.4)
-                .then_with(|| b.2.cmp(&a.2))
-                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-        });
-
-        let total = ranked.len() as u64;
-        let offset = params.page.checked_mul(params.page_size).ok_or_else(|| {
-            Self::to_business_error(
-                ERR_INVALID_PAGINATION,
-                "INVALID_PAGINATION",
-                json!({"page": params.page, "page_size": params.page_size}),
-            )
-        })?;
-        let items = if offset >= ranked.len() {
-            Vec::new()
+        let (raw_total, ranked) = self.build_pass_energy_leaderboard_dataset(resolved_height)?;
+        let capped_total = raw_total.min(cache_top_k as u64);
+        let capped_len = capped_total as usize;
+        let capped_ranked = if ranked.len() > capped_len {
+            &ranked[..capped_len]
         } else {
-            let end = offset.saturating_add(params.page_size).min(ranked.len());
-            ranked[offset..end]
-                .iter()
-                .map(|item| PassEnergyLeaderboardItem {
-                    inscription_id: item.0.to_string(),
-                    owner: item.1.to_string(),
-                    record_block_height: item.2,
-                    state: item.3.as_str().to_string(),
-                    energy: item.4,
-                })
-                .collect()
+            &ranked[..]
         };
+        let items = Self::paginate_leaderboard_items(
+            capped_ranked,
+            capped_total,
+            params.page,
+            params.page_size,
+        )?;
+
+        if should_use_cache {
+            self.update_leaderboard_cache(
+                resolved_height,
+                cache_top_k,
+                capped_total,
+                capped_ranked,
+            );
+            info!(
+                "Pass energy leaderboard cache refreshed: module=rpc_server, resolved_height={}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                resolved_height,
+                cache_top_k,
+                raw_total,
+                capped_total,
+                params.page,
+                params.page_size,
+                call_start.elapsed().as_millis()
+            );
+        } else {
+            info!(
+                "Pass energy leaderboard served without cache: module=rpc_server, resolved_height={}, at_height={:?}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                resolved_height,
+                params.at_height,
+                cache_top_k,
+                raw_total,
+                capped_total,
+                params.page,
+                params.page_size,
+                call_start.elapsed().as_millis()
+            );
+        }
 
         Ok(PassEnergyLeaderboardPage {
             resolved_height,
-            total,
+            total: capped_total,
             items,
         })
     }
@@ -769,7 +992,7 @@ mod tests {
     use crate::index::{InscriptionIndexer, MinerPassState};
     use crate::output::IndexOutput;
     use crate::status::StatusManager;
-    use crate::storage::MinerPassInfo;
+    use crate::storage::{MinerPassInfo, PassEnergyRecord};
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
     use ord::InscriptionId;
@@ -841,6 +1064,28 @@ mod tests {
         pass.invalid_code = Some(code.to_string());
         pass.invalid_reason = Some(format!("mock reason for {}", code));
         pass
+    }
+
+    fn seed_energy_record(
+        server: &UsdbIndexerRpcServer,
+        pass: &MinerPassInfo,
+        block_height: u32,
+        energy: u64,
+    ) {
+        server
+            .indexer
+            .pass_energy_manager()
+            .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                inscription_id: pass.inscription_id,
+                block_height,
+                state: MinerPassState::Active,
+                active_block_height: block_height,
+                owner_address: pass.owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy,
+            })
+            .unwrap();
     }
 
     fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
@@ -1028,6 +1273,127 @@ mod tests {
         assert_eq!(stats.active_count, 1);
         assert_eq!(stats.dormant_count, 1);
         assert_eq!(stats.invalid_count, 1);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_cache_refresh_on_height_change() {
+        let (server, root_dir) = build_server("leaderboard_cache", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(8, 80, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 777);
+
+        let page_120 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(page_120.resolved_height, 120);
+        assert_eq!(page_120.total, 1);
+        assert_eq!(page_120.items.len(), 1);
+        assert_eq!(
+            page_120.items[0].inscription_id,
+            pass.inscription_id.to_string()
+        );
+        assert_eq!(page_120.items[0].energy, 777);
+
+        {
+            let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
+            let entry = cache.latest.as_ref().expect("cache should be populated");
+            assert_eq!(entry.resolved_height, 120);
+            assert_eq!(entry.total, 1);
+            assert_eq!(entry.items.len(), 1);
+        }
+
+        storage.update_synced_btc_block_height(121).unwrap();
+        let page_121 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(page_121.resolved_height, 121);
+        assert_eq!(page_121.total, 1);
+        assert_eq!(page_121.items.len(), 1);
+        assert_eq!(page_121.items[0].energy, 777);
+
+        {
+            let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
+            let entry = cache.latest.as_ref().expect("cache should be refreshed");
+            assert_eq!(entry.resolved_height, 121);
+            assert_eq!(entry.total, 1);
+        }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_explicit_height_bypass_cache() {
+        let (server, root_dir) = build_server("leaderboard_no_cache", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(9, 90, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 888);
+
+        let page = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: Some(120),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(page.resolved_height, 120);
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].energy, 888);
+
+        {
+            let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
+            assert!(
+                cache.latest.is_none(),
+                "Explicit-height leaderboard query should bypass latest-height cache"
+            );
+        }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_top_k_overflow_returns_empty_without_rebuild() {
+        let (server, root_dir) = build_server("leaderboard_top_k_overflow", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(10, 100, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 999);
+
+        // default top_k is 1000, so this query is guaranteed to overflow.
+        let page = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 100,
+                page_size: 20,
+            })
+            .unwrap();
+        assert_eq!(page.resolved_height, 120);
+        assert_eq!(page.total, 1000);
+        assert!(page.items.is_empty());
+
+        // Overflow path should return directly and not build/refresh cache.
+        {
+            let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
+            assert!(cache.latest.is_none());
+        }
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
