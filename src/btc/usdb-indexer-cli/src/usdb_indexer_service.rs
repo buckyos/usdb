@@ -84,6 +84,18 @@ impl UsdbIndexerService {
                     .await?;
                 print_pretty_json(&result)?;
             }
+            Commands::PassStats { at_height } => {
+                let result = self
+                    .client
+                    .call(
+                        "get_pass_stats_at_height",
+                        json!([{
+                            "at_height": at_height,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
             Commands::OwnerActivePass { owner, at_height } => {
                 let result = self
                     .client
@@ -154,6 +166,24 @@ impl UsdbIndexerService {
                             "inscription_id": inscription_id,
                             "from_height": from_height,
                             "to_height": to_height,
+                            "page": page,
+                            "page_size": page_size,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
+            Commands::PassEnergyLeaderboard {
+                at_height,
+                page,
+                page_size,
+            } => {
+                let result = self
+                    .client
+                    .call(
+                        "get_pass_energy_leaderboard",
+                        json!([{
+                            "at_height": at_height,
                             "page": page,
                             "page_size": page_size,
                         }]),

@@ -349,6 +349,19 @@ impl PassEnergyManager {
             )
     }
 
+    pub fn count_pass_energy_records_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_block_height: u32,
+        to_block_height: u32,
+    ) -> Result<u64, String> {
+        self.storage.count_pass_energy_records_in_height_range(
+            inscription_id,
+            from_block_height,
+            to_block_height,
+        )
+    }
+
     // Get the latest energy and state snapshot for the pass at or before block_height.
     pub async fn get_pass_energy_at_or_before(
         &self,

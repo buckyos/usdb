@@ -244,6 +244,7 @@
 ```json
 {
   "resolved_height": 900123,
+  "total": 1234,
   "items": [
     {
       "inscription_id": "txidi0",
@@ -257,7 +258,33 @@
 
 - 固定按 `(block_height DESC, event_id DESC)`。
 
-### 8) `get_owner_active_pass_at_height`
+### 8) `get_pass_stats_at_height`
+
+查询某高度下的 pass 状态聚合统计（历史视图）。
+
+参数：
+
+```json
+{
+  "at_height": 900123
+}
+```
+
+返回：
+
+```json
+{
+  "resolved_height": 900123,
+  "total_count": 10000,
+  "active_count": 6000,
+  "dormant_count": 3000,
+  "consumed_count": 500,
+  "burned_count": 200,
+  "invalid_count": 300
+}
+```
+
+### 9) `get_owner_active_pass_at_height`
 
 查询某地址在高度 `h` 是否有活跃矿工证（按历史视图）。
 
@@ -276,7 +303,7 @@
 - `PassSnapshot`：存在唯一活跃 pass
 - 若出现多条，返回 `DUPLICATE_ACTIVE_OWNER`（硬错误）
 
-### 9) `get_invalid_passes`
+### 10) `get_invalid_passes`
 
 查询无效 mint 记录，便于外部排障。
 
@@ -292,11 +319,17 @@
 }
 ```
 
+返回包含：
+
+- `resolved_height`：服务端最终解析高度。
+- `total`：闭区间内总记录数（用于分页）。
+- `items`：当前页无效 pass 列表。
+
 ---
 
 ## 5.3 能量查询
 
-### 10) `get_pass_energy`
+### 11) `get_pass_energy`
 
 查询某 inscription 在目标高度的能量快照。
 
@@ -315,7 +348,7 @@
 - `exact`：仅接受该高度存在记录
 - `at_or_before`：返回 `<= block_height` 的最近记录（推荐默认）
 
-### 11) `get_pass_energy_range`
+### 12) `get_pass_energy_range`
 
 查询某 inscription 在区间内的能量记录（用于可视化时间线）。
 
@@ -331,11 +364,49 @@
 }
 ```
 
+返回包含：
+
+- `resolved_height`：服务端最终解析高度。
+- `total`：闭区间内总记录数（用于分页）。
+- `items`：当前页记录。
+
+### 13) `get_pass_energy_leaderboard`
+
+查询某高度活跃 pass 的能量排行榜（按 `energy DESC`）。
+
+参数：
+
+```json
+{
+  "at_height": 900123,
+  "page": 0,
+  "page_size": 100
+}
+```
+
+返回：
+
+```json
+{
+  "resolved_height": 900123,
+  "total": 6000,
+  "items": [
+    {
+      "inscription_id": "txidi0",
+      "owner": "<USDBScriptHash>",
+      "record_block_height": 900123,
+      "state": "active",
+      "energy": 123456789
+    }
+  ]
+}
+```
+
 ---
 
 ## 5.4 活跃地址余额快照
 
-### 12) `get_active_balance_snapshot`
+### 14) `get_active_balance_snapshot`
 
 查询指定高度快照（精确高度）。
 
@@ -349,7 +420,7 @@
 
 返回：`ActiveBalanceSnapshot` 或 `SNAPSHOT_NOT_FOUND`。
 
-### 13) `get_latest_active_balance_snapshot`
+### 15) `get_latest_active_balance_snapshot`
 
 查询最近一次已落库快照。
 
@@ -357,7 +428,7 @@
 
 ## 5.5 管理
 
-### 14) `stop`
+### 16) `stop`
 
 触发索引器优雅停止（建议默认仅 localhost 可访问）。
 
@@ -412,6 +483,7 @@
   - `get_synced_block_height`
   - `get_pass_snapshot`
   - `get_active_passes_at_height`
+  - `get_pass_stats_at_height`
   - `get_pass_energy`
   - `get_active_balance_snapshot`
   - `get_latest_active_balance_snapshot`
@@ -420,6 +492,7 @@
   - `get_pass_history`
   - `get_owner_active_pass_at_height`
   - `get_pass_energy_range`
+  - `get_pass_energy_leaderboard`
   - `get_invalid_passes`
   - `stop`
 
@@ -433,4 +506,3 @@
 - `pass_energy`（RocksDB）：能量记录  
 
 建议默认以 `history` 作为状态口径，避免“当前状态污染历史重放”的歧义。
-

@@ -58,6 +58,12 @@ pub enum Commands {
         page_size: usize,
     },
 
+    /// Get pass-state aggregate stats at target height.
+    PassStats {
+        #[arg(long)]
+        at_height: Option<u32>,
+    },
+
     /// Get active pass for one owner at target height.
     OwnerActivePass {
         #[arg(long)]
@@ -110,6 +116,18 @@ pub enum Commands {
 
         #[arg(long)]
         to_height: u32,
+
+        #[arg(long, default_value_t = 0)]
+        page: usize,
+
+        #[arg(long, default_value_t = 100)]
+        page_size: usize,
+    },
+
+    /// Get pass energy leaderboard at target height.
+    PassEnergyLeaderboard {
+        #[arg(long)]
+        at_height: Option<u32>,
 
         #[arg(long, default_value_t = 0)]
         page: usize,

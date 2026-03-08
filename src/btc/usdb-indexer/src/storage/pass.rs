@@ -57,6 +57,16 @@ pub struct ActiveMinerPassInfo {
     pub owner: USDBScriptHash,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MinerPassStateStats {
+    pub total_count: u64,
+    pub active_count: u64,
+    pub dormant_count: u64,
+    pub consumed_count: u64,
+    pub burned_count: u64,
+    pub invalid_count: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MinerPassHistoryInfo {
     pub event_id: i64,
@@ -2035,6 +2045,207 @@ impl MinerPassStorage {
         Ok(events)
     }
 
+    pub fn get_pass_history_count_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_height: u32,
+        to_height: u32,
+    ) -> Result<u64, String> {
+        if from_height > to_height {
+            let msg = format!(
+                "Invalid history height range: from_height {} > to_height {}",
+                from_height, to_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM miner_pass_state_history
+                WHERE inscription_id = ?1
+                  AND block_height >= ?2
+                  AND block_height <= ?3;
+                ",
+                rusqlite::params![
+                    inscription_id.to_string(),
+                    from_height as i64,
+                    to_height as i64
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to count pass history in range: inscription_id={}, from_height={}, to_height={}, error={}",
+                    inscription_id, from_height, to_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if count < 0 {
+            let msg = format!(
+                "Invalid negative pass history count: inscription_id={}, from_height={}, to_height={}, count={}",
+                inscription_id, from_height, to_height, count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(count as u64)
+    }
+
+    pub fn get_pass_state_stats_from_history_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<MinerPassStateStats, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                WITH latest AS (
+                    SELECT
+                        inscription_id,
+                        MAX(id) AS max_id
+                    FROM miner_pass_state_history
+                    WHERE block_height <= ?1
+                    GROUP BY inscription_id
+                )
+                SELECT
+                    h.new_state,
+                    COUNT(*)
+                FROM miner_pass_state_history h
+                INNER JOIN latest l ON h.id = l.max_id
+                GROUP BY h.new_state;
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get pass state stats from history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![block_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query pass state stats from history at block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut stats = MinerPassStateStats::default();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to get next row when querying pass state stats from history: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let state_text: String = row.get(0).map_err(|e| {
+                let msg = format!("Failed to get state from pass state stats row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            let count: i64 = row.get(1).map_err(|e| {
+                let msg = format!("Failed to get count from pass state stats row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            if count < 0 {
+                let msg = format!(
+                    "Invalid negative state count in pass state stats: state={}, count={}",
+                    state_text, count
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let count = count as u64;
+            stats.total_count = stats.total_count.checked_add(count).ok_or_else(|| {
+                let msg = format!(
+                    "Pass state stats total count overflow at block height {}",
+                    block_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            let state = MinerPassState::from_str(&state_text).map_err(|e| {
+                let msg = format!(
+                    "Failed to parse pass state from stats row: state={}, error={}",
+                    state_text, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            match state {
+                MinerPassState::Active => stats.active_count = count,
+                MinerPassState::Dormant => stats.dormant_count = count,
+                MinerPassState::Consumed => stats.consumed_count = count,
+                MinerPassState::Burned => stats.burned_count = count,
+                MinerPassState::Invalid => stats.invalid_count = count,
+            }
+        }
+
+        Ok(stats)
+    }
+
+    pub fn get_active_pass_count_from_history_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "
+                WITH latest AS (
+                    SELECT
+                        inscription_id,
+                        MAX(id) AS max_id
+                    FROM miner_pass_state_history
+                    WHERE block_height <= ?1
+                    GROUP BY inscription_id
+                )
+                SELECT COUNT(*)
+                FROM miner_pass_state_history h
+                INNER JOIN latest l ON h.id = l.max_id
+                WHERE h.new_state = ?2;
+                ",
+                rusqlite::params![block_height as i64, MinerPassState::Active.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to count active pass snapshot from history at block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if count < 0 {
+            let msg = format!(
+                "Invalid negative active pass count at block height {}: {}",
+                block_height, count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(count as u64)
+    }
+
     pub fn get_all_active_pass_by_page_from_history_at_height(
         &self,
         page: usize,
@@ -2244,6 +2455,87 @@ impl MinerPassStorage {
         }
 
         Ok(results.into_iter().next())
+    }
+
+    pub fn get_invalid_pass_count_in_height_range(
+        &self,
+        from_height: u32,
+        to_height: u32,
+        error_code: Option<&str>,
+    ) -> Result<u64, String> {
+        if from_height > to_height {
+            let msg = format!(
+                "Invalid invalid-pass height range: from_height {} > to_height {}",
+                from_height, to_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let (sql, params): (&str, Vec<rusqlite::types::Value>) = if let Some(code) = error_code {
+            (
+                "
+                SELECT COUNT(*)
+                FROM miner_passes
+                WHERE state = ?1
+                  AND mint_block_height >= ?2
+                  AND mint_block_height <= ?3
+                  AND invalid_code = ?4;
+                ",
+                vec![
+                    MinerPassState::Invalid.as_str().to_string().into(),
+                    (from_height as i64).into(),
+                    (to_height as i64).into(),
+                    code.to_string().into(),
+                ],
+            )
+        } else {
+            (
+                "
+                SELECT COUNT(*)
+                FROM miner_passes
+                WHERE state = ?1
+                  AND mint_block_height >= ?2
+                  AND mint_block_height <= ?3;
+                ",
+                vec![
+                    MinerPassState::Invalid.as_str().to_string().into(),
+                    (from_height as i64).into(),
+                    (to_height as i64).into(),
+                ],
+            )
+        };
+
+        let mut stmt = conn.prepare(sql).map_err(|e| {
+            let msg = format!(
+                "Failed to prepare statement to count invalid passes in range: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let count: i64 = stmt
+            .query_row(rusqlite::params_from_iter(params), |row| row.get(0))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to count invalid passes: from_height={}, to_height={}, error_code={:?}, error={}",
+                    from_height, to_height, error_code, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if count < 0 {
+            let msg = format!(
+                "Invalid negative invalid-pass count: from_height={}, to_height={}, error_code={:?}, count={}",
+                from_height, to_height, error_code, count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(count as u64)
     }
 
     pub fn get_invalid_passes_by_page_in_height_range(
@@ -3499,6 +3791,100 @@ mod tests {
         assert_eq!(active_150.len(), 1);
         assert_eq!(active_150[0].inscription_id, pass.inscription_id);
         assert_eq!(active_150[0].owner, owner2);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_stats_and_count_queries() {
+        // Purpose: verify history-based count/stat APIs used by RPC pagination
+        // and dashboard aggregation logic.
+        let dir = test_data_dir("history_stats_and_count");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(81);
+        let owner2 = script_hash(82);
+        let owner3 = script_hash(83);
+
+        let active_pass = make_pass(121, 0, owner1, MinerPassState::Active, 100);
+        storage
+            .add_new_mint_pass_at_height(&active_pass, active_pass.mint_block_height)
+            .unwrap();
+
+        let dormant_pass = make_pass(122, 0, owner2, MinerPassState::Active, 101);
+        storage
+            .add_new_mint_pass_at_height(&dormant_pass, dormant_pass.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &dormant_pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        let invalid_pass = make_pass(123, 0, owner3, MinerPassState::Invalid, 110);
+        let mut invalid_pass = invalid_pass;
+        invalid_pass.invalid_code = Some("INVALID_ETH_MAIN".to_string());
+        invalid_pass.invalid_reason = Some("invalid eth_main in test".to_string());
+        storage
+            .add_invalid_mint_pass_at_height(&invalid_pass, invalid_pass.mint_block_height)
+            .unwrap();
+
+        let stats_105 = storage
+            .get_pass_state_stats_from_history_at_height(105)
+            .unwrap();
+        assert_eq!(
+            stats_105,
+            MinerPassStateStats {
+                total_count: 2,
+                active_count: 2,
+                dormant_count: 0,
+                consumed_count: 0,
+                burned_count: 0,
+                invalid_count: 0,
+            }
+        );
+
+        let stats_120 = storage
+            .get_pass_state_stats_from_history_at_height(120)
+            .unwrap();
+        assert_eq!(
+            stats_120,
+            MinerPassStateStats {
+                total_count: 3,
+                active_count: 1,
+                dormant_count: 1,
+                consumed_count: 0,
+                burned_count: 0,
+                invalid_count: 1,
+            }
+        );
+
+        let active_count_120 = storage
+            .get_active_pass_count_from_history_at_height(120)
+            .unwrap();
+        assert_eq!(active_count_120, 1);
+
+        let history_count = storage
+            .get_pass_history_count_in_height_range(&dormant_pass.inscription_id, 100, 130)
+            .unwrap();
+        assert_eq!(history_count, 2);
+
+        let invalid_all = storage
+            .get_invalid_pass_count_in_height_range(100, 130, None)
+            .unwrap();
+        assert_eq!(invalid_all, 1);
+
+        let invalid_code = storage
+            .get_invalid_pass_count_in_height_range(100, 130, Some("INVALID_ETH_MAIN"))
+            .unwrap();
+        assert_eq!(invalid_code, 1);
+
+        let invalid_other = storage
+            .get_invalid_pass_count_in_height_range(100, 130, Some("INVALID_SCHEMA"))
+            .unwrap();
+        assert_eq!(invalid_other, 0);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

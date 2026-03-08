@@ -480,6 +480,65 @@ impl PassEnergyStorage {
         Ok(records)
     }
 
+    pub fn count_pass_energy_records_in_height_range(
+        &self,
+        inscription_id: &InscriptionId,
+        from_block_height: u32,
+        to_block_height: u32,
+    ) -> Result<u64, String> {
+        if from_block_height > to_block_height {
+            let msg = format!(
+                "Invalid energy height range: from_block_height {} > to_block_height {}",
+                from_block_height, to_block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", PASS_ENERGY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let start_key = Self::make_energy_key(inscription_id, from_block_height)?;
+        let mut iter = self.db.iterator_cf(
+            cf,
+            rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
+        );
+
+        let mut count: u64 = 0;
+        while let Some(item) = iter.next() {
+            let (key_bytes, _value_bytes) = item.map_err(|e| {
+                let msg = format!(
+                    "Failed to iterate pass energy records by range count: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            let key = Self::parse_energy_key(&key_bytes)?;
+            if key.inscription_id != *inscription_id {
+                break;
+            }
+            if key.block_height > to_block_height {
+                break;
+            }
+
+            count = count.checked_add(1).ok_or_else(|| {
+                let msg = format!(
+                    "Pass energy record count overflow: inscription_id={}, from_block_height={}, to_block_height={}",
+                    inscription_id, from_block_height, to_block_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        Ok(count)
+    }
+
     // Clear all pass energy records from given block height (inclusive)
     pub fn clear_records_from_height(&self, from_block_height: u32) -> Result<(), String> {
         let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
@@ -822,6 +881,60 @@ mod tests {
 
         let err = storage
             .get_pass_energy_records_by_page_in_height_range(&target, 130, 100, 0, 10)
+            .unwrap_err();
+        assert!(err.contains("Invalid energy height range"));
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_count_pass_energy_records_in_height_range() {
+        let dir = test_data_dir("range_count");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let target = inscription_id(60, 0);
+        for height in [100, 110, 120, 130] {
+            storage
+                .insert_pass_energy_record(&PassEnergyRecord {
+                    inscription_id: target.clone(),
+                    block_height: height,
+                    state: MinerPassState::Active,
+                    active_block_height: height,
+                    owner_address: script_hash(7),
+                    owner_balance: 1_000 + height as u64,
+                    owner_delta: 1,
+                    energy: height as u64,
+                })
+                .unwrap();
+        }
+
+        let another = inscription_id(61, 0);
+        storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: another,
+                block_height: 115,
+                state: MinerPassState::Active,
+                active_block_height: 115,
+                owner_address: script_hash(8),
+                owner_balance: 2_000,
+                owner_delta: 2,
+                energy: 115,
+            })
+            .unwrap();
+
+        let count = storage
+            .count_pass_energy_records_in_height_range(&target, 100, 125)
+            .unwrap();
+        assert_eq!(count, 3);
+
+        let empty = storage
+            .count_pass_energy_records_in_height_range(&target, 131, 140)
+            .unwrap();
+        assert_eq!(empty, 0);
+
+        let err = storage
+            .count_pass_energy_records_in_height_range(&target, 130, 100)
             .unwrap_err();
         assert!(err.contains("Invalid energy height range"));
 

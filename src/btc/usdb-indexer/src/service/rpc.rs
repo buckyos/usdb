@@ -103,8 +103,36 @@ pub struct ActivePassItem {
 pub struct ActivePassesAtHeight {
     /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Total number of active passes at this height.
+    pub total: u64,
     /// Active pass rows in the requested page.
     pub items: Vec<ActivePassItem>,
+}
+
+/// Parameters for `get_pass_stats_at_height`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPassStatsAtHeightParams {
+    /// Optional query height; `None` resolves to synced height.
+    pub at_height: Option<u32>,
+}
+
+/// Aggregated pass-state statistics resolved at a target height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassStatsAtHeight {
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Total number of passes visible at this height.
+    pub total_count: u64,
+    /// Number of passes in `active` state.
+    pub active_count: u64,
+    /// Number of passes in `dormant` state.
+    pub dormant_count: u64,
+    /// Number of passes in `consumed` state.
+    pub consumed_count: u64,
+    /// Number of passes in `burned` state.
+    pub burned_count: u64,
+    /// Number of passes in `invalid` state.
+    pub invalid_count: u64,
 }
 
 /// Parameters for `get_pass_history`.
@@ -148,6 +176,8 @@ pub struct PassHistoryEvent {
 pub struct PassHistoryPage {
     /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Total history rows in the requested closed range.
+    pub total: u64,
     /// History rows in requested page.
     pub items: Vec<PassHistoryEvent>,
 }
@@ -236,8 +266,47 @@ pub struct PassEnergyRangeItem {
 pub struct PassEnergyRangePage {
     /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Total energy rows in the requested closed range.
+    pub total: u64,
     /// Energy rows in requested page.
     pub items: Vec<PassEnergyRangeItem>,
+}
+
+/// Parameters for `get_pass_energy_leaderboard`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPassEnergyLeaderboardParams {
+    /// Optional query height; `None` resolves to synced height.
+    pub at_height: Option<u32>,
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of rows per page.
+    pub page_size: usize,
+}
+
+/// One row in energy leaderboard response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassEnergyLeaderboardItem {
+    /// Pass inscription id.
+    pub inscription_id: String,
+    /// Owner script hash at resolved height.
+    pub owner: String,
+    /// Height of the latest energy record used for ranking.
+    pub record_block_height: u32,
+    /// Pass state in the latest energy record.
+    pub state: String,
+    /// Energy value used for ranking.
+    pub energy: u64,
+}
+
+/// Paged pass energy leaderboard response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassEnergyLeaderboardPage {
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Total number of ranked passes.
+    pub total: u64,
+    /// Leaderboard rows in requested page.
+    pub items: Vec<PassEnergyLeaderboardItem>,
 }
 
 /// Parameters for `get_active_balance_snapshot`.
@@ -309,6 +378,8 @@ pub struct InvalidPassItem {
 pub struct InvalidPassesPage {
     /// Final query height resolved by the server.
     pub resolved_height: u32,
+    /// Total invalid-pass rows in the requested closed range.
+    pub total: u64,
     /// Invalid pass rows in requested page.
     pub items: Vec<InvalidPassItem>,
 }
@@ -343,6 +414,13 @@ pub trait UsdbIndexerRpc {
         params: GetActivePassesAtHeightParams,
     ) -> JsonResult<ActivePassesAtHeight>;
 
+    /// Returns pass-state aggregate stats at a target height.
+    #[rpc(name = "get_pass_stats_at_height")]
+    fn get_pass_stats_at_height(
+        &self,
+        params: GetPassStatsAtHeightParams,
+    ) -> JsonResult<PassStatsAtHeight>;
+
     /// Returns pass history events in a height range.
     #[rpc(name = "get_pass_history")]
     fn get_pass_history(&self, params: GetPassHistoryParams) -> JsonResult<PassHistoryPage>;
@@ -364,6 +442,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassEnergyRangeParams,
     ) -> JsonResult<PassEnergyRangePage>;
+
+    /// Returns pass energy leaderboard at a target height.
+    #[rpc(name = "get_pass_energy_leaderboard")]
+    fn get_pass_energy_leaderboard(
+        &self,
+        params: GetPassEnergyLeaderboardParams,
+    ) -> JsonResult<PassEnergyLeaderboardPage>;
 
     /// Returns invalid passes with optional code filter.
     #[rpc(name = "get_invalid_passes")]

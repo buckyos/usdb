@@ -125,6 +125,27 @@ impl RpcClient {
         .await
     }
 
+    /// Returns pass-state aggregate counts at a target height.
+    ///
+    /// # Arguments
+    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    ///
+    /// # Returns
+    /// * `Ok(PassStatsAtHeight)` on success.
+    /// * `Err(String)` if request fails.
+    pub async fn get_pass_stats_at_height(
+        &self,
+        at_height: Option<u32>,
+    ) -> Result<PassStatsAtHeight, String> {
+        self.rpc_call::<PassStatsAtHeight>(
+            "get_pass_stats_at_height",
+            json!([{
+                "at_height": at_height,
+            }]),
+        )
+        .await
+    }
+
     /// Returns pass history events in a closed height range with pagination.
     ///
     /// # Arguments
@@ -239,6 +260,33 @@ impl RpcClient {
                 "inscription_id": inscription_id,
                 "from_height": from_height,
                 "to_height": to_height,
+                "page": page,
+                "page_size": page_size,
+            }]),
+        )
+        .await
+    }
+
+    /// Returns pass energy leaderboard at a target height.
+    ///
+    /// # Arguments
+    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `page` - Zero-based page index.
+    /// * `page_size` - Number of rows per page.
+    ///
+    /// # Returns
+    /// * `Ok(PassEnergyLeaderboardPage)` on success.
+    /// * `Err(String)` if request fails.
+    pub async fn get_pass_energy_leaderboard(
+        &self,
+        at_height: Option<u32>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<PassEnergyLeaderboardPage, String> {
+        self.rpc_call::<PassEnergyLeaderboardPage>(
+            "get_pass_energy_leaderboard",
+            json!([{
+                "at_height": at_height,
                 "page": page,
                 "page_size": page_size,
             }]),

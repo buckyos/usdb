@@ -256,9 +256,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
+                "pass_stats_at_height".to_string(),
                 "owner_active_pass_at_height".to_string(),
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
+                "pass_energy_leaderboard".to_string(),
                 "invalid_passes".to_string(),
                 "active_balance_snapshot".to_string(),
                 "latest_active_balance_snapshot".to_string(),
@@ -301,9 +303,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
-        let rows = self
-            .indexer
-            .miner_pass_storage()
+        let storage = self.indexer.miner_pass_storage();
+        let total = storage
+            .get_active_pass_count_from_history_at_height(resolved_height)
+            .map_err(Self::to_internal_error)?;
+        let rows = storage
             .get_all_active_pass_by_page_from_history_at_height(
                 params.page,
                 params.page_size,
@@ -313,6 +317,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Ok(ActivePassesAtHeight {
             resolved_height,
+            total,
             items: rows
                 .into_iter()
                 .map(|row| ActivePassItem {
@@ -323,11 +328,42 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         })
     }
 
+    fn get_pass_stats_at_height(
+        &self,
+        params: GetPassStatsAtHeightParams,
+    ) -> JsonResult<PassStatsAtHeight> {
+        let resolved_height = self.resolve_height(params.at_height)?;
+        let stats = self
+            .indexer
+            .miner_pass_storage()
+            .get_pass_state_stats_from_history_at_height(resolved_height)
+            .map_err(Self::to_internal_error)?;
+
+        Ok(PassStatsAtHeight {
+            resolved_height,
+            total_count: stats.total_count,
+            active_count: stats.active_count,
+            dormant_count: stats.dormant_count,
+            consumed_count: stats.consumed_count,
+            burned_count: stats.burned_count,
+            invalid_count: stats.invalid_count,
+        })
+    }
+
     fn get_pass_history(&self, params: GetPassHistoryParams) -> JsonResult<PassHistoryPage> {
         self.validate_pagination(params.page, params.page_size)?;
 
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let resolved_to_height = self.resolve_height_range(params.from_height, params.to_height)?;
+        let total = self
+            .indexer
+            .miner_pass_storage()
+            .get_pass_history_count_in_height_range(
+                &inscription_id,
+                params.from_height,
+                resolved_to_height,
+            )
+            .map_err(Self::to_internal_error)?;
 
         let order = params.order.as_deref().unwrap_or("asc");
         let desc = match order {
@@ -356,6 +392,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Ok(PassHistoryPage {
             resolved_height: resolved_to_height,
+            total,
             items: items
                 .into_iter()
                 .map(|event| PassHistoryEvent {
@@ -474,6 +511,15 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let resolved_to_height = self.resolve_height_range(params.from_height, params.to_height)?;
+        let total = self
+            .indexer
+            .pass_energy_manager()
+            .count_pass_energy_records_in_height_range(
+                &inscription_id,
+                params.from_height,
+                resolved_to_height,
+            )
+            .map_err(Self::to_internal_error)?;
 
         let records = self
             .indexer
@@ -489,6 +535,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Ok(PassEnergyRangePage {
             resolved_height: resolved_to_height,
+            total,
             items: records
                 .into_iter()
                 .map(|record| PassEnergyRangeItem {
@@ -505,13 +552,123 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         })
     }
 
+    fn get_pass_energy_leaderboard(
+        &self,
+        params: GetPassEnergyLeaderboardParams,
+    ) -> JsonResult<PassEnergyLeaderboardPage> {
+        self.validate_pagination(params.page, params.page_size)?;
+
+        let resolved_height = self.resolve_height(params.at_height)?;
+        let storage = self.indexer.miner_pass_storage();
+        let total_active = storage
+            .get_active_pass_count_from_history_at_height(resolved_height)
+            .map_err(Self::to_internal_error)?;
+
+        if total_active == 0 {
+            return Ok(PassEnergyLeaderboardPage {
+                resolved_height,
+                total: 0,
+                items: Vec::new(),
+            });
+        }
+
+        let load_page_size = 1024usize;
+        let total_active_usize = usize::try_from(total_active).map_err(|_| {
+            Self::to_internal_error(format!(
+                "Active pass count overflow when building energy leaderboard: total_active={}",
+                total_active
+            ))
+        })?;
+        let total_pages = (total_active_usize + load_page_size - 1) / load_page_size;
+        let mut active_rows = Vec::with_capacity(total_active_usize);
+        for page in 0..total_pages {
+            let rows = storage
+                .get_all_active_pass_by_page_from_history_at_height(
+                    page,
+                    load_page_size,
+                    resolved_height,
+                )
+                .map_err(Self::to_internal_error)?;
+            if rows.is_empty() {
+                break;
+            }
+            active_rows.extend(rows);
+        }
+
+        let mut ranked = Vec::new();
+        for row in active_rows {
+            let Some(record) = self
+                .indexer
+                .pass_energy_manager()
+                .get_pass_energy_record_at_or_before(&row.inscription_id, resolved_height)
+                .map_err(Self::to_internal_error)?
+            else {
+                warn!(
+                    "Missing energy record when building energy leaderboard: inscription_id={}, resolved_height={}",
+                    row.inscription_id, resolved_height
+                );
+                continue;
+            };
+
+            ranked.push((
+                row.inscription_id,
+                row.owner,
+                record.block_height,
+                record.state,
+                record.energy,
+            ));
+        }
+
+        ranked.sort_by(|a, b| {
+            b.4.cmp(&a.4)
+                .then_with(|| b.2.cmp(&a.2))
+                .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+        });
+
+        let total = ranked.len() as u64;
+        let offset = params.page.checked_mul(params.page_size).ok_or_else(|| {
+            Self::to_business_error(
+                ERR_INVALID_PAGINATION,
+                "INVALID_PAGINATION",
+                json!({"page": params.page, "page_size": params.page_size}),
+            )
+        })?;
+        let items = if offset >= ranked.len() {
+            Vec::new()
+        } else {
+            let end = offset.saturating_add(params.page_size).min(ranked.len());
+            ranked[offset..end]
+                .iter()
+                .map(|item| PassEnergyLeaderboardItem {
+                    inscription_id: item.0.to_string(),
+                    owner: item.1.to_string(),
+                    record_block_height: item.2,
+                    state: item.3.as_str().to_string(),
+                    energy: item.4,
+                })
+                .collect()
+        };
+
+        Ok(PassEnergyLeaderboardPage {
+            resolved_height,
+            total,
+            items,
+        })
+    }
+
     fn get_invalid_passes(&self, params: GetInvalidPassesParams) -> JsonResult<InvalidPassesPage> {
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_to_height = self.resolve_height_range(params.from_height, params.to_height)?;
-        let rows = self
-            .indexer
-            .miner_pass_storage()
+        let storage = self.indexer.miner_pass_storage();
+        let total = storage
+            .get_invalid_pass_count_in_height_range(
+                params.from_height,
+                resolved_to_height,
+                params.error_code.as_deref(),
+            )
+            .map_err(Self::to_internal_error)?;
+        let rows = storage
             .get_invalid_passes_by_page_in_height_range(
                 params.from_height,
                 resolved_to_height,
@@ -523,6 +680,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Ok(InvalidPassesPage {
             resolved_height: resolved_to_height,
+            total,
             items: rows
                 .into_iter()
                 .map(|item| InvalidPassItem {
@@ -746,6 +904,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(history.resolved_height, 101);
+        assert_eq!(history.total, 2);
         assert_eq!(history.items.len(), 2);
         assert_eq!(history.items[0].event_type, "mint");
         assert_eq!(history.items[1].event_type, "state_update");
@@ -820,6 +979,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.resolved_height, 120);
+        assert_eq!(page.total, 1);
         assert_eq!(page.items.len(), 1);
         assert_eq!(
             page.items[0].inscription_id,
@@ -829,6 +989,45 @@ mod tests {
             page.items[0].invalid_code.as_deref(),
             Some("INVALID_ETH_MAIN")
         );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_stats_at_height_success() {
+        let (server, root_dir) = build_server("pass_stats", 150);
+        let storage = server.indexer.miner_pass_storage();
+
+        let active = make_active_pass(5, 50, 100);
+        storage.add_new_mint_pass_at_height(&active, 100).unwrap();
+
+        let dormant = make_active_pass(6, 60, 100);
+        storage.add_new_mint_pass_at_height(&dormant, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &dormant.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        let invalid = make_invalid_pass(7, 70, 110, "INVALID_ETH_MAIN");
+        storage
+            .add_invalid_mint_pass_at_height(&invalid, 110)
+            .unwrap();
+
+        let stats = server
+            .get_pass_stats_at_height(GetPassStatsAtHeightParams {
+                at_height: Some(120),
+            })
+            .unwrap();
+        assert_eq!(stats.resolved_height, 120);
+        assert_eq!(stats.total_count, 3);
+        assert_eq!(stats.active_count, 1);
+        assert_eq!(stats.dormant_count, 1);
+        assert_eq!(stats.invalid_count, 1);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
