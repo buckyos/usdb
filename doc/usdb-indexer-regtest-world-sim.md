@@ -12,6 +12,7 @@
 
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
+- [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 
 ## 核心能力
 
@@ -38,12 +39,22 @@
   - active address 总余额
   - 能量榜首摘要
 - 支持固定 `seed`，保证场景可复现。
+- 可选输出结构化 JSONL 报告（每个 tick 一条记录），便于后续离线分析。
+- 运行失败时会自动打印关键日志尾部，提升排障速度。
 
 ## 运行示例
 
 ```bash
 src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 ```
+
+Long-run live preset (recommended for direct start):
+
+```bash
+src/btc/usdb-indexer/scripts/run_live.sh
+```
+
+This wrapper preloads a high-pressure profile (default `200 agents` + `5000 blocks`), and every variable at the top of the script is documented for quick tuning.
 
 运行期间可同时打开前端页面观察动态变化：
 
@@ -89,6 +100,10 @@ src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 - `SIM_AGENT_GROWTH_STEP`：每次扩容增加的 agent 数（默认 `1`）
 - `SIM_POLICY_MODE`：策略模式（`adaptive` 或 `scripted`，默认 `adaptive`）
 - `SIM_SCRIPTED_CYCLE`：`scripted` 模式的动作序列（逗号分隔）
+- `SIM_REPORT_ENABLED`：是否启用 JSONL 结构化报告（默认 `1`）
+- `SIM_REPORT_FILE`：报告文件路径（默认 `$WORK_DIR/world-sim-report.jsonl`）
+- `SIM_REPORT_FLUSH_EVERY`：报告刷盘频率（按事件条数，默认 `1`）
+- `DIAG_TAIL_LINES`：失败诊断时每个日志文件打印的尾部行数（默认 `120`）
 
 ## 示例：长时间持续运行
 
