@@ -331,6 +331,38 @@ impl PassEnergyManager {
             .find_last_pass_energy_record(inscription_id, block_height)
     }
 
+    // Project one stored energy record to query height under the assumption that
+    // no additional owner-balance change records were written after record.block_height.
+    pub fn project_energy_record_no_balance_change(
+        &self,
+        record: &PassEnergyRecord,
+        query_block_height: u32,
+    ) -> PassEnergyResult {
+        if query_block_height <= record.block_height || record.state != MinerPassState::Active {
+            return PassEnergyResult {
+                energy: record.energy,
+                state: record.state.clone(),
+            };
+        }
+
+        let growth_at_query = calc_growth_delta(
+            record.owner_balance,
+            query_block_height.saturating_sub(record.active_block_height),
+        );
+        let growth_at_record = calc_growth_delta(
+            record.owner_balance,
+            record
+                .block_height
+                .saturating_sub(record.active_block_height),
+        );
+        let incremental_growth = growth_at_query.saturating_sub(growth_at_record);
+
+        PassEnergyResult {
+            energy: record.energy.saturating_add(incremental_growth),
+            state: record.state.clone(),
+        }
+    }
+
     pub fn get_pass_energy_records_by_page_in_height_range(
         &self,
         inscription_id: &InscriptionId,

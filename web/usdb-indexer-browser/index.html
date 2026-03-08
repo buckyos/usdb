@@ -20,6 +20,13 @@
             <form id="rpc-form" class="rpc-box">
                 <label for="rpc-url">RPC Endpoint</label>
                 <div class="row">
+                    <select id="rpc-network" title="选择网络预设">
+                        <option value="mainnet">Mainnet</option>
+                        <option value="regtest">Regtest</option>
+                        <option value="testnet">Testnet</option>
+                        <option value="signet">Signet</option>
+                        <option value="testnet4">Testnet4</option>
+                    </select>
                     <input id="rpc-url" type="url" value="http://127.0.0.1:28020" />
                     <button type="submit">连接</button>
                 </div>
@@ -154,8 +161,8 @@
                             <thead>
                                 <tr>
                                     <th>rank</th>
-                                    <th>inscription_id</th>
                                     <th>energy</th>
+                                    <th>inscription_id</th>
                                     <th>state</th>
                                     <th>height</th>
                                 </tr>

@@ -421,13 +421,17 @@ impl UsdbIndexerRpcServer {
                 );
                 continue;
             };
+            let projected = self
+                .indexer
+                .pass_energy_manager()
+                .project_energy_record_no_balance_change(&record, resolved_height);
 
             ranked.push(PassEnergyLeaderboardItem {
                 inscription_id: row.inscription_id.to_string(),
                 owner: row.owner.to_string(),
                 record_block_height: record.block_height,
-                state: record.state.as_str().to_string(),
-                energy: record.energy,
+                state: projected.state.as_str().to_string(),
+                energy: projected.energy,
             });
         }
 
@@ -696,17 +700,26 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 }),
             ));
         };
+        let (effective_state, effective_energy) = if mode == "at_or_before" {
+            let projected = self
+                .indexer
+                .pass_energy_manager()
+                .project_energy_record_no_balance_change(&record, query_height);
+            (projected.state, projected.energy)
+        } else {
+            (record.state.clone(), record.energy)
+        };
 
         Ok(PassEnergySnapshot {
             inscription_id: record.inscription_id.to_string(),
             query_block_height: query_height,
             record_block_height: record.block_height,
-            state: record.state.as_str().to_string(),
+            state: effective_state.as_str().to_string(),
             active_block_height: record.active_block_height,
             owner_address: record.owner_address.to_string(),
             owner_balance: record.owner_balance,
             owner_delta: record.owner_delta,
-            energy: record.energy,
+            energy: effective_energy,
         })
     }
 
@@ -989,6 +1002,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 mod tests {
     use super::*;
     use crate::config::ConfigManager;
+    use crate::index::energy_formula::calc_growth_delta;
     use crate::index::{InscriptionIndexer, MinerPassState};
     use crate::output::IndexOutput;
     use crate::status::StatusManager;
@@ -1319,10 +1333,11 @@ mod tests {
                 page_size: 10,
             })
             .unwrap();
+        let expected_energy_121 = 777u64.saturating_add(calc_growth_delta(100_000, 1));
         assert_eq!(page_121.resolved_height, 121);
         assert_eq!(page_121.total, 1);
         assert_eq!(page_121.items.len(), 1);
-        assert_eq!(page_121.items[0].energy, 777);
+        assert_eq!(page_121.items[0].energy, expected_energy_121);
 
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
@@ -1330,6 +1345,43 @@ mod tests {
             assert_eq!(entry.resolved_height, 121);
             assert_eq!(entry.total, 1);
         }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_at_or_before_projects_to_query_height() {
+        let (server, root_dir) = build_server("energy_projection", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(11, 110, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 500);
+
+        let projected = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(130),
+                mode: Some("at_or_before".to_string()),
+            })
+            .unwrap();
+
+        let expected = 500u64.saturating_add(calc_growth_delta(100_000, 10));
+        assert_eq!(projected.query_block_height, 130);
+        assert_eq!(projected.record_block_height, 120);
+        assert_eq!(projected.energy, expected);
+
+        let exact = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                mode: Some("exact".to_string()),
+            })
+            .unwrap();
+        assert_eq!(exact.query_block_height, 120);
+        assert_eq!(exact.record_block_height, 120);
+        assert_eq!(exact.energy, 500);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

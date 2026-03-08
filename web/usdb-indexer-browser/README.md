@@ -44,5 +44,6 @@ http://127.0.0.1:8088/web/usdb-indexer-browser/
 ## 说明
 
 - 页面不依赖构建工具，`index.html` + `styles.css` + `app.js` 即可运行。
+- 顶部 RPC 区域支持按网络预设（Mainnet/Regtest/Testnet/Signet/Testnet4）自动填充默认 endpoint。
 - 首页默认每 5 秒刷新一次，可点击“刷新”立即拉取最新状态。
 - 能量排行榜点击某一行会自动联动到“能量详情”查询。

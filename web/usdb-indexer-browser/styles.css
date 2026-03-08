@@ -250,11 +250,13 @@ h2 {
 }
 
 input,
+select,
 button {
     font: inherit;
 }
 
-input {
+input,
+select {
     border: 1px solid var(--line);
     border-radius: 10px;
     padding: 10px 12px;

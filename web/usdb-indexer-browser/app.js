@@ -31,8 +31,17 @@ const state = {
     },
 };
 
+const RPC_DEFAULT_ENDPOINTS = {
+    mainnet: "http://127.0.0.1:28020",
+    regtest: "http://127.0.0.1:28120",
+    testnet: "http://127.0.0.1:28220",
+    signet: "http://127.0.0.1:28320",
+    testnet4: "http://127.0.0.1:28420",
+};
+
 const els = {
     rpcForm: document.getElementById("rpc-form"),
+    rpcNetwork: document.getElementById("rpc-network"),
     rpcUrl: document.getElementById("rpc-url"),
     rpcHint: document.getElementById("rpc-hint"),
     tabs: Array.from(document.querySelectorAll(".tab")),
@@ -96,6 +105,40 @@ function fmtNum(value) {
     return new Intl.NumberFormat("en-US").format(value);
 }
 
+function toNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+function fmtBtc(value) {
+    if (value === null || value === undefined || Number.isNaN(value)) return "-";
+    let text = Number(value).toFixed(8);
+    text = text.replace(/\.?0+$/, "");
+    return text;
+}
+
+function fmtBalanceSmart(valueSat) {
+    const sat = toNumber(valueSat);
+    if (sat === null) return "-";
+    const abs = Math.abs(sat);
+    if (abs >= 100_000_000) {
+        return `${fmtBtc(sat / 100_000_000)} BTC`;
+    }
+    return `${fmtNum(sat)} sat`;
+}
+
+function fmtBalanceDeltaSmart(valueSat) {
+    const sat = toNumber(valueSat);
+    if (sat === null) return "-";
+    const sign = sat >= 0 ? "+" : "-";
+    const abs = Math.abs(sat);
+    if (abs >= 100_000_000) {
+        return `${sign}${fmtBtc(abs / 100_000_000)} BTC`;
+    }
+    return `${sign}${fmtNum(abs)} sat`;
+}
+
 function fmtTime(ts = new Date()) {
     return ts.toLocaleString("zh-CN", { hour12: false });
 }
@@ -128,6 +171,16 @@ function isLikelyBitcoindRpcUrl(rawUrl) {
     } catch {
         return false;
     }
+}
+
+function normalizeNetworkName(network) {
+    const raw = String(network || "").toLowerCase();
+    if (raw.includes("regtest")) return "regtest";
+    if (raw.includes("testnet4")) return "testnet4";
+    if (raw.includes("testnet")) return "testnet";
+    if (raw.includes("signet")) return "signet";
+    if (raw.includes("mainnet") || raw.includes("bitcoin")) return "mainnet";
+    return "";
 }
 
 async function rpcCall(method, params = []) {
@@ -204,8 +257,13 @@ async function refreshHome() {
         els.homeActivePass.textContent = fmtNum(passStats.active_count ?? 0);
         els.homeTotalPass.textContent = fmtNum(passStats.total_count ?? 0);
         els.homeActiveBalance.textContent = latestBalance
-            ? `${fmtNum(latestBalance.total_balance)} sat`
+            ? fmtBalanceSmart(latestBalance.total_balance)
             : "-";
+
+        const networkPreset = normalizeNetworkName(rpcInfo.network);
+        if (networkPreset && els.rpcNetwork.value !== networkPreset) {
+            els.rpcNetwork.value = networkPreset;
+        }
 
         els.homeSyncMessage.textContent = syncStatus.message || "Running";
         els.homeSyncCurrent.textContent = fmtNum(syncStatus.current ?? 0);
@@ -331,13 +389,14 @@ function renderLeaderboardRows(rows) {
         tr.className = "clickable";
         tr.innerHTML = `
             <td>${fmtNum(rankBase + idx + 1)}</td>
-            <td class="mono">${item.inscription_id}</td>
             <td>${fmtNum(item.energy)}</td>
+            <td class="mono">${item.inscription_id}</td>
             <td>${item.state}</td>
             <td>${fmtNum(item.record_block_height)}</td>
         `;
         tr.addEventListener("click", () => {
             els.energyIdInput.value = item.inscription_id;
+            els.energyHeightInput.value = "";
             state.energy.selectedQueryHeight = null;
             void queryEnergySnapshot();
         });
@@ -378,8 +437,8 @@ function renderEnergyRangeRows(rows) {
         tr.innerHTML = `
             <td>${fmtNum(item.record_block_height)}</td>
             <td>${item.state}</td>
-            <td>${fmtNum(item.owner_balance)}</td>
-            <td class="${deltaClass}">${fmtNum(item.owner_delta)}</td>
+            <td>${fmtBalanceSmart(item.owner_balance)}</td>
+            <td class="${deltaClass}">${fmtBalanceDeltaSmart(item.owner_delta)}</td>
             <td>${fmtNum(item.energy)}</td>
         `;
         els.energyRangeTable.appendChild(tr);
@@ -442,8 +501,8 @@ async function queryEnergySnapshot() {
             ["state", snapshot.state],
             ["active_block_height", snapshot.active_block_height],
             ["owner_address", snapshot.owner_address],
-            ["owner_balance", snapshot.owner_balance],
-            ["owner_delta", snapshot.owner_delta],
+            ["owner_balance", fmtBalanceSmart(snapshot.owner_balance)],
+            ["owner_delta", fmtBalanceDeltaSmart(snapshot.owner_delta)],
             ["energy", snapshot.energy],
         ]);
 
@@ -481,6 +540,16 @@ function bindEvents() {
         els.rpcHint.textContent = `已切换 RPC: ${url}`;
         void refreshHome();
         void loadLeaderboard();
+    });
+
+    els.rpcNetwork.addEventListener("change", () => {
+        const network = els.rpcNetwork.value;
+        const defaultUrl = RPC_DEFAULT_ENDPOINTS[network];
+        if (defaultUrl) {
+            els.rpcUrl.value = defaultUrl;
+            state.rpcUrl = defaultUrl;
+            els.rpcHint.textContent = `已按网络预设填充 RPC: ${defaultUrl}`;
+        }
     });
 
     els.homeRefresh.addEventListener("click", () => {
