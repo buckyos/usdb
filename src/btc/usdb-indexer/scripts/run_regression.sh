@@ -52,11 +52,11 @@ run_regtest_smoke_scenarios() {
 }
 
 run_live_ord_realworld_suite() {
-  local btc_rpc_port_1="${BTC_RPC_PORT:-19473}"
-  local btc_p2p_port_1="${BTC_P2P_PORT:-19474}"
-  local bh_rpc_port_1="${BH_RPC_PORT:-18093}"
-  local usdb_rpc_port_1="${USDB_RPC_PORT:-18113}"
-  local ord_server_port_1="${ORD_SERVER_PORT:-18094}"
+  local btc_rpc_port_1="${BTC_RPC_PORT:-28132}"
+  local btc_p2p_port_1="${BTC_P2P_PORT:-28133}"
+  local bh_rpc_port_1="${BH_RPC_PORT:-28110}"
+  local usdb_rpc_port_1="${USDB_RPC_PORT:-28120}"
+  local ord_server_port_1="${ORD_SERVER_PORT:-28130}"
 
   local btc_rpc_port_2="${LIVE_SUITE_BTC_RPC_PORT_2:-$((btc_rpc_port_1 + 1000))}"
   local btc_p2p_port_2="${LIVE_SUITE_BTC_P2P_PORT_2:-$((btc_p2p_port_1 + 1000))}"

@@ -14,11 +14,11 @@ BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
 ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 
 # RPC and p2p ports for isolated local services.
-BTC_RPC_PORT="${BTC_RPC_PORT:-19483}"
-BTC_P2P_PORT="${BTC_P2P_PORT:-19484}"
-BH_RPC_PORT="${BH_RPC_PORT:-18123}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-18143}"
-ORD_SERVER_PORT="${ORD_SERVER_PORT:-18124}"
+BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
+BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
+BH_RPC_PORT="${BH_RPC_PORT:-28110}"
+USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
+ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
 
 # Total agent wallets created for simulation.
 AGENT_COUNT="${AGENT_COUNT:-200}"

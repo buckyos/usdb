@@ -44,8 +44,8 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 2. `BITCOIN_BIN_DIR`：Bitcoin Core 二进制目录（默认 `/home/bucky/btc/bitcoin-28.1/bin`，若不存在则回退 PATH）。
 3. `BITCOIN_DIR`：regtest 数据目录（默认 `${WORK_DIR}/bitcoin`）。
 4. `BALANCE_HISTORY_ROOT`：balance-history 根目录（默认 `${WORK_DIR}/balance-history`）。
-5. `BTC_RPC_PORT`：bitcoind RPC 端口（默认 `19443`）。
-6. `BH_RPC_PORT`：balance-history RPC 端口（默认 `18080`）。
+5. `BTC_RPC_PORT`：bitcoind RPC 端口（默认 `28132`）。
+6. `BH_RPC_PORT`：balance-history RPC 端口（默认 `28110`）。
 7. `WALLET_NAME`：regtest 钱包名（默认 `bhitest`）。
 8. `TARGET_HEIGHT`：要挖的区块高度（默认 `120`）。
 9. `SYNC_TIMEOUT_SEC`：等待同步超时秒数（默认 `120`）。
@@ -57,8 +57,8 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 ```bash
 WORK_DIR=/tmp/usdb-bh-test \
 BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
-BTC_RPC_PORT=29443 \
-BH_RPC_PORT=28080 \
+BTC_RPC_PORT=28132 \
+BH_RPC_PORT=28110 \
 TARGET_HEIGHT=150 \
 SEND_AMOUNT_BTC=1.0 \
 src/btc/balance-history/scripts/regtest_smoke.sh

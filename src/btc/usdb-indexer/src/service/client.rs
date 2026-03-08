@@ -16,7 +16,7 @@ impl RpcClient {
     /// Creates a new RPC client bound to a target server URL.
     ///
     /// # Arguments
-    /// * `url` - Full JSON-RPC endpoint, for example `http://127.0.0.1:8100`.
+    /// * `url` - Full JSON-RPC endpoint, for example `http://127.0.0.1:28020`.
     ///
     /// # Returns
     /// * `Ok(Self)` if the underlying HTTP client is constructed successfully.

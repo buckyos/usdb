@@ -11,9 +11,9 @@ USDB_INDEXER_ROOT="${USDB_INDEXER_ROOT:-$WORK_DIR/usdb-indexer}"
 SCENARIO_RUNNER="${SCENARIO_RUNNER:-$REPO_ROOT/src/btc/usdb-indexer/scripts/regtest_scenario_runner.py}"
 SCENARIO_FILE="${SCENARIO_FILE:-}"
 
-BTC_RPC_PORT="${BTC_RPC_PORT:-19453}"
-BH_RPC_PORT="${BH_RPC_PORT:-18090}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-18110}"
+BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
+BH_RPC_PORT="${BH_RPC_PORT:-28110}"
+USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
 
 WALLET_NAME="${WALLET_NAME:-usdbitest}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-120}"
@@ -25,6 +25,7 @@ CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
 INSCRIPTION_SOURCE="${INSCRIPTION_SOURCE:-bitcoind}"
 INSCRIPTION_FIXTURE_FILE="${INSCRIPTION_FIXTURE_FILE:-}"
+ORD_RPC_PORT="${ORD_RPC_PORT:-28130}"
 
 BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
@@ -239,7 +240,7 @@ data_dir = "${BITCOIN_DIR}/regtest"
 rpc_url = "http://127.0.0.1:${BTC_RPC_PORT}"
 
 [ordinals]
-rpc_url = "http://127.0.0.1:8070"
+rpc_url = "http://127.0.0.1:"
 
 [electrs]
 rpc_url = "tcp://127.0.0.1:50001"
@@ -270,7 +271,7 @@ create_usdb_indexer_config() {
     "rpc_url": "http://127.0.0.1:${BTC_RPC_PORT}"
   },
   "ordinals": {
-    "rpc_url": "http://127.0.0.1:8070"
+    "rpc_url": "http://127.0.0.1:${ORD_RPC_PORT}"
   },
   "balance_history": {
     "rpc_url": "http://127.0.0.1:${BH_RPC_PORT}"

@@ -10,8 +10,10 @@ USDB Indexer 的静态浏览器调试面板（v1）。
 
 ## 依赖
 
-- 已启动 `usdb-indexer` RPC 服务（默认 `http://127.0.0.1:8100`）
+- 已启动 `usdb-indexer` RPC 服务（默认 `http://127.0.0.1:28020`）
 - 浏览器可直接访问该 RPC endpoint
+
+注意：不要填 `bitcoind` RPC 端口（例如 `28032` 或 `28132`），浏览器会被 CORS 策略拦截。
 
 ## 快速启动
 

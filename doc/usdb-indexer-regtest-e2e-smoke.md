@@ -107,7 +107,7 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 19. `RUN_LIVE_ORD_REALWORLD_SUITE`：`run_regression.sh` 是否执行 live realworld 场景集（默认 `0`，包含 `transfer_remint`、`invalid_mint`、`passive_transfer`、`same_owner_multi_mint`、`duplicate_prev_inherit`）
 20. `ORD_BIN`：`regtest_live_ord_e2e.sh` 使用的 ord CLI 可执行文件路径
 21. `LIVE_SCENARIO`：live ord 场景名称（默认 `transfer_remint`，可选 `invalid_mint`、`passive_transfer`、`same_owner_multi_mint`、`duplicate_prev_inherit`）
-22. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `18094`，必须使用空闲端口）
+22. `ORD_SERVER_PORT`：live ord 临时服务端口（默认 `28130`，必须使用空闲端口）
 23. `ORD_WALLET_NAME`：live e2e 首个 ord 钱包名称（默认 `ord-live-a`）
 24. `ORD_WALLET_NAME_B`：live e2e 第二个 ord 钱包名称（默认 `ord-live-b`）
 25. `TRANSFER_CONFIRM_BLOCKS`：铭文转移后的确认块数（默认 `1`）
@@ -120,9 +120,9 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 ```bash
 BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
 TARGET_HEIGHT=101 \
-BTC_RPC_PORT=19460 \
-BH_RPC_PORT=18091 \
-USDB_RPC_PORT=18111 \
+BTC_RPC_PORT=28132 \
+BH_RPC_PORT=28110 \
+USDB_RPC_PORT=28120 \
 src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 ```
 

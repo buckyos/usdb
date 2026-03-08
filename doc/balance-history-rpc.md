@@ -4,7 +4,7 @@
 
 `balance-history` 服务用于追踪并查询每个地址在不同区块高度的余额变化（`delta`）与余额总额（`balance`），并通过 JSON-RPC 暴露查询接口。
 
-- 默认监听地址：`http://127.0.0.1:8099`
+- 默认监听地址：`http://127.0.0.1:28010`
 - 传输协议：HTTP + JSON-RPC 2.0
 - CORS：`AllowAny`
 
@@ -242,13 +242,13 @@ null
 ## curl 调用示例
 
 ```bash
-curl -s http://127.0.0.1:8099 \
+curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"get_block_height","params":[],"id":1}'
 ```
 
 ```bash
-curl -s http://127.0.0.1:8099 \
+curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<USDBScriptHash>","block_height":800000,"block_range":null}],"id":2}'
 ```

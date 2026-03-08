@@ -1,5 +1,5 @@
 const state = {
-    rpcUrl: "http://127.0.0.1:8100",
+    rpcUrl: "http://127.0.0.1:28020",
     homeRefreshMs: 5000,
     homeTimer: null,
     clockTimer: null,
@@ -115,6 +115,21 @@ function rpcErrorMessage(err) {
     return JSON.stringify(err);
 }
 
+function isLikelyBitcoindRpcUrl(rawUrl) {
+    try {
+        const parsed = new URL(rawUrl);
+        const host = parsed.hostname;
+        const port = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
+        const knownBitcoindPorts = new Set([8332, 18332, 18443, 38332, 48332, 28032, 28132]);
+        return (
+            (host === "127.0.0.1" || host === "localhost") &&
+            knownBitcoindPorts.has(port)
+        );
+    } catch {
+        return false;
+    }
+}
+
 async function rpcCall(method, params = []) {
     const body = {
         jsonrpc: "2.0",
@@ -124,11 +139,21 @@ async function rpcCall(method, params = []) {
     };
 
     const started = performance.now();
-    const resp = await fetch(state.rpcUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-    });
+    let resp;
+    try {
+        resp = await fetch(state.rpcUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+    } catch (err) {
+        if (isLikelyBitcoindRpcUrl(state.rpcUrl)) {
+            throw new Error(
+                `当前地址看起来是 bitcoind RPC (${state.rpcUrl})，浏览器会被 CORS 拦截。请改为 usdb-indexer RPC（例如 http://127.0.0.1:28020 或 http://127.0.0.1:28120）。`,
+            );
+        }
+        throw err;
+    }
     const latency = Math.round(performance.now() - started);
     els.homeRpcLatency.textContent = `${latency} ms`;
 
@@ -448,6 +473,10 @@ function bindEvents() {
         event.preventDefault();
         const url = els.rpcUrl.value.trim();
         if (!url) return;
+        if (isLikelyBitcoindRpcUrl(url)) {
+            els.rpcHint.textContent = "你输入的是 bitcoind RPC 端口，浏览器会触发 CORS。请使用 usdb-indexer RPC（默认 http://127.0.0.1:28020，regtest 常用 http://127.0.0.1:28120）。";
+            return;
+        }
         state.rpcUrl = url;
         els.rpcHint.textContent = `已切换 RPC: ${url}`;
         void refreshHome();

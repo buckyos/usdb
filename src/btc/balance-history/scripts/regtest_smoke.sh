@@ -8,13 +8,14 @@ BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 # Prefer local Bitcoin Core binaries if available (can be overridden by env).
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
-BTC_RPC_PORT="${BTC_RPC_PORT:-19443}"
-BH_RPC_PORT="${BH_RPC_PORT:-18080}"
+BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
+BH_RPC_PORT="${BH_RPC_PORT:-28110}"
 WALLET_NAME="${WALLET_NAME:-bhitest}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-120}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 ENABLE_TRANSFER_CHECK="${ENABLE_TRANSFER_CHECK:-1}"
 SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.25}"
+ORD_RPC_PORT="${ORD_RPC_PORT:-28130}"
 
 BITCOIND_PID=""
 BALANCE_HISTORY_PID=""
@@ -178,7 +179,7 @@ data_dir = "${BITCOIN_DIR}/regtest"
 rpc_url = "http://127.0.0.1:${BTC_RPC_PORT}"
 
 [ordinals]
-rpc_url = "http://127.0.0.1:8070"
+rpc_url = "http://127.0.0.1:"
 
 [electrs]
 rpc_url = "tcp://127.0.0.1:50001"

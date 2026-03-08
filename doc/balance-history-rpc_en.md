@@ -4,7 +4,7 @@
 
 `balance-history` tracks per-address balance changes (`delta`) and resulting balances (`balance`) across block heights, and exposes query APIs via JSON-RPC.
 
-- Default endpoint: `http://127.0.0.1:8099`
+- Default endpoint: `http://127.0.0.1:28010`
 - Transport: HTTP + JSON-RPC 2.0
 - CORS policy: `AllowAny`
 
@@ -113,13 +113,13 @@ Sends shutdown signal to service for graceful stop.
 ## curl Examples
 
 ```bash
-curl -s http://127.0.0.1:8099 \
+curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"get_block_height","params":[],"id":1}'
 ```
 
 ```bash
-curl -s http://127.0.0.1:8099 \
+curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<USDBScriptHash>","block_height":800000,"block_range":null}],"id":2}'
 ```

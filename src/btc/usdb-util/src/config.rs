@@ -71,17 +71,13 @@ impl BTCConfig {
         if let Some(ref url) = self.rpc_url {
             url.clone()
         } else {
-            /*
-            # Listen for JSON-RPC connections on <port> (default: 8332, testnet3:
-            # 18332, testnet4: 48332, signet: 38332, regtest: 18443)
-             */
-
+            // Default to USDB-managed per-network local RPC ports.
             let port = match self.network() {
-                Network::Bitcoin => 8332,
-                Network::Testnet => 18332,
-                Network::Regtest => 18443,
-                Network::Signet => 38332,
-                Network::Testnet4 => 48332,
+                Network::Bitcoin => crate::constants::BITCOIND_MAINNET_RPC_PORT,
+                Network::Testnet => crate::constants::BITCOIND_TESTNET_RPC_PORT,
+                Network::Regtest => crate::constants::BITCOIND_REGTEST_RPC_PORT,
+                Network::Signet => crate::constants::BITCOIND_SIGNET_RPC_PORT,
+                Network::Testnet4 => crate::constants::BITCOIND_TESTNET4_RPC_PORT,
             };
 
             format!("http://127.0.0.1:{}", port)
@@ -122,7 +118,10 @@ pub struct OrdConfig {
 }
 
 fn default_ord_rpc_url() -> String {
-    "http://127.0.0.1:8070".to_string()
+    format!(
+        "http://127.0.0.1:{}",
+        crate::constants::ORD_SERVICE_HTTP_PORT
+    )
 }
 
 impl OrdConfig {

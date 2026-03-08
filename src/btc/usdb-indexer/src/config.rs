@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::{BTCConfig, BalanceHistoryConfig, OrdConfig};
+use usdb_util::{BTCConfig, BalanceHistoryConfig, OrdConfig, USDB_INDEXER_SERVICE_HTTP_PORT};
 
 fn default_genesis_block_height() -> u32 {
     900000
@@ -44,7 +44,7 @@ fn default_inscription_source_shadow_fail_fast() -> bool {
 }
 
 fn default_rpc_server_port() -> u16 {
-    8100
+    USDB_INDEXER_SERVICE_HTTP_PORT
 }
 
 fn default_rpc_server_enabled() -> bool {

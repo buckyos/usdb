@@ -60,7 +60,7 @@ This wrapper preloads a high-pressure profile (default `200 agents` + `5000 bloc
 
 1. `python3 -m http.server 8088`
 2. `http://127.0.0.1:8088/web/usdb-indexer-browser/`
-3. 页面 RPC endpoint 设置为当前 `USDB_RPC_PORT`（默认 `http://127.0.0.1:18143`）
+3. 页面 RPC endpoint 设置为当前 `USDB_RPC_PORT`（默认 `http://127.0.0.1:28120`）
 
 ## 常用环境变量
 
