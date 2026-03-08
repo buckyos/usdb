@@ -507,8 +507,25 @@ impl PassEnergyManager {
         owner_balance: u64,
         owner_delta: i64,
     ) -> Result<bool, String> {
-        let strict_settle_consistency = !cfg!(test);
+        self.apply_active_balance_change_internal(
+            inscription_id,
+            owner_address,
+            block_height,
+            owner_balance,
+            owner_delta,
+            !cfg!(test),
+        )
+    }
 
+    fn apply_active_balance_change_internal(
+        &self,
+        inscription_id: &InscriptionId,
+        owner_address: &USDBScriptHash,
+        block_height: u32,
+        owner_balance: u64,
+        owner_delta: i64,
+        strict_settle_consistency: bool,
+    ) -> Result<bool, String> {
         if owner_delta == 0 {
             return Ok(false);
         }
@@ -843,6 +860,267 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(via_same_api, projected);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_zero_delta_skips_without_new_record() {
+        // Zero delta should be treated as no-op and must not write a new record.
+        let root_dir = test_root_dir("apply_delta_zero_skip");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(5, 0);
+        let owner = test_script_hash(5);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 300_000,
+                owner_delta: 0,
+                energy: 1_000,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 300_000, 0)
+            .unwrap();
+        assert!(!changed);
+        assert!(
+            manager
+                .get_pass_energy_record_exact(&inscription_id, 120)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_positive_delta_writes_record() {
+        // Positive delta keeps active_block_height unchanged and only adds growth.
+        let root_dir = test_root_dir("apply_positive_delta_write");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(6, 0);
+        let owner = test_script_hash(6);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 300_000,
+                owner_delta: 0,
+                energy: 10_000,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 320_000, 20_000)
+            .unwrap();
+        assert!(changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        let expected_energy = 10_000 + calc_growth_delta(300_000, 20);
+        assert_eq!(record.energy, expected_energy);
+        assert_eq!(record.owner_balance, 320_000);
+        assert_eq!(record.owner_delta, 20_000);
+        assert_eq!(record.active_block_height, 100);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_negative_delta_resets_active_height_and_applies_penalty() {
+        // Negative delta resets active_block_height and applies protocol penalty.
+        let root_dir = test_root_dir("apply_negative_delta_penalty");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(7, 0);
+        let owner = test_script_hash(7);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 400_000,
+                owner_delta: 0,
+                energy: 10_000,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 350_000, -50_000)
+            .unwrap();
+        assert!(changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        let expected_energy = 10_000u64
+            .saturating_add(calc_growth_delta(400_000, 20))
+            .saturating_sub(calc_penalty_from_delta(-50_000));
+        assert_eq!(record.energy, expected_energy);
+        assert_eq!(record.owner_balance, 350_000);
+        assert_eq!(record.owner_delta, -50_000);
+        assert_eq!(record.active_block_height, 120);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_same_height_conflict_relaxed_mode_skips() {
+        // Relaxed mode should skip same-height conflicting updates without mutating existing record.
+        let root_dir = test_root_dir("apply_same_height_conflict_relaxed");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(10, 0);
+        let owner = test_script_hash(10);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 120,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 320_000,
+                owner_delta: 20_000,
+                energy: 12_345,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change_internal(
+                &inscription_id,
+                &owner,
+                120,
+                330_000,
+                30_000,
+                false,
+            )
+            .unwrap();
+        assert!(!changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.owner_balance, 320_000);
+        assert_eq!(record.owner_delta, 20_000);
+        assert_eq!(record.energy, 12_345);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_same_height_conflict_strict_mode_errors() {
+        // Strict mode must fail on same-height conflicting updates.
+        let root_dir = test_root_dir("apply_same_height_conflict_strict");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(11, 0);
+        let owner = test_script_hash(11);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 120,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 320_000,
+                owner_delta: 20_000,
+                energy: 99,
+            })
+            .unwrap();
+
+        let err = manager
+            .apply_active_balance_change_internal(
+                &inscription_id,
+                &owner,
+                120,
+                330_000,
+                30_000,
+                true,
+            )
+            .unwrap_err();
+        assert!(err.contains("conflicts with existing record at same block"));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_direction_conflict_strict_and_relaxed() {
+        // Direction conflict should be skipped in relaxed mode and rejected in strict mode.
+        let root_dir = test_root_dir("apply_direction_conflict_modes");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(12, 0);
+        let owner = test_script_hash(12);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id: inscription_id.clone(),
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 400_000,
+                owner_delta: 0,
+                energy: 7_000,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change_internal(
+                &inscription_id,
+                &owner,
+                120,
+                350_000,
+                10_000,
+                false,
+            )
+            .unwrap();
+        assert!(!changed);
+        assert!(
+            manager
+                .get_pass_energy_record_exact(&inscription_id, 120)
+                .unwrap()
+                .is_none()
+        );
+
+        let err = manager
+            .apply_active_balance_change_internal(
+                &inscription_id,
+                &owner,
+                120,
+                350_000,
+                10_000,
+                true,
+            )
+            .unwrap_err();
+        assert!(err.contains("inconsistent settle direction"));
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }
