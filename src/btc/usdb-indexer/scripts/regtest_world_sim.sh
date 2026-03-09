@@ -127,8 +127,10 @@ on_exit() {
 }
 
 require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing required command: $1" >&2
+  local cmd_name="$1"
+  if ! command -v "$cmd_name" >/dev/null 2>&1; then
+    echo "Missing required command: ${cmd_name}" >&2
+    echo "Please install it or add it to PATH." >&2
     exit 1
   fi
 }
@@ -150,7 +152,47 @@ resolve_bitcoin_binaries() {
   BITCOIND_BIN="$(command -v bitcoind || true)"
   BITCOIN_CLI_BIN="$(command -v bitcoin-cli || true)"
   if [[ -z "$BITCOIND_BIN" || -z "$BITCOIN_CLI_BIN" ]]; then
-    echo "Missing required commands bitcoind/bitcoin-cli. Tried BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR} and PATH." >&2
+    cat >&2 <<EOF
+Missing required Bitcoin Core binaries: bitcoind and/or bitcoin-cli
+Checked:
+  - BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR}
+  - PATH
+Fix:
+  - Set BITCOIN_BIN_DIR to your Bitcoin Core bin directory, e.g.
+      BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin
+  - Or add bitcoind/bitcoin-cli to PATH
+EOF
+    exit 1
+  fi
+}
+
+ensure_ord_binary() {
+  if [[ "$ORD_BIN" == */* ]]; then
+    if [[ ! -x "$ORD_BIN" ]]; then
+      cat >&2 <<EOF
+Missing ord executable: ORD_BIN is not executable
+Current:
+  ORD_BIN=${ORD_BIN}
+Fix:
+  - Set ORD_BIN to a valid ord binary, e.g.
+      ORD_BIN=/home/bucky/ord/target/release/ord
+  - Or use default by adding ord to PATH and setting ORD_BIN=ord
+EOF
+      exit 1
+    fi
+    return
+  fi
+
+  if ! command -v "$ORD_BIN" >/dev/null 2>&1; then
+    cat >&2 <<EOF
+Missing ord executable in PATH
+Current:
+  ORD_BIN=${ORD_BIN}
+Fix:
+  - Set ORD_BIN to full path, e.g.
+      ORD_BIN=/home/bucky/ord/target/release/ord
+  - Or add ord to PATH and keep ORD_BIN=ord
+EOF
     exit 1
   fi
 }
@@ -466,7 +508,7 @@ main() {
   trap on_exit EXIT
 
   resolve_bitcoin_binaries
-  require_cmd "$ORD_BIN"
+  ensure_ord_binary
   require_cmd cargo
   require_cmd curl
   require_cmd python3
