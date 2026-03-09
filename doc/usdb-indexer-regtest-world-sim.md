@@ -12,6 +12,8 @@
 
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
+- [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
+- [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 
 ## 核心能力
@@ -36,11 +38,13 @@
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
   - agent 粒度自检（默认开启）：每块对选中 agent 的 active pass 做能量数值校验（与公式推导一致）
+  - 全局交叉检查（低频采样，默认开启）：每 K 块对比 `leaderboard top N` 与 `get_pass_energy`，并抽样 active owner 校验 `balance-history` 与 usdb 视图一致性
   - pass 总量 / active / invalid
   - active address 总余额
   - 能量榜首摘要
 - 支持固定 `seed`，保证场景可复现。
 - 可选输出结构化 JSONL 报告（每个 tick 一条记录），便于后续离线分析。
+  - tick 事件包含 `tick_action_type_counts`，便于“同 seed 双跑”时对比关键序列统计。
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 
 ## 运行示例
@@ -107,6 +111,10 @@ This wrapper preloads a high-pressure profile (default `200 agents` + `5000 bloc
 - `SIM_AGENT_SELF_CHECK_ENABLED`：是否启用 agent 自检（默认 `1`）
 - `SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次自检（默认 `1`）
 - `SIM_AGENT_SELF_CHECK_SAMPLE_SIZE`：每次自检采样多少 active agents（默认 `0`，表示全量）
+- `SIM_GLOBAL_CROSS_CHECK_ENABLED`：是否启用全局交叉检查（默认 `1`）
+- `SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次全局交叉检查（默认 `20`）
+- `SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N`：每次检查的能量榜前 N 条（默认 `20`）
+- `SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE`：每次检查抽样的 active owner 数（默认 `16`，`0` 表示全量）
 - `DIAG_TAIL_LINES`：失败诊断时每个日志文件打印的尾部行数（默认 `120`）
 
 ## 示例：长时间持续运行
@@ -126,6 +134,27 @@ SIM_POLICY_MODE=scripted \
 SIM_SCRIPTED_CYCLE=mint,send_balance,transfer,remint,spend_balance,noop \
 src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 ```
+
+## 同 seed 双跑一致性检查
+
+用于快速发现非确定性问题（并发、缓存、时序）：
+
+```bash
+src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh
+```
+
+可选参数（环境变量）：
+
+- `SIM_SEED`：两次运行都使用同一个 seed
+- `SIM_BLOCKS`：每次运行的区块数
+- `WORK_DIR`：双跑总工作目录
+- `RUN1_WORK_DIR`、`RUN2_WORK_DIR`：单次运行工作目录
+- `RUN1_REPORT_FILE`、`RUN2_REPORT_FILE`：两次报告路径
+
+脚本会顺序运行两次 `regtest_world_sim.sh`，然后调用 `compare_world_sim_reports.py` 对比：
+
+- `session_end.final_metrics`
+- 每个 tick 的关键字段（默认不比较 txid/inscription id）
 
 ## 说明
 

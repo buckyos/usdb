@@ -96,6 +96,10 @@ class Args:
     agent_self_check_enabled: bool
     agent_self_check_interval_blocks: int
     agent_self_check_sample_size: int
+    global_cross_check_enabled: bool
+    global_cross_check_interval_blocks: int
+    global_cross_check_leaderboard_top_n: int
+    global_cross_check_owner_sample_size: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -146,7 +150,10 @@ class RegtestWorldSimulator:
                 f"unsupported action(s) in scripted_cycle: {unknown_actions}"
             )
 
-        self.rng = random.Random(args.seed)
+        self.action_seed = int(args.seed)
+        self.diagnostic_seed = int(args.seed) ^ 0xA5A5A5A5
+        self.action_rng = random.Random(self.action_seed)
+        self.diag_rng = random.Random(self.diagnostic_seed)
         self.temp_dir = Path(args.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +184,8 @@ class RegtestWorldSimulator:
             "verify_fail": 0,
             "agent_self_check_ok": 0,
             "agent_self_check_fail": 0,
+            "global_cross_check_ok": 0,
+            "global_cross_check_fail": 0,
             "skip": 0,
         }
 
@@ -196,6 +205,8 @@ class RegtestWorldSimulator:
             "session_start",
             {
                 "seed": self.args.seed,
+                "action_seed": self.action_seed,
+                "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
                 "total_agents": self.total_agents,
                 "initial_active_agents": self.active_agent_count,
@@ -204,6 +215,10 @@ class RegtestWorldSimulator:
                 "agent_self_check_enabled": self.args.agent_self_check_enabled,
                 "agent_self_check_interval_blocks": self.args.agent_self_check_interval_blocks,
                 "agent_self_check_sample_size": self.args.agent_self_check_sample_size,
+                "global_cross_check_enabled": self.args.global_cross_check_enabled,
+                "global_cross_check_interval_blocks": self.args.global_cross_check_interval_blocks,
+                "global_cross_check_leaderboard_top_n": self.args.global_cross_check_leaderboard_top_n,
+                "global_cross_check_owner_sample_size": self.args.global_cross_check_owner_sample_size,
             },
         )
 
@@ -492,7 +507,9 @@ class RegtestWorldSimulator:
             time.sleep(0.8)
 
     def random_eth_address(self) -> str:
-        return "0x" + "".join(self.rng.choice("0123456789abcdef") for _ in range(40))
+        return "0x" + "".join(
+            self.action_rng.choice("0123456789abcdef") for _ in range(40)
+        )
 
     def random_btc_amount(self, min_btc: str, max_btc: str) -> str:
         min_sat = int((Decimal(min_btc) * Decimal("100000000")).to_integral_value())
@@ -500,7 +517,7 @@ class RegtestWorldSimulator:
         if max_sat <= min_sat:
             sat = min_sat
         else:
-            sat = self.rng.randint(min_sat, max_sat)
+            sat = self.action_rng.randint(min_sat, max_sat)
         amount = Decimal(sat) / Decimal("100000000")
         return f"{amount:.8f}"
 
@@ -558,9 +575,9 @@ class RegtestWorldSimulator:
 
         total = sum(weight for _, weight in weighted)
         if total <= 0:
-            return self.rng.choice(sorted(available_agent_ids))
+            return self.action_rng.choice(sorted(available_agent_ids))
 
-        x = self.rng.random() * total
+        x = self.action_rng.random() * total
         cursor = 0.0
         for agent_id, weight in weighted:
             cursor += weight
@@ -682,7 +699,7 @@ class RegtestWorldSimulator:
             return "noop"
 
         total = sum(w for _, w in positive)
-        x = self.rng.random() * total
+        x = self.action_rng.random() * total
         cursor = 0.0
         for action, weight in positive:
             cursor += weight
@@ -807,8 +824,8 @@ class RegtestWorldSimulator:
                 {actor.agent_id},
             )
 
-        inscription_id = self.rng.choice(sorted(actor.owned_passes))
-        target = self.rng.choice(target_candidates)
+        inscription_id = self.action_rng.choice(sorted(actor.owned_passes))
+        target = self.action_rng.choice(target_candidates)
         target_active_before = (
             self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
         )
@@ -882,7 +899,7 @@ class RegtestWorldSimulator:
         if max_sat < min_sat:
             amount_sat = max_sat
         else:
-            amount_sat = self.rng.randint(min_sat, max_sat)
+            amount_sat = self.action_rng.randint(min_sat, max_sat)
 
         amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
         txid = self.run_btc_cli(
@@ -915,7 +932,7 @@ class RegtestWorldSimulator:
         candidates = non_invalid if non_invalid else list(self.pass_owner_by_id.keys())
         if not candidates:
             return None
-        return self.rng.choice(sorted(candidates))
+        return self.action_rng.choice(sorted(candidates))
 
     def execute_agent_action(
         self,
@@ -1124,7 +1141,7 @@ class RegtestWorldSimulator:
         sample_size = self.args.agent_self_check_sample_size
         if sample_size <= 0 or sample_size >= len(ordered):
             return ordered
-        return sorted(self.rng.sample(ordered, sample_size))
+        return sorted(self.diag_rng.sample(ordered, sample_size))
 
     def run_agent_self_check(self, agent: Agent, block_height: int) -> None:
         active_pass_id = agent.active_pass_id
@@ -1216,6 +1233,253 @@ class RegtestWorldSimulator:
         agent.oracle_last_owner_balance = owner_balance
         agent.oracle_last_record_block_height = record_block_height
 
+    def should_run_global_cross_check(self, tick: int) -> bool:
+        if not self.args.global_cross_check_enabled:
+            return False
+        interval = self.args.global_cross_check_interval_blocks
+        if interval <= 0:
+            return False
+        return tick % interval == 0
+
+    def load_all_active_passes_at_height(self, block_height: int) -> list[dict[str, Any]]:
+        page = 0
+        page_size = 256
+        rows: list[dict[str, Any]] = []
+
+        while True:
+            payload = self.rpc_usdb(
+                "get_active_passes_at_height",
+                [{"at_height": block_height, "page": page, "page_size": page_size}],
+            )
+            if not isinstance(payload, dict):
+                raise WorldSimError(
+                    "global cross-check invalid get_active_passes_at_height payload: "
+                    f"block_height={block_height}, page={page}, payload={payload}"
+                )
+
+            resolved_height = int(payload.get("resolved_height", -1))
+            if resolved_height != block_height:
+                raise WorldSimError(
+                    "global cross-check active-pass resolved height mismatch: "
+                    f"expected={block_height}, got={resolved_height}, page={page}"
+                )
+
+            items = payload.get("items") or []
+            if not isinstance(items, list):
+                raise WorldSimError(
+                    "global cross-check invalid active-pass items type: "
+                    f"block_height={block_height}, page={page}, items={items}"
+                )
+
+            if not items:
+                break
+            rows.extend(items)
+            if len(items) < page_size:
+                break
+            page += 1
+
+        return rows
+
+    def run_global_cross_check(self, block_height: int, tick: int) -> dict[str, Any]:
+        start_ts = time.time()
+        top_n = max(1, self.args.global_cross_check_leaderboard_top_n)
+        owner_sample_size = self.args.global_cross_check_owner_sample_size
+
+        exact_snapshot = self.rpc_usdb(
+            "get_active_balance_snapshot", [{"block_height": block_height}]
+        )
+        if not isinstance(exact_snapshot, dict):
+            raise WorldSimError(
+                "global cross-check missing exact active balance snapshot: "
+                f"tick={tick}, block_height={block_height}, payload={exact_snapshot}"
+            )
+        snapshot_height = int(exact_snapshot.get("block_height", -1))
+        snapshot_total_balance = int(exact_snapshot.get("total_balance", 0))
+        snapshot_active_count = int(exact_snapshot.get("active_address_count", 0))
+        if snapshot_height != block_height:
+            raise WorldSimError(
+                "global cross-check snapshot height mismatch: "
+                f"tick={tick}, expected={block_height}, got={snapshot_height}"
+            )
+
+        leaderboard = self.rpc_usdb(
+            "get_pass_energy_leaderboard",
+            [{"at_height": block_height, "page": 0, "page_size": top_n}],
+        )
+        if not isinstance(leaderboard, dict):
+            raise WorldSimError(
+                "global cross-check invalid leaderboard payload: "
+                f"tick={tick}, block_height={block_height}, payload={leaderboard}"
+            )
+        leaderboard_height = int(leaderboard.get("resolved_height", -1))
+        if leaderboard_height != block_height:
+            raise WorldSimError(
+                "global cross-check leaderboard height mismatch: "
+                f"tick={tick}, expected={block_height}, got={leaderboard_height}"
+            )
+        leaderboard_items = leaderboard.get("items") or []
+        if not isinstance(leaderboard_items, list):
+            raise WorldSimError(
+                "global cross-check invalid leaderboard items type: "
+                f"tick={tick}, block_height={block_height}, items={leaderboard_items}"
+            )
+
+        compared_top_items = 0
+        for item in leaderboard_items:
+            inscription_id = str(item.get("inscription_id", ""))
+            owner = str(item.get("owner", ""))
+            expected_energy = int(item.get("energy", 0))
+            expected_state = str(item.get("state", ""))
+            expected_record_height = int(item.get("record_block_height", -1))
+            if not inscription_id:
+                raise WorldSimError(
+                    "global cross-check leaderboard item missing inscription_id: "
+                    f"tick={tick}, block_height={block_height}, item={item}"
+                )
+
+            energy_snapshot = self.get_pass_energy_snapshot(
+                inscription_id, block_height, mode="at_or_before"
+            )
+            if energy_snapshot is None:
+                raise WorldSimError(
+                    "global cross-check missing pass energy for leaderboard item: "
+                    f"tick={tick}, block_height={block_height}, inscription_id={inscription_id}"
+                )
+
+            actual_query_height = int(
+                energy_snapshot.get("query_block_height", block_height)
+            )
+            actual_record_height = int(
+                energy_snapshot.get("record_block_height", -1)
+            )
+            actual_owner = str(energy_snapshot.get("owner_address", ""))
+            actual_state = str(energy_snapshot.get("state", ""))
+            actual_energy = int(energy_snapshot.get("energy", 0))
+
+            if actual_query_height != block_height:
+                raise WorldSimError(
+                    "global cross-check leaderboard query height mismatch: "
+                    f"tick={tick}, block_height={block_height}, inscription_id={inscription_id}, "
+                    f"actual_query_height={actual_query_height}"
+                )
+            if actual_record_height != expected_record_height:
+                raise WorldSimError(
+                    "global cross-check leaderboard record height mismatch: "
+                    f"tick={tick}, inscription_id={inscription_id}, expected={expected_record_height}, got={actual_record_height}"
+                )
+            if actual_owner != owner:
+                raise WorldSimError(
+                    "global cross-check leaderboard owner mismatch: "
+                    f"tick={tick}, inscription_id={inscription_id}, expected_owner={owner}, got_owner={actual_owner}"
+                )
+            if actual_state != expected_state:
+                raise WorldSimError(
+                    "global cross-check leaderboard state mismatch: "
+                    f"tick={tick}, inscription_id={inscription_id}, expected_state={expected_state}, got_state={actual_state}"
+                )
+            if actual_energy != expected_energy:
+                raise WorldSimError(
+                    "global cross-check leaderboard energy mismatch: "
+                    f"tick={tick}, inscription_id={inscription_id}, expected_energy={expected_energy}, got_energy={actual_energy}"
+                )
+            compared_top_items += 1
+
+        active_rows = self.load_all_active_passes_at_height(block_height)
+        owner_to_pass: dict[str, str] = {}
+        for row in active_rows:
+            owner = str(row.get("owner", ""))
+            inscription_id = str(row.get("inscription_id", ""))
+            if not owner or not inscription_id:
+                raise WorldSimError(
+                    "global cross-check invalid active-pass row: "
+                    f"tick={tick}, block_height={block_height}, row={row}"
+                )
+            if owner in owner_to_pass:
+                raise WorldSimError(
+                    "global cross-check duplicate active owner from active-pass view: "
+                    f"tick={tick}, block_height={block_height}, owner={owner}, "
+                    f"pass_a={owner_to_pass[owner]}, pass_b={inscription_id}"
+                )
+            owner_to_pass[owner] = inscription_id
+
+        if len(owner_to_pass) != snapshot_active_count:
+            raise WorldSimError(
+                "global cross-check active owner count mismatch: "
+                f"tick={tick}, block_height={block_height}, owner_count={len(owner_to_pass)}, "
+                f"snapshot_active_count={snapshot_active_count}"
+            )
+
+        owners = sorted(owner_to_pass.keys())
+        if owner_sample_size <= 0 or owner_sample_size >= len(owners):
+            sampled_owners = owners
+        else:
+            sampled_owners = sorted(self.diag_rng.sample(owners, owner_sample_size))
+
+        sampled_balance_sum = 0
+        for owner in sampled_owners:
+            inscription_id = owner_to_pass[owner]
+            bh_balance = self.get_balance_at_height(owner, block_height)
+            sampled_balance_sum += bh_balance
+
+            owner_active = self.get_owner_active_pass_snapshot(owner, block_height)
+            if owner_active is None:
+                raise WorldSimError(
+                    "global cross-check missing owner active pass snapshot: "
+                    f"tick={tick}, block_height={block_height}, owner={owner}"
+                )
+            owner_active_id = str(owner_active.get("inscription_id", ""))
+            if owner_active_id != inscription_id:
+                raise WorldSimError(
+                    "global cross-check owner active pass mismatch: "
+                    f"tick={tick}, owner={owner}, expected_pass={inscription_id}, got_pass={owner_active_id}"
+                )
+
+            energy_snapshot = self.get_pass_energy_snapshot(
+                inscription_id, block_height, mode="at_or_before"
+            )
+            if energy_snapshot is None:
+                raise WorldSimError(
+                    "global cross-check missing energy for sampled owner pass: "
+                    f"tick={tick}, owner={owner}, inscription_id={inscription_id}"
+                )
+            owner_from_energy = str(energy_snapshot.get("owner_address", ""))
+            owner_balance_from_energy = int(energy_snapshot.get("owner_balance", 0))
+            if owner_from_energy != owner:
+                raise WorldSimError(
+                    "global cross-check sampled owner mismatch in energy snapshot: "
+                    f"tick={tick}, inscription_id={inscription_id}, expected_owner={owner}, got_owner={owner_from_energy}"
+                )
+            if owner_balance_from_energy != bh_balance:
+                raise WorldSimError(
+                    "global cross-check sampled owner balance mismatch: "
+                    f"tick={tick}, owner={owner}, inscription_id={inscription_id}, "
+                    f"balance_history_balance={bh_balance}, energy_owner_balance={owner_balance_from_energy}"
+                )
+
+        if sampled_balance_sum > snapshot_total_balance:
+            raise WorldSimError(
+                "global cross-check sampled balance exceeds snapshot total: "
+                f"tick={tick}, sampled_balance_sum={sampled_balance_sum}, snapshot_total={snapshot_total_balance}"
+            )
+        if len(sampled_owners) == len(owners) and sampled_balance_sum != snapshot_total_balance:
+            raise WorldSimError(
+                "global cross-check full sampled balance mismatch with snapshot total: "
+                f"tick={tick}, sampled_balance_sum={sampled_balance_sum}, snapshot_total={snapshot_total_balance}"
+            )
+
+        elapsed_ms = int((time.time() - start_ts) * 1000)
+        return {
+            "tick": tick,
+            "block_height": block_height,
+            "top_n": top_n,
+            "leaderboard_compared_count": compared_top_items,
+            "active_owner_count": len(owners),
+            "sampled_owner_count": len(sampled_owners),
+            "sampled_balance_sum": sampled_balance_sum,
+            "snapshot_total_balance": snapshot_total_balance,
+            "elapsed_ms": elapsed_ms,
+        }
+
     def mine_one_block(self) -> int:
         self.run_btc_cli(
             self.args.miner_wallet,
@@ -1273,7 +1537,11 @@ class RegtestWorldSimulator:
             f"scripted_cycle={self.args.scripted_cycle}, "
             f"agent_self_check_enabled={self.args.agent_self_check_enabled}, "
             f"agent_self_check_interval_blocks={self.args.agent_self_check_interval_blocks}, "
-            f"agent_self_check_sample_size={self.args.agent_self_check_sample_size}"
+            f"agent_self_check_sample_size={self.args.agent_self_check_sample_size}, "
+            f"global_cross_check_enabled={self.args.global_cross_check_enabled}, "
+            f"global_cross_check_interval_blocks={self.args.global_cross_check_interval_blocks}, "
+            f"global_cross_check_leaderboard_top_n={self.args.global_cross_check_leaderboard_top_n}, "
+            f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}"
         )
         if self.report_path is not None:
             self.log(f"Structured tick report enabled: path={self.report_path}")
@@ -1290,9 +1558,12 @@ class RegtestWorldSimulator:
             active_agent_ids = self.get_active_agent_ids()
             available_ids: set[int] = set(active_agent_ids)
             max_slots = min(self.args.max_actions_per_block, len(available_ids))
-            action_slots = self.rng.randint(0, max(0, max_slots))
+            action_slots = self.action_rng.randint(0, max(0, max_slots))
 
             action_results: list[str] = []
+            tick_action_type_counts = {
+                action: 0 for action in sorted(self.SUPPORTED_ACTIONS)
+            }
             expectations: list[ActionExpectation] = []
             action_failed = 0
             action_fail_samples: list[str] = []
@@ -1301,6 +1572,10 @@ class RegtestWorldSimulator:
             self_check_failed = 0
             self_check_fail_samples: list[str] = []
             self_checked_count = 0
+            global_cross_checked = 0
+            global_cross_check_failed = 0
+            global_cross_check_fail_samples: list[str] = []
+            global_cross_check_info: dict[str, Any] | None = None
             refresh_failed_agent_ids: set[int] = set()
 
             for _ in range(action_slots):
@@ -1310,6 +1585,9 @@ class RegtestWorldSimulator:
                 actor_id = self.choose_actor(available_ids)
                 actor = self.agents[actor_id]
                 action = self.choose_action_for_agent(actor, available_ids, pre_height)
+                tick_action_type_counts[action] = (
+                    tick_action_type_counts.get(action, 0) + 1
+                )
 
                 try:
                     detail, expectation, used_ids = self.execute_agent_action(
@@ -1392,6 +1670,24 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            if self.should_run_global_cross_check(tick):
+                global_cross_checked = 1
+                try:
+                    global_cross_check_info = self.run_global_cross_check(
+                        block_height, tick
+                    )
+                    self.metrics["global_cross_check_ok"] += 1
+                except Exception as e:  # noqa: BLE001
+                    self.metrics["global_cross_check_fail"] += 1
+                    global_cross_check_failed = 1
+                    global_cross_check_fail_samples.append(str(e))
+                    self.log(
+                        "WARN global cross-check failed: "
+                        f"tick={tick}, block_height={block_height}, error={e}"
+                    )
+                    if self.args.fail_fast:
+                        raise
+
             summary = self.collect_summary(block_height)
             pass_stats = summary["pass_stats"] or {}
             latest_balance = summary["latest_balance"] or {}
@@ -1408,6 +1704,7 @@ class RegtestWorldSimulator:
                 f"tick={tick}, block_height={block_height}, synced_height={synced_height}, "
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
                 f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
+                f"global_cross_checked={global_cross_checked}, global_cross_check_failed={global_cross_check_failed}, "
                 f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, pass_active={active_count}, "
                 f"pass_invalid={invalid_count}, active_addresses={active_addresses}, "
                 f"active_total_balance={total_balance}, top_energy={top_energy}"
@@ -1432,7 +1729,10 @@ class RegtestWorldSimulator:
                     "verify_failed": verify_failed,
                     "agent_self_checked": self_checked_count,
                     "agent_self_check_failed": self_check_failed,
+                    "global_cross_checked": global_cross_checked,
+                    "global_cross_check_failed": global_cross_check_failed,
                     "known_passes": len(self.pass_owner_by_id),
+                    "tick_action_type_counts": tick_action_type_counts,
                     "pass_total": total_count,
                     "pass_active": active_count,
                     "pass_invalid": invalid_count,
@@ -1443,6 +1743,10 @@ class RegtestWorldSimulator:
                     "action_fail_samples": action_fail_samples[:8],
                     "verify_fail_samples": verify_fail_samples[:8],
                     "agent_self_check_fail_samples": self_check_fail_samples[:8],
+                    "global_cross_check_info": global_cross_check_info,
+                    "global_cross_check_fail_samples": global_cross_check_fail_samples[
+                        :8
+                    ],
                 },
             )
 
@@ -1522,6 +1826,29 @@ def parse_args() -> Args:
         default=0,
         help="How many active agents to self-check per run tick (0 means all active agents)",
     )
+    parser.add_argument(
+        "--disable-global-cross-check",
+        action="store_true",
+        help="Disable low-frequency global cross-check diagnostics",
+    )
+    parser.add_argument(
+        "--global-cross-check-interval-blocks",
+        type=int,
+        default=20,
+        help="Run global cross-check every N mined blocks",
+    )
+    parser.add_argument(
+        "--global-cross-check-leaderboard-top-n",
+        type=int,
+        default=20,
+        help="Cross-check this many top leaderboard rows each run",
+    )
+    parser.add_argument(
+        "--global-cross-check-owner-sample-size",
+        type=int,
+        default=16,
+        help="How many active owners to sample per global cross-check (0 means all active owners)",
+    )
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
@@ -1565,6 +1892,10 @@ def parse_args() -> Args:
         agent_self_check_enabled=(not parsed.disable_agent_self_check),
         agent_self_check_interval_blocks=parsed.agent_self_check_interval_blocks,
         agent_self_check_sample_size=parsed.agent_self_check_sample_size,
+        global_cross_check_enabled=(not parsed.disable_global_cross_check),
+        global_cross_check_interval_blocks=parsed.global_cross_check_interval_blocks,
+        global_cross_check_leaderboard_top_n=parsed.global_cross_check_leaderboard_top_n,
+        global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
     )
 
 
