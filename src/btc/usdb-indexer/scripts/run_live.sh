@@ -7,6 +7,10 @@ WORLD_SIM_SCRIPT="${SCRIPT_DIR}/regtest_world_sim.sh"
 
 # Base workspace for this long-running session.
 WORK_DIR="${WORK_DIR:-/tmp/usdb-world-live}"
+# Reset workspace before launch (1=true, 0=false).
+RESET_WORK_DIR="${RESET_WORK_DIR:-1}"
+# Skip interactive prompt for workspace reset (1=true, 0=false).
+RESET_WORK_DIR_FORCE="${RESET_WORK_DIR_FORCE:-0}"
 
 # Bitcoin Core binaries directory (contains bitcoind and bitcoin-cli).
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
@@ -81,11 +85,47 @@ log() {
   echo "[run-live] $*"
 }
 
+confirm_and_reset_work_dir() {
+  if [[ "${RESET_WORK_DIR}" != "1" ]]; then
+    return
+  fi
+
+  if [[ -z "${WORK_DIR}" || "${WORK_DIR}" == "/" ]]; then
+    echo "Refusing to reset unsafe WORK_DIR='${WORK_DIR}'" >&2
+    exit 1
+  fi
+
+  # Keep reset scope narrow: this switch is intended for temporary workspace paths.
+  if [[ "${WORK_DIR}" != /tmp/* ]]; then
+    echo "Refusing to reset non-/tmp WORK_DIR='${WORK_DIR}'" >&2
+    echo "Set WORK_DIR under /tmp, or disable RESET_WORK_DIR." >&2
+    exit 1
+  fi
+
+  if [[ "${RESET_WORK_DIR_FORCE}" != "1" ]]; then
+    log "Workspace reset requested: WORK_DIR=${WORK_DIR}"
+    echo "Type 'YES' to delete and recreate this directory: ${WORK_DIR}"
+    read -r confirm
+    if [[ "${confirm}" != "YES" ]]; then
+      echo "Reset aborted by user." >&2
+      exit 1
+    fi
+  else
+    log "Workspace reset requested with force mode: WORK_DIR=${WORK_DIR}"
+  fi
+
+  rm -rf "${WORK_DIR}"
+  mkdir -p "${WORK_DIR}"
+  log "Workspace reset completed: WORK_DIR=${WORK_DIR}"
+}
+
 main() {
   if [[ ! -x "${WORLD_SIM_SCRIPT}" ]]; then
     echo "Missing executable script: ${WORLD_SIM_SCRIPT}" >&2
     exit 1
   fi
+
+  confirm_and_reset_work_dir
 
   log "Starting live world simulation with AGENT_COUNT=${AGENT_COUNT}, SIM_BLOCKS=${SIM_BLOCKS}"
   log "USDB RPC endpoint: http://127.0.0.1:${USDB_RPC_PORT}"
