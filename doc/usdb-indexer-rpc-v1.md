@@ -375,17 +375,24 @@
 
 ### 13) `get_pass_energy_leaderboard`
 
-查询某高度活跃 pass 的能量排行榜（按 `energy DESC`）。
+查询某高度 pass 的能量排行榜（按 `energy DESC`）。
 
 参数：
 
 ```json
 {
   "at_height": 900123,
+  "scope": "active",
   "page": 0,
   "page_size": 100
 }
 ```
+
+`scope` 可选，允许：
+
+- `active`：仅 `active`（默认）
+- `active_dormant`：`active + dormant`
+- `all`：全部状态（`active/dormant/consumed/burned/invalid`）
 
 返回：
 

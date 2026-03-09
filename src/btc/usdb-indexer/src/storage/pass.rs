@@ -2205,10 +2205,28 @@ impl MinerPassStorage {
         &self,
         block_height: u32,
     ) -> Result<u64, String> {
+        self.get_pass_count_from_history_at_height_by_states(
+            block_height,
+            &[MinerPassState::Active],
+        )
+    }
+
+    pub fn get_pass_count_from_history_at_height_by_states(
+        &self,
+        block_height: u32,
+        states: &[MinerPassState],
+    ) -> Result<u64, String> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+
         let conn = self.conn.lock().unwrap();
-        let count: i64 = conn
-            .query_row(
-                "
+        let placeholders = (0..states.len())
+            .map(|idx| format!("?{}", idx + 2))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql = format!(
+            "
                 WITH latest AS (
                     SELECT
                         inscription_id,
@@ -2220,15 +2238,28 @@ impl MinerPassStorage {
                 SELECT COUNT(*)
                 FROM miner_pass_state_history h
                 INNER JOIN latest l ON h.id = l.max_id
-                WHERE h.new_state = ?2;
+                WHERE h.new_state IN ({});
                 ",
-                rusqlite::params![block_height as i64, MinerPassState::Active.as_str()],
-                |row| row.get(0),
-            )
+            placeholders
+        );
+
+        let mut params = Vec::<rusqlite::types::Value>::with_capacity(1 + states.len());
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+
+        let count: i64 = conn
+            .query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
             .map_err(|e| {
+                let state_names = states
+                    .iter()
+                    .map(|s| s.as_str().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
                 let msg = format!(
-                    "Failed to count active pass snapshot from history at block height {}: {}",
-                    block_height, e
+                    "Failed to count pass snapshot from history at block height {} with states [{}]: {}",
+                    block_height, state_names, e
                 );
                 error!("{}", msg);
                 msg
@@ -2236,7 +2267,7 @@ impl MinerPassStorage {
 
         if count < 0 {
             let msg = format!(
-                "Invalid negative active pass count at block height {}: {}",
+                "Invalid negative pass count at block height {}: {}",
                 block_height, count
             );
             error!("{}", msg);
@@ -2252,12 +2283,36 @@ impl MinerPassStorage {
         page_size: usize,
         block_height: u32,
     ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        self.get_passes_by_page_from_history_at_height_by_states(
+            page,
+            page_size,
+            block_height,
+            &[MinerPassState::Active],
+        )
+    }
+
+    pub fn get_passes_by_page_from_history_at_height_by_states(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+        states: &[MinerPassState],
+    ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let conn = self.conn.lock().unwrap();
         let offset = page * page_size;
 
-        let mut stmt = conn
-            .prepare(
-                "
+        let state_placeholders = (0..states.len())
+            .map(|idx| format!("?{}", idx + 2))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let limit_placeholder = states.len() + 2;
+        let offset_placeholder = states.len() + 3;
+        let sql = format!(
+            "
             WITH latest AS (
                 SELECT
                     inscription_id,
@@ -2271,30 +2326,37 @@ impl MinerPassStorage {
                 h.new_owner
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.max_id
-            WHERE h.new_state = ?2
+            WHERE h.new_state IN ({})
             ORDER BY h.block_height DESC, h.id DESC
-            LIMIT ?3 OFFSET ?4;
+            LIMIT ?{} OFFSET ?{};
             ",
-            )
+            state_placeholders, limit_placeholder, offset_placeholder
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| {
                 let msg = format!(
-                    "Failed to prepare statement to get active pass snapshot from history by page: {}",
+                    "Failed to prepare statement to get pass snapshot from history by page and states: {}",
                     e
                 );
                 error!("{}", msg);
                 msg
             })?;
 
+        let mut params = Vec::<rusqlite::types::Value>::with_capacity(states.len() + 3);
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+        params.push(rusqlite::types::Value::Integer(page_size as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
+
         let mut rows = stmt
-            .query(rusqlite::params![
-                block_height as i64,
-                MinerPassState::Active.as_str(),
-                page_size as i64,
-                offset as i64
-            ])
+            .query(rusqlite::params_from_iter(params))
             .map_err(|e| {
                 let msg = format!(
-                    "Failed to query active pass snapshot from history at block height {}: {}",
+                    "Failed to query pass snapshot from history at block height {} with state filter: {}",
                     block_height, e
                 );
                 error!("{}", msg);
@@ -3865,6 +3927,48 @@ mod tests {
             .get_active_pass_count_from_history_at_height(120)
             .unwrap();
         assert_eq!(active_count_120, 1);
+
+        let active_dormant_count_120 = storage
+            .get_pass_count_from_history_at_height_by_states(
+                120,
+                &[MinerPassState::Active, MinerPassState::Dormant],
+            )
+            .unwrap();
+        assert_eq!(active_dormant_count_120, 2);
+
+        let all_state_count_120 = storage
+            .get_pass_count_from_history_at_height_by_states(
+                120,
+                &[
+                    MinerPassState::Active,
+                    MinerPassState::Dormant,
+                    MinerPassState::Consumed,
+                    MinerPassState::Burned,
+                    MinerPassState::Invalid,
+                ],
+            )
+            .unwrap();
+        assert_eq!(all_state_count_120, 3);
+
+        let active_dormant_rows = storage
+            .get_passes_by_page_from_history_at_height_by_states(
+                0,
+                10,
+                120,
+                &[MinerPassState::Active, MinerPassState::Dormant],
+            )
+            .unwrap();
+        assert_eq!(active_dormant_rows.len(), 2);
+
+        let empty_state_count = storage
+            .get_pass_count_from_history_at_height_by_states(120, &[])
+            .unwrap();
+        assert_eq!(empty_state_count, 0);
+
+        let empty_state_rows = storage
+            .get_passes_by_page_from_history_at_height_by_states(0, 10, 120, &[])
+            .unwrap();
+        assert!(empty_state_rows.is_empty());
 
         let history_count = storage
             .get_pass_history_count_in_height_range(&dormant_pass.inscription_id, 100, 130)

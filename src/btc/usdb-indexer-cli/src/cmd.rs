@@ -132,6 +132,10 @@ pub enum Commands {
         #[arg(long)]
         at_height: Option<u32>,
 
+        /// Leaderboard scope: active | active_dormant | all.
+        #[arg(long)]
+        scope: Option<String>,
+
         #[arg(long, default_value_t = 0)]
         page: usize,
 

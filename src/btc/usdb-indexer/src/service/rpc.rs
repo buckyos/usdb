@@ -286,6 +286,11 @@ pub struct PassEnergyRangePage {
 pub struct GetPassEnergyLeaderboardParams {
     /// Optional query height; `None` resolves to synced height.
     pub at_height: Option<u32>,
+    /// Optional leaderboard scope:
+    /// - `active`: only active passes (default).
+    /// - `active_dormant`: include active + dormant passes.
+    /// - `all`: include all pass states.
+    pub scope: Option<String>,
     /// Zero-based page index.
     pub page: usize,
     /// Number of rows per page.

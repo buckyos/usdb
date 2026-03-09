@@ -1,6 +1,6 @@
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
-use crate::index::InscriptionIndexer;
+use crate::index::{InscriptionIndexer, MinerPassState};
 use crate::status::StatusManagerRef;
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
@@ -25,6 +25,7 @@ const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 #[derive(Clone, Debug)]
 struct PassEnergyLeaderboardCacheEntry {
     resolved_height: u32,
+    scope: String,
     top_k: usize,
     total: u64,
     items: Vec<PassEnergyLeaderboardItem>,
@@ -33,6 +34,37 @@ struct PassEnergyLeaderboardCacheEntry {
 #[derive(Debug, Default)]
 struct PassEnergyLeaderboardCache {
     latest: Option<PassEnergyLeaderboardCacheEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PassEnergyLeaderboardScope {
+    Active,
+    ActiveDormant,
+    All,
+}
+
+impl PassEnergyLeaderboardScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::ActiveDormant => "active_dormant",
+            Self::All => "all",
+        }
+    }
+
+    fn states(self) -> Vec<MinerPassState> {
+        match self {
+            Self::Active => vec![MinerPassState::Active],
+            Self::ActiveDormant => vec![MinerPassState::Active, MinerPassState::Dormant],
+            Self::All => vec![
+                MinerPassState::Active,
+                MinerPassState::Dormant,
+                MinerPassState::Consumed,
+                MinerPassState::Burned,
+                MinerPassState::Invalid,
+            ],
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -221,6 +253,22 @@ impl UsdbIndexerRpcServer {
         Ok(resolved_to)
     }
 
+    fn parse_leaderboard_scope(
+        &self,
+        value: Option<&str>,
+    ) -> Result<PassEnergyLeaderboardScope, JsonError> {
+        let normalized = value.unwrap_or("active").trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "active" => Ok(PassEnergyLeaderboardScope::Active),
+            "active_dormant" => Ok(PassEnergyLeaderboardScope::ActiveDormant),
+            "all" => Ok(PassEnergyLeaderboardScope::All),
+            _ => Err(Self::to_invalid_params(format!(
+                "Invalid leaderboard scope {}, expected active, active_dormant, or all",
+                normalized
+            ))),
+        }
+    }
+
     fn build_pass_snapshot(
         &self,
         inscription_id: &InscriptionId,
@@ -303,6 +351,7 @@ impl UsdbIndexerRpcServer {
     fn try_get_cached_leaderboard_page(
         &self,
         resolved_height: u32,
+        scope: PassEnergyLeaderboardScope,
         top_k: usize,
         page: usize,
         page_size: usize,
@@ -312,7 +361,10 @@ impl UsdbIndexerRpcServer {
         let Some(entry) = &cache.latest else {
             return Ok(None);
         };
-        if entry.resolved_height != resolved_height || entry.top_k != top_k {
+        if entry.resolved_height != resolved_height
+            || entry.scope != scope.as_str()
+            || entry.top_k != top_k
+        {
             return Ok(None);
         }
 
@@ -352,6 +404,7 @@ impl UsdbIndexerRpcServer {
     fn update_leaderboard_cache(
         &self,
         resolved_height: u32,
+        scope: PassEnergyLeaderboardScope,
         top_k: usize,
         total: u64,
         ranked: &[PassEnergyLeaderboardItem],
@@ -364,6 +417,7 @@ impl UsdbIndexerRpcServer {
             .collect::<Vec<PassEnergyLeaderboardItem>>();
         cache.latest = Some(PassEnergyLeaderboardCacheEntry {
             resolved_height,
+            scope: scope.as_str().to_string(),
             top_k,
             total,
             items: cached_items,
@@ -373,42 +427,46 @@ impl UsdbIndexerRpcServer {
     fn build_pass_energy_leaderboard_dataset(
         &self,
         resolved_height: u32,
+        scope: PassEnergyLeaderboardScope,
     ) -> Result<(u64, Vec<PassEnergyLeaderboardItem>), JsonError> {
         let build_start = Instant::now();
+        let states = scope.states();
         let storage = self.indexer.miner_pass_storage();
-        let total_active = storage
-            .get_active_pass_count_from_history_at_height(resolved_height)
+        let total_passes = storage
+            .get_pass_count_from_history_at_height_by_states(resolved_height, &states)
             .map_err(Self::to_internal_error)?;
 
-        if total_active == 0 {
+        if total_passes == 0 {
             return Ok((0, Vec::new()));
         }
 
         let load_page_size = self.config.config().usdb.active_address_page_size.max(1);
-        let total_active_usize = usize::try_from(total_active).map_err(|_| {
+        let total_passes_usize = usize::try_from(total_passes).map_err(|_| {
             Self::to_internal_error(format!(
-                "Active pass count overflow when building energy leaderboard: total_active={}",
-                total_active
+                "Pass count overflow when building energy leaderboard: total_passes={}, scope={}",
+                total_passes,
+                scope.as_str()
             ))
         })?;
-        let total_pages = (total_active_usize + load_page_size - 1) / load_page_size;
-        let mut active_rows = Vec::with_capacity(total_active_usize);
+        let total_pages = (total_passes_usize + load_page_size - 1) / load_page_size;
+        let mut rows = Vec::with_capacity(total_passes_usize);
         for page in 0..total_pages {
-            let rows = storage
-                .get_all_active_pass_by_page_from_history_at_height(
+            let page_rows = storage
+                .get_passes_by_page_from_history_at_height_by_states(
                     page,
                     load_page_size,
                     resolved_height,
+                    &states,
                 )
                 .map_err(Self::to_internal_error)?;
-            if rows.is_empty() {
+            if page_rows.is_empty() {
                 break;
             }
-            active_rows.extend(rows);
+            rows.extend(page_rows);
         }
 
-        let mut ranked = Vec::with_capacity(active_rows.len());
-        for row in active_rows {
+        let mut ranked = Vec::with_capacity(rows.len());
+        for row in rows {
             let Some(record) = self
                 .indexer
                 .pass_energy_manager()
@@ -445,11 +503,12 @@ impl UsdbIndexerRpcServer {
         let total = ranked.len() as u64;
         let elapsed_ms = build_start.elapsed().as_millis();
         info!(
-            "Pass energy leaderboard dataset built: module=rpc_server, resolved_height={}, active_count={}, ranked_count={}, missing_energy_count={}, elapsed_ms={}",
+            "Pass energy leaderboard dataset built: module=rpc_server, scope={}, resolved_height={}, pass_count={}, ranked_count={}, missing_energy_count={}, elapsed_ms={}",
+            scope.as_str(),
             resolved_height,
-            total_active,
+            total_passes,
             total,
-            total_active.saturating_sub(total),
+            total_passes.saturating_sub(total),
             elapsed_ms
         );
 
@@ -794,6 +853,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         self.validate_pagination(params.page, params.page_size)?;
 
         let resolved_height = self.resolve_height(params.at_height)?;
+        let scope = self.parse_leaderboard_scope(params.scope.as_deref())?;
         let call_start = Instant::now();
         let (cache_enabled, cache_top_k) = self.leaderboard_cache_settings();
         let offset = Self::pagination_offset(params.page, params.page_size)?;
@@ -803,12 +863,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             if should_use_cache {
                 if let Some(cached_page) = self.try_get_cached_leaderboard_page(
                     resolved_height,
+                    scope,
                     cache_top_k,
                     params.page,
                     params.page_size,
                 )? {
                     info!(
-                        "Pass energy leaderboard top-k overflow served from cache metadata: module=rpc_server, resolved_height={}, top_k={}, page={}, page_size={}, elapsed_ms={}",
+                        "Pass energy leaderboard top-k overflow served from cache metadata: module=rpc_server, scope={}, resolved_height={}, top_k={}, page={}, page_size={}, elapsed_ms={}",
+                        scope.as_str(),
                         resolved_height,
                         cache_top_k,
                         params.page,
@@ -820,7 +882,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             }
 
             info!(
-                "Pass energy leaderboard top-k overflow returned empty: module=rpc_server, resolved_height={}, top_k={}, at_height={:?}, page={}, page_size={}, elapsed_ms={}",
+                "Pass energy leaderboard top-k overflow returned empty: module=rpc_server, scope={}, resolved_height={}, top_k={}, at_height={:?}, page={}, page_size={}, elapsed_ms={}",
+                scope.as_str(),
                 resolved_height,
                 cache_top_k,
                 params.at_height,
@@ -838,12 +901,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         if should_use_cache {
             if let Some(cached_page) = self.try_get_cached_leaderboard_page(
                 resolved_height,
+                scope,
                 cache_top_k,
                 params.page,
                 params.page_size,
             )? {
                 info!(
-                    "Pass energy leaderboard served from cache: module=rpc_server, resolved_height={}, page={}, page_size={}, total={}, elapsed_ms={}",
+                    "Pass energy leaderboard served from cache: module=rpc_server, scope={}, resolved_height={}, page={}, page_size={}, total={}, elapsed_ms={}",
+                    scope.as_str(),
                     resolved_height,
                     params.page,
                     params.page_size,
@@ -854,7 +919,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             }
         }
 
-        let (raw_total, ranked) = self.build_pass_energy_leaderboard_dataset(resolved_height)?;
+        let (raw_total, ranked) =
+            self.build_pass_energy_leaderboard_dataset(resolved_height, scope)?;
         let capped_total = raw_total.min(cache_top_k as u64);
         let capped_len = capped_total as usize;
         let capped_ranked = if ranked.len() > capped_len {
@@ -872,12 +938,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         if should_use_cache {
             self.update_leaderboard_cache(
                 resolved_height,
+                scope,
                 cache_top_k,
                 capped_total,
                 capped_ranked,
             );
             info!(
-                "Pass energy leaderboard cache refreshed: module=rpc_server, resolved_height={}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                "Pass energy leaderboard cache refreshed: module=rpc_server, scope={}, resolved_height={}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                scope.as_str(),
                 resolved_height,
                 cache_top_k,
                 raw_total,
@@ -888,7 +956,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             );
         } else {
             info!(
-                "Pass energy leaderboard served without cache: module=rpc_server, resolved_height={}, at_height={:?}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                "Pass energy leaderboard served without cache: module=rpc_server, scope={}, resolved_height={}, at_height={:?}, top_k={}, raw_total={}, capped_total={}, page={}, page_size={}, elapsed_ms={}",
+                scope.as_str(),
                 resolved_height,
                 params.at_height,
                 cache_top_k,
@@ -1101,13 +1170,23 @@ mod tests {
         block_height: u32,
         energy: u64,
     ) {
+        seed_energy_record_with_state(server, pass, block_height, MinerPassState::Active, energy);
+    }
+
+    fn seed_energy_record_with_state(
+        server: &UsdbIndexerRpcServer,
+        pass: &MinerPassInfo,
+        block_height: u32,
+        state: MinerPassState,
+        energy: u64,
+    ) {
         server
             .indexer
             .pass_energy_manager()
             .insert_pass_energy_record_for_test(&PassEnergyRecord {
                 inscription_id: pass.inscription_id,
                 block_height,
-                state: MinerPassState::Active,
+                state,
                 active_block_height: block_height,
                 owner_address: pass.owner,
                 owner_balance: 100_000,
@@ -1319,6 +1398,7 @@ mod tests {
         let page_120 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 0,
                 page_size: 10,
             })
@@ -1344,6 +1424,7 @@ mod tests {
         let page_121 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 0,
                 page_size: 10,
             })
@@ -1473,6 +1554,7 @@ mod tests {
         let page = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: Some(120),
+                scope: None,
                 page: 0,
                 page_size: 10,
             })
@@ -1507,6 +1589,7 @@ mod tests {
         let page = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 100,
                 page_size: 20,
             })
@@ -1546,6 +1629,7 @@ mod tests {
         let page0_h120 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 0,
                 page_size: 2,
             })
@@ -1560,6 +1644,7 @@ mod tests {
         let page1_h120 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 1,
                 page_size: 2,
             })
@@ -1574,6 +1659,7 @@ mod tests {
         let explicit_page1_h120 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: Some(120),
+                scope: None,
                 page: 1,
                 page_size: 2,
             })
@@ -1603,6 +1689,7 @@ mod tests {
         let page0_h121 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 0,
                 page_size: 2,
             })
@@ -1616,6 +1703,7 @@ mod tests {
         let page1_h121 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: None,
+                scope: None,
                 page: 1,
                 page_size: 2,
             })
@@ -1633,6 +1721,105 @@ mod tests {
             assert_eq!(entry.total, 4);
             assert_eq!(entry.items.len(), 4);
         }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_scope_filters_states() {
+        let (server, root_dir) = build_server("leaderboard_scope_filters", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let active = make_active_pass(51, 61, 100);
+        storage.add_new_mint_pass_at_height(&active, 100).unwrap();
+        seed_energy_record_with_state(&server, &active, 130, MinerPassState::Active, 900);
+
+        let dormant = make_active_pass(52, 62, 100);
+        storage.add_new_mint_pass_at_height(&dormant, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &dormant.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                110,
+            )
+            .unwrap();
+        seed_energy_record_with_state(&server, &dormant, 110, MinerPassState::Dormant, 800);
+
+        let invalid = make_invalid_pass(53, 63, 100, "INVALID_ETH_MAIN");
+        storage
+            .add_invalid_mint_pass_at_height(&invalid, 100)
+            .unwrap();
+        seed_energy_record_with_state(&server, &invalid, 100, MinerPassState::Invalid, 700);
+
+        let active_only = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                scope: Some("active".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(active_only.total, 1);
+        assert_eq!(active_only.items.len(), 1);
+        assert_eq!(
+            active_only.items[0].inscription_id,
+            active.inscription_id.to_string()
+        );
+
+        // Keep `at_height=None` to verify cache key includes scope.
+        let active_dormant = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                scope: Some("active_dormant".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(active_dormant.total, 2);
+        assert_eq!(active_dormant.items.len(), 2);
+        assert_eq!(
+            active_dormant.items[0].inscription_id,
+            active.inscription_id.to_string()
+        );
+        assert_eq!(
+            active_dormant.items[1].inscription_id,
+            dormant.inscription_id.to_string()
+        );
+
+        let all_states = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                scope: Some("all".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(all_states.total, 3);
+        assert_eq!(all_states.items.len(), 3);
+        assert_eq!(
+            all_states.items[2].inscription_id,
+            invalid.inscription_id.to_string()
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_invalid_scope_returns_invalid_params() {
+        let (server, root_dir) = build_server("leaderboard_invalid_scope", 120);
+        let err = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                scope: Some("bad_scope".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Invalid leaderboard scope"));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

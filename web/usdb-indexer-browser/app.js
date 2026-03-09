@@ -15,6 +15,7 @@ const state = {
     },
     energy: {
         leaderboard: {
+            scope: "active",
             page: 0,
             pageSize: 50,
             total: 0,
@@ -80,6 +81,7 @@ const els = {
 
     energyLeaderboardPrev: document.getElementById("energy-leaderboard-prev"),
     energyLeaderboardNext: document.getElementById("energy-leaderboard-next"),
+    energyLeaderboardScope: document.getElementById("energy-leaderboard-scope"),
     energyLeaderboardPage: document.getElementById("energy-leaderboard-page"),
     energyLeaderboardSummary: document.getElementById("energy-leaderboard-summary"),
     energyLeaderboardTable: document.getElementById("energy-leaderboard-table"),
@@ -413,6 +415,7 @@ async function loadLeaderboard() {
     try {
         const page = await rpcCall("get_pass_energy_leaderboard", [{
             at_height: null,
+            scope: state.energy.leaderboard.scope,
             page: state.energy.leaderboard.page,
             page_size: state.energy.leaderboard.pageSize,
         }]);
@@ -426,7 +429,7 @@ async function loadLeaderboard() {
             Math.ceil(state.energy.leaderboard.total / state.energy.leaderboard.pageSize),
         );
         els.energyLeaderboardPage.textContent = `${currentPage}/${totalPages}`;
-        els.energyLeaderboardSummary.textContent = `resolved_height=${fmtNum(page.resolved_height)}, total=${fmtNum(state.energy.leaderboard.total)}`;
+        els.energyLeaderboardSummary.textContent = `resolved_height=${fmtNum(page.resolved_height)}, scope=${state.energy.leaderboard.scope}, total=${fmtNum(state.energy.leaderboard.total)}`;
         els.energyLeaderboardPrev.disabled = state.energy.leaderboard.page === 0;
         els.energyLeaderboardNext.disabled = currentPage >= totalPages;
     } catch (err) {
@@ -624,6 +627,11 @@ function bindEvents() {
         state.energy.leaderboard.page += 1;
         void loadLeaderboard();
     });
+    els.energyLeaderboardScope.addEventListener("change", () => {
+        state.energy.leaderboard.scope = els.energyLeaderboardScope.value;
+        state.energy.leaderboard.page = 0;
+        void loadLeaderboard();
+    });
 
     els.energyQueryForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -678,6 +686,9 @@ function startHomeRefresh() {
 }
 
 async function bootstrap() {
+    if (els.energyLeaderboardScope && els.energyLeaderboardScope.value) {
+        state.energy.leaderboard.scope = els.energyLeaderboardScope.value;
+    }
     bindEvents();
     startClock();
     startHomeRefresh();

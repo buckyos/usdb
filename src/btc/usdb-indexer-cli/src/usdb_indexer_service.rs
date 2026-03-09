@@ -177,6 +177,7 @@ impl UsdbIndexerService {
             }
             Commands::PassEnergyLeaderboard {
                 at_height,
+                scope,
                 page,
                 page_size,
             } => {
@@ -186,6 +187,7 @@ impl UsdbIndexerService {
                         "get_pass_energy_leaderboard",
                         json!([{
                             "at_height": at_height,
+                            "scope": scope,
                             "page": page,
                             "page_size": page_size,
                         }]),

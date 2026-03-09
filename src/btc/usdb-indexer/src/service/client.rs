@@ -274,6 +274,7 @@ impl RpcClient {
     ///
     /// # Arguments
     /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `scope` - Optional leaderboard scope: `active`, `active_dormant`, or `all`.
     /// * `page` - Zero-based page index.
     /// * `page_size` - Number of rows per page.
     ///
@@ -283,6 +284,7 @@ impl RpcClient {
     pub async fn get_pass_energy_leaderboard(
         &self,
         at_height: Option<u32>,
+        scope: Option<&str>,
         page: usize,
         page_size: usize,
     ) -> Result<PassEnergyLeaderboardPage, String> {
@@ -290,6 +292,7 @@ impl RpcClient {
             "get_pass_energy_leaderboard",
             json!([{
                 "at_height": at_height,
+                "scope": scope,
                 "page": page,
                 "page_size": page_size,
             }]),
