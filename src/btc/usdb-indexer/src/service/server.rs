@@ -1454,6 +1454,119 @@ mod tests {
     }
 
     #[test]
+    fn test_pass_energy_leaderboard_cached_pagination_consistent_across_pages_and_height() {
+        let (server, root_dir) = build_server("leaderboard_cached_pagination", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass1 = make_active_pass(31, 41, 100);
+        let pass2 = make_active_pass(32, 42, 100);
+        let pass3 = make_active_pass(33, 43, 100);
+        let pass4 = make_active_pass(34, 44, 100);
+        for pass in [&pass1, &pass2, &pass3, &pass4] {
+            storage.add_new_mint_pass_at_height(pass, 100).unwrap();
+        }
+        seed_energy_record(&server, &pass1, 120, 400);
+        seed_energy_record(&server, &pass2, 120, 300);
+        seed_energy_record(&server, &pass3, 120, 200);
+        seed_energy_record(&server, &pass4, 120, 100);
+
+        // First query builds cache at latest synced height.
+        let page0_h120 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page0_h120.resolved_height, 120);
+        assert_eq!(page0_h120.total, 4);
+        assert_eq!(page0_h120.items.len(), 2);
+        assert_eq!(page0_h120.items[0].energy, 400);
+        assert_eq!(page0_h120.items[1].energy, 300);
+
+        // Second page should be served from the same cache entry.
+        let page1_h120 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page1_h120.resolved_height, 120);
+        assert_eq!(page1_h120.total, 4);
+        assert_eq!(page1_h120.items.len(), 2);
+        assert_eq!(page1_h120.items[0].energy, 200);
+        assert_eq!(page1_h120.items[1].energy, 100);
+
+        // Explicit height bypasses cache and should still return identical pagination.
+        let explicit_page1_h120 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: Some(120),
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(
+            explicit_page1_h120.resolved_height,
+            page1_h120.resolved_height
+        );
+        assert_eq!(explicit_page1_h120.total, page1_h120.total);
+        assert_eq!(explicit_page1_h120.items.len(), page1_h120.items.len());
+        for (lhs, rhs) in explicit_page1_h120
+            .items
+            .iter()
+            .zip(page1_h120.items.iter())
+        {
+            assert_eq!(lhs.inscription_id, rhs.inscription_id);
+            assert_eq!(lhs.owner, rhs.owner);
+            assert_eq!(lhs.record_block_height, rhs.record_block_height);
+            assert_eq!(lhs.state, rhs.state);
+            assert_eq!(lhs.energy, rhs.energy);
+        }
+
+        // Move synced height forward: cache must refresh and both pages remain internally consistent.
+        storage.update_synced_btc_block_height(121).unwrap();
+        let growth = calc_growth_delta(100_000, 1);
+
+        let page0_h121 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page0_h121.resolved_height, 121);
+        assert_eq!(page0_h121.total, 4);
+        assert_eq!(page0_h121.items.len(), 2);
+        assert_eq!(page0_h121.items[0].energy, 400u64.saturating_add(growth));
+        assert_eq!(page0_h121.items[1].energy, 300u64.saturating_add(growth));
+
+        let page1_h121 = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: None,
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page1_h121.resolved_height, 121);
+        assert_eq!(page1_h121.total, 4);
+        assert_eq!(page1_h121.items.len(), 2);
+        assert_eq!(page1_h121.items[0].energy, 200u64.saturating_add(growth));
+        assert_eq!(page1_h121.items[1].energy, 100u64.saturating_add(growth));
+
+        {
+            let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
+            let entry = cache.latest.as_ref().expect("cache should exist");
+            assert_eq!(entry.resolved_height, 121);
+            assert_eq!(entry.total, 4);
+            assert_eq!(entry.items.len(), 4);
+        }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_pagination_and_height_range_errors() {
         let (server, root_dir) = build_server("params_error", 300);
 

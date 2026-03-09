@@ -385,6 +385,64 @@ async fn test_settle_active_balance_accepts_at_or_before_balance_height_and_zero
 }
 
 #[tokio::test]
+async fn test_settle_active_balance_long_window_at_or_before_keeps_zero_delta() {
+    // Purpose: regression for repeated at-or-before responses across multiple blocks.
+    // Expected behavior: each queried block uses carried balance and forces effective delta=0.
+    let dir = test_data_dir("at_or_before_long_window");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+    let owner = script_hash(17);
+    add_active_pass_with_history(&storage, 103, 0, owner, 80);
+
+    let mut responses = Vec::new();
+    for _ in 100..=104 {
+        responses.push(MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height: 99,
+                balance: 4_321,
+                delta: 99,
+            },
+        ]])));
+    }
+    let backend = Arc::new(MockBalanceBackend::new(responses));
+    let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    for query_height in 100..=104 {
+        let settlement = monitor
+            .settle_active_balance_with_details(query_height)
+            .await
+            .unwrap();
+        assert_eq!(settlement.snapshot.block_height, query_height);
+        assert_eq!(settlement.snapshot.active_address_count, 1);
+        assert_eq!(settlement.snapshot.total_balance, 4_321);
+        assert_eq!(settlement.active_pass_balances.len(), 1);
+
+        let pass_balance = &settlement.active_pass_balances[0];
+        assert_eq!(pass_balance.owner, owner);
+        assert_eq!(pass_balance.block_height, query_height);
+        assert_eq!(pass_balance.balance, 4_321);
+        assert_eq!(
+            pass_balance.delta, 0,
+            "effective delta must stay zero for at-or-before balances"
+        );
+
+        let stored = storage
+            .get_active_balance_snapshot(query_height)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.block_height, query_height);
+        assert_eq!(stored.total_balance, 4_321);
+        assert_eq!(stored.active_address_count, 1);
+    }
+
+    assert_eq!(backend.call_count(), 5);
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}
+
+#[tokio::test]
 async fn test_settle_active_balance_rejects_future_balance_height() {
     // Purpose: reject impossible RPC data where returned balance height is in the future.
     // Expected behavior: settlement fails and no snapshot is persisted.

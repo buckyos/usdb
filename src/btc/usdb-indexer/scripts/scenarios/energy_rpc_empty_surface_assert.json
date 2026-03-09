@@ -1,0 +1,86 @@
+{
+  "name": "energy-rpc-empty-surface-assert",
+  "steps": [
+    {
+      "type": "log",
+      "message": "Assert energy RPC surface behavior on an empty pass set."
+    },
+    {
+      "type": "assert_usdb_state",
+      "height": "$effective_target_height",
+      "expected_total_balance": 0,
+      "expected_active_count": 0
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy_leaderboard",
+      "params": [
+        {
+          "at_height": null,
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "leaderboard_latest"
+    },
+    {
+      "type": "assert_eq",
+      "left": "$leaderboard_latest.resolved_height",
+      "right": "$effective_target_height",
+      "message": "Leaderboard resolved height should match initial synced height"
+    },
+    {
+      "type": "assert_eq",
+      "left": "$leaderboard_latest.total",
+      "right": 0,
+      "message": "Empty system should have no leaderboard entries"
+    },
+    {
+      "type": "assert_len",
+      "value": "$leaderboard_latest.items",
+      "expected_len": 0,
+      "message": "Empty system should return empty leaderboard items"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy_leaderboard",
+      "params": [
+        {
+          "at_height": "$effective_target_height",
+          "page": 0,
+          "page_size": 20
+        }
+      ],
+      "result_only": true,
+      "var": "leaderboard_exact"
+    },
+    {
+      "type": "assert_eq",
+      "left": "$leaderboard_exact.total",
+      "right": 0,
+      "message": "Exact-height leaderboard query should also be empty"
+    },
+    {
+      "type": "assert_len",
+      "value": "$leaderboard_exact.items",
+      "expected_len": 0
+    },
+    {
+      "type": "assert_rpc_error_code",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "0000000000000000000000000000000000000000000000000000000000000000i0",
+          "block_height": "$effective_target_height",
+          "mode": "at_or_before"
+        }
+      ],
+      "expected_code": -32011,
+      "message_contains": "PASS_NOT_FOUND"
+    }
+  ]
+}

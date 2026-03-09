@@ -49,6 +49,10 @@ run_regtest_smoke_scenarios() {
   run_cmd env \
     SCENARIO_FILE="${SCRIPT_DIR}/scenarios/multi_transfer_balance_assert.json" \
     "${SCRIPT_DIR}/regtest_e2e_smoke.sh"
+
+  run_cmd env \
+    SCENARIO_FILE="${SCRIPT_DIR}/scenarios/energy_rpc_empty_surface_assert.json" \
+    "${SCRIPT_DIR}/regtest_e2e_smoke.sh"
 }
 
 run_live_ord_realworld_suite() {

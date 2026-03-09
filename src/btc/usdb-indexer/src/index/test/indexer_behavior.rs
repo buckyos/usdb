@@ -1003,6 +1003,121 @@ async fn test_sync_blocks_energy_projects_growth_without_intermediate_records() 
 }
 
 #[tokio::test]
+async fn test_sync_blocks_energy_projects_growth_over_long_window_without_new_records() {
+    // Long-window projection regression:
+    // mint once at h400, then settle through h460 with unchanged balance and stale at-or-before height.
+    // No new energy records should be written after mint, but query-time projection must remain exact.
+    let owner = test_script_hash(27);
+    let mint_height = 400u32;
+    let query_height = 460u32;
+    let mint_tx = build_test_tx(63);
+    let pass_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+
+    let mut block_provider =
+        MockBlockHintProvider::default().with_block(mint_height, build_test_block(vec![mint_tx]));
+    for h in (mint_height + 1)..=query_height {
+        block_provider = block_provider.with_block(h, build_test_block(vec![]));
+    }
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(block_provider);
+
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(
+            mint_height,
+            vec![make_discovered_mint(pass_id.clone(), mint_height, vec![])],
+        ));
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(27, 0, 0),
+        value: Amount::from_sat(15_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[27u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[27u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&pass_id, create_info));
+
+    let mut backend_responses = Vec::new();
+    for h in mint_height..=query_height {
+        let effective_balance_height = if h == mint_height { h } else { mint_height };
+        backend_responses.push(MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height: effective_balance_height,
+                balance: 260_000,
+                delta: 0,
+            },
+        ]])));
+    }
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_energy_projection_long_window_without_records",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        backend_responses,
+        Arc::new(MockBalanceProvider::default().with_height(owner, mint_height, 260_000, 0)),
+    );
+    fixture
+        .storage
+        .update_synced_btc_block_height(mint_height - 1)
+        .unwrap();
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(mint_height..=query_height)
+        .await
+        .unwrap();
+    assert_eq!(synced, query_height);
+    assert_eq!(
+        fixture.backend.call_count(),
+        (query_height - mint_height + 1) as usize
+    );
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // Mint record should exist.
+    let mint_record = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_exact(&pass_id, mint_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(mint_record.state, MinerPassState::Active);
+    assert_eq!(mint_record.owner_balance, 260_000);
+    assert_eq!(mint_record.energy, 0);
+
+    // No incremental record should be written for zero-delta windows.
+    for h in (mint_height + 1)..=query_height {
+        assert!(
+            fixture
+                .pass_energy_manager
+                .get_pass_energy_record_exact(&pass_id, h)
+                .unwrap()
+                .is_none(),
+            "unexpected energy record found at height {}",
+            h
+        );
+    }
+
+    for h in [410u32, 430u32, query_height] {
+        let snapshot = fixture
+            .pass_energy_manager
+            .get_pass_energy(&pass_id, h)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected = calc_growth_delta(260_000, h - mint_height);
+        assert_eq!(snapshot.state, MinerPassState::Active);
+        assert_eq!(snapshot.energy, expected);
+    }
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
 async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advance() {
     let owner = test_script_hash(2);
     let block_height = 200;
