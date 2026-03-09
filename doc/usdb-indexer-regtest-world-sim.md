@@ -35,6 +35,7 @@
   - 当前链高度与 usdb 同步高度
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
+  - agent 粒度自检（默认开启）：每块对选中 agent 的 active pass 做能量数值校验（与公式推导一致）
   - pass 总量 / active / invalid
   - active address 总余额
   - 能量榜首摘要
@@ -103,6 +104,9 @@ This wrapper preloads a high-pressure profile (default `200 agents` + `5000 bloc
 - `SIM_REPORT_ENABLED`：是否启用 JSONL 结构化报告（默认 `1`）
 - `SIM_REPORT_FILE`：报告文件路径（默认 `$WORK_DIR/world-sim-report.jsonl`）
 - `SIM_REPORT_FLUSH_EVERY`：报告刷盘频率（按事件条数，默认 `1`）
+- `SIM_AGENT_SELF_CHECK_ENABLED`：是否启用 agent 自检（默认 `1`）
+- `SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次自检（默认 `1`）
+- `SIM_AGENT_SELF_CHECK_SAMPLE_SIZE`：每次自检采样多少 active agents（默认 `0`，表示全量）
 - `DIAG_TAIL_LINES`：失败诊断时每个日志文件打印的尾部行数（默认 `120`）
 
 ## 示例：长时间持续运行

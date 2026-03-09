@@ -36,6 +36,13 @@ class Agent:
     last_action: str = "init"
     cooldown: int = 0
     scripted_index: int = 0
+    # Per-agent oracle baseline used by self-check diagnostics.
+    oracle_last_checked_height: int | None = None
+    oracle_last_pass_id: str | None = None
+    oracle_last_state: str | None = None
+    oracle_last_energy: int | None = None
+    oracle_last_owner_balance: int | None = None
+    oracle_last_record_block_height: int | None = None
 
 
 @dataclass
@@ -86,6 +93,9 @@ class Args:
     scripted_cycle: list[str]
     report_file: str | None
     report_flush_every: int
+    agent_self_check_enabled: bool
+    agent_self_check_interval_blocks: int
+    agent_self_check_sample_size: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -95,6 +105,10 @@ class Args:
 class RegtestWorldSimulator:
     INSCRIPTION_ID_PATTERN = re.compile(r"([0-9a-f]{64}i\d+)")
     TXID_PATTERN = re.compile(r"\b([0-9a-f]{64})\b")
+    U64_MAX = 2**64 - 1
+    ENERGY_BALANCE_THRESHOLD = 100_000
+    ENERGY_GROWTH_MULTIPLIER = 10_000
+    ENERGY_PENALTY_MULTIPLIER = 43_200_000
     SUPPORTED_ACTIONS = {
         "mint",
         "invalid_mint",
@@ -158,6 +172,8 @@ class RegtestWorldSimulator:
             "spend_fail": 0,
             "verify_ok": 0,
             "verify_fail": 0,
+            "agent_self_check_ok": 0,
+            "agent_self_check_fail": 0,
             "skip": 0,
         }
 
@@ -182,6 +198,9 @@ class RegtestWorldSimulator:
                 "initial_active_agents": self.active_agent_count,
                 "policy_mode": self.args.policy_mode,
                 "scripted_cycle": self.args.scripted_cycle,
+                "agent_self_check_enabled": self.args.agent_self_check_enabled,
+                "agent_self_check_interval_blocks": self.args.agent_self_check_interval_blocks,
+                "agent_self_check_sample_size": self.args.agent_self_check_sample_size,
             },
         )
 
@@ -364,6 +383,30 @@ class RegtestWorldSimulator:
         amount = Decimal(amount_btc)
         return int((amount * Decimal("100000000")).to_integral_value())
 
+    @classmethod
+    def sat_add_u64(cls, left: int, right: int) -> int:
+        total = int(left) + int(right)
+        return total if total <= cls.U64_MAX else cls.U64_MAX
+
+    @classmethod
+    def sat_sub_u64(cls, left: int, right: int) -> int:
+        diff = int(left) - int(right)
+        return diff if diff > 0 else 0
+
+    @classmethod
+    def calc_growth_delta(cls, owner_balance: int, r: int) -> int:
+        if owner_balance < cls.ENERGY_BALANCE_THRESHOLD:
+            return 0
+        raw = int(owner_balance) * cls.ENERGY_GROWTH_MULTIPLIER * int(r)
+        return raw if raw <= cls.U64_MAX else cls.U64_MAX
+
+    @classmethod
+    def calc_penalty_from_delta(cls, owner_delta: int) -> int:
+        if owner_delta >= 0:
+            return 0
+        raw = abs(int(owner_delta)) * cls.ENERGY_PENALTY_MULTIPLIER
+        return raw if raw <= cls.U64_MAX else cls.U64_MAX
+
     def get_balance_at_height(self, script_hash: str, block_height: int) -> int:
         rows = self.rpc_balance_history(
             "get_address_balance",
@@ -386,6 +429,21 @@ class RegtestWorldSimulator:
         result = self.rpc_usdb(
             "get_pass_snapshot",
             [{"inscription_id": inscription_id, "at_height": at_height}],
+        )
+        return result if isinstance(result, dict) else None
+
+    def get_pass_energy_snapshot(
+        self, inscription_id: str, block_height: int, mode: str = "at_or_before"
+    ) -> dict[str, Any] | None:
+        result = self.rpc_usdb(
+            "get_pass_energy",
+            [
+                {
+                    "inscription_id": inscription_id,
+                    "block_height": block_height,
+                    "mode": mode,
+                }
+            ],
         )
         return result if isinstance(result, dict) else None
 
@@ -1022,6 +1080,112 @@ class RegtestWorldSimulator:
         agent.owned_passes.add(inscription_id)
         self.pass_owner_by_id[inscription_id] = agent.agent_id
 
+    def select_agents_for_self_check(self, active_agent_ids: list[int], tick: int) -> list[int]:
+        if not self.args.agent_self_check_enabled:
+            return []
+        if self.args.agent_self_check_interval_blocks <= 0:
+            return []
+        if tick % self.args.agent_self_check_interval_blocks != 0:
+            return []
+        if not active_agent_ids:
+            return []
+
+        ordered = sorted(active_agent_ids)
+        sample_size = self.args.agent_self_check_sample_size
+        if sample_size <= 0 or sample_size >= len(ordered):
+            return ordered
+        return sorted(self.rng.sample(ordered, sample_size))
+
+    def run_agent_self_check(self, agent: Agent, block_height: int) -> None:
+        active_pass_id = agent.active_pass_id
+        if active_pass_id is None:
+            # No active pass at this height, reset the oracle baseline.
+            agent.oracle_last_checked_height = block_height
+            agent.oracle_last_pass_id = None
+            agent.oracle_last_state = None
+            agent.oracle_last_energy = None
+            agent.oracle_last_owner_balance = None
+            agent.oracle_last_record_block_height = None
+            return
+
+        energy_snapshot = self.get_pass_energy_snapshot(
+            active_pass_id, block_height, mode="at_or_before"
+        )
+        if energy_snapshot is None:
+            raise WorldSimError(
+                "agent self-check missing pass energy snapshot: "
+                f"agent={agent.wallet_name}, inscription_id={active_pass_id}, block_height={block_height}"
+            )
+
+        query_height = int(energy_snapshot.get("query_block_height", block_height))
+        record_block_height = int(
+            energy_snapshot.get("record_block_height", query_height)
+        )
+        state = str(energy_snapshot.get("state", ""))
+        owner_address = str(energy_snapshot.get("owner_address", ""))
+        owner_balance = int(energy_snapshot.get("owner_balance", 0))
+        owner_delta = int(energy_snapshot.get("owner_delta", 0))
+        energy = int(energy_snapshot.get("energy", 0))
+
+        if query_height != block_height:
+            raise WorldSimError(
+                "agent self-check query height mismatch: "
+                f"agent={agent.wallet_name}, inscription_id={active_pass_id}, "
+                f"expected_query_height={block_height}, got={query_height}"
+            )
+        if owner_address != agent.owner_script_hash:
+            raise WorldSimError(
+                "agent self-check owner mismatch: "
+                f"agent={agent.wallet_name}, inscription_id={active_pass_id}, "
+                f"expected_owner={agent.owner_script_hash}, got_owner={owner_address}"
+            )
+        if state != "active":
+            raise WorldSimError(
+                "agent self-check expected active state for owner active pass: "
+                f"agent={agent.wallet_name}, inscription_id={active_pass_id}, state={state}, "
+                f"record_block_height={record_block_height}, block_height={block_height}"
+            )
+
+        prev_height = agent.oracle_last_checked_height
+        prev_pass_id = agent.oracle_last_pass_id
+        prev_state = agent.oracle_last_state
+        prev_energy = agent.oracle_last_energy
+        prev_owner_balance = agent.oracle_last_owner_balance
+
+        # Strict numeric oracle when check cadence is consecutive and active pass is stable.
+        if (
+            prev_height is not None
+            and prev_pass_id == active_pass_id
+            and prev_state == "active"
+            and prev_energy is not None
+            and prev_owner_balance is not None
+            and block_height == prev_height + 1
+        ):
+            expected_energy = self.sat_add_u64(
+                prev_energy, self.calc_growth_delta(prev_owner_balance, 1)
+            )
+            if record_block_height == block_height and owner_delta < 0:
+                expected_energy = self.sat_sub_u64(
+                    expected_energy, self.calc_penalty_from_delta(owner_delta)
+                )
+
+            if energy != expected_energy:
+                raise WorldSimError(
+                    "agent self-check energy mismatch: "
+                    f"agent={agent.wallet_name}, inscription_id={active_pass_id}, "
+                    f"block_height={block_height}, prev_height={prev_height}, "
+                    f"prev_energy={prev_energy}, prev_owner_balance={prev_owner_balance}, "
+                    f"record_block_height={record_block_height}, owner_delta={owner_delta}, "
+                    f"expected_energy={expected_energy}, actual_energy={energy}"
+                )
+
+        agent.oracle_last_checked_height = block_height
+        agent.oracle_last_pass_id = active_pass_id
+        agent.oracle_last_state = state
+        agent.oracle_last_energy = energy
+        agent.oracle_last_owner_balance = owner_balance
+        agent.oracle_last_record_block_height = record_block_height
+
     def mine_one_block(self) -> int:
         self.run_btc_cli(
             self.args.miner_wallet,
@@ -1076,7 +1240,10 @@ class RegtestWorldSimulator:
             "World simulation started: "
             f"seed={self.args.seed}, blocks={self.args.blocks}, total_agents={self.total_agents}, "
             f"initial_active_agents={self.active_agent_count}, policy_mode={self.args.policy_mode}, "
-            f"scripted_cycle={self.args.scripted_cycle}"
+            f"scripted_cycle={self.args.scripted_cycle}, "
+            f"agent_self_check_enabled={self.args.agent_self_check_enabled}, "
+            f"agent_self_check_interval_blocks={self.args.agent_self_check_interval_blocks}, "
+            f"agent_self_check_sample_size={self.args.agent_self_check_sample_size}"
         )
         if self.report_path is not None:
             self.log(f"Structured tick report enabled: path={self.report_path}")
@@ -1101,6 +1268,10 @@ class RegtestWorldSimulator:
             action_fail_samples: list[str] = []
             verify_failed = 0
             verify_fail_samples: list[str] = []
+            self_check_failed = 0
+            self_check_fail_samples: list[str] = []
+            self_checked_count = 0
+            refresh_failed_agent_ids: set[int] = set()
 
             for _ in range(action_slots):
                 if not available_ids:
@@ -1163,8 +1334,30 @@ class RegtestWorldSimulator:
                 try:
                     self.refresh_agent_state(self.agents[agent_id], block_height)
                 except Exception as e:  # noqa: BLE001
+                    refresh_failed_agent_ids.add(agent_id)
                     self.log(
                         f"WARN refresh_agent_state failed: tick={tick}, agent_id={agent_id}, error={e}"
+                    )
+                    if self.args.fail_fast:
+                        raise
+
+            for agent_id in self.select_agents_for_self_check(active_agent_ids, tick):
+                if agent_id in refresh_failed_agent_ids:
+                    continue
+                self_checked_count += 1
+                agent = self.agents[agent_id]
+                try:
+                    self.run_agent_self_check(agent, block_height)
+                    self.metrics["agent_self_check_ok"] += 1
+                except Exception as e:  # noqa: BLE001
+                    self.metrics["agent_self_check_fail"] += 1
+                    self_check_failed += 1
+                    self_check_fail_samples.append(
+                        f"agent={agent.wallet_name},agent_id={agent.agent_id},error={e}"
+                    )
+                    self.log(
+                        "WARN agent self-check failed: "
+                        f"tick={tick}, block_height={block_height}, agent={agent.wallet_name}, error={e}"
                     )
                     if self.args.fail_fast:
                         raise
@@ -1184,6 +1377,7 @@ class RegtestWorldSimulator:
                 "tick_summary: "
                 f"tick={tick}, block_height={block_height}, synced_height={synced_height}, "
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
+                f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
                 f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, pass_active={active_count}, "
                 f"pass_invalid={invalid_count}, active_addresses={active_addresses}, "
                 f"active_total_balance={total_balance}, top_energy={top_energy}"
@@ -1206,6 +1400,8 @@ class RegtestWorldSimulator:
                     "actions": action_slots,
                     "action_failed": action_failed,
                     "verify_failed": verify_failed,
+                    "agent_self_checked": self_checked_count,
+                    "agent_self_check_failed": self_check_failed,
                     "known_passes": len(self.pass_owner_by_id),
                     "pass_total": total_count,
                     "pass_active": active_count,
@@ -1216,6 +1412,7 @@ class RegtestWorldSimulator:
                     "action_results": action_results,
                     "action_fail_samples": action_fail_samples[:8],
                     "verify_fail_samples": verify_fail_samples[:8],
+                    "agent_self_check_fail_samples": self_check_fail_samples[:8],
                 },
             )
 
@@ -1278,6 +1475,23 @@ def parse_args() -> Args:
     )
     parser.add_argument("--report-file")
     parser.add_argument("--report-flush-every", type=int, default=1)
+    parser.add_argument(
+        "--disable-agent-self-check",
+        action="store_true",
+        help="Disable per-agent on-chain self-check diagnostics",
+    )
+    parser.add_argument(
+        "--agent-self-check-interval-blocks",
+        type=int,
+        default=1,
+        help="Run agent self-check every N mined blocks",
+    )
+    parser.add_argument(
+        "--agent-self-check-sample-size",
+        type=int,
+        default=0,
+        help="How many active agents to self-check per run tick (0 means all active agents)",
+    )
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
@@ -1318,6 +1532,9 @@ def parse_args() -> Args:
         scripted_cycle=scripted_cycle,
         report_file=parsed.report_file,
         report_flush_every=parsed.report_flush_every,
+        agent_self_check_enabled=(not parsed.disable_agent_self_check),
+        agent_self_check_interval_blocks=parsed.agent_self_check_interval_blocks,
+        agent_self_check_sample_size=parsed.agent_self_check_sample_size,
     )
 
 

@@ -47,6 +47,9 @@ SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spen
 SIM_REPORT_ENABLED="${SIM_REPORT_ENABLED:-1}"
 SIM_REPORT_FILE="${SIM_REPORT_FILE:-$WORK_DIR/world-sim-report.jsonl}"
 SIM_REPORT_FLUSH_EVERY="${SIM_REPORT_FLUSH_EVERY:-1}"
+SIM_AGENT_SELF_CHECK_ENABLED="${SIM_AGENT_SELF_CHECK_ENABLED:-1}"
+SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS="${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}"
+SIM_AGENT_SELF_CHECK_SAMPLE_SIZE="${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}"
 
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -565,7 +568,7 @@ main() {
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -574,6 +577,13 @@ main() {
   if [[ "$SIM_REPORT_ENABLED" == "1" ]]; then
     report_args+=(--report-file "$SIM_REPORT_FILE")
     report_args+=(--report-flush-every "$SIM_REPORT_FLUSH_EVERY")
+  fi
+  local self_check_args=()
+  if [[ "$SIM_AGENT_SELF_CHECK_ENABLED" != "1" ]]; then
+    self_check_args+=(--disable-agent-self-check)
+  else
+    self_check_args+=(--agent-self-check-interval-blocks "$SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS")
+    self_check_args+=(--agent-self-check-sample-size "$SIM_AGENT_SELF_CHECK_SAMPLE_SIZE")
   fi
 
   python3 "$WORLD_SIMULATOR" \
@@ -606,6 +616,7 @@ main() {
     --agent-growth-step "$SIM_AGENT_GROWTH_STEP" \
     --policy-mode "$SIM_POLICY_MODE" \
     --scripted-cycle "$SIM_SCRIPTED_CYCLE" \
+    "${self_check_args[@]}" \
     "${report_args[@]}" \
     --temp-dir "$WORK_DIR" \
     "${fail_fast_arg[@]}"
