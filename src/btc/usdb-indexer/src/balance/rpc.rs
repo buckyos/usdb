@@ -49,6 +49,11 @@ impl BalanceRpcBackend for BalanceHistoryBackend {
 }
 
 pub trait BalanceRpcLoader: Send + Sync {
+    // Note about semantics:
+    // - This API currently uses balance-history `get_address_balance(block_height=H)`.
+    // - That upstream API returns the latest record at or before H (not strictly at H).
+    // - Therefore returned AddressBalance.block_height may be < H when no mutation happened at H.
+    // - Exact-at-height delta semantics are provided by balance-history delta RPC, not this API.
     fn load_balances<'a>(
         &'a self,
         active_addresses: Vec<USDBScriptHash>,

@@ -178,6 +178,10 @@ impl BalanceMonitor {
         };
 
         let rpc_begin = Instant::now();
+        // Important semantic boundary:
+        // `load_balances(..., block_height=H)` is backed by balance-history "at-or-before" lookup.
+        // Returned entry height may be < H, which is valid when address has no mutation at H.
+        // Do not enforce strict equality here; we normalize delta below for block-H settlement.
         let balances = self
             .rpc_loader
             .load_balances(active_addresses, block_height)
@@ -206,14 +210,24 @@ impl BalanceMonitor {
                 error!("{}", msg);
                 msg
             })?;
-            if owner_balance.block_height != block_height {
+            if owner_balance.block_height > block_height {
                 let msg = format!(
-                    "Unexpected owner balance height returned by RPC: module=balance_monitor, query_height={}, balance_height={}, owner={}, inscription_id={}",
+                    "Unexpected future owner balance height returned by RPC: module=balance_monitor, query_height={}, balance_height={}, owner={}, inscription_id={}",
                     block_height, owner_balance.block_height, pass.owner, pass.inscription_id
                 );
                 error!("{}", msg);
                 return Err(msg);
             }
+            // balance-history returns "at or before" for height lookup.
+            // If no record exists at query height, carry forward balance and treat delta as zero at this block.
+            // This keeps settlement semantics strict at block H:
+            // - balance is the effective balance at H
+            // - delta reflects only mutations that happened exactly at H
+            let effective_delta = if owner_balance.block_height < block_height {
+                0
+            } else {
+                owner_balance.delta
+            };
 
             total_balance = total_balance.saturating_add(owner_balance.balance);
             active_pass_balances.push(ActivePassBalance {
@@ -221,7 +235,7 @@ impl BalanceMonitor {
                 owner: pass.owner,
                 block_height,
                 balance: owner_balance.balance,
-                delta: owner_balance.delta,
+                delta: effective_delta,
             });
         }
         if !balance_by_owner.is_empty() {

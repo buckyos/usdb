@@ -340,3 +340,74 @@ async fn test_settle_active_balance_fail_on_duplicate_owner_in_history_view() {
     drop(storage);
     cleanup_data_dir(&dir);
 }
+
+#[tokio::test]
+async fn test_settle_active_balance_accepts_at_or_before_balance_height_and_zeroes_delta() {
+    // Purpose: balance-history returns "at or before" entries for height lookup.
+    // Expected behavior: monitor accepts older balance height and applies zero effective delta at query height.
+    let dir = test_data_dir("at_or_before_height_with_zero_delta");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+    let owner = script_hash(15);
+    add_active_pass_with_history(&storage, 101, 0, owner, 80);
+
+    let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+        vec![vec![balance_history::AddressBalance {
+            block_height: 99,
+            balance: 3_210,
+            delta: 77,
+        }]],
+    ))]));
+    let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    let settlement = monitor
+        .settle_active_balance_with_details(100)
+        .await
+        .unwrap();
+    assert_eq!(settlement.snapshot.block_height, 100);
+    assert_eq!(settlement.snapshot.active_address_count, 1);
+    assert_eq!(settlement.snapshot.total_balance, 3_210);
+    assert_eq!(settlement.active_pass_balances.len(), 1);
+    let pass_balance = &settlement.active_pass_balances[0];
+    assert_eq!(pass_balance.owner, owner);
+    assert_eq!(pass_balance.block_height, 100);
+    assert_eq!(pass_balance.balance, 3_210);
+    assert_eq!(pass_balance.delta, 0);
+
+    let stored = storage.get_active_balance_snapshot(100).unwrap().unwrap();
+    assert_eq!(stored.total_balance, 3_210);
+    assert_eq!(stored.active_address_count, 1);
+    assert_eq!(backend.call_count(), 1);
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}
+
+#[tokio::test]
+async fn test_settle_active_balance_rejects_future_balance_height() {
+    // Purpose: reject impossible RPC data where returned balance height is in the future.
+    // Expected behavior: settlement fails and no snapshot is persisted.
+    let dir = test_data_dir("future_balance_height_guard");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+    add_active_pass_with_history(&storage, 102, 0, script_hash(16), 80);
+
+    let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+        vec![vec![balance_history::AddressBalance {
+            block_height: 101,
+            balance: 1_234,
+            delta: 12,
+        }]],
+    ))]));
+    let loader = Arc::new(SerialBalanceLoader::new(backend.clone(), 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    let err = monitor.settle_active_balance(100).await.unwrap_err();
+    assert!(err.contains("Unexpected future owner balance height returned by RPC"));
+    assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
+    assert_eq!(backend.call_count(), 1);
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}

@@ -152,6 +152,9 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>> {
         if let Some(height) = params.block_height {
+            // This endpoint uses at-or-before semantics:
+            // return the latest balance record with block_height <= query height.
+            // Callers that need exact block delta should use get_address_balance_delta.
             let ret = self
                 .db
                 .get_balance_at_block_height(&params.script_hash, height)

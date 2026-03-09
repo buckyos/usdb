@@ -3682,7 +3682,7 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
     // owner_a balance timeline for update range [641, 643]:
     // - h641: negative delta (penalty + reset active height)
     // - h642: balance below threshold in previous record (no growth)
-    // - h643: growth resumes from above-threshold balance with r=2
+    // - h643: growth resumes from above-threshold balance with one-step incremental growth
     let h640 = 640u32;
     let h641 = 641u32;
     let h642 = 642u32;
@@ -3841,7 +3841,9 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
     assert_eq!(expected_h641, 0);
     let expected_h642 = expected_h641.saturating_add(calc_growth_delta(90_000, 1));
     assert_eq!(expected_h642, 0);
-    let expected_h643 = expected_h642.saturating_add(calc_growth_delta(120_000, 2));
+    let expected_h643 = expected_h642.saturating_add(
+        calc_growth_delta(120_000, 2).saturating_sub(calc_growth_delta(120_000, 1)),
+    );
 
     let energy_642 = fixture
         .pass_energy_manager
