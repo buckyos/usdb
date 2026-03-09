@@ -78,6 +78,8 @@ pub struct PassEnergyManager {
     config: ConfigManagerRef,
     storage: PassEnergyStorage,
     balance_provider: Arc<dyn BalanceProvider>,
+    #[cfg(test)]
+    force_strict_settle_consistency_for_test: std::sync::atomic::AtomicBool,
 }
 
 impl PassEnergyManager {
@@ -99,7 +101,27 @@ impl PassEnergyManager {
             config,
             storage,
             balance_provider,
+            #[cfg(test)]
+            force_strict_settle_consistency_for_test: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn strict_settle_consistency_enabled(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.force_strict_settle_consistency_for_test
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+        #[cfg(not(test))]
+        {
+            true
+        }
+    }
+
+    #[cfg(test)]
+    pub fn set_force_strict_settle_consistency_for_test(&self, enabled: bool) {
+        self.force_strict_settle_consistency_for_test
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn begin_block_sync(&self, block_height: u32) -> Result<(), String> {
@@ -513,7 +535,7 @@ impl PassEnergyManager {
             block_height,
             owner_balance,
             owner_delta,
-            !cfg!(test),
+            self.strict_settle_consistency_enabled(),
         )
     }
 
@@ -1235,7 +1257,9 @@ mod tests {
         let err = manager
             .apply_active_balance_change(&inscription_id, &owner, 120, 270_000, 10_000)
             .unwrap_err();
-        assert!(err.contains("No previous energy record found when applying active balance change"));
+        assert!(
+            err.contains("No previous energy record found when applying active balance change")
+        );
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

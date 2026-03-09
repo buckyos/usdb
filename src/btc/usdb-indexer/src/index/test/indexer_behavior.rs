@@ -870,6 +870,139 @@ async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projec
 }
 
 #[tokio::test]
+async fn test_sync_blocks_energy_projects_growth_without_intermediate_records() {
+    // Mint once, then keep owner balance unchanged for multiple blocks:
+    // no extra energy records should be written, but query-time projection must still grow.
+    let owner = test_script_hash(26);
+    let mint_height = 300u32;
+    let query_height = 305u32;
+    let mint_tx = build_test_tx(62);
+    let pass_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(mint_height, build_test_block(vec![mint_tx]))
+            .with_block(mint_height + 1, build_test_block(vec![]))
+            .with_block(mint_height + 2, build_test_block(vec![]))
+            .with_block(mint_height + 3, build_test_block(vec![]))
+            .with_block(mint_height + 4, build_test_block(vec![]))
+            .with_block(mint_height + 5, build_test_block(vec![])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(
+            mint_height,
+            vec![make_discovered_mint(pass_id.clone(), mint_height, vec![])],
+        ));
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(26, 0, 0),
+        value: Amount::from_sat(12_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[26u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[26u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&pass_id, create_info));
+
+    let backend_responses = vec![
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height + 1,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height + 2,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height + 3,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height + 4,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+        MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+            block_height: mint_height + 5,
+            balance: 250_000,
+            delta: 0,
+        }]])),
+    ];
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_energy_projection_without_records",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        backend_responses,
+        Arc::new(MockBalanceProvider::default().with_height(owner, mint_height, 250_000, 0)),
+    );
+    fixture
+        .storage
+        .update_synced_btc_block_height(mint_height - 1)
+        .unwrap();
+
+    let synced = fixture
+        .indexer
+        .sync_blocks_for_test(mint_height..=query_height)
+        .await
+        .unwrap();
+    assert_eq!(synced, query_height);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 6);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    // Mint height has the baseline record written by on_new_pass.
+    let mint_record = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_exact(&pass_id, mint_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(mint_record.state, MinerPassState::Active);
+    assert_eq!(mint_record.owner_balance, 250_000);
+    assert_eq!(mint_record.energy, 0);
+
+    // No subsequent record should be written when all settle deltas are zero.
+    for h in (mint_height + 1)..=query_height {
+        assert!(
+            fixture
+                .pass_energy_manager
+                .get_pass_energy_record_exact(&pass_id, h)
+                .unwrap()
+                .is_none(),
+            "unexpected energy record found at height {}",
+            h
+        );
+    }
+
+    // Query-time energy must still project growth from mint height to query height.
+    let energy = fixture
+        .pass_energy_manager
+        .get_pass_energy(&pass_id, query_height)
+        .await
+        .unwrap()
+        .unwrap();
+    let expected = calc_growth_delta(250_000, query_height - mint_height);
+    assert_eq!(energy.state, MinerPassState::Active);
+    assert_eq!(energy.energy, expected);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
 async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advance() {
     let owner = test_script_hash(2);
     let block_height = 200;
@@ -929,6 +1062,197 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
         .get_active_balance_snapshot(block_height)
         .unwrap();
     assert!(snapshot.is_none());
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_strict_same_height_conflict_rolls_back_atomically() {
+    let owner = test_script_hash(24);
+    let block_height = 210u32;
+    let mint_tx = build_test_tx(61);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(24, 0, 0),
+        value: Amount::from_sat(20_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[24u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[24u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
+
+    // on_new_pass writes same-height record from energy provider;
+    // settle stage provides conflicting same-height balance/delta.
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_strict_same_height_conflict_rollback",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 320_000,
+                delta: 20_000,
+            },
+        ]]))],
+        Arc::new(MockBalanceProvider::default().with_height(owner, block_height, 300_000, 10_000)),
+    );
+    fixture
+        .storage
+        .update_synced_btc_block_height(block_height - 1)
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .set_force_strict_settle_consistency_for_test(true);
+
+    let err = fixture
+        .indexer
+        .sync_blocks_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(err.contains("conflicts with existing record at same block"));
+
+    // SQLite state should rollback atomically.
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(block_height - 1)
+    );
+    assert!(
+        fixture
+            .storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .storage
+            .get_pass_history_count_in_height_range(&mint_id, block_height, block_height)
+            .unwrap(),
+        0
+    );
+    assert!(
+        fixture
+            .storage
+            .get_active_balance_snapshot(block_height)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_strict_direction_conflict_rolls_back_atomically() {
+    let owner = test_script_hash(25);
+    let pass_id = test_inscription_id(25, 0);
+    let base_height = 200u32;
+    let block_height = 220u32;
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
+    let transfer_tracker = Arc::new(MockTransferTracker::default());
+
+    // Direction conflict: delta > 0 but balance goes down from last record.
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_strict_direction_conflict_rollback",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 350_000,
+                delta: 10_000,
+            },
+        ]]))],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    fixture
+        .storage
+        .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .insert_pass_energy_record_for_test(&PassEnergyRecord {
+            inscription_id: pass_id.clone(),
+            block_height: base_height,
+            state: MinerPassState::Active,
+            active_block_height: base_height,
+            owner_address: owner,
+            owner_balance: 400_000,
+            owner_delta: 0,
+            energy: 1_000,
+        })
+        .unwrap();
+    fixture
+        .storage
+        .update_synced_btc_block_height(base_height)
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .set_force_strict_settle_consistency_for_test(true);
+
+    let err = fixture
+        .indexer
+        .sync_blocks_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(err.contains("inconsistent settle direction"));
+
+    // SQLite state should rollback atomically.
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(base_height)
+    );
+    let current_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&pass_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current_pass.state, MinerPassState::Active);
+    assert_eq!(current_pass.owner, owner);
+    assert_eq!(
+        fixture
+            .storage
+            .get_pass_history_count_in_height_range(&pass_id, block_height, block_height)
+            .unwrap(),
+        0
+    );
+    assert!(
+        fixture
+            .storage
+            .get_active_balance_snapshot(block_height)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        active_owner_set_at_height(&fixture.storage, block_height),
+        HashSet::from([owner])
+    );
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
