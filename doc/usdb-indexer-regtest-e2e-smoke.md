@@ -169,6 +169,9 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
    - `assert_eq`
    - `assert_gt`
    - `assert_ge`
+   - `assert_pass_energy_eq`
+   - `assert_pass_energy_ge`
+   - `assert_pass_energy_delta`
    - `assert_len`
    - `assert_contains`
    - `assert_rpc_error_code`

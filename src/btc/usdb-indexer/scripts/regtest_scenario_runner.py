@@ -50,6 +50,7 @@ class RegtestScenarioRunner:
         "invalid_passes",
         "active_balance_snapshot",
         "latest_active_balance_snapshot",
+        "energy_snapshot",
     }
 
     def __init__(self, args: RunnerArgs) -> None:
@@ -255,6 +256,147 @@ class RegtestScenarioRunner:
             raise ScenarioError(
                 f"Balance mismatch at height={height}: expected={expected_sat}, got={got_balance}"
             )
+
+    def get_pass_energy_snapshot(
+        self, inscription_id: str, block_height: int, mode: str = "at_or_before"
+    ) -> dict[str, Any]:
+        result = self.rpc_result(
+            self.rpc_call(
+                self.args.usdb_rpc_url,
+                "get_pass_energy",
+                [
+                    {
+                        "inscription_id": inscription_id,
+                        "block_height": block_height,
+                        "mode": mode,
+                    }
+                ],
+            ),
+            "get_pass_energy",
+        )
+        if not isinstance(result, dict):
+            raise ScenarioError(
+                f"Invalid get_pass_energy result: inscription_id={inscription_id}, block_height={block_height}, mode={mode}, result={result}"
+            )
+        if "energy" not in result:
+            raise ScenarioError(
+                f"Missing energy field in get_pass_energy result: inscription_id={inscription_id}, block_height={block_height}, mode={mode}, result={result}"
+            )
+        return result
+
+    def assert_pass_energy_eq(
+        self,
+        inscription_id: str,
+        block_height: int,
+        expected_energy: int,
+        mode: str = "at_or_before",
+        expected_state: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        snapshot = self.get_pass_energy_snapshot(inscription_id, block_height, mode)
+        got_energy = int(snapshot.get("energy", -1))
+        if got_energy != expected_energy:
+            detail = (
+                "assert_pass_energy_eq failed: "
+                f"inscription_id={inscription_id}, block_height={block_height}, mode={mode}, "
+                f"got_energy={got_energy}, expected_energy={expected_energy}, snapshot={snapshot}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+        if expected_state is not None:
+            got_state = str(snapshot.get("state"))
+            if got_state != expected_state:
+                detail = (
+                    "assert_pass_energy_eq state check failed: "
+                    f"inscription_id={inscription_id}, block_height={block_height}, mode={mode}, "
+                    f"got_state={got_state}, expected_state={expected_state}, snapshot={snapshot}"
+                )
+                if message:
+                    detail = f"{message}: {detail}"
+                raise ScenarioError(detail)
+
+    def assert_pass_energy_ge(
+        self,
+        inscription_id: str,
+        block_height: int,
+        expected_min_energy: int,
+        mode: str = "at_or_before",
+        expected_state: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        snapshot = self.get_pass_energy_snapshot(inscription_id, block_height, mode)
+        got_energy = int(snapshot.get("energy", -1))
+        if got_energy < expected_min_energy:
+            detail = (
+                "assert_pass_energy_ge failed: "
+                f"inscription_id={inscription_id}, block_height={block_height}, mode={mode}, "
+                f"got_energy={got_energy}, expected_min_energy={expected_min_energy}, snapshot={snapshot}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+        if expected_state is not None:
+            got_state = str(snapshot.get("state"))
+            if got_state != expected_state:
+                detail = (
+                    "assert_pass_energy_ge state check failed: "
+                    f"inscription_id={inscription_id}, block_height={block_height}, mode={mode}, "
+                    f"got_state={got_state}, expected_state={expected_state}, snapshot={snapshot}"
+                )
+                if message:
+                    detail = f"{message}: {detail}"
+                raise ScenarioError(detail)
+
+    def assert_pass_energy_delta(
+        self,
+        inscription_id: str,
+        from_height: int,
+        to_height: int,
+        mode: str = "at_or_before",
+        expected_delta: int | None = None,
+        min_delta: int | None = None,
+        max_delta: int | None = None,
+        message: str | None = None,
+    ) -> None:
+        snapshot_from = self.get_pass_energy_snapshot(inscription_id, from_height, mode)
+        snapshot_to = self.get_pass_energy_snapshot(inscription_id, to_height, mode)
+
+        energy_from = int(snapshot_from.get("energy", -1))
+        energy_to = int(snapshot_to.get("energy", -1))
+        delta = energy_to - energy_from
+
+        if expected_delta is not None and delta != expected_delta:
+            detail = (
+                "assert_pass_energy_delta exact check failed: "
+                f"inscription_id={inscription_id}, mode={mode}, from_height={from_height}, to_height={to_height}, "
+                f"energy_from={energy_from}, energy_to={energy_to}, delta={delta}, expected_delta={expected_delta}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+        if min_delta is not None and delta < min_delta:
+            detail = (
+                "assert_pass_energy_delta min check failed: "
+                f"inscription_id={inscription_id}, mode={mode}, from_height={from_height}, to_height={to_height}, "
+                f"energy_from={energy_from}, energy_to={energy_to}, delta={delta}, min_delta={min_delta}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
+        if max_delta is not None and delta > max_delta:
+            detail = (
+                "assert_pass_energy_delta max check failed: "
+                f"inscription_id={inscription_id}, mode={mode}, from_height={from_height}, to_height={to_height}, "
+                f"energy_from={energy_from}, energy_to={energy_to}, delta={delta}, max_delta={max_delta}"
+            )
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
 
     def send_to_new_address_and_confirm(
         self, amount_btc: str, mine_blocks: int, var_name: str | None
@@ -795,6 +937,135 @@ class RegtestScenarioRunner:
                 )
                 self.log(f"scenario-step[{idx}] assert_ge")
                 self.assert_ge(left, right, message)
+                continue
+
+            if step_type == "assert_pass_energy_eq":
+                inscription_id = str(self.resolve_value(step.get("inscription_id")))
+                block_height = self.to_int(
+                    self.resolve_value(step.get("block_height")),
+                    "assert_pass_energy_eq.block_height",
+                )
+                expected_energy = self.to_int(
+                    self.resolve_value(step.get("expected_energy")),
+                    "assert_pass_energy_eq.expected_energy",
+                )
+                mode = str(self.resolve_value(step.get("mode", "at_or_before")))
+                expected_state = (
+                    str(self.resolve_value(step.get("expected_state")))
+                    if step.get("expected_state") is not None
+                    else None
+                )
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(
+                    f"scenario-step[{idx}] assert_pass_energy_eq inscription_id={inscription_id} block_height={block_height} expected_energy={expected_energy} mode={mode}"
+                )
+                self.assert_pass_energy_eq(
+                    inscription_id,
+                    block_height,
+                    expected_energy,
+                    mode,
+                    expected_state,
+                    message,
+                )
+                continue
+
+            if step_type == "assert_pass_energy_ge":
+                inscription_id = str(self.resolve_value(step.get("inscription_id")))
+                block_height = self.to_int(
+                    self.resolve_value(step.get("block_height")),
+                    "assert_pass_energy_ge.block_height",
+                )
+                expected_min_energy = self.to_int(
+                    self.resolve_value(step.get("expected_min_energy")),
+                    "assert_pass_energy_ge.expected_min_energy",
+                )
+                mode = str(self.resolve_value(step.get("mode", "at_or_before")))
+                expected_state = (
+                    str(self.resolve_value(step.get("expected_state")))
+                    if step.get("expected_state") is not None
+                    else None
+                )
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(
+                    f"scenario-step[{idx}] assert_pass_energy_ge inscription_id={inscription_id} block_height={block_height} expected_min_energy={expected_min_energy} mode={mode}"
+                )
+                self.assert_pass_energy_ge(
+                    inscription_id,
+                    block_height,
+                    expected_min_energy,
+                    mode,
+                    expected_state,
+                    message,
+                )
+                continue
+
+            if step_type == "assert_pass_energy_delta":
+                inscription_id = str(self.resolve_value(step.get("inscription_id")))
+                from_height = self.to_int(
+                    self.resolve_value(step.get("from_height")),
+                    "assert_pass_energy_delta.from_height",
+                )
+                to_height = self.to_int(
+                    self.resolve_value(step.get("to_height")),
+                    "assert_pass_energy_delta.to_height",
+                )
+                mode = str(self.resolve_value(step.get("mode", "at_or_before")))
+
+                expected_delta = (
+                    self.to_int(
+                        self.resolve_value(step.get("expected_delta")),
+                        "assert_pass_energy_delta.expected_delta",
+                    )
+                    if step.get("expected_delta") is not None
+                    else None
+                )
+                min_delta = (
+                    self.to_int(
+                        self.resolve_value(step.get("min_delta")),
+                        "assert_pass_energy_delta.min_delta",
+                    )
+                    if step.get("min_delta") is not None
+                    else None
+                )
+                max_delta = (
+                    self.to_int(
+                        self.resolve_value(step.get("max_delta")),
+                        "assert_pass_energy_delta.max_delta",
+                    )
+                    if step.get("max_delta") is not None
+                    else None
+                )
+                if expected_delta is None and min_delta is None and max_delta is None:
+                    raise ScenarioError(
+                        "assert_pass_energy_delta requires at least one of expected_delta/min_delta/max_delta"
+                    )
+
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(
+                    f"scenario-step[{idx}] assert_pass_energy_delta inscription_id={inscription_id} from_height={from_height} to_height={to_height} mode={mode} expected_delta={expected_delta} min_delta={min_delta} max_delta={max_delta}"
+                )
+                self.assert_pass_energy_delta(
+                    inscription_id,
+                    from_height,
+                    to_height,
+                    mode,
+                    expected_delta,
+                    min_delta,
+                    max_delta,
+                    message,
+                )
                 continue
 
             if step_type == "assert_len":

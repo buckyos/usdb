@@ -604,6 +604,14 @@ build_live_transfer_remint_scenario() {
       "right": "active"
     },
     {
+      "type": "assert_pass_energy_ge",
+      "inscription_id": "${inscription_id_1}",
+      "block_height": ${height_mint},
+      "expected_min_energy": 0,
+      "mode": "at_or_before",
+      "expected_state": "active"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_active_balance_snapshot",
@@ -665,6 +673,14 @@ build_live_transfer_remint_scenario() {
       "type": "assert_eq",
       "left": "\$pass1_energy_transfer.state",
       "right": "dormant"
+    },
+    {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_1}",
+      "from_height": ${height_mint},
+      "to_height": ${height_transfer},
+      "min_delta": 0,
+      "mode": "at_or_before"
     },
     {
       "type": "rpc_call",
@@ -730,6 +746,14 @@ build_live_transfer_remint_scenario() {
       "right": "dormant"
     },
     {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_1}",
+      "from_height": ${height_transfer},
+      "to_height": ${height_remint},
+      "expected_delta": 0,
+      "mode": "at_or_before"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_pass_snapshot",
@@ -770,6 +794,14 @@ build_live_transfer_remint_scenario() {
       "type": "assert_eq",
       "left": "\$pass2_energy_remint.state",
       "right": "active"
+    },
+    {
+      "type": "assert_pass_energy_eq",
+      "inscription_id": "${inscription_id_2}",
+      "block_height": ${height_remint},
+      "expected_energy": "\$pass1_energy_remint.energy",
+      "mode": "at_or_before",
+      "expected_state": "active"
     },
     {
       "type": "rpc_call",
@@ -968,6 +1000,25 @@ build_live_passive_transfer_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_mint_2},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_mint2"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_mint2.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
       "method": "get_pass_snapshot",
       "params": [
         {
@@ -1021,6 +1072,14 @@ build_live_passive_transfer_scenario() {
       "right": "dormant"
     },
     {
+      "type": "assert_pass_energy_ge",
+      "inscription_id": "${inscription_id_1}",
+      "block_height": ${height_transfer},
+      "expected_min_energy": 0,
+      "mode": "at_or_before",
+      "expected_state": "dormant"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_pass_energy",
@@ -1038,6 +1097,14 @@ build_live_passive_transfer_scenario() {
       "type": "assert_eq",
       "left": "\$pass2_energy_transfer.state",
       "right": "active"
+    },
+    {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_2}",
+      "from_height": ${height_mint_2},
+      "to_height": ${height_transfer},
+      "min_delta": 0,
+      "mode": "at_or_before"
     },
     {
       "type": "rpc_call",
@@ -1125,6 +1192,25 @@ build_live_same_owner_multi_mint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_1}",
+          "block_height": ${height_mint_1},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass1_energy_mint1"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass1_energy_mint1.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
       "method": "get_pass_snapshot",
       "params": [
         {
@@ -1178,6 +1264,14 @@ build_live_same_owner_multi_mint_scenario() {
       "right": "dormant"
     },
     {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_1}",
+      "from_height": ${height_mint_1},
+      "to_height": ${height_mint_2},
+      "min_delta": 0,
+      "mode": "at_or_before"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_pass_energy",
@@ -1195,6 +1289,14 @@ build_live_same_owner_multi_mint_scenario() {
       "type": "assert_eq",
       "left": "\$pass2_energy_mint2.state",
       "right": "active"
+    },
+    {
+      "type": "assert_pass_energy_eq",
+      "inscription_id": "${inscription_id_2}",
+      "block_height": ${height_mint_2},
+      "expected_energy": 0,
+      "mode": "at_or_before",
+      "expected_state": "active"
     },
     {
       "type": "rpc_call",
@@ -1320,6 +1422,25 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_remint_1},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_remint1"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_remint1.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
       "method": "get_pass_snapshot",
       "params": [
         {
@@ -1391,6 +1512,14 @@ build_live_duplicate_prev_inherit_scenario() {
       "right": "consumed"
     },
     {
+      "type": "assert_pass_energy_eq",
+      "inscription_id": "${inscription_id_1}",
+      "block_height": ${height_remint_2},
+      "expected_energy": 0,
+      "mode": "at_or_before",
+      "expected_state": "consumed"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_pass_energy",
@@ -1410,6 +1539,14 @@ build_live_duplicate_prev_inherit_scenario() {
       "right": "dormant"
     },
     {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_2}",
+      "from_height": ${height_remint_1},
+      "to_height": ${height_remint_2},
+      "min_delta": 0,
+      "mode": "at_or_before"
+    },
+    {
       "type": "rpc_call",
       "service": "usdb",
       "method": "get_pass_energy",
@@ -1427,6 +1564,14 @@ build_live_duplicate_prev_inherit_scenario() {
       "type": "assert_eq",
       "left": "\$pass3_energy_remint2.state",
       "right": "active"
+    },
+    {
+      "type": "assert_pass_energy_eq",
+      "inscription_id": "${inscription_id_3}",
+      "block_height": ${height_remint_2},
+      "expected_energy": 0,
+      "mode": "at_or_before",
+      "expected_state": "active"
     },
     {
       "type": "rpc_call",
