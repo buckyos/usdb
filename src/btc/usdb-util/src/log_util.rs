@@ -1,11 +1,13 @@
 use super::dirs::get_service_dir;
 use flexi_logger::{Cleanup, Criterion, FileSpec, Logger, Naming, detailed_format};
+use std::path::PathBuf;
 
 pub struct LogConfig {
     pub service_name: String,
     pub file: bool,
     pub file_name: Option<String>,
     pub console: bool,
+    pub service_root_dir: Option<PathBuf>,
 }
 
 impl LogConfig {
@@ -15,6 +17,7 @@ impl LogConfig {
             file_name: None,
             console: false,
             file: true,
+            service_root_dir: None,
         }
     }
 
@@ -32,10 +35,19 @@ impl LogConfig {
         self.console = enable;
         self
     }
+
+    pub fn with_service_root_dir(mut self, service_root_dir: PathBuf) -> Self {
+        self.service_root_dir = Some(service_root_dir);
+        self
+    }
 }
 
 pub fn init_log(config: LogConfig) {
-    let log_dir = get_service_dir(&config.service_name).join("logs");
+    let log_dir = if let Some(service_root_dir) = &config.service_root_dir {
+        service_root_dir.join("logs")
+    } else {
+        get_service_dir(&config.service_name).join("logs")
+    };
     std::fs::create_dir_all(&log_dir).expect("Failed to create log directory");
 
     let file_name = config.file_name.unwrap_or(config.service_name);

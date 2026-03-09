@@ -153,7 +153,9 @@ async fn main_run(root_dir: PathBuf, max_block_height: Option<u32>, skip_process
     let output = Arc::new(output);
 
     // Init file logging
-    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME).enable_console(false);
+    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+        .with_service_root_dir(root_dir.clone())
+        .enable_console(false);
     usdb_util::init_log(config);
 
     output.println(&format!("Using service directory: {}", root_dir.display()));
@@ -277,6 +279,7 @@ async fn main() {
             // Init file logging
             let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(true);
             usdb_util::init_log(config);
@@ -302,6 +305,7 @@ async fn main() {
             // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(false);
             usdb_util::init_log(config);
@@ -340,6 +344,7 @@ async fn main() {
             // Init file logging
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(false);
             usdb_util::init_log(config);
@@ -390,6 +395,7 @@ async fn main() {
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(false);
             usdb_util::init_log(config);
@@ -473,6 +479,7 @@ async fn main() {
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(false);
             usdb_util::init_log(config);
@@ -544,6 +551,7 @@ async fn main() {
             // Init file logging
             let file_name = format!("{}_verify", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(true);
             usdb_util::init_log(config);
@@ -678,6 +686,7 @@ async fn main() {
         Some(BalanceHistoryCommands::ServeWeb { port, web_root }) => {
             let file_name = format!("{}_web", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
             let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
                 .with_file_name(&file_name)
                 .enable_console(true);
             usdb_util::init_log(config);

@@ -49,16 +49,19 @@ async fn main() {
         ))
     };
 
+    let root_dir = cli
+        .root_dir
+        .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::USDB_INDEXER_SERVICE_NAME));
+
     // Init file logging
-    let config = LogConfig::new(usdb_util::USDB_INDEXER_SERVICE_NAME).enable_console(false);
+    let config = LogConfig::new(usdb_util::USDB_INDEXER_SERVICE_NAME)
+        .with_service_root_dir(root_dir.clone())
+        .enable_console(false);
     usdb_util::init_log(config);
 
     let output = output::IndexOutput::new();
     let output = Arc::new(output);
 
-    let root_dir = cli
-        .root_dir
-        .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::USDB_INDEXER_SERVICE_NAME));
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
     // Load configuration
