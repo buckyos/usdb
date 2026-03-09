@@ -410,14 +410,44 @@ impl PassEnergyManager {
         page: usize,
         page_size: usize,
     ) -> Result<Vec<PassEnergyRecord>, String> {
-        self.storage
-            .get_pass_energy_records_by_page_in_height_range(
-                inscription_id,
-                from_block_height,
-                to_block_height,
-                page,
-                page_size,
-            )
+        self.get_pass_energy_records_by_page_in_height_range_with_order(
+            inscription_id,
+            from_block_height,
+            to_block_height,
+            page,
+            page_size,
+            false,
+        )
+    }
+
+    pub fn get_pass_energy_records_by_page_in_height_range_with_order(
+        &self,
+        inscription_id: &InscriptionId,
+        from_block_height: u32,
+        to_block_height: u32,
+        page: usize,
+        page_size: usize,
+        desc: bool,
+    ) -> Result<Vec<PassEnergyRecord>, String> {
+        if desc {
+            self.storage
+                .get_pass_energy_records_by_page_in_height_range_desc(
+                    inscription_id,
+                    from_block_height,
+                    to_block_height,
+                    page,
+                    page_size,
+                )
+        } else {
+            self.storage
+                .get_pass_energy_records_by_page_in_height_range(
+                    inscription_id,
+                    from_block_height,
+                    to_block_height,
+                    page,
+                    page_size,
+                )
+        }
     }
 
     pub fn count_pass_energy_records_in_height_range(

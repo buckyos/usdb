@@ -155,6 +155,7 @@ impl UsdbIndexerService {
                 inscription_id,
                 from_height,
                 to_height,
+                order,
                 page,
                 page_size,
             } => {
@@ -166,6 +167,7 @@ impl UsdbIndexerService {
                             "inscription_id": inscription_id,
                             "from_height": from_height,
                             "to_height": to_height,
+                            "order": order,
                             "page": page,
                             "page_size": page_size,
                         }]),

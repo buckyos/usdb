@@ -457,32 +457,17 @@ async function loadEnergyRange() {
     els.energyRangeError.textContent = "";
 
     try {
-        // Query one tiny page first to get the latest total count under current range.
-        const summary = await rpcCall("get_pass_energy_range", [{
-            inscription_id: state.energy.selectedInscriptionId,
-            from_height: state.energy.range.fromHeight,
-            to_height: state.energy.range.toHeight,
-            page: 0,
-            page_size: 1,
-        }]);
-
-        state.energy.range.total = Number(summary.total || 0);
-        const totalPages = Math.max(1, Math.ceil(state.energy.range.total / state.energy.range.pageSize));
-        if (state.energy.range.page >= totalPages) {
-            state.energy.range.page = totalPages - 1;
-        }
-
-        // Backend range API is ascending by height. Map UI descending page to ascending page.
-        const ascPage = Math.max(0, totalPages - 1 - state.energy.range.page);
         const page = await rpcCall("get_pass_energy_range", [{
             inscription_id: state.energy.selectedInscriptionId,
             from_height: state.energy.range.fromHeight,
             to_height: state.energy.range.toHeight,
-            page: ascPage,
+            order: state.energy.range.order,
+            page: state.energy.range.page,
             page_size: state.energy.range.pageSize,
         }]);
 
-        const rows = (page.items || []).slice().reverse();
+        state.energy.range.total = Number(page.total || 0);
+        const rows = page.items || [];
         if (state.energy.range.total === 0 && state.energy.latestSnapshot) {
             // Defensive fallback: if timeline API unexpectedly returns empty but snapshot exists,
             // query exact latest record and render one-row timeline instead of blank table.
@@ -510,6 +495,7 @@ async function loadEnergyRange() {
         renderEnergyRangeRows(rows);
 
         const currentPage = state.energy.range.page + 1;
+        const totalPages = Math.max(1, Math.ceil(state.energy.range.total / state.energy.range.pageSize));
         els.energyRangePage.textContent = `${currentPage}/${totalPages}`;
         els.energyRangeSummary.textContent = `total=${fmtNum(state.energy.range.total)}, range=[${fmtNum(state.energy.range.fromHeight)}, ${fmtNum(state.energy.range.toHeight)}], order=${state.energy.range.order}`;
         els.energyRangePrev.disabled = state.energy.range.page === 0;

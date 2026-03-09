@@ -47,4 +47,4 @@ http://127.0.0.1:8088/web/usdb-indexer-browser/
 - 顶部 RPC 区域支持按网络预设（Mainnet/Regtest/Testnet/Signet/Testnet4）自动填充默认 endpoint。
 - 首页默认每 5 秒刷新一次，可点击“刷新”立即拉取最新状态。
 - 能量排行榜点击某一行会自动联动到“当前能量状态”查询。
-- 能量详情查询默认使用最新同步高度，并自动加载 `[0, current_height]` 全区间记录（分页倒序展示）。
+- 能量详情查询默认使用最新同步高度，并自动加载 `[mint_block_height, current_height]` 区间记录（分页倒序展示）。

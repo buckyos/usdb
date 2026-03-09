@@ -241,6 +241,8 @@ pub struct GetPassEnergyRangeParams {
     pub from_height: u32,
     /// Inclusive range end height.
     pub to_height: u32,
+    /// Optional sort order, `asc` or `desc`. Defaults to `asc`.
+    pub order: Option<String>,
     /// Zero-based page index.
     pub page: usize,
     /// Number of rows per page.

@@ -743,15 +743,28 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             )
             .map_err(Self::to_internal_error)?;
 
+        let order = params.order.as_deref().unwrap_or("asc");
+        let desc = match order {
+            "asc" => false,
+            "desc" => true,
+            _ => {
+                return Err(Self::to_invalid_params(format!(
+                    "Invalid energy range order {}, expected asc or desc",
+                    order
+                )));
+            }
+        };
+
         let records = self
             .indexer
             .pass_energy_manager()
-            .get_pass_energy_records_by_page_in_height_range(
+            .get_pass_energy_records_by_page_in_height_range_with_order(
                 &inscription_id,
                 params.from_height,
                 resolved_to_height,
                 params.page,
                 params.page_size,
+                desc,
             )
             .map_err(Self::to_internal_error)?;
 
@@ -1390,6 +1403,65 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_energy_range_supports_desc_order() {
+        let (server, root_dir) = build_server("energy_range_desc_order", 150);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(12, 120, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 110, 1100);
+        seed_energy_record(&server, &pass, 120, 1200);
+        seed_energy_record(&server, &pass, 130, 1300);
+
+        let desc_page0 = server
+            .get_pass_energy_range(GetPassEnergyRangeParams {
+                inscription_id: pass.inscription_id.to_string(),
+                from_height: 100,
+                to_height: 130,
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(desc_page0.total, 3);
+        assert_eq!(desc_page0.items.len(), 2);
+        assert_eq!(desc_page0.items[0].record_block_height, 130);
+        assert_eq!(desc_page0.items[1].record_block_height, 120);
+
+        let desc_page1 = server
+            .get_pass_energy_range(GetPassEnergyRangeParams {
+                inscription_id: pass.inscription_id.to_string(),
+                from_height: 100,
+                to_height: 130,
+                order: Some("desc".to_string()),
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(desc_page1.total, 3);
+        assert_eq!(desc_page1.items.len(), 1);
+        assert_eq!(desc_page1.items[0].record_block_height, 110);
+
+        let asc_page0 = server
+            .get_pass_energy_range(GetPassEnergyRangeParams {
+                inscription_id: pass.inscription_id.to_string(),
+                from_height: 100,
+                to_height: 130,
+                order: Some("asc".to_string()),
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(asc_page0.total, 3);
+        assert_eq!(asc_page0.items.len(), 2);
+        assert_eq!(asc_page0.items[0].record_block_height, 110);
+        assert_eq!(asc_page0.items[1].record_block_height, 120);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_energy_leaderboard_explicit_height_bypass_cache() {
         let (server, root_dir) = build_server("leaderboard_no_cache", 120);
         let storage = server.indexer.miner_pass_storage();
@@ -1598,6 +1670,21 @@ mod tests {
             _ => panic!("unexpected error code: {:?}", range_err.code),
         }
         assert_eq!(range_err.message, "INVALID_HEIGHT_RANGE");
+
+        let energy_order_err = server
+            .get_pass_energy_range(GetPassEnergyRangeParams {
+                inscription_id: test_inscription_id(9, 0).to_string(),
+                from_height: 100,
+                to_height: 120,
+                order: Some("bad".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+        match energy_order_err.code {
+            ErrorCode::InvalidParams => {}
+            _ => panic!("unexpected error code: {:?}", energy_order_err.code),
+        }
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

@@ -359,10 +359,13 @@
   "inscription_id": "txidi0",
   "from_height": 900000,
   "to_height": 900200,
+  "order": "desc",
   "page": 0,
   "page_size": 100
 }
 ```
+
+`order` 可选，允许 `asc` / `desc`，默认 `asc`。
 
 返回包含：
 

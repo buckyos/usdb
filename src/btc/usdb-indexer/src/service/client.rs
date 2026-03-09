@@ -240,6 +240,7 @@ impl RpcClient {
     /// * `inscription_id` - Target inscription id.
     /// * `from_height` - Inclusive range start.
     /// * `to_height` - Inclusive range end.
+    /// * `order` - Optional sort order: `Some("asc")` or `Some("desc")`.
     /// * `page` - Zero-based page index.
     /// * `page_size` - Number of rows per page.
     ///
@@ -251,6 +252,7 @@ impl RpcClient {
         inscription_id: &str,
         from_height: u32,
         to_height: u32,
+        order: Option<&str>,
         page: usize,
         page_size: usize,
     ) -> Result<PassEnergyRangePage, String> {
@@ -260,6 +262,7 @@ impl RpcClient {
                 "inscription_id": inscription_id,
                 "from_height": from_height,
                 "to_height": to_height,
+                "order": order,
                 "page": page,
                 "page_size": page_size,
             }]),

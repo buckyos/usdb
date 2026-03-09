@@ -117,6 +117,9 @@ pub enum Commands {
         #[arg(long)]
         to_height: u32,
 
+        #[arg(long, default_value = "asc")]
+        order: String,
+
         #[arg(long, default_value_t = 0)]
         page: usize,
 
