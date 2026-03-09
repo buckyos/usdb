@@ -20,13 +20,14 @@ const state = {
             total: 0,
         },
         selectedInscriptionId: "",
-        selectedQueryHeight: null,
+        latestSnapshot: null,
         range: {
             fromHeight: null,
             toHeight: null,
             page: 0,
             pageSize: 50,
             total: 0,
+            order: "desc",
         },
     },
 };
@@ -84,7 +85,6 @@ const els = {
     energyLeaderboardTable: document.getElementById("energy-leaderboard-table"),
     energyQueryForm: document.getElementById("energy-query-form"),
     energyIdInput: document.getElementById("energy-id-input"),
-    energyHeightInput: document.getElementById("energy-height-input"),
     energyQueryHint: document.getElementById("energy-query-hint"),
     energySnapshotEmpty: document.getElementById("energy-snapshot-empty"),
     energySnapshotBox: document.getElementById("energy-snapshot-box"),
@@ -396,8 +396,6 @@ function renderLeaderboardRows(rows) {
         `;
         tr.addEventListener("click", () => {
             els.energyIdInput.value = item.inscription_id;
-            els.energyHeightInput.value = "";
-            state.energy.selectedQueryHeight = null;
             void queryEnergySnapshot();
         });
         els.energyLeaderboardTable.appendChild(tr);
@@ -431,12 +429,20 @@ async function loadLeaderboard() {
 
 function renderEnergyRangeRows(rows) {
     els.energyRangeTable.innerHTML = "";
+    if (!rows || rows.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="7">No energy records in selected range.</td>`;
+        els.energyRangeTable.appendChild(tr);
+        return;
+    }
     rows.forEach((item) => {
         const deltaClass = item.owner_delta >= 0 ? "pos" : "neg";
         const tr = document.createElement("tr");
         tr.innerHTML = `
             <td>${fmtNum(item.record_block_height)}</td>
             <td>${item.state}</td>
+            <td>${fmtNum(item.active_block_height)}</td>
+            <td class="mono">${item.owner_address}</td>
             <td>${fmtBalanceSmart(item.owner_balance)}</td>
             <td class="${deltaClass}">${fmtBalanceDeltaSmart(item.owner_delta)}</td>
             <td>${fmtNum(item.energy)}</td>
@@ -451,25 +457,68 @@ async function loadEnergyRange() {
     els.energyRangeError.textContent = "";
 
     try {
+        // Query one tiny page first to get the latest total count under current range.
+        const summary = await rpcCall("get_pass_energy_range", [{
+            inscription_id: state.energy.selectedInscriptionId,
+            from_height: state.energy.range.fromHeight,
+            to_height: state.energy.range.toHeight,
+            page: 0,
+            page_size: 1,
+        }]);
+
+        state.energy.range.total = Number(summary.total || 0);
+        const totalPages = Math.max(1, Math.ceil(state.energy.range.total / state.energy.range.pageSize));
+        if (state.energy.range.page >= totalPages) {
+            state.energy.range.page = totalPages - 1;
+        }
+
+        // Backend range API is ascending by height. Map UI descending page to ascending page.
+        const ascPage = Math.max(0, totalPages - 1 - state.energy.range.page);
         const page = await rpcCall("get_pass_energy_range", [{
             inscription_id: state.energy.selectedInscriptionId,
             from_height: state.energy.range.fromHeight,
             to_height: state.energy.range.toHeight,
-            page: state.energy.range.page,
+            page: ascPage,
             page_size: state.energy.range.pageSize,
         }]);
 
-        state.energy.range.total = Number(page.total || 0);
-        renderEnergyRangeRows(page.items || []);
+        const rows = (page.items || []).slice().reverse();
+        if (state.energy.range.total === 0 && state.energy.latestSnapshot) {
+            // Defensive fallback: if timeline API unexpectedly returns empty but snapshot exists,
+            // query exact latest record and render one-row timeline instead of blank table.
+            const latest = state.energy.latestSnapshot;
+            const exact = await rpcCall("get_pass_energy", [{
+                inscription_id: latest.inscription_id,
+                block_height: latest.record_block_height,
+                mode: "exact",
+            }]);
+            renderEnergyRangeRows([{
+                record_block_height: exact.record_block_height,
+                state: exact.state,
+                active_block_height: exact.active_block_height,
+                owner_address: exact.owner_address,
+                owner_balance: exact.owner_balance,
+                owner_delta: exact.owner_delta,
+                energy: exact.energy,
+            }]);
+            els.energyRangeSummary.textContent = `total=0 (fallback latest record shown), range=[${fmtNum(state.energy.range.fromHeight)}, ${fmtNum(state.energy.range.toHeight)}], order=${state.energy.range.order}`;
+            els.energyRangePage.textContent = "1/1";
+            els.energyRangePrev.disabled = true;
+            els.energyRangeNext.disabled = true;
+            return;
+        }
+        renderEnergyRangeRows(rows);
 
         const currentPage = state.energy.range.page + 1;
-        const totalPages = Math.max(1, Math.ceil(state.energy.range.total / state.energy.range.pageSize));
         els.energyRangePage.textContent = `${currentPage}/${totalPages}`;
-        els.energyRangeSummary.textContent = `total=${fmtNum(state.energy.range.total)}, range=[${fmtNum(state.energy.range.fromHeight)}, ${fmtNum(state.energy.range.toHeight)}]`;
+        els.energyRangeSummary.textContent = `total=${fmtNum(state.energy.range.total)}, range=[${fmtNum(state.energy.range.fromHeight)}, ${fmtNum(state.energy.range.toHeight)}], order=${state.energy.range.order}`;
         els.energyRangePrev.disabled = state.energy.range.page === 0;
         els.energyRangeNext.disabled = currentPage >= totalPages;
+        return;
     } catch (err) {
+        state.energy.range.total = 0;
         els.energyRangeError.textContent = `区间查询失败：${rpcErrorMessage(err)}`;
+        throw err;
     }
 }
 
@@ -483,39 +532,40 @@ async function queryEnergySnapshot() {
     els.energyRangeError.textContent = "";
 
     try {
-        const height = parseOptionalU32(els.energyHeightInput.value);
-        const snapshot = await rpcCall("get_pass_energy", [{
-            inscription_id: inscriptionId,
-            block_height: height,
-            mode: "at_or_before",
-        }]);
+        const [snapshot, passSnapshot] = await Promise.all([
+            rpcCall("get_pass_energy", [{
+                inscription_id: inscriptionId,
+                block_height: null,
+                mode: "at_or_before",
+            }]),
+            rpcCall("get_pass_snapshot", [{
+                inscription_id: inscriptionId,
+                at_height: null,
+            }]),
+        ]);
 
         state.energy.selectedInscriptionId = inscriptionId;
-        state.energy.selectedQueryHeight = height;
+        state.energy.latestSnapshot = snapshot;
         els.energySnapshotEmpty.classList.add("hidden");
         els.energySnapshotBox.classList.remove("hidden");
         renderDetailGrid(els.energySnapshotGrid, [
             ["inscription_id", snapshot.inscription_id],
-            ["query_block_height", snapshot.query_block_height],
-            ["record_block_height", snapshot.record_block_height],
-            ["state", snapshot.state],
-            ["active_block_height", snapshot.active_block_height],
-            ["owner_address", snapshot.owner_address],
-            ["owner_balance", fmtBalanceSmart(snapshot.owner_balance)],
-            ["owner_delta", fmtBalanceDeltaSmart(snapshot.owner_delta)],
-            ["energy", snapshot.energy],
+            ["current_height", snapshot.query_block_height],
+            ["current_state", snapshot.state],
+            ["current_energy", fmtNum(snapshot.energy)],
+            ["current_owner", snapshot.owner_address],
         ]);
 
         const toHeight = Number(snapshot.query_block_height || 0);
-        const fromHeight = Math.max(0, toHeight - 5000);
+        const fromHeight = Math.max(0, Number(passSnapshot?.mint_block_height ?? 0));
         state.energy.range.fromHeight = fromHeight;
         state.energy.range.toHeight = toHeight;
         state.energy.range.page = 0;
         els.energyRangeFrom.value = String(fromHeight);
         els.energyRangeTo.value = String(toHeight);
 
-        els.energyQueryHint.textContent = "查询成功。";
         await loadEnergyRange();
+        els.energyQueryHint.textContent = `查询成功。timeline_total=${fmtNum(state.energy.range.total)}`;
     } catch (err) {
         els.energyQueryHint.textContent = `查询失败：${rpcErrorMessage(err)}`;
     }

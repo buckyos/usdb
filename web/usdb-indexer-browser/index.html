@@ -174,11 +174,10 @@
 
                 <article class="card">
                     <div class="card-head">
-                        <h2>能量详情</h2>
+                        <h2>当前能量状态</h2>
                     </div>
                     <form id="energy-query-form" class="query">
                         <input id="energy-id-input" placeholder="输入 inscription id" required />
-                        <input id="energy-height-input" type="number" min="0" placeholder="可选 block_height" />
                         <button type="submit">查询</button>
                     </form>
                     <p id="energy-query-hint" class="hint"></p>
@@ -186,39 +185,38 @@
                     <div id="energy-snapshot-box" class="detail hidden">
                         <div id="energy-snapshot-grid" class="detail-grid"></div>
                     </div>
-                </article>
-            </section>
-
-            <section class="card">
-                <div class="card-head">
-                    <h2>能量变化记录</h2>
-                    <div class="pager">
-                        <button id="energy-range-prev" class="ghost" type="button">上一页</button>
-                        <span id="energy-range-page">-</span>
-                        <button id="energy-range-next" class="ghost" type="button">下一页</button>
+                    <div class="card-head" style="margin-top: 12px;">
+                        <h2>Record Timeline</h2>
+                        <div class="pager">
+                            <button id="energy-range-prev" class="ghost" type="button">上一页</button>
+                            <span id="energy-range-page">-</span>
+                            <button id="energy-range-next" class="ghost" type="button">下一页</button>
+                        </div>
                     </div>
-                </div>
-                <form id="energy-range-form" class="query">
-                    <input id="energy-range-from" type="number" min="0" placeholder="from_height" />
-                    <input id="energy-range-to" type="number" min="0" placeholder="to_height" />
-                    <button type="submit">更新区间</button>
-                </form>
-                <p id="energy-range-summary" class="hint">-</p>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>height</th>
-                                <th>state</th>
-                                <th>owner_balance</th>
-                                <th>owner_delta</th>
-                                <th>energy</th>
-                            </tr>
-                        </thead>
-                        <tbody id="energy-range-table"></tbody>
-                    </table>
-                </div>
-                <p id="energy-range-error" class="error"></p>
+                    <form id="energy-range-form" class="query">
+                        <input id="energy-range-from" type="number" min="0" placeholder="from_height" />
+                        <input id="energy-range-to" type="number" min="0" placeholder="to_height" />
+                        <button type="submit">更新区间</button>
+                    </form>
+                    <p id="energy-range-summary" class="hint">-</p>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>record_height (new->old)</th>
+                                    <th>state</th>
+                                    <th>active_block_height</th>
+                                    <th>owner_address</th>
+                                    <th>owner_balance</th>
+                                    <th>owner_delta</th>
+                                    <th>record_energy</th>
+                                </tr>
+                            </thead>
+                            <tbody id="energy-range-table"></tbody>
+                        </table>
+                    </div>
+                    <p id="energy-range-error" class="error"></p>
+                </article>
             </section>
         </section>
     </main>
