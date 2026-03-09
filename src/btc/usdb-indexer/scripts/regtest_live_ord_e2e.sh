@@ -28,6 +28,10 @@ FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
 TRANSFER_CONFIRM_BLOCKS="${TRANSFER_CONFIRM_BLOCKS:-1}"
 REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
+PENALTY_FUND_AMOUNT_BTC="${PENALTY_FUND_AMOUNT_BTC:-0.50000000}"
+PENALTY_SPEND_AMOUNT_BTC="${PENALTY_SPEND_AMOUNT_BTC:-0.49950000}"
+PENALTY_FUND_CONFIRM_BLOCKS="${PENALTY_FUND_CONFIRM_BLOCKS:-1}"
+PENALTY_SPEND_CONFIRM_BLOCKS="${PENALTY_SPEND_CONFIRM_BLOCKS:-1}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -1352,7 +1356,9 @@ build_live_duplicate_prev_inherit_scenario() {
   local inscription_id_3="$4"
   local height_transfer="$5"
   local height_remint_1="$6"
-  local height_remint_2="$7"
+  local height_penalty_baseline="$7"
+  local height_penalty="$8"
+  local height_remint_2="$9"
   cat >"$scenario_file" <<EOF
 {
   "name": "live-ord-duplicate-prev-inherit-assert",
@@ -1437,6 +1443,52 @@ build_live_duplicate_prev_inherit_scenario() {
       "type": "assert_eq",
       "left": "\$pass2_energy_remint1.state",
       "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_penalty_baseline},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_before_penalty"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_before_penalty.state",
+      "right": "active"
+    },
+    {
+      "type": "rpc_call",
+      "service": "usdb",
+      "method": "get_pass_energy",
+      "params": [
+        {
+          "inscription_id": "${inscription_id_2}",
+          "block_height": ${height_penalty},
+          "mode": "at_or_before"
+        }
+      ],
+      "result_only": true,
+      "var": "pass2_energy_penalty"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_penalty.state",
+      "right": "active"
+    },
+    {
+      "type": "assert_pass_energy_delta",
+      "inscription_id": "${inscription_id_2}",
+      "from_height": ${height_penalty_baseline},
+      "to_height": ${height_penalty},
+      "max_delta": -1,
+      "mode": "at_or_before"
     },
     {
       "type": "rpc_call",
@@ -1541,7 +1593,7 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "assert_pass_energy_delta",
       "inscription_id": "${inscription_id_2}",
-      "from_height": ${height_remint_1},
+      "from_height": ${height_penalty},
       "to_height": ${height_remint_2},
       "min_delta": 0,
       "mode": "at_or_before"
@@ -1905,6 +1957,102 @@ EOF
     height_remint_1="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
     log "Chain height after first remint confirmations: ${height_remint_1}"
 
+    log "Funding owner address before penalty spend: address=${ord_receive_address_b}, amount_btc=${PENALTY_FUND_AMOUNT_BTC}"
+    local penalty_fund_txid
+    penalty_fund_txid="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      sendtoaddress "$ord_receive_address_b" "$PENALTY_FUND_AMOUNT_BTC")"
+    if [[ -z "$penalty_fund_txid" ]]; then
+      log "Failed to create penalty baseline funding transaction"
+      exit 1
+    fi
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$PENALTY_FUND_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    local height_penalty_baseline
+    height_penalty_baseline="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after penalty baseline funding confirmations: ${height_penalty_baseline}"
+
+    local penalty_fund_vout
+    penalty_fund_vout="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      getrawtransaction "$penalty_fund_txid" 2 | python3 - "$ord_receive_address_b" <<'PY'
+import json
+import sys
+
+target_address = sys.argv[1]
+payload = json.load(sys.stdin)
+for vout in payload.get("vout", []):
+    output_index = vout.get("n")
+    if output_index is None:
+        continue
+    script_pub_key = vout.get("scriptPubKey", {})
+    addresses = []
+    address = script_pub_key.get("address")
+    if isinstance(address, str):
+        addresses.append(address)
+    extra_addresses = script_pub_key.get("addresses")
+    if isinstance(extra_addresses, list):
+        addresses.extend([item for item in extra_addresses if isinstance(item, str)])
+    if target_address in addresses:
+        print(output_index)
+        raise SystemExit(0)
+
+print("")
+PY
+)"
+    if [[ -z "$penalty_fund_vout" ]]; then
+      log "Failed to locate owner output in penalty funding tx: txid=${penalty_fund_txid}, owner_address=${ord_receive_address_b}"
+      exit 1
+    fi
+
+    log "Spending funded owner UTXO to trigger negative owner delta: txid=${penalty_fund_txid}, vout=${penalty_fund_vout}, amount_btc=${PENALTY_SPEND_AMOUNT_BTC}"
+    local penalty_spend_raw
+    penalty_spend_raw="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$ORD_WALLET_NAME_B" \
+      createrawtransaction "[{\"txid\":\"${penalty_fund_txid}\",\"vout\":${penalty_fund_vout}}]" "{\"${miner_address}\":${PENALTY_SPEND_AMOUNT_BTC}}")"
+    if [[ -z "$penalty_spend_raw" ]]; then
+      log "Failed to create penalty spend raw transaction"
+      exit 1
+    fi
+
+    local penalty_spend_signed
+    penalty_spend_signed="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$ORD_WALLET_NAME_B" \
+      signrawtransactionwithwallet "$penalty_spend_raw")"
+    local penalty_spend_hex
+    penalty_spend_hex="$(echo "$penalty_spend_signed" | python3 - <<'PY'
+import json
+import sys
+
+payload = json.load(sys.stdin)
+print(payload.get("hex", ""))
+PY
+)"
+    local penalty_spend_complete
+    penalty_spend_complete="$(echo "$penalty_spend_signed" | python3 - <<'PY'
+import json
+import sys
+
+payload = json.load(sys.stdin)
+print("true" if payload.get("complete") else "false")
+PY
+)"
+    if [[ "$penalty_spend_complete" != "true" || -z "$penalty_spend_hex" ]]; then
+      log "Failed to sign penalty spend transaction: payload=${penalty_spend_signed}"
+      exit 1
+    fi
+
+    local penalty_spend_txid
+    penalty_spend_txid="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      sendrawtransaction "$penalty_spend_hex")"
+    if [[ -z "$penalty_spend_txid" ]]; then
+      log "Failed to broadcast penalty spend transaction"
+      exit 1
+    fi
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$PENALTY_SPEND_CONFIRM_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+    local height_penalty
+    height_penalty="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    log "Chain height after penalty spend confirmations: ${height_penalty}"
+
     local remint_content_file_2
     remint_content_file_2="$WORK_DIR/usdb_live_remint_second.json"
     cat >"$remint_content_file_2" <<EOF
@@ -1927,7 +2075,7 @@ EOF
     log "Chain height after duplicate remint confirmations: ${target_height}"
 
     scenario_file="$WORK_DIR/live_ord_duplicate_prev_inherit_assert.json"
-    build_live_duplicate_prev_inherit_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$inscription_id_3" "$height_transfer_1" "$height_remint_1" "$target_height"
+    build_live_duplicate_prev_inherit_scenario "$scenario_file" "$inscription_id_1" "$inscription_id_2" "$inscription_id_3" "$height_transfer_1" "$height_remint_1" "$height_penalty_baseline" "$height_penalty" "$target_height"
     scenario_summary="${scenario_summary}, pass2=${inscription_id_2}, pass3=${inscription_id_3}"
   else
     log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint/invalid_mint/passive_transfer/same_owner_multi_mint/duplicate_prev_inherit"
