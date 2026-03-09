@@ -105,6 +105,13 @@ function fmtNum(value) {
     return new Intl.NumberFormat("en-US").format(value);
 }
 
+function shortText(value, head = 14, tail = 12) {
+    const text = String(value ?? "");
+    if (!text) return "-";
+    if (text.length <= head + tail + 3) return text;
+    return `${text.slice(0, head)}...${text.slice(-tail)}`;
+}
+
 function toNumber(value) {
     if (value === null || value === undefined || value === "") return null;
     const n = Number(value);
@@ -390,7 +397,7 @@ function renderLeaderboardRows(rows) {
         tr.innerHTML = `
             <td>${fmtNum(rankBase + idx + 1)}</td>
             <td>${fmtNum(item.energy)}</td>
-            <td class="mono">${item.inscription_id}</td>
+            <td class="mono" title="${item.inscription_id}">${shortText(item.inscription_id, 14, 14)}</td>
             <td>${item.state}</td>
             <td>${fmtNum(item.record_block_height)}</td>
         `;
@@ -442,7 +449,7 @@ function renderEnergyRangeRows(rows) {
             <td>${fmtNum(item.record_block_height)}</td>
             <td>${item.state}</td>
             <td>${fmtNum(item.active_block_height)}</td>
-            <td class="mono">${item.owner_address}</td>
+            <td class="mono" title="${item.owner_address}">${shortText(item.owner_address, 14, 14)}</td>
             <td>${fmtBalanceSmart(item.owner_balance)}</td>
             <td class="${deltaClass}">${fmtBalanceDeltaSmart(item.owner_delta)}</td>
             <td>${fmtNum(item.energy)}</td>
