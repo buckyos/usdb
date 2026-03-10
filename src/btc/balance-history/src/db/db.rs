@@ -30,7 +30,7 @@ pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScrip
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
-// Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
+                                                                       // Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
 pub const BLOCK_COMMIT_VALUE_LEN: usize = BlockHash::LEN + 32 + 32;
 
 #[derive(Debug, Clone)]
@@ -1937,9 +1937,9 @@ mod tests {
         assert_eq!(entry.delta, -200);
         assert_eq!(entry.balance, 300);
 
-        // Test get BTC block height when not set
+        // update_address_history_async writes the stable BTC block height together with history data
         let height = db.get_btc_block_height().unwrap();
-        assert_eq!(height, 0);
+        assert_eq!(height, 401);
 
         // Test put and get BTC block height
         db.put_btc_block_height(123456).unwrap();
@@ -1972,6 +1972,58 @@ mod tests {
 
         let loaded = db.get_block_commit(42).unwrap().unwrap();
         assert_eq!(loaded, commit);
+        assert_eq!(db.get_btc_block_height().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_get_block_commit_returns_none_when_missing() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_block_commit_missing_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        assert!(db.get_block_commit(99).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_block_commit_multiple_round_trip() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_block_commit_multi_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let first = BlockCommitEntry {
+            block_height: 41,
+            btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+            balance_delta_root: [2u8; 32],
+            block_commit: [3u8; 32],
+        };
+        let second = BlockCommitEntry {
+            block_height: 42,
+            btc_block_hash: BlockHash::from_slice(&[4u8; 32]).unwrap(),
+            balance_delta_root: [5u8; 32],
+            block_commit: [6u8; 32],
+        };
+
+        db.update_address_history_with_block_commits_async(
+            &Vec::new(),
+            42,
+            &[first.clone(), second.clone()],
+        )
+        .unwrap();
+
+        assert_eq!(db.get_block_commit(41).unwrap().unwrap(), first);
+        assert_eq!(db.get_block_commit(42).unwrap().unwrap(), second);
         assert_eq!(db.get_btc_block_height().unwrap(), 42);
     }
 

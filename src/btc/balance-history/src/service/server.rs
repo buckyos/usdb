@@ -369,3 +369,80 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         results
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BalanceHistoryConfig;
+    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BlockCommitEntry};
+    use crate::status::SyncStatusManager;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::BlockHash;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn make_test_server(tag: &str) -> BalanceHistoryRpcServer {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root_dir = std::env::temp_dir().join(format!("balance_history_rpc_{}_{}", tag, nanos));
+        std::fs::create_dir_all(&root_dir).unwrap();
+
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir;
+        let config = Arc::new(config);
+        let db = Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
+        let status = Arc::new(SyncStatusManager::new());
+        let (shutdown_tx, _) = watch::channel(());
+
+        BalanceHistoryRpcServer::new(
+            config,
+            "127.0.0.1:0".parse().unwrap(),
+            status,
+            db,
+            shutdown_tx,
+        )
+    }
+
+    #[test]
+    fn test_get_snapshot_info_without_commit() {
+        let server = make_test_server("empty");
+
+        let snapshot = server.get_snapshot_info().unwrap();
+        assert_eq!(snapshot.stable_height, 0);
+        assert_eq!(snapshot.stable_block_hash, None);
+        assert_eq!(snapshot.latest_block_commit, None);
+        assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
+        assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_snapshot_info_with_commit() {
+        let server = make_test_server("commit");
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let snapshot = server.get_snapshot_info().unwrap();
+        assert_eq!(snapshot.stable_height, 12);
+        assert_eq!(
+            snapshot.stable_block_hash,
+            Some(format!("{:x}", commit.btc_block_hash))
+        );
+        assert_eq!(
+            snapshot.latest_block_commit,
+            Some(encode_hex(&commit.block_commit))
+        );
+        assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
+        assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+}

@@ -186,6 +186,7 @@ mod tests {
     use usdb_util::BTCConfig;
 
     #[tokio::test]
+    #[ignore = "requires local bitcoind RPC"]
     async fn test_batch_get_blocks() {
         let config = BTCConfig::default();
         let rpc_url = config.rpc_url();

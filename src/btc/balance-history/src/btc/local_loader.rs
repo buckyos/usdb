@@ -582,27 +582,27 @@ impl BTCClient for BlockLocalLoader {
 
 #[cfg(test)]
 mod tests {
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::{BlockHash, bech32};
-
-    use super::super::rpc::BTCRpcClient;
     use super::*;
+    use crate::btc::BTCClient;
     use crate::config::BalanceHistoryConfig;
-    use crate::db::BalanceHistoryDB;
-    use std::path::PathBuf;
+    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
+    use bitcoincore_rpc::bitcoin::BlockHash;
+    use usdb_util::BTCRpcClient;
 
     #[test]
+    #[ignore = "requires local bitcoind RPC and blk files"]
     fn test_read_blk_blocks() {
         let test_data_dir = std::env::temp_dir().join("bitcoin_test_data_loader");
         std::fs::create_dir_all(&test_data_dir).unwrap();
 
-        let config = BalanceHistoryConfig::default();
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = test_data_dir;
         let config = std::sync::Arc::new(config);
 
         let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
-        let client = std::sync::Arc::new(client);
+        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
 
-        let db = BalanceHistoryDB::open(&test_data_dir.join("db"), config.clone()).unwrap();
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         let db = std::sync::Arc::new(db);
 
         let reader =
@@ -718,12 +718,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires local bitcoind RPC and blk files"]
     fn test_latest_blk_file() {
         let config = BalanceHistoryConfig::default();
         let config = std::sync::Arc::new(config);
 
         let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
-        let client = std::sync::Arc::new(client);
+        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
 
         let reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
@@ -776,6 +777,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires local blk files"]
     fn test_block_file_cache() {
         let config = BalanceHistoryConfig::default();
         let config = std::sync::Arc::new(config);
@@ -784,7 +786,7 @@ mod tests {
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         let reader = Arc::new(reader);
 
-        let cache = BlockFileCache::new(reader.clone());
+        let cache = BlockFileCache::new(reader.clone()).unwrap();
 
         let block1 = cache.get_block_by_file_index(0, 0).unwrap();
         println!("Block 1 hash: {}", block1.block_hash());

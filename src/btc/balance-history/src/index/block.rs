@@ -731,6 +731,26 @@ mod block_commit_tests {
     }
 
     #[test]
+    fn test_balance_delta_root_changes_when_entry_changes() {
+        let block_hash = BlockHash::from_slice(&[7u8; 32]).unwrap();
+        let original = BlockBalanceDelta {
+            block_height: 10,
+            block_hash,
+            entries: vec![make_entry(1, 10, 5, 5), make_entry(2, 10, -2, 8)],
+        };
+        let changed = BlockBalanceDelta {
+            block_height: 10,
+            block_hash,
+            entries: vec![make_entry(1, 10, 6, 6), make_entry(2, 10, -2, 8)],
+        };
+
+        assert_ne!(
+            compute_balance_delta_root(&original),
+            compute_balance_delta_root(&changed)
+        );
+    }
+
+    #[test]
     fn test_build_block_commits_links_previous_hash() {
         let first = BlockBalanceDelta {
             block_height: 1,
@@ -759,6 +779,19 @@ mod block_commit_tests {
             &commits[0].block_commit,
         );
         assert_eq!(commits[1].block_commit, expected_second);
+    }
+
+    #[test]
+    fn test_build_block_commits_depends_on_previous_commit() {
+        let block = BlockBalanceDelta {
+            block_height: 11,
+            block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            entries: vec![make_entry(4, 11, 3, 33)],
+        };
+
+        let left = build_block_commits(&[block.clone()], [1u8; 32]);
+        let right = build_block_commits(&[block], [2u8; 32]);
+        assert_ne!(left[0].block_commit, right[0].block_commit);
     }
 }
 

@@ -282,6 +282,7 @@ mod tests {
     use usdb_util::LogConfig;
 
     #[test]
+    #[ignore = "requires local blk files"]
     fn test_block_file_cache() {
         let config = LogConfig::new("block_file_cache_test").enable_console(true);
         usdb_util::init_log(config);
@@ -293,7 +294,7 @@ mod tests {
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         let reader = Arc::new(reader);
 
-        let cache = BlockFileCache::new(reader.clone());
+        let cache = BlockFileCache::new(reader.clone()).unwrap();
         for i in 1000..1100 {
             let block = cache.get_block_by_file_index(i, 0).unwrap();
             println!(
