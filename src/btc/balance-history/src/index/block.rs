@@ -1,14 +1,19 @@
 use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
-use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry};
-use bitcoincore_rpc::bitcoin::{Block, OutPoint, Txid};
+use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry};
+use bitcoincore_rpc::bitcoin::{Block, BlockHash, OutPoint, Txid};
 use dashmap::DashMap;
 use rayon::slice::ParallelSliceMut;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntryRef, UTXOValue};
 use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+
+// EMPTY_COMMIT_HASH is the genesis previous-commit value used when the batch
+// starts from block height 0 and there is no earlier committed block.
+const EMPTY_COMMIT_HASH: [u8; 32] = [0u8; 32];
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
@@ -39,8 +44,25 @@ pub struct PreloadTx {
 }
 
 pub struct PreloadBlock {
+    // BTC block height of this preloaded block.
     pub height: u32,
+    // BTC block hash paired with the height above. This is committed into the
+    // balance-history block commit chain and must stay aligned with height.
+    pub block_hash: BlockHash,
+    // Preloaded transactions with all vin/vout information needed by the batch processor.
     pub txdata: Vec<PreloadTx>,
+}
+
+// BlockBalanceDelta is the canonical per-block logical result that feeds the
+// first-version balance-history commit chain.
+#[derive(Clone, Debug)]
+pub struct BlockBalanceDelta {
+    // BTC block height for this logical balance delta set.
+    pub block_height: u32,
+    // BTC block hash bound to the same logical delta set.
+    pub block_hash: BlockHash,
+    // Balance entries after this block is applied, sorted by script_hash.
+    pub entries: Vec<BalanceHistoryEntry>,
 }
 
 struct VInPosition {
@@ -53,11 +75,14 @@ pub struct BatchBlockData {
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
     vout_utxos: Arc<RwLock<HashMap<OutPointRef, VOutUtxoInfo>>>,
 
-    // Keep let latest balances for all addresses involved from block to block t+n
+    // Keep latest balances for all addresses involved while processing a batch.
     balances: Arc<DashMap<USDBScriptHash, BalanceHistoryData>>,
 
-    // Use to keep all balance history entries for the batch, will be flushed to db at once
+    // Keep all balance history entries for the batch and flush them to DB once.
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
+
+    // Keep deterministic per-block balance deltas for block commit calculation.
+    block_balance_deltas: Arc<Mutex<Vec<BlockBalanceDelta>>>,
 
     bench_mark: BatchBlockBenchMarkRef,
 }
@@ -70,9 +95,70 @@ impl BatchBlockData {
             vout_utxos: Arc::new(RwLock::new(HashMap::new())),
             balances: Arc::new(DashMap::new()),
             balance_history: Arc::new(Mutex::new(Vec::new())),
+            block_balance_deltas: Arc::new(Mutex::new(Vec::new())),
             bench_mark: Arc::new(BatchBlockBenchMark::new()),
         }
     }
+}
+
+// compute_balance_delta_root hashes the canonical logical balance result of one block.
+// The hash only covers balance-history state, not UTXO cache state.
+fn compute_balance_delta_root(block: &BlockBalanceDelta) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"balance-history:block-delta-root:v1");
+    hasher.update(block.block_height.to_be_bytes());
+    hasher.update(block.block_hash.as_ref() as &[u8]);
+
+    for entry in &block.entries {
+        hasher.update(entry.script_hash.as_ref() as &[u8]);
+        hasher.update(entry.block_height.to_be_bytes());
+        hasher.update(entry.delta.to_be_bytes());
+        hasher.update(entry.balance.to_be_bytes());
+    }
+
+    hasher.finalize().into()
+}
+
+// compute_block_commit links one block's logical result to the previous committed block.
+fn compute_block_commit(
+    block_height: u32,
+    block_hash: &BlockHash,
+    balance_delta_root: &[u8; 32],
+    prev_block_commit: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"balance-history:block-commit:v1");
+    hasher.update(block_height.to_be_bytes());
+    hasher.update(block_hash.as_ref() as &[u8]);
+    hasher.update(balance_delta_root);
+    hasher.update(prev_block_commit);
+    hasher.finalize().into()
+}
+
+// build_block_commits computes a contiguous commit chain for a fully ordered batch.
+// The caller must ensure `blocks` are already sorted by block_height.
+fn build_block_commits(
+    blocks: &[BlockBalanceDelta],
+    mut prev_block_commit: [u8; 32],
+) -> Vec<BlockCommitEntry> {
+    let mut commits = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let balance_delta_root = compute_balance_delta_root(block);
+        let block_commit = compute_block_commit(
+            block.block_height,
+            &block.block_hash,
+            &balance_delta_root,
+            &prev_block_commit,
+        );
+        commits.push(BlockCommitEntry {
+            block_height: block.block_height,
+            btc_block_hash: block.block_hash.clone(),
+            balance_delta_root,
+            block_commit,
+        });
+        prev_block_commit = block_commit;
+    }
+    commits
 }
 
 pub type BatchBlockDataRef = Arc<BatchBlockData>;
@@ -207,6 +293,7 @@ impl BatchBlockPreloader {
     ) -> Result<PreloadBlock, String> {
         let mut preload_block = PreloadBlock {
             height: block_height,
+            block_hash: block.block_hash(),
             txdata: Vec::with_capacity(block.txdata.len()),
         };
 
@@ -505,10 +592,31 @@ impl BatchBlockFlusher {
         // Update balance to db in batch
         let begin = std::time::Instant::now();
 
+        let previous_height = data.block_range.start.checked_sub(1);
+        let previous_commit = match previous_height {
+            Some(height) => match self.db.get_block_commit(height)? {
+                Some(commit) => commit.block_commit,
+                None => {
+                    let msg = format!(
+                        "Missing previous block commit at height {}. Backfill or resync is required before continuing.",
+                        height
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            },
+            None => EMPTY_COMMIT_HASH,
+        };
+
         let last_block_height = data.block_range.end - 1;
         let all = data.balance_history.lock().unwrap();
-        self.db
-            .update_address_history_async(&all, last_block_height as u32)?;
+        let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
+        let block_commits = build_block_commits(&block_balance_deltas, previous_commit);
+        self.db.update_address_history_with_block_commits_async(
+            &all,
+            last_block_height as u32,
+            &block_commits,
+        )?;
 
         // Update bench mark info
         let duration = begin.elapsed();
@@ -587,6 +695,70 @@ impl BatchBlockFlusher {
         );
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod block_commit_tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use usdb_util::ToUSDBScriptHash;
+
+    fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {
+        let script = ScriptBuf::from(vec![seed; 32]);
+        BalanceHistoryEntry {
+            script_hash: script.to_usdb_script_hash(),
+            block_height,
+            delta,
+            balance,
+        }
+    }
+
+    #[test]
+    fn test_balance_delta_root_is_stable() {
+        let block_hash = BlockHash::from_slice(&[7u8; 32]).unwrap();
+        let block = BlockBalanceDelta {
+            block_height: 10,
+            block_hash,
+            entries: vec![make_entry(1, 10, 5, 5), make_entry(2, 10, -2, 8)],
+        };
+
+        assert_eq!(
+            compute_balance_delta_root(&block),
+            compute_balance_delta_root(&block)
+        );
+    }
+
+    #[test]
+    fn test_build_block_commits_links_previous_hash() {
+        let first = BlockBalanceDelta {
+            block_height: 1,
+            block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+            entries: vec![make_entry(1, 1, 10, 10)],
+        };
+        let second = BlockBalanceDelta {
+            block_height: 2,
+            block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+            entries: vec![make_entry(2, 2, 5, 15)],
+        };
+
+        let commits = build_block_commits(&[first.clone(), second.clone()], EMPTY_COMMIT_HASH);
+        assert_eq!(commits.len(), 2);
+
+        let first_root = compute_balance_delta_root(&first);
+        let expected_first =
+            compute_block_commit(1, &first.block_hash, &first_root, &EMPTY_COMMIT_HASH);
+        assert_eq!(commits[0].block_commit, expected_first);
+
+        let second_root = compute_balance_delta_root(&second);
+        let expected_second = compute_block_commit(
+            2,
+            &second.block_hash,
+            &second_root,
+            &commits[0].block_commit,
+        );
+        assert_eq!(commits[1].block_commit, expected_second);
     }
 }
 
@@ -715,8 +887,16 @@ impl BatchBlockBalanceProcessor {
         );
         all.reserve(block_history_count);
 
-        for ret in block_history_results.into_iter() {
+        let mut block_balance_deltas = data.block_balance_deltas.lock().unwrap();
+        assert!(
+            block_balance_deltas.is_empty(),
+            "Block balance delta vector is not empty before flushing"
+        );
+        block_balance_deltas.reserve(blocks.len());
+
+        for (block, ret) in blocks.iter().zip(block_history_results.into_iter()) {
             let block_history = ret?;
+            let mut entries = Vec::with_capacity(block_history.len());
             for (script_hash, data) in block_history.into_iter() {
                 let entry = BalanceHistoryEntry {
                     script_hash,
@@ -724,8 +904,16 @@ impl BatchBlockBalanceProcessor {
                     delta: data.delta,
                     balance: data.balance,
                 };
-                all.push(entry);
+                entries.push(entry);
             }
+
+            entries.par_sort_by(|a, b| a.script_hash.cmp(&b.script_hash));
+            all.extend(entries.iter().cloned());
+            block_balance_deltas.push(BlockBalanceDelta {
+                block_height: block.height,
+                block_hash: block.block_hash.clone(),
+                entries,
+            });
         }
 
         all.par_sort_by(|a, b| {

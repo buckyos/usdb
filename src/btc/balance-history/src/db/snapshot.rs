@@ -1,6 +1,6 @@
 use super::db::BalanceHistoryEntry;
-use bitcoincore_rpc::bitcoin::OutPoint;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
+use bitcoincore_rpc::bitcoin::OutPoint;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -711,6 +711,7 @@ mod tests {
 
         let entry = snapshot_db
             .get_balance_history_entry(&script_hash)
+            .expect("Failed to query entry")
             .expect("Entry not found");
         println!(
             "Entry at height {}: balance={}, delta={}",

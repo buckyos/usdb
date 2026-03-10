@@ -1,4 +1,4 @@
-use super::rpc::AddressBalance;
+use super::rpc::{AddressBalance, SnapshotInfo};
 use crate::status::SyncStatus;
 use reqwest::Client;
 use serde::Deserialize;
@@ -12,6 +12,7 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
+    // Create a lightweight JSON-RPC client for the local balance-history service.
     pub fn new(url: &str) -> Result<Self, String> {
         let client = Client::builder().build().map_err(|e| {
             let msg = format!("Failed to build HTTP client: {}", e);
@@ -37,6 +38,12 @@ impl RpcClient {
 
     pub async fn get_sync_status(&self) -> Result<SyncStatus, String> {
         self.rpc_call::<SyncStatus>(&self.url, "get_sync_status", json!([]))
+            .await
+    }
+
+    // Read the current stable snapshot metadata, including the latest logical block commit.
+    pub async fn get_snapshot_info(&self) -> Result<SnapshotInfo, String> {
+        self.rpc_call::<SnapshotInfo>(&self.url, "get_snapshot_info", json!([]))
             .await
     }
 

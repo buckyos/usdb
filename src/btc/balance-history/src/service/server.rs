@@ -8,6 +8,21 @@ use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBui
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
+// Public version string of the first balance-history block commit protocol.
+const COMMIT_PROTOCOL_VERSION: &str = "1.0.0";
+// Hash algorithm used by both balance delta roots and rolling block commits.
+const COMMIT_HASH_ALGO: &str = "sha256";
+
+// encode_hex converts internal commit bytes to the lowercase hex strings returned by RPC.
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut output, "{:02x}", byte);
+    }
+    output
+}
+
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
     config: BalanceHistoryConfigRef,
@@ -148,6 +163,38 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     fn get_sync_status(&self) -> JsonResult<SyncStatus> {
         let status = self.status.get_status();
         Ok(status)
+    }
+
+    fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo> {
+        let stable_height = self.db.get_btc_block_height().map_err(|e| JsonError {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to get stable height: {}", e),
+            data: None,
+        })?;
+
+        let latest_commit = self
+            .db
+            .get_block_commit(stable_height)
+            .map_err(|e| JsonError {
+                code: ErrorCode::InternalError,
+                message: format!(
+                    "Failed to get block commit at height {}: {}",
+                    stable_height, e
+                ),
+                data: None,
+            })?;
+
+        Ok(SnapshotInfo {
+            stable_height,
+            stable_block_hash: latest_commit
+                .as_ref()
+                .map(|entry| format!("{:x}", entry.btc_block_hash)),
+            latest_block_commit: latest_commit
+                .as_ref()
+                .map(|entry| encode_hex(&entry.block_commit)),
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+        })
     }
 
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>> {

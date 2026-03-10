@@ -3,8 +3,8 @@ use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
-    WriteOptions,
+    ColumnFamilyDescriptor, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
+    WriteOptions, DB,
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
@@ -19,6 +19,8 @@ pub const META_CF: &str = "meta";
 pub const UTXO_CF: &str = "utxo";
 pub const BLOCKS_CF: &str = "blocks";
 pub const BLOCK_HEIGHTS_CF: &str = "block_heights";
+// BLOCK_COMMITS_CF stores the first-version logical commit chain metadata for balance-history.
+pub const BLOCK_COMMITS_CF: &str = "block_commits";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
@@ -28,12 +30,18 @@ pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScrip
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
+// Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
+pub const BLOCK_COMMIT_VALUE_LEN: usize = BlockHash::LEN + 32 + 32;
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
+    // Address script hash.
     pub script_hash: USDBScriptHash,
+    // Block height where this record was written.
     pub block_height: u32,
+    // Balance delta applied at this height.
     pub delta: i64,
+    // Final balance after the delta is applied.
     pub balance: u64,
 }
 
@@ -42,6 +50,19 @@ pub struct BlockEntry {
     pub block_file_index: u32,   // which blk file
     pub block_file_offset: u64,  // offset in the blk file
     pub block_record_index: u32, // index in the block record cache
+}
+
+// BlockCommitEntry is the persisted per-block commit metadata exposed to downstream services.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockCommitEntry {
+    // BTC block height that this commit corresponds to.
+    pub block_height: u32,
+    // BTC block hash paired with the height above.
+    pub btc_block_hash: BlockHash,
+    // Hash of the canonical per-block balance delta set.
+    pub balance_delta_root: [u8; 32],
+    // Rolling block commit linked to the previous committed block.
+    pub block_commit: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +222,7 @@ impl BalanceHistoryDB {
             ColumnFamilyDescriptor::new(UTXO_CF, Self::get_utxo_cf_opts_on_mode(mode)),
             ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
             ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
+            ColumnFamilyDescriptor::new(BLOCK_COMMITS_CF, Options::default()),
         ]
     }
 
@@ -303,6 +325,7 @@ impl BalanceHistoryDB {
             UTXO_CF,
             BLOCKS_CF,
             BLOCK_HEIGHTS_CF,
+            BLOCK_COMMITS_CF,
         ];
         let db = DB::open_cf_as_secondary(&opts, &file, &tmp_dir, cf_descriptors_names).map_err(
             |e| {
@@ -435,6 +458,55 @@ impl BalanceHistoryDB {
         }
     }
 
+    // Block commit keys are indexed directly by big-endian block height.
+    fn make_block_commit_key(block_height: u32) -> [u8; 4] {
+        block_height.to_be_bytes()
+    }
+
+    // Serialize one BlockCommitEntry into the stable on-disk value layout used by BLOCK_COMMITS_CF.
+    fn serialize_block_commit_value(entry: &BlockCommitEntry) -> [u8; BLOCK_COMMIT_VALUE_LEN] {
+        let mut value = [0u8; BLOCK_COMMIT_VALUE_LEN];
+        value[..BlockHash::LEN].copy_from_slice(entry.btc_block_hash.as_ref());
+        value[BlockHash::LEN..BlockHash::LEN + 32].copy_from_slice(&entry.balance_delta_root);
+        value[BlockHash::LEN + 32..].copy_from_slice(&entry.block_commit);
+        value
+    }
+
+    // Parse a BLOCK_COMMITS_CF value back into the structured metadata returned by the DB API.
+    fn parse_block_commit_value(
+        block_height: u32,
+        value: &[u8],
+    ) -> Result<BlockCommitEntry, String> {
+        if value.len() != BLOCK_COMMIT_VALUE_LEN {
+            let msg = format!(
+                "Invalid block commit value length: expected {}, got {}",
+                BLOCK_COMMIT_VALUE_LEN,
+                value.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let btc_block_hash = BlockHash::from_slice(&value[..BlockHash::LEN]).map_err(|e| {
+            let msg = format!("Failed to parse block hash from block commit: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut balance_delta_root = [0u8; 32];
+        balance_delta_root.copy_from_slice(&value[BlockHash::LEN..BlockHash::LEN + 32]);
+
+        let mut block_commit = [0u8; 32];
+        block_commit.copy_from_slice(&value[BlockHash::LEN + 32..]);
+
+        Ok(BlockCommitEntry {
+            block_height,
+            btc_block_hash,
+            balance_delta_root,
+            block_commit,
+        })
+    }
+
     pub fn put_address_history_async(
         &self,
         entries_list: &Vec<BalanceHistoryEntry>,
@@ -468,7 +540,8 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn update_address_history_async(
+    // Only for testing - put address history entries together with the block height metadata in one batch write.
+    fn update_address_history_async(
         &self,
         entries_list: &Vec<BalanceHistoryEntry>,
         block_height: u32,
@@ -508,6 +581,85 @@ impl BalanceHistoryDB {
         })?;
 
         Ok(())
+    }
+
+    // Persist one batch of balance history entries together with the matching block commit metadata.
+    // This keeps logical state and commit chain metadata on the same write boundary.
+    pub fn update_address_history_with_block_commits_async(
+        &self,
+        entries_list: &Vec<BalanceHistoryEntry>,
+        block_height: u32,
+        block_commits: &[BlockCommitEntry],
+    ) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+
+        let balance_cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in entries_list {
+            let key = Self::make_balance_history_key(&entry.script_hash, entry.block_height);
+
+            let mut value = [0u8; 16];
+            value[..8].copy_from_slice(&entry.delta.to_be_bytes());
+            value[8..16].copy_from_slice(&entry.balance.to_be_bytes());
+
+            batch.put_cf(balance_cf, key, value);
+        }
+
+        let block_commit_cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in block_commits {
+            let key = Self::make_block_commit_key(entry.block_height);
+            let value = Self::serialize_block_commit_value(entry);
+            batch.put_cf(block_commit_cf, key, value);
+        }
+
+        let meta_cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let height_bytes = block_height.to_be_bytes();
+        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    // Read the committed block metadata for one exact block height.
+    pub fn get_block_commit(&self, block_height: u32) -> Result<Option<BlockCommitEntry>, String> {
+        let cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let key = Self::make_block_commit_key(block_height);
+        match self.db.get_cf(cf, key).map_err(|e| {
+            let msg = format!(
+                "Failed to get block commit for height {}: {}",
+                block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            Some(value) => Ok(Some(Self::parse_block_commit_value(block_height, &value)?)),
+            None => Ok(None),
+        }
     }
 
     // Get the latest balance entry for a given script_hash
@@ -1598,7 +1750,7 @@ impl BalanceHistoryDB {
                 msg
             })?;
 
-        // Clear BLOCKS_CF and BLOCK_HEIGHTS_CF
+        // Clear BLOCKS_CF, BLOCK_HEIGHTS_CF and BLOCK_COMMITS_CF
         let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BLOCKS_CF);
             error!("{}", msg);
@@ -1618,6 +1770,17 @@ impl BalanceHistoryDB {
         })?;
         self.db.delete_cf(cf, b"").map_err(|e| {
             let msg = format!("Failed to clear Block Heights CF: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        self.db.delete_cf(cf, b"").map_err(|e| {
+            let msg = format!("Failed to clear Block Commits CF: {}", e);
             error!("{}", msg);
             msg
         })?;
@@ -1645,8 +1808,8 @@ pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::sync::Arc;
     use usdb_util::ToUSDBScriptHash;
 
@@ -1782,6 +1945,34 @@ mod tests {
         db.put_btc_block_height(123456).unwrap();
         let height = db.get_btc_block_height().unwrap();
         assert_eq!(height, 123456);
+    }
+
+    #[test]
+    fn test_block_commit_round_trip() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_block_commit_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let block_hash = BlockHash::from_slice(&[3u8; 32]).unwrap();
+        let commit = BlockCommitEntry {
+            block_height: 42,
+            btc_block_hash: block_hash,
+            balance_delta_root: [4u8; 32],
+            block_commit: [5u8; 32],
+        };
+
+        db.update_address_history_with_block_commits_async(&Vec::new(), 42, &[commit.clone()])
+            .unwrap();
+
+        let loaded = db.get_block_commit(42).unwrap().unwrap();
+        assert_eq!(loaded, commit);
+        assert_eq!(db.get_btc_block_height().unwrap(), 42);
     }
 
     #[test]

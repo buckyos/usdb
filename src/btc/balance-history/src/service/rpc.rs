@@ -34,6 +34,20 @@ pub struct AddressBalance {
     pub delta: i64,   // in Satoshi
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotInfo {
+    /// Current stable height that balance-history exposes to downstream services.
+    pub stable_height: u32,
+    /// BTC block hash paired with `stable_height`, if a block commit exists for that height.
+    pub stable_block_hash: Option<String>,
+    /// Latest logical block commit at `stable_height`, encoded as lowercase hex.
+    pub latest_block_commit: Option<String>,
+    /// Version of the balance-history commit protocol exposed by this service.
+    pub commit_protocol_version: String,
+    /// Hash algorithm used to build `latest_block_commit`.
+    pub commit_hash_algo: String,
+}
+
 #[rpc(server)]
 pub trait BalanceHistoryRpc {
     /// Gets the current bitcoin chain network type
@@ -47,6 +61,10 @@ pub trait BalanceHistoryRpc {
     /// Gets the current sync status
     #[rpc(name = "get_sync_status")]
     fn get_sync_status(&self) -> JsonResult<SyncStatus>;
+
+    /// Gets the current stable snapshot metadata
+    #[rpc(name = "get_snapshot_info")]
+    fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo>;
 
     /// Gets the current balance for the specified address
     #[rpc(name = "get_address_balance")]
