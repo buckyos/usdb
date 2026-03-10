@@ -192,6 +192,54 @@ function normalizeNetworkName(network) {
     return "";
 }
 
+function getDefaultRpcEndpoint(network) {
+    const normalized = normalizeNetworkName(network);
+    return normalized ? RPC_DEFAULT_ENDPOINTS[normalized] || "" : "";
+}
+
+function readRpcConfigFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const network = normalizeNetworkName(params.get("network"));
+    const rpcUrl = params.get("rpc_url") || "";
+    return { network, rpcUrl };
+}
+
+function syncRpcConfigToUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const network = normalizeNetworkName(els.rpcNetwork?.value);
+    const rpcUrl = (state.rpcUrl || els.rpcUrl?.value || "").trim();
+    const defaultRpcUrl = getDefaultRpcEndpoint(network);
+
+    if (network) {
+        params.set("network", network);
+    } else {
+        params.delete("network");
+    }
+
+    if (rpcUrl && rpcUrl !== defaultRpcUrl) {
+        params.set("rpc_url", rpcUrl);
+    } else {
+        params.delete("rpc_url");
+    }
+
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(null, "", nextUrl);
+}
+
+function applyRpcConfig(network, rpcUrl) {
+    const normalizedNetwork = normalizeNetworkName(network);
+    if (normalizedNetwork && els.rpcNetwork) {
+        els.rpcNetwork.value = normalizedNetwork;
+    }
+
+    const resolvedRpcUrl = (rpcUrl || "").trim() || getDefaultRpcEndpoint(normalizedNetwork) || state.rpcUrl;
+    state.rpcUrl = resolvedRpcUrl;
+    if (els.rpcUrl) {
+        els.rpcUrl.value = resolvedRpcUrl;
+    }
+}
+
 async function rpcCall(method, params = []) {
     const body = {
         jsonrpc: "2.0",
@@ -272,6 +320,7 @@ async function refreshHome() {
         const networkPreset = normalizeNetworkName(rpcInfo.network);
         if (networkPreset && els.rpcNetwork.value !== networkPreset) {
             els.rpcNetwork.value = networkPreset;
+            syncRpcConfigToUrl();
         }
 
         els.homeSyncMessage.textContent = syncStatus.message || "Running";
@@ -413,9 +462,10 @@ function renderLeaderboardRows(rows) {
 
 async function loadLeaderboard() {
     try {
+        const scope = state.energy.leaderboard.scope || "active";
         const page = await rpcCall("get_pass_energy_leaderboard", [{
             at_height: null,
-            scope: state.energy.leaderboard.scope,
+            scope,
             page: state.energy.leaderboard.page,
             page_size: state.energy.leaderboard.pageSize,
         }]);
@@ -429,7 +479,7 @@ async function loadLeaderboard() {
             Math.ceil(state.energy.leaderboard.total / state.energy.leaderboard.pageSize),
         );
         els.energyLeaderboardPage.textContent = `${currentPage}/${totalPages}`;
-        els.energyLeaderboardSummary.textContent = `resolved_height=${fmtNum(page.resolved_height)}, scope=${state.energy.leaderboard.scope}, total=${fmtNum(state.energy.leaderboard.total)}`;
+        els.energyLeaderboardSummary.textContent = `resolved_height=${fmtNum(page.resolved_height)}, scope=${scope}, total=${fmtNum(state.energy.leaderboard.total)}`;
         els.energyLeaderboardPrev.disabled = state.energy.leaderboard.page === 0;
         els.energyLeaderboardNext.disabled = currentPage >= totalPages;
     } catch (err) {
@@ -583,6 +633,7 @@ function bindEvents() {
             return;
         }
         state.rpcUrl = url;
+        syncRpcConfigToUrl();
         els.rpcHint.textContent = `已切换 RPC: ${url}`;
         void refreshHome();
         void loadLeaderboard();
@@ -590,10 +641,11 @@ function bindEvents() {
 
     els.rpcNetwork.addEventListener("change", () => {
         const network = els.rpcNetwork.value;
-        const defaultUrl = RPC_DEFAULT_ENDPOINTS[network];
+        const defaultUrl = getDefaultRpcEndpoint(network);
         if (defaultUrl) {
             els.rpcUrl.value = defaultUrl;
             state.rpcUrl = defaultUrl;
+            syncRpcConfigToUrl();
             els.rpcHint.textContent = `已按网络预设填充 RPC: ${defaultUrl}`;
         }
     });
@@ -627,11 +679,13 @@ function bindEvents() {
         state.energy.leaderboard.page += 1;
         void loadLeaderboard();
     });
-    els.energyLeaderboardScope.addEventListener("change", () => {
-        state.energy.leaderboard.scope = els.energyLeaderboardScope.value;
-        state.energy.leaderboard.page = 0;
-        void loadLeaderboard();
-    });
+    if (els.energyLeaderboardScope) {
+        els.energyLeaderboardScope.addEventListener("change", () => {
+            state.energy.leaderboard.scope = els.energyLeaderboardScope.value;
+            state.energy.leaderboard.page = 0;
+            void loadLeaderboard();
+        });
+    }
 
     els.energyQueryForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -686,6 +740,12 @@ function startHomeRefresh() {
 }
 
 async function bootstrap() {
+    const urlConfig = readRpcConfigFromUrl();
+    applyRpcConfig(urlConfig.network, urlConfig.rpcUrl);
+    if (urlConfig.network || urlConfig.rpcUrl) {
+        syncRpcConfigToUrl();
+    }
+
     if (els.energyLeaderboardScope && els.energyLeaderboardScope.value) {
         state.energy.leaderboard.scope = els.energyLeaderboardScope.value;
     }
@@ -696,4 +756,10 @@ async function bootstrap() {
     await loadLeaderboard();
 }
 
-void bootstrap();
+void bootstrap().catch((err) => {
+    const msg = `前端初始化失败：${rpcErrorMessage(err)}`;
+    console.error(msg, err);
+    if (els.rpcHint) {
+        els.rpcHint.textContent = msg;
+    }
+});
