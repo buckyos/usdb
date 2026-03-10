@@ -12,6 +12,7 @@ use crate::inscription::{
 };
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
+use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::{Block, Txid};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -248,9 +249,49 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    // Get latest block height from depended services
-    fn get_latest_block_height(&self) -> u32 {
-        self.status.latest_depend_synced_block_height()
+    // Get latest stable height from balance-history, which is the only sync height dependency.
+    fn get_balance_history_stable_height(&self) -> Result<u32, String> {
+        self.status.balance_history_stable_height().ok_or_else(|| {
+            let msg = "Balance-history stable height is not ready yet".to_string();
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn current_balance_history_snapshot(&self) -> Result<BalanceHistorySnapshotInfo, String> {
+        self.status.balance_history_snapshot().ok_or_else(|| {
+            let msg = "Balance-history snapshot is not ready yet".to_string();
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn persist_balance_history_snapshot_anchor(
+        &self,
+        synced_height: u32,
+        snapshot: &BalanceHistorySnapshotInfo,
+    ) -> Result<(), String> {
+        // Only adopt an upstream snapshot anchor when the local durable state has
+        // fully caught up to the same stable height.
+        if snapshot.stable_height != synced_height {
+            let msg = format!(
+                "Balance-history snapshot height mismatch when persisting anchor: synced_height={}, snapshot_height={}",
+                synced_height, snapshot.stable_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        self.miner_pass_storage
+            .upsert_balance_history_snapshot_anchor(snapshot)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to persist adopted balance-history snapshot anchor: synced_height={}, error={}",
+                    synced_height, e
+                );
+                error!("{}", msg);
+                msg
+            })
     }
 
     async fn wait_for_new_blocks(&self, last_synced_height: u32) -> u32 {
@@ -261,7 +302,10 @@ impl InscriptionIndexer {
             );
             self.status.update_index_status(None, None, Some(msg));
 
-            let latest_height = self.status.latest_depend_synced_block_height();
+            let latest_height = match self.status.balance_history_stable_height() {
+                Some(height) => height,
+                None => last_synced_height,
+            };
             if latest_height > last_synced_height {
                 info!(
                     "New block detected: {} > {}",
@@ -283,7 +327,8 @@ impl InscriptionIndexer {
 
     // Returns the latest synced block height after this sync
     async fn sync_once(&self) -> Result<u32, String> {
-        let latest_height = self.get_latest_block_height();
+        let balance_history_snapshot = self.current_balance_history_snapshot()?;
+        let latest_height = self.get_balance_history_stable_height()?;
 
         // Ensure we don't go below genesis block height
         let genesis_block_height = self.config.config().usdb.genesis_block_height;
@@ -347,6 +392,13 @@ impl InscriptionIndexer {
             })?;
 
         if current_height >= latest_height {
+            // Even on a no-op sync loop, persist the adopted upstream snapshot anchor.
+            // This backfills metadata for already-synced data directories and keeps
+            // get_snapshot_info consistent after restart.
+            self.persist_balance_history_snapshot_anchor(
+                current_height,
+                &balance_history_snapshot,
+            )?;
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
@@ -381,6 +433,8 @@ impl InscriptionIndexer {
         }
 
         let current_height = ret.unwrap();
+
+        self.persist_balance_history_snapshot_anchor(current_height, &balance_history_snapshot)?;
 
         Ok(current_height)
     }

@@ -1,11 +1,10 @@
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-const BAR_PREFIX: &[&str] = &["BTC", "Ordinals", "Balance History", "Index"];
+const BAR_PREFIX: &[&str] = &["BTC", "Balance History", "Index"];
 
 pub struct IndexOutput {
     mp: MultiProgress,
     btc_bar: ProgressBar,
-    ord_bar: ProgressBar,
     balance_history_bar: ProgressBar,
     index_bar: ProgressBar,
 }
@@ -22,23 +21,16 @@ impl IndexOutput {
         ));
         let btc_bar = mp.add(btc_bar);
 
-        let ord_bar = Self::create_bar(format!(
-            "{:<width$}",
-            BAR_PREFIX[1],
-            width = max_prefix_width
-        ));
-        let ord_bar = mp.add(ord_bar);
-
         let balance_history_bar = Self::create_bar(format!(
             "{:<width$}",
-            BAR_PREFIX[2],
+            BAR_PREFIX[1],
             width = max_prefix_width
         ));
         let balance_history_bar = mp.add(balance_history_bar);
 
         let index_bar = Self::create_bar(format!(
             "{:<width$}",
-            BAR_PREFIX[3],
+            BAR_PREFIX[2],
             width = max_prefix_width
         ));
         let index_bar = mp.add(index_bar);
@@ -46,7 +38,6 @@ impl IndexOutput {
         Self {
             mp,
             btc_bar,
-            ord_bar,
             balance_history_bar,
             index_bar,
         }
@@ -75,10 +66,6 @@ impl IndexOutput {
         &self.btc_bar
     }
 
-    pub fn ord_bar(&self) -> &ProgressBar {
-        &self.ord_bar
-    }
-
     pub fn balance_history_bar(&self) -> &ProgressBar {
         &self.balance_history_bar
     }
@@ -89,7 +76,6 @@ impl IndexOutput {
 
     pub fn update_latest_block_height(&self, latest_block_height: u64) {
         self.btc_bar.set_length(latest_block_height);
-        self.ord_bar.set_length(latest_block_height);
         self.balance_history_bar.set_length(latest_block_height);
         self.index_bar.set_length(latest_block_height);
     }

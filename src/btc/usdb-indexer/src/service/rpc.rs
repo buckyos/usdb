@@ -22,8 +22,8 @@ pub struct IndexerSyncStatus {
     pub genesis_block_height: u32,
     /// Last block height fully committed by the indexer.
     pub synced_block_height: Option<u32>,
-    /// Minimum synced height among dependency services.
-    pub latest_depend_synced_block_height: u32,
+    /// Stable height currently exposed by balance-history and used as the indexer sync ceiling.
+    pub balance_history_stable_height: Option<u32>,
     /// Current progress position for status display.
     pub current: u32,
     /// Total progress target for status display.
@@ -32,12 +32,37 @@ pub struct IndexerSyncStatus {
     pub message: Option<String>,
 }
 
+/// Adopted upstream snapshot metadata plus the local commit point that adopted it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndexerSnapshotInfo {
+    /// Local durable commit height in usdb-indexer when this anchor was adopted.
+    /// This is the indexer's own committed height, not an upstream service height.
+    pub local_synced_block_height: u32,
+    /// Upstream stable height reported by balance-history for the adopted snapshot.
+    /// This is the external snapshot ceiling, not a local usdb-indexer progress field.
+    pub balance_history_stable_height: u32,
+    /// Stable BTC block hash returned by balance-history for the adopted snapshot.
+    pub stable_block_hash: String,
+    /// Latest logical block commit returned by balance-history for the adopted snapshot.
+    pub latest_block_commit: String,
+    /// Balance-history commit protocol version used for `latest_block_commit`.
+    pub commit_protocol_version: String,
+    /// Hash algorithm used by both upstream block commit and local snapshot id.
+    pub commit_hash_algo: String,
+    /// Canonical snapshot id derived from network plus adopted upstream snapshot metadata.
+    pub snapshot_id: String,
+    /// Hash algorithm used to derive `snapshot_id`.
+    pub snapshot_id_hash_algo: String,
+    /// Version tag of the local snapshot id derivation rule.
+    pub snapshot_id_version: String,
+}
+
 /// Parameters for `get_pass_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassSnapshotParams {
     /// Target inscription id, for example `txidi0`.
     pub inscription_id: String,
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
 }
 
@@ -81,7 +106,7 @@ pub struct PassSnapshot {
 /// Parameters for `get_active_passes_at_height`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetActivePassesAtHeightParams {
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
     /// Zero-based page index.
     pub page: usize,
@@ -112,7 +137,7 @@ pub struct ActivePassesAtHeight {
 /// Parameters for `get_pass_stats_at_height`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassStatsAtHeightParams {
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
 }
 
@@ -187,7 +212,7 @@ pub struct PassHistoryPage {
 pub struct GetOwnerActivePassAtHeightParams {
     /// Target owner script hash.
     pub owner: String,
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
 }
 
@@ -196,7 +221,7 @@ pub struct GetOwnerActivePassAtHeightParams {
 pub struct GetPassEnergyParams {
     /// Target inscription id.
     pub inscription_id: String,
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub block_height: Option<u32>,
     /// Query mode:
     /// - `exact`: read only the record exactly at `block_height`.
@@ -284,7 +309,7 @@ pub struct PassEnergyRangePage {
 /// Parameters for `get_pass_energy_leaderboard`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassEnergyLeaderboardParams {
-    /// Optional query height; `None` resolves to synced height.
+    /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
     /// Optional leaderboard scope:
     /// - `active`: only active passes (default).
@@ -416,6 +441,10 @@ pub trait UsdbIndexerRpc {
     /// Returns latest fully committed sync height.
     #[rpc(name = "get_synced_block_height")]
     fn get_synced_block_height(&self) -> JsonResult<Option<u64>>;
+
+    /// Returns the currently adopted upstream snapshot metadata.
+    #[rpc(name = "get_snapshot_info")]
+    fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>>;
 
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]

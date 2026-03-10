@@ -7,6 +7,7 @@ use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use ord::InscriptionId;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -21,6 +22,37 @@ const ERR_DUPLICATE_ACTIVE_OWNER: i64 = -32014;
 const ERR_INVALID_PAGINATION: i64 = -32015;
 const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
+const SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
+const SNAPSHOT_ID_VERSION: &str = "usdb-indexer-snapshot:v1";
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut output, "{:02x}", byte);
+    }
+    output
+}
+
+fn build_snapshot_id(network: &str, snapshot: &IndexerSnapshotInfo) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_ID_VERSION.as_bytes());
+    hasher.update(b"|");
+    hasher.update(network.as_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.local_synced_block_height.to_be_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.balance_history_stable_height.to_be_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.stable_block_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.latest_block_commit.as_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.commit_protocol_version.as_bytes());
+    hasher.update(b"|");
+    hasher.update(snapshot.commit_hash_algo.as_bytes());
+    encode_hex(&hasher.finalize())
+}
 
 #[derive(Clone, Debug)]
 struct PassEnergyLeaderboardCacheEntry {
@@ -188,6 +220,39 @@ impl UsdbIndexerRpcServer {
             .miner_pass_storage()
             .get_synced_btc_block_height()
             .map_err(Self::to_internal_error)
+    }
+
+    fn adopted_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
+        let Some(anchor) = self
+            .indexer
+            .miner_pass_storage()
+            .get_balance_history_snapshot_anchor()
+            .map_err(Self::to_internal_error)?
+        else {
+            return Ok(None);
+        };
+
+        let mut snapshot = IndexerSnapshotInfo {
+            local_synced_block_height: self
+                .indexer
+                .miner_pass_storage()
+                .get_synced_btc_block_height()
+                .map_err(Self::to_internal_error)?
+                .unwrap_or(anchor.stable_height),
+            balance_history_stable_height: anchor.stable_height,
+            stable_block_hash: anchor.stable_block_hash,
+            latest_block_commit: anchor.latest_block_commit,
+            commit_protocol_version: anchor.commit_protocol_version,
+            commit_hash_algo: anchor.commit_hash_algo,
+            snapshot_id: String::new(),
+            snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
+            snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
+        };
+        snapshot.snapshot_id = build_snapshot_id(
+            &self.config.config().bitcoin.network().to_string(),
+            &snapshot,
+        );
+        Ok(Some(snapshot))
     }
 
     fn resolve_height(&self, requested: Option<u32>) -> Result<u32, JsonError> {
@@ -523,6 +588,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             api_version: "1.0.0".to_string(),
             network: self.config.config().bitcoin.network().to_string(),
             features: vec![
+                "snapshot_info".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
@@ -549,7 +615,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         Ok(IndexerSyncStatus {
             genesis_block_height: status.genesis_block_height,
             synced_block_height,
-            latest_depend_synced_block_height: status.latest_depend_synced_block_height,
+            balance_history_stable_height: status.balance_history_stable_height,
             current: status.current,
             total: status.total,
             message: status.message,
@@ -558,6 +624,10 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_synced_block_height(&self) -> JsonResult<Option<u64>> {
         Ok(self.synced_height()?.map(|v| v as u64))
+    }
+
+    fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>> {
+        self.adopted_snapshot_info()
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
@@ -1217,6 +1287,36 @@ mod tests {
             shutdown_tx,
         );
         (server, root_dir)
+    }
+
+    #[test]
+    fn test_get_snapshot_info_success() {
+        let (server, root_dir) = build_server("snapshot_info", 120);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let snapshot = server.get_snapshot_info().unwrap().unwrap();
+        assert_eq!(snapshot.local_synced_block_height, 120);
+        assert_eq!(snapshot.balance_history_stable_height, 120);
+        assert_eq!(snapshot.stable_block_hash, "aa".repeat(32));
+        assert_eq!(snapshot.latest_block_commit, "bb".repeat(32));
+        assert_eq!(snapshot.commit_protocol_version, "1.0.0");
+        assert_eq!(snapshot.commit_hash_algo, "sha256");
+        assert_eq!(snapshot.snapshot_id_hash_algo, SNAPSHOT_ID_HASH_ALGO);
+        assert_eq!(snapshot.snapshot_id_version, SNAPSHOT_ID_VERSION);
+        assert!(!snapshot.snapshot_id.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]

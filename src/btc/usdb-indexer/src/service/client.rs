@@ -73,11 +73,17 @@ impl RpcClient {
             .await
     }
 
+    /// Returns the currently adopted upstream snapshot metadata.
+    pub async fn get_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, String> {
+        self.rpc_call::<Option<IndexerSnapshotInfo>>("get_snapshot_info", json!([]))
+            .await
+    }
+
     /// Returns a pass snapshot resolved at a target height.
     ///
     /// # Arguments
     /// * `inscription_id` - Pass inscription id (for example `txidi0`).
-    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
     ///
     /// # Returns
     /// * `Ok(Some(PassSnapshot))` if pass exists and has visible history at that height.
@@ -101,7 +107,7 @@ impl RpcClient {
     /// Returns active passes snapshot at a target height with pagination.
     ///
     /// # Arguments
-    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
     /// * `page` - Zero-based page index.
     /// * `page_size` - Number of rows per page.
     ///
@@ -128,7 +134,7 @@ impl RpcClient {
     /// Returns pass-state aggregate counts at a target height.
     ///
     /// # Arguments
-    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
     ///
     /// # Returns
     /// * `Ok(PassStatsAtHeight)` on success.
@@ -186,7 +192,7 @@ impl RpcClient {
     ///
     /// # Arguments
     /// * `owner` - Owner script hash string.
-    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
     ///
     /// # Returns
     /// * `Ok(Some(PassSnapshot))` when exactly one active pass exists for owner.
@@ -211,7 +217,7 @@ impl RpcClient {
     ///
     /// # Arguments
     /// * `inscription_id` - Target inscription id.
-    /// * `block_height` - Optional query height. `None` resolves to synced height.
+    /// * `block_height` - Optional query height. `None` resolves to current local synced height.
     /// * `mode` - Optional query mode: `exact` or `at_or_before`.
     ///
     /// # Returns
@@ -273,7 +279,7 @@ impl RpcClient {
     /// Returns pass energy leaderboard at a target height.
     ///
     /// # Arguments
-    /// * `at_height` - Optional query height. `None` resolves to current synced height.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
     /// * `scope` - Optional leaderboard scope: `active`, `active_dormant`, or `all`.
     /// * `page` - Zero-based page index.
     /// * `page_size` - Number of rows per page.

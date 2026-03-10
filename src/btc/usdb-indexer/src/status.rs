@@ -1,11 +1,10 @@
-use crate::btc::{OrdClient, OrdClientRef};
 use crate::config::ConfigManagerRef;
 use crate::output::IndexOutputRef;
 use balance_history::{
     RpcClient as BalanceHistoryRpcClient, RpcClientRef as BalanceHistoryClientRef,
+    SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 
@@ -30,14 +29,11 @@ impl USDBInscriptionIndexStatus {
 #[derive(Clone)]
 pub struct StatusManager {
     btc_client: BTCRpcClientRef,
-    ord_client: Option<OrdClientRef>,
     balance_history_client: BalanceHistoryClientRef,
     output: IndexOutputRef,
 
     usdb_status: Arc<Mutex<USDBInscriptionIndexStatus>>,
-
-    // The latest block height that has been synced by all dependent services: BTC, Ordinals, Balance History
-    latest_depend_synced_block_height: Arc<AtomicU32>,
+    latest_balance_history_snapshot: Arc<Mutex<Option<BalanceHistorySnapshotInfo>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,7 +42,7 @@ pub struct IndexerSyncStatusSnapshot {
     pub current: u32,
     pub total: u32,
     pub message: Option<String>,
-    pub latest_depend_synced_block_height: u32,
+    pub balance_history_stable_height: Option<u32>,
 }
 
 impl StatusManager {
@@ -57,14 +53,6 @@ impl StatusManager {
             config.config().bitcoin.auth(),
         )?;
 
-        let ord_client = if config.config().usdb.monitor_ord_enabled {
-            let client = OrdClient::new(config.config().ordinals.rpc_url())?;
-            Some(Arc::new(client))
-        } else {
-            warn!("ORD monitor is disabled by config: module=status, monitor_ord_enabled=false");
-            None
-        };
-
         let balance_history_client =
             BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?;
 
@@ -74,17 +62,23 @@ impl StatusManager {
 
         Ok(Self {
             btc_client: Arc::new(btc_client),
-            ord_client,
             balance_history_client: Arc::new(balance_history_client),
             output,
-            latest_depend_synced_block_height: Arc::new(AtomicU32::new(0)),
+            latest_balance_history_snapshot: Arc::new(Mutex::new(None)),
             usdb_status,
         })
     }
 
-    pub fn latest_depend_synced_block_height(&self) -> u32 {
-        self.latest_depend_synced_block_height
-            .load(std::sync::atomic::Ordering::SeqCst)
+    pub fn balance_history_stable_height(&self) -> Option<u32> {
+        self.latest_balance_history_snapshot
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|snapshot| snapshot.stable_height)
+    }
+
+    pub fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo> {
+        self.latest_balance_history_snapshot.lock().unwrap().clone()
     }
 
     pub fn update_index_status(
@@ -118,7 +112,7 @@ impl StatusManager {
             current: status.current,
             total: status.total,
             message: status.message.clone(),
-            latest_depend_synced_block_height: self.latest_depend_synced_block_height(),
+            balance_history_stable_height: self.balance_history_stable_height(),
         }
     }
 
@@ -154,37 +148,6 @@ impl StatusManager {
             btc_bar.reset_eta();
         }
 
-        let ord_height = if let Some(ord_client) = &self.ord_client {
-            let ord_height = ord_client.get_latest_block_height().await.map_err(|e| {
-                let msg = format!("Failed to get Ordinals block height: {}", e);
-                error!("{}", msg);
-                self.output.ord_bar().set_message(msg.clone());
-                msg
-            })?;
-
-            // Update Ordinals bar
-            let ord_bar = self.output.ord_bar();
-            let current = ord_bar.length().unwrap_or(0);
-            ord_bar.set_length(btc_height as u64);
-            ord_bar.set_position(ord_height as u64);
-            if current == 0 {
-                ord_bar.reset_eta();
-            }
-
-            ord_height
-        } else {
-            // Keep ord bar aligned with BTC when ord monitor is explicitly disabled.
-            let ord_bar = self.output.ord_bar();
-            let current = ord_bar.length().unwrap_or(0);
-            ord_bar.set_length(btc_height as u64);
-            ord_bar.set_position(btc_height as u64);
-            if current == 0 {
-                ord_bar.reset_eta();
-            }
-            ord_bar.set_message("ORD monitor disabled".to_string());
-            btc_height
-        };
-
         let status = self
             .balance_history_client
             .get_sync_status()
@@ -210,14 +173,11 @@ impl StatusManager {
         }
 
         // Determine the latest synced block height among dependent services
-        let balance_history_height = self.balance_history_client.get_block_height().await? as u32;
-
-        let latest_synced_height = *[btc_height, ord_height, balance_history_height]
-            .iter()
-            .min()
-            .unwrap();
-        self.latest_depend_synced_block_height
-            .store(latest_synced_height, std::sync::atomic::Ordering::SeqCst);
+        let balance_history_snapshot = self.balance_history_client.get_snapshot_info().await?;
+        {
+            let mut current_snapshot = self.latest_balance_history_snapshot.lock().unwrap();
+            *current_snapshot = Some(balance_history_snapshot);
+        }
 
         Ok(())
     }

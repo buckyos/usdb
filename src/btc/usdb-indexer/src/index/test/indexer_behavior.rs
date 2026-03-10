@@ -18,6 +18,7 @@ use crate::inscription::{
 use crate::storage::{
     MinerPassInfo, MinerPassStorage, MinerPassStorageRef, PassEnergyRecord, PassEnergyStorage,
 };
+use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{
     Amount, Block, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
@@ -71,8 +72,18 @@ impl MockStatus {
 }
 
 impl IndexStatusApi for MockStatus {
-    fn latest_depend_synced_block_height(&self) -> u32 {
-        self.latest_height.load(Ordering::SeqCst)
+    fn balance_history_stable_height(&self) -> Option<u32> {
+        Some(self.latest_height.load(Ordering::SeqCst))
+    }
+
+    fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo> {
+        Some(BalanceHistorySnapshotInfo {
+            stable_height: self.latest_height.load(Ordering::SeqCst),
+            stable_block_hash: Some("11".repeat(32)),
+            latest_block_commit: Some("22".repeat(32)),
+            commit_protocol_version: "1.0.0".to_string(),
+            commit_hash_algo: "sha256".to_string(),
+        })
     }
 
     fn update_index_status(

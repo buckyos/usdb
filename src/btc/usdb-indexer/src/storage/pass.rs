@@ -1,4 +1,5 @@
 use crate::index::MinerPassState;
+use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
@@ -10,6 +11,13 @@ use usdb_util::USDBScriptHash;
 
 // Key for storing the last synced BTC block height
 const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
+const BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY: &str = "balance_history_snapshot_height";
+const BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY: &str = "balance_history_snapshot_block_hash";
+const BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY: &str = "balance_history_snapshot_block_commit";
+const BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY: &str =
+    "balance_history_snapshot_commit_protocol_version";
+const BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY: &str =
+    "balance_history_snapshot_commit_hash_algo";
 
 // Default savepoint name for miner pass operations
 const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
@@ -85,6 +93,15 @@ pub struct ActiveBalanceSnapshot {
     pub active_address_count: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BalanceHistorySnapshotAnchor {
+    pub stable_height: u32,
+    pub stable_block_hash: String,
+    pub latest_block_commit: String,
+    pub commit_protocol_version: String,
+    pub commit_hash_algo: String,
+}
+
 pub struct MinerPassStorage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
@@ -120,6 +137,11 @@ impl MinerPassStorage {
             CREATE TABLE IF NOT EXISTS state (
                 name TEXT PRIMARY KEY,
                 value INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS state_text (
+                name TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS miner_passes (
@@ -374,6 +396,188 @@ impl MinerPassStorage {
         })?;
 
         Ok(())
+    }
+
+    fn upsert_text_state(&self, name: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "
+            INSERT INTO state_text (name, value)
+            VALUES (?1, ?2)
+            ON CONFLICT(name) DO UPDATE SET value = excluded.value;
+            ",
+            rusqlite::params![name, value],
+        )
+        .map_err(|e| {
+            let msg = format!("Failed to update text state {} in database: {}", name, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    fn get_text_state(&self, name: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT value FROM state_text WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare text state statement for {}: {}", name, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let value: Option<String> = stmt
+            .query_row([name], |row| row.get::<usize, String>(0))
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to query text state {}: {}", name, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(value)
+    }
+
+    pub fn upsert_balance_history_snapshot_anchor(
+        &self,
+        snapshot: &BalanceHistorySnapshotInfo,
+    ) -> Result<(), String> {
+        let stable_block_hash = snapshot.stable_block_hash.clone().ok_or_else(|| {
+            let msg = format!(
+                "Balance-history snapshot missing stable block hash at height {}",
+                snapshot.stable_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let latest_block_commit = snapshot.latest_block_commit.clone().ok_or_else(|| {
+            let msg = format!(
+                "Balance-history snapshot missing latest block commit at height {}",
+                snapshot.stable_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.update_synced_btc_block_height(snapshot.stable_height)?;
+        self.upsert_text_state(BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY, &stable_block_hash)?;
+        self.upsert_text_state(
+            BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY,
+            &latest_block_commit,
+        )?;
+        self.upsert_text_state(
+            BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY,
+            &snapshot.commit_protocol_version,
+        )?;
+        self.upsert_text_state(
+            BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY,
+            &snapshot.commit_hash_algo,
+        )?;
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "
+            INSERT INTO state (name, value)
+            VALUES (?1, ?2)
+            ON CONFLICT(name) DO UPDATE SET value = excluded.value;
+            ",
+            rusqlite::params![
+                BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY,
+                snapshot.stable_height as i64,
+            ],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to update balance-history snapshot height in database: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_balance_history_snapshot_anchor(
+        &self,
+    ) -> Result<Option<BalanceHistorySnapshotAnchor>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement for balance-history snapshot height: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let stable_height: Option<i64> = stmt
+            .query_row([BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY], |row| {
+                row.get::<usize, i64>(0)
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to query balance-history snapshot height: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        drop(stmt);
+        drop(conn);
+
+        let Some(stable_height) = stable_height else {
+            return Ok(None);
+        };
+        if stable_height < 0 {
+            let msg = format!(
+                "Invalid negative balance-history snapshot height: {}",
+                stable_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let stable_block_hash = self
+            .get_text_state(BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY)?
+            .ok_or_else(|| {
+                let msg = "Missing balance-history snapshot block hash in database".to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        let latest_block_commit = self
+            .get_text_state(BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY)?
+            .ok_or_else(|| {
+                let msg = "Missing balance-history snapshot block commit in database".to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        let commit_protocol_version = self
+            .get_text_state(BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY)?
+            .ok_or_else(|| {
+                let msg = "Missing balance-history snapshot commit protocol version in database"
+                    .to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        let commit_hash_algo = self
+            .get_text_state(BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY)?
+            .ok_or_else(|| {
+                let msg = "Missing balance-history snapshot commit hash algorithm in database"
+                    .to_string();
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(Some(BalanceHistorySnapshotAnchor {
+            stable_height: stable_height as u32,
+            stable_block_hash,
+            latest_block_commit,
+            commit_protocol_version,
+            commit_hash_algo,
+        }))
     }
 
     // Get last synced btc block height
@@ -4225,6 +4429,34 @@ mod tests {
         storage
             .assert_balance_snapshot_consistency(130, 100)
             .unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_balance_history_snapshot_anchor_round_trip() {
+        let dir = test_data_dir("balance_history_snapshot_anchor_round_trip");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 321,
+                stable_block_hash: Some("ab".repeat(32)),
+                latest_block_commit: Some("cd".repeat(32)),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let anchor = storage
+            .get_balance_history_snapshot_anchor()
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchor.stable_height, 321);
+        assert_eq!(anchor.stable_block_hash, "ab".repeat(32));
+        assert_eq!(anchor.latest_block_commit, "cd".repeat(32));
+        assert_eq!(anchor.commit_protocol_version, "1.0.0");
+        assert_eq!(anchor.commit_hash_algo, "sha256");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

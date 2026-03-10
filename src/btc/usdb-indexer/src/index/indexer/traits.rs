@@ -3,6 +3,7 @@ use super::super::transfer::{
 };
 use crate::inscription::InscriptionTransferItem;
 use crate::status::StatusManager;
+use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Block;
 use ord::InscriptionId;
 use ordinals::SatPoint;
@@ -119,7 +120,8 @@ impl TransferTrackerApi for InscriptionTransferTracker {
 }
 
 pub(crate) trait IndexStatusApi: Send + Sync {
-    fn latest_depend_synced_block_height(&self) -> u32;
+    fn balance_history_stable_height(&self) -> Option<u32>;
+    fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo>;
     fn update_index_status(
         &self,
         current: Option<u32>,
@@ -129,8 +131,12 @@ pub(crate) trait IndexStatusApi: Send + Sync {
 }
 
 impl IndexStatusApi for StatusManager {
-    fn latest_depend_synced_block_height(&self) -> u32 {
-        self.latest_depend_synced_block_height()
+    fn balance_history_stable_height(&self) -> Option<u32> {
+        self.balance_history_stable_height()
+    }
+
+    fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo> {
+        self.balance_history_snapshot()
     }
 
     fn update_index_status(
