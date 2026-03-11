@@ -3,8 +3,8 @@ use crate::config::BalanceHistoryConfigRef;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
-    ColumnFamilyDescriptor, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
-    WriteOptions, DB,
+    ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
+    WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScrip
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
-                                                                       // Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
+// Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
 pub const BLOCK_COMMIT_VALUE_LEN: usize = BlockHash::LEN + 32 + 32;
 
 #[derive(Debug, Clone)]
@@ -1808,8 +1808,8 @@ pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::sync::Arc;
     use usdb_util::ToUSDBScriptHash;
 

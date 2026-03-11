@@ -701,8 +701,8 @@ impl BatchBlockFlusher {
 #[cfg(test)]
 mod block_commit_tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use usdb_util::ToUSDBScriptHash;
 
     fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {

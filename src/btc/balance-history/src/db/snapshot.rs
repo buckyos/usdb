@@ -1,6 +1,6 @@
 use super::db::BalanceHistoryEntry;
-use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::OutPoint;
+use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
