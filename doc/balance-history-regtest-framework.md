@@ -9,6 +9,9 @@
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
 - 多次 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh)
 - 深回滚 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh)
+- 重启后 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh)
+- 重启后多轮 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh)
+- 重启后混合 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh)
 
 ## 设计目标
 
@@ -26,12 +29,19 @@
 3. bitcoind 生命周期：启动、停止、PID 探测。
 4. bitcoind 端口隔离：同时设置 `-rpcport` 与 `-port`。
 5. 钱包初始化：创建或加载指定 `WALLET_NAME`。
-6. balance-history 配置生成与服务启动。
+6. balance-history 配置生成、服务启动与优雅停止。
 7. balance-history JSON-RPC 调用与等待同步辅助函数。
-8. 常见辅助逻辑：金额转 sat、地址转 script hash、地址余额断言、等待 block commit hash 收敛。
+8. 常见辅助逻辑：金额转 sat、地址转 script hash、地址余额断言、UTXO 断言、等待 block commit hash 收敛。
 9. 成熟资金预热：自动补足可花费的 coinbase 区块，避免转账前资金未成熟。
 10. 空替代块辅助：在需要时通过 `generateblock` 显式挖不包含 mempool 交易的替代块。
 11. 失败诊断输出：测试失败时自动打印 balance-history 与 bitcoind 日志尾部。
+12. 服务重启辅助：停止并重启 balance-history，然后等待 RPC 再次 ready。
+
+## 关闭与查询约束
+
+1. `regtest_stop_balance_history` 默认先调用 `stop` RPC，再等待子进程退出；只有超时后才回退到 `kill -9`。
+2. 后台 `cargo run` 进程在服务已退出后可能短暂进入 zombie 状态，脚本需要显式 `wait` 回收，不能只靠 `kill -0` 判断。
+3. `get_utxo` 的 JSON-RPC 参数必须使用 rust-bitcoin 的 human-readable `OutPoint` 形式，也就是单个字符串 `"txid:vout"`，不能发送 map 结构。
 
 ## 场景脚本的最小模式
 
@@ -96,6 +106,6 @@ main "$@"
 ## 后续扩展方向
 
 1. 增加多地址、多交易图、范围查询一致性场景。
-2. 增加重启 `balance-history` 后继续 reorg 的恢复场景。
-3. 增加更深层级的多高度余额断言和 UTXO 一致性校验。
+2. 覆盖更复杂的 UTXO 花费图，而不只是单输出转账。
+3. 覆盖服务离线更久、跨多高度组合回滚后再恢复的场景。
 4. 视复杂度再决定是否引入 Python 场景 runner。

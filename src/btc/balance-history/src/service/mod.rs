@@ -2,6 +2,6 @@ mod client;
 mod rpc;
 mod server;
 
-pub use client::*;
-pub use rpc::*;
-pub use server::*;
+#[cfg(test)]
+pub use rpc::BalanceHistoryRpc;
+pub use server::BalanceHistoryRpcServer;

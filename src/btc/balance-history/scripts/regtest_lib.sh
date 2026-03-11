@@ -105,6 +105,55 @@ regtest_get_snapshot_stable_hash() {
     | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_block_hash", ""))'
 }
 
+regtest_get_utxo_value_sat() {
+  local txid="$1"
+  local vout="$2"
+  local response
+  response="$(regtest_rpc_call_balance_history "get_utxo" "[\"${txid}:${vout}\"]")"
+  if [[ -z "$response" ]]; then
+    echo ""
+    return 0
+  fi
+
+  local error_message
+  error_message="$(printf '%s' "$response" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); err=d.get("error") or {}; print(err.get("message", ""))')"
+  if [[ -n "$error_message" ]]; then
+    regtest_log "get_utxo RPC returned error for ${txid}:${vout}: ${response}"
+    echo ""
+    return 0
+  fi
+
+  printf '%s' "$response" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print("" if r is None else r.get("value", ""))'
+}
+
+regtest_assert_utxo_value_sat() {
+  local txid="$1"
+  local vout="$2"
+  local expected_sat="$3"
+  local actual_sat
+
+  actual_sat="$(regtest_get_utxo_value_sat "$txid" "$vout")"
+  regtest_log "UTXO assertion: txid=${txid}, vout=${vout}, expected_sat=${expected_sat}, actual_sat=${actual_sat}"
+  if [[ "$actual_sat" != "$expected_sat" ]]; then
+    regtest_log "UTXO assertion failed for ${txid}:${vout}"
+    exit 1
+  fi
+}
+
+regtest_assert_utxo_missing() {
+  local txid="$1"
+  local vout="$2"
+  local actual_sat
+
+  actual_sat="$(regtest_get_utxo_value_sat "$txid" "$vout")"
+  regtest_log "UTXO missing assertion: txid=${txid}, vout=${vout}, actual_sat=${actual_sat}"
+  if [[ -n "$actual_sat" ]]; then
+    regtest_log "Expected missing UTXO but found ${txid}:${vout} value=${actual_sat}"
+    exit 1
+  fi
+}
+
 regtest_create_balance_history_config() {
   mkdir -p "$BALANCE_HISTORY_ROOT"
 
@@ -189,6 +238,29 @@ regtest_get_new_address() {
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress
 }
 
+regtest_lock_wallet_outpoint() {
+  local txid="$1"
+  local vout="$2"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    lockunspent false "[{\"txid\":\"${txid}\",\"vout\":${vout}}]" >/dev/null
+}
+
+regtest_get_tx_vout_for_address() {
+  local txid="$1"
+  local address="$2"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getrawtransaction "$txid" true \
+  | python3 -c 'import json, sys
+address = sys.argv[1]
+data = json.load(sys.stdin)
+for output in data.get("vout", []):
+  script = output.get("scriptPubKey", {})
+  output_address = script.get("address")
+  addresses = script.get("addresses") or []
+  if output_address == address or address in addresses:
+    print(output.get("n", ""))
+    break' "$address"
+}
+
 regtest_mine_blocks() {
   local block_count="$1"
   local address="$2"
@@ -228,6 +300,13 @@ regtest_start_balance_history() {
       --skip-process-lock
   ) >"${BALANCE_HISTORY_LOG_FILE}" 2>&1 &
   BALANCE_HISTORY_PID=$!
+}
+
+# Restart the service and wait until its RPC endpoint becomes reachable again.
+regtest_restart_balance_history() {
+  regtest_stop_balance_history
+  regtest_start_balance_history
+  regtest_wait_balance_history_rpc_ready
 }
 
 regtest_wait_until_synced_height() {
@@ -367,14 +446,25 @@ regtest_stop_balance_history() {
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1 || true
 
     for _ in $(seq 1 20); do
+      if [[ "$(ps -o stat= -p "$BALANCE_HISTORY_PID" 2>/dev/null | tr -d ' ')" == Z* ]]; then
+        wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
+        BALANCE_HISTORY_PID=""
+        return 0
+      fi
+
       if ! kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+        wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
+        BALANCE_HISTORY_PID=""
         return 0
       fi
       sleep 0.5
     done
 
     kill -9 "$BALANCE_HISTORY_PID" 2>/dev/null || true
+    wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
   fi
+
+  BALANCE_HISTORY_PID=""
 }
 
 regtest_stop_bitcoind() {

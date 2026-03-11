@@ -1,5 +1,6 @@
-use super::rpc::{AddressBalance, BlockCommitInfo, SnapshotInfo};
+use super::rpc::{AddressBalance, BlockCommitInfo, SnapshotInfo, UtxoInfo};
 use crate::status::SyncStatus;
+use bitcoincore_rpc::bitcoin::OutPoint;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -57,6 +58,12 @@ impl RpcClient {
             json!([block_height]),
         )
         .await
+    }
+
+    pub async fn get_utxo(&self, outpoint: OutPoint) -> Result<Option<UtxoInfo>, String> {
+        let params = json!([outpoint]);
+        self.rpc_call::<Option<UtxoInfo>>(&self.url, "get_utxo", params)
+            .await
     }
 
     pub async fn stop(&self) -> Result<(), String> {

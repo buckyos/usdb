@@ -1,4 +1,5 @@
 use crate::status::SyncStatus;
+use bitcoincore_rpc::bitcoin::OutPoint;
 use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,14 @@ pub struct BlockCommitInfo {
     pub commit_hash_algo: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UtxoInfo {
+    pub txid: String,
+    pub vout: u32,
+    pub script_hash: String,
+    pub value: u64,
+}
+
 #[rpc(server)]
 pub trait BalanceHistoryRpc {
     /// Gets the current bitcoin chain network type
@@ -101,6 +110,9 @@ pub trait BalanceHistoryRpc {
         &self,
         params: GetBalancesParams,
     ) -> JsonResult<Vec<Vec<Option<AddressBalance>>>>;
+
+    #[rpc(name = "get_utxo")]
+    fn get_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>>;
 
     #[rpc(name = "stop")]
     fn stop(&self) -> JsonResult<()>;

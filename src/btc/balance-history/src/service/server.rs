@@ -2,10 +2,12 @@ use super::rpc::*;
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
+use bitcoincore_rpc::bitcoin::OutPoint;
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::watch;
 
 // Public version string of the first balance-history block commit protocol.
@@ -109,7 +111,7 @@ impl BalanceHistoryRpcServer {
             .await
             .unwrap();
 
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             info!("RPC server closed.");
         } else {
             warn!("RPC server handle not found.");
@@ -132,9 +134,8 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
         if let Some(handle) = self.server_handle.lock().unwrap().take() {
             info!("Closing RPC server.");
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                info!("Closing RPC server.");
+            tokio::task::spawn_blocking(move || {
+                std::thread::sleep(Duration::from_millis(500));
                 handle.close();
             });
         } else {
@@ -391,6 +392,21 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
         results
     }
+
+    fn get_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
+        let utxo = self.db.get_utxo(&outpoint).map_err(|e| JsonError {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to get utxo {}:{}: {}", outpoint.txid, outpoint.vout, e),
+            data: None,
+        })?;
+
+        Ok(utxo.map(|entry| UtxoInfo {
+            txid: outpoint.txid.to_string(),
+            vout: outpoint.vout,
+            script_hash: format!("{:x}", entry.script_hash),
+            value: entry.value,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -498,5 +514,29 @@ mod tests {
         assert_eq!(loaded.block_commit, encode_hex(&commit.block_commit));
         assert_eq!(loaded.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(loaded.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_utxo_success() {
+        use bitcoincore_rpc::bitcoin::OutPoint;
+        use bitcoincore_rpc::bitcoin::Txid;
+        use usdb_util::USDBScriptHash;
+
+        let server = make_test_server("get_utxo");
+        let outpoint = OutPoint {
+            txid: Txid::from_slice(&[7u8; 32]).unwrap(),
+            vout: 3,
+        };
+        let script_hash = USDBScriptHash::from_byte_array([3u8; 32]);
+        server.db.put_utxo(&outpoint, &script_hash, 12345).unwrap();
+
+        let loaded = server
+            .get_utxo(outpoint.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.txid, outpoint.txid.to_string());
+        assert_eq!(loaded.vout, outpoint.vout);
+        assert_eq!(loaded.script_hash, format!("{:x}", script_hash));
+        assert_eq!(loaded.value, 12345);
     }
 }
