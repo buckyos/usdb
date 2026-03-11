@@ -413,6 +413,27 @@ tbody tr.clickable {
     cursor: pointer;
 }
 
+tbody tr.active-history-row {
+    background: rgba(10, 125, 111, 0.08);
+}
+
+tbody tr.active-history-row:hover {
+    background: rgba(10, 125, 111, 0.12);
+}
+
+.history-height-action {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent-2);
+    cursor: pointer;
+}
+
+.history-height-action:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
 .mono {
     font-family: "Azeret Mono", "SFMono-Regular", "Consolas", monospace;
 }

@@ -456,15 +456,37 @@ function renderPassHistory(events) {
     els.passHistoryTable.innerHTML = "";
     events.forEach((event) => {
         const tr = document.createElement("tr");
+        const isFocusedHeight = state.pass.atHeight !== null && Number(event.block_height) === Number(state.pass.atHeight);
+        tr.className = isFocusedHeight ? "clickable active-history-row" : "clickable";
+        const heightText = fmtNum(event.block_height);
         tr.innerHTML = `
             <td class="mono">${event.event_id}</td>
-            <td>${fmtNum(event.block_height)}</td>
+            <td><button class="mono history-height-action" type="button" title="按该高度刷新 Pass 快照与 commit">${heightText}</button></td>
             <td>${event.event_type}</td>
             <td>${event.state}</td>
             <td class="mono">${event.owner}</td>
             <td class="mono">${event.satpoint}</td>
         `;
+        tr.querySelector(".history-height-action")?.addEventListener("click", (eventTarget) => {
+            eventTarget.stopPropagation();
+            openPassLinkedHeight(event.block_height);
+        });
+        tr.addEventListener("click", () => {
+            openPassLinkedHeight(event.block_height);
+        });
         els.passHistoryTable.appendChild(tr);
+    });
+}
+
+function scrollActivePassHistoryRowIntoView() {
+    const activeRow = els.passHistoryTable.querySelector(".active-history-row");
+    if (!activeRow) return;
+    window.requestAnimationFrame(() => {
+        activeRow.scrollIntoView({
+            block: "nearest",
+            inline: "nearest",
+            behavior: "smooth",
+        });
     });
 }
 
@@ -483,10 +505,17 @@ async function loadPassHistory() {
 
         state.pass.total = Number(page.total || 0);
         renderPassHistory(page.items || []);
+        scrollActivePassHistoryRowIntoView();
         const currentPage = state.pass.page + 1;
         const totalPages = Math.max(1, Math.ceil(state.pass.total / state.pass.pageSize));
         els.passHistoryPage.textContent = `${currentPage}/${totalPages}`;
-        els.passHistorySummary.textContent = `total=${fmtNum(state.pass.total)}, range=[${fmtNum(state.pass.fromHeight)}, ${fmtNum(state.pass.toHeight)}], order=${state.pass.order}`;
+        const focusedHeight = state.pass.atHeight === null ? "latest" : fmtNum(state.pass.atHeight);
+        const focusedInCurrentPage = state.pass.atHeight === null
+            ? "current"
+            : ((page.items || []).some((item) => Number(item.block_height) === Number(state.pass.atHeight))
+                ? "in_page"
+                : "not_in_page");
+        els.passHistorySummary.textContent = `total=${fmtNum(state.pass.total)}, range=[${fmtNum(state.pass.fromHeight)}, ${fmtNum(state.pass.toHeight)}], order=${state.pass.order}, focused_height=${focusedHeight}, focus_state=${focusedInCurrentPage}`;
         els.passHistoryPrev.disabled = state.pass.page === 0;
         els.passHistoryNext.disabled = currentPage >= totalPages;
     } catch (err) {
