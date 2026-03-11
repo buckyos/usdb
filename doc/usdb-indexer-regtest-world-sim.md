@@ -18,6 +18,8 @@
 
 ## 核心能力
 
+`get_sync_status` 的完整字段语义见：[usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)。
+
 - 真实 agent 模型（有状态）：
   - 每个 agent 有独立钱包、BTC 地址、script hash、persona（`holder`/`trader`/`farmer`/`adversary`）
   - 支持两种策略模式：
@@ -34,7 +36,9 @@
   - `spend_balance`
   - `noop`
 - 每个 tick（每个新区块）会输出：
-  - 当前链高度与 usdb 同步高度
+  - 当前链高度与 usdb `synced_height`
+    - 这里的 `synced_height` 对应 `get_sync_status.synced_block_height`，表示 `usdb-indexer` 本地 durable 已提交高度
+    - 当前 world-sim 顶层摘要没有单独提升 `balance_history_stable_height`；如果需要分析上游稳定 ceiling，应查看原始 `get_sync_status` 返回值
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
   - agent 粒度自检（默认开启）：每块对选中 agent 的 active pass 做能量数值校验（与公式推导一致）
@@ -45,6 +49,7 @@
 - 支持固定 `seed`，保证场景可复现。
 - 可选输出结构化 JSONL 报告（每个 tick 一条记录），便于后续离线分析。
   - tick 事件包含 `tick_action_type_counts`，便于“同 seed 双跑”时对比关键序列统计。
+  - tick 事件的 `synced_height` 也是 `get_sync_status.synced_block_height` 的摘要值，不应解读成上游稳定高度。
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 
 ## 运行示例
@@ -160,3 +165,4 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh
 
 - 该模式优先用于“持续行为观测”与“协议回归压力验证”，不是严格确定性单测替代。
 - 若需要严格断言，请继续使用 `run_regression.sh` 与固定场景脚本。
+- 如果要分析“本地 durable 高度”和“上游稳定高度”是否同时收敛，应把 world-sim 摘要里的 `synced_height` 与单独拉取的 `get_sync_status.balance_history_stable_height` 结合起来看，而不是把摘要字段当成完整同步状态。

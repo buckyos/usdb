@@ -9,9 +9,11 @@
 并完成最小联调断言：
 
 1. 两个 RPC 服务都返回 `regtest`
-2. `balance-history` 与 `usdb-indexer` 同步高度达到目标高度
+2. `balance-history` 稳定高度与 `usdb-indexer` 本地 durable 高度都达到目标高度
 3. `usdb-indexer` RPC 语义断言（`get_rpc_info`、`get_sync_status`、`get_active_passes_at_height`、`get_invalid_passes`、`get_active_balance_snapshot`）
 4. 可选转账断言：`get_address_balance` 返回值与发送金额一致
+
+`get_sync_status` 的完整字段语义见：[usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)。
 
 脚本位置：
 
@@ -175,6 +177,9 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
    - `assert_len`
    - `assert_contains`
    - `assert_rpc_error_code`
+    - 其中 `assert_usdb_state` 会同时校验：
+       - `synced_block_height` 是否达到预期高度
+       - `balance_history_stable_height` 是否达到预期高度
 4. 脚本启动 `usdb-indexer` 时显式传入：
    - `--root-dir <USDB_INDEXER_ROOT>`
    - `--skip-process-lock`
@@ -208,3 +213,17 @@ src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
   "right": "$effective_target_height"
 }
 ```
+
+```json
+{
+   "type": "assert_ge",
+   "left": "$sync_status.balance_history_stable_height",
+   "right": "$effective_target_height"
+}
+```
+
+说明：
+
+- `synced_block_height` 表示 `usdb-indexer` 本地 durable 已提交高度。
+- `balance_history_stable_height` 表示上游 `balance-history` 当前稳定高度。
+- `current` / `total` 仅用于进度展示，不应直接拿来替代这两个断言字段。
