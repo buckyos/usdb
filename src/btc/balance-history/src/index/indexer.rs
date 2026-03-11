@@ -15,34 +15,46 @@ use usdb_util::USDBScriptHash;
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
 
+// Find the highest local height that still matches the current canonical BTC chain.
 fn find_reorg_common_ancestor_height(
     db: &BalanceHistoryDBRef,
     btc_client: &BTCClientRef,
     current_height: u32,
+    latest_btc_height: u32,
 ) -> Result<Option<u32>, String> {
     if current_height == 0 {
         return Ok(None);
     }
 
-    let local_tip_commit = db.get_block_commit(current_height)?.ok_or_else(|| {
-        let msg = format!(
-            "Missing local block commit at synced height {} while checking for reorg",
-            current_height
+    if latest_btc_height >= current_height {
+        let local_tip_commit = db.get_block_commit(current_height)?.ok_or_else(|| {
+            let msg = format!(
+                "Missing local block commit at synced height {} while checking for reorg",
+                current_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let canonical_tip_hash = btc_client.get_block_hash(current_height)?;
+        if local_tip_commit.btc_block_hash == canonical_tip_hash {
+            return Ok(None);
+        }
+
+        warn!(
+            "Detected local/canonical tip mismatch: local_height={}, local_hash={}, canonical_hash={}",
+            current_height, local_tip_commit.btc_block_hash, canonical_tip_hash
         );
-        error!("{}", msg);
-        msg
-    })?;
-    let canonical_tip_hash = btc_client.get_block_hash(current_height)?;
-    if local_tip_commit.btc_block_hash == canonical_tip_hash {
-        return Ok(None);
     }
 
-    warn!(
-        "Detected local/canonical tip mismatch: local_height={}, local_hash={}, canonical_hash={}",
-        current_height, local_tip_commit.btc_block_hash, canonical_tip_hash
-    );
+    let search_start_height = current_height.min(latest_btc_height);
+    if latest_btc_height < current_height {
+        warn!(
+            "Canonical BTC tip moved below local synced height: local_height={}, canonical_height={}",
+            current_height, latest_btc_height
+        );
+    }
 
-    for height in (0..current_height).rev() {
+    for height in (1..=search_start_height).rev() {
         let local_commit = db.get_block_commit(height)?.ok_or_else(|| {
             let msg = format!(
                 "Missing local block commit at height {} while searching reorg common ancestor",
@@ -57,12 +69,38 @@ fn find_reorg_common_ancestor_height(
         }
     }
 
-    let msg = format!(
-        "No common ancestor found while checking BTC reorg up to height {}",
-        current_height
-    );
-    error!("{}", msg);
-    Err(msg)
+    Ok(Some(0))
+}
+
+// Wake the sync loop when height changes or the watched tip hash no longer matches local state.
+fn should_wake_for_chain_update(
+    db: &BalanceHistoryDBRef,
+    btc_client: &BTCClientRef,
+    last_height: u32,
+    latest_height: u32,
+) -> Result<bool, String> {
+    if latest_height != last_height || last_height == 0 {
+        return Ok(latest_height != last_height);
+    }
+
+    let local_tip_commit = db.get_block_commit(last_height)?.ok_or_else(|| {
+        let msg = format!(
+            "Missing local block commit at synced height {} while waiting for chain updates",
+            last_height
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let canonical_tip_hash = btc_client.get_block_hash(last_height)?;
+
+    if canonical_tip_hash != local_tip_commit.btc_block_hash {
+        warn!(
+            "Detected local/canonical tip mismatch while waiting for chain update: height={}, local_hash={}, canonical_hash={}",
+            last_height, local_tip_commit.btc_block_hash, canonical_tip_hash
+        );
+    }
+
+    Ok(local_tip_commit.btc_block_hash != canonical_tip_hash)
 }
 
 #[derive(Clone)]
@@ -438,8 +476,12 @@ impl BalanceHistoryIndexer {
     fn wait_for_new_blocks(&self, last_height: u32) -> Result<u32, String> {
         loop {
             let latest_height = self.get_latest_block_height()?;
-            if latest_height > last_height {
-                info!("New block detected: {} > {}", latest_height, last_height);
+            if should_wake_for_chain_update(&self.db, &self.btc_client, last_height, latest_height)?
+            {
+                info!(
+                    "BTC chain update detected while waiting: local_height={}, canonical_height={}",
+                    last_height, latest_height
+                );
                 return Ok(latest_height);
             }
 
@@ -453,9 +495,17 @@ impl BalanceHistoryIndexer {
         }
     }
 
-    fn reconcile_reorg_if_needed(&self, current_height: u32) -> Result<u32, String> {
-        let ancestor_height =
-            match find_reorg_common_ancestor_height(&self.db, &self.btc_client, current_height)? {
+    fn reconcile_reorg_if_needed(
+        &self,
+        current_height: u32,
+        latest_btc_height: u32,
+    ) -> Result<u32, String> {
+        let ancestor_height = match find_reorg_common_ancestor_height(
+            &self.db,
+            &self.btc_client,
+            current_height,
+            latest_btc_height,
+        )? {
                 Some(height) => height,
                 None => return Ok(current_height),
             };
@@ -478,6 +528,7 @@ impl BalanceHistoryIndexer {
 
     // Return the last synced block height
     fn sync_once(&self) -> Result<u32, String> {
+        // Check and resume pending rollback if needed before getting latest block height, to ensure we are checking the reorg against the correct local state
         self.resume_pending_rollback_if_needed()?;
 
         // Get latest block height from BTC node
@@ -486,7 +537,10 @@ impl BalanceHistoryIndexer {
 
         // Get last synced block height from DB
         let last_synced_height = self.db.get_btc_block_height()?;
-        let last_synced_height = self.reconcile_reorg_if_needed(last_synced_height)?;
+
+        // Check for reorg and reconcile local state if needed. This will also update the last_synced_height to the reconciled height.
+        let last_synced_height =
+            self.reconcile_reorg_if_needed(last_synced_height, latest_btc_height)?;
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
@@ -725,7 +779,7 @@ mod tests {
             ]),
         }));
 
-        let ancestor = find_reorg_common_ancestor_height(&db, &client, 2).unwrap();
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 2, 2).unwrap();
         assert_eq!(ancestor, None);
     }
 
@@ -763,7 +817,64 @@ mod tests {
             ]),
         }));
 
-        let ancestor = find_reorg_common_ancestor_height(&db, &client, 3).unwrap();
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 3, 3).unwrap();
         assert_eq!(ancestor, Some(2));
+    }
+
+    #[test]
+    fn test_find_reorg_common_ancestor_height_handles_canonical_tip_rollback() {
+        let db = temp_db("balance_history_reorg_detect_tip_rollback");
+        let commits = vec![
+            crate::db::BlockCommitEntry {
+                block_height: 1,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [1u8; 32],
+                block_commit: [1u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 2,
+                btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [2u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 3,
+                btc_block_hash: BlockHash::from_slice(&[3u8; 32]).unwrap(),
+                balance_delta_root: [3u8; 32],
+                block_commit: [3u8; 32],
+            },
+        ];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(3).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([
+                (1, BlockHash::from_slice(&[1u8; 32]).unwrap()),
+                (2, BlockHash::from_slice(&[9u8; 32]).unwrap()),
+            ]),
+        }));
+
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 3, 2).unwrap();
+        assert_eq!(ancestor, Some(1));
+    }
+
+    #[test]
+    fn test_should_wake_for_chain_update_on_same_height_hash_change() {
+        let db = temp_db("balance_history_wait_hash_change");
+        let commits = vec![crate::db::BlockCommitEntry {
+            block_height: 2,
+            btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+            balance_delta_root: [2u8; 32],
+            block_commit: [2u8; 32],
+        }];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(2).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([(2, BlockHash::from_slice(&[7u8; 32]).unwrap())]),
+        }));
+
+        let should_wake = should_wake_for_chain_update(&db, &client, 2, 2).unwrap();
+        assert!(should_wake);
     }
 }

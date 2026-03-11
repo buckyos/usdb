@@ -624,6 +624,36 @@
 
 - reorg 检测使用已提交 `BLOCK_COMMITS_CF` 里的 `btc_block_hash` 作为本地锚点，不额外引入新的链锚 CF。
 
+### 9.1 检测触发时机约束
+
+虽然 rollback 层只接收 `ancestor_height`，但工程实现里必须明确一条约束：
+
+- reorg 检测不能只在“准备同步更高新区块”时触发。
+
+原因是仅依赖 `latest_height > last_height` 会漏掉以下场景：
+
+1. 同高度 reorg：本地与 canonical tip 高度相同，但 block hash 已变化。
+2. tip 回退：canonical tip 暂时低于本地已同步高度。
+3. tip 先回退后恢复：canonical 高度重新回到原高度，但 block hash 已不同。
+
+因此更稳妥的实现约束应是：
+
+1. `sync_once()` 入口始终执行一次本地 tip 与 canonical chain 的对齐检查。
+2. 等待新块阶段除了观察高度增长，还要观察 watched tip hash 是否发生变化。
+3. 一旦发现高度变化或 hash 变化，应立即唤醒主循环并进入统一的 reorg reconcile 路径。
+
+### 9.2 共同祖先搜索边界
+
+共同祖先搜索不能默认从 `current_height` 直接读取 canonical hash。
+
+更稳妥的边界是：
+
+1. 先读取当前 canonical `latest_btc_height`。
+2. 从 `min(current_height, latest_btc_height)` 开始向下搜索共同祖先。
+3. 如果 `latest_btc_height < current_height`，要把它视为合法 reorg 场景，而不是直接当作 RPC 异常。
+
+这样可以避免在深 reorg 或节点暂时掉高时，因为读取不存在的 canonical 高度而把正常 rollback 流程误判成错误重试。
+
 ## 10. 与 snapshot 的关系
 
 ## 10.1 v1 不要求把 undo journal 打进 snapshot

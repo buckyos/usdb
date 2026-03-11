@@ -77,6 +77,18 @@
 
 这意味着当前更接近“尽快写入最新块”，而不是“只提交已验证稳定的 canonical 块”。
 
+补充当前实现进展：
+
+- `balance-history` 现在已经在 `sync_once()` 入口增加本地 tip 与 canonical chain 的对齐检查。
+- 但工程上不能只依赖“下一次进入 sync_once”这个触发点；如果只在检测到 `latest_height > last_height` 时才唤醒主循环，那么同高度 reorg 或 tip 暂时回退都可能被长期压住。
+- 因此当前实现已进一步收敛为：等待新块阶段也要在高度变化或 watched tip hash 变化时唤醒同步循环，再进入统一的 reorg reconcile 路径。
+
+这条约束非常关键，因为它决定系统能否及时发现：
+
+1. 高度不变但 block hash 已变化的同高度 reorg。
+2. canonical tip 暂时低于本地已同步高度的深 reorg。
+3. tip 先回退、后恢复到原高度但 hash 已变化的链切换。
+
 ### 4.1.2 本地 blk 文件恢复不是当前 reorg 主要问题
 
 `local_loader` 的恢复逻辑已经具备一定的连续性校验和 tip anchor 校验能力，但它处理的是“本地 blk 索引可否复用”的问题，不是 live block index 的回滚问题。
@@ -162,6 +174,13 @@
 - 或回退到最近完整快照再重放
 
 这两种方式都能作为临时兜底，但不能视为最终方案。
+
+补充当前状态修正：
+
+- undo journal、rollback to height、rollback crash recovery 和 tip 附近热窗口策略已经进入实现。
+- reorg 检测也不再只依赖“有更高新块到来”，而是已经开始覆盖同高度 hash 变化与 canonical tip 回退场景。
+
+因此，这里的剩余风险更准确地说是“仍需继续补完集成测试与下游协同”，而不是“上游完全没有自动 reorg 处理框架”。
 
 ## 4.2 usdb-indexer
 
