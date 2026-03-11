@@ -162,6 +162,8 @@
 
 返回索引同步状态，包含本地 durable 已提交高度、上游稳定高度，以及仅用于进度展示的 `current/total`。
 
+完整状态模型说明见：[usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)。
+
 返回建议：
 
 ```json
