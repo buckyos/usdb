@@ -107,7 +107,7 @@ enum BalanceHistoryCommands {
         #[arg(short, long)]
         script_hash: Option<String>,
 
-        /// Specify the target block height to verify
+        /// Specify the target block height to verify. If omitted, verify against the current stable height in balance-history DB.
         /// #[arg(short, long)]
         height: Option<u32>,
 
@@ -651,12 +651,18 @@ async fn main() {
                         println!("Balance history verified successfully for script_hash {} at height {}.", script_hash.as_ref().unwrap(), height);
                         return;
                     } else {
-                        output.println(&format!("Verifying script_hash: {}", script_hash.unwrap()));
+                        output.println(&format!(
+                            "Verifying script_hash {} at current stable height...",
+                            script_hash.unwrap()
+                        ));
                         if let Err(e) = verifier.verify_address_latest(&script_hash.unwrap()) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
-                        println!("Balance history verified successfully for script_hash {}.", script_hash.as_ref().unwrap());
+                        println!(
+                            "Balance history verified successfully for script_hash {} at current stable height.",
+                            script_hash.as_ref().unwrap()
+                        );
                     }
                 } else {
                     if height.is_some() {
@@ -669,7 +675,9 @@ async fn main() {
                             std::process::exit(1);
                         }
                     } else {
-                        output.println("Verifying entire balance history...");
+                        output.println(
+                            "Verifying entire balance history at current stable height...",
+                        );
                         if let Err(e) = verifier.verify_latest(from) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);

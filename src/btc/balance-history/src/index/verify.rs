@@ -28,7 +28,11 @@ impl BalanceHistoryVerifier {
     }
 
     pub fn verify_latest(&self, start: Option<USDBScriptHash>) -> Result<(), String> {
-        info!("Starting full balance history verification for latest block height");
+        let stable_height = self.db.get_btc_block_height()?;
+        info!(
+            "Starting full balance history verification for stable block height {}",
+            stable_height
+        );
 
         let mut script_hashes = vec![];
         let mut balances = vec![];
@@ -39,7 +43,8 @@ impl BalanceHistoryVerifier {
         self.db.traverse_latest(start, 1, |entries| {
             assert!(
                 entries.len() == 1,
-                "Expected exactly one snapshot entry for latest block height, found {}",
+                "Expected exactly one snapshot entry for stable block height {}, found {}",
+                stable_height,
                 entries.len()
             );
 
@@ -48,17 +53,23 @@ impl BalanceHistoryVerifier {
 
             if script_hashes.len() >= BATCH_SIZE {
                 // Verify batch
-                if let Err(e) =
-                    self.verify_address_latest_balance_batch_sync(&script_hashes, &balances)
-                {
+                if let Err(e) = self.verify_address_latest_balance_batch_sync(
+                    &script_hashes,
+                    &balances,
+                    stable_height,
+                ) {
                     warn!("Failed to verify address batch: {}", e);
                     self.db.flush_with_primary()?;
 
-                    // Sleep for a while to allow indexer to catch up
+                    // Sleep for a while to allow electrs to catch up.
                     std::thread::sleep(std::time::Duration::from_secs(10));
 
                     // Retry once after flushing
-                    self.verify_address_latest_balance_batch_sync(&script_hashes, &balances)?;
+                    self.verify_address_latest_balance_batch_sync(
+                        &script_hashes,
+                        &balances,
+                        stable_height,
+                    )?;
                 }
 
                 script_hashes.clear();
@@ -79,7 +90,17 @@ impl BalanceHistoryVerifier {
             }
 
             Ok(())
-        })
+        })?;
+
+        if !script_hashes.is_empty() {
+            self.verify_address_latest_balance_batch_sync(
+                &script_hashes,
+                &balances,
+                stable_height,
+            )?;
+        }
+
+        Ok(())
     }
 
     pub fn verify_at_height(
@@ -112,7 +133,7 @@ impl BalanceHistoryVerifier {
 
     pub fn verify_address_latest(&self, script_hash: &USDBScriptHash) -> Result<(), String> {
         self.output.println(&format!(
-            "Starting latest balance history verification for script_hash: {}",
+            "Starting stable-height balance verification for script_hash: {}",
             script_hash
         ));
 
@@ -276,12 +297,25 @@ impl BalanceHistoryVerifier {
         latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
-        let electrs_balance = self.electrs_client.get_balance(script_hash).await?;
+        let electrs_balance = self
+            .electrs_client
+            .calc_balance(script_hash, latest_block_height)
+            .await?;
 
-        if electrs_balance != balance {
+        let address = Address::from_script(&electrs_balance.script_buf, self.config.btc.network())
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to parse address from script for script_hash {}: {}",
+                    script_hash, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if electrs_balance.balance != balance {
             let msg = format!(
-                "Balance mismatch for script_hash {}: expected {}, got {}, used latest block height {}",
-                script_hash, balance, electrs_balance, latest_block_height
+                "Balance mismatch for script_hash {} at stable block height {}: expected {}, got {}, address {}",
+                script_hash, latest_block_height, balance, electrs_balance.balance, address
             );
             error!("{}", msg);
 
@@ -294,8 +328,8 @@ impl BalanceHistoryVerifier {
         }
 
         info!(
-            "Balance history verification successful for script_hash {}: balance={}, used latest block height={}",
-            script_hash, balance, latest_block_height
+            "Balance history verification successful for script_hash {} at stable block height {}: balance={}, address={}",
+            script_hash, latest_block_height, balance, address
         );
         Ok(())
     }
@@ -304,9 +338,10 @@ impl BalanceHistoryVerifier {
         &self,
         script_hashes: &[USDBScriptHash],
         balances: &[u64],
+        stable_height: u32,
     ) -> Result<(), String> {
         tokio::runtime::Handle::current().block_on(async {
-            self.verify_address_latest_balance_batch(script_hashes, balances)
+            self.verify_address_latest_balance_batch(script_hashes, balances, stable_height)
                 .await
         })
     }
@@ -315,14 +350,31 @@ impl BalanceHistoryVerifier {
         &self,
         script_hashes: &[USDBScriptHash],
         balances: &[u64],
+        stable_height: u32,
     ) -> Result<(), String> {
-        let electrs_balances = self.electrs_client.get_balances(script_hashes).await?;
-
         for i in 0..script_hashes.len() {
-            if electrs_balances[i] != balances[i] {
+            let electrs_balance = self
+                .electrs_client
+                .calc_balance(&script_hashes[i], stable_height)
+                .await?;
+
+            if electrs_balance.balance != balances[i] {
+                let address = Address::from_script(
+                    &electrs_balance.script_buf,
+                    self.config.btc.network(),
+                )
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to parse address from script for script_hash {}: {}",
+                        script_hashes[i], e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
                 let msg = format!(
-                    "Balance mismatch for script_hash {}: expected {}, got {}",
-                    script_hashes[i], balances[i], electrs_balances[i]
+                    "Balance mismatch for script_hash {} at stable block height {}: expected {}, got {}, address {}",
+                    script_hashes[i], stable_height, balances[i], electrs_balance.balance, address
                 );
                 error!("{}", msg);
 
