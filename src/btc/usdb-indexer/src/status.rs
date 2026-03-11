@@ -172,7 +172,7 @@ impl StatusManager {
             balance_history_bar.set_message(msg.clone());
         }
 
-        // Determine the latest synced block height among dependent services
+        // Refresh the latest upstream stable snapshot from balance-history.
         let balance_history_snapshot = self.balance_history_client.get_snapshot_info().await?;
         {
             let mut current_snapshot = self.latest_balance_history_snapshot.lock().unwrap();

@@ -288,24 +288,29 @@ impl UsdbIndexerService {
                 .synced_block_height
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "none".to_string());
+            let stable_height = status
+                .balance_history_stable_height
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_string());
             let message = status.message.unwrap_or_else(|| "syncing".to_string());
 
             progress.set_message(format!(
-                "synced={} depend={} genesis={} {}",
+                "synced={} stable={} genesis={} {}",
                 synced_height,
-                status.latest_depend_synced_block_height,
+                stable_height,
                 status.genesis_block_height,
                 message
             ));
 
             if status
                 .synced_block_height
-                .is_some_and(|h| h >= status.latest_depend_synced_block_height)
+                .zip(status.balance_history_stable_height)
+                .is_some_and(|(synced_height, stable_height)| synced_height >= stable_height)
                 && status.current >= status.total
             {
                 progress.finish_with_message(format!(
-                    "synced={} depend={} completed",
-                    synced_height, status.latest_depend_synced_block_height
+                    "synced={} stable={} completed",
+                    synced_height, stable_height
                 ));
                 break;
             }
@@ -327,7 +332,8 @@ struct JsonRpcResponse {
 struct IndexerSyncStatus {
     genesis_block_height: u32,
     synced_block_height: Option<u32>,
-    latest_depend_synced_block_height: u32,
+    #[serde(alias = "latest_depend_synced_block_height")]
+    balance_history_stable_height: Option<u32>,
     current: u32,
     total: u32,
     message: Option<String>,

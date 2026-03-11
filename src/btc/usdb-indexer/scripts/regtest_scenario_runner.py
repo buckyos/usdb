@@ -617,14 +617,14 @@ class RegtestScenarioRunner:
         if not isinstance(sync_status, dict):
             raise ScenarioError(f"Invalid get_sync_status result: {sync_status}")
         synced_height = sync_status.get("synced_block_height")
-        depend_height = sync_status.get("latest_depend_synced_block_height")
+        stable_height = sync_status.get("balance_history_stable_height")
         if synced_height is None or int(synced_height) < expected_height:
             raise ScenarioError(
                 f"Synced block height too low: got={synced_height}, expected_at_least={expected_height}"
             )
-        if depend_height is None or int(depend_height) < expected_height:
+        if stable_height is None or int(stable_height) < expected_height:
             raise ScenarioError(
-                f"Dependency synced height too low: got={depend_height}, expected_at_least={expected_height}"
+                f"Balance-history stable height too low: got={stable_height}, expected_at_least={expected_height}"
             )
 
         active_page = self.rpc_result(

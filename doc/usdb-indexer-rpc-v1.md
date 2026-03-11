@@ -160,7 +160,7 @@
 
 ### 3) `get_sync_status`
 
-返回索引进度与依赖高度。
+返回索引同步状态，包含本地 durable 已提交高度、上游稳定高度，以及仅用于进度展示的 `current/total`。
 
 返回建议：
 
@@ -168,12 +168,18 @@
 {
   "genesis_block_height": 900000,
   "synced_block_height": 900123,
-  "latest_depend_synced_block_height": 900130,
+  "balance_history_stable_height": 900130,
   "current": 900123,
   "total": 900130,
   "message": "Syncing block 900124"
 }
 ```
+
+语义：
+
+- `synced_block_height`：`usdb-indexer` 本地 durable 已提交高度。
+- `balance_history_stable_height`：`balance-history` 当前稳定高度，也是 `usdb-indexer` 的同步 ceiling。
+- `current` / `total`：仅用于进度条展示，不应当作新的高度语义字段解释。
 
 ### 4) `get_synced_block_height`
 

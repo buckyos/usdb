@@ -54,7 +54,7 @@ const els = {
     homeNow: document.getElementById("home-now"),
     homeNetwork: document.getElementById("home-network"),
     homeSyncedHeight: document.getElementById("home-synced-height"),
-    homeDependHeight: document.getElementById("home-depend-height"),
+    homeStableHeight: document.getElementById("home-stable-height"),
     homeActivePass: document.getElementById("home-active-pass"),
     homeTotalPass: document.getElementById("home-total-pass"),
     homeActiveBalance: document.getElementById("home-active-balance"),
@@ -421,7 +421,7 @@ async function refreshHome() {
 
         els.homeNetwork.textContent = rpcInfo.network || "-";
         els.homeSyncedHeight.textContent = fmtNum(syncStatus.synced_block_height ?? 0);
-        els.homeDependHeight.textContent = fmtNum(syncStatus.latest_depend_synced_block_height ?? 0);
+        els.homeStableHeight.textContent = fmtNum(syncStatus.balance_history_stable_height ?? 0);
 
         els.homeActivePass.textContent = fmtNum(passStats.active_count ?? 0);
         els.homeTotalPass.textContent = fmtNum(passStats.total_count ?? 0);
@@ -559,7 +559,7 @@ async function queryPassBlockCommit(heightOverride = undefined) {
                 asDetailAction(
                     fmtNum(commit.balance_history_block_height),
                     () => openPassLinkedHeight(commit.balance_history_block_height),
-                    "把依赖高度带入 Pass 页进行精确查询",
+                    "把上游锚定高度带入 Pass 页进行精确查询",
                 ),
             ],
             ["commit_protocol_version", commit.commit_protocol_version],

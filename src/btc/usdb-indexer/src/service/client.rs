@@ -52,7 +52,7 @@ impl RpcClient {
         self.rpc_call::<String>("get_network_type", json!([])).await
     }
 
-    /// Returns indexer synchronization progress and dependency status snapshot.
+    /// Returns indexer synchronization progress, local durable height, and upstream stable-height snapshot.
     ///
     /// # Returns
     /// * `Ok(IndexerSyncStatus)` on success.

@@ -486,7 +486,7 @@ pub trait UsdbIndexerRpc {
     #[rpc(name = "get_network_type")]
     fn get_network_type(&self) -> JsonResult<String>;
 
-    /// Returns indexer sync progress and dependency status.
+    /// Returns indexer sync progress, local durable height, and upstream stable-height status.
     #[rpc(name = "get_sync_status")]
     fn get_sync_status(&self) -> JsonResult<IndexerSyncStatus>;
 

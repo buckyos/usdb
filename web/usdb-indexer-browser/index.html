@@ -55,8 +55,8 @@
                     <p id="home-synced-height" class="value">-</p>
                 </article>
                 <article class="card metric">
-                    <h2>依赖高度</h2>
-                    <p id="home-depend-height" class="value">-</p>
+                    <h2>稳定高度</h2>
+                    <p id="home-stable-height" class="value">-</p>
                 </article>
             </section>
 
@@ -83,11 +83,12 @@
                 <p id="home-sync-message" class="status">-</p>
                 <div class="progress-wrap"><div id="home-sync-progress" class="progress"></div></div>
                 <div class="kv">
-                    <div><span>Current</span><strong id="home-sync-current">-</strong></div>
-                    <div><span>Total</span><strong id="home-sync-total">-</strong></div>
+                    <div><span>当前进度</span><strong id="home-sync-current">-</strong></div>
+                    <div><span>进度上限</span><strong id="home-sync-total">-</strong></div>
                     <div><span>RPC 延迟</span><strong id="home-rpc-latency">-</strong></div>
                     <div><span>更新时间</span><strong id="home-updated-at">-</strong></div>
                 </div>
+                <p>current / total 仅表示同步进度，不等同于新的状态高度字段。</p>
                 <p id="home-error" class="error"></p>
             </section>
 
