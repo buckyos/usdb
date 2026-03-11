@@ -702,10 +702,12 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use crate::db::{BalanceHistoryDBMode, BlockCommitEntry};
     use crate::output::IndexOutput;
+    use crate::service::{BalanceHistoryRpc, BalanceHistoryRpcServer};
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf, Txid};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::watch;
     use usdb_util::ToUSDBScriptHash;
 
     fn temp_root(tag: &str) -> PathBuf {
@@ -827,6 +829,66 @@ mod tests {
 
         let installed_commit = reopened_db.get_block_commit(10).unwrap().unwrap();
         assert_eq!(installed_commit, new_commit);
+
+        let status = Arc::new(SyncStatusManager::new());
+        let (shutdown_tx, _) = watch::channel(());
+        let rpc_server = BalanceHistoryRpcServer::new(
+            config.clone(),
+            "127.0.0.1:0".parse().unwrap(),
+            status,
+            Arc::new(reopened_db),
+            shutdown_tx,
+        );
+
+        let snapshot = rpc_server.get_snapshot_info().unwrap();
+        assert_eq!(snapshot.stable_height, 10);
+        assert_eq!(
+            snapshot.stable_block_hash,
+            Some(format!("{:x}", new_commit.btc_block_hash))
+        );
+        assert_eq!(
+            snapshot.latest_block_commit,
+            Some(format!(
+                "{}",
+                {
+                    let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
+                    for byte in &new_commit.block_commit {
+                        use std::fmt::Write;
+                        let _ = write!(&mut output, "{:02x}", byte);
+                    }
+                    output
+                }
+            ))
+        );
+
+        let rpc_commit = rpc_server.get_block_commit(10).unwrap().unwrap();
+        assert_eq!(rpc_commit.block_height, 10);
+        assert_eq!(
+            rpc_commit.btc_block_hash,
+            format!("{:x}", new_commit.btc_block_hash)
+        );
+        assert_eq!(
+            rpc_commit.balance_delta_root,
+            {
+                let mut output = String::with_capacity(new_commit.balance_delta_root.len() * 2);
+                for byte in &new_commit.balance_delta_root {
+                    use std::fmt::Write;
+                    let _ = write!(&mut output, "{:02x}", byte);
+                }
+                output
+            }
+        );
+        assert_eq!(
+            rpc_commit.block_commit,
+            {
+                let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
+                for byte in &new_commit.block_commit {
+                    use std::fmt::Write;
+                    let _ = write!(&mut output, "{:02x}", byte);
+                }
+                output
+            }
+        );
 
         let staging_dirs: Vec<_> = std::fs::read_dir(&root_dir)
             .unwrap()
