@@ -224,6 +224,20 @@
 - 清理动作真实有效。
 - 不再出现“看上去恢复了，实际上带着脏索引运行”的情况。
 
+### 5.1.0 当前进展
+
+截至当前版本，第一阶段已落地的内容包括：
+
+- `clear_blocks()` 已改为真正清空 `BLOCKS_CF`、`BLOCK_HEIGHTS_CF`、`BLOCK_COMMITS_CF`，并带清理后校验。
+- local loader 的恢复阈值判断已改为 `saturating_sub(10)`，消除了下溢风险。
+- local loader 已不再“命中阈值就直接复用”，而是改为“先恢复到内存，再做最小一致性校验”。
+- 恢复失败路径已实现 `clear_and_rebuild` 前置清理，并补了针对性测试。
+
+当前尚未完成的部分主要是：
+
+- 覆盖真实 rebuild 成功路径的更完整测试。
+- `clear_blocks()` 失败时更细粒度的故障注入测试。
+
 ### 5.1.1 实施设计：`clear_blocks()` 真正清空 block 相关状态
 
 建议把 `clear_blocks()` 从“删除几个特定 key”改成“显式清空整个 block 相关状态集”。
@@ -250,7 +264,7 @@
 建议新增或调整的函数：
 
 - 在 DB 层新增一个内部辅助函数，例如：
-  - `clear_column_family(cf_name: &str) -> Result<(), String>`
+   - `clear_column_family(cf_name: &str) -> Result<usize, String>`
 - 保留对外入口：
   - `clear_blocks() -> Result<(), String>`
 - 在测试中新增：
@@ -288,7 +302,8 @@
 建议新增或调整的函数：
 
 - `should_try_restore_from_db(last_block_file_index, current_last_blk_file) -> bool`
-- `validate_persisted_block_index(current_last_blk_file) -> Result<(), String>`
+- `validate_loaded_block_index(...) -> Result<(), String>`
+- `restore_or_clear_persisted_block_index(...) -> Result<(), String>`
 - `rebuild_block_index() -> Result<(), String>`
 
 这样可以把“分支选择”“状态验证”“索引重建”三类职责拆开，后续也更容易测试。
@@ -309,16 +324,14 @@
    - `sorted_blocks` 中每个 `block_hash` 都必须在 `block_hash_cache` 中存在
 4. 主链 tip 对齐校验
    - 取恢复后最高高度 `tip_height`
-   - 用 RPC 查询 `get_block_by_height(tip_height)`
+   - 用 RPC 查询该高度的 `block_hash`
    - 要求 RPC 返回的 `block_hash` 与缓存中的 `tip_hash` 一致
-5. 低成本 fork 探测
-   - 除 tip 外，再随机或固定抽查 1 到 2 个靠近尾部的高度点
-   - 确认 `height -> hash` 映射仍与 RPC 一致
 
 第一阶段可以先不做的事情：
 
 - 不需要在启动时对所有高度做全量 RPC 校验。
 - 不需要在恢复阶段重新扫描全部 blk 文件内容。
+- 不需要在第一阶段做多点 RPC hash 抽查，保留一个 tip 锚点即可。
 
 目标是先把“明显已经坏了的索引”筛掉，而不是做完整审计。
 
@@ -364,19 +377,20 @@ warn!(
 
 1. `clear_blocks()` 后所有 block 相关 CF 为空。
 2. `current_last_blk_file < 10` 时，恢复阈值判断不下溢。
-3. DB 中存在断裂高度序列时，`validate_persisted_block_index()` 返回错误。
+3. DB 中存在断裂高度序列时，`validate_loaded_block_index()` 返回错误。
 4. DB 中 tip hash 与 RPC tip hash 不一致时，恢复分支拒绝复用并进入重建。
-5. `clear_blocks()` 失败时，local loader 不继续往下执行。
-6. rebuild 成功后，新的 block index 可以再次通过恢复校验。
+5. 恢复失败时，persisted block index 会被清理。
+6. `clear_blocks()` 失败时，local loader 不继续往下执行。
+7. rebuild 成功后，新的 block index 可以再次通过恢复校验。
 
 ### 5.1.6 第一阶段实施顺序建议
 
 建议按以下顺序实现，避免交叉回滚：
 
-1. 先修 `clear_blocks()` 和其测试。
-2. 再抽出 `should_try_restore_from_db()`，消除阈值下溢。
-3. 再实现 `validate_persisted_block_index()` 与恢复失败降级逻辑。
-4. 最后补测试，覆盖“脏索引 -> 清理 -> rebuild”的完整启动路径。
+1. 先修 `clear_blocks()` 和其测试。 已完成。
+2. 再抽出 `should_try_restore_from_db()`，消除阈值下溢。 已完成。
+3. 再实现 `validate_loaded_block_index()` 与恢复失败降级逻辑。 已完成。
+4. 最后补测试，覆盖“脏索引 -> 清理 -> rebuild”的完整启动路径。 进行中。
 
 这样做的原因是：
 
@@ -467,9 +481,11 @@ warn!(
 以下事项按建议顺序排列，可直接作为后续开发 checklist 使用。
 
 - [ ] 修复 `clear_blocks()`，并补单元测试验证列族确实被清空。
-- [ ] 修复 local loader 阈值判断下溢问题。
-- [ ] 为 local loader 增加恢复前一致性检查函数。
-- [ ] 明确 local loader 在恢复失败时的降级策略和日志格式。
+- [x] 修复 `clear_blocks()`，并补单元测试验证列族确实被清空。
+- [x] 修复 local loader 阈值判断下溢问题。
+- [x] 为 local loader 增加恢复前一致性检查函数。
+- [x] 明确 local loader 在恢复失败时的降级策略和日志格式。
+- [x] 为恢复失败后清理 persisted block index 补充针对性测试。
 - [ ] 设计并落地单批次 block flush 的原子提交方案。
 - [ ] 如果无法单批次原子提交，设计 pending marker / recovery journal 方案。
 - [ ] 明确 stable height 推进条件，并补文档说明。

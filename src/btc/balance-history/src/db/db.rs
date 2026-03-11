@@ -1735,6 +1735,46 @@ impl BalanceHistoryDB {
         Ok(results)
     }
 
+    fn clear_column_family(&self, cf_name: &str) -> Result<usize, String> {
+        let cf = self.db.cf_handle(cf_name).ok_or_else(|| {
+            let msg = format!("Column family {} not found", cf_name);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut keys = Vec::new();
+        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|e| {
+                let msg = format!("Iterator error while clearing {}: {}", cf_name, e);
+                error!("{}", msg);
+                msg
+            })?;
+            keys.push(key.to_vec());
+        }
+
+        if keys.is_empty() {
+            info!("Column family already empty: {}", cf_name);
+            return Ok(0);
+        }
+
+        let mut batch = WriteBatch::default();
+        for key in &keys {
+            batch.delete_cf(cf, key);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(true);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to clear column family {}: {}", cf_name, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        info!("Cleared column family {}: removed_keys={}", cf_name, keys.len());
+        Ok(keys.len())
+    }
+
     pub fn clear_blocks(&self) -> Result<(), String> {
         // Clear meta last block file index at META_CF first
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
@@ -1750,42 +1790,36 @@ impl BalanceHistoryDB {
                 msg
             })?;
 
-        // Clear BLOCKS_CF, BLOCK_HEIGHTS_CF and BLOCK_COMMITS_CF
-        let cf = self.db.cf_handle(BLOCKS_CF).ok_or_else(|| {
-            let msg = format!("Column family {} not found", BLOCKS_CF);
-            error!("{}", msg);
-            msg
-        })?;
+        let removed_blocks = self.clear_column_family(BLOCKS_CF)?;
+        let removed_heights = self.clear_column_family(BLOCK_HEIGHTS_CF)?;
+        let removed_commits = self.clear_column_family(BLOCK_COMMITS_CF)?;
 
-        self.db.delete_cf(cf, b"").map_err(|e| {
-            let msg = format!("Failed to clear Blocks CF: {}", e);
+        if self.get_last_block_file_index()?.is_some() {
+            let msg = "Block index clear verification failed: last_block_file_index still exists"
+                .to_string();
             error!("{}", msg);
-            msg
-        })?;
+            return Err(msg);
+        }
 
-        let cf = self.db.cf_handle(BLOCK_HEIGHTS_CF).ok_or_else(|| {
-            let msg = format!("Column family {} not found", BLOCK_HEIGHTS_CF);
+        if !self.get_all_blocks()?.is_empty() {
+            let msg = "Block index clear verification failed: blocks CF is not empty".to_string();
             error!("{}", msg);
-            msg
-        })?;
-        self.db.delete_cf(cf, b"").map_err(|e| {
-            let msg = format!("Failed to clear Block Heights CF: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+            return Err(msg);
+        }
 
-        let cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
-            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+        if !self.get_all_block_heights()?.is_empty() {
+            let msg =
+                "Block index clear verification failed: block_heights CF is not empty".to_string();
             error!("{}", msg);
-            msg
-        })?;
-        self.db.delete_cf(cf, b"").map_err(|e| {
-            let msg = format!("Failed to clear Block Commits CF: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
+            return Err(msg);
+        }
 
-        info!("Cleared all blocks and block heights from DB");
+        info!(
+            "Cleared all persisted block index state: blocks_removed={}, heights_removed={}, commits_removed={}",
+            removed_blocks,
+            removed_heights,
+            removed_commits
+        );
         Ok(())
     }
 }
@@ -2070,5 +2104,62 @@ mod tests {
         // Try to get UTXO again, should be None
         let utxo_entry = db.get_utxo(&outpoint).unwrap();
         assert!(utxo_entry.is_none());
+    }
+
+    #[test]
+    fn test_clear_blocks_removes_all_block_state() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_clear_blocks_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let block_hash_1 = BlockHash::from_slice(&[7u8; 32]).unwrap();
+        let block_hash_2 = BlockHash::from_slice(&[8u8; 32]).unwrap();
+        let blocks = vec![
+            (
+                block_hash_1,
+                BlockEntry {
+                    block_file_index: 1,
+                    block_file_offset: 10,
+                    block_record_index: 0,
+                },
+            ),
+            (
+                block_hash_2,
+                BlockEntry {
+                    block_file_index: 2,
+                    block_file_offset: 20,
+                    block_record_index: 1,
+                },
+            ),
+        ];
+        let block_heights = vec![(0, block_hash_1), (1, block_hash_2)];
+        db.put_blocks_sync(2, &blocks, &block_heights).unwrap();
+
+        let commit = BlockCommitEntry {
+            block_height: 1,
+            btc_block_hash: block_hash_2,
+            balance_delta_root: [1u8; 32],
+            block_commit: [2u8; 32],
+        };
+        db.update_address_history_with_block_commits_async(&Vec::new(), 1, &[commit])
+            .unwrap();
+
+        assert_eq!(db.get_last_block_file_index().unwrap(), Some(2));
+        assert_eq!(db.get_all_blocks().unwrap().len(), 2);
+        assert_eq!(db.get_all_block_heights().unwrap().len(), 2);
+        assert!(db.get_block_commit(1).unwrap().is_some());
+
+        db.clear_blocks().unwrap();
+
+        assert_eq!(db.get_last_block_file_index().unwrap(), None);
+        assert!(db.get_all_blocks().unwrap().is_empty());
+        assert!(db.get_all_block_heights().unwrap().is_empty());
+        assert!(db.get_block_commit(1).unwrap().is_none());
     }
 }

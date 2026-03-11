@@ -399,21 +399,20 @@ impl BlockLocalLoader {
 
             let current_last_blk_file = self.block_reader.find_latest_blk_file()? as u32;
             if last_block_file_index > current_last_blk_file {
-                // Is this possible?
-                let msg = format!(
-                    "Inconsistent last block file index: db has {}, but current blk files only up to {}",
-                    last_block_file_index, current_last_blk_file
+                warn!(
+                    "Persisted block index is ahead of local blk files: module=local_loader, action=clear_and_rebuild, db_last_block_file_index={}, current_last_blk_file={}",
+                    last_block_file_index,
+                    current_last_blk_file
                 );
-                error!("{}", msg);
                 self.db.clear_blocks()?;
-            } else if last_block_file_index >= current_last_blk_file - 10 {
-                self.output.println("Loading block index from db...");
-                let mut cache = self.block_index_cache.lock().unwrap();
-                cache.load_from_db(&self.db)?;
-
-                self.output.println("Block index loaded from db.");
-
-                return Ok(());
+            } else if Self::should_try_restore_from_db(last_block_file_index, current_last_blk_file)
+            {
+                if self.try_restore_block_index_from_db(
+                    last_block_file_index,
+                    current_last_blk_file,
+                )? {
+                    return Ok(());
+                }
             } else {
                 warn!(
                     "Block index in db is outdated (last indexed blk file index: {}, current last blk file index: {}), rebuilding index from blk files...",
@@ -421,6 +420,152 @@ impl BlockLocalLoader {
                 );
             }
         }
+
+        self.rebuild_block_index()
+    }
+
+    fn should_try_restore_from_db(last_block_file_index: u32, current_last_blk_file: u32) -> bool {
+        last_block_file_index >= current_last_blk_file.saturating_sub(10)
+    }
+
+    fn validation_tip_height(len: usize) -> Option<u32> {
+        if len == 0 {
+            None
+        } else {
+            Some((len - 1) as u32)
+        }
+    }
+
+    fn validate_loaded_block_index(
+        cache: &BlockRecordCache,
+        btc_client: &BTCClientRef,
+        last_block_file_index: u32,
+        current_last_blk_file: u32,
+    ) -> Result<(), String> {
+        if cache.sorted_blocks.is_empty() {
+            return Err("Persisted block index is empty".to_string());
+        }
+
+        if last_block_file_index > current_last_blk_file {
+            return Err(format!(
+                "Persisted last block file index {} exceeds current local blk file {}",
+                last_block_file_index, current_last_blk_file
+            ));
+        }
+
+        if let Some(max_cached_file_index) = cache.calc_latest_block_file_index() {
+            if max_cached_file_index > last_block_file_index {
+                return Err(format!(
+                    "Cached block file index {} exceeds persisted last block file index {}",
+                    max_cached_file_index, last_block_file_index
+                ));
+            }
+        }
+
+        for (expected_height, (height, block_hash)) in cache.sorted_blocks.iter().enumerate() {
+            if *height != expected_height as u32 {
+                return Err(format!(
+                    "Persisted block heights are not contiguous: expected height {}, got {}",
+                    expected_height, height
+                ));
+            }
+
+            if !cache.block_hash_cache.contains_key(block_hash) {
+                return Err(format!(
+                    "Persisted block hash {} at height {} is missing from block cache",
+                    block_hash, height
+                ));
+            }
+        }
+
+        // Keep the restore validation cheap: rely on in-memory continuity checks,
+        // then use one RPC tip hash as the external chain anchor.
+        if let Some(height) = Self::validation_tip_height(cache.sorted_blocks.len()) {
+            let expected_hash = cache.sorted_blocks[height as usize].1;
+            let rpc_hash = btc_client.get_block_hash(height).map_err(|e| {
+                format!(
+                    "Failed to validate persisted block index against RPC at height {}: {}",
+                    height, e
+                )
+            })?;
+
+            if rpc_hash != expected_hash {
+                return Err(format!(
+                    "Persisted block hash mismatch at height {}: cached={}, rpc={}",
+                    height, expected_hash, rpc_hash
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn try_restore_block_index_from_db(
+        &self,
+        last_block_file_index: u32,
+        current_last_blk_file: u32,
+    ) -> Result<bool, String> {
+        self.output.println("Loading block index from db...");
+
+        match Self::restore_or_clear_persisted_block_index(
+            &self.block_index_cache,
+            &self.db,
+            &self.btc_client,
+            last_block_file_index,
+            current_last_blk_file,
+        ) {
+            Ok(()) => {
+                self.output.println("Block index loaded from db.");
+                info!(
+                    "Loaded persisted block index successfully: module=local_loader, db_last_block_file_index={}, current_last_blk_file={}",
+                    last_block_file_index,
+                    current_last_blk_file
+                );
+                Ok(true)
+            }
+            Err(reason) => {
+                warn!(
+                    "Persisted block index validation failed: module=local_loader, reason={}, action=clear_and_rebuild, db_last_block_file_index={}, current_last_blk_file={}",
+                    reason,
+                    last_block_file_index,
+                    current_last_blk_file
+                );
+                Ok(false)
+            }
+        }
+    }
+
+    fn restore_or_clear_persisted_block_index(
+        block_index_cache: &Arc<Mutex<BlockRecordCache>>,
+        db: &BalanceHistoryDBRef,
+        btc_client: &BTCClientRef,
+        last_block_file_index: u32,
+        current_last_blk_file: u32,
+    ) -> Result<(), String> {
+        let validation_result = {
+            let mut cache = block_index_cache.lock().unwrap();
+            cache.clear();
+            cache.load_from_db(db)?;
+            Self::validate_loaded_block_index(
+                &cache,
+                btc_client,
+                last_block_file_index,
+                current_last_blk_file,
+            )
+        };
+
+        match validation_result {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                block_index_cache.lock().unwrap().clear();
+                db.clear_blocks()
+                    .map_err(|e| format!("{}; additionally failed to clear persisted block index: {}", reason, e))?;
+                Err(reason)
+            }
+        }
+    }
+
+    fn rebuild_block_index(&self) -> Result<(), String> {
 
         let builder = BlocksIndexer::new(
             self.block_reader.clone(),
@@ -586,8 +731,186 @@ mod tests {
     use crate::btc::BTCClient;
     use crate::config::BalanceHistoryConfig;
     use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
-    use bitcoincore_rpc::bitcoin::BlockHash;
+    use bitcoincore_rpc::bitcoin::{Amount, BlockHash, OutPoint, ScriptBuf};
+    use std::collections::BTreeMap;
     use usdb_util::BTCRpcClient;
+
+    struct MockBTCClient {
+        hashes: BTreeMap<u32, BlockHash>,
+    }
+
+    #[async_trait::async_trait]
+    impl BTCClient for MockBTCClient {
+        fn get_type(&self) -> BTCClientType {
+            BTCClientType::RPC
+        }
+
+        fn init(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn on_sync_complete(&self, _block_height: u32) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn get_latest_block_height(&self) -> Result<u32, String> {
+            self.hashes
+                .keys()
+                .next_back()
+                .copied()
+                .ok_or_else(|| "No mock block heights configured".to_string())
+        }
+
+        fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
+            self.hashes
+                .get(&block_height)
+                .copied()
+                .ok_or_else(|| format!("Missing mock block hash at height {}", block_height))
+        }
+
+        fn get_block_by_hash(&self, _block_hash: &BlockHash) -> Result<Block, String> {
+            Err("MockBTCClient::get_block_by_hash is not used in this test".to_string())
+        }
+
+        fn get_block_by_height(&self, _block_height: u32) -> Result<Block, String> {
+            Err("MockBTCClient::get_block_by_height is not used in this test".to_string())
+        }
+
+        async fn get_blocks(&self, _start_height: u32, _end_height: u32) -> Result<Vec<Block>, String> {
+            Err("MockBTCClient::get_blocks is not used in this test".to_string())
+        }
+
+        fn get_utxo(&self, _outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String> {
+            Err("MockBTCClient::get_utxo is not used in this test".to_string())
+        }
+    }
+
+    fn make_mock_client(hashes: &[(u32, [u8; 32])]) -> BTCClientRef {
+        let hashes = hashes
+            .iter()
+            .map(|(height, hash)| (*height, BlockHash::from_slice(hash).unwrap()))
+            .collect();
+        Arc::new(Box::new(MockBTCClient { hashes }) as Box<dyn BTCClient>)
+    }
+
+    fn make_cache(entries: &[(u32, [u8; 32], u32)]) -> BlockRecordCache {
+        let client = make_mock_client(&[]);
+        let mut cache = BlockRecordCache::new(client);
+        for (height, hash, file_index) in entries {
+            let block_hash = BlockHash::from_slice(hash).unwrap();
+            cache.sorted_blocks.push((*height, block_hash));
+            cache.block_hash_cache.insert(
+                block_hash,
+                BlockEntry {
+                    block_file_index: *file_index,
+                    block_file_offset: 0,
+                    block_record_index: 0,
+                },
+            );
+        }
+        cache
+    }
+
+    #[test]
+    fn test_should_try_restore_from_db_uses_saturating_threshold() {
+        assert!(BlockLocalLoader::should_try_restore_from_db(0, 0));
+        assert!(BlockLocalLoader::should_try_restore_from_db(0, 5));
+        assert!(BlockLocalLoader::should_try_restore_from_db(3, 9));
+        assert!(BlockLocalLoader::should_try_restore_from_db(5, 15));
+        assert!(!BlockLocalLoader::should_try_restore_from_db(3, 15));
+    }
+
+    #[test]
+    fn test_validation_tip_height_only_anchors_tip() {
+        assert_eq!(BlockLocalLoader::validation_tip_height(0), None);
+        assert_eq!(BlockLocalLoader::validation_tip_height(1), Some(0));
+        assert_eq!(BlockLocalLoader::validation_tip_height(3), Some(2));
+    }
+
+    #[test]
+    fn test_validate_loaded_block_index_rejects_non_contiguous_heights() {
+        let cache = make_cache(&[(0, [1u8; 32], 0), (2, [2u8; 32], 0)]);
+        let client = make_mock_client(&[(0, [1u8; 32]), (2, [2u8; 32])]);
+
+        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0)
+            .unwrap_err();
+        assert!(err.contains("not contiguous"));
+    }
+
+    #[test]
+    fn test_validate_loaded_block_index_rejects_tip_hash_mismatch() {
+        let cache = make_cache(&[(0, [1u8; 32], 0), (1, [2u8; 32], 0), (2, [3u8; 32], 0)]);
+        let client = make_mock_client(&[(0, [1u8; 32]), (1, [2u8; 32]), (2, [9u8; 32])]);
+
+        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0)
+            .unwrap_err();
+        assert!(err.contains("mismatch"));
+    }
+
+    #[test]
+    fn test_validate_loaded_block_index_accepts_consistent_cache() {
+        let cache = make_cache(&[(0, [1u8; 32], 0), (1, [2u8; 32], 0), (2, [3u8; 32], 0)]);
+        let client = make_mock_client(&[(0, [1u8; 32]), (1, [2u8; 32]), (2, [3u8; 32])]);
+
+        BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0).unwrap();
+    }
+
+    #[test]
+    fn test_restore_or_clear_persisted_block_index_clears_invalid_db_state() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_restore_or_clear_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+
+        let db = Arc::new(BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap());
+
+        let block_hash_1 = BlockHash::from_slice(&[1u8; 32]).unwrap();
+        let block_hash_2 = BlockHash::from_slice(&[2u8; 32]).unwrap();
+        let blocks = vec![
+            (
+                block_hash_1,
+                BlockEntry {
+                    block_file_index: 0,
+                    block_file_offset: 0,
+                    block_record_index: 0,
+                },
+            ),
+            (
+                block_hash_2,
+                BlockEntry {
+                    block_file_index: 0,
+                    block_file_offset: 1,
+                    block_record_index: 1,
+                },
+            ),
+        ];
+        let broken_heights = vec![(0, block_hash_1), (2, block_hash_2)];
+        db.put_blocks_sync(0, &blocks, &broken_heights).unwrap();
+
+        let cache = BlockRecordCache::new_ref(make_mock_client(&[(0, [1u8; 32]), (2, [2u8; 32])]));
+        let btc_client = make_mock_client(&[(0, [1u8; 32]), (2, [2u8; 32])]);
+
+        let err = BlockLocalLoader::restore_or_clear_persisted_block_index(
+            &cache,
+            &db,
+            &btc_client,
+            0,
+            0,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("not contiguous"));
+        assert_eq!(db.get_last_block_file_index().unwrap(), None);
+        assert!(db.get_all_blocks().unwrap().is_empty());
+        assert!(db.get_all_block_heights().unwrap().is_empty());
+        assert!(cache.lock().unwrap().sorted_blocks.is_empty());
+    }
 
     #[test]
     #[ignore = "requires local bitcoind RPC and blk files"]
