@@ -10,6 +10,8 @@
 脚本位置：
 
 - [regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
+- [regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
+- [balance-history-regtest-framework.md](/home/bucky/work/usdb/doc/balance-history-regtest-framework.md)
 
 ## 前置条件
 
@@ -45,12 +47,13 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 3. `BITCOIN_DIR`：regtest 数据目录（默认 `${WORK_DIR}/bitcoin`）。
 4. `BALANCE_HISTORY_ROOT`：balance-history 根目录（默认 `${WORK_DIR}/balance-history`）。
 5. `BTC_RPC_PORT`：bitcoind RPC 端口（默认 `28132`）。
-6. `BH_RPC_PORT`：balance-history RPC 端口（默认 `28110`）。
-7. `WALLET_NAME`：regtest 钱包名（默认 `bhitest`）。
-8. `TARGET_HEIGHT`：要挖的区块高度（默认 `120`）。
-9. `SYNC_TIMEOUT_SEC`：等待同步超时秒数（默认 `120`）。
-10. `ENABLE_TRANSFER_CHECK`：是否执行真实转账与余额断言（`1` 开启，默认 `1`）。
-11. `SEND_AMOUNT_BTC`：转账校验金额（BTC，默认 `1.25`）。
+6. `BTC_P2P_PORT`：bitcoind P2P 端口（默认 `28133`），用于并行运行多个 regtest 实例时避免端口冲突。
+7. `BH_RPC_PORT`：balance-history RPC 端口（默认 `28110`）。
+8. `WALLET_NAME`：regtest 钱包名（默认 `bhitest`）。
+9. `TARGET_HEIGHT`：要挖的区块高度（默认 `120`）。
+10. `SYNC_TIMEOUT_SEC`：等待同步超时秒数（默认 `120`）。
+11. `ENABLE_TRANSFER_CHECK`：是否执行真实转账与余额断言（`1` 开启，默认 `1`）。
+12. `SEND_AMOUNT_BTC`：转账校验金额（BTC，默认 `1.25`）。
 
 示例：
 
@@ -58,6 +61,7 @@ src/btc/balance-history/scripts/regtest_smoke.sh
 WORK_DIR=/tmp/usdb-bh-test \
 BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
 BTC_RPC_PORT=28132 \
+BTC_P2P_PORT=28133 \
 BH_RPC_PORT=28110 \
 TARGET_HEIGHT=150 \
 SEND_AMOUNT_BTC=1.0 \
@@ -78,9 +82,11 @@ src/btc/balance-history/scripts/regtest_smoke.sh
    - 出块确认后按该高度调用 `get_address_balance`
    - 断言余额与发送金额对应 satoshi 严格一致
 4. 退出时会自动尝试关闭 `balance-history` 与 `bitcoind`。
+5. bitcoind 启动时会显式设置 `-rpcport` 与 `-port`，使多个测试实例可以并行运行而不互相抢占默认端口。
 
 ## 已知限制
 
 1. 该脚本只覆盖单地址单笔转账的正确性，不覆盖复杂交易图（多输入/多输出/找零策略差异）。
 2. 不覆盖重组（reorg）与异常恢复场景。
 3. 更深入场景（如多地址批量、范围查询、回滚恢复）建议在此脚本基础上扩展。
+4. 当前脚本已经改为依赖共享的 [regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)，后续新场景应优先复用该库，而不是复制脚本主体。

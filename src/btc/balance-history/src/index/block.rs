@@ -2,8 +2,7 @@ use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
 use crate::db::{
-    BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockUndoBundle,
-    BlockUndoUtxoEntry,
+    BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockUndoBundle, BlockUndoUtxoEntry,
 };
 use bitcoincore_rpc::bitcoin::{Block, BlockHash, OutPoint, Txid};
 use dashmap::DashMap;
@@ -162,6 +161,27 @@ fn build_block_commits(
         prev_block_commit = block_commit;
     }
     commits
+}
+
+fn resolve_previous_commit(
+    previous_height: Option<u32>,
+    previous_commit: Option<&BlockCommitEntry>,
+) -> Result<[u8; 32], String> {
+    match previous_height {
+            None | Some(0) => Ok(previous_commit
+                .map(|commit| commit.block_commit)
+                .unwrap_or(EMPTY_COMMIT_HASH)),
+            Some(height) => previous_commit
+                .map(|commit| commit.block_commit)
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Missing previous block commit at height {}. Backfill or resync is required before continuing.",
+                        height
+                    );
+                    error!("{}", msg);
+                    msg
+                }),
+        }
 }
 
 // Persist undo only for the hot reorg window close to the current canonical BTC tip.
@@ -645,20 +665,12 @@ impl BatchBlockFlusher {
         data: &BatchBlockDataRef,
     ) -> Result<(Vec<BalanceHistoryEntry>, Vec<BlockCommitEntry>, u32), String> {
         let previous_height = data.block_range.start.checked_sub(1);
-        let previous_commit = match previous_height {
-            Some(height) => match self.db.get_block_commit(height)? {
-                Some(commit) => commit.block_commit,
-                None => {
-                    let msg = format!(
-                        "Missing previous block commit at height {}. Backfill or resync is required before continuing.",
-                        height
-                    );
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-            },
-            None => EMPTY_COMMIT_HASH,
+        let previous_commit_entry = match previous_height {
+            Some(height) => self.db.get_block_commit(height)?,
+            None => None,
         };
+        let previous_commit =
+            resolve_previous_commit(previous_height, previous_commit_entry.as_ref())?;
 
         let last_block_height = data.block_range.end - 1;
         let all = data.balance_history.lock().unwrap().clone();
@@ -672,7 +684,10 @@ impl BatchBlockFlusher {
         Ok((all, block_commits, last_block_height as u32))
     }
 
-    fn collect_undo_bundles(&self, data: &BatchBlockDataRef) -> Result<Vec<BlockUndoBundle>, String> {
+    fn collect_undo_bundles(
+        &self,
+        data: &BatchBlockDataRef,
+    ) -> Result<Vec<BlockUndoBundle>, String> {
         if !should_persist_any_undo_for_range(
             &data.block_range,
             self.latest_btc_height,
@@ -688,7 +703,11 @@ impl BatchBlockFlusher {
                 .map(|block| {
                     (
                         block.block_height,
-                        block.entries.iter().map(|entry| entry.script_hash).collect(),
+                        block
+                            .entries
+                            .iter()
+                            .map(|entry| entry.script_hash)
+                            .collect(),
                     )
                 })
                 .collect()
@@ -835,8 +854,8 @@ impl BatchBlockFlusher {
 #[cfg(test)]
 mod block_commit_tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use usdb_util::ToUSDBScriptHash;
 
     fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {
@@ -926,6 +945,24 @@ mod block_commit_tests {
         let left = build_block_commits(&[block.clone()], [1u8; 32]);
         let right = build_block_commits(&[block], [2u8; 32]);
         assert_ne!(left[0].block_commit, right[0].block_commit);
+    }
+
+    #[test]
+    fn test_resolve_previous_commit_uses_empty_hash_for_genesis_boundary() {
+        assert_eq!(
+            resolve_previous_commit(None, None).unwrap(),
+            EMPTY_COMMIT_HASH
+        );
+        assert_eq!(
+            resolve_previous_commit(Some(0), None).unwrap(),
+            EMPTY_COMMIT_HASH
+        );
+    }
+
+    #[test]
+    fn test_resolve_previous_commit_requires_existing_non_genesis_commit() {
+        let error = resolve_previous_commit(Some(7), None).unwrap_err();
+        assert!(error.contains("Missing previous block commit at height 7"));
     }
 
     #[test]

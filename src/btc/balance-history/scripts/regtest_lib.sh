@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+
+if [[ -n "${USDB_BH_REGTEST_LIB_SH:-}" ]]; then
+  return 0
+fi
+USDB_BH_REGTEST_LIB_SH=1
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-bh-regtest-XXXXXX)}"
+BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
+BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
+BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
+BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
+BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
+BH_RPC_PORT="${BH_RPC_PORT:-28110}"
+WALLET_NAME="${WALLET_NAME:-bhitest}"
+SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
+CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
+CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
+BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
+
+BITCOIND_PID="${BITCOIND_PID:-}"
+BALANCE_HISTORY_PID="${BALANCE_HISTORY_PID:-}"
+BITCOIND_BIN="${BITCOIND_BIN:-}"
+BITCOIN_CLI_BIN="${BITCOIN_CLI_BIN:-}"
+
+regtest_log() {
+  echo "${REGTEST_LOG_PREFIX:-[balance-history-regtest]} $*"
+}
+
+regtest_require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+regtest_resolve_bitcoin_binaries() {
+  local candidate_bitcoind=""
+  local candidate_bitcoin_cli=""
+
+  if [[ -n "$BITCOIN_BIN_DIR" ]]; then
+    candidate_bitcoind="${BITCOIN_BIN_DIR}/bitcoind"
+    candidate_bitcoin_cli="${BITCOIN_BIN_DIR}/bitcoin-cli"
+    if [[ -x "$candidate_bitcoind" ]] && [[ -x "$candidate_bitcoin_cli" ]]; then
+      BITCOIND_BIN="$candidate_bitcoind"
+      BITCOIN_CLI_BIN="$candidate_bitcoin_cli"
+      regtest_log "Using Bitcoin Core binaries from BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR}"
+      return
+    fi
+  fi
+
+  BITCOIND_BIN="$(command -v bitcoind || true)"
+  BITCOIN_CLI_BIN="$(command -v bitcoin-cli || true)"
+  if [[ -z "$BITCOIND_BIN" || -z "$BITCOIN_CLI_BIN" ]]; then
+    echo "Missing required commands bitcoind/bitcoin-cli. Tried BITCOIN_BIN_DIR=${BITCOIN_BIN_DIR} and PATH." >&2
+    exit 1
+  fi
+
+  regtest_log "Using Bitcoin Core binaries from PATH"
+}
+
+regtest_ensure_workspace_dirs() {
+  mkdir -p "$WORK_DIR" "$BITCOIN_DIR" "$BALANCE_HISTORY_ROOT"
+  regtest_log "Workspace directory: $WORK_DIR"
+}
+
+regtest_json_extract_python() {
+  local script="$1"
+  python3 -c "$script"
+}
+
+regtest_parse_json_number_result() {
+  sed -n 's/.*"result"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n 1
+}
+
+regtest_parse_json_string_result() {
+  sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+regtest_rpc_call_balance_history() {
+  local method="$1"
+  local params="${2:-[]}"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    -X POST "http://127.0.0.1:${BH_RPC_PORT}" \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+}
+
+regtest_create_balance_history_config() {
+  mkdir -p "$BALANCE_HISTORY_ROOT"
+
+  cat >"${BALANCE_HISTORY_ROOT}/config.toml" <<EOF
+root_dir = "${BALANCE_HISTORY_ROOT}"
+
+[btc]
+network = "regtest"
+data_dir = "${BITCOIN_DIR}/regtest"
+rpc_url = "http://127.0.0.1:${BTC_RPC_PORT}"
+
+[ordinals]
+rpc_url = "http://127.0.0.1:"
+
+[electrs]
+rpc_url = "tcp://127.0.0.1:50001"
+
+[sync]
+local_loader_threshold = 100000000
+batch_size = 32
+max_sync_block_height = 4294967295
+
+[rpc_server]
+port = ${BH_RPC_PORT}
+EOF
+}
+
+regtest_wait_balance_history_rpc_ready() {
+  regtest_log "Waiting for balance-history RPC readiness"
+
+  for _ in $(seq 1 120); do
+    if regtest_rpc_call_balance_history "get_network_type" "[]" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  regtest_log "balance-history RPC not ready, see log: ${BALANCE_HISTORY_LOG_FILE}"
+  exit 1
+}
+
+regtest_start_bitcoind() {
+  regtest_log "Starting bitcoind regtest on rpcport=${BTC_RPC_PORT}, port=${BTC_P2P_PORT}, bin=${BITCOIND_BIN}"
+  "$BITCOIND_BIN" \
+    -regtest \
+    -server=1 \
+    -txindex=1 \
+    -fallbackfee=0.0001 \
+    -datadir="$BITCOIN_DIR" \
+    -rpcport="$BTC_RPC_PORT" \
+    -port="$BTC_P2P_PORT" \
+    -daemonwait
+
+  BITCOIND_PID="$(pgrep -f "bitcoind.*-datadir=${BITCOIN_DIR}" | head -n 1 || true)"
+  if [[ -z "$BITCOIND_PID" ]]; then
+    regtest_log "Failed to detect bitcoind PID"
+    exit 1
+  fi
+  regtest_log "bitcoind pid=${BITCOIND_PID}"
+}
+
+regtest_ensure_wallet() {
+  regtest_log "Creating/Loading wallet ${WALLET_NAME}"
+
+  if ! "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getwalletinfo >/dev/null 2>&1; then
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      -named createwallet wallet_name="$WALLET_NAME" load_on_startup=true >/dev/null 2>&1 || true
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      loadwallet "$WALLET_NAME" >/dev/null 2>&1 || true
+  fi
+
+  if ! "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getwalletinfo >/dev/null 2>&1; then
+    regtest_log "Failed to create/load wallet: ${WALLET_NAME}"
+    exit 1
+  fi
+}
+
+regtest_get_new_address() {
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" getnewaddress
+}
+
+regtest_mine_blocks() {
+  local block_count="$1"
+  local address="$2"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    generatetoaddress "$block_count" "$address" >/dev/null
+}
+
+regtest_start_balance_history() {
+  regtest_log "Starting balance-history service (root=${BALANCE_HISTORY_ROOT}, rpc=${BH_RPC_PORT})"
+  (
+    cd "$REPO_ROOT"
+    cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
+      --root-dir "$BALANCE_HISTORY_ROOT" \
+      --skip-process-lock
+  ) >"${BALANCE_HISTORY_LOG_FILE}" 2>&1 &
+  BALANCE_HISTORY_PID=$!
+}
+
+regtest_wait_until_synced_height() {
+  local target_height="$1"
+  regtest_log "Waiting until synced block height >= ${target_height}"
+
+  local start_ts now synced height_resp
+  start_ts="$(date +%s)"
+  while true; do
+    height_resp="$(regtest_rpc_call_balance_history "get_block_height" "[]")"
+    synced="$(echo "$height_resp" | regtest_parse_json_number_result)"
+    synced="${synced:-0}"
+    if [[ "$synced" -ge "$target_height" ]]; then
+      regtest_log "Sync reached height=${synced}"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Sync timeout, last response: ${height_resp}"
+      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+regtest_wait_until_block_commit_hash() {
+  local block_height="$1"
+  local expected_hash="$2"
+  regtest_log "Waiting until get_block_commit(${block_height}) reports hash=${expected_hash}"
+
+  local start_ts now resp got_hash current_height
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${block_height}]")"
+    got_hash="$(echo "$resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))')"
+    current_height="$(echo "$(regtest_rpc_call_balance_history "get_block_height" "[]")" | regtest_parse_json_number_result)"
+    current_height="${current_height:-0}"
+    if [[ "$got_hash" == "$expected_hash" ]] && [[ "$current_height" -ge "$block_height" ]]; then
+      regtest_log "Service observed new canonical hash at height=${block_height}"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for new block commit hash. last_commit_resp=${resp}, current_height=${current_height}"
+      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+regtest_btc_amount_to_sat() {
+  local amount_btc="$1"
+  python3 - "$amount_btc" <<'PY'
+from decimal import Decimal, ROUND_DOWN
+import sys
+
+amount = Decimal(sys.argv[1])
+sat = int((amount * Decimal("100000000")).to_integral_value(rounding=ROUND_DOWN))
+print(sat)
+PY
+}
+
+regtest_address_to_script_hash() {
+  local address="$1"
+  local script_pubkey
+  script_pubkey="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
+    getaddressinfo "$address" | regtest_json_extract_python 'import json,sys; print(json.load(sys.stdin)["scriptPubKey"])')"
+
+  python3 - "$script_pubkey" <<'PY'
+import hashlib
+import sys
+
+script_hex = sys.argv[1]
+script = bytes.fromhex(script_hex)
+digest = hashlib.sha256(script).digest()[::-1].hex()
+print(digest)
+PY
+}
+
+regtest_stop_balance_history() {
+  if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+    regtest_log "Stopping balance-history process pid=$BALANCE_HISTORY_PID"
+    curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+      -X POST "http://127.0.0.1:${BH_RPC_PORT}" \
+      -H 'content-type: application/json' \
+      --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1 || true
+
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+        return 0
+      fi
+      sleep 0.5
+    done
+
+    kill -9 "$BALANCE_HISTORY_PID" 2>/dev/null || true
+  fi
+}
+
+regtest_stop_bitcoind() {
+  if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$BITCOIND_PID" ]] && kill -0 "$BITCOIND_PID" 2>/dev/null; then
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$BITCOIND_PID" 2>/dev/null; then
+        return 0
+      fi
+      sleep 0.5
+    done
+
+    kill -9 "$BITCOIND_PID" 2>/dev/null || true
+  fi
+}
+
+regtest_cleanup() {
+  set +e
+  regtest_stop_balance_history
+  regtest_stop_bitcoind
+}

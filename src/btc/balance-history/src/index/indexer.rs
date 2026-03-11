@@ -877,4 +877,78 @@ mod tests {
         let should_wake = should_wake_for_chain_update(&db, &client, 2, 2).unwrap();
         assert!(should_wake);
     }
+
+    #[test]
+    fn test_should_wake_for_chain_update_returns_false_when_chain_is_unchanged() {
+        let db = temp_db("balance_history_wait_no_change");
+        let commits = vec![crate::db::BlockCommitEntry {
+            block_height: 2,
+            btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+            balance_delta_root: [2u8; 32],
+            block_commit: [2u8; 32],
+        }];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(2).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([(2, BlockHash::from_slice(&[2u8; 32]).unwrap())]),
+        }));
+
+        let should_wake = should_wake_for_chain_update(&db, &client, 2, 2).unwrap();
+        assert!(!should_wake);
+    }
+
+    #[test]
+    fn test_should_wake_for_chain_update_on_canonical_height_drop() {
+        let db = temp_db("balance_history_wait_height_drop");
+        let commits = vec![crate::db::BlockCommitEntry {
+            block_height: 3,
+            btc_block_hash: BlockHash::from_slice(&[3u8; 32]).unwrap(),
+            balance_delta_root: [3u8; 32],
+            block_commit: [3u8; 32],
+        }];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(3).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([
+                (1, BlockHash::from_slice(&[1u8; 32]).unwrap()),
+                (2, BlockHash::from_slice(&[2u8; 32]).unwrap()),
+            ]),
+        }));
+
+        let should_wake = should_wake_for_chain_update(&db, &client, 3, 2).unwrap();
+        assert!(should_wake);
+    }
+
+    #[test]
+    fn test_find_reorg_common_ancestor_height_returns_genesis_when_no_match_remains() {
+        let db = temp_db("balance_history_reorg_detect_no_common_match");
+        let commits = vec![
+            crate::db::BlockCommitEntry {
+                block_height: 1,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [1u8; 32],
+                block_commit: [1u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 2,
+                btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [2u8; 32],
+            },
+        ];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(2).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([
+                (1, BlockHash::from_slice(&[7u8; 32]).unwrap()),
+                (2, BlockHash::from_slice(&[8u8; 32]).unwrap()),
+            ]),
+        }));
+
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 2, 2).unwrap();
+        assert_eq!(ancestor, Some(0));
+    }
 }
