@@ -4,6 +4,7 @@ use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
 use crate::db::{
     BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockUndoBundle, BlockUndoUtxoEntry,
 };
+use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash, OutPoint, Txid};
 use dashmap::DashMap;
 use rayon::slice::ParallelSliceMut;
@@ -696,6 +697,15 @@ impl BatchBlockFlusher {
             return Ok(Vec::new());
         }
 
+        // Undo rollback deletes balance rows by (script_hash, block_height). The canonical
+        // per-block balance result in block_balance_deltas should already cover all logical
+        // balance mutations, but the undo path intentionally keeps a defensive superset of
+        // touched script hashes.
+        //
+        // The extra cost here is bounded and piggybacks on work we already do for the hot
+        // undo window: we are already iterating every vin/vout in order to collect created
+        // and spent UTXOs for the same undo bundle, so the marginal overhead is only a few
+        // HashSet insertions plus one small merge from block_balance_deltas.
         let touched_by_height: HashMap<u32, Vec<USDBScriptHash>> = {
             let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
             block_balance_deltas
@@ -727,9 +737,11 @@ impl BatchBlockFlusher {
 
             let mut created_utxos = Vec::new();
             let mut spent_utxos = Vec::new();
+            let mut touched_script_hashes = HashSet::new();
 
             for tx in &block.txdata {
                 for vout in &tx.vout {
+                    touched_script_hashes.insert(vout.cache_tx_out.script_hash);
                     created_utxos.push(BlockUndoUtxoEntry {
                         outpoint: vout.outpoint.as_ref().clone(),
                         script_hash: vout.cache_tx_out.script_hash,
@@ -751,6 +763,8 @@ impl BatchBlockFlusher {
                         msg
                     })?;
 
+                    touched_script_hashes.insert(spent.script_hash);
+
                     spent_utxos.push(BlockUndoUtxoEntry {
                         outpoint: vin.outpoint.as_ref().clone(),
                         script_hash: spent.script_hash,
@@ -759,15 +773,23 @@ impl BatchBlockFlusher {
                 }
             }
 
+            // Merge the canonical balance-entry view with the vin/vout-derived view and then
+            // sort deterministically before persisting. The HashSet keeps the stored undo index
+            // compact even when the same script hash is touched multiple times within one block.
+            if let Some(entries) = touched_by_height.get(&block.height) {
+                touched_script_hashes.extend(entries.iter().copied());
+            }
+
+            let mut touched_script_hashes: Vec<_> = touched_script_hashes.into_iter().collect();
+            touched_script_hashes
+                .sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+
             bundles.push(BlockUndoBundle {
                 block_height: block.height,
                 btc_block_hash: block.block_hash,
                 created_utxos,
                 spent_utxos,
-                touched_script_hashes: touched_by_height
-                    .get(&block.height)
-                    .cloned()
-                    .unwrap_or_default(),
+                touched_script_hashes,
             });
         }
 
@@ -858,10 +880,10 @@ mod block_commit_tests {
     use crate::config::BalanceHistoryConfig;
     use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::{ToUSDBScriptHash, UTXOValue};
 
     fn temp_db(test_name: &str) -> BalanceHistoryDBRef {
         let mut config = BalanceHistoryConfig::default();
@@ -882,6 +904,23 @@ mod block_commit_tests {
         let utxo_cache = Arc::new(UTXOCache::new(config.clone(), CacheStrategy::Normal));
         let balance_cache = Arc::new(AddressBalanceCache::new(config, CacheStrategy::Normal));
         BatchBlockFlusher::new(db, utxo_cache, balance_cache, 1, 0)
+    }
+
+    fn test_flusher_with_undo(
+        db: BalanceHistoryDBRef,
+        latest_btc_height: u32,
+        undo_retention_blocks: u32,
+    ) -> BatchBlockFlusher {
+        let config = Arc::new(BalanceHistoryConfig::default());
+        let utxo_cache = Arc::new(UTXOCache::new(config.clone(), CacheStrategy::Normal));
+        let balance_cache = Arc::new(AddressBalanceCache::new(config, CacheStrategy::Normal));
+        BatchBlockFlusher::new(
+            db,
+            utxo_cache,
+            balance_cache,
+            latest_btc_height,
+            undo_retention_blocks,
+        )
     }
 
     fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {
@@ -1024,6 +1063,285 @@ mod block_commit_tests {
             block_commits,
             build_block_commits(&[block], EMPTY_COMMIT_HASH)
         );
+    }
+
+    #[test]
+    fn test_collect_undo_bundles_keeps_vout_touches_without_balance_entries() {
+        let db = temp_db("balance_history_undo_tracks_vout_script_hashes");
+        let flusher = test_flusher_with_undo(db, 10, 16);
+        let mut data = BatchBlockData::new();
+
+        let script_hash = make_entry(9, 10, 0, 0).script_hash;
+        let outpoint = Arc::new(OutPoint {
+            txid: Txid::from_slice(&[7u8; 32]).unwrap(),
+            vout: 0,
+        });
+        let utxo = Arc::new(UTXOValue {
+            script_hash,
+            value: 125_000_000,
+        });
+
+        data.block_range = 10..11;
+        *data.blocks.lock().unwrap() = vec![PreloadBlock {
+            height: 10,
+            block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            txdata: vec![PreloadTx {
+                txid: Txid::from_slice(&[11u8; 32]).unwrap(),
+                vin: Vec::new(),
+                vout: vec![PreloadVOut {
+                    outpoint,
+                    cache_tx_out: utxo,
+                }],
+            }],
+        }];
+        *data.block_balance_deltas.lock().unwrap() = Vec::new();
+        let data = Arc::new(data);
+
+        let bundles = flusher.collect_undo_bundles(&data).unwrap();
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].block_height, 10);
+        assert_eq!(bundles[0].touched_script_hashes, vec![script_hash]);
+    }
+
+    #[test]
+    fn test_collect_undo_bundles_deduplicates_and_sorts_touch_set() {
+        let db = temp_db("balance_history_undo_dedup_and_sort_touch_set");
+        let flusher = test_flusher_with_undo(db, 20, 32);
+        let mut data = BatchBlockData::new();
+
+        let script_a = make_entry(1, 20, 0, 0).script_hash;
+        let script_b = make_entry(2, 20, 0, 0).script_hash;
+        let script_c = make_entry(3, 20, 0, 0).script_hash;
+
+        data.block_range = 20..21;
+        *data.blocks.lock().unwrap() = vec![PreloadBlock {
+            height: 20,
+            block_hash: BlockHash::from_slice(&[20u8; 32]).unwrap(),
+            txdata: vec![PreloadTx {
+                txid: Txid::from_slice(&[21u8; 32]).unwrap(),
+                vin: vec![
+                    PreloadVIn {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[22u8; 32]).unwrap(),
+                            vout: 0,
+                        }),
+                        cache_tx_out: Some(Arc::new(UTXOValue {
+                            script_hash: script_c,
+                            value: 30,
+                        })),
+                        need_flush: true,
+                    },
+                    PreloadVIn {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[23u8; 32]).unwrap(),
+                            vout: 1,
+                        }),
+                        cache_tx_out: Some(Arc::new(UTXOValue {
+                            script_hash: script_a,
+                            value: 40,
+                        })),
+                        need_flush: true,
+                    },
+                ],
+                vout: vec![
+                    PreloadVOut {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[24u8; 32]).unwrap(),
+                            vout: 0,
+                        }),
+                        cache_tx_out: Arc::new(UTXOValue {
+                            script_hash: script_b,
+                            value: 50,
+                        }),
+                    },
+                    PreloadVOut {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[25u8; 32]).unwrap(),
+                            vout: 1,
+                        }),
+                        cache_tx_out: Arc::new(UTXOValue {
+                            script_hash: script_a,
+                            value: 60,
+                        }),
+                    },
+                ],
+            }],
+        }];
+        *data.block_balance_deltas.lock().unwrap() = vec![BlockBalanceDelta {
+            block_height: 20,
+            block_hash: BlockHash::from_slice(&[20u8; 32]).unwrap(),
+            entries: vec![
+                BalanceHistoryEntry {
+                    script_hash: script_c,
+                    block_height: 20,
+                    delta: -30,
+                    balance: 70,
+                },
+                BalanceHistoryEntry {
+                    script_hash: script_b,
+                    block_height: 20,
+                    delta: 50,
+                    balance: 50,
+                },
+                BalanceHistoryEntry {
+                    script_hash: script_a,
+                    block_height: 20,
+                    delta: -40,
+                    balance: 60,
+                },
+            ],
+        }];
+
+        let data = Arc::new(data);
+        let bundles = flusher.collect_undo_bundles(&data).unwrap();
+        let mut expected = vec![script_a, script_b, script_c];
+        expected.sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].block_height, 20);
+        assert_eq!(bundles[0].created_utxos.len(), 2);
+        assert_eq!(bundles[0].spent_utxos.len(), 2);
+        assert_eq!(bundles[0].touched_script_hashes.len(), 3);
+        assert_eq!(bundles[0].touched_script_hashes, expected);
+    }
+
+    #[test]
+    fn test_collect_undo_bundles_match_processed_balance_deltas() {
+        let db = temp_db("balance_history_undo_matches_processed_block_deltas");
+        let flusher = test_flusher_with_undo(db, 30, 32);
+        let processor = BatchBlockBalanceProcessor::new();
+        let mut data = BatchBlockData::new();
+
+        let script_a = make_entry(1, 29, 0, 0).script_hash;
+        let script_b = make_entry(2, 29, 0, 0).script_hash;
+        let script_c = make_entry(3, 29, 0, 0).script_hash;
+
+        data.block_range = 30..31;
+        data.balances.insert(
+            script_a,
+            BalanceHistoryData {
+                block_height: 29,
+                delta: 0,
+                balance: 100,
+            },
+        );
+        data.balances.insert(
+            script_b,
+            BalanceHistoryData {
+                block_height: 29,
+                delta: 0,
+                balance: 0,
+            },
+        );
+        data.balances.insert(
+            script_c,
+            BalanceHistoryData {
+                block_height: 29,
+                delta: 0,
+                balance: 70,
+            },
+        );
+
+        *data.blocks.lock().unwrap() = vec![PreloadBlock {
+            height: 30,
+            block_hash: BlockHash::from_slice(&[30u8; 32]).unwrap(),
+            txdata: vec![PreloadTx {
+                txid: Txid::from_slice(&[31u8; 32]).unwrap(),
+                vin: vec![
+                    PreloadVIn {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[32u8; 32]).unwrap(),
+                            vout: 0,
+                        }),
+                        cache_tx_out: Some(Arc::new(UTXOValue {
+                            script_hash: script_a,
+                            value: 40,
+                        })),
+                        need_flush: true,
+                    },
+                    PreloadVIn {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[33u8; 32]).unwrap(),
+                            vout: 1,
+                        }),
+                        cache_tx_out: Some(Arc::new(UTXOValue {
+                            script_hash: script_c,
+                            value: 30,
+                        })),
+                        need_flush: true,
+                    },
+                ],
+                vout: vec![
+                    PreloadVOut {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[34u8; 32]).unwrap(),
+                            vout: 0,
+                        }),
+                        cache_tx_out: Arc::new(UTXOValue {
+                            script_hash: script_a,
+                            value: 60,
+                        }),
+                    },
+                    PreloadVOut {
+                        outpoint: Arc::new(OutPoint {
+                            txid: Txid::from_slice(&[35u8; 32]).unwrap(),
+                            vout: 1,
+                        }),
+                        cache_tx_out: Arc::new(UTXOValue {
+                            script_hash: script_b,
+                            value: 50,
+                        }),
+                    },
+                ],
+            }],
+        }];
+
+        let data = Arc::new(data);
+        processor.process(&data).unwrap();
+
+        let mut expected_entries = vec![
+            BalanceHistoryEntry {
+                script_hash: script_a,
+                block_height: 30,
+                delta: 20,
+                balance: 120,
+            },
+            BalanceHistoryEntry {
+                script_hash: script_b,
+                block_height: 30,
+                delta: 50,
+                balance: 50,
+            },
+            BalanceHistoryEntry {
+                script_hash: script_c,
+                block_height: 30,
+                delta: -30,
+                balance: 40,
+            },
+        ];
+        expected_entries.sort_by(|left, right| left.script_hash.cmp(&right.script_hash));
+
+        let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
+        assert_eq!(block_balance_deltas.len(), 1);
+        let entries = &block_balance_deltas[0].entries;
+        assert_eq!(entries.len(), 3);
+        for (actual, expected) in entries.iter().zip(expected_entries.iter()) {
+            assert_eq!(actual.script_hash, expected.script_hash);
+            assert_eq!(actual.block_height, expected.block_height);
+            assert_eq!(actual.delta, expected.delta);
+            assert_eq!(actual.balance, expected.balance);
+        }
+        drop(block_balance_deltas);
+
+        let bundles = flusher.collect_undo_bundles(&data).unwrap();
+        let mut expected_touched = vec![script_a, script_b, script_c];
+        expected_touched.sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].block_height, 30);
+        assert_eq!(bundles[0].created_utxos.len(), 2);
+        assert_eq!(bundles[0].spent_utxos.len(), 2);
+        assert_eq!(bundles[0].touched_script_hashes, expected_touched);
     }
 
     #[test]

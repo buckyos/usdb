@@ -8,6 +8,7 @@
 - 基础 smoke 场景：[src/btc/balance-history/scripts/regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
 - 多次 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh)
+- 深回滚 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh)
 
 ## 设计目标
 
@@ -27,7 +28,10 @@
 5. 钱包初始化：创建或加载指定 `WALLET_NAME`。
 6. balance-history 配置生成与服务启动。
 7. balance-history JSON-RPC 调用与等待同步辅助函数。
-8. 常见辅助逻辑：金额转 sat、地址转 script hash、等待 block commit hash 收敛。
+8. 常见辅助逻辑：金额转 sat、地址转 script hash、地址余额断言、等待 block commit hash 收敛。
+9. 成熟资金预热：自动补足可花费的 coinbase 区块，避免转账前资金未成熟。
+10. 空替代块辅助：在需要时通过 `generateblock` 显式挖不包含 mempool 交易的替代块。
+11. 失败诊断输出：测试失败时自动打印 balance-history 与 bitcoind 日志尾部。
 
 ## 场景脚本的最小模式
 
@@ -91,7 +95,7 @@ main "$@"
 
 ## 后续扩展方向
 
-1. 增加统一的日志诊断打印，在失败时自动输出 `balance-history.log` 和 `debug.log` 尾部。
-2. 增加多地址、多交易图、范围查询一致性场景。
-3. 增加多次连续 reorg、深 reorg、重启恢复场景。
+1. 增加多地址、多交易图、范围查询一致性场景。
+2. 增加重启 `balance-history` 后继续 reorg 的恢复场景。
+3. 增加更深层级的多高度余额断言和 UTXO 一致性校验。
 4. 视复杂度再决定是否引入 Python 场景 runner。

@@ -17,12 +17,15 @@ WALLET_NAME="${WALLET_NAME:-bhitest}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
+REGTEST_DIAG_TAIL_LINES="${REGTEST_DIAG_TAIL_LINES:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
+COINBASE_MATURITY="${COINBASE_MATURITY:-100}"
 
 BITCOIND_PID="${BITCOIND_PID:-}"
 BALANCE_HISTORY_PID="${BALANCE_HISTORY_PID:-}"
 BITCOIND_BIN="${BITCOIND_BIN:-}"
 BITCOIN_CLI_BIN="${BITCOIN_CLI_BIN:-}"
+REGTEST_DIAGNOSTICS_PRINTED="${REGTEST_DIAGNOSTICS_PRINTED:-0}"
 
 regtest_log() {
   echo "${REGTEST_LOG_PREFIX:-[balance-history-regtest]} $*"
@@ -87,6 +90,21 @@ regtest_rpc_call_balance_history() {
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
 
+regtest_get_balance_history_height() {
+  regtest_rpc_call_balance_history "get_block_height" "[]" | regtest_parse_json_number_result
+}
+
+regtest_get_block_commit_hash() {
+  local block_height="$1"
+  regtest_rpc_call_balance_history "get_block_commit" "[${block_height}]" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))'
+}
+
+regtest_get_snapshot_stable_hash() {
+  regtest_rpc_call_balance_history "get_snapshot_info" "[]" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_block_hash", ""))'
+}
+
 regtest_create_balance_history_config() {
   mkdir -p "$BALANCE_HISTORY_ROOT"
 
@@ -134,6 +152,7 @@ regtest_start_bitcoind() {
     -regtest \
     -server=1 \
     -txindex=1 \
+    -persistmempool=0 \
     -fallbackfee=0.0001 \
     -datadir="$BITCOIN_DIR" \
     -rpcport="$BTC_RPC_PORT" \
@@ -175,6 +194,29 @@ regtest_mine_blocks() {
   local address="$2"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
     generatetoaddress "$block_count" "$address" >/dev/null
+}
+
+regtest_mine_empty_block() {
+  local address="$1"
+  regtest_log "Mining empty replacement block to address=${address}"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+    -named generateblock output="$address" transactions='[]' >/dev/null
+}
+
+regtest_ensure_mature_funds() {
+  local address="$1"
+  local required_height="$((COINBASE_MATURITY + 1))"
+  local current_height blocks_to_mine
+
+  current_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  if (( current_height >= required_height )); then
+    regtest_log "Coinbase funds already mature at height=${current_height}"
+    return 0
+  fi
+
+  blocks_to_mine=$((required_height - current_height))
+  regtest_log "Mining ${blocks_to_mine} maturity blocks to reach spendable funds at height=${required_height}"
+  regtest_mine_blocks "$blocks_to_mine" "$address"
 }
 
 regtest_start_balance_history() {
@@ -269,6 +311,53 @@ print(digest)
 PY
 }
 
+regtest_get_address_balance_sat() {
+  local address="$1"
+  local block_height="$2"
+  local script_hash
+  script_hash="$(regtest_address_to_script_hash "$address")"
+  regtest_rpc_call_balance_history "get_address_balance" "[{\"script_hash\":\"${script_hash}\",\"block_height\":${block_height},\"block_range\":null}]" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result", []); print(r[0]["balance"] if r else 0)'
+}
+
+regtest_assert_address_balance_btc() {
+  local address="$1"
+  local block_height="$2"
+  local amount_btc="$3"
+  local expected_sat actual_sat
+
+  expected_sat="$(regtest_btc_amount_to_sat "$amount_btc")"
+  actual_sat="$(regtest_get_address_balance_sat "$address" "$block_height")"
+  regtest_log "Balance assertion: address=${address}, height=${block_height}, expected_sat=${expected_sat}, actual_sat=${actual_sat}"
+  if [[ "$actual_sat" != "$expected_sat" ]]; then
+    regtest_log "Balance assertion failed for address=${address} at height=${block_height}"
+    exit 1
+  fi
+}
+
+regtest_print_tail_if_exists() {
+  local label="$1"
+  local file_path="$2"
+  if [[ -f "$file_path" ]]; then
+    regtest_log "---- ${label} (tail -n ${REGTEST_DIAG_TAIL_LINES}) ----"
+    tail -n "$REGTEST_DIAG_TAIL_LINES" "$file_path" || true
+    regtest_log "---- end ${label} ----"
+  fi
+}
+
+regtest_print_failure_diagnostics() {
+  local exit_code="$1"
+  if [[ "$REGTEST_DIAGNOSTICS_PRINTED" == "1" ]]; then
+    return 0
+  fi
+  REGTEST_DIAGNOSTICS_PRINTED=1
+
+  regtest_log "Failure diagnostics: exit_code=${exit_code}, work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, bh_rpc_port=${BH_RPC_PORT}"
+  regtest_print_tail_if_exists "balance-history stdout log" "$BALANCE_HISTORY_LOG_FILE"
+  regtest_print_tail_if_exists "balance-history service log" "${BALANCE_HISTORY_ROOT}/logs/balance-history_rCURRENT.log"
+  regtest_print_tail_if_exists "bitcoind debug log" "${BITCOIN_DIR}/regtest/debug.log"
+}
+
 regtest_stop_balance_history() {
   if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
     regtest_log "Stopping balance-history process pid=$BALANCE_HISTORY_PID"
@@ -306,7 +395,11 @@ regtest_stop_bitcoind() {
 }
 
 regtest_cleanup() {
+  local exit_code=$?
   set +e
+  if [[ "$exit_code" -ne 0 ]]; then
+    regtest_print_failure_diagnostics "$exit_code"
+  fi
   regtest_stop_balance_history
   regtest_stop_bitcoind
 }
