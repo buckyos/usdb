@@ -100,6 +100,18 @@ regtest_get_block_commit_hash() {
     | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))'
 }
 
+regtest_get_block_hash_by_height() {
+  local block_height="$1"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockhash "$block_height"
+}
+
+regtest_get_block_json_by_height() {
+  local block_height="$1"
+  local block_hash
+  block_hash="$(regtest_get_block_hash_by_height "$block_height")"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblock "$block_hash" 2
+}
+
 regtest_get_snapshot_stable_hash() {
   regtest_rpc_call_balance_history "get_snapshot_info" "[]" \
     | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_block_hash", ""))'
@@ -406,6 +418,20 @@ regtest_assert_address_balance_btc() {
   local expected_sat actual_sat
 
   expected_sat="$(regtest_btc_amount_to_sat "$amount_btc")"
+  actual_sat="$(regtest_get_address_balance_sat "$address" "$block_height")"
+  regtest_log "Balance assertion: address=${address}, height=${block_height}, expected_sat=${expected_sat}, actual_sat=${actual_sat}"
+  if [[ "$actual_sat" != "$expected_sat" ]]; then
+    regtest_log "Balance assertion failed for address=${address} at height=${block_height}"
+    exit 1
+  fi
+}
+
+regtest_assert_address_balance_sat() {
+  local address="$1"
+  local block_height="$2"
+  local expected_sat="$3"
+  local actual_sat
+
   actual_sat="$(regtest_get_address_balance_sat "$address" "$block_height")"
   regtest_log "Balance assertion: address=${address}, height=${block_height}, expected_sat=${expected_sat}, actual_sat=${actual_sat}"
   if [[ "$actual_sat" != "$expected_sat" ]]; then

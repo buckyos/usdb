@@ -12,6 +12,8 @@
 - 重启后 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh)
 - 重启后多轮 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh)
 - 重启后混合 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh)
+- 历史余额 oracle 场景：[src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
+- RPC 语义专项场景：[src/btc/balance-history/scripts/regtest_rpc_semantics.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_rpc_semantics.sh)
 
 ## 设计目标
 
@@ -36,6 +38,7 @@
 10. 空替代块辅助：在需要时通过 `generateblock` 显式挖不包含 mempool 交易的替代块。
 11. 失败诊断输出：测试失败时自动打印 balance-history 与 bitcoind 日志尾部。
 12. 服务重启辅助：停止并重启 balance-history，然后等待 RPC 再次 ready。
+13. 历史对拍辅助：按高度读取完整区块 JSON，配合独立 Python oracle 校验 `(address, height)` 余额。
 
 ## 关闭与查询约束
 
