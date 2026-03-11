@@ -40,6 +40,16 @@ fn default_local_loader_threshold() -> usize {
     500
 }
 
+// Keep a hot undo window for common BTC reorg recovery.
+fn default_undo_retention_blocks() -> u32 {
+    64
+}
+
+// Throttle undo cleanup so batch catch-up does not prune on every block.
+fn default_undo_cleanup_interval_blocks() -> u32 {
+    16
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexConfig {
     /// Threshold of blocks behind to switch to LocalLoader client
@@ -64,6 +74,14 @@ pub struct IndexConfig {
 
     #[serde(default = "default_max_sync_block_height")]
     pub max_sync_block_height: u32,
+
+    /// Number of recent committed blocks whose undo journal is retained for rollback.
+    #[serde(default = "default_undo_retention_blocks")]
+    pub undo_retention_blocks: u32,
+
+    /// Block interval used to trigger low-frequency undo journal pruning.
+    #[serde(default = "default_undo_cleanup_interval_blocks")]
+    pub undo_cleanup_interval_blocks: u32,
 }
 
 // By default, no limit on max sync block height
@@ -81,6 +99,8 @@ impl Default for IndexConfig {
             balance_max_cache_bytes: default_balance_cache_bytes(),
             max_memory_percent: default_max_memory_percent(),
             max_sync_block_height: default_max_sync_block_height(),
+            undo_retention_blocks: default_undo_retention_blocks(),
+            undo_cleanup_interval_blocks: default_undo_cleanup_interval_blocks(),
         }
     }
 }

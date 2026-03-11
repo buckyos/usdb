@@ -15,6 +15,56 @@ use usdb_util::USDBScriptHash;
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
 
+fn find_reorg_common_ancestor_height(
+    db: &BalanceHistoryDBRef,
+    btc_client: &BTCClientRef,
+    current_height: u32,
+) -> Result<Option<u32>, String> {
+    if current_height == 0 {
+        return Ok(None);
+    }
+
+    let local_tip_commit = db.get_block_commit(current_height)?.ok_or_else(|| {
+        let msg = format!(
+            "Missing local block commit at synced height {} while checking for reorg",
+            current_height
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let canonical_tip_hash = btc_client.get_block_hash(current_height)?;
+    if local_tip_commit.btc_block_hash == canonical_tip_hash {
+        return Ok(None);
+    }
+
+    warn!(
+        "Detected local/canonical tip mismatch: local_height={}, local_hash={}, canonical_hash={}",
+        current_height, local_tip_commit.btc_block_hash, canonical_tip_hash
+    );
+
+    for height in (0..current_height).rev() {
+        let local_commit = db.get_block_commit(height)?.ok_or_else(|| {
+            let msg = format!(
+                "Missing local block commit at height {} while searching reorg common ancestor",
+                height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let canonical_hash = btc_client.get_block_hash(height)?;
+        if local_commit.btc_block_hash == canonical_hash {
+            return Ok(Some(height));
+        }
+    }
+
+    let msg = format!(
+        "No common ancestor found while checking BTC reorg up to height {}",
+        current_height
+    );
+    error!("{}", msg);
+    Err(msg)
+}
+
 #[derive(Clone)]
 pub struct BalanceHistoryIndexer {
     config: BalanceHistoryConfigRef,
@@ -160,6 +210,18 @@ impl BalanceHistoryIndexer {
 
     pub fn db(&self) -> &BalanceHistoryDBRef {
         &self.db
+    }
+
+    fn resume_pending_rollback_if_needed(&self) -> Result<bool, String> {
+        let resumed = self.db.resume_rollback_if_needed()?;
+        if resumed {
+            warn!("Resumed pending balance-history rollback from persisted meta state");
+            self.output
+                .set_index_message("Resumed pending rollback from persisted meta state");
+            self.utxo_cache.clear();
+            self.balance_cache.clear();
+        }
+        Ok(resumed)
     }
 
     pub async fn run(&self) -> Result<(), String> {
@@ -391,14 +453,40 @@ impl BalanceHistoryIndexer {
         }
     }
 
+    fn reconcile_reorg_if_needed(&self, current_height: u32) -> Result<u32, String> {
+        let ancestor_height =
+            match find_reorg_common_ancestor_height(&self.db, &self.btc_client, current_height)? {
+                Some(height) => height,
+                None => return Ok(current_height),
+            };
+
+        warn!(
+            "BTC reorg detected, rolling back local balance-history state: from_height={}, to_height={}",
+            current_height, ancestor_height
+        );
+        self.output.set_index_message(&format!(
+            "BTC reorg detected, rolling back from block height {} to {}",
+            current_height, ancestor_height
+        ));
+
+        self.db.rollback_to_block_height(ancestor_height)?;
+        self.utxo_cache.clear();
+        self.balance_cache.clear();
+
+        Ok(ancestor_height)
+    }
+
     // Return the last synced block height
     fn sync_once(&self) -> Result<u32, String> {
+        self.resume_pending_rollback_if_needed()?;
+
         // Get latest block height from BTC node
         let latest_btc_height = self.get_latest_block_height()?;
         info!("Latest BTC block height: {}", latest_btc_height);
 
         // Get last synced block height from DB
         let last_synced_height = self.db.get_btc_block_height()?;
+        let last_synced_height = self.reconcile_reorg_if_needed(last_synced_height)?;
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
@@ -440,7 +528,8 @@ impl BalanceHistoryIndexer {
             let end_height =
                 std::cmp::min(current_height + batch_size as u32 - 1, latest_btc_height);
             info!("Processing blocks [{} - {}]", current_height, end_height);
-            let last_height = self.process_block_batch(current_height..(end_height + 1))?;
+            let last_height =
+                self.process_block_batch(current_height..(end_height + 1), latest_btc_height)?;
             current_height = last_height + 1;
 
             // Check for shutdown signal between batches
@@ -458,19 +547,31 @@ impl BalanceHistoryIndexer {
 
     // Process a batch of blocks from height_range.start() to height_range.end() (not included)
     // Return the last processed block height
-    fn process_block_batch(&self, height_range: std::ops::Range<u32>) -> Result<u32, String> {
+    fn process_block_batch(
+        &self,
+        height_range: std::ops::Range<u32>,
+        latest_btc_height: u32,
+    ) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
+        let batch_start_height = height_range.start;
 
         self.output.set_index_message(&format!(
             "Processing block batch [{} - {})",
             height_range.start, height_range.end
         ));
         self.batch_block_processor
-            .process_blocks(height_range.clone())?;
+            .process_blocks(
+                height_range.clone(),
+                latest_btc_height,
+                self.config.sync.undo_retention_blocks,
+            )?;
 
         // self.db.flush_all()?;
 
         let last_height = height_range.end - 1;
+
+        self.prune_undo_journal_if_needed(batch_start_height, last_height)?;
+
         self.output.update_current_height(last_height as u64);
 
         info!(
@@ -479,5 +580,190 @@ impl BalanceHistoryIndexer {
         );
 
         Ok(last_height)
+    }
+
+    fn prune_undo_journal_if_needed(
+        &self,
+        batch_start_height: u32,
+        last_height: u32,
+    ) -> Result<(), String> {
+        let retention_blocks = self.config.sync.undo_retention_blocks;
+        let cleanup_interval_blocks = self.config.sync.undo_cleanup_interval_blocks;
+
+        if retention_blocks == 0 || cleanup_interval_blocks == 0 {
+            return Ok(());
+        }
+
+        let previous_height = batch_start_height.saturating_sub(1);
+        let previous_bucket = previous_height / cleanup_interval_blocks;
+        let current_bucket = last_height / cleanup_interval_blocks;
+        if current_bucket == previous_bucket {
+            return Ok(());
+        }
+
+        let latest_btc_height = self.get_latest_block_height()?;
+        let hot_window_start =
+            latest_btc_height.saturating_sub(retention_blocks.saturating_sub(1));
+        if last_height < hot_window_start {
+            return Ok(());
+        }
+
+        let min_retained_height = last_height.saturating_sub(retention_blocks.saturating_sub(1));
+        let pruned = self.db.prune_undo_before_height(min_retained_height)?;
+        if pruned > 0 {
+            info!(
+                "Undo retention prune finished: pruned_blocks={}, min_retained_height={}",
+                pruned, min_retained_height
+            );
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::btc::BTCClient;
+    use crate::config::BalanceHistoryConfig;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
+    use std::collections::BTreeMap;
+
+    struct FakeBTCClient {
+        block_hashes: BTreeMap<u32, BlockHash>,
+    }
+
+    #[async_trait::async_trait]
+    impl BTCClient for FakeBTCClient {
+        fn get_type(&self) -> BTCClientType {
+            BTCClientType::RPC
+        }
+
+        fn init(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn stop(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn on_sync_complete(&self, _block_height: u32) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn get_latest_block_height(&self) -> Result<u32, String> {
+            self.block_hashes
+                .keys()
+                .next_back()
+                .copied()
+                .ok_or_else(|| "No block hashes configured".to_string())
+        }
+
+        fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
+            self.block_hashes
+                .get(&block_height)
+                .copied()
+                .ok_or_else(|| format!("Missing fake block hash at height {}", block_height))
+        }
+
+        fn get_block_by_hash(&self, _block_hash: &BlockHash) -> Result<Block, String> {
+            Err("not implemented in FakeBTCClient".to_string())
+        }
+
+        fn get_block_by_height(&self, _block_height: u32) -> Result<Block, String> {
+            Err("not implemented in FakeBTCClient".to_string())
+        }
+
+        async fn get_blocks(
+            &self,
+            _start_height: u32,
+            _end_height: u32,
+        ) -> Result<Vec<Block>, String> {
+            Err("not implemented in FakeBTCClient".to_string())
+        }
+
+        fn get_utxo(&self, _outpoint: &OutPoint) -> Result<(ScriptBuf, Amount), String> {
+            Err("not implemented in FakeBTCClient".to_string())
+        }
+    }
+
+    fn temp_db(test_name: &str) -> BalanceHistoryDBRef {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join(test_name);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+        Arc::new(BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap())
+    }
+
+    #[test]
+    fn test_find_reorg_common_ancestor_height_returns_none_when_tip_matches() {
+        let db = temp_db("balance_history_reorg_detect_no_mismatch");
+        let commits = vec![
+            crate::db::BlockCommitEntry {
+                block_height: 1,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [1u8; 32],
+                block_commit: [1u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 2,
+                btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [2u8; 32],
+            },
+        ];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(2).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([
+                (1, BlockHash::from_slice(&[1u8; 32]).unwrap()),
+                (2, BlockHash::from_slice(&[2u8; 32]).unwrap()),
+            ]),
+        }));
+
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 2).unwrap();
+        assert_eq!(ancestor, None);
+    }
+
+    #[test]
+    fn test_find_reorg_common_ancestor_height_returns_latest_matching_height() {
+        let db = temp_db("balance_history_reorg_detect_with_mismatch");
+        let commits = vec![
+            crate::db::BlockCommitEntry {
+                block_height: 1,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [1u8; 32],
+                block_commit: [1u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 2,
+                btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [2u8; 32],
+            },
+            crate::db::BlockCommitEntry {
+                block_height: 3,
+                btc_block_hash: BlockHash::from_slice(&[3u8; 32]).unwrap(),
+                balance_delta_root: [3u8; 32],
+                block_commit: [3u8; 32],
+            },
+        ];
+        db.put_block_commits_async(&commits).unwrap();
+        db.put_btc_block_height(3).unwrap();
+
+        let client: BTCClientRef = Arc::new(Box::new(FakeBTCClient {
+            block_hashes: BTreeMap::from([
+                (1, BlockHash::from_slice(&[1u8; 32]).unwrap()),
+                (2, BlockHash::from_slice(&[2u8; 32]).unwrap()),
+                (3, BlockHash::from_slice(&[9u8; 32]).unwrap()),
+            ]),
+        }));
+
+        let ancestor = find_reorg_common_ancestor_height(&db, &client, 3).unwrap();
+        assert_eq!(ancestor, Some(2));
     }
 }

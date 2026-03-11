@@ -41,6 +41,8 @@
 
 1. undo journal 只保留有限热窗口，不能无限累积到全历史。
 2. rollback 数据收集不能把当前 batch 初始化路径上的大缓存结构整体改造成按 block 分片，否则容易拖慢基于 blk 文件的快速批量加载。
+3. undo journal 不应从高度 0 开始对全历史持续构建，而应只在接近当前 canonical BTC tip 的热窗口内启用。
+4. prune 检查不应在历史追块阶段反复扫描 RocksDB，只有进入热窗口且 retained 水位需要推进时才应执行实际清理。
 
 ## 3. 当前实现约束
 
@@ -121,6 +123,8 @@
 - per-block undo journal
 - 每个 block 的 forward mutation 和 undo mutation 一起原子提交
 - rollback 按 block 从高到低逐块反演
+
+这里的 per-block undo journal 语义需要明确为：只对热窗口内的 block 持久化 undo，而不是从创世高度到当前 tip 的全历史都保留 undo。
 
 这是当前代码基础上改造成本和正确性最平衡的方案。
 
@@ -287,6 +291,12 @@
 
 因此，undo journal 必须被明确设计为“热窗口数据”，而不是完整历史数据。
 
+结合当前实现约束，建议进一步明确：
+
+- `undo_retention_blocks` 同时定义 undo 的在线保留窗口和在线启用窗口。
+- 只有 `block_height >= latest_btc_height - undo_retention_blocks + 1` 的区块才需要在 flush 时生成 undo bundle。
+- 历史追块阶段如果当前 batch 还没有进入这个热窗口，应直接跳过 undo 构建。
+
 ### 5.7.2 建议引入 undo retention window
 
 建议新增配置语义，例如：
@@ -350,6 +360,13 @@
    - 或在后台维护线程中异步执行
 
 这样可以避免把 undo 清理成本直接叠加到每个 block 的提交延迟上。
+
+结合当前实现，建议把触发条件再收紧为：
+
+1. 只有跨过 `undo_cleanup_interval_blocks` 分桶边界时才尝试 prune。
+2. 如果当前 batch 仍完全位于热窗口之外，直接跳过 prune 检查。
+3. 如果 DB 里尚未建立 `rollback_supported_from_height`，说明还没有开始保存 undo，也应直接跳过。
+4. 如果 `undo_retained_from_height` 已经大于等于本次目标 retained height，也应直接跳过，避免重复扫描 undo meta CF。
 
 ### 5.7.6 清理实现要求
 
@@ -488,6 +505,12 @@
 3. spent UTXO undo 在 vin 遍历时顺手生成，避免二次扫描整个 batch。
 4. created UTXO undo 在 vout 处理时顺手生成，避免从最终 `vout_utxos` 全量反推每个 block。
 5. 如果实现复杂度过高，优先允许初始化阶段的 undo 收集先以“额外线性遍历一次已加载 block”实现，但必须验证对 blk 快速加载吞吐的影响；未经基准验证，不应接受明显拖慢初始化的结构性改造。
+
+补充当前已收敛的实现方向：
+
+1. forward state 仍然对所有 block 正常写入。
+2. undo bundle 只在热窗口内的 block flush 时生成并与 forward state 原子提交。
+3. 因此初始化追块不会为远古历史块额外付出 undo 序列化和落盘成本。
 
 ## 7. rollback 执行协议
 

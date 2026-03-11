@@ -21,10 +21,19 @@ pub const BLOCKS_CF: &str = "blocks";
 pub const BLOCK_HEIGHTS_CF: &str = "block_heights";
 // BLOCK_COMMITS_CF stores the first-version logical commit chain metadata for balance-history.
 pub const BLOCK_COMMITS_CF: &str = "block_commits";
+pub const BLOCK_UNDO_META_CF: &str = "block_undo_meta";
+pub const BLOCK_UNDO_CREATED_UTXOS_CF: &str = "block_undo_created_utxos";
+pub const BLOCK_UNDO_SPENT_UTXOS_CF: &str = "block_undo_spent_utxos";
+pub const BLOCK_UNDO_BALANCE_INDEX_CF: &str = "block_undo_balance_index";
 
 // Mete key names
 pub const META_KEY_BTC_BLOCK_HEIGHT: &str = "btc_block_height";
 pub const META_KEY_LAST_BLOCK_FILE_INDEX: &str = "last_block_file_index";
+pub const META_KEY_ROLLBACK_IN_PROGRESS: &str = "rollback_in_progress";
+pub const META_KEY_ROLLBACK_TARGET_HEIGHT: &str = "rollback_target_height";
+pub const META_KEY_ROLLBACK_NEXT_HEIGHT: &str = "rollback_next_height";
+pub const META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT: &str = "rollback_supported_from_height";
+pub const META_KEY_UNDO_RETAINED_FROM_HEIGHT: &str = "undo_retained_from_height";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
@@ -32,6 +41,10 @@ pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
 // Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
 pub const BLOCK_COMMIT_VALUE_LEN: usize = BlockHash::LEN + 32 + 32;
+pub const BLOCK_UNDO_META_VALUE_LEN: usize = 2 + BlockHash::LEN + 4 + 4 + 4;
+pub const BLOCK_UNDO_UTXO_KEY_LEN: usize = 4 + 4;
+pub const BLOCK_UNDO_UTXO_VALUE_LEN: usize = UTXO_KEY_LEN + USDBScriptHash::LEN + 8;
+pub const BLOCK_UNDO_BALANCE_INDEX_KEY_LEN: usize = 4 + USDBScriptHash::LEN;
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
@@ -63,6 +76,46 @@ pub struct BlockCommitEntry {
     pub balance_delta_root: [u8; 32],
     // Rolling block commit linked to the previous committed block.
     pub block_commit: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockUndoMetaEntry {
+    // Block height that this undo bundle can revert.
+    pub block_height: u32,
+    // On-disk undo encoding version for forward compatibility.
+    pub format_version: u16,
+    // Canonical BTC block hash paired with the block height above.
+    pub btc_block_hash: BlockHash,
+    // Number of UTXOs created by the block and deleted during rollback.
+    pub created_utxo_count: u32,
+    // Number of spent UTXOs restored during rollback.
+    pub spent_utxo_count: u32,
+    // Number of script hashes whose exact-height balance rows are removed during rollback.
+    pub balance_entry_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockUndoUtxoEntry {
+    // Outpoint to delete or restore while reverting a block.
+    pub outpoint: OutPoint,
+    // Script hash owning the UTXO at the reverted height.
+    pub script_hash: USDBScriptHash,
+    // UTXO value used to reconstruct spent outputs.
+    pub value: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockUndoBundle {
+    // Block height that this bundle reverts.
+    pub block_height: u32,
+    // BTC block hash used to validate undo/canonical chain alignment.
+    pub btc_block_hash: BlockHash,
+    // Outputs created by the block and removed on rollback.
+    pub created_utxos: Vec<BlockUndoUtxoEntry>,
+    // Outputs spent by the block and restored on rollback.
+    pub spent_utxos: Vec<BlockUndoUtxoEntry>,
+    // Script hashes whose exact block-height balance rows must be deleted.
+    pub touched_script_hashes: Vec<USDBScriptHash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,7 +276,27 @@ impl BalanceHistoryDB {
             ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
             ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
             ColumnFamilyDescriptor::new(BLOCK_COMMITS_CF, Options::default()),
+            ColumnFamilyDescriptor::new(BLOCK_UNDO_META_CF, Options::default()),
+            ColumnFamilyDescriptor::new(
+                BLOCK_UNDO_CREATED_UTXOS_CF,
+                Self::get_block_undo_height_cf_opts(),
+            ),
+            ColumnFamilyDescriptor::new(
+                BLOCK_UNDO_SPENT_UTXOS_CF,
+                Self::get_block_undo_height_cf_opts(),
+            ),
+            ColumnFamilyDescriptor::new(
+                BLOCK_UNDO_BALANCE_INDEX_CF,
+                Self::get_block_undo_height_cf_opts(),
+            ),
         ]
+    }
+
+    fn get_block_undo_height_cf_opts() -> Options {
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(4));
+        opts
     }
 
     fn get_balance_history_cf_opts_on_mode(mode: BalanceHistoryDBMode) -> Options {
@@ -326,6 +399,10 @@ impl BalanceHistoryDB {
             BLOCKS_CF,
             BLOCK_HEIGHTS_CF,
             BLOCK_COMMITS_CF,
+            BLOCK_UNDO_META_CF,
+            BLOCK_UNDO_CREATED_UTXOS_CF,
+            BLOCK_UNDO_SPENT_UTXOS_CF,
+            BLOCK_UNDO_BALANCE_INDEX_CF,
         ];
         let db = DB::open_cf_as_secondary(&opts, &file, &tmp_dir, cf_descriptors_names).map_err(
             |e| {
@@ -456,6 +533,134 @@ impl BalanceHistoryDB {
             block_file_offset,
             block_record_index,
         }
+    }
+
+    fn make_block_undo_meta_key(block_height: u32) -> [u8; 4] {
+        block_height.to_be_bytes()
+    }
+
+    fn serialize_block_undo_meta_value(entry: &BlockUndoMetaEntry) -> [u8; BLOCK_UNDO_META_VALUE_LEN] {
+        let mut value = [0u8; BLOCK_UNDO_META_VALUE_LEN];
+        value[..2].copy_from_slice(&entry.format_version.to_be_bytes());
+        value[2..2 + BlockHash::LEN].copy_from_slice(entry.btc_block_hash.as_ref());
+        let mut offset = 2 + BlockHash::LEN;
+        value[offset..offset + 4].copy_from_slice(&entry.created_utxo_count.to_be_bytes());
+        offset += 4;
+        value[offset..offset + 4].copy_from_slice(&entry.spent_utxo_count.to_be_bytes());
+        offset += 4;
+        value[offset..offset + 4].copy_from_slice(&entry.balance_entry_count.to_be_bytes());
+        value
+    }
+
+    fn parse_block_undo_meta_value(
+        block_height: u32,
+        value: &[u8],
+    ) -> Result<BlockUndoMetaEntry, String> {
+        if value.len() != BLOCK_UNDO_META_VALUE_LEN {
+            let msg = format!(
+                "Invalid block undo meta value length for height {}: expected {}, got {}",
+                block_height,
+                BLOCK_UNDO_META_VALUE_LEN,
+                value.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let format_version = u16::from_be_bytes(value[..2].try_into().unwrap());
+        let btc_block_hash = BlockHash::from_slice(&value[2..2 + BlockHash::LEN]).map_err(|e| {
+            let msg = format!(
+                "Invalid BTC block hash in block undo meta at height {}: {}",
+                block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let mut offset = 2 + BlockHash::LEN;
+        let created_utxo_count = u32::from_be_bytes(value[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        let spent_utxo_count = u32::from_be_bytes(value[offset..offset + 4].try_into().unwrap());
+        offset += 4;
+        let balance_entry_count = u32::from_be_bytes(value[offset..offset + 4].try_into().unwrap());
+
+        Ok(BlockUndoMetaEntry {
+            block_height,
+            format_version,
+            btc_block_hash,
+            created_utxo_count,
+            spent_utxo_count,
+            balance_entry_count,
+        })
+    }
+
+    fn make_block_undo_utxo_key(block_height: u32, seq: u32) -> [u8; BLOCK_UNDO_UTXO_KEY_LEN] {
+        let mut key = [0u8; BLOCK_UNDO_UTXO_KEY_LEN];
+        key[..4].copy_from_slice(&block_height.to_be_bytes());
+        key[4..].copy_from_slice(&seq.to_be_bytes());
+        key
+    }
+
+    fn serialize_block_undo_utxo_value(entry: &BlockUndoUtxoEntry) -> [u8; BLOCK_UNDO_UTXO_VALUE_LEN] {
+        let mut value = [0u8; BLOCK_UNDO_UTXO_VALUE_LEN];
+        value[..UTXO_KEY_LEN].copy_from_slice(&Self::make_utxo_key(&entry.outpoint));
+        let mut offset = UTXO_KEY_LEN;
+        value[offset..offset + USDBScriptHash::LEN].copy_from_slice(entry.script_hash.as_ref());
+        offset += USDBScriptHash::LEN;
+        value[offset..offset + 8].copy_from_slice(&entry.value.to_be_bytes());
+        value
+    }
+
+    fn parse_block_undo_utxo_value(value: &[u8]) -> Result<BlockUndoUtxoEntry, String> {
+        if value.len() != BLOCK_UNDO_UTXO_VALUE_LEN {
+            let msg = format!(
+                "Invalid block undo utxo value length: expected {}, got {}",
+                BLOCK_UNDO_UTXO_VALUE_LEN,
+                value.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let outpoint = usdb_util::OutPointCodec::decode(&value[..UTXO_KEY_LEN]).map_err(|e| {
+            let msg = format!("Failed to decode block undo outpoint: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut script_hash_bytes = [0u8; USDBScriptHash::LEN];
+        let mut offset = UTXO_KEY_LEN;
+        script_hash_bytes.copy_from_slice(&value[offset..offset + USDBScriptHash::LEN]);
+        offset += USDBScriptHash::LEN;
+        let value_sats = u64::from_be_bytes(value[offset..offset + 8].try_into().unwrap());
+
+        Ok(BlockUndoUtxoEntry {
+            outpoint,
+            script_hash: USDBScriptHash::from_byte_array(script_hash_bytes),
+            value: value_sats,
+        })
+    }
+
+    fn make_block_undo_balance_index_key(
+        block_height: u32,
+        script_hash: &USDBScriptHash,
+    ) -> [u8; BLOCK_UNDO_BALANCE_INDEX_KEY_LEN] {
+        let mut key = [0u8; BLOCK_UNDO_BALANCE_INDEX_KEY_LEN];
+        key[..4].copy_from_slice(&block_height.to_be_bytes());
+        key[4..].copy_from_slice(script_hash.as_ref());
+        key
+    }
+
+    fn block_height_prefix_matches(key: &[u8], block_height: u32) -> bool {
+        key.len() >= 4 && key[..4] == block_height.to_be_bytes()
+    }
+
+    fn parse_u32_be_key(key: &[u8]) -> Result<u32, String> {
+        if key.len() != 4 {
+            let msg = format!("Invalid 4-byte key length: expected 4, got {}", key.len());
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(u32::from_be_bytes(key.try_into().unwrap()))
     }
 
     // Block commit keys are indexed directly by big-endian block height.
@@ -650,6 +855,25 @@ impl BalanceHistoryDB {
         block_height: u32,
         block_commits: &[BlockCommitEntry],
     ) -> Result<(), String> {
+        self.update_block_state_with_undo_async(
+            new_utxos,
+            remove_utxos,
+            entries_list,
+            block_height,
+            block_commits,
+            &[],
+        )
+    }
+
+    pub fn update_block_state_with_undo_async(
+        &self,
+        new_utxos: &[(OutPointRef, UTXOEntryRef)],
+        remove_utxos: &[OutPointRef],
+        entries_list: &[BalanceHistoryEntry],
+        block_height: u32,
+        block_commits: &[BlockCommitEntry],
+        undo_bundles: &[BlockUndoBundle],
+    ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
 
         let utxo_cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -705,6 +929,32 @@ impl BalanceHistoryDB {
         let height_bytes = block_height.to_be_bytes();
         batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
 
+        self.append_block_undo_bundles_to_batch(&mut batch, undo_bundles)?;
+
+        if !undo_bundles.is_empty() {
+            let first_undo_height = undo_bundles
+                .iter()
+                .map(|bundle| bundle.block_height)
+                .min()
+                .unwrap();
+
+            if self.get_rollback_supported_from_height()?.is_none() {
+                batch.put_cf(
+                    meta_cf,
+                    META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT,
+                    first_undo_height.to_be_bytes(),
+                );
+            }
+
+            if self.get_undo_retained_from_height()?.is_none() {
+                batch.put_cf(
+                    meta_cf,
+                    META_KEY_UNDO_RETAINED_FROM_HEIGHT,
+                    first_undo_height.to_be_bytes(),
+                );
+            }
+        }
+
         let mut write_options = WriteOptions::default();
         write_options.set_sync(false);
         self.db.write_opt(&batch, &write_options).map_err(|e| {
@@ -714,6 +964,630 @@ impl BalanceHistoryDB {
         })?;
 
         Ok(())
+    }
+
+    fn append_block_undo_bundles_to_batch(
+        &self,
+        batch: &mut WriteBatch,
+        undo_bundles: &[BlockUndoBundle],
+    ) -> Result<(), String> {
+        if undo_bundles.is_empty() {
+            return Ok(());
+        }
+
+        let meta_cf = self.db.cf_handle(BLOCK_UNDO_META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_UNDO_META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let created_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_CREATED_UTXOS_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_CREATED_UTXOS_CF);
+                error!("{}", msg);
+                msg
+            })?;
+        let spent_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_SPENT_UTXOS_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_SPENT_UTXOS_CF);
+                error!("{}", msg);
+                msg
+            })?;
+        let balance_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_BALANCE_INDEX_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_BALANCE_INDEX_CF);
+                error!("{}", msg);
+                msg
+            })?;
+
+        for bundle in undo_bundles {
+            let meta = BlockUndoMetaEntry {
+                block_height: bundle.block_height,
+                format_version: 1,
+                btc_block_hash: bundle.btc_block_hash,
+                created_utxo_count: bundle.created_utxos.len() as u32,
+                spent_utxo_count: bundle.spent_utxos.len() as u32,
+                balance_entry_count: bundle.touched_script_hashes.len() as u32,
+            };
+
+            batch.put_cf(
+                meta_cf,
+                Self::make_block_undo_meta_key(bundle.block_height),
+                Self::serialize_block_undo_meta_value(&meta),
+            );
+
+            for (seq, entry) in bundle.created_utxos.iter().enumerate() {
+                batch.put_cf(
+                    created_cf,
+                    Self::make_block_undo_utxo_key(bundle.block_height, seq as u32),
+                    Self::serialize_block_undo_utxo_value(entry),
+                );
+            }
+
+            for (seq, entry) in bundle.spent_utxos.iter().enumerate() {
+                batch.put_cf(
+                    spent_cf,
+                    Self::make_block_undo_utxo_key(bundle.block_height, seq as u32),
+                    Self::serialize_block_undo_utxo_value(entry),
+                );
+            }
+
+            for script_hash in &bundle.touched_script_hashes {
+                batch.put_cf(
+                    balance_cf,
+                    Self::make_block_undo_balance_index_key(bundle.block_height, script_hash),
+                    [1u8; 1],
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_block_undo_meta(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<BlockUndoMetaEntry>, String> {
+        let cf = self.db.cf_handle(BLOCK_UNDO_META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_UNDO_META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        match self.db.get_cf(cf, Self::make_block_undo_meta_key(block_height)) {
+            Ok(Some(value)) => Ok(Some(Self::parse_block_undo_meta_value(block_height, &value)?)),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!("Failed to get block undo meta at height {}: {}", block_height, e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    fn get_block_undo_utxos_from_cf(
+        &self,
+        cf_name: &str,
+        block_height: u32,
+    ) -> Result<Vec<BlockUndoUtxoEntry>, String> {
+        let cf = self.db.cf_handle(cf_name).ok_or_else(|| {
+            let msg = format!("Column family {} not found", cf_name);
+            error!("{}", msg);
+            msg
+        })?;
+        let start_key = Self::make_block_undo_utxo_key(block_height, 0);
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_prefix_same_as_start(true);
+        read_opts.set_total_order_seek(false);
+        let iter = self.db.iterator_cf_opt(
+            cf,
+            read_opts,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+
+        let mut entries = Vec::new();
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error when reading block undo utxos from {} at height {}: {}",
+                    cf_name, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if !Self::block_height_prefix_matches(&key, block_height) {
+                break;
+            }
+            entries.push(Self::parse_block_undo_utxo_value(&value)?);
+        }
+        Ok(entries)
+    }
+
+    pub fn get_block_undo_created_utxos(
+        &self,
+        block_height: u32,
+    ) -> Result<Vec<BlockUndoUtxoEntry>, String> {
+        self.get_block_undo_utxos_from_cf(BLOCK_UNDO_CREATED_UTXOS_CF, block_height)
+    }
+
+    pub fn get_block_undo_spent_utxos(
+        &self,
+        block_height: u32,
+    ) -> Result<Vec<BlockUndoUtxoEntry>, String> {
+        self.get_block_undo_utxos_from_cf(BLOCK_UNDO_SPENT_UTXOS_CF, block_height)
+    }
+
+    pub fn get_block_undo_touched_script_hashes(
+        &self,
+        block_height: u32,
+    ) -> Result<Vec<USDBScriptHash>, String> {
+        let cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_BALANCE_INDEX_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_BALANCE_INDEX_CF);
+                error!("{}", msg);
+                msg
+            })?;
+        let start_key = Self::make_block_undo_balance_index_key(
+            block_height,
+            &USDBScriptHash::from_byte_array([0u8; USDBScriptHash::LEN]),
+        );
+        let mut read_opts = ReadOptions::default();
+        read_opts.set_prefix_same_as_start(true);
+        read_opts.set_total_order_seek(false);
+        let iter = self.db.iterator_cf_opt(
+            cf,
+            read_opts,
+            IteratorMode::From(&start_key, Direction::Forward),
+        );
+
+        let mut script_hashes = Vec::new();
+        for item in iter {
+            let (key, _value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error when reading block undo balance index at height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if !Self::block_height_prefix_matches(&key, block_height) {
+                break;
+            }
+            let mut bytes = [0u8; USDBScriptHash::LEN];
+            bytes.copy_from_slice(&key[4..4 + USDBScriptHash::LEN]);
+            script_hashes.push(USDBScriptHash::from_byte_array(bytes));
+        }
+
+        Ok(script_hashes)
+    }
+
+    pub fn get_block_undo_bundle(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<BlockUndoBundle>, String> {
+        let meta = match self.get_block_undo_meta(block_height)? {
+            Some(meta) => meta,
+            None => return Ok(None),
+        };
+
+        Ok(Some(BlockUndoBundle {
+            block_height,
+            btc_block_hash: meta.btc_block_hash,
+            created_utxos: self.get_block_undo_created_utxos(block_height)?,
+            spent_utxos: self.get_block_undo_spent_utxos(block_height)?,
+            touched_script_hashes: self.get_block_undo_touched_script_hashes(block_height)?,
+        }))
+    }
+
+    fn append_delete_block_undo_bundle_to_batch(
+        &self,
+        batch: &mut WriteBatch,
+        block_height: u32,
+    ) -> Result<(), String> {
+        let meta_cf = self.db.cf_handle(BLOCK_UNDO_META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_UNDO_META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let created_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_CREATED_UTXOS_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_CREATED_UTXOS_CF);
+                error!("{}", msg);
+                msg
+            })?;
+        let spent_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_SPENT_UTXOS_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_SPENT_UTXOS_CF);
+                error!("{}", msg);
+                msg
+            })?;
+        let balance_cf = self
+            .db
+            .cf_handle(BLOCK_UNDO_BALANCE_INDEX_CF)
+            .ok_or_else(|| {
+                let msg = format!("Column family {} not found", BLOCK_UNDO_BALANCE_INDEX_CF);
+                error!("{}", msg);
+                msg
+            })?;
+
+        batch.delete_cf(meta_cf, Self::make_block_undo_meta_key(block_height));
+
+        let created = self.get_block_undo_created_utxos(block_height)?;
+        for (seq, _entry) in created.iter().enumerate() {
+            batch.delete_cf(
+                created_cf,
+                Self::make_block_undo_utxo_key(block_height, seq as u32),
+            );
+        }
+
+        let spent = self.get_block_undo_spent_utxos(block_height)?;
+        for (seq, _entry) in spent.iter().enumerate() {
+            batch.delete_cf(
+                spent_cf,
+                Self::make_block_undo_utxo_key(block_height, seq as u32),
+            );
+        }
+
+        let touched = self.get_block_undo_touched_script_hashes(block_height)?;
+        for script_hash in touched {
+            batch.delete_cf(
+                balance_cf,
+                Self::make_block_undo_balance_index_key(block_height, &script_hash),
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn rollback_one_block(&self, block_height: u32) -> Result<(), String> {
+        let current_height = self.get_btc_block_height()?;
+        if current_height != block_height {
+            let msg = format!(
+                "Rollback currently only supports the latest committed height: current_height={}, rollback_height={}",
+                current_height, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let bundle = self.get_block_undo_bundle(block_height)?.ok_or_else(|| {
+            let msg = format!("Missing block undo bundle at height {}", block_height);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let utxo_cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let balance_cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let block_commit_cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let meta_cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut batch = WriteBatch::default();
+
+        for created in &bundle.created_utxos {
+            batch.delete_cf(utxo_cf, Self::make_utxo_key(&created.outpoint));
+        }
+
+        for spent in &bundle.spent_utxos {
+            batch.put_cf(
+                utxo_cf,
+                Self::make_utxo_key(&spent.outpoint),
+                UTXOValue::encode(&spent.script_hash, spent.value),
+            );
+        }
+
+        for script_hash in &bundle.touched_script_hashes {
+            batch.delete_cf(
+                balance_cf,
+                Self::make_balance_history_key(script_hash, block_height),
+            );
+        }
+
+        batch.delete_cf(block_commit_cf, Self::make_block_commit_key(block_height));
+
+        self.append_delete_block_undo_bundle_to_batch(&mut batch, block_height)?;
+
+        let previous_height = block_height.saturating_sub(1);
+        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, previous_height.to_be_bytes());
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to rollback block height {}: {}", block_height, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    // Roll back committed forward state down to the inclusive target height.
+    pub fn rollback_to_block_height(&self, target_height: u32) -> Result<(), String> {
+        let current_height = self.get_btc_block_height()?;
+        if target_height > current_height {
+            let msg = format!(
+                "Invalid rollback target height {} above current height {}",
+                target_height, current_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        if target_height == current_height {
+            return Ok(());
+        }
+
+        self.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1)?;
+        self.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, target_height)?;
+        self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, current_height)?;
+
+        let result = (|| {
+            let mut next_height = current_height;
+            while next_height > target_height {
+                self.rollback_one_block(next_height)?;
+                next_height -= 1;
+                self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, next_height)?;
+            }
+            Ok::<(), String>(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.clear_rollback_state()?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    // Resume an interrupted rollback using persisted rollback meta state.
+    pub fn resume_rollback_if_needed(&self) -> Result<bool, String> {
+        if self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? != Some(1) {
+            return Ok(false);
+        }
+
+        let target_height = self
+            .get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT)?
+            .ok_or_else(|| {
+                let msg = "Missing rollback_target_height while rollback_in_progress=1"
+                    .to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        let mut next_height = self
+            .get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT)?
+            .ok_or_else(|| {
+                let msg =
+                    "Missing rollback_next_height while rollback_in_progress=1".to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        let current_height = self.get_btc_block_height()?;
+
+        if next_height != current_height {
+            let msg = format!(
+                "Rollback resume state mismatch: rollback_next_height={}, current_height={}",
+                next_height, current_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        if target_height > next_height {
+            let msg = format!(
+                "Invalid rollback resume state: target_height {} > next_height {}",
+                target_height, next_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        while next_height > target_height {
+            self.rollback_one_block(next_height)?;
+            next_height -= 1;
+            self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, next_height)?;
+        }
+
+        self.clear_rollback_state()?;
+        Ok(true)
+    }
+
+    pub fn prune_undo_before_height(&self, min_retained_height: u32) -> Result<usize, String> {
+        if self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? == Some(1) {
+            warn!(
+                "Skipping undo prune while rollback is in progress: min_retained_height={}",
+                min_retained_height
+            );
+            return Ok(0);
+        }
+
+        let rollback_supported_from_height = match self.get_rollback_supported_from_height()? {
+            Some(height) => height,
+            None => return Ok(0),
+        };
+
+        let effective_min_retained_height = min_retained_height.max(rollback_supported_from_height);
+
+        if let Some(current_retained_height) = self.get_undo_retained_from_height()? {
+            if current_retained_height >= effective_min_retained_height {
+                return Ok(0);
+            }
+        }
+
+        let meta_cf = self.db.cf_handle(BLOCK_UNDO_META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_UNDO_META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let iter = self
+            .db
+            .iterator_cf(meta_cf, IteratorMode::From(&0u32.to_be_bytes(), Direction::Forward));
+
+        let mut heights_to_prune = Vec::new();
+        for item in iter {
+            let (key, _value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error when scanning block undo meta for pruning: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            let block_height = Self::parse_u32_be_key(&key)?;
+            if block_height >= effective_min_retained_height {
+                break;
+            }
+            heights_to_prune.push(block_height);
+        }
+
+        if heights_to_prune.is_empty() {
+            self.put_undo_retained_from_height(effective_min_retained_height)?;
+            return Ok(0);
+        }
+
+        let mut batch = WriteBatch::default();
+        for block_height in &heights_to_prune {
+            self.append_delete_block_undo_bundle_to_batch(&mut batch, *block_height)?;
+        }
+
+        let meta_cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        batch.put_cf(
+            meta_cf,
+            META_KEY_UNDO_RETAINED_FROM_HEIGHT,
+            effective_min_retained_height.to_be_bytes(),
+        );
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!(
+                "Failed to prune undo journal before height {}: {}",
+                effective_min_retained_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        info!(
+            "Pruned undo journal entries: removed_blocks={}, undo_retained_from_height={}",
+            heights_to_prune.len(),
+            effective_min_retained_height
+        );
+
+        Ok(heights_to_prune.len())
+    }
+
+    pub fn put_undo_retained_from_height(&self, height: u32) -> Result<(), String> {
+        self.put_u32_meta(META_KEY_UNDO_RETAINED_FROM_HEIGHT, height)
+    }
+
+    pub fn get_undo_retained_from_height(&self) -> Result<Option<u32>, String> {
+        self.get_u32_meta(META_KEY_UNDO_RETAINED_FROM_HEIGHT)
+    }
+
+    pub fn put_rollback_supported_from_height(&self, height: u32) -> Result<(), String> {
+        self.put_u32_meta(META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT, height)
+    }
+
+    pub fn get_rollback_supported_from_height(&self) -> Result<Option<u32>, String> {
+        self.get_u32_meta(META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT)
+    }
+
+    fn put_u32_meta(&self, key: &str, value: u32) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+        self.db
+            .put_cf_opt(cf, key, value.to_be_bytes(), &ops)
+            .map_err(|e| {
+                let msg = format!("Failed to write meta key {}: {}", key, e);
+                error!("{}", msg);
+                msg
+            })
+    }
+
+    fn delete_meta_key(&self, key: &str) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        self.db.delete_cf(cf, key).map_err(|e| {
+            let msg = format!("Failed to delete meta key {}: {}", key, e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    fn clear_rollback_state(&self) -> Result<(), String> {
+        self.delete_meta_key(META_KEY_ROLLBACK_IN_PROGRESS)?;
+        self.delete_meta_key(META_KEY_ROLLBACK_TARGET_HEIGHT)?;
+        self.delete_meta_key(META_KEY_ROLLBACK_NEXT_HEIGHT)?;
+        Ok(())
+    }
+
+    fn get_u32_meta(&self, key: &str) -> Result<Option<u32>, String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        match self.db.get_cf(cf, key) {
+            Ok(Some(value)) => {
+                if value.len() != 4 {
+                    let msg = format!(
+                        "Invalid meta value length for key {}: expected 4, got {}",
+                        key,
+                        value.len()
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                Ok(Some(u32::from_be_bytes(value.as_slice().try_into().unwrap())))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!("Failed to read meta key {}: {}", key, e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
     }
 
     // Read the committed block metadata for one exact block height.
@@ -2476,5 +3350,450 @@ mod tests {
 
         assert_eq!(db.get_block_commit(12).unwrap().unwrap(), commit);
         assert_eq!(db.get_btc_block_height().unwrap(), 12);
+    }
+
+    #[test]
+    fn test_block_undo_bundle_round_trip() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_block_undo_round_trip_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let created = BlockUndoUtxoEntry {
+            outpoint: OutPoint {
+                txid: Txid::from_slice(&[1u8; 32]).unwrap(),
+                vout: 2,
+            },
+            script_hash: ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash(),
+            value: 100,
+        };
+        let spent = BlockUndoUtxoEntry {
+            outpoint: OutPoint {
+                txid: Txid::from_slice(&[2u8; 32]).unwrap(),
+                vout: 3,
+            },
+            script_hash: ScriptBuf::from(vec![2u8; 32]).to_usdb_script_hash(),
+            value: 200,
+        };
+        let touched_script_hash = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+        let bundle = BlockUndoBundle {
+            block_height: 88,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            created_utxos: vec![created.clone()],
+            spent_utxos: vec![spent.clone()],
+            touched_script_hashes: vec![touched_script_hash],
+        };
+
+        db.update_block_state_with_undo_async(&[], &[], &[], 88, &[], &[bundle.clone()])
+            .unwrap();
+
+        let loaded_meta = db.get_block_undo_meta(88).unwrap().unwrap();
+        assert_eq!(loaded_meta.block_height, 88);
+        assert_eq!(loaded_meta.btc_block_hash, bundle.btc_block_hash);
+        assert_eq!(loaded_meta.created_utxo_count, 1);
+        assert_eq!(loaded_meta.spent_utxo_count, 1);
+        assert_eq!(loaded_meta.balance_entry_count, 1);
+
+        let loaded_bundle = db.get_block_undo_bundle(88).unwrap().unwrap();
+        assert_eq!(loaded_bundle, bundle);
+    }
+
+    #[test]
+    fn test_undo_meta_height_round_trip() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_undo_meta_height_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        assert_eq!(db.get_undo_retained_from_height().unwrap(), None);
+        assert_eq!(db.get_rollback_supported_from_height().unwrap(), None);
+
+        db.put_undo_retained_from_height(120).unwrap();
+        db.put_rollback_supported_from_height(80).unwrap();
+
+        assert_eq!(db.get_undo_retained_from_height().unwrap(), Some(120));
+        assert_eq!(db.get_rollback_supported_from_height().unwrap(), Some(80));
+    }
+
+    #[test]
+    fn test_rollback_one_block_reverts_forward_state_and_clears_undo() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_rollback_one_block_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let existing_outpoint = OutPoint {
+            txid: Txid::from_slice(&[4u8; 32]).unwrap(),
+            vout: 1,
+        };
+        let existing_script_hash = ScriptBuf::from(vec![4u8; 32]).to_usdb_script_hash();
+        db.put_utxo(&existing_outpoint, &existing_script_hash, 400)
+            .unwrap();
+
+        let previous_balance = BalanceHistoryEntry {
+            script_hash: existing_script_hash,
+            block_height: 11,
+            delta: 400,
+            balance: 400,
+        };
+        let previous_balances = vec![previous_balance];
+        db.update_address_history_with_block_commits_async(&previous_balances, 11, &[])
+            .unwrap();
+
+        let new_outpoint = OutPoint {
+            txid: Txid::from_slice(&[5u8; 32]).unwrap(),
+            vout: 2,
+        };
+        let new_script_hash = ScriptBuf::from(vec![5u8; 32]).to_usdb_script_hash();
+        let new_utxo = Arc::new(UTXOValue {
+            script_hash: new_script_hash,
+            value: 900,
+        });
+        let new_balance = BalanceHistoryEntry {
+            script_hash: new_script_hash,
+            block_height: 12,
+            delta: 900,
+            balance: 900,
+        };
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[6u8; 32]).unwrap(),
+            balance_delta_root: [7u8; 32],
+            block_commit: [8u8; 32],
+        };
+        let undo_bundle = BlockUndoBundle {
+            block_height: 12,
+            btc_block_hash: commit.btc_block_hash,
+            created_utxos: vec![BlockUndoUtxoEntry {
+                outpoint: new_outpoint.clone(),
+                script_hash: new_script_hash,
+                value: 900,
+            }],
+            spent_utxos: vec![BlockUndoUtxoEntry {
+                outpoint: existing_outpoint.clone(),
+                script_hash: existing_script_hash,
+                value: 400,
+            }],
+            touched_script_hashes: vec![new_script_hash],
+        };
+
+        db.update_block_state_with_undo_async(
+            &[(Arc::new(new_outpoint.clone()), new_utxo)],
+            &[Arc::new(existing_outpoint.clone())],
+            &[new_balance],
+            12,
+            &[commit.clone()],
+            &[undo_bundle],
+        )
+        .unwrap();
+
+        assert!(db.get_utxo(&existing_outpoint).unwrap().is_none());
+        assert!(db.get_utxo(&new_outpoint).unwrap().is_some());
+        assert!(db.get_block_commit(12).unwrap().is_some());
+        assert!(db.get_block_undo_bundle(12).unwrap().is_some());
+        assert_eq!(db.get_btc_block_height().unwrap(), 12);
+
+        db.rollback_one_block(12).unwrap();
+
+        let restored = db.get_utxo(&existing_outpoint).unwrap().unwrap();
+        assert_eq!(restored.script_hash, existing_script_hash);
+        assert_eq!(restored.value, 400);
+        assert!(db.get_utxo(&new_outpoint).unwrap().is_none());
+        assert!(db.get_balance_delta_at_block_height(&new_script_hash, 12).unwrap().is_none());
+        assert!(db.get_block_commit(12).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(12).unwrap().is_none());
+        assert_eq!(db.get_btc_block_height().unwrap(), 11);
+    }
+
+    #[test]
+    fn test_rollback_to_block_height_reverts_multiple_blocks_and_clears_meta_state() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_rollback_to_height_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let script_11 = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let entry_11 = BalanceHistoryEntry {
+            script_hash: script_11,
+            block_height: 11,
+            delta: 10,
+            balance: 10,
+        };
+        let entries_11 = vec![entry_11];
+        db.update_address_history_with_block_commits_async(&entries_11, 11, &[])
+            .unwrap();
+
+        let outpoint_12 = OutPoint {
+            txid: Txid::from_slice(&[9u8; 32]).unwrap(),
+            vout: 0,
+        };
+        let script_12 = ScriptBuf::from(vec![2u8; 32]).to_usdb_script_hash();
+        let utxo_12 = Arc::new(UTXOValue {
+            script_hash: script_12,
+            value: 20,
+        });
+        let entry_12 = BalanceHistoryEntry {
+            script_hash: script_12,
+            block_height: 12,
+            delta: 20,
+            balance: 20,
+        };
+        let commit_12 = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[2u8; 32]).unwrap(),
+            balance_delta_root: [2u8; 32],
+            block_commit: [2u8; 32],
+        };
+        let undo_12 = BlockUndoBundle {
+            block_height: 12,
+            btc_block_hash: commit_12.btc_block_hash,
+            created_utxos: vec![BlockUndoUtxoEntry {
+                outpoint: outpoint_12.clone(),
+                script_hash: script_12,
+                value: 20,
+            }],
+            spent_utxos: Vec::new(),
+            touched_script_hashes: vec![script_12],
+        };
+        db.update_block_state_with_undo_async(
+            &[(Arc::new(outpoint_12.clone()), utxo_12)],
+            &[],
+            &[entry_12],
+            12,
+            &[commit_12],
+            &[undo_12],
+        )
+        .unwrap();
+
+        let outpoint_13 = OutPoint {
+            txid: Txid::from_slice(&[8u8; 32]).unwrap(),
+            vout: 1,
+        };
+        let script_13 = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+        let utxo_13 = Arc::new(UTXOValue {
+            script_hash: script_13,
+            value: 30,
+        });
+        let entry_13 = BalanceHistoryEntry {
+            script_hash: script_13,
+            block_height: 13,
+            delta: 30,
+            balance: 30,
+        };
+        let commit_13 = BlockCommitEntry {
+            block_height: 13,
+            btc_block_hash: BlockHash::from_slice(&[3u8; 32]).unwrap(),
+            balance_delta_root: [3u8; 32],
+            block_commit: [3u8; 32],
+        };
+        let undo_13 = BlockUndoBundle {
+            block_height: 13,
+            btc_block_hash: commit_13.btc_block_hash,
+            created_utxos: vec![BlockUndoUtxoEntry {
+                outpoint: outpoint_13.clone(),
+                script_hash: script_13,
+                value: 30,
+            }],
+            spent_utxos: Vec::new(),
+            touched_script_hashes: vec![script_13],
+        };
+        db.update_block_state_with_undo_async(
+            &[(Arc::new(outpoint_13.clone()), utxo_13)],
+            &[],
+            &[entry_13],
+            13,
+            &[commit_13],
+            &[undo_13],
+        )
+        .unwrap();
+
+        db.rollback_to_block_height(11).unwrap();
+
+        assert_eq!(db.get_btc_block_height().unwrap(), 11);
+        assert!(db.get_utxo(&outpoint_12).unwrap().is_none());
+        assert!(db.get_utxo(&outpoint_13).unwrap().is_none());
+        assert!(db.get_block_commit(12).unwrap().is_none());
+        assert!(db.get_block_commit(13).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(12).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(13).unwrap().is_none());
+        assert!(db
+            .get_balance_delta_at_block_height(&script_12, 12)
+            .unwrap()
+            .is_none());
+        assert!(db
+            .get_balance_delta_at_block_height(&script_13, 13)
+            .unwrap()
+            .is_none());
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(), None);
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(), None);
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(), None);
+    }
+
+    #[test]
+    fn test_prune_undo_before_height_removes_only_older_undo_entries() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_prune_undo_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        for height in 10..=12u32 {
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let outpoint = OutPoint {
+                txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
+                vout: height,
+            };
+            let utxo = Arc::new(UTXOValue {
+                script_hash,
+                value: height as u64,
+            });
+            let entry = BalanceHistoryEntry {
+                script_hash,
+                block_height: height,
+                delta: height as i64,
+                balance: height as u64,
+            };
+            let commit = BlockCommitEntry {
+                block_height: height,
+                btc_block_hash: BlockHash::from_slice(&[height as u8; 32]).unwrap(),
+                balance_delta_root: [height as u8; 32],
+                block_commit: [height as u8; 32],
+            };
+            let undo = BlockUndoBundle {
+                block_height: height,
+                btc_block_hash: commit.btc_block_hash,
+                created_utxos: vec![BlockUndoUtxoEntry {
+                    outpoint: outpoint.clone(),
+                    script_hash,
+                    value: height as u64,
+                }],
+                spent_utxos: Vec::new(),
+                touched_script_hashes: vec![script_hash],
+            };
+
+            db.update_block_state_with_undo_async(
+                &[(Arc::new(outpoint), utxo)],
+                &[],
+                &[entry],
+                height,
+                &[commit],
+                &[undo],
+            )
+            .unwrap();
+        }
+
+        let removed = db.prune_undo_before_height(12).unwrap();
+        assert_eq!(removed, 2);
+        assert!(db.get_block_undo_bundle(10).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(11).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(12).unwrap().is_some());
+        assert_eq!(db.get_undo_retained_from_height().unwrap(), Some(12));
+    }
+
+    #[test]
+    fn test_resume_rollback_if_needed_continues_from_meta_state() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_resume_rollback_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let base_script = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let base_entry = BalanceHistoryEntry {
+            script_hash: base_script,
+            block_height: 11,
+            delta: 11,
+            balance: 11,
+        };
+        let base_entries = vec![base_entry];
+        db.update_address_history_with_block_commits_async(&base_entries, 11, &[])
+            .unwrap();
+
+        for height in 12..=13u32 {
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let outpoint = OutPoint {
+                txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
+                vout: height,
+            };
+            let utxo = Arc::new(UTXOValue {
+                script_hash,
+                value: height as u64,
+            });
+            let entry = BalanceHistoryEntry {
+                script_hash,
+                block_height: height,
+                delta: height as i64,
+                balance: height as u64,
+            };
+            let commit = BlockCommitEntry {
+                block_height: height,
+                btc_block_hash: BlockHash::from_slice(&[height as u8; 32]).unwrap(),
+                balance_delta_root: [height as u8; 32],
+                block_commit: [height as u8; 32],
+            };
+            let undo = BlockUndoBundle {
+                block_height: height,
+                btc_block_hash: commit.btc_block_hash,
+                created_utxos: vec![BlockUndoUtxoEntry {
+                    outpoint: outpoint.clone(),
+                    script_hash,
+                    value: height as u64,
+                }],
+                spent_utxos: Vec::new(),
+                touched_script_hashes: vec![script_hash],
+            };
+
+            db.update_block_state_with_undo_async(
+                &[(Arc::new(outpoint.clone()), utxo)],
+                &[],
+                &[entry],
+                height,
+                &[commit],
+                &[undo],
+            )
+            .unwrap();
+        }
+
+        db.rollback_one_block(13).unwrap();
+        db.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1).unwrap();
+        db.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, 11).unwrap();
+        db.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, 12).unwrap();
+
+        let resumed = db.resume_rollback_if_needed().unwrap();
+        assert!(resumed);
+        assert_eq!(db.get_btc_block_height().unwrap(), 11);
+        assert!(db.get_block_undo_bundle(12).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(13).unwrap().is_none());
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(), None);
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(), None);
+        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(), None);
     }
 }

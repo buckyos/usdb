@@ -128,6 +128,14 @@
 
 这不是小缺口，而是 `balance-history` 无法安全支持目标高度回滚的根因之一。
 
+补充当前实现进展：
+
+- `balance-history` 已经补上按 block 的 undo journal、回滚执行入口和崩溃恢复元数据。
+- 当前 undo journal 不是对全历史启用，而是只在接近 canonical tip 的热窗口内生成。
+- 对应的 undo 清理也已经收紧为低频、按需执行，不再在历史追块阶段反复扫描 RocksDB。
+
+因此，这一节的风险判断现在应理解为“历史上存在的根因已被识别并进入实现修复”，而不是“当前代码仍完全没有 undo 方案”。
+
 ### 4.1.5 clear_blocks 不能替代逻辑状态回滚
 
 当前 `clear_blocks()` 只处理 block 索引相关元数据，不会把 live balance history、UTXO 当前态、stable snapshot 语义一起退回到某个目标高度。

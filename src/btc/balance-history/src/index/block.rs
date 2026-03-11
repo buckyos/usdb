@@ -1,7 +1,10 @@
 use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
-use crate::db::{BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry};
+use crate::db::{
+    BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockUndoBundle,
+    BlockUndoUtxoEntry,
+};
 use bitcoincore_rpc::bitcoin::{Block, BlockHash, OutPoint, Txid};
 use dashmap::DashMap;
 use rayon::slice::ParallelSliceMut;
@@ -159,6 +162,36 @@ fn build_block_commits(
         prev_block_commit = block_commit;
     }
     commits
+}
+
+// Persist undo only for the hot reorg window close to the current canonical BTC tip.
+fn should_persist_undo_for_block(
+    block_height: u32,
+    latest_btc_height: u32,
+    undo_retention_blocks: u32,
+) -> bool {
+    if undo_retention_blocks == 0 || block_height > latest_btc_height {
+        return false;
+    }
+
+    let min_undo_height = latest_btc_height.saturating_sub(undo_retention_blocks - 1);
+    block_height >= min_undo_height
+}
+
+// Return true when at least one block in the batch overlaps the hot undo window.
+fn should_persist_any_undo_for_range(
+    block_height_range: &std::ops::Range<u32>,
+    latest_btc_height: u32,
+    undo_retention_blocks: u32,
+) -> bool {
+    if block_height_range.is_empty() || undo_retention_blocks == 0 {
+        return false;
+    }
+
+    let min_undo_height = latest_btc_height.saturating_sub(undo_retention_blocks - 1);
+    let last_block_height = block_height_range.end - 1;
+
+    block_height_range.start <= latest_btc_height && last_block_height >= min_undo_height
 }
 
 pub type BatchBlockDataRef = Arc<BatchBlockData>;
@@ -555,6 +588,8 @@ pub struct BatchBlockFlusher {
     db: BalanceHistoryDBRef,
     utxo_cache: UTXOCacheRef,
     balance_cache: AddressBalanceCacheRef,
+    latest_btc_height: u32,
+    undo_retention_blocks: u32,
 }
 
 impl BatchBlockFlusher {
@@ -562,11 +597,15 @@ impl BatchBlockFlusher {
         db: BalanceHistoryDBRef,
         utxo_cache: UTXOCacheRef,
         balance_cache: AddressBalanceCacheRef,
+        latest_btc_height: u32,
+        undo_retention_blocks: u32,
     ) -> Self {
         Self {
             db,
             utxo_cache,
             balance_cache,
+            latest_btc_height,
+            undo_retention_blocks,
         }
     }
 
@@ -574,14 +613,16 @@ impl BatchBlockFlusher {
         let (new_utxos, spent_utxos) = self.collect_utxo_updates(data)?;
         let (balance_entries, block_commits, last_block_height) =
             self.collect_balance_updates(data)?;
+        let undo_bundles = self.collect_undo_bundles(data)?;
 
         let begin = std::time::Instant::now();
-        self.db.update_block_state_async(
+        self.db.update_block_state_with_undo_async(
             &new_utxos,
             &spent_utxos,
             &balance_entries,
             last_block_height,
             &block_commits,
+            &undo_bundles,
         )?;
         let duration = begin.elapsed();
 
@@ -629,6 +670,89 @@ impl BatchBlockFlusher {
             .store(all.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
         Ok((all, block_commits, last_block_height as u32))
+    }
+
+    fn collect_undo_bundles(&self, data: &BatchBlockDataRef) -> Result<Vec<BlockUndoBundle>, String> {
+        if !should_persist_any_undo_for_range(
+            &data.block_range,
+            self.latest_btc_height,
+            self.undo_retention_blocks,
+        ) {
+            return Ok(Vec::new());
+        }
+
+        let touched_by_height: HashMap<u32, Vec<USDBScriptHash>> = {
+            let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
+            block_balance_deltas
+                .iter()
+                .map(|block| {
+                    (
+                        block.block_height,
+                        block.entries.iter().map(|entry| entry.script_hash).collect(),
+                    )
+                })
+                .collect()
+        };
+
+        let blocks = data.blocks.lock().unwrap();
+        let mut bundles = Vec::with_capacity(blocks.len());
+
+        for block in blocks.iter() {
+            if !should_persist_undo_for_block(
+                block.height,
+                self.latest_btc_height,
+                self.undo_retention_blocks,
+            ) {
+                continue;
+            }
+
+            let mut created_utxos = Vec::new();
+            let mut spent_utxos = Vec::new();
+
+            for tx in &block.txdata {
+                for vout in &tx.vout {
+                    created_utxos.push(BlockUndoUtxoEntry {
+                        outpoint: vout.outpoint.as_ref().clone(),
+                        script_hash: vout.cache_tx_out.script_hash,
+                        value: vout.cache_tx_out.value,
+                    });
+                }
+
+                for vin in &tx.vin {
+                    if !vin.need_flush {
+                        continue;
+                    }
+
+                    let spent = vin.cache_tx_out.as_ref().ok_or_else(|| {
+                        let msg = format!(
+                            "Missing cached spent UTXO when collecting undo bundle: block_height={}, outpoint={}",
+                            block.height, vin.outpoint
+                        );
+                        error!("{}", msg);
+                        msg
+                    })?;
+
+                    spent_utxos.push(BlockUndoUtxoEntry {
+                        outpoint: vin.outpoint.as_ref().clone(),
+                        script_hash: spent.script_hash,
+                        value: spent.value,
+                    });
+                }
+            }
+
+            bundles.push(BlockUndoBundle {
+                block_height: block.height,
+                btc_block_hash: block.block_hash,
+                created_utxos,
+                spent_utxos,
+                touched_script_hashes: touched_by_height
+                    .get(&block.height)
+                    .cloned()
+                    .unwrap_or_default(),
+            });
+        }
+
+        Ok(bundles)
     }
 
     fn collect_utxo_updates(
@@ -802,6 +926,22 @@ mod block_commit_tests {
         let left = build_block_commits(&[block.clone()], [1u8; 32]);
         let right = build_block_commits(&[block], [2u8; 32]);
         assert_ne!(left[0].block_commit, right[0].block_commit);
+    }
+
+    #[test]
+    fn test_should_persist_undo_only_inside_hot_window() {
+        assert!(!should_persist_undo_for_block(100, 150, 0));
+        assert!(!should_persist_undo_for_block(100, 150, 32));
+        assert!(should_persist_undo_for_block(119, 150, 32));
+        assert!(should_persist_undo_for_block(150, 150, 32));
+    }
+
+    #[test]
+    fn test_should_persist_any_undo_for_range_only_when_batch_hits_hot_window() {
+        assert!(!should_persist_any_undo_for_range(&(80..100), 150, 32));
+        assert!(!should_persist_any_undo_for_range(&(151..160), 150, 32));
+        assert!(should_persist_any_undo_for_range(&(100..121), 150, 32));
+        assert!(should_persist_any_undo_for_range(&(140..151), 150, 32));
     }
 }
 
@@ -994,7 +1134,12 @@ impl BatchBlockProcessor {
         }
     }
 
-    pub fn process_blocks(&self, block_height_range: std::ops::Range<u32>) -> Result<(), String> {
+    pub fn process_blocks(
+        &self,
+        block_height_range: std::ops::Range<u32>,
+        latest_btc_height: u32,
+        undo_retention_blocks: u32,
+    ) -> Result<(), String> {
         let preloader = BatchBlockPreloader::new(
             self.btc_client.clone(),
             self.db.clone(),
@@ -1017,6 +1162,8 @@ impl BatchBlockProcessor {
             self.db.clone(),
             self.utxo_cache.clone(),
             self.balance_cache.clone(),
+            latest_btc_height,
+            undo_retention_blocks,
         );
         flusher.flush(&data)?;
 
