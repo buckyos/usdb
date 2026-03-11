@@ -7,6 +7,7 @@
 - 共享库：[src/btc/balance-history/scripts/regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
 - 基础 smoke 场景：[src/btc/balance-history/scripts/regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
+- 多次 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh)
 
 ## 设计目标
 
@@ -86,7 +87,7 @@ main "$@"
 
 1. `balance-history` 当前最紧急的是把真实节点下的端到端验证铺开。
 2. smoke 与 reorg 两类场景在生命周期上高度相似，抽共享库已经能显著减少重复。
-3. 如果后续场景数量继续增多，再演进成 Python runner 会更稳妥。
+3. 当前已经扩展到 multi-reorg 场景，说明共享库路线可持续；如果场景数量继续增多，再演进成 Python runner 会更稳妥。
 
 ## 后续扩展方向
 

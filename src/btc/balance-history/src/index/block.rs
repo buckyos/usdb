@@ -168,20 +168,20 @@ fn resolve_previous_commit(
     previous_commit: Option<&BlockCommitEntry>,
 ) -> Result<[u8; 32], String> {
     match previous_height {
-            None | Some(0) => Ok(previous_commit
-                .map(|commit| commit.block_commit)
-                .unwrap_or(EMPTY_COMMIT_HASH)),
-            Some(height) => previous_commit
-                .map(|commit| commit.block_commit)
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Missing previous block commit at height {}. Backfill or resync is required before continuing.",
-                        height
-                    );
-                    error!("{}", msg);
-                    msg
-                }),
-        }
+        None | Some(0) => Ok(previous_commit
+            .map(|commit| commit.block_commit)
+            .unwrap_or(EMPTY_COMMIT_HASH)),
+        Some(height) => previous_commit
+            .map(|commit| commit.block_commit)
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Missing previous block commit at height {}. Backfill or resync is required before continuing.",
+                    height
+                );
+                error!("{}", msg);
+                msg
+            }),
+    }
 }
 
 // Persist undo only for the hot reorg window close to the current canonical BTC tip.
@@ -854,9 +854,35 @@ impl BatchBlockFlusher {
 #[cfg(test)]
 mod block_commit_tests {
     use super::*;
+    use crate::cache::{AddressBalanceCache, CacheStrategy, UTXOCache};
+    use crate::config::BalanceHistoryConfig;
+    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
+
+    fn temp_db(test_name: &str) -> BalanceHistoryDBRef {
+        let mut config = BalanceHistoryConfig::default();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("{}_{}", test_name, nanos));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+        Arc::new(BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap())
+    }
+
+    fn test_flusher(db: BalanceHistoryDBRef) -> BatchBlockFlusher {
+        let config = Arc::new(BalanceHistoryConfig::default());
+        let utxo_cache = Arc::new(UTXOCache::new(config.clone(), CacheStrategy::Normal));
+        let balance_cache = Arc::new(AddressBalanceCache::new(config, CacheStrategy::Normal));
+        BatchBlockFlusher::new(db, utxo_cache, balance_cache, 1, 0)
+    }
 
     fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {
         let script = ScriptBuf::from(vec![seed; 32]);
@@ -963,6 +989,41 @@ mod block_commit_tests {
     fn test_resolve_previous_commit_requires_existing_non_genesis_commit() {
         let error = resolve_previous_commit(Some(7), None).unwrap_err();
         assert!(error.contains("Missing previous block commit at height 7"));
+    }
+
+    #[test]
+    fn test_collect_balance_updates_accepts_missing_height_zero_commit() {
+        let db = temp_db("balance_history_genesis_prev_commit_boundary");
+        let flusher = test_flusher(db);
+        let mut data = BatchBlockData::new();
+
+        let block = BlockBalanceDelta {
+            block_height: 1,
+            block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+            entries: vec![make_entry(1, 1, 10, 10)],
+        };
+
+        data.block_range = 1..2;
+        *data.balance_history.lock().unwrap() = block.entries.clone();
+        *data.block_balance_deltas.lock().unwrap() = vec![block.clone()];
+        let data = Arc::new(data);
+
+        let (balance_entries, block_commits, last_block_height) =
+            flusher.collect_balance_updates(&data).unwrap();
+
+        assert_eq!(last_block_height, 1);
+        assert_eq!(balance_entries.len(), 1);
+        assert_eq!(balance_entries[0].script_hash, block.entries[0].script_hash);
+        assert_eq!(
+            balance_entries[0].block_height,
+            block.entries[0].block_height
+        );
+        assert_eq!(balance_entries[0].delta, block.entries[0].delta);
+        assert_eq!(balance_entries[0].balance, block.entries[0].balance);
+        assert_eq!(
+            block_commits,
+            build_block_commits(&[block], EMPTY_COMMIT_HASH)
+        );
     }
 
     #[test]
