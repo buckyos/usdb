@@ -94,7 +94,7 @@ enum BalanceHistoryCommands {
         source: InstallSnapshotSource,
 
         /// Specify the expected hash of the snapshot file for verification
-        #[arg(short, long)]
+        #[arg(long)]
         hash: Option<String>,
     },
 

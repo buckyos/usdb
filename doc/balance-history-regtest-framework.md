@@ -14,6 +14,7 @@
 - 重启后混合 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh)
 - 历史余额 oracle 场景：[src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
 - RPC 语义专项场景：[src/btc/balance-history/scripts/regtest_rpc_semantics.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_rpc_semantics.sh)
+- Snapshot 生成/恢复场景：[src/btc/balance-history/scripts/regtest_snapshot_recovery.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_recovery.sh)
 
 ## 设计目标
 
@@ -39,6 +40,7 @@
 11. 失败诊断输出：测试失败时自动打印 balance-history 与 bitcoind 日志尾部。
 12. 服务重启辅助：停止并重启 balance-history，然后等待 RPC 再次 ready。
 13. 历史对拍辅助：按高度读取完整区块 JSON，配合独立 Python oracle 校验 `(address, height)` 余额。
+14. CLI 复用辅助：可在自定义 `root_dir` 下直接调用 `balance-history` 的 snapshot 子命令，避免脚本重复拼接 `cargo run`。
 
 ## 关闭与查询约束
 
@@ -111,5 +113,6 @@ main "$@"
 
 1. 增加多地址、多交易图、范围查询一致性场景。
 2. 覆盖更复杂的 UTXO 花费图，而不只是单输出转账。
-3. 覆盖服务离线更久、跨多高度组合回滚后再恢复的场景。
-4. 视复杂度再决定是否引入 Python 场景 runner。
+3. 覆盖 snapshot 生成、安装和恢复后继续追块的一致性场景。
+4. 覆盖服务离线更久、跨多高度组合回滚后再恢复的场景。
+5. 视复杂度再决定是否引入 Python 场景 runner。

@@ -53,7 +53,7 @@ impl SnapshotIndexer {
 
         self.output.start_load(0);
 
-        let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+        let root_dir = self.config.root_dir.clone();
 
         self.output.println(&format!(
             "Creating snapshot database at {} height {}, with_utxo={}",

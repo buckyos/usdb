@@ -314,6 +314,18 @@ regtest_start_balance_history() {
   BALANCE_HISTORY_PID=$!
 }
 
+regtest_run_balance_history_cli() {
+  local root_dir="$1"
+  shift
+
+  (
+    cd "$REPO_ROOT"
+    cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
+      --root-dir "$root_dir" \
+      "$@"
+  )
+}
+
 # Restart the service and wait until its RPC endpoint becomes reachable again.
 regtest_restart_balance_history() {
   regtest_stop_balance_history
