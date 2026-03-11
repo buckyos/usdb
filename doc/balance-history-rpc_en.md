@@ -4,6 +4,8 @@
 
 `balance-history` tracks per-address balance changes (`delta`) and resulting balances (`balance`) across block heights, and exposes query APIs via JSON-RPC.
 
+Implementation review findings and the remediation tracker are documented in [balance-history-review-remediation-plan.md](./balance-history-review-remediation-plan.md).
+
 - Default endpoint: `http://127.0.0.1:28010`
 - Transport: HTTP + JSON-RPC 2.0
 - CORS policy: `AllowAny`
