@@ -3,7 +3,10 @@ use super::super::transfer::{
 };
 use crate::inscription::InscriptionTransferItem;
 use crate::status::StatusManager;
-use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
+use balance_history::{
+    BlockCommitInfo as BalanceHistoryBlockCommitInfo, RpcClient as BalanceHistoryRpcClient,
+    SnapshotInfo as BalanceHistorySnapshotInfo,
+};
 use bitcoincore_rpc::bitcoin::Block;
 use ord::InscriptionId;
 use ordinals::SatPoint;
@@ -13,6 +16,7 @@ use std::sync::Arc;
 use usdb_util::{BTCRpcClientRef, USDBScriptHash};
 
 pub(crate) type TransferTrackerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub(crate) type BalanceHistoryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub(crate) trait BlockHintProvider: Send + Sync {
     fn load_block_hint(&self, block_height: u32) -> Result<Option<Arc<Block>>, String>;
@@ -116,6 +120,22 @@ impl TransferTrackerApi for InscriptionTransferTracker {
         block_height: u32,
     ) -> TransferTrackerFuture<'a, Result<(), String>> {
         Box::pin(async move { self.rollback_staged_block(block_height) })
+    }
+}
+
+pub(crate) trait BalanceHistoryCommitApi: Send + Sync {
+    fn get_block_commit<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> BalanceHistoryFuture<'a, Result<Option<BalanceHistoryBlockCommitInfo>, String>>;
+}
+
+impl BalanceHistoryCommitApi for BalanceHistoryRpcClient {
+    fn get_block_commit<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> BalanceHistoryFuture<'a, Result<Option<BalanceHistoryBlockCommitInfo>, String>> {
+        Box::pin(async move { self.get_block_commit(block_height).await })
     }
 }
 

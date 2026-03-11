@@ -1,4 +1,4 @@
-use crate::index::MinerPassState;
+use crate::index::{MinerPassState, PassBlockCommitEntry};
 use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
@@ -102,6 +102,17 @@ pub struct BalanceHistorySnapshotAnchor {
     pub commit_hash_algo: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredPassBlockCommitEntry {
+    pub block_height: u32,
+    pub balance_history_block_height: u32,
+    pub balance_history_block_commit: String,
+    pub mutation_root: String,
+    pub block_commit: String,
+    pub commit_protocol_version: String,
+    pub commit_hash_algo: String,
+}
+
 pub struct MinerPassStorage {
     db_path: PathBuf,
     conn: Mutex<Connection>,
@@ -198,6 +209,17 @@ impl MinerPassStorage {
 
             CREATE INDEX IF NOT EXISTS idx_pass_history_inscription_height_id
             ON miner_pass_state_history (inscription_id, block_height, id);
+
+            CREATE TABLE IF NOT EXISTS pass_block_commits (
+                block_height INTEGER PRIMARY KEY,
+                balance_history_block_height INTEGER NOT NULL,
+                balance_history_block_commit TEXT NOT NULL,
+                mutation_root TEXT NOT NULL,
+                block_commit TEXT NOT NULL,
+                commit_protocol_version TEXT NOT NULL,
+                commit_hash_algo TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             ",
         )
         .map_err(|e| {
@@ -578,6 +600,104 @@ impl MinerPassStorage {
             commit_protocol_version,
             commit_hash_algo,
         }))
+    }
+
+    pub fn upsert_pass_block_commit(&self, entry: &PassBlockCommitEntry) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "
+            INSERT INTO pass_block_commits (
+                block_height,
+                balance_history_block_height,
+                balance_history_block_commit,
+                mutation_root,
+                block_commit,
+                commit_protocol_version,
+                commit_hash_algo
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ON CONFLICT(block_height) DO UPDATE SET
+                balance_history_block_height = excluded.balance_history_block_height,
+                balance_history_block_commit = excluded.balance_history_block_commit,
+                mutation_root = excluded.mutation_root,
+                block_commit = excluded.block_commit,
+                commit_protocol_version = excluded.commit_protocol_version,
+                commit_hash_algo = excluded.commit_hash_algo;
+            ",
+            rusqlite::params![
+                entry.block_height as i64,
+                entry.balance_history_block_height as i64,
+                entry.balance_history_block_commit,
+                entry.mutation_root,
+                entry.block_commit,
+                entry.commit_protocol_version,
+                entry.commit_hash_algo,
+            ],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to upsert pass block commit at height {}: {}",
+                entry.block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_pass_block_commit(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<StoredPassBlockCommitEntry>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT
+                    block_height,
+                    balance_history_block_height,
+                    balance_history_block_commit,
+                    mutation_root,
+                    block_commit,
+                    commit_protocol_version,
+                    commit_hash_algo
+                FROM pass_block_commits
+                WHERE block_height = ?1
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare pass block commit query at height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let entry = stmt
+            .query_row(rusqlite::params![block_height as i64], |row| {
+                Ok(StoredPassBlockCommitEntry {
+                    block_height: row.get::<usize, i64>(0)? as u32,
+                    balance_history_block_height: row.get::<usize, i64>(1)? as u32,
+                    balance_history_block_commit: row.get(2)?,
+                    mutation_root: row.get(3)?,
+                    block_commit: row.get(4)?,
+                    commit_protocol_version: row.get(5)?,
+                    commit_hash_algo: row.get(6)?,
+                })
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to load pass block commit at height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(entry)
     }
 
     // Get last synced btc block height
@@ -2940,8 +3060,8 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
@@ -3799,18 +3919,14 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(
-            storage
-                .get_pass_by_inscription_id(&rollback_pass.inscription_id)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            storage
-                .get_last_pass_history_at_or_before_height(&rollback_pass.inscription_id, u32::MAX)
-                .unwrap()
-                .is_none()
-        );
+        assert!(storage
+            .get_pass_by_inscription_id(&rollback_pass.inscription_id)
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .get_last_pass_history_at_or_before_height(&rollback_pass.inscription_id, u32::MAX)
+            .unwrap()
+            .is_none());
 
         // Roll back history update on existing pass, ensure latest snapshot stays unchanged.
         {
@@ -4457,6 +4573,35 @@ mod tests {
         assert_eq!(anchor.latest_block_commit, "cd".repeat(32));
         assert_eq!(anchor.commit_protocol_version, "1.0.0");
         assert_eq!(anchor.commit_hash_algo, "sha256");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_block_commit_round_trip() {
+        let dir = test_data_dir("pass_block_commit_round_trip");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 456,
+                balance_history_block_height: 456,
+                balance_history_block_commit: "ab".repeat(32),
+                mutation_root: "cd".repeat(32),
+                block_commit: "ef".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let commit = storage.get_pass_block_commit(456).unwrap().unwrap();
+        assert_eq!(commit.block_height, 456);
+        assert_eq!(commit.balance_history_block_height, 456);
+        assert_eq!(commit.balance_history_block_commit, "ab".repeat(32));
+        assert_eq!(commit.mutation_root, "cd".repeat(32));
+        assert_eq!(commit.block_commit, "ef".repeat(32));
+        assert_eq!(commit.commit_protocol_version, "1.0.0");
+        assert_eq!(commit.commit_hash_algo, "sha256");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

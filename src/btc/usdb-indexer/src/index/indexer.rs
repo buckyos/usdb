@@ -3,6 +3,7 @@ use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{
     InvalidPassMintInscriptionInfo, MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo,
 };
+use super::pass_commit::{PassBlockCommitEntry, PassBlockMutationCollector};
 use super::transfer::{InscriptionTransferTracker, TransferTrackSeed};
 use crate::balance::BalanceMonitor;
 use crate::config::ConfigManagerRef;
@@ -12,7 +13,9 @@ use crate::inscription::{
 };
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
-use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
+use balance_history::{
+    RpcClient as BalanceHistoryRpcClient, SnapshotInfo as BalanceHistorySnapshotInfo,
+};
 use bitcoincore_rpc::bitcoin::{Block, Txid};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +30,9 @@ mod traits;
 
 use block_events::{BlockEventExecutor, BlockEventPlanner, BlockProcessEvent};
 use traits::RpcBlockHintProvider;
-pub(crate) use traits::{BlockHintProvider, IndexStatusApi, TransferTrackerApi};
+pub(crate) use traits::{
+    BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, TransferTrackerApi,
+};
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
@@ -40,6 +45,7 @@ pub struct InscriptionIndexer {
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
+    balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
 
     status: Arc<dyn IndexStatusApi>,
 
@@ -50,6 +56,35 @@ pub struct InscriptionIndexer {
 struct CollectedMintItems {
     valid_items: Vec<InscriptionNewItem>,
     invalid_items: Vec<InvalidPassMintInscriptionInfo>,
+}
+
+struct BlockMutationCollectionGuard<'a> {
+    manager: &'a MinerPassManagerRef,
+    active: bool,
+}
+
+impl<'a> BlockMutationCollectionGuard<'a> {
+    fn begin(manager: &'a MinerPassManagerRef, block_height: u32) -> Result<Self, String> {
+        manager.begin_block_mutation_collection(block_height)?;
+        Ok(Self {
+            manager,
+            active: true,
+        })
+    }
+
+    fn take(mut self, block_height: u32) -> Result<PassBlockMutationCollector, String> {
+        let collector = self.manager.take_block_mutation_collector(block_height)?;
+        self.active = false;
+        Ok(collector)
+    }
+}
+
+impl Drop for BlockMutationCollectionGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.manager.clear_block_mutation_collection();
+        }
+    }
 }
 
 impl InscriptionIndexer {
@@ -63,6 +98,9 @@ impl InscriptionIndexer {
             Self::build_inscription_source(config.clone(), btc_client.clone())?;
         let block_hint_provider: Arc<dyn BlockHintProvider> =
             Arc::new(RpcBlockHintProvider::new(btc_client.clone()));
+        let balance_history_client: Arc<dyn BalanceHistoryCommitApi> = Arc::new(
+            BalanceHistoryRpcClient::new(&config.config().balance_history.rpc_url)?,
+        );
 
         // Init pass energy manager
         let pass_energy_manager = Arc::new(PassEnergyManager::new(config.clone())?);
@@ -95,6 +133,7 @@ impl InscriptionIndexer {
 
             pass_energy_manager,
             miner_pass_manager,
+            balance_history_client,
             miner_pass_storage,
             balance_monitor,
             status,
@@ -115,6 +154,7 @@ impl InscriptionIndexer {
         balance_monitor: BalanceMonitor,
         pass_energy_manager: PassEnergyManagerRef,
         miner_pass_manager: MinerPassManagerRef,
+        balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
         status: Arc<dyn IndexStatusApi>,
     ) -> Self {
         Self {
@@ -126,6 +166,7 @@ impl InscriptionIndexer {
             balance_monitor,
             pass_energy_manager,
             miner_pass_manager,
+            balance_history_client,
             status,
             should_stop: Arc::new(AtomicBool::new(false)),
         }
@@ -502,12 +543,19 @@ impl InscriptionIndexer {
         self.sync_blocks(block_range).await
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_active_block_mutation_collection_for_test(&self) -> bool {
+        self.miner_pass_manager.has_active_block_mutation_collection()
+    }
+
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
 
         // Mark energy sync as pending first so crashes can be detected and repaired on restart.
         self.pass_energy_manager.begin_block_sync(height)?;
+        let mutation_collection_guard =
+            BlockMutationCollectionGuard::begin(&self.miner_pass_manager, height)?;
         let block_hint = self.block_hint_provider.load_block_hint(height)?;
         let block_hint = block_hint.ok_or_else(|| {
             let msg = format!(
@@ -617,6 +665,14 @@ impl InscriptionIndexer {
             self.transfer_tracker.rollback_staged_block(height).await?;
             return Err(e);
         }
+        let mutation_collector = mutation_collection_guard.take(height)?;
+        if let Err(e) = self
+            .persist_pass_block_commit(height, &mutation_collector)
+            .await
+        {
+            self.transfer_tracker.rollback_staged_block(height).await?;
+            return Err(e);
+        }
         // Commit transfer tracker staged state only after energy metadata finalize succeeds.
         self.transfer_tracker.commit_staged_block(height).await?;
         let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
@@ -648,6 +704,44 @@ impl InscriptionIndexer {
         );
 
         Ok(())
+    }
+
+    async fn persist_pass_block_commit(
+        &self,
+        block_height: u32,
+        collector: &super::pass_commit::PassBlockMutationCollector,
+    ) -> Result<(), String> {
+        let upstream_commit = self
+            .balance_history_client
+            .get_block_commit(block_height)
+            .await?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Balance-history block commit is missing for synced block height {}",
+                    block_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let prev_local_commit = if block_height == 0 {
+            None
+        } else {
+            self.miner_pass_storage
+                .get_pass_block_commit(block_height - 1)?
+        };
+        let prev_local_commit = prev_local_commit.map(|entry| PassBlockCommitEntry {
+            block_height: entry.block_height,
+            balance_history_block_height: entry.balance_history_block_height,
+            balance_history_block_commit: entry.balance_history_block_commit,
+            mutation_root: entry.mutation_root,
+            block_commit: entry.block_commit,
+            commit_protocol_version: entry.commit_protocol_version,
+            commit_hash_algo: entry.commit_hash_algo,
+        });
+
+        let entry = collector.build_commit_entry(&upstream_commit, prev_local_commit.as_ref())?;
+        self.miner_pass_storage.upsert_pass_block_commit(&entry)
     }
 
     #[cfg(test)]

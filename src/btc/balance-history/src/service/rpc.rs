@@ -48,6 +48,16 @@ pub struct SnapshotInfo {
     pub commit_hash_algo: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockCommitInfo {
+    pub block_height: u32,
+    pub btc_block_hash: String,
+    pub balance_delta_root: String,
+    pub block_commit: String,
+    pub commit_protocol_version: String,
+    pub commit_hash_algo: String,
+}
+
 #[rpc(server)]
 pub trait BalanceHistoryRpc {
     /// Gets the current bitcoin chain network type
@@ -65,6 +75,10 @@ pub trait BalanceHistoryRpc {
     /// Gets the current stable snapshot metadata
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo>;
+
+    /// Gets the logical block commit metadata at one exact block height.
+    #[rpc(name = "get_block_commit")]
+    fn get_block_commit(&self, block_height: u32) -> JsonResult<Option<BlockCommitInfo>>;
 
     /// Gets the current balance for the specified address
     #[rpc(name = "get_address_balance")]

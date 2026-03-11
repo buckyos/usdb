@@ -197,6 +197,29 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         })
     }
 
+    fn get_block_commit(&self, block_height: u32) -> JsonResult<Option<BlockCommitInfo>> {
+        let commit = self
+            .db
+            .get_block_commit(block_height)
+            .map_err(|e| JsonError {
+                code: ErrorCode::InternalError,
+                message: format!(
+                    "Failed to get block commit at height {}: {}",
+                    block_height, e
+                ),
+                data: None,
+            })?;
+
+        Ok(commit.map(|entry| BlockCommitInfo {
+            block_height: entry.block_height,
+            btc_block_hash: format!("{:x}", entry.btc_block_hash),
+            balance_delta_root: encode_hex(&entry.balance_delta_root),
+            block_commit: encode_hex(&entry.block_commit),
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+        }))
+    }
+
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>> {
         if let Some(height) = params.block_height {
             // This endpoint uses at-or-before semantics:
@@ -376,8 +399,8 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BlockCommitEntry};
     use crate::status::SyncStatusManager;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::BlockHash;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -392,7 +415,8 @@ mod tests {
         let mut config = BalanceHistoryConfig::default();
         config.root_dir = root_dir;
         let config = Arc::new(config);
-        let db = Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
+        let db =
+            Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
         let status = Arc::new(SyncStatusManager::new());
         let (shutdown_tx, _) = watch::channel(());
 
@@ -444,5 +468,35 @@ mod tests {
         );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_block_commit_success() {
+        let server = make_test_server("get_block_commit");
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let loaded = server.get_block_commit(12).unwrap().unwrap();
+        assert_eq!(loaded.block_height, 12);
+        assert_eq!(
+            loaded.btc_block_hash,
+            format!("{:x}", commit.btc_block_hash)
+        );
+        assert_eq!(
+            loaded.balance_delta_root,
+            encode_hex(&commit.balance_delta_root)
+        );
+        assert_eq!(loaded.block_commit, encode_hex(&commit.block_commit));
+        assert_eq!(loaded.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
+        assert_eq!(loaded.commit_hash_algo, COMMIT_HASH_ALGO);
     }
 }

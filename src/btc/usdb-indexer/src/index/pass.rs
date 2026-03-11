@@ -1,11 +1,12 @@
 use super::content::MinerPassState;
 use super::energy::PassEnergyManagerRef;
+use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
 use crate::storage::{MinerPassInfo, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use usdb_util::USDBScriptHash;
 
 pub struct PassMintInscriptionInfo {
@@ -40,6 +41,7 @@ pub struct MinerPassManager {
     config: ConfigManagerRef,
     storage: MinerPassStorageRef,
     energy_manager: PassEnergyManagerRef,
+    current_block_collector: Mutex<Option<PassBlockMutationCollector>>,
 }
 
 impl MinerPassManager {
@@ -52,11 +54,72 @@ impl MinerPassManager {
             config,
             storage: miner_pass_storage,
             energy_manager,
+            current_block_collector: Mutex::new(None),
         })
     }
 
     pub fn miner_pass_storage(&self) -> &MinerPassStorageRef {
         &self.storage
+    }
+
+    pub fn begin_block_mutation_collection(&self, block_height: u32) -> Result<(), String> {
+        let mut current = self.current_block_collector.lock().unwrap();
+        if current.is_some() {
+            let msg = format!(
+                "Pass block mutation collector is already active when starting block {}",
+                block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        *current = Some(PassBlockMutationCollector::new(block_height));
+        Ok(())
+    }
+
+    pub fn take_block_mutation_collector(
+        &self,
+        block_height: u32,
+    ) -> Result<PassBlockMutationCollector, String> {
+        let mut current = self.current_block_collector.lock().unwrap();
+        let collector = current.take().ok_or_else(|| {
+            let msg = format!(
+                "Pass block mutation collector is not active when finalizing block {}",
+                block_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        if collector.block_height() != block_height {
+            let msg = format!(
+                "Pass block mutation collector height mismatch: expected_block_height={}, collector_block_height={}",
+                block_height,
+                collector.block_height()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        Ok(collector)
+    }
+
+    pub fn clear_block_mutation_collection(&self) {
+        let mut current = self.current_block_collector.lock().unwrap();
+        *current = None;
+    }
+
+    pub fn has_active_block_mutation_collection(&self) -> bool {
+        self.current_block_collector.lock().unwrap().is_some()
+    }
+
+    fn push_block_mutation(&self, mutation: PassBlockMutation) {
+        if let Some(collector) = self.current_block_collector.lock().unwrap().as_mut() {
+            collector.push(mutation);
+            return;
+        }
+
+        warn!(
+            "Pass block mutation collector is inactive; skipping mutation recording: mutation={:?}",
+            mutation
+        );
     }
 
     pub async fn on_mint_pass(&self, mint_info: &PassMintInscriptionInfo) -> Result<(), String> {
@@ -85,6 +148,15 @@ impl MinerPassManager {
         // Persist current snapshot and append pass history event at mint height.
         self.storage
             .add_new_mint_pass_at_height(&info, mint_info.mint_block_height)?;
+        self.push_block_mutation(PassBlockMutation::Mint {
+            inscription_id: info.inscription_id.to_string(),
+            inscription_number: info.inscription_number,
+            mint_owner: info.mint_owner.to_string(),
+            satpoint: info.satpoint.to_string(),
+            eth_main: info.eth_main.clone(),
+            eth_collab: info.eth_collab.clone(),
+            prev: info.prev.iter().map(|v| v.to_string()).collect(),
+        });
 
         info!(
             "New Miner Pass {} minted at block height {} for owner {}",
@@ -175,6 +247,14 @@ impl MinerPassManager {
         // Invalid mint should also be visible in history timeline at inscription height.
         self.storage
             .add_invalid_mint_pass_at_height(&info, invalid_info.mint_block_height)?;
+        self.push_block_mutation(PassBlockMutation::InvalidMint {
+            inscription_id: info.inscription_id.to_string(),
+            inscription_number: info.inscription_number,
+            mint_owner: info.mint_owner.to_string(),
+            satpoint: info.satpoint.to_string(),
+            error_code: invalid_info.error_code.clone(),
+            error_reason: invalid_info.error_reason.clone(),
+        });
 
         warn!(
             "Invalid mint inscription recorded: module=pass_manager, inscription_id={}, block_height={}, owner={}, error_code={}, error_reason={}",
@@ -226,6 +306,13 @@ impl MinerPassManager {
                 MinerPassState::Active,
                 mint_info.mint_block_height,
             )?;
+            self.push_block_mutation(PassBlockMutation::StateTransition {
+                inscription_id: last_pass.inscription_id.to_string(),
+                from_state: MinerPassState::Active.as_str().to_string(),
+                to_state: MinerPassState::Dormant.as_str().to_string(),
+                owner: last_pass.owner.to_string(),
+                satpoint: last_pass.satpoint.to_string(),
+            });
 
             info!(
                 "Last Pass {} marked as Dormant due to new pass {} for owner {}",
@@ -272,9 +359,16 @@ impl MinerPassManager {
         self.storage.update_state_at_height(
             inscription_id,
             MinerPassState::Consumed,
-            pass.state,
+            pass.state.clone(),
             block_height,
         )?;
+        self.push_block_mutation(PassBlockMutation::StateTransition {
+            inscription_id: inscription_id.to_string(),
+            from_state: pass.state.as_str().to_string(),
+            to_state: MinerPassState::Consumed.as_str().to_string(),
+            owner: pass.owner.to_string(),
+            satpoint: pass.satpoint.to_string(),
+        });
 
         // Get the latest energy at block_height.
         // The pass may become dormant at an earlier height, so exact-height lookup is not reliable.
@@ -351,6 +445,13 @@ impl MinerPassManager {
                 satpoint,
                 block_height,
             )?;
+            self.push_block_mutation(PassBlockMutation::SatpointUpdate {
+                inscription_id: inscription_id.to_string(),
+                state: pass.state.as_str().to_string(),
+                owner: pass.owner.to_string(),
+                from_satpoint: pass.satpoint.to_string(),
+                to_satpoint: satpoint.to_string(),
+            });
         } else {
             if pass.state == MinerPassState::Active {
                 // Freeze active energy at transfer height and mark pass state as Dormant first.
@@ -363,6 +464,13 @@ impl MinerPassManager {
                     MinerPassState::Active,
                     block_height,
                 )?;
+                self.push_block_mutation(PassBlockMutation::StateTransition {
+                    inscription_id: inscription_id.to_string(),
+                    from_state: MinerPassState::Active.as_str().to_string(),
+                    to_state: MinerPassState::Dormant.as_str().to_string(),
+                    owner: pass.owner.to_string(),
+                    satpoint: pass.satpoint.to_string(),
+                });
             }
 
             // Transfer the ownership in storage
@@ -372,6 +480,18 @@ impl MinerPassManager {
                 satpoint,
                 block_height,
             )?;
+            self.push_block_mutation(PassBlockMutation::OwnerTransfer {
+                inscription_id: inscription_id.to_string(),
+                state: if pass.state == MinerPassState::Active {
+                    MinerPassState::Dormant.as_str().to_string()
+                } else {
+                    pass.state.as_str().to_string()
+                },
+                from_owner: pass.owner.to_string(),
+                to_owner: new_owner.to_string(),
+                from_satpoint: pass.satpoint.to_string(),
+                to_satpoint: satpoint.to_string(),
+            });
         }
 
         Ok(())
@@ -409,9 +529,16 @@ impl MinerPassManager {
         self.storage.update_state_at_height(
             inscription_id,
             MinerPassState::Burned,
-            pass.state,
+            pass.state.clone(),
             block_height,
         )?;
+        self.push_block_mutation(PassBlockMutation::StateTransition {
+            inscription_id: inscription_id.to_string(),
+            from_state: pass.state.as_str().to_string(),
+            to_state: MinerPassState::Burned.as_str().to_string(),
+            owner: pass.owner.to_string(),
+            satpoint: pass.satpoint.to_string(),
+        });
 
         Ok(())
     }

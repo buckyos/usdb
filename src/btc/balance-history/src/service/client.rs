@@ -1,4 +1,4 @@
-use super::rpc::{AddressBalance, SnapshotInfo};
+use super::rpc::{AddressBalance, BlockCommitInfo, SnapshotInfo};
 use crate::status::SyncStatus;
 use reqwest::Client;
 use serde::Deserialize;
@@ -45,6 +45,18 @@ impl RpcClient {
     pub async fn get_snapshot_info(&self) -> Result<SnapshotInfo, String> {
         self.rpc_call::<SnapshotInfo>(&self.url, "get_snapshot_info", json!([]))
             .await
+    }
+
+    pub async fn get_block_commit(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<BlockCommitInfo>, String> {
+        self.rpc_call::<Option<BlockCommitInfo>>(
+            &self.url,
+            "get_block_commit",
+            json!([block_height]),
+        )
+        .await
     }
 
     pub async fn stop(&self) -> Result<(), String> {

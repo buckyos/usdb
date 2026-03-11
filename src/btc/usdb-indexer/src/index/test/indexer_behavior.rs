@@ -10,7 +10,10 @@ use crate::index::energy::PassEnergyManager;
 use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
-use crate::index::{BlockHintProvider, IndexStatusApi, InscriptionIndexer, TransferTrackerApi};
+use crate::index::{
+    BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, InscriptionIndexer,
+    TransferTrackerApi,
+};
 use crate::inscription::{
     DiscoveredInscription, DiscoveredInvalidMint, DiscoveredMint, DiscoveredMintBatch,
     InscriptionSource, InscriptionTransferItem,
@@ -93,6 +96,33 @@ impl IndexStatusApi for MockStatus {
         message: Option<String>,
     ) {
         self.updates.lock().unwrap().push((current, total, message));
+    }
+}
+
+#[derive(Default)]
+struct MockBalanceHistoryCommitProvider;
+
+impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
+    fn get_block_commit<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<balance_history::BlockCommitInfo>, String>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(Some(balance_history::BlockCommitInfo {
+                block_height,
+                btc_block_hash: "11".repeat(32),
+                balance_delta_root: "22".repeat(32),
+                block_commit: "33".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            }))
+        })
     }
 }
 
@@ -416,6 +446,8 @@ fn build_indexer_fixture_with_hint_provider_at_root(
     let status = Arc::new(MockStatus::new(1_000_000));
     let status_api: Arc<dyn IndexStatusApi> = status.clone();
     let transfer_tracker_api: Arc<dyn TransferTrackerApi> = transfer_tracker.clone();
+    let balance_history_commit_provider: Arc<dyn BalanceHistoryCommitApi> =
+        Arc::new(MockBalanceHistoryCommitProvider);
 
     let indexer = InscriptionIndexer::new_with_deps_for_test(
         config,
@@ -426,6 +458,7 @@ fn build_indexer_fixture_with_hint_provider_at_root(
         balance_monitor,
         pass_energy_manager.clone(),
         miner_pass_manager,
+        balance_history_commit_provider,
         status_api,
     );
 
@@ -584,6 +617,40 @@ async fn test_sync_block_without_events_still_settles_balance_snapshot() {
     assert_eq!(fixture.backend.call_count(), 1);
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
+    let block_height = 120u32;
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
+    let transfer_tracker = Arc::new(MockTransferTracker::default());
+
+    let fixture = build_indexer_fixture(
+        "sync_block_missing_hint_clears_collector",
+        inscription_source,
+        transfer_tracker,
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    let first_err = fixture
+        .indexer
+        .sync_blocks_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(first_err.contains("Missing required block hint"));
+    assert!(!fixture.indexer.has_active_block_mutation_collection_for_test());
+
+    let second_err = fixture
+        .indexer
+        .sync_blocks_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(second_err.contains("Missing required block hint"));
+    assert!(!second_err.contains("collector is already active"));
+    assert!(!fixture.indexer.has_active_block_mutation_collection_for_test());
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -1959,6 +2026,19 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
         .unwrap();
     assert_eq!(snapshot.total_balance, 8_888);
     assert_eq!(snapshot.active_address_count, 1);
+
+    let pass_block_commit = fixture.storage.get_pass_block_commit(block_height).unwrap();
+    let pass_block_commit = pass_block_commit.unwrap();
+    assert_eq!(pass_block_commit.block_height, block_height);
+    assert_eq!(pass_block_commit.balance_history_block_height, block_height);
+    assert_eq!(
+        pass_block_commit.balance_history_block_commit,
+        "33".repeat(32)
+    );
+    assert_eq!(pass_block_commit.commit_protocol_version, "1.0.0");
+    assert_eq!(pass_block_commit.commit_hash_algo, "sha256");
+    assert_eq!(pass_block_commit.mutation_root.len(), 64);
+    assert_eq!(pass_block_commit.block_commit.len(), 64);
 
     assert!(fixture.status.update_count() > 0);
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
