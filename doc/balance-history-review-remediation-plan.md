@@ -402,6 +402,25 @@ warn!(
 
 这一阶段目标是明确并收敛 stable state 的原子提交单元。
 
+### 5.2.0 当前进展
+
+截至当前版本，第二阶段已落地的内容包括：
+
+- block flush 已收敛为单个 RocksDB `WriteBatch`，同一批次内同时提交 UTXO、balance history、block commit 和 `btc_block_height`。
+- `BatchBlockFlusher` 已调整为先收集变更、先落库，再更新内存 cache，避免 cache 先于 durable state 变化。
+- `preload_utxos()` 已改为只读预加载，不再在预加载阶段提前对全局 `utxo_cache` 做 `spend()` 变更。
+- 已补充 DB 级单元测试，覆盖 UTXO 增删、balance history、block commit 与 stable height 的原子写入边界。
+
+当前阶段的设计决议是：
+
+- 由于上述状态目前都落在同一个 RocksDB 实例内，优先使用单批次原子提交解决一致性问题。
+- 当前实现下不再额外引入 pending marker / recovery journal，以避免不必要的状态机复杂度。
+
+当前尚未完成的部分主要是：
+
+- 更强的 fault injection / crash recovery 测试仍未补齐。
+- stable height durable 边界的对外说明还没有单独整理成文档注记。
+
 建议项：
 
 1. 重新定义单批次 block flush 的提交边界。
@@ -425,6 +444,21 @@ warn!(
 
 这一阶段目标是把 snapshot install 从“批量导入”升级成“可验证的状态切换”。
 
+### 5.3.0 当前进展
+
+截至当前版本，第三阶段已落地的内容包括：
+
+- snapshot install 已改为先安装到 staging DB，再通过目录 rename 提升为 live DB。
+- 安装过程会先完整写入 staging DB，并在提升前显式 flush staging 数据。
+- live DB 在替换前会先关闭句柄，旧 DB 目录会改名为带时间戳的 backup 目录。
+- 默认策略已调整为保留旧 live DB backup，而不是安装成功后立即删除。
+- 已补充端到端测试，覆盖“旧 live DB 被新 snapshot 替换、staging 目录被清理、backup 目录被保留”的路径。
+
+当前尚未完成的部分主要是：
+
+- install 完成后尚未额外补一层基于 RPC `get_snapshot_info` 的验收测试。
+- 中途失败与回滚路径的 fault injection 测试仍未覆盖。
+
 建议项：
 
 1. 在设计上二选一：
@@ -442,6 +476,20 @@ warn!(
 ## 5.4 第四阶段：补齐 block commit 快照链路
 
 这一阶段目标是让快照、RPC 和 stable state 的定义完全闭合。
+
+### 5.4.0 当前进展
+
+截至当前版本，第四阶段已落地的内容包括：
+
+- snapshot schema 已纳入 `block_commits` 表，并在 `meta` 中记录 `block_commit_count`。
+- snapshot 生成流程已导出 block commit 数据，安装流程已同步恢复 block commit 数据。
+- snapshot 安装后的端到端测试已覆盖“旧 commit 被替换，新 commit 可读取”的路径。
+- 服务侧 `get_snapshot_info` / `get_block_commit` 继续以 live DB 中的 stable commit 数据为准，快照与 RPC 的数据定义已经不再缺口明显。
+
+当前尚未完成的部分主要是：
+
+- snapshot identity 的文档化定义还不够正式，目前主要体现在 RPC 字段语义中。
+- “安装 snapshot 后直接调用 `get_snapshot_info` 做一致性校验”的专项测试尚未补充。
 
 建议项：
 
@@ -480,17 +528,16 @@ warn!(
 
 以下事项按建议顺序排列，可直接作为后续开发 checklist 使用。
 
-- [ ] 修复 `clear_blocks()`，并补单元测试验证列族确实被清空。
 - [x] 修复 `clear_blocks()`，并补单元测试验证列族确实被清空。
 - [x] 修复 local loader 阈值判断下溢问题。
 - [x] 为 local loader 增加恢复前一致性检查函数。
 - [x] 明确 local loader 在恢复失败时的降级策略和日志格式。
 - [x] 为恢复失败后清理 persisted block index 补充针对性测试。
-- [ ] 设计并落地单批次 block flush 的原子提交方案。
-- [ ] 如果无法单批次原子提交，设计 pending marker / recovery journal 方案。
+- [x] 设计并落地单批次 block flush 的原子提交方案。
+- [x] 评估 pending marker / recovery journal 方案，并确认当前阶段无需引入。
 - [ ] 明确 stable height 推进条件，并补文档说明。
-- [ ] 设计 snapshot install 的空库安装或原子替换方案。
-- [ ] 扩展 snapshot schema，纳入 block commit 元数据。
+- [x] 设计并落地 snapshot install 的 staging + 原子替换方案。
+- [x] 扩展 snapshot schema，纳入 block commit 元数据。
 - [ ] 安装 snapshot 后补充 `get_snapshot_info` 一致性校验。
 - [ ] 调整 verifier，使 latest 校验锚定 stable height。
 - [ ] 为崩溃恢复和中途失败场景补充 fault injection / recovery tests。
@@ -516,14 +563,14 @@ warn!(
 建议采用以下顺序推进：
 
 1. 先修恢复链路：`clear_blocks()`、local loader 阈值与恢复校验。
-2. 再收敛持久化原子性：block flush 边界、stable height 推进、pending marker。
+2. 再收敛持久化原子性：block flush 边界、stable height 推进与 durable 语义说明。
 3. 然后重做 snapshot install 语义，并补齐 block commit 快照链路。
-4. 最后调整 verifier，使其严格基于 stable state 语义工作。
+4. 最后调整 verifier，并补 crash recovery / RPC 一致性验收测试。
 
 原因：
 
 - 第一阶段工作量相对可控，但收益很高。
-- 第二、三阶段会影响状态边界定义，应在恢复路径稳定后处理。
+- 第二、三阶段已经直接影响 stable state 的定义，现阶段剩余工作主要转向验收闭环。
 - verifier 调整依赖前面稳定状态语义收敛，否则容易反复改。
 
 ## 9. 后续维护方式
