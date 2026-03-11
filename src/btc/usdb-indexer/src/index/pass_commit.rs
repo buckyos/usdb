@@ -63,8 +63,12 @@ pub struct PassBlockCommitEntry {
     // Local usdb-indexer block height whose pass state transitions are being committed.
     pub block_height: u32,
     // Upstream balance-history block height used as the anchor for this local commit.
+    // In pass commit v1 this is required to equal block_height; it is stored separately so the
+    // external anchor source remains explicit in the persisted/RPC schema.
     pub balance_history_block_height: u32,
     // Upstream balance-history logical block commit at the same anchor height.
+    // Because balance-history block_commit already commits to its btc_block_hash, pass commit v1
+    // does not need to duplicate the upstream block hash here while the two heights stay equal.
     pub balance_history_block_commit: String,
     // Hash of the normalized pass mutation stream collected for this block only.
     pub mutation_root: String,
@@ -131,6 +135,9 @@ impl PassBlockMutationCollector {
         upstream_commit: &BalanceHistoryBlockCommitInfo,
         prev_local_commit: Option<&PassBlockCommitEntry>,
     ) -> Result<PassBlockCommitEntry, String> {
+        // Pass commit v1 intentionally anchors block N only to balance-history block commit N.
+        // If future protocol revisions allow cross-height anchoring, this invariant and schema
+        // will need to change because upstream block_commit would no longer imply local N's hash.
         if upstream_commit.block_height != self.block_height {
             let msg = format!(
                 "Balance-history block commit height mismatch: local_block_height={}, upstream_block_height={}",

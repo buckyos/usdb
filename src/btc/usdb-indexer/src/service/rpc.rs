@@ -92,8 +92,12 @@ pub struct PassBlockCommitInfo {
     /// Final query height resolved by the server.
     pub block_height: u32,
     /// Upstream balance-history height used as the external anchor.
+    /// Pass commit v1 requires this to equal `block_height`; both are exposed so clients can see
+    /// that the local commit is anchored to a specific upstream protocol source.
     pub balance_history_block_height: u32,
     /// Upstream balance-history logical block commit captured at the anchor height.
+    /// This already commits to the upstream BTC block hash, so the pass commit RPC does not
+    /// separately expose that hash unless a future protocol revision needs cross-height anchoring.
     pub balance_history_block_commit: String,
     /// Hash of the normalized local pass mutation stream for this block.
     pub mutation_root: String,

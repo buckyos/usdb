@@ -107,8 +107,10 @@ pub struct StoredPassBlockCommitEntry {
     // Local usdb-indexer block height of this persisted commit row.
     pub block_height: u32,
     // Upstream balance-history anchor height used when this local commit was built.
+    // Pass commit v1 stores this explicitly even though it must equal block_height.
     pub balance_history_block_height: u32,
     // Upstream balance-history logical block commit captured as the external anchor.
+    // This upstream commit already includes the upstream btc_block_hash in its own hash input.
     pub balance_history_block_commit: String,
     // Hash of this block's local pass mutation stream.
     pub mutation_root: String,

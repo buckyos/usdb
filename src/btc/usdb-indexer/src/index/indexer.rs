@@ -866,6 +866,8 @@ impl InscriptionIndexer {
         block_height: u32,
         collector: &super::pass_commit::PassBlockMutationCollector,
     ) -> Result<(), String> {
+        // Pass commit v1 always fetches the upstream anchor at the same local block height.
+        // The downstream build_commit_entry path rejects any height mismatch explicitly.
         let upstream_commit = self
             .balance_history_client
             .get_block_commit(block_height)
