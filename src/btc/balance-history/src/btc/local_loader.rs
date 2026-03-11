@@ -738,6 +738,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::BTCRpcClient;
 
+    const TEST_SUBSET_BLK_FILE_COUNT: usize = 4;
+
     struct MockBTCClient {
         hashes: BTreeMap<u32, BlockHash>,
     }
@@ -970,11 +972,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root_dir);
         std::fs::create_dir_all(&root_dir).unwrap();
         config.root_dir = root_dir;
-        let subset_data_dir = prepare_subset_block_data_dir(tag, 4);
+        let subset_data_dir =
+            prepare_subset_block_data_dir(tag, TEST_SUBSET_BLK_FILE_COUNT);
         config.btc.data_dir = Some(subset_data_dir);
         let config = Arc::new(config);
 
-        println!("rpc url: {}", rpc_url);
         let client = BTCRpcClient::new(rpc_url, auth).unwrap();
         let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
 
@@ -1032,6 +1034,70 @@ mod tests {
         heights
     }
 
+    fn make_subset_reader(tag: &str, file_count: usize) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
+        let mut config = BalanceHistoryConfig::default();
+        config.btc.data_dir = Some(prepare_subset_block_data_dir(tag, file_count));
+        let config = Arc::new(config);
+        let reader = Arc::new(
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap(),
+        );
+        (config, reader)
+    }
+
+    fn make_default_subset_reader(tag: &str) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
+        make_subset_reader(tag, TEST_SUBSET_BLK_FILE_COUNT)
+    }
+
+    fn make_live_reader_and_client() -> (Arc<BalanceHistoryConfig>, BTCClientRef, Arc<BlockFileReader>) {
+        let config = Arc::new(load_real_test_base_config());
+        let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
+        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
+        let reader = Arc::new(
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap(),
+        );
+        (config, client, reader)
+    }
+
+    fn non_empty_file_indices(reader: &BlockFileReader, max_file_index: usize) -> Vec<usize> {
+        let mut result = Vec::new();
+        for file_index in 0..=max_file_index {
+            let blocks = reader.load_blk_blocks_by_index(file_index).unwrap();
+            if !blocks.is_empty() {
+                result.push(file_index);
+            }
+        }
+        result
+    }
+
+    fn assert_subset_latest_blk_file(reader: &BlockFileReader) -> usize {
+        let latest_index = reader.find_latest_blk_file().unwrap();
+        assert_eq!(
+            latest_index,
+            TEST_SUBSET_BLK_FILE_COUNT - 1,
+            "expected subset blk dir to contain exactly {} blk files",
+            TEST_SUBSET_BLK_FILE_COUNT
+        );
+        latest_index
+    }
+
+    fn first_non_empty_file_with_min_blocks(
+        reader: &BlockFileReader,
+        min_block_count: usize,
+    ) -> usize {
+        let latest_index = reader.find_latest_blk_file().unwrap();
+        for file_index in non_empty_file_indices(reader, latest_index) {
+            let block_count = reader.load_blk_blocks_by_index(file_index).unwrap().len();
+            if block_count >= min_block_count {
+                return file_index;
+            }
+        }
+
+        panic!(
+            "expected at least one blk file with {} or more blocks in subset data dir",
+            min_block_count
+        );
+    }
+
     #[test]
     #[ignore = "requires local bitcoind RPC and blk files"]
     fn test_local_loader_build_index_matches_rpc_on_sample_heights() {
@@ -1039,11 +1105,11 @@ mod tests {
         if !ensure_real_rpc_available(&client) {
             return;
         }
-        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        let subset_latest = subset_reader.find_latest_blk_file().unwrap();
+        let subset_reader =
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        let subset_latest = assert_subset_latest_blk_file(&subset_reader);
         println!("subset data dir: {}", config.btc.data_dir().display());
         println!("subset latest blk file index: {}", subset_latest);
-        assert_eq!(subset_latest, 3, "expected subset blk dir to contain exactly 4 blk files");
 
         let loader = build_real_loader(config, client.clone(), db, output);
 
@@ -1072,8 +1138,9 @@ mod tests {
         if !ensure_real_rpc_available(&client) {
             return;
         }
-        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        assert_eq!(subset_reader.find_latest_blk_file().unwrap(), 3);
+        let subset_reader =
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        assert_subset_latest_blk_file(&subset_reader);
         let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
         loader.build_index().unwrap();
 
@@ -1104,8 +1171,9 @@ mod tests {
         if !ensure_real_rpc_available(&client) {
             return;
         }
-        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        assert_eq!(subset_reader.find_latest_blk_file().unwrap(), 3);
+        let subset_reader =
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        assert_subset_latest_blk_file(&subset_reader);
         let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
         loader.build_index().unwrap();
 
@@ -1156,99 +1224,52 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_read_blk_blocks() {
-        let test_data_dir = std::env::temp_dir().join("bitcoin_test_data_loader");
-        std::fs::create_dir_all(&test_data_dir).unwrap();
+    #[ignore = "requires local blk files"]
+    fn test_read_blk_blocks_matches_direct_reader_on_subset_files() {
+        let (_config, reader) = make_default_subset_reader("read_blk_blocks");
+        let latest_index = assert_subset_latest_blk_file(&reader);
 
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = test_data_dir;
-        let config = std::sync::Arc::new(config);
+        let non_empty_files = non_empty_file_indices(&reader, latest_index);
+        assert!(
+            !non_empty_files.is_empty(),
+            "expected at least one non-empty blk file in subset data dir"
+        );
 
-        let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
-        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
-
-        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
-        let db = std::sync::Arc::new(db);
-
-        let reader =
-            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        let reader = Arc::new(reader);
-
-        let status = crate::status::SyncStatusManager::new();
-        let status = Arc::new(status);
-        let output = crate::output::IndexOutput::new(status);
-        let output = Arc::new(output);
-
-        test_memory_usage(&reader);
-        return;
-        /*
-        let begin_tick = std::time::Instant::now();
-        let mut file_index = 0;
-        loop {
-            let file = reader.get_blk_file_path(file_index);
-            if !file.exists() {
-                println!("No more blk files to read at index {:?}", file);
-                break;
-            }
-
-            //let blocks = reader.load_blk_blocks_by_index(file_index).unwrap();
-            let blocks = reader.read_blk_records2(&file).unwrap();
-            println!(
-                "Loaded {} blocks from blk file {}",
-                blocks.len(),
+        for file_index in non_empty_files {
+            let path = reader.get_blk_file_path(file_index);
+            let blocks_via_record_reader = reader.read_blk_records2(&path).unwrap();
+            let blocks_via_loader = reader.load_blk_blocks_by_index(file_index).unwrap();
+            assert_eq!(
+                blocks_via_record_reader.len(),
+                blocks_via_loader.len(),
+                "block count mismatch for blk file {}",
                 file_index
             );
-
-            file_index += 1;
-            if file_index == 100 {
-                break;
-            }
-        }
-        let end_tick = std::time::Instant::now();
-        let duration = end_tick.duration_since(begin_tick);
-        println!("Finished loading blk files in {:?}", duration);
-        */
-
-        /*
-        let cache = BlockRecordCache::new_ref();
-        let indexer = BlocksIndexer::new(reader.clone(), cache.clone(), output.clone());
-        let indexer = Arc::new(indexer);
-        let begin_tick = std::time::Instant::now();
-        indexer.build_index_by_file_range(0, 5200).unwrap();
-        let end_tick = std::time::Instant::now();
-        let duration = end_tick.duration_since(begin_tick);
-        println!("Finished building index in {:?}", duration);
-        */
-
-        let loader = BlockLocalLoader::new(
-            config.btc.block_magic(),
-            &config.btc.data_dir(),
-            client.clone(),
-            db.clone(),
-            output.clone(),
-        )
-        .unwrap();
-
-        loader.build_index().unwrap();
-
-        let block_height = 400000;
-        output.start_index(block_height, 0);
-        for height in 0..block_height {
-            let _block = loader.get_block_by_height(height as u32).unwrap();
-            //let _block_hash = block.block_hash();
-            output.update_current_height(height as u64 + 1);
+            assert_eq!(
+                blocks_via_record_reader.first().unwrap().block_hash(),
+                blocks_via_loader.first().unwrap().block_hash(),
+                "first block hash mismatch for blk file {}",
+                file_index
+            );
+            assert_eq!(
+                blocks_via_record_reader.last().unwrap().block_hash(),
+                blocks_via_loader.last().unwrap().block_hash(),
+                "last block hash mismatch for blk file {}",
+                file_index
+            );
         }
     }
 
-    fn test_memory_usage(reader: &BlockFileReader) {
+    fn measure_blk_file_memory_usage(
+        reader: &BlockFileReader,
+        start_index: usize,
+        count: usize,
+    ) -> (usize, u64) {
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
         let available_memory = sys.available_memory();
 
-        let start_index = 3000;
         let mut file_index = start_index;
-        let count = 10;
         let mut result = Vec::new();
         loop {
             let file = reader.get_blk_file_path(file_index);
@@ -1281,106 +1302,100 @@ mod tests {
             count, used_memory
         );
         println!("Estimated memory per item: {} bytes", item_memory);
+
+        (result.len(), used_memory)
+    }
+
+    #[test]
+    #[ignore = "manual profiling helper for local blk files"]
+    fn test_profile_blk_file_reader_memory_usage() {
+        let (_config, reader) = make_default_subset_reader("memory_profile");
+        let (loaded_file_count, used_memory) =
+            measure_blk_file_memory_usage(&reader, 0, TEST_SUBSET_BLK_FILE_COUNT);
+        assert!(loaded_file_count > 0, "expected memory profiling to load at least one blk file");
+        println!(
+            "profiled blk reader memory usage: loaded_files={}, used_memory={} bytes",
+            loaded_file_count, used_memory
+        );
     }
 
     #[test]
     #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_latest_blk_file() {
-        let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);
-
-        let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
-        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
-
-        let reader =
-            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        let reader = Arc::new(reader);
-
-        let status = crate::status::SyncStatusManager::new();
-        let status = Arc::new(status);
-        let output = crate::output::IndexOutput::new(status.clone());
-        let output = Arc::new(output);
-
-        let cache = BlockRecordCache::new_ref(client.clone());
-        let should_stop = Arc::new(AtomicBool::new(false));
-        let indexer = BlocksIndexer::new(
-            reader.clone(),
-            cache.clone(),
-            output.clone(),
-            should_stop.clone(),
-        );
-        let indexer = Arc::new(indexer);
-
+    fn test_latest_complete_blk_file_blocks_are_available_via_rpc() {
+        let (_config, client, reader) = make_live_reader_and_client();
+        if !ensure_real_rpc_available(&client) {
+            return;
+        }
         let latest_index = reader.find_latest_blk_file().unwrap();
         println!("Latest blk file index: {}", latest_index);
 
-        let block_hash = "00000000000000000001742dae886a6caa2f9c39f3967218861c3c2403a03d10"
-            .parse::<BlockHash>()
-            .unwrap();
-        let block = client.get_block_by_hash(&block_hash).unwrap();
-        println!("Block {} found from rpc", block_hash);
+        let latest_complete_index = latest_index.saturating_sub(1);
+        let records = reader.load_blk_blocks_by_index(latest_complete_index).unwrap();
+        assert!(
+            !records.is_empty(),
+            "expected latest complete blk file {} to contain blocks",
+            latest_complete_index
+        );
 
-        // Load latest blk file records
-        let latest_block_height = client.get_latest_block_height().unwrap();
-        println!("Latest block height from rpc: {}", latest_block_height);
-        let latest_block_hash = client.get_block_hash(latest_block_height).unwrap();
-        let records = reader.load_blk_blocks_by_index(latest_index - 1).unwrap();
-        let mut found = false;
-        for record in records {
-            let block_hash = record.block_hash();
-            println!("Block hash: {}", block_hash);
-            if block_hash == latest_block_hash {
-                println!(
-                    "Found latest block {} in blk file {}",
-                    latest_block_height, latest_index
-                );
-                found = true;
-                break;
-            }
+        let sample_indices = if records.len() == 1 {
+            vec![0]
+        } else {
+            vec![0, records.len() - 1]
+        };
+
+        for record_index in sample_indices {
+            let block_hash = records[record_index].block_hash();
+            let rpc_block = client.get_block_by_hash(&block_hash).unwrap();
+            assert_eq!(
+                rpc_block.block_hash(),
+                block_hash,
+                "block at record {} from latest complete blk file {} did not match RPC",
+                record_index,
+                latest_complete_index
+            );
         }
-
-        // assert!(found, "Latest block not found in latest blk file");
     }
 
     #[test]
     #[ignore = "requires local blk files"]
-    fn test_block_file_cache() {
-        let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);
-
-        let reader =
-            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        let reader = Arc::new(reader);
-
+    fn test_block_file_cache_returns_consistent_block_on_repeat_access() {
+        let (_config, reader) = make_default_subset_reader("cache_repeat_access");
         let cache = BlockFileCache::new(reader.clone()).unwrap();
+        let file_index = first_non_empty_file_with_min_blocks(&reader, 2);
+        let expected_blocks = reader.load_blk_blocks_by_index(file_index).unwrap();
 
-        let block1 = cache.get_block_by_file_index(0, 0).unwrap();
-        println!("Block 1 hash: {}", block1.block_hash());
+        let first_block = cache.get_block_by_file_index(file_index, 0).unwrap();
+        let second_block = cache.get_block_by_file_index(file_index, 1).unwrap();
+        let first_block_again = cache.get_block_by_file_index(file_index, 0).unwrap();
 
-        let block2 = cache.get_block_by_file_index(0, 1).unwrap();
-        println!("Block 2 hash: {}", block2.block_hash());
+        assert_eq!(first_block.block_hash(), expected_blocks[0].block_hash());
+        assert_eq!(second_block.block_hash(), expected_blocks[1].block_hash());
+        assert_eq!(first_block.block_hash(), first_block_again.block_hash());
+    }
 
-        let block3 = cache.get_block_by_file_index(1, 0).unwrap();
-        println!("Block 3 hash: {}", block3.block_hash());
+    #[test]
+    #[ignore = "requires local blk files"]
+    fn test_block_file_cache_matches_reader_across_multiple_files() {
+        let (_config, reader) = make_default_subset_reader("cache_multiple_files");
+        let cache = BlockFileCache::new(reader.clone()).unwrap();
+        let non_empty_files =
+            non_empty_file_indices(&reader, assert_subset_latest_blk_file(&reader));
 
-        // Access block1 again to test cache hit
-        let block1_again = cache.get_block_by_file_index(0, 0).unwrap();
-        println!("Block 1 again hash: {}", block1_again.block_hash());
+        assert!(
+            !non_empty_files.is_empty(),
+            "expected at least one non-empty blk file in subset data dir"
+        );
 
-        // Test file 3
-        let block4 = cache.get_block_by_file_index(2, 0).unwrap();
-        println!("Block 4 hash: {}", block4.block_hash());
+        for file_index in non_empty_files {
+            let expected_blocks = reader.load_blk_blocks_by_index(file_index).unwrap();
+            let first_block = cache.get_block_by_file_index(file_index, 0).unwrap();
+            let last_record_index = expected_blocks.len() - 1;
+            let last_block = cache
+                .get_block_by_file_index(file_index, last_record_index)
+                .unwrap();
 
-        for i in 0..100 {
-            let block = cache.get_block_by_file_index(2, i).unwrap();
-            println!("Block from file index {} hash: {}", i, block.block_hash());
+            assert_eq!(first_block.block_hash(), expected_blocks.first().unwrap().block_hash());
+            assert_eq!(last_block.block_hash(), expected_blocks.last().unwrap().block_hash());
         }
-
-        for i in 0..100 {
-            let block = cache.get_block_by_file_index(3, i).unwrap();
-            println!("Block from file index {} hash: {}", i, block.block_hash());
-        }
-
-        assert_eq!(block1.block_hash(), block1_again.block_hash());
     }
 }
