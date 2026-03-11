@@ -1,5 +1,5 @@
-use super::db::BalanceHistoryEntry;
-use bitcoincore_rpc::bitcoin::OutPoint;
+use super::db::{BalanceHistoryEntry, BlockCommitEntry};
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -14,6 +14,7 @@ pub struct SnapshotMeta {
     pub block_height: u32,
     pub balance_history_count: u64,
     pub utxo_count: u64,
+    pub block_commit_count: u64,
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
 }
@@ -29,6 +30,7 @@ impl SnapshotMeta {
             block_height,
             balance_history_count: 0,
             utxo_count: 0,
+            block_commit_count: 0,
             generated_at: since_the_epoch.as_secs(),
             version: SNAPSHOT_DB_VERSION,
         }
@@ -193,11 +195,12 @@ impl SnapshotDB {
     pub fn update_meta(&self, meta: &SnapshotMeta) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT INTO meta (block_height, balance_history_count, utxo_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO meta (block_height, balance_history_count, utxo_count, block_commit_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 (
                     meta.block_height as i64,
                     meta.balance_history_count as i64,
                     meta.utxo_count as i64,
+                    meta.block_commit_count as i64,
                     meta.generated_at as i64,
                     meta.version as i64,
                 ),
@@ -215,7 +218,7 @@ impl SnapshotDB {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT block_height, balance_history_count, utxo_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
+                "SELECT block_height, balance_history_count, utxo_count, block_commit_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
@@ -229,8 +232,9 @@ impl SnapshotDB {
                     block_height: row.get::<_, i64>(0).map(|v| v as u32)?,
                     balance_history_count: row.get::<_, i64>(1).map(|v| v as u64)?,
                     utxo_count: row.get::<_, i64>(2).map(|v| v as u64)?,
-                    generated_at: row.get::<_, i64>(3).map(|v| v as u64)?,
-                    version: row.get::<_, i64>(4).map(|v| v as u32)?,
+                    block_commit_count: row.get::<_, i64>(3).map(|v| v as u64)?,
+                    generated_at: row.get::<_, i64>(4).map(|v| v as u64)?,
+                    version: row.get::<_, i64>(5).map(|v| v as u32)?,
                 })
             })
             .map_err(|e| {
@@ -309,6 +313,48 @@ impl SnapshotDB {
                 ))
                 .map_err(|e| {
                     let msg = format!("Failed to insert UTXO entry: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+            }
+        }
+
+        tx.commit().map_err(|e| {
+            let msg = format!("Failed to commit transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn put_block_commit_entries(&mut self, entries: &[BlockCommitEntry]) -> Result<(), String> {
+        let tx = self.conn.transaction().map_err(|e| {
+            let msg = format!("Failed to start transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO block_commits (block_height, btc_block_hash, balance_delta_root, block_commit) VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(|e| {
+                    let msg = format!("Failed to prepare statement: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            for entry in entries {
+                stmt.execute((
+                    entry.block_height as i64,
+                    entry.btc_block_hash.as_ref() as &[u8],
+                    &entry.balance_delta_root[..],
+                    &entry.block_commit[..],
+                ))
+                .map_err(|e| {
+                    let msg = format!("Failed to insert block commit entry: {}", e);
                     error!("{}", msg);
                     msg
                 })?;
@@ -581,6 +627,145 @@ impl SnapshotDB {
         Ok(count)
     }
 
+    pub fn stat_block_commit_entries_count(&self) -> Result<u64, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM block_commits")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare statement: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let count: u64 = stmt
+            .query_row([], |row| row.get::<_, i64>(0).map(|v| v as u64))
+            .map_err(|e| {
+                let msg = format!("Failed to query row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(count)
+    }
+
+    pub fn get_block_commit_entries(
+        &self,
+        page_size: u32,
+        last_block_height: Option<u32>,
+    ) -> Result<Vec<BlockCommitEntry>, String> {
+        let sql = match last_block_height {
+            Some(_) => {
+                "
+                SELECT block_height, btc_block_hash, balance_delta_root, block_commit
+                FROM block_commits
+                WHERE block_height > ?1
+                ORDER BY block_height ASC
+                LIMIT ?2
+                "
+            }
+            None => {
+                "
+                SELECT block_height, btc_block_hash, balance_delta_root, block_commit
+                FROM block_commits
+                ORDER BY block_height ASC
+                LIMIT ?1
+                "
+            }
+        };
+
+        let params = match last_block_height {
+            Some(height) => rusqlite::params![height as i64, page_size as i64],
+            None => rusqlite::params![page_size as i64],
+        };
+
+        let mut stmt = self.conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries_iter = stmt.query(params).map_err(|e| {
+            let msg = format!("Failed to query map: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = entries_iter.next().map_err(|e| {
+            let msg = format!("Failed to get next row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let btc_block_hash = {
+                let blob: Vec<u8> = row.get(1).map_err(|e| {
+                    let msg = format!("Failed to get block hash blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                BlockHash::from_slice(&blob).map_err(|e| {
+                    let msg = format!("Failed to convert block hash blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+            };
+
+            let balance_delta_root = {
+                let blob: Vec<u8> = row.get(2).map_err(|e| {
+                    let msg = format!("Failed to get balance_delta_root blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                if blob.len() != 32 {
+                    let msg = format!(
+                        "Invalid balance_delta_root length: expected 32, got {}",
+                        blob.len()
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                let mut value = [0u8; 32];
+                value.copy_from_slice(&blob);
+                value
+            };
+
+            let block_commit = {
+                let blob: Vec<u8> = row.get(3).map_err(|e| {
+                    let msg = format!("Failed to get block_commit blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                if blob.len() != 32 {
+                    let msg = format!(
+                        "Invalid block_commit length: expected 32, got {}",
+                        blob.len()
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                let mut value = [0u8; 32];
+                value.copy_from_slice(&blob);
+                value
+            };
+
+            entries.push(BlockCommitEntry {
+                block_height: row.get::<_, i64>(0).map(|v| v as u32).map_err(|e| {
+                    let msg = format!("Failed to get block height: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?,
+                btc_block_hash,
+                balance_delta_root,
+                block_commit,
+            });
+        }
+
+        Ok(entries)
+    }
+
     pub fn get_utxo_entries(
         &self,
         page_size: u32,
@@ -676,6 +861,7 @@ pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
+    use bitcoincore_rpc::bitcoin::BlockHash;
 
     #[test]
     fn test_snapshot_db_creation() {
@@ -692,7 +878,40 @@ mod tests {
 
         let retrieved_meta = snapshot_db.get_meta().unwrap();
         assert_eq!(retrieved_meta.block_height, 100);
+        assert_eq!(retrieved_meta.block_commit_count, 0);
         assert_eq!(retrieved_meta.version, SNAPSHOT_DB_VERSION);
+    }
+
+    #[test]
+    fn test_block_commit_round_trip() {
+        let dir = std::env::temp_dir().join("usdb").join("test_snapshot_block_commit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("snapshot_block_commit_test.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        let mut snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        let entries = vec![
+            BlockCommitEntry {
+                block_height: 100,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [3u8; 32],
+            },
+            BlockCommitEntry {
+                block_height: 101,
+                btc_block_hash: BlockHash::from_slice(&[4u8; 32]).unwrap(),
+                balance_delta_root: [5u8; 32],
+                block_commit: [6u8; 32],
+            },
+        ];
+
+        snapshot_db.put_block_commit_entries(&entries).unwrap();
+
+        let loaded = snapshot_db.get_block_commit_entries(10, None).unwrap();
+        assert_eq!(loaded, entries);
+        assert_eq!(snapshot_db.stat_block_commit_entries_count().unwrap(), 2);
     }
 
     #[test]

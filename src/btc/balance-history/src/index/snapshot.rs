@@ -1,7 +1,7 @@
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{
     BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry,
-    SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
+    BlockCommitEntry, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use std::path::PathBuf;
@@ -120,6 +120,31 @@ impl SnapshotIndexer {
             self.output.println(&msg);
         }
 
+        {
+            let estimated_total = self
+                .db
+                .get_block_commit_count()?
+                .min(u64::from(target_block_height) + 1);
+            self.output.update_load_total_count(estimated_total);
+            self.output.println(&format!(
+                "Will generate block commit snapshot up to block height {}",
+                target_block_height
+            ));
+
+            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
+            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
+            self.db.generate_block_commit_snapshot(target_block_height, cb)?;
+
+            let total_count = generator.block_commit_count.load(Ordering::SeqCst);
+            snapshot_meta.block_commit_count = total_count;
+
+            let msg = format!(
+                "Completed block commit snapshot generation up to block height {}, total commits: {}",
+                target_block_height, total_count
+            );
+            self.output.println(&msg);
+        }
+
         let db_path = snapshot_db.lock().unwrap().path().to_owned();
         self.output.println(&format!(
             "Snapshot database created at {}",
@@ -139,6 +164,7 @@ struct SnapshotGenerator {
     count: Arc<AtomicU64>,
     balance_history_count: Arc<AtomicU64>,
     utxo_count: Arc<AtomicU64>,
+    block_commit_count: Arc<AtomicU64>,
     output: IndexOutputRef,
 }
 
@@ -149,6 +175,7 @@ impl SnapshotGenerator {
             count: Arc::new(AtomicU64::new(0)),
             balance_history_count: Arc::new(AtomicU64::new(0)),
             utxo_count: Arc::new(AtomicU64::new(0)),
+            block_commit_count: Arc::new(AtomicU64::new(0)),
             output,
         }
     }
@@ -199,6 +226,29 @@ impl SnapshotCallback for SnapshotGenerator {
         if let Some(last_entry) = entries.last() {
             self.output
                 .set_load_message(&format!("{}", last_entry.outpoint,));
+        }
+
+        Ok(())
+    }
+
+    fn on_block_commit_entries(
+        &self,
+        entries: &[BlockCommitEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
+        self.db.lock().unwrap().put_block_commit_entries(entries)?;
+
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+
+        self.block_commit_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+
+        if let Some(last_entry) = entries.last() {
+            self.output.set_load_message(&format!(
+                "block_commit@{} {:x}",
+                last_entry.block_height, last_entry.btc_block_hash
+            ));
         }
 
         Ok(())
@@ -270,8 +320,8 @@ impl SnapshotInstaller {
 
         info!("Snapshot metadata: {:?}", meta);
         self.output.println(&format!(
-            "Snapshot generated at block height {}, balance history entries: {}, UTXO entries: {}",
-            meta.block_height, meta.balance_history_count, meta.utxo_count
+            "Snapshot generated at block height {}, balance history entries: {}, UTXO entries: {}, block commits: {}",
+            meta.block_height, meta.balance_history_count, meta.utxo_count, meta.block_commit_count
         ));
 
         let staging_root = self.prepare_staging_root()?;
@@ -286,6 +336,7 @@ impl SnapshotInstaller {
         // Install into staging DB first, then atomically switch the live DB directory.
         self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
         self.install_utxo_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_block_commit_snapshot(&staging_db, &snapshot_db, &meta)?;
 
         staging_db
             .put_btc_block_height(meta.block_height)
@@ -449,6 +500,74 @@ impl SnapshotInstaller {
         Ok(())
     }
 
+    fn install_block_commit_snapshot(
+        &self,
+        target_db: &BalanceHistoryDB,
+        snapshot_db: &SnapshotDB,
+        meta: &SnapshotMeta,
+    ) -> Result<(), String> {
+        let total = meta.block_commit_count;
+        if total == 0 {
+            self.output
+                .println("No block commit entries in snapshot, skipping installation");
+            return Ok(());
+        }
+
+        self.output.update_load_total_count(total);
+        self.output.println(&format!(
+            "Installing block commit snapshot with {} entries up to block height {}",
+            total, meta.block_height
+        ));
+
+        let page_size = 1024 * 256;
+        let mut last_block_height = None;
+        let mut installed_total = 0u64;
+        loop {
+            let entries = snapshot_db
+                .get_block_commit_entries(page_size, last_block_height)
+                .map_err(|e| {
+                    let msg = format!("Failed to read snapshot block commits: {}", e);
+                    self.output.println(&msg);
+                    msg
+                })?;
+
+            target_db.put_block_commits_async(&entries).map_err(|e| {
+                let msg = format!("Failed to write snapshot block commits to database: {}", e);
+                self.output.println(&msg);
+                msg
+            })?;
+            installed_total += entries.len() as u64;
+
+            if let Some(last_entry) = entries.last() {
+                last_block_height = Some(last_entry.block_height);
+            }
+
+            self.output.update_load_current_count(installed_total);
+
+            if entries.len() < page_size as usize {
+                break;
+            }
+        }
+
+        assert!(
+            installed_total == total,
+            "Installed block commits total {} does not match expected total {}",
+            installed_total,
+            total
+        );
+
+        target_db.flush_all().map_err(|e| {
+            let msg = format!("Failed to flush database: {}", e);
+            self.output.println(&msg);
+            msg
+        })?;
+
+        self.output
+            .println("Block commit snapshot installation completed");
+
+        Ok(())
+    }
+
     fn prepare_staging_root(&self) -> Result<PathBuf, String> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -581,11 +700,11 @@ impl SnapshotInstaller {
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use crate::db::BalanceHistoryDBMode;
+    use crate::db::{BalanceHistoryDBMode, BlockCommitEntry};
     use crate::output::IndexOutput;
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf, Txid};
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
 
@@ -614,6 +733,12 @@ mod tests {
         };
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let old_commit = BlockCommitEntry {
+            block_height: 3,
+            btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
+            balance_delta_root: [8u8; 32],
+            block_commit: [9u8; 32],
+        };
         live_db
             .put_address_history_async(&vec![BalanceHistoryEntry {
                 script_hash: old_script_hash,
@@ -623,6 +748,7 @@ mod tests {
             }])
             .unwrap();
         live_db.put_utxo(&old_outpoint, &old_script_hash, 50).unwrap();
+        live_db.put_block_commits_async(&[old_commit]).unwrap();
         live_db.put_btc_block_height(3).unwrap();
         let live_db = Arc::new(live_db);
 
@@ -632,6 +758,12 @@ mod tests {
         let new_outpoint = OutPoint {
             txid: Txid::from_slice(&[4u8; 32]).unwrap(),
             vout: 1,
+        };
+        let new_commit = BlockCommitEntry {
+            block_height: 10,
+            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            balance_delta_root: [11u8; 32],
+            block_commit: [12u8; 32],
         };
 
         {
@@ -651,10 +783,14 @@ mod tests {
                     value: 75,
                 }])
                 .unwrap();
+            snapshot_db
+                .put_block_commit_entries(std::slice::from_ref(&new_commit))
+                .unwrap();
 
             let mut meta = SnapshotMeta::new(10);
             meta.balance_history_count = 1;
             meta.utxo_count = 1;
+            meta.block_commit_count = 1;
             snapshot_db.update_meta(&meta).unwrap();
         }
 
@@ -676,6 +812,7 @@ mod tests {
             .unwrap();
         assert!(old_balance.is_none(), "old live DB balance entry should be replaced by snapshot");
         assert!(reopened_db.get_utxo(&old_outpoint).unwrap().is_none());
+        assert!(reopened_db.get_block_commit(3).unwrap().is_none());
 
         let new_balance = reopened_db
             .get_balance_delta_at_block_height(&new_script_hash, 10)
@@ -687,6 +824,9 @@ mod tests {
         let new_utxo = reopened_db.get_utxo(&new_outpoint).unwrap().unwrap();
         assert_eq!(new_utxo.script_hash, new_script_hash);
         assert_eq!(new_utxo.value, 75);
+
+        let installed_commit = reopened_db.get_block_commit(10).unwrap().unwrap();
+        assert_eq!(installed_commit, new_commit);
 
         let staging_dirs: Vec<_> = std::fs::read_dir(&root_dir)
             .unwrap()

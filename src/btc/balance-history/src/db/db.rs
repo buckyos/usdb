@@ -1295,6 +1295,10 @@ impl BalanceHistoryDB {
         get_approx_cf_key_count(&self.db, UTXO_CF)
     }
 
+    pub fn get_block_commit_count(&self) -> Result<u64, String> {
+        get_approx_cf_key_count(&self.db, BLOCK_COMMITS_CF)
+    }
+
     fn generate_balance_history_snapshot_sharded(
         &self,
         target_block_height: u32,
@@ -1491,6 +1495,87 @@ impl BalanceHistoryDB {
             })?;
 
         info!("UTXO snapshot generation complete");
+
+        Ok(())
+    }
+
+    pub fn generate_block_commit_snapshot(
+        &self,
+        target_block_height: u32,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        const BATCH_SIZE: usize = 1024 * 64;
+
+        let cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        let mut snapshot = Vec::with_capacity(BATCH_SIZE);
+        let mut entries_processed = 0u64;
+
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!("Iterator error while generating block commit snapshot: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+            if key.len() != 4 {
+                continue;
+            }
+
+            let block_height = u32::from_be_bytes(key.as_ref().try_into().unwrap());
+            if block_height > target_block_height {
+                break;
+            }
+
+            snapshot.push(Self::parse_block_commit_value(block_height, &value)?);
+            entries_processed += 1;
+
+            if snapshot.len() >= BATCH_SIZE {
+                cb.on_block_commit_entries(&snapshot, entries_processed)?;
+                snapshot.clear();
+                entries_processed = 0;
+            }
+        }
+
+        if !snapshot.is_empty() {
+            cb.on_block_commit_entries(&snapshot, entries_processed)?;
+        }
+
+        info!(
+            "Block commit snapshot generation complete: target_block_height={}",
+            target_block_height
+        );
+
+        Ok(())
+    }
+
+    pub fn put_block_commits_async(&self, block_commits: &[BlockCommitEntry]) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+
+        let block_commit_cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in block_commits {
+            let key = Self::make_block_commit_key(entry.block_height);
+            let value = Self::serialize_block_commit_value(entry);
+            batch.put_cf(block_commit_cf, key, value);
+        }
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write block commits batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(())
     }
@@ -1910,6 +1995,12 @@ pub trait SnapshotCallback: Send + Sync {
     ) -> Result<(), String>;
 
     fn on_utxo_entries(&self, entries: &[UTXOEntry], entries_processed: u64) -> Result<(), String>;
+
+    fn on_block_commit_entries(
+        &self,
+        entries: &[BlockCommitEntry],
+        entries_processed: u64,
+    ) -> Result<(), String>;
 }
 
 pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
@@ -1920,7 +2011,7 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use usdb_util::ToUSDBScriptHash;
 
     #[test]
@@ -2135,6 +2226,82 @@ mod tests {
         assert_eq!(db.get_block_commit(41).unwrap().unwrap(), first);
         assert_eq!(db.get_block_commit(42).unwrap().unwrap(), second);
         assert_eq!(db.get_btc_block_height().unwrap(), 42);
+    }
+
+    #[test]
+    fn test_generate_block_commit_snapshot_respects_target_height() {
+        #[derive(Clone)]
+        struct BlockCommitCollector {
+            entries: Arc<Mutex<Vec<BlockCommitEntry>>>,
+        }
+
+        impl SnapshotCallback for BlockCommitCollector {
+            fn on_balance_history_entries(
+                &self,
+                _entries: &[BalanceHistoryEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn on_utxo_entries(
+                &self,
+                _entries: &[UTXOEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn on_block_commit_entries(
+                &self,
+                entries: &[BlockCommitEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                self.entries.lock().unwrap().extend_from_slice(entries);
+                Ok(())
+            }
+        }
+
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_generate_block_commit_snapshot");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let entries = vec![
+            BlockCommitEntry {
+                block_height: 10,
+                btc_block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+                balance_delta_root: [2u8; 32],
+                block_commit: [3u8; 32],
+            },
+            BlockCommitEntry {
+                block_height: 11,
+                btc_block_hash: BlockHash::from_slice(&[4u8; 32]).unwrap(),
+                balance_delta_root: [5u8; 32],
+                block_commit: [6u8; 32],
+            },
+            BlockCommitEntry {
+                block_height: 12,
+                btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
+                balance_delta_root: [8u8; 32],
+                block_commit: [9u8; 32],
+            },
+        ];
+        db.put_block_commits_async(&entries).unwrap();
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let cb: SnapshotCallbackRef = Arc::new(Box::new(BlockCommitCollector {
+            entries: collected.clone(),
+        }));
+
+        db.generate_block_commit_snapshot(11, cb).unwrap();
+
+        let loaded = collected.lock().unwrap().clone();
+        assert_eq!(loaded, entries[..2].to_vec());
     }
 
     #[test]

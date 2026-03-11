@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS meta (
     block_height    INTEGER NOT NULL,
     balance_history_count INTEGER NOT NULL,
     utxo_count      INTEGER NOT NULL,
+    block_commit_count INTEGER NOT NULL,
     generated_at    INTEGER NOT NULL,
     version         INTEGER NOT NULL DEFAULT 1
 );
@@ -18,4 +19,11 @@ CREATE TABLE IF NOT EXISTS utxos (
     outpoint       BLOB    NOT NULL PRIMARY KEY,  -- 36 bytes
     script_hash    BLOB    NOT NULL,              -- 32 bytes
     value          INTEGER NOT NULL               -- u64
+);
+
+CREATE TABLE IF NOT EXISTS block_commits (
+    block_height       INTEGER NOT NULL PRIMARY KEY,
+    btc_block_hash     BLOB    NOT NULL,          -- 32 bytes
+    balance_delta_root BLOB    NOT NULL,          -- 32 bytes
+    block_commit       BLOB    NOT NULL           -- 32 bytes
 );
