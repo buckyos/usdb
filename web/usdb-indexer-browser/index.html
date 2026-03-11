@@ -105,14 +105,31 @@
                 <p id="pass-query-hint" class="hint"></p>
             </section>
 
-            <section class="card">
-                <div class="card-head">
-                    <h2>矿工证详情</h2>
-                </div>
-                <div id="pass-snapshot-empty" class="empty">等待查询矿工证。</div>
-                <div id="pass-snapshot-box" class="detail hidden">
-                    <div class="detail-grid" id="pass-snapshot-grid"></div>
-                </div>
+            <section class="grid grid-2">
+                <article class="card">
+                    <div class="card-head">
+                        <h2>矿工证详情</h2>
+                    </div>
+                    <div id="pass-snapshot-empty" class="empty">等待查询矿工证。</div>
+                    <div id="pass-snapshot-box" class="detail hidden">
+                        <div class="detail-grid" id="pass-snapshot-grid"></div>
+                    </div>
+                </article>
+
+                <article class="card">
+                    <div class="card-head">
+                        <h2>区块 Commit</h2>
+                    </div>
+                    <form id="pass-commit-form" class="query">
+                        <input id="pass-commit-height-input" type="number" min="0" placeholder="可选高度 block_height" />
+                        <button type="submit">查询</button>
+                    </form>
+                    <p id="pass-commit-hint" class="hint">留空时查询当前本地已持久化高度。</p>
+                    <div id="pass-commit-empty" class="empty">等待查询 block commit。</div>
+                    <div id="pass-commit-box" class="detail hidden">
+                        <div class="detail-grid" id="pass-commit-grid"></div>
+                    </div>
+                </article>
             </section>
 
             <section class="card">

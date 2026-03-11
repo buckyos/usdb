@@ -23,6 +23,12 @@ pub enum Commands {
     /// Get current synced block height.
     SyncedHeight,
 
+    /// Get local pass block commit metadata at target height.
+    PassBlockCommit {
+        #[arg(long)]
+        block_height: Option<u32>,
+    },
+
     /// Get indexer sync status.
     SyncStatus {
         /// Keep polling sync status.

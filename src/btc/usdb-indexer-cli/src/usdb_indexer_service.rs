@@ -37,6 +37,18 @@ impl UsdbIndexerService {
                     .await?;
                 print_pretty_json(&result)?;
             }
+            Commands::PassBlockCommit { block_height } => {
+                let result = self
+                    .client
+                    .call(
+                        "get_pass_block_commit",
+                        json!([{
+                            "block_height": block_height,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
             Commands::SyncStatus { watch, interval_ms } => {
                 if watch {
                     self.watch_sync_status(interval_ms).await?;

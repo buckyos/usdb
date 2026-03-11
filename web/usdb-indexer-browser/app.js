@@ -6,6 +6,7 @@ const state = {
     pass: {
         inscriptionId: "",
         atHeight: null,
+        commitHeight: null,
         page: 0,
         pageSize: 20,
         order: "desc",
@@ -72,6 +73,12 @@ const els = {
     passSnapshotEmpty: document.getElementById("pass-snapshot-empty"),
     passSnapshotBox: document.getElementById("pass-snapshot-box"),
     passSnapshotGrid: document.getElementById("pass-snapshot-grid"),
+    passCommitForm: document.getElementById("pass-commit-form"),
+    passCommitHeightInput: document.getElementById("pass-commit-height-input"),
+    passCommitHint: document.getElementById("pass-commit-hint"),
+    passCommitEmpty: document.getElementById("pass-commit-empty"),
+    passCommitBox: document.getElementById("pass-commit-box"),
+    passCommitGrid: document.getElementById("pass-commit-grid"),
     passHistoryPrev: document.getElementById("pass-history-prev"),
     passHistoryNext: document.getElementById("pass-history-next"),
     passHistoryPage: document.getElementById("pass-history-page"),
@@ -380,6 +387,47 @@ async function loadPassHistory() {
     }
 }
 
+async function queryPassBlockCommit(heightOverride = undefined) {
+    els.passCommitHint.textContent = "";
+
+    try {
+        const blockHeight = heightOverride !== undefined
+            ? heightOverride
+            : parseOptionalU32(els.passCommitHeightInput.value);
+        state.pass.commitHeight = blockHeight;
+
+        const commit = await rpcCall("get_pass_block_commit", [{
+            block_height: blockHeight,
+        }]);
+
+        if (!commit) {
+            els.passCommitEmpty.textContent = "目标高度还没有本地 pass block commit 记录。";
+            els.passCommitEmpty.classList.remove("hidden");
+            els.passCommitBox.classList.add("hidden");
+            return;
+        }
+
+        els.passCommitEmpty.classList.add("hidden");
+        els.passCommitBox.classList.remove("hidden");
+        renderDetailGrid(els.passCommitGrid, [
+            ["block_height", commit.block_height],
+            ["balance_history_block_height", commit.balance_history_block_height],
+            ["commit_protocol_version", commit.commit_protocol_version],
+            ["commit_hash_algo", commit.commit_hash_algo],
+            ["mutation_root", commit.mutation_root],
+            ["balance_history_block_commit", commit.balance_history_block_commit],
+            ["block_commit", commit.block_commit],
+        ]);
+
+        if (els.passCommitHeightInput.value === "" || heightOverride !== undefined) {
+            els.passCommitHeightInput.value = String(commit.block_height);
+        }
+        els.passCommitHint.textContent = `查询成功，高度=${fmtNum(commit.block_height)}。`;
+    } catch (err) {
+        els.passCommitHint.textContent = `查询失败：${rpcErrorMessage(err)}`;
+    }
+}
+
 async function queryPassSnapshot() {
     els.passQueryHint.textContent = "";
     els.passHistoryError.textContent = "";
@@ -431,9 +479,14 @@ async function queryPassSnapshot() {
 
         state.pass.fromHeight = Number(snapshot.mint_block_height || 0);
         state.pass.toHeight = Number(snapshot.resolved_height || 0);
+        state.pass.commitHeight = Number(snapshot.resolved_height || 0);
+        els.passCommitHeightInput.value = String(state.pass.commitHeight);
         els.passQueryHint.textContent = "查询成功。";
 
-        await loadPassHistory();
+        await Promise.all([
+            loadPassHistory(),
+            queryPassBlockCommit(state.pass.commitHeight),
+        ]);
     } catch (err) {
         els.passQueryHint.textContent = `查询失败：${rpcErrorMessage(err)}`;
     }
@@ -657,6 +710,10 @@ function bindEvents() {
     els.passQueryForm.addEventListener("submit", (event) => {
         event.preventDefault();
         void queryPassSnapshot();
+    });
+    els.passCommitForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void queryPassBlockCommit();
     });
     els.passHistoryPrev.addEventListener("click", () => {
         if (state.pass.page > 0) {
