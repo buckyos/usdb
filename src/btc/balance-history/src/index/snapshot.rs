@@ -133,7 +133,8 @@ impl SnapshotIndexer {
 
             let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
             let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
-            self.db.generate_block_commit_snapshot(target_block_height, cb)?;
+            self.db
+                .generate_block_commit_snapshot(target_block_height, cb)?;
 
             let total_count = generator.block_commit_count.load(Ordering::SeqCst);
             snapshot_meta.block_commit_count = total_count;
@@ -328,10 +329,10 @@ impl SnapshotInstaller {
         let staging_config = self.make_staging_config(staging_root.clone());
         let staging_db = BalanceHistoryDB::open(staging_config, BalanceHistoryDBMode::BestEffort)
             .map_err(|e| {
-                let msg = format!("Failed to initialize staging database: {}", e);
-                self.output.println(&msg);
-                msg
-            })?;
+            let msg = format!("Failed to initialize staging database: {}", e);
+            self.output.println(&msg);
+            msg
+        })?;
 
         // Install into staging DB first, then atomically switch the live DB directory.
         self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
@@ -635,8 +636,8 @@ impl SnapshotInstaller {
         staging_db.close();
 
         let live_db = Arc::try_unwrap(self.db).map_err(|_| {
-            let msg = "Failed to acquire exclusive ownership of live DB before snapshot swap"
-                .to_string();
+            let msg =
+                "Failed to acquire exclusive ownership of live DB before snapshot swap".to_string();
             error!("{}", msg);
             msg
         })?;
@@ -749,7 +750,9 @@ mod tests {
                 balance: 50,
             }])
             .unwrap();
-        live_db.put_utxo(&old_outpoint, &old_script_hash, 50).unwrap();
+        live_db
+            .put_utxo(&old_outpoint, &old_script_hash, 50)
+            .unwrap();
         live_db.put_block_commits_async(&[old_commit]).unwrap();
         live_db.put_btc_block_height(3).unwrap();
         let live_db = Arc::new(live_db);
@@ -806,13 +809,17 @@ mod tests {
             })
             .unwrap();
 
-        let reopened_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let reopened_db =
+            BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
 
         let old_balance = reopened_db
             .get_balance_delta_at_block_height(&old_script_hash, 3)
             .unwrap();
-        assert!(old_balance.is_none(), "old live DB balance entry should be replaced by snapshot");
+        assert!(
+            old_balance.is_none(),
+            "old live DB balance entry should be replaced by snapshot"
+        );
         assert!(reopened_db.get_utxo(&old_outpoint).unwrap().is_none());
         assert!(reopened_db.get_block_commit(3).unwrap().is_none());
 
@@ -848,17 +855,14 @@ mod tests {
         );
         assert_eq!(
             snapshot.latest_block_commit,
-            Some(format!(
-                "{}",
-                {
-                    let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
-                    for byte in &new_commit.block_commit {
-                        use std::fmt::Write;
-                        let _ = write!(&mut output, "{:02x}", byte);
-                    }
-                    output
+            Some(format!("{}", {
+                let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
+                for byte in &new_commit.block_commit {
+                    use std::fmt::Write;
+                    let _ = write!(&mut output, "{:02x}", byte);
                 }
-            ))
+                output
+            }))
         );
 
         let rpc_commit = rpc_server.get_block_commit(10).unwrap().unwrap();
@@ -867,28 +871,22 @@ mod tests {
             rpc_commit.btc_block_hash,
             format!("{:x}", new_commit.btc_block_hash)
         );
-        assert_eq!(
-            rpc_commit.balance_delta_root,
-            {
-                let mut output = String::with_capacity(new_commit.balance_delta_root.len() * 2);
-                for byte in &new_commit.balance_delta_root {
-                    use std::fmt::Write;
-                    let _ = write!(&mut output, "{:02x}", byte);
-                }
-                output
+        assert_eq!(rpc_commit.balance_delta_root, {
+            let mut output = String::with_capacity(new_commit.balance_delta_root.len() * 2);
+            for byte in &new_commit.balance_delta_root {
+                use std::fmt::Write;
+                let _ = write!(&mut output, "{:02x}", byte);
             }
-        );
-        assert_eq!(
-            rpc_commit.block_commit,
-            {
-                let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
-                for byte in &new_commit.block_commit {
-                    use std::fmt::Write;
-                    let _ = write!(&mut output, "{:02x}", byte);
-                }
-                output
+            output
+        });
+        assert_eq!(rpc_commit.block_commit, {
+            let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
+            for byte in &new_commit.block_commit {
+                use std::fmt::Write;
+                let _ = write!(&mut output, "{:02x}", byte);
             }
-        );
+            output
+        });
 
         let staging_dirs: Vec<_> = std::fs::read_dir(&root_dir)
             .unwrap()
@@ -896,7 +894,10 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.starts_with("snapshot_install_staging_"))
             .collect();
-        assert!(staging_dirs.is_empty(), "temporary staging directories should be cleaned up");
+        assert!(
+            staging_dirs.is_empty(),
+            "temporary staging directories should be cleaned up"
+        );
 
         let backup_dirs: Vec<_> = std::fs::read_dir(&root_dir)
             .unwrap()
@@ -904,6 +905,10 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().to_string())
             .filter(|name| name.starts_with("db_backup_snapshot_install_"))
             .collect();
-        assert_eq!(backup_dirs.len(), 1, "previous live DB backup should be preserved by default");
+        assert_eq!(
+            backup_dirs.len(),
+            1,
+            "previous live DB backup should be preserved by default"
+        );
     }
 }

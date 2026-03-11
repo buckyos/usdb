@@ -52,7 +52,8 @@ src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh
 2. 除地址余额外，还会对被跟踪 outpoint 做 UTXO 当前态断言，因此能直接观察 rollback 后 live UTXO 是否被正确删除。
 3. tip 段里被跟踪的 wallet outpoint 会在确认后立即 `lockunspent false` 锁定，避免后续 deep 转账错误复用这些输入，污染回滚断言。
 4. 替代链继续使用 `generateblock ... transactions=[]` 显式挖空，避免旧交易重新进入新链。
-5. 场景里的 `get_utxo` 查询走的是服务端最小 RPC，并要求 outpoint 参数使用 `"txid:vout"` 的字符串形式。
+5. 场景里的 `get_live_utxo` 查询走的是服务端最小 RPC，并要求 outpoint 参数使用 `"txid:vout"` 的字符串形式。
+6. 这里校验的是 balance-history 当前 DB/live 视图中的 UTXO 是否存在，不是向 bitcoind 追查任意曾经上链过的 outpoint。
 
 ## 已知边界
 

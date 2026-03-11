@@ -109,7 +109,7 @@ regtest_get_utxo_value_sat() {
   local txid="$1"
   local vout="$2"
   local response
-  response="$(regtest_rpc_call_balance_history "get_utxo" "[\"${txid}:${vout}\"]")"
+  response="$(regtest_rpc_call_balance_history "get_live_utxo" "[\"${txid}:${vout}\"]")"
   if [[ -z "$response" ]]; then
     echo ""
     return 0
@@ -118,7 +118,7 @@ regtest_get_utxo_value_sat() {
   local error_message
   error_message="$(printf '%s' "$response" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); err=d.get("error") or {}; print(err.get("message", ""))')"
   if [[ -n "$error_message" ]]; then
-    regtest_log "get_utxo RPC returned error for ${txid}:${vout}: ${response}"
+    regtest_log "get_live_utxo RPC returned error for ${txid}:${vout}: ${response}"
     echo ""
     return 0
   fi

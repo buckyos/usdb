@@ -60,9 +60,10 @@ impl RpcClient {
         .await
     }
 
-    pub async fn get_utxo(&self, outpoint: OutPoint) -> Result<Option<UtxoInfo>, String> {
+    // Query the current live UTXO view persisted by balance-history itself.
+    pub async fn get_live_utxo(&self, outpoint: OutPoint) -> Result<Option<UtxoInfo>, String> {
         let params = json!([outpoint]);
-        self.rpc_call::<Option<UtxoInfo>>(&self.url, "get_utxo", params)
+        self.rpc_call::<Option<UtxoInfo>>(&self.url, "get_live_utxo", params)
             .await
     }
 

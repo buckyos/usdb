@@ -41,7 +41,8 @@
 
 1. `regtest_stop_balance_history` 默认先调用 `stop` RPC，再等待子进程退出；只有超时后才回退到 `kill -9`。
 2. 后台 `cargo run` 进程在服务已退出后可能短暂进入 zombie 状态，脚本需要显式 `wait` 回收，不能只靠 `kill -0` 判断。
-3. `get_utxo` 的 JSON-RPC 参数必须使用 rust-bitcoin 的 human-readable `OutPoint` 形式，也就是单个字符串 `"txid:vout"`，不能发送 map 结构。
+3. `get_live_utxo` 的 JSON-RPC 参数必须使用 rust-bitcoin 的 human-readable `OutPoint` 形式，也就是单个字符串 `"txid:vout"`，不能发送 map 结构。
+4. `get_live_utxo` 只查询 balance-history 当前 DB 中的 live UTXO 视图；它不会像内部索引链路那样在 miss 时回退到 bitcoind 拉取历史交易输出。
 
 ## 场景脚本的最小模式
 

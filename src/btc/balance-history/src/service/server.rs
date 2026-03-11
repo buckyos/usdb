@@ -393,7 +393,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         results
     }
 
-    fn get_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
+    fn get_live_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
         let utxo = self.db.get_utxo(&outpoint).map_err(|e| JsonError {
             code: ErrorCode::InternalError,
             message: format!("Failed to get utxo {}:{}: {}", outpoint.txid, outpoint.vout, e),
@@ -517,12 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn test_get_utxo_success() {
+    fn test_get_live_utxo_success() {
         use bitcoincore_rpc::bitcoin::OutPoint;
         use bitcoincore_rpc::bitcoin::Txid;
         use usdb_util::USDBScriptHash;
 
-        let server = make_test_server("get_utxo");
+        let server = make_test_server("get_live_utxo");
         let outpoint = OutPoint {
             txid: Txid::from_slice(&[7u8; 32]).unwrap(),
             vout: 3,
@@ -531,7 +531,7 @@ mod tests {
         server.db.put_utxo(&outpoint, &script_hash, 12345).unwrap();
 
         let loaded = server
-            .get_utxo(outpoint.clone())
+            .get_live_utxo(outpoint.clone())
             .unwrap()
             .unwrap();
         assert_eq!(loaded.txid, outpoint.txid.to_string());
