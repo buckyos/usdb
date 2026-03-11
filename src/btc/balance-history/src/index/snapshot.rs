@@ -1,12 +1,13 @@
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{
-    BalanceHistoryDBRef, BalanceHistoryEntry, SnapshotCallback, SnapshotDB, SnapshotHash,
-    SnapshotMeta,
+    BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry,
+    SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{USDBScriptHash, UTXOEntry};
 
 pub struct SnapshotIndexer {
@@ -227,7 +228,7 @@ impl SnapshotInstaller {
         Self { config, db, output }
     }
 
-    pub fn install(&self, data: SnapshotData) -> Result<(), String> {
+    pub fn install(self, data: SnapshotData) -> Result<(), String> {
         info!("Starting snapshot installation from {:?}", data,);
 
         self.output.start_load(0);
@@ -273,31 +274,47 @@ impl SnapshotInstaller {
             meta.block_height, meta.balance_history_count, meta.utxo_count
         ));
 
-        // Install balance history entries
-        self.install_balance_history_snapshot(&snapshot_db, &meta)?;
+        let staging_root = self.prepare_staging_root()?;
+        let staging_config = self.make_staging_config(staging_root.clone());
+        let staging_db = BalanceHistoryDB::open(staging_config, BalanceHistoryDBMode::BestEffort)
+            .map_err(|e| {
+                let msg = format!("Failed to initialize staging database: {}", e);
+                self.output.println(&msg);
+                msg
+            })?;
 
-        // Install UTXO entries
-        self.install_utxo_snapshot(&snapshot_db, &meta)?;
+        // Install into staging DB first, then atomically switch the live DB directory.
+        self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_utxo_snapshot(&staging_db, &snapshot_db, &meta)?;
 
-        self.db
+        staging_db
             .put_btc_block_height(meta.block_height)
             .map_err(|e| {
                 let msg = format!("Failed to update BTC block height: {}", e);
                 self.output.println(&msg);
                 msg
             })?;
+        staging_db.flush_all().map_err(|e| {
+            let msg = format!("Failed to flush staging database: {}", e);
+            self.output.println(&msg);
+            msg
+        })?;
 
-        self.output.println(&format!(
+        let output = self.output.clone();
+        self.swap_staging_db_into_place(staging_db, staging_root)?;
+
+        output.println(&format!(
             "Completed snapshot installation up to block height {}",
             meta.block_height
         ));
-        self.output.finish_load();
+        output.finish_load();
 
         Ok(())
     }
 
     fn install_balance_history_snapshot(
         &self,
+        target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
     ) -> Result<(), String> {
@@ -327,7 +344,7 @@ impl SnapshotInstaller {
                     msg
                 })?;
 
-            self.db.put_address_history_async(&entries).map_err(|e| {
+            target_db.put_address_history_async(&entries).map_err(|e| {
                 let msg = format!("Failed to write snapshot entries to database: {}", e);
                 self.output.println(&msg);
                 msg
@@ -352,7 +369,7 @@ impl SnapshotInstaller {
             total
         );
 
-        self.db.flush_all().map_err(|e| {
+        target_db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
             self.output.println(&msg);
             msg
@@ -366,6 +383,7 @@ impl SnapshotInstaller {
 
     fn install_utxo_snapshot(
         &self,
+        target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
     ) -> Result<(), String> {
@@ -395,7 +413,7 @@ impl SnapshotInstaller {
                     msg
                 })?;
 
-            self.db.put_utxos(&utxos).map_err(|e| {
+            target_db.put_utxos(&utxos).map_err(|e| {
                 let msg = format!("Failed to write snapshot UTXOs to database: {}", e);
                 self.output.println(&msg);
                 msg
@@ -420,7 +438,7 @@ impl SnapshotInstaller {
             total
         );
 
-        self.db.flush_all().map_err(|e| {
+        target_db.flush_all().map_err(|e| {
             let msg = format!("Failed to flush database: {}", e);
             self.output.println(&msg);
             msg
@@ -429,5 +447,261 @@ impl SnapshotInstaller {
         self.output.println("UTXO snapshot installation completed");
 
         Ok(())
+    }
+
+    fn prepare_staging_root(&self) -> Result<PathBuf, String> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let staging_root = self
+            .config
+            .root_dir
+            .join(format!("snapshot_install_staging_{}", nanos));
+        if staging_root.exists() {
+            std::fs::remove_dir_all(&staging_root).map_err(|e| {
+                let msg = format!(
+                    "Failed to clear existing staging root {}: {}",
+                    staging_root.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        std::fs::create_dir_all(&staging_root).map_err(|e| {
+            let msg = format!(
+                "Failed to create staging root {}: {}",
+                staging_root.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(staging_root)
+    }
+
+    fn make_staging_config(&self, staging_root: PathBuf) -> BalanceHistoryConfigRef {
+        let mut cfg = self.config.as_ref().clone();
+        cfg.root_dir = staging_root;
+        Arc::new(cfg)
+    }
+
+    fn swap_staging_db_into_place(
+        self,
+        staging_db: BalanceHistoryDB,
+        staging_root: PathBuf,
+    ) -> Result<(), String> {
+        let live_db_dir = self.config.db_dir();
+        let staged_db_dir = staging_root.join("db");
+        let backup_db_dir = self.config.root_dir.join(format!(
+            "db_backup_snapshot_install_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+
+        if !staged_db_dir.exists() {
+            let msg = format!(
+                "Staged DB directory does not exist: {}",
+                staged_db_dir.display()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        staging_db.close();
+
+        let live_db = Arc::try_unwrap(self.db).map_err(|_| {
+            let msg = "Failed to acquire exclusive ownership of live DB before snapshot swap"
+                .to_string();
+            error!("{}", msg);
+            msg
+        })?;
+        live_db.close();
+
+        if live_db_dir.exists() {
+            std::fs::rename(&live_db_dir, &backup_db_dir).map_err(|e| {
+                let msg = format!(
+                    "Failed to move live DB directory {} to backup {}: {}",
+                    live_db_dir.display(),
+                    backup_db_dir.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        if let Err(e) = std::fs::rename(&staged_db_dir, &live_db_dir) {
+            if backup_db_dir.exists() {
+                let _ = std::fs::rename(&backup_db_dir, &live_db_dir);
+            }
+            let msg = format!(
+                "Failed to promote staged DB {} to live {}: {}",
+                staged_db_dir.display(),
+                live_db_dir.display(),
+                e
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        if backup_db_dir.exists() {
+            info!(
+                "Preserved previous live DB backup after snapshot install: {}",
+                backup_db_dir.display()
+            );
+            self.output.println(&format!(
+                "Previous live DB preserved at {}",
+                backup_db_dir.display()
+            ));
+        }
+
+        if staging_root.exists() {
+            std::fs::remove_dir_all(&staging_root).map_err(|e| {
+                let msg = format!(
+                    "Failed to remove staging root {}: {}",
+                    staging_root.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BalanceHistoryConfig;
+    use crate::db::BalanceHistoryDBMode;
+    use crate::output::IndexOutput;
+    use crate::status::SyncStatusManager;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::ToUSDBScriptHash;
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("balance_history_snapshot_{}_{}", tag, nanos));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn test_install_replaces_live_db_with_staged_snapshot() {
+        let root_dir = temp_root("install_replace");
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir.clone();
+        let config = Arc::new(config);
+
+        let old_script = ScriptBuf::from(vec![1u8; 32]);
+        let old_script_hash = old_script.to_usdb_script_hash();
+        let old_outpoint = OutPoint {
+            txid: Txid::from_slice(&[2u8; 32]).unwrap(),
+            vout: 0,
+        };
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db
+            .put_address_history_async(&vec![BalanceHistoryEntry {
+                script_hash: old_script_hash,
+                block_height: 3,
+                delta: 50,
+                balance: 50,
+            }])
+            .unwrap();
+        live_db.put_utxo(&old_outpoint, &old_script_hash, 50).unwrap();
+        live_db.put_btc_block_height(3).unwrap();
+        let live_db = Arc::new(live_db);
+
+        let snapshot_path = root_dir.join("install_source_snapshot.db");
+        let new_script = ScriptBuf::from(vec![9u8; 32]);
+        let new_script_hash = new_script.to_usdb_script_hash();
+        let new_outpoint = OutPoint {
+            txid: Txid::from_slice(&[4u8; 32]).unwrap(),
+            vout: 1,
+        };
+
+        {
+            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
+            snapshot_db
+                .put_balance_history_entries(&[BalanceHistoryEntry {
+                    script_hash: new_script_hash,
+                    block_height: 10,
+                    delta: 75,
+                    balance: 75,
+                }])
+                .unwrap();
+            snapshot_db
+                .put_utxo_entries(&[UTXOEntry {
+                    outpoint: new_outpoint,
+                    script_hash: new_script_hash,
+                    value: 75,
+                }])
+                .unwrap();
+
+            let mut meta = SnapshotMeta::new(10);
+            meta.balance_history_count = 1;
+            meta.utxo_count = 1;
+            snapshot_db.update_meta(&meta).unwrap();
+        }
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        installer
+            .install(SnapshotData {
+                file: snapshot_path,
+                hash: None,
+            })
+            .unwrap();
+
+        let reopened_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
+
+        let old_balance = reopened_db
+            .get_balance_delta_at_block_height(&old_script_hash, 3)
+            .unwrap();
+        assert!(old_balance.is_none(), "old live DB balance entry should be replaced by snapshot");
+        assert!(reopened_db.get_utxo(&old_outpoint).unwrap().is_none());
+
+        let new_balance = reopened_db
+            .get_balance_delta_at_block_height(&new_script_hash, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(new_balance.balance, 75);
+        assert_eq!(new_balance.delta, 75);
+
+        let new_utxo = reopened_db.get_utxo(&new_outpoint).unwrap().unwrap();
+        assert_eq!(new_utxo.script_hash, new_script_hash);
+        assert_eq!(new_utxo.value, 75);
+
+        let staging_dirs: Vec<_> = std::fs::read_dir(&root_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with("snapshot_install_staging_"))
+            .collect();
+        assert!(staging_dirs.is_empty(), "temporary staging directories should be cleaned up");
+
+        let backup_dirs: Vec<_> = std::fs::read_dir(&root_dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with("db_backup_snapshot_install_"))
+            .collect();
+        assert_eq!(backup_dirs.len(), 1, "previous live DB backup should be preserved by default");
     }
 }
