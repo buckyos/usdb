@@ -3,6 +3,7 @@ const state = {
     homeRefreshMs: 5000,
     homeTimer: null,
     clockTimer: null,
+    latestPassCommit: null,
     pass: {
         inscriptionId: "",
         atHeight: null,
@@ -65,6 +66,11 @@ const els = {
     homeUpdatedAt: document.getElementById("home-updated-at"),
     homeError: document.getElementById("home-error"),
     homeRefresh: document.getElementById("home-refresh"),
+    homeOpenPassCommit: document.getElementById("home-open-pass-commit"),
+    homePassCommitEmpty: document.getElementById("home-pass-commit-empty"),
+    homePassCommitBox: document.getElementById("home-pass-commit-box"),
+    homePassCommitGrid: document.getElementById("home-pass-commit-grid"),
+    homePassCommitHint: document.getElementById("home-pass-commit-hint"),
 
     passQueryForm: document.getElementById("pass-query-form"),
     passIdInput: document.getElementById("pass-id-input"),
@@ -299,19 +305,118 @@ function renderDetailGrid(container, entries) {
     entries.forEach(([k, v]) => {
         const row = document.createElement("div");
         row.className = "detail-item";
-        row.innerHTML = `<span class="k">${k}</span><span class="v mono">${v ?? "-"}</span>`;
+
+        const key = document.createElement("span");
+        key.className = "k";
+        key.textContent = k;
+        row.appendChild(key);
+
+        if (v && typeof v === "object" && v.kind === "action") {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "v mono detail-action";
+            button.textContent = v.text ?? "-";
+            if (v.title) {
+                button.title = v.title;
+            }
+            button.addEventListener("click", () => {
+                v.onClick?.();
+            });
+            row.appendChild(button);
+        } else {
+            const value = document.createElement("span");
+            value.className = "v mono";
+            value.textContent = v ?? "-";
+            row.appendChild(value);
+        }
+
         container.appendChild(row);
     });
+}
+
+function asDetailAction(text, onClick, title = "") {
+    return {
+        kind: "action",
+        text: String(text ?? "-"),
+        onClick,
+        title,
+    };
+}
+
+function renderHomePassCommit(commit) {
+    if (!commit) {
+        state.latestPassCommit = null;
+        els.homePassCommitEmpty.textContent = "当前还没有可展示的本地 pass block commit。";
+        els.homePassCommitEmpty.classList.remove("hidden");
+        els.homePassCommitBox.classList.add("hidden");
+        els.homePassCommitHint.textContent = "-";
+        if (els.homeOpenPassCommit) {
+            els.homeOpenPassCommit.disabled = true;
+        }
+        return;
+    }
+
+    state.latestPassCommit = commit;
+    els.homePassCommitEmpty.classList.add("hidden");
+    els.homePassCommitBox.classList.remove("hidden");
+    renderDetailGrid(els.homePassCommitGrid, [
+        [
+            "block_height",
+            asDetailAction(
+                fmtNum(commit.block_height),
+                () => openPassCommitAtHeight(commit.block_height),
+                "打开 Pass 页并带入该高度",
+            ),
+        ],
+        ["balance_history_block_height", commit.balance_history_block_height],
+        ["commit_protocol_version", commit.commit_protocol_version],
+        ["commit_hash_algo", commit.commit_hash_algo],
+        ["mutation_root", commit.mutation_root],
+        ["block_commit", commit.block_commit],
+    ]);
+    els.homePassCommitHint.textContent = `本地最新 durable pass commit，高度=${fmtNum(commit.block_height)}。`;
+    if (els.homeOpenPassCommit) {
+        els.homeOpenPassCommit.disabled = false;
+    }
+}
+
+function openPassCommitAtHeight(blockHeight) {
+    if (blockHeight === null || blockHeight === undefined) return;
+    setActiveTab("pass");
+    state.pass.commitHeight = blockHeight;
+    state.pass.atHeight = blockHeight;
+    els.passCommitHeightInput.value = String(blockHeight);
+    els.passHeightInput.value = String(blockHeight);
+    void queryPassBlockCommit(blockHeight);
+    if (els.passIdInput.value.trim()) {
+        void queryPassSnapshot();
+    }
+}
+
+function openPassLinkedHeight(blockHeight) {
+    if (blockHeight === null || blockHeight === undefined) return;
+    setActiveTab("pass");
+    state.pass.atHeight = blockHeight;
+    state.pass.commitHeight = blockHeight;
+    els.passHeightInput.value = String(blockHeight);
+    els.passCommitHeightInput.value = String(blockHeight);
+
+    if (state.pass.inscriptionId) {
+        void queryPassSnapshot();
+        return;
+    }
+    void queryPassBlockCommit(blockHeight);
 }
 
 async function refreshHome() {
     els.homeError.textContent = "";
     try {
-        const [rpcInfo, syncStatus, passStats, latestBalance] = await Promise.all([
+        const [rpcInfo, syncStatus, passStats, latestBalance, latestPassCommit] = await Promise.all([
             rpcCall("get_rpc_info"),
             rpcCall("get_sync_status"),
             rpcCall("get_pass_stats_at_height", [{ at_height: null }]),
             rpcCall("get_latest_active_balance_snapshot"),
+            rpcCall("get_pass_block_commit", [{ block_height: null }]),
         ]);
 
         els.homeNetwork.textContent = rpcInfo.network || "-";
@@ -339,9 +444,11 @@ async function refreshHome() {
         els.homeSyncProgress.style.width = `${pct.toFixed(2)}%`;
         els.homeUpdatedAt.textContent = fmtTime();
         els.rpcHint.textContent = `连接正常，最后刷新 ${fmtTime()}`;
+        renderHomePassCommit(latestPassCommit);
     } catch (err) {
         els.homeError.textContent = `首页刷新失败：${rpcErrorMessage(err)}`;
         els.rpcHint.textContent = `RPC 异常：${rpcErrorMessage(err)}`;
+        renderHomePassCommit(null);
     }
 }
 
@@ -410,8 +517,22 @@ async function queryPassBlockCommit(heightOverride = undefined) {
         els.passCommitEmpty.classList.add("hidden");
         els.passCommitBox.classList.remove("hidden");
         renderDetailGrid(els.passCommitGrid, [
-            ["block_height", commit.block_height],
-            ["balance_history_block_height", commit.balance_history_block_height],
+            [
+                "block_height",
+                asDetailAction(
+                    fmtNum(commit.block_height),
+                    () => openPassLinkedHeight(commit.block_height),
+                    "用该高度刷新 Pass 快照与本地 commit",
+                ),
+            ],
+            [
+                "balance_history_block_height",
+                asDetailAction(
+                    fmtNum(commit.balance_history_block_height),
+                    () => openPassLinkedHeight(commit.balance_history_block_height),
+                    "把依赖高度带入 Pass 页进行精确查询",
+                ),
+            ],
             ["commit_protocol_version", commit.commit_protocol_version],
             ["commit_hash_algo", commit.commit_hash_algo],
             ["mutation_root", commit.mutation_root],
@@ -421,6 +542,9 @@ async function queryPassBlockCommit(heightOverride = undefined) {
 
         if (els.passCommitHeightInput.value === "" || heightOverride !== undefined) {
             els.passCommitHeightInput.value = String(commit.block_height);
+        }
+        if (els.passHeightInput.value === "" || heightOverride !== undefined) {
+            els.passHeightInput.value = String(commit.block_height);
         }
         els.passCommitHint.textContent = `查询成功，高度=${fmtNum(commit.block_height)}。`;
     } catch (err) {
@@ -462,10 +586,24 @@ async function queryPassSnapshot() {
         renderDetailGrid(els.passSnapshotGrid, [
             ["inscription_id", snapshot.inscription_id],
             ["inscription_number", snapshot.inscription_number],
-            ["resolved_height", snapshot.resolved_height],
+            [
+                "resolved_height",
+                asDetailAction(
+                    fmtNum(snapshot.resolved_height),
+                    () => openPassLinkedHeight(snapshot.resolved_height),
+                    "用 resolved_height 刷新 exact height 视图",
+                ),
+            ],
             ["state", snapshot.state],
             ["owner", snapshot.owner],
-            ["mint_block_height", snapshot.mint_block_height],
+            [
+                "mint_block_height",
+                asDetailAction(
+                    fmtNum(snapshot.mint_block_height),
+                    () => openPassLinkedHeight(snapshot.mint_block_height),
+                    "回到 mint 高度查看快照与 commit",
+                ),
+            ],
             ["mint_owner", snapshot.mint_owner],
             ["eth_main", snapshot.eth_main],
             ["eth_collab", snapshot.eth_collab || "-"],
@@ -706,6 +844,11 @@ function bindEvents() {
     els.homeRefresh.addEventListener("click", () => {
         void refreshHome();
     });
+    if (els.homeOpenPassCommit) {
+        els.homeOpenPassCommit.addEventListener("click", () => {
+            openPassCommitAtHeight(state.latestPassCommit?.block_height);
+        });
+    }
 
     els.passQueryForm.addEventListener("submit", (event) => {
         event.preventDefault();
