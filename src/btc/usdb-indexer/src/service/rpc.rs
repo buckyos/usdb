@@ -2,6 +2,28 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 
+/// Business error code returned when the requested height is above local durable sync progress.
+pub const ERR_HEIGHT_NOT_SYNCED: i64 = -32010;
+/// Business error code returned when a pass snapshot cannot be found at the requested height.
+pub const ERR_PASS_NOT_FOUND: i64 = -32011;
+/// Business error code returned when no energy record can be resolved for the requested pass/height.
+pub const ERR_ENERGY_NOT_FOUND: i64 = -32012;
+/// Business error code returned when an exact active-balance snapshot is missing.
+pub const ERR_SNAPSHOT_NOT_FOUND: i64 = -32013;
+/// Business error code returned when history invariants imply more than one active pass per owner.
+pub const ERR_DUPLICATE_ACTIVE_OWNER: i64 = -32014;
+/// Business error code returned when pagination arguments are invalid.
+pub const ERR_INVALID_PAGINATION: i64 = -32015;
+/// Business error code returned when a closed height range is malformed.
+pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
+/// Business error code returned when internal state invariants are violated during RPC resolution.
+pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
+
+/// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
+pub const SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
+/// Version tag of the local snapshot-id derivation rule exposed by the RPC layer.
+pub const SNAPSHOT_ID_VERSION: &str = "usdb-indexer-snapshot:v1";
+
 /// Service metadata returned by `get_rpc_info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcInfo {
@@ -55,6 +77,32 @@ pub struct IndexerSnapshotInfo {
     pub snapshot_id_hash_algo: String,
     /// Version tag of the local snapshot id derivation rule.
     pub snapshot_id_version: String,
+}
+
+/// Parameters for `get_pass_block_commit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPassBlockCommitParams {
+    /// Optional query height; `None` resolves to the current local synced height.
+    pub block_height: Option<u32>,
+}
+
+/// Local pass block commit metadata resolved at one exact height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassBlockCommitInfo {
+    /// Final query height resolved by the server.
+    pub block_height: u32,
+    /// Upstream balance-history height used as the external anchor.
+    pub balance_history_block_height: u32,
+    /// Upstream balance-history logical block commit captured at the anchor height.
+    pub balance_history_block_commit: String,
+    /// Hash of the normalized local pass mutation stream for this block.
+    pub mutation_root: String,
+    /// Rolling local pass block commit chained from previous local commit and upstream anchor.
+    pub block_commit: String,
+    /// Local pass commit protocol version used to interpret this row.
+    pub commit_protocol_version: String,
+    /// Hash algorithm used by both `mutation_root` and `block_commit`.
+    pub commit_hash_algo: String,
 }
 
 /// Parameters for `get_pass_snapshot`.
@@ -445,6 +493,13 @@ pub trait UsdbIndexerRpc {
     /// Returns the currently adopted upstream snapshot metadata.
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>>;
+
+    /// Returns local pass block commit metadata at one exact height.
+    #[rpc(name = "get_pass_block_commit")]
+    fn get_pass_block_commit(
+        &self,
+        params: GetPassBlockCommitParams,
+    ) -> JsonResult<Option<PassBlockCommitInfo>>;
 
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]

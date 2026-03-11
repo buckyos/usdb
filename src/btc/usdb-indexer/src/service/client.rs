@@ -79,6 +79,28 @@ impl RpcClient {
             .await
     }
 
+    /// Returns local pass block commit metadata at a target height.
+    ///
+    /// # Arguments
+    /// * `block_height` - Optional query height. `None` resolves to current local synced height.
+    ///
+    /// # Returns
+    /// * `Ok(Some(PassBlockCommitInfo))` when a local pass block commit row exists at the height.
+    /// * `Ok(None)` when the height is resolved successfully but no local pass commit row exists.
+    /// * `Err(String)` if the RPC call fails.
+    pub async fn get_pass_block_commit(
+        &self,
+        block_height: Option<u32>,
+    ) -> Result<Option<PassBlockCommitInfo>, String> {
+        self.rpc_call::<Option<PassBlockCommitInfo>>(
+            "get_pass_block_commit",
+            json!([{
+                "block_height": block_height,
+            }]),
+        )
+        .await
+    }
+
     /// Returns a pass snapshot resolved at a target height.
     ///
     /// # Arguments

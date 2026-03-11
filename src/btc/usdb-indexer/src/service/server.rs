@@ -14,17 +14,6 @@ use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 
-const ERR_HEIGHT_NOT_SYNCED: i64 = -32010;
-const ERR_PASS_NOT_FOUND: i64 = -32011;
-const ERR_ENERGY_NOT_FOUND: i64 = -32012;
-const ERR_SNAPSHOT_NOT_FOUND: i64 = -32013;
-const ERR_DUPLICATE_ACTIVE_OWNER: i64 = -32014;
-const ERR_INVALID_PAGINATION: i64 = -32015;
-const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
-const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
-const SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
-const SNAPSHOT_ID_VERSION: &str = "usdb-indexer-snapshot:v1";
-
 fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -589,6 +578,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             network: self.config.config().bitcoin.network().to_string(),
             features: vec![
                 "snapshot_info".to_string(),
+                "pass_block_commit".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
@@ -628,6 +618,28 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>> {
         self.adopted_snapshot_info()
+    }
+
+    fn get_pass_block_commit(
+        &self,
+        params: GetPassBlockCommitParams,
+    ) -> JsonResult<Option<PassBlockCommitInfo>> {
+        let resolved_height = self.resolve_height(params.block_height)?;
+        let entry = self
+            .indexer
+            .miner_pass_storage()
+            .get_pass_block_commit(resolved_height)
+            .map_err(Self::to_internal_error)?;
+
+        Ok(entry.map(|entry| PassBlockCommitInfo {
+            block_height: entry.block_height,
+            balance_history_block_height: entry.balance_history_block_height,
+            balance_history_block_commit: entry.balance_history_block_commit,
+            mutation_root: entry.mutation_root,
+            block_commit: entry.block_commit,
+            commit_protocol_version: entry.commit_protocol_version,
+            commit_hash_algo: entry.commit_hash_algo,
+        }))
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
@@ -1157,7 +1169,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigManager;
     use crate::index::energy_formula::calc_growth_delta;
-    use crate::index::{InscriptionIndexer, MinerPassState};
+    use crate::index::{InscriptionIndexer, MinerPassState, PassBlockCommitEntry};
     use crate::output::IndexOutput;
     use crate::status::StatusManager;
     use crate::storage::{MinerPassInfo, PassEnergyRecord};
@@ -1314,6 +1326,42 @@ mod tests {
         assert_eq!(snapshot.snapshot_id_hash_algo, SNAPSHOT_ID_HASH_ALGO);
         assert_eq!(snapshot.snapshot_id_version, SNAPSHOT_ID_VERSION);
         assert!(!snapshot.snapshot_id.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_block_commit_success() {
+        let (server, root_dir) = build_server("pass_block_commit", 140);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 140,
+                balance_history_block_height: 140,
+                balance_history_block_commit: "aa".repeat(32),
+                mutation_root: "bb".repeat(32),
+                block_commit: "cc".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let commit = server
+            .get_pass_block_commit(GetPassBlockCommitParams {
+                block_height: Some(140),
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(commit.block_height, 140);
+        assert_eq!(commit.balance_history_block_height, 140);
+        assert_eq!(commit.balance_history_block_commit, "aa".repeat(32));
+        assert_eq!(commit.mutation_root, "bb".repeat(32));
+        assert_eq!(commit.block_commit, "cc".repeat(32));
+        assert_eq!(commit.commit_protocol_version, "1.0.0");
+        assert_eq!(commit.commit_hash_algo, "sha256");
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
