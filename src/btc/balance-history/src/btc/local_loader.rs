@@ -731,8 +731,11 @@ mod tests {
     use crate::btc::BTCClient;
     use crate::config::BalanceHistoryConfig;
     use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
+    use crate::output::IndexOutput;
+    use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::{Amount, BlockHash, OutPoint, ScriptBuf};
     use std::collections::BTreeMap;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::BTCRpcClient;
 
     struct MockBTCClient {
@@ -910,6 +913,246 @@ mod tests {
         assert!(db.get_all_blocks().unwrap().is_empty());
         assert!(db.get_all_block_heights().unwrap().is_empty());
         assert!(cache.lock().unwrap().sorted_blocks.is_empty());
+    }
+
+    fn real_test_root(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("balance_history_local_loader_{}_{}", tag, nanos))
+    }
+
+    fn load_real_test_base_config() -> BalanceHistoryConfig {
+        let default_root = BalanceHistoryConfig::default().root_dir.clone();
+        BalanceHistoryConfig::load(&default_root).unwrap_or_else(|_| BalanceHistoryConfig::default())
+    }
+
+    fn prepare_subset_block_data_dir(tag: &str, file_count: usize) -> std::path::PathBuf {
+        let source_config = load_real_test_base_config();
+        let source_data_dir = source_config.btc.data_dir();
+        let source_blocks_dir = source_data_dir.join("blocks");
+        let target_data_dir = real_test_root(&format!("{}_btc", tag));
+        let target_blocks_dir = target_data_dir.join("blocks");
+        std::fs::create_dir_all(&target_blocks_dir).unwrap();
+
+        let xor_file = source_blocks_dir.join("xor.dat");
+        if xor_file.exists() {
+            std::fs::copy(&xor_file, target_blocks_dir.join("xor.dat")).unwrap();
+        }
+
+        for index in 0..file_count {
+            let file_name = format!("blk{:05}.dat", index);
+            let source_file = source_blocks_dir.join(&file_name);
+            assert!(
+                source_file.exists(),
+                "expected blk file to exist for real local loader test: {}",
+                source_file.display()
+            );
+            std::fs::copy(&source_file, target_blocks_dir.join(file_name)).unwrap();
+        }
+
+        target_data_dir
+    }
+
+    fn make_real_test_env(
+        tag: &str,
+    ) -> (
+        Arc<BalanceHistoryConfig>,
+        BTCClientRef,
+        Arc<BalanceHistoryDB>,
+        Arc<IndexOutput>,
+    ) {
+        let mut config = load_real_test_base_config();
+        let rpc_url = config.btc.rpc_url();
+        let auth = config.btc.auth();
+        let root_dir = real_test_root(tag);
+        let _ = std::fs::remove_dir_all(&root_dir);
+        std::fs::create_dir_all(&root_dir).unwrap();
+        config.root_dir = root_dir;
+        let subset_data_dir = prepare_subset_block_data_dir(tag, 4);
+        config.btc.data_dir = Some(subset_data_dir);
+        let config = Arc::new(config);
+
+        println!("rpc url: {}", rpc_url);
+        let client = BTCRpcClient::new(rpc_url, auth).unwrap();
+        let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
+
+        let db = Arc::new(BalanceHistoryDB::open(
+            config.clone(),
+            BalanceHistoryDBMode::Normal,
+        )
+        .unwrap());
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+
+        (config, client, db, output)
+    }
+
+    fn build_real_loader(
+        config: Arc<BalanceHistoryConfig>,
+        client: BTCClientRef,
+        db: Arc<BalanceHistoryDB>,
+        output: Arc<IndexOutput>,
+    ) -> BlockLocalLoader {
+        BlockLocalLoader::new(
+            config.btc.block_magic(),
+            &config.btc.data_dir(),
+            client,
+            db,
+            output,
+        )
+        .unwrap()
+    }
+
+    fn ensure_real_rpc_available(client: &BTCClientRef) -> bool {
+        match client.get_latest_block_height() {
+            Ok(height) => {
+                println!("real local-loader test connected to bitcoind RPC, latest height={}", height);
+                true
+            }
+            Err(err) => {
+                eprintln!(
+                    "skipping real local-loader test because bitcoind RPC is unavailable: {}",
+                    err
+                );
+                false
+            }
+        }
+    }
+
+    fn sample_heights(latest_indexed_height: u32) -> Vec<u32> {
+        let mut heights = vec![0, latest_indexed_height];
+        if latest_indexed_height >= 2 {
+            heights.push(latest_indexed_height / 2);
+        }
+        heights.sort_unstable();
+        heights.dedup();
+        heights
+    }
+
+    #[test]
+    #[ignore = "requires local bitcoind RPC and blk files"]
+    fn test_local_loader_build_index_matches_rpc_on_sample_heights() {
+        let (config, client, db, output) = make_real_test_env("build_match_rpc");
+        if !ensure_real_rpc_available(&client) {
+            return;
+        }
+        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        let subset_latest = subset_reader.find_latest_blk_file().unwrap();
+        println!("subset data dir: {}", config.btc.data_dir().display());
+        println!("subset latest blk file index: {}", subset_latest);
+        assert_eq!(subset_latest, 3, "expected subset blk dir to contain exactly 4 blk files");
+
+        let loader = build_real_loader(config, client.clone(), db, output);
+
+        loader.build_index().unwrap();
+
+        let latest_indexed_height = {
+            let cache = loader.block_index_cache.lock().unwrap();
+            assert!(!cache.sorted_blocks.is_empty(), "local loader cache should not be empty");
+            cache.sorted_blocks.last().unwrap().0
+        };
+
+        for height in sample_heights(latest_indexed_height) {
+            let loader_hash = loader.get_block_hash(height).unwrap();
+            let rpc_hash = client.get_block_hash(height).unwrap();
+            assert_eq!(loader_hash, rpc_hash, "block hash mismatch at height {}", height);
+
+            let block = loader.get_block_by_height(height).unwrap();
+            assert_eq!(block.block_hash(), rpc_hash, "block body/hash mismatch at height {}", height);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local bitcoind RPC and blk files"]
+    fn test_try_restore_block_index_from_db_real() {
+        let (config, client, db, output) = make_real_test_env("restore_valid");
+        if !ensure_real_rpc_available(&client) {
+            return;
+        }
+        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        assert_eq!(subset_reader.find_latest_blk_file().unwrap(), 3);
+        let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
+        loader.build_index().unwrap();
+
+        let last_block_file_index = db.get_last_block_file_index().unwrap().unwrap();
+        let current_last_blk_file = loader.block_reader.find_latest_blk_file().unwrap() as u32;
+
+        let restore_loader = build_real_loader(config, client.clone(), db, output);
+        let restored = restore_loader
+            .try_restore_block_index_from_db(last_block_file_index, current_last_blk_file)
+            .unwrap();
+        assert!(restored, "expected persisted block index restore to succeed");
+
+        let latest_indexed_height = {
+            let cache = restore_loader.block_index_cache.lock().unwrap();
+            assert!(!cache.sorted_blocks.is_empty(), "restored cache should not be empty");
+            cache.sorted_blocks.last().unwrap().0
+        };
+
+        let restored_hash = restore_loader.get_block_hash(latest_indexed_height).unwrap();
+        let rpc_hash = client.get_block_hash(latest_indexed_height).unwrap();
+        assert_eq!(restored_hash, rpc_hash);
+    }
+
+    #[test]
+    #[ignore = "requires local bitcoind RPC and blk files"]
+    fn test_build_index_rebuilds_after_corrupted_persisted_state_real() {
+        let (config, client, db, output) = make_real_test_env("rebuild_after_corrupt");
+        if !ensure_real_rpc_available(&client) {
+            return;
+        }
+        let subset_reader = BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        assert_eq!(subset_reader.find_latest_blk_file().unwrap(), 3);
+        let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
+        loader.build_index().unwrap();
+
+        let block_hash_0 = client.get_block_hash(0).unwrap();
+        let block_hash_2 = client.get_block_hash(2).unwrap();
+        db.clear_blocks().unwrap();
+        db.put_blocks_sync(
+            0,
+            &vec![
+                (
+                    block_hash_0,
+                    BlockEntry {
+                        block_file_index: 0,
+                        block_file_offset: 0,
+                        block_record_index: 0,
+                    },
+                ),
+                (
+                    block_hash_2,
+                    BlockEntry {
+                        block_file_index: 0,
+                        block_file_offset: 1,
+                        block_record_index: 1,
+                    },
+                ),
+            ],
+            &vec![(0, block_hash_0), (2, block_hash_2)],
+        )
+        .unwrap();
+
+        let rebuild_loader = build_real_loader(config, client.clone(), db.clone(), output);
+        rebuild_loader.build_index().unwrap();
+
+        let latest_indexed_height = {
+            let cache = rebuild_loader.block_index_cache.lock().unwrap();
+            assert!(!cache.sorted_blocks.is_empty(), "rebuilt cache should not be empty");
+            for (expected_height, (height, _)) in cache.sorted_blocks.iter().enumerate() {
+                assert_eq!(*height, expected_height as u32, "rebuilt cache should be contiguous");
+            }
+            cache.sorted_blocks.last().unwrap().0
+        };
+
+        assert!(db.get_last_block_file_index().unwrap().is_some());
+        assert!(!db.get_all_block_heights().unwrap().is_empty());
+        let rebuilt_hash = rebuild_loader.get_block_hash(latest_indexed_height).unwrap();
+        let rpc_hash = client.get_block_hash(latest_indexed_height).unwrap();
+        assert_eq!(rebuilt_hash, rpc_hash);
     }
 
     #[test]
