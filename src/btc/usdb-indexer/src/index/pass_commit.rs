@@ -60,18 +60,27 @@ pub enum PassBlockMutation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassBlockCommitEntry {
+    // Local usdb-indexer block height whose pass state transitions are being committed.
     pub block_height: u32,
+    // Upstream balance-history block height used as the anchor for this local commit.
     pub balance_history_block_height: u32,
+    // Upstream balance-history logical block commit at the same anchor height.
     pub balance_history_block_commit: String,
+    // Hash of the normalized pass mutation stream collected for this block only.
     pub mutation_root: String,
+    // Rolling local pass block commit derived from previous local commit + upstream anchor + mutation_root.
     pub block_commit: String,
+    // Version of the local pass commit protocol used to hash this entry.
     pub commit_protocol_version: String,
+    // Hash algorithm name used by mutation_root and block_commit.
     pub commit_hash_algo: String,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct PassBlockMutationCollector {
+    // Block height for which this collector is recording pass mutations.
     block_height: u32,
+    // Ordered logical mutation stream emitted by pass-state transitions in this block.
     mutations: Vec<PassBlockMutation>,
 }
 

@@ -54,12 +54,16 @@ pub struct InscriptionIndexer {
 }
 
 struct CollectedMintItems {
+    // Valid protocol mints that will enter tx-order event execution for this block.
     valid_items: Vec<InscriptionNewItem>,
+    // Invalid protocol mints that still need history visibility at the inscription height.
     invalid_items: Vec<InvalidPassMintInscriptionInfo>,
 }
 
 struct BlockMutationCollectionGuard<'a> {
+    // Manager that owns the single active per-block mutation collector.
     manager: &'a MinerPassManagerRef,
+    // Cleared once ownership of the collector is transferred via take().
     active: bool,
 }
 
@@ -81,6 +85,8 @@ impl<'a> BlockMutationCollectionGuard<'a> {
 
 impl Drop for BlockMutationCollectionGuard<'_> {
     fn drop(&mut self) {
+        // Any early return before take() means this block never produced a durable commit,
+        // so the transient collector must not leak into the next block attempt.
         if self.active {
             self.manager.clear_block_mutation_collection();
         }
@@ -492,6 +498,10 @@ impl InscriptionIndexer {
         for height in block_range {
             info!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
+            let durable_pass_synced_height = self
+                .miner_pass_storage
+                .get_synced_btc_block_height()?
+                .unwrap_or(0);
 
             // Use savepoint to keep pass+balance sqlite state atomic at per-block granularity.
             let savepoint_guard = MinePassStorageSavePointGuard::new(&self.miner_pass_storage)?;
@@ -504,13 +514,39 @@ impl InscriptionIndexer {
 
             // Persist synced height before committing savepoint so crash-recovery starts from durable progress.
             let update_synced_height_begin = Instant::now();
-            self.miner_pass_storage
-                .update_synced_btc_block_height(height)?;
+            if let Err(e) = self
+                .miner_pass_storage
+                .update_synced_btc_block_height(height)
+            {
+                let recovery_error = self
+                    .pass_energy_manager
+                    .rollback_to_pass_synced_height(durable_pass_synced_height)
+                    .err();
+                let msg = Self::merge_block_failure_with_recovery(
+                    e,
+                    recovery_error,
+                    "energy rollback after synced-height update failure",
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
             let update_synced_height_elapsed_ms = update_synced_height_begin.elapsed().as_millis();
 
             // Commit only after all block writes and synced-height update succeed.
             let commit_savepoint_begin = Instant::now();
-            savepoint_guard.commit()?;
+            if let Err(e) = savepoint_guard.commit() {
+                let recovery_error = self
+                    .pass_energy_manager
+                    .rollback_to_pass_synced_height(durable_pass_synced_height)
+                    .err();
+                let msg = Self::merge_block_failure_with_recovery(
+                    e,
+                    recovery_error,
+                    "energy rollback after sqlite savepoint failure",
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
             let commit_savepoint_elapsed_ms = commit_savepoint_begin.elapsed().as_millis();
             let sync_single_block_elapsed_ms = sync_single_block_begin.elapsed().as_millis();
 
@@ -544,13 +580,23 @@ impl InscriptionIndexer {
     }
 
     #[cfg(test)]
+    pub(crate) async fn sync_blocks_without_reconcile_for_test(
+        &self,
+        block_range: std::ops::RangeInclusive<u32>,
+    ) -> Result<u32, String> {
+        self.sync_blocks(block_range).await
+    }
+
+    #[cfg(test)]
     pub(crate) fn has_active_block_mutation_collection_for_test(&self) -> bool {
-        self.miner_pass_manager.has_active_block_mutation_collection()
+        self.miner_pass_manager
+            .has_active_block_mutation_collection()
     }
 
     async fn sync_block(&self, height: u32) -> Result<(), String> {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
+        let mut energy_finalized = false;
 
         // Mark energy sync as pending first so crashes can be detected and repaired on restart.
         self.pass_energy_manager.begin_block_sync(height)?;
@@ -594,8 +640,10 @@ impl InscriptionIndexer {
             Ok(value) => value,
             Err(e) => {
                 // Drop staged transfer mutations when event planning fails to avoid stale staged state.
-                self.transfer_tracker.rollback_staged_block(height).await?;
-                return Err(e);
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, e)
+                    .await;
+                return Err(msg);
             }
         };
         let (new_inscriptions_count, transfer_count) =
@@ -603,8 +651,10 @@ impl InscriptionIndexer {
                 Ok(value) => value,
                 Err(e) => {
                     // Event execution failed after transfer staging; staged state must be discarded.
-                    self.transfer_tracker.rollback_staged_block(height).await?;
-                    return Err(e);
+                    let msg = self
+                        .recover_failed_block_sync(height, true, energy_finalized, e)
+                        .await;
+                    return Err(msg);
                 }
             };
         let process_events_elapsed_ms = process_events_begin.elapsed().as_millis();
@@ -617,8 +667,10 @@ impl InscriptionIndexer {
             Ok(value) => value,
             Err(e) => {
                 // Invalid mint recording is part of the same block transaction boundary.
-                self.transfer_tracker.rollback_staged_block(height).await?;
-                return Err(e);
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, e)
+                    .await;
+                return Err(msg);
             }
         };
         let process_invalid_mints_elapsed_ms = process_invalid_mints_begin.elapsed().as_millis();
@@ -632,8 +684,10 @@ impl InscriptionIndexer {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 // Balance settlement failure means block is not complete; rollback staged transfer state.
-                self.transfer_tracker.rollback_staged_block(height).await?;
-                return Err(e);
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, e)
+                    .await;
+                return Err(msg);
             }
         };
         let apply_energy_begin = Instant::now();
@@ -651,8 +705,10 @@ impl InscriptionIndexer {
             ) {
                 Ok(changed) => changed,
                 Err(e) => {
-                    self.transfer_tracker.rollback_staged_block(height).await?;
-                    return Err(e);
+                    let msg = self
+                        .recover_failed_block_sync(height, true, energy_finalized, e)
+                        .await;
+                    return Err(msg);
                 }
             };
             if changed {
@@ -662,19 +718,40 @@ impl InscriptionIndexer {
         let apply_energy_elapsed_ms = apply_energy_begin.elapsed().as_millis();
         if let Err(e) = self.pass_energy_manager.finalize_block_sync(height) {
             // Energy finalize must succeed before transfer staging commit to keep cross-store ordering.
-            self.transfer_tracker.rollback_staged_block(height).await?;
-            return Err(e);
+            let msg = self
+                .recover_failed_block_sync(height, true, energy_finalized, e)
+                .await;
+            return Err(msg);
         }
-        let mutation_collector = mutation_collection_guard.take(height)?;
+        energy_finalized = true;
+        let mutation_collector = match mutation_collection_guard.take(height) {
+            Ok(collector) => collector,
+            Err(e) => {
+                // Collector take failure happens after energy finalize succeeded, so this is no
+                // longer just a local collector cleanup issue. The guard drop will still clear the
+                // collector state, but cross-store state must also be recovered explicitly.
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, e)
+                    .await;
+                return Err(msg);
+            }
+        };
         if let Err(e) = self
             .persist_pass_block_commit(height, &mutation_collector)
             .await
         {
-            self.transfer_tracker.rollback_staged_block(height).await?;
-            return Err(e);
+            let msg = self
+                .recover_failed_block_sync(height, true, energy_finalized, e)
+                .await;
+            return Err(msg);
         }
         // Commit transfer tracker staged state only after energy metadata finalize succeeds.
-        self.transfer_tracker.commit_staged_block(height).await?;
+        if let Err(e) = self.transfer_tracker.commit_staged_block(height).await {
+            let msg = self
+                .recover_failed_block_sync(height, true, energy_finalized, e)
+                .await;
+            return Err(msg);
+        }
         let settle_balance_elapsed_ms = settle_balance_begin.elapsed().as_millis();
         let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
 
@@ -704,6 +781,84 @@ impl InscriptionIndexer {
         );
 
         Ok(())
+    }
+
+    fn merge_block_failure_with_recovery<E: std::fmt::Display>(
+        original_error: E,
+        recovery_error: Option<String>,
+        recovery_context: &str,
+    ) -> String {
+        let original_error = original_error.to_string();
+        match recovery_error {
+            Some(recovery_error) => format!(
+                "{}; {} failed: {}",
+                original_error, recovery_context, recovery_error
+            ),
+            None => original_error,
+        }
+    }
+
+    async fn recover_failed_block_sync(
+        &self,
+        block_height: u32,
+        transfer_staged: bool,
+        energy_finalized: bool,
+        original_error: String,
+    ) -> String {
+        // There are two distinct recovery windows here:
+        // 1) energy_finalized == false:
+        //    energy writes may exist, but the pending marker still exists, so we abort the
+        //    in-flight energy block by deleting records from this height and clearing pending.
+        // 2) energy_finalized == true:
+        //    energy metadata has already advanced, so we must roll energy state back to the
+        //    last durable pass synced height instead of using the pending marker path.
+        let energy_recovery_result = if energy_finalized {
+            self.miner_pass_storage
+                .get_synced_btc_block_height()
+                .map(|height| height.unwrap_or(0))
+                .map_err(|e| {
+                    format!(
+                        "failed to load pass synced height before energy rollback: {}",
+                        e
+                    )
+                })
+                .and_then(|pass_synced_height| {
+                    self.pass_energy_manager
+                        .rollback_to_pass_synced_height(pass_synced_height)
+                })
+                .err()
+        } else {
+            self.pass_energy_manager
+                .abort_pending_block_sync(block_height)
+                .err()
+        };
+        let recovery_context = if energy_finalized {
+            "energy rollback after finalized block failure"
+        } else {
+            "energy abort after pending block failure"
+        };
+        let msg = Self::merge_block_failure_with_recovery(
+            original_error,
+            energy_recovery_result,
+            recovery_context,
+        );
+
+        // Transfer tracking is staged per block as well. If staging happened, discard it on the
+        // same failure path so retry starts from a clean transfer-tracker state.
+        if !transfer_staged {
+            return msg;
+        }
+
+        let transfer_rollback_error = self
+            .transfer_tracker
+            .rollback_staged_block(block_height)
+            .await
+            .err();
+        Self::merge_block_failure_with_recovery(
+            msg,
+            transfer_rollback_error,
+            "transfer rollback after block failure",
+        )
     }
 
     async fn persist_pass_block_commit(

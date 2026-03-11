@@ -145,6 +145,16 @@ impl PassEnergyManager {
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[cfg(test)]
+    pub fn get_pending_block_height_for_test(&self) -> Result<Option<u32>, String> {
+        self.storage.get_pending_block_height()
+    }
+
+    #[cfg(test)]
+    pub fn get_synced_block_height_for_test(&self) -> Result<Option<u32>, String> {
+        self.storage.get_synced_block_height()
+    }
+
     pub fn begin_block_sync(&self, block_height: u32) -> Result<(), String> {
         // Mark this block as pending before any energy writes.
         // If process crashes mid-block, startup reconcile will roll back from this height.
@@ -175,6 +185,41 @@ impl PassEnergyManager {
 
         self.storage.finalize_block_sync(block_height)?;
         Ok(())
+    }
+
+    pub fn abort_pending_block_sync(&self, block_height: u32) -> Result<(), String> {
+        // Use this when block processing fails before finalize_block_sync succeeds.
+        // At this point energy writes for the block may already exist, but the pending marker
+        // still proves the block never became a durable energy commit, so we can safely
+        // delete all records from this height and clear the pending marker.
+        let pending_height = self.storage.get_pending_block_height()?;
+        if pending_height != Some(block_height) {
+            let msg = format!(
+                "Energy pending block mismatch when aborting block sync: pending_height={:?}, abort_height={}",
+                pending_height, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        warn!(
+            "Aborting pending energy block sync: module=energy, block_height={}",
+            block_height
+        );
+        self.storage.clear_records_from_height(block_height)?;
+        self.storage.clear_pending_block_height()?;
+        Ok(())
+    }
+
+    pub fn rollback_to_pass_synced_height(&self, pass_synced_height: u32) -> Result<(), String> {
+        // Use this when energy finalize already succeeded, but the enclosing block commit did not
+        // become durable on the pass/SQLite side. In that window the pending marker is gone, so the
+        // only safe recovery is to realign energy state against the last durable pass synced height.
+        warn!(
+            "Rolling back energy state to pass synced height: module=energy, pass_synced_height={}",
+            pass_synced_height
+        );
+        self.reconcile_with_pass_synced_height(pass_synced_height)
     }
 
     pub fn reconcile_with_pass_synced_height(&self, pass_synced_height: u32) -> Result<(), String> {

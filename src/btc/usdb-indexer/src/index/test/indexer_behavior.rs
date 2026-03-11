@@ -144,6 +144,7 @@ struct MockTransferTracker {
     staged_blocks: Mutex<HashSet<u32>>,
     commit_calls: AtomicU32,
     rollback_calls: AtomicU32,
+    fail_commit_count: AtomicU32,
 }
 
 impl MockTransferTracker {
@@ -154,6 +155,11 @@ impl MockTransferTracker {
 
     fn with_transfers(mut self, block_height: u32, items: Vec<InscriptionTransferItem>) -> Self {
         self.transfers_by_height.insert(block_height, items);
+        self
+    }
+
+    fn with_commit_failures(self, count: u32) -> Self {
+        self.fail_commit_count.store(count, Ordering::SeqCst);
         self
     }
 
@@ -240,6 +246,15 @@ impl TransferTrackerApi for MockTransferTracker {
         block_height: u32,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
+            let remaining_failures = self.fail_commit_count.load(Ordering::SeqCst);
+            if remaining_failures > 0 {
+                self.fail_commit_count.fetch_sub(1, Ordering::SeqCst);
+                return Err(format!(
+                    "Injected mock transfer commit failure at block {}",
+                    block_height
+                ));
+            }
+
             let removed = self.staged_blocks.lock().unwrap().remove(&block_height);
             if !removed {
                 return Err(format!(
@@ -641,7 +656,11 @@ async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
         .await
         .unwrap_err();
     assert!(first_err.contains("Missing required block hint"));
-    assert!(!fixture.indexer.has_active_block_mutation_collection_for_test());
+    assert!(
+        !fixture
+            .indexer
+            .has_active_block_mutation_collection_for_test()
+    );
 
     let second_err = fixture
         .indexer
@@ -650,7 +669,11 @@ async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
         .unwrap_err();
     assert!(second_err.contains("Missing required block hint"));
     assert!(!second_err.contains("collector is already active"));
-    assert!(!fixture.indexer.has_active_block_mutation_collection_for_test());
+    assert!(
+        !fixture
+            .indexer
+            .has_active_block_mutation_collection_for_test()
+    );
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -1558,6 +1581,155 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
     assert_eq!(snapshot_301.total_balance, 7_777);
     assert_eq!(snapshot_301.active_address_count, 1);
     assert_eq!(fixture.transfer_tracker.commit_call_count(), 2);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_retry_without_reconcile_recovers_energy_pending_failure() {
+    let owner = test_script_hash(31);
+    let block_height = 320u32;
+    let mint_tx = build_test_tx(71);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
+
+    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(31, 0, 0),
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[31u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[31u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_retry_without_reconcile_pending_energy_failure",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![])),
+            MockResponse::Immediate(Ok(vec![vec![balance_history::AddressBalance {
+                block_height,
+                balance: 8_888,
+                delta: 1,
+            }]])),
+        ],
+        Arc::new(MockBalanceProvider::default().with_height(owner, block_height, 200_000, 100)),
+    );
+
+    let first_err = fixture
+        .indexer
+        .sync_blocks_without_reconcile_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(first_err.contains("Address balance batch size mismatch"));
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_pending_block_height_for_test()
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_synced_block_height_for_test()
+            .unwrap(),
+        None
+    );
+
+    let second_ok = fixture
+        .indexer
+        .sync_blocks_without_reconcile_for_test(block_height..=block_height)
+        .await
+        .unwrap();
+    assert_eq!(second_ok, block_height);
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(block_height)
+    );
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_pending_block_height_for_test()
+            .unwrap(),
+        None
+    );
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_blocks_retry_without_reconcile_recovers_finalized_energy_failure() {
+    let block_height = 330u32;
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![])),
+    );
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(MockInscriptionSource::default());
+    let transfer_tracker = Arc::new(MockTransferTracker::default().with_commit_failures(1));
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_blocks_retry_without_reconcile_finalized_energy_failure",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![
+            MockResponse::Immediate(Ok(vec![])),
+            MockResponse::Immediate(Ok(vec![])),
+        ],
+        Arc::new(MockBalanceProvider::default()),
+    );
+
+    let first_err = fixture
+        .indexer
+        .sync_blocks_without_reconcile_for_test(block_height..=block_height)
+        .await
+        .unwrap_err();
+    assert!(first_err.contains("Injected mock transfer commit failure"));
+    assert_eq!(fixture.storage.get_synced_btc_block_height().unwrap(), None);
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_pending_block_height_for_test()
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_synced_block_height_for_test()
+            .unwrap(),
+        Some(0)
+    );
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 0);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
+
+    let second_ok = fixture
+        .indexer
+        .sync_blocks_without_reconcile_for_test(block_height..=block_height)
+        .await
+        .unwrap();
+    assert_eq!(second_ok, block_height);
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(block_height)
+    );
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
     assert_eq!(fixture.transfer_tracker.rollback_call_count(), 1);
 
     cleanup_temp_dir(&fixture.root_dir);

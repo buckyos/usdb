@@ -104,12 +104,19 @@ pub struct BalanceHistorySnapshotAnchor {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredPassBlockCommitEntry {
+    // Local usdb-indexer block height of this persisted commit row.
     pub block_height: u32,
+    // Upstream balance-history anchor height used when this local commit was built.
     pub balance_history_block_height: u32,
+    // Upstream balance-history logical block commit captured as the external anchor.
     pub balance_history_block_commit: String,
+    // Hash of this block's local pass mutation stream.
     pub mutation_root: String,
+    // Rolling local pass block commit persisted for later chaining/query.
     pub block_commit: String,
+    // Protocol version used to interpret/hash the stored commit payload.
     pub commit_protocol_version: String,
+    // Hash algorithm name used to produce mutation_root and block_commit.
     pub commit_hash_algo: String,
 }
 
@@ -3060,8 +3067,8 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
@@ -3919,14 +3926,18 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(storage
-            .get_pass_by_inscription_id(&rollback_pass.inscription_id)
-            .unwrap()
-            .is_none());
-        assert!(storage
-            .get_last_pass_history_at_or_before_height(&rollback_pass.inscription_id, u32::MAX)
-            .unwrap()
-            .is_none());
+        assert!(
+            storage
+                .get_pass_by_inscription_id(&rollback_pass.inscription_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_last_pass_history_at_or_before_height(&rollback_pass.inscription_id, u32::MAX)
+                .unwrap()
+                .is_none()
+        );
 
         // Roll back history update on existing pass, ensure latest snapshot stays unchanged.
         {
