@@ -640,6 +640,82 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
+    // Persist one block batch atomically across UTXO state, balance history,
+    // block commits and the stable BTC height marker.
+    pub fn update_block_state_async(
+        &self,
+        new_utxos: &[(OutPointRef, UTXOEntryRef)],
+        remove_utxos: &[OutPointRef],
+        entries_list: &[BalanceHistoryEntry],
+        block_height: u32,
+        block_commits: &[BlockCommitEntry],
+    ) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+
+        let utxo_cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", UTXO_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for (outpoint, utxo) in new_utxos {
+            let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
+            let key = Self::make_utxo_key(outpoint);
+            batch.put_cf(utxo_cf, key, value);
+        }
+
+        for outpoint in remove_utxos {
+            let key = Self::make_utxo_key(outpoint);
+            batch.delete_cf(utxo_cf, key);
+        }
+
+        let balance_cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in entries_list {
+            let key = Self::make_balance_history_key(&entry.script_hash, entry.block_height);
+
+            let mut value = [0u8; 16];
+            value[..8].copy_from_slice(&entry.delta.to_be_bytes());
+            value[8..16].copy_from_slice(&entry.balance.to_be_bytes());
+
+            batch.put_cf(balance_cf, key, value);
+        }
+
+        let block_commit_cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", BLOCK_COMMITS_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in block_commits {
+            let key = Self::make_block_commit_key(entry.block_height);
+            let value = Self::serialize_block_commit_value(entry);
+            batch.put_cf(block_commit_cf, key, value);
+        }
+
+        let meta_cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let height_bytes = block_height.to_be_bytes();
+        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write atomic block-state batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
     // Read the committed block metadata for one exact block height.
     pub fn get_block_commit(&self, block_height: u32) -> Result<Option<BlockCommitEntry>, String> {
         let cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
@@ -2161,5 +2237,77 @@ mod tests {
         assert!(db.get_all_blocks().unwrap().is_empty());
         assert!(db.get_all_block_heights().unwrap().is_empty());
         assert!(db.get_block_commit(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_update_block_state_async_writes_all_state_atomically() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_atomic_block_state_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let spent_outpoint = OutPoint {
+            txid: Txid::from_slice(&[9u8; 32]).unwrap(),
+            vout: 1,
+        };
+        let spent_script = ScriptBuf::from(vec![9u8; 32]);
+        let spent_script_hash = spent_script.to_usdb_script_hash();
+        db.put_utxo(&spent_outpoint, &spent_script_hash, 900).unwrap();
+
+        let new_outpoint = OutPoint {
+            txid: Txid::from_slice(&[8u8; 32]).unwrap(),
+            vout: 2,
+        };
+        let new_script = ScriptBuf::from(vec![8u8; 32]);
+        let new_script_hash = new_script.to_usdb_script_hash();
+        let new_utxo = Arc::new(UTXOValue {
+            script_hash: new_script_hash,
+            value: 1800,
+        });
+
+        let balance_entry = BalanceHistoryEntry {
+            script_hash: new_script_hash,
+            block_height: 12,
+            delta: 1800,
+            balance: 1800,
+        };
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
+            balance_delta_root: [6u8; 32],
+            block_commit: [5u8; 32],
+        };
+
+        db.update_block_state_async(
+            &[(Arc::new(new_outpoint.clone()), new_utxo.clone())],
+            &[Arc::new(spent_outpoint.clone())],
+            &[balance_entry.clone()],
+            12,
+            &[commit.clone()],
+        )
+        .unwrap();
+
+        assert!(db.get_utxo(&spent_outpoint).unwrap().is_none());
+
+        let loaded_utxo = db.get_utxo(&new_outpoint).unwrap().unwrap();
+        assert_eq!(loaded_utxo.script_hash, new_script_hash);
+        assert_eq!(loaded_utxo.value, 1800);
+
+        let loaded_balance = db
+            .get_balance_delta_at_block_height(&new_script_hash, 12)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_balance.block_height, 12);
+        assert_eq!(loaded_balance.delta, 1800);
+        assert_eq!(loaded_balance.balance, 1800);
+
+        assert_eq!(db.get_block_commit(12).unwrap().unwrap(), commit);
+        assert_eq!(db.get_btc_block_height().unwrap(), 12);
     }
 }

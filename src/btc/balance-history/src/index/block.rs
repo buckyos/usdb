@@ -403,8 +403,10 @@ impl BatchBlockPreloader {
                     }
                 }
 
-                // Then check if the UTXO is in utxo cache then use it(need spend)
-                if let Some(cache_tx_out) = self.utxo_cache.spend(&vin.outpoint) {
+                // Then check if the UTXO is in the global cache.
+                // Preload must stay read-only; the real cache spend happens only
+                // after the block batch is durably committed to RocksDB.
+                if let Some(cache_tx_out) = self.utxo_cache.get(&vin.outpoint) {
                     vin.cache_tx_out.replace(cache_tx_out);
                     continue;
                 }
@@ -569,29 +571,38 @@ impl BatchBlockFlusher {
     }
 
     pub fn flush(&self, data: &BatchBlockDataRef) -> Result<(), String> {
-        self.flush_utxos(data)?;
-        self.flush_balances(data)?;
+        let (new_utxos, spent_utxos) = self.collect_utxo_updates(data)?;
+        let (balance_entries, block_commits, last_block_height) =
+            self.collect_balance_updates(data)?;
+
+        let begin = std::time::Instant::now();
+        self.db.update_block_state_async(
+            &new_utxos,
+            &spent_utxos,
+            &balance_entries,
+            last_block_height,
+            &block_commits,
+        )?;
+        let duration = begin.elapsed();
+
+        data.bench_mark.batch_update_utxo_duration_micros.store(
+            duration.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        data.bench_mark.batch_update_balances_duration_micros.store(
+            duration.as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+
+        self.apply_cache_updates(data, &new_utxos, &spent_utxos);
 
         Ok(())
     }
 
-    fn flush_balances(&self, data: &BatchBlockDataRef) -> Result<(), String> {
-        // Update block balance caches to global balance caches
-        {
-            for entry in data.balances.iter() {
-                self.balance_cache
-                    .put(entry.key(), Arc::new(entry.value().clone()));
-            }
-
-            data.bench_mark.batch_update_balance_cache_counts.store(
-                data.balances.len() as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
-
-        // Update balance to db in batch
-        let begin = std::time::Instant::now();
-
+    fn collect_balance_updates(
+        &self,
+        data: &BatchBlockDataRef,
+    ) -> Result<(Vec<BalanceHistoryEntry>, Vec<BlockCommitEntry>, u32), String> {
         let previous_height = data.block_range.start.checked_sub(1);
         let previous_commit = match previous_height {
             Some(height) => match self.db.get_block_commit(height)? {
@@ -609,32 +620,22 @@ impl BatchBlockFlusher {
         };
 
         let last_block_height = data.block_range.end - 1;
-        let all = data.balance_history.lock().unwrap();
+        let all = data.balance_history.lock().unwrap().clone();
         let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
         let block_commits = build_block_commits(&block_balance_deltas, previous_commit);
-        self.db.update_address_history_with_block_commits_async(
-            &all,
-            last_block_height as u32,
-            &block_commits,
-        )?;
-
-        // Update bench mark info
-        let duration = begin.elapsed();
-        data.bench_mark.batch_update_balances_duration_micros.store(
-            duration.as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
 
         data.bench_mark
             .batch_put_balance_counts
             .store(all.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
-        Ok(())
+        Ok((all, block_commits, last_block_height as u32))
     }
 
-    fn flush_utxos(&self, data: &BatchBlockDataRef) -> Result<(), String> {
-        // Flush UTXO cache
-        // First found unspent UTXOs to add to cache and db
+    fn collect_utxo_updates(
+        &self,
+        data: &BatchBlockDataRef,
+    ) -> Result<(Vec<(OutPointRef, UTXOEntryRef)>, Vec<OutPointRef>), String> {
+        // First find all unspent UTXOs to add.
         let mut utxo_list = Vec::new();
         {
             let vout_utxos = data.vout_utxos.read().unwrap();
@@ -646,15 +647,11 @@ impl BatchBlockFlusher {
                 }
 
                 utxo_list.push((outpoint.clone(), vout_utxo_info.item.clone()));
-
-                self.utxo_cache
-                    .put(outpoint.clone(), vout_utxo_info.item.clone());
             }
         }
 
         utxo_list.par_sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-        // Then found all spent UTXOs to remove from db
+        // Then find all spent UTXOs to remove.
         let mut spent_utxo_list: Vec<_> = {
             use rayon::prelude::*;
             let blocks = data.blocks.lock().unwrap();
@@ -674,18 +671,6 @@ impl BatchBlockFlusher {
 
         spent_utxo_list.par_sort_unstable();
 
-        // Update UTXOs in db finally
-        let begin = std::time::Instant::now();
-
-        self.db.update_utxos_async(&utxo_list, &spent_utxo_list)?;
-
-        let duration = begin.elapsed();
-        data.bench_mark.batch_update_utxo_duration_micros.store(
-            duration.as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-
-        // Update bench mark info
         data.bench_mark
             .batch_put_utxo_counts
             .store(utxo_list.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -694,7 +679,32 @@ impl BatchBlockFlusher {
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        Ok(())
+        Ok((utxo_list, spent_utxo_list))
+    }
+
+    fn apply_cache_updates(
+        &self,
+        data: &BatchBlockDataRef,
+        new_utxos: &[(OutPointRef, UTXOEntryRef)],
+        spent_utxos: &[OutPointRef],
+    ) {
+        for (outpoint, utxo) in new_utxos {
+            self.utxo_cache.put(outpoint.clone(), utxo.clone());
+        }
+
+        for outpoint in spent_utxos {
+            self.utxo_cache.spend(outpoint.as_ref());
+        }
+
+        for entry in data.balances.iter() {
+            self.balance_cache
+                .put(entry.key(), Arc::new(entry.value().clone()));
+        }
+
+        data.bench_mark.batch_update_balance_cache_counts.store(
+            data.balances.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 }
 
