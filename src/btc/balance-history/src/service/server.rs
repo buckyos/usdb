@@ -413,12 +413,13 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BlockCommitEntry};
+    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry};
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::BlockHash;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use usdb_util::USDBScriptHash;
 
     fn make_test_server(tag: &str) -> BalanceHistoryRpcServer {
         let nanos = SystemTime::now()
@@ -443,6 +444,14 @@ mod tests {
             db,
             shutdown_tx,
         )
+    }
+
+    fn make_script_hash(byte: u8) -> USDBScriptHash {
+        USDBScriptHash::from_byte_array([byte; 32])
+    }
+
+    fn seed_balance_entries(server: &BalanceHistoryRpcServer, entries: &[BalanceHistoryEntry]) {
+        server.db.put_address_history_async(&entries.to_vec()).unwrap();
     }
 
     #[test]
@@ -517,10 +526,203 @@ mod tests {
     }
 
     #[test]
+    fn test_get_block_commit_missing_returns_none() {
+        let server = make_test_server("get_block_commit_missing");
+
+        let loaded = server.get_block_commit(99).unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_get_address_balance_latest_and_at_or_before_semantics() {
+        let server = make_test_server("balance_latest_and_before");
+        let script_hash = make_script_hash(1);
+        seed_balance_entries(
+            &server,
+            &[
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 10,
+                    delta: 50,
+                    balance: 50,
+                },
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 12,
+                    delta: 30,
+                    balance: 80,
+                },
+            ],
+        );
+
+        let latest = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: None,
+            })
+            .unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].block_height, 12);
+        assert_eq!(latest[0].balance, 80);
+        assert_eq!(latest[0].delta, 30);
+
+        let at_or_before = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: Some(11),
+                block_range: None,
+            })
+            .unwrap();
+        assert_eq!(at_or_before.len(), 1);
+        assert_eq!(at_or_before[0].block_height, 10);
+        assert_eq!(at_or_before[0].balance, 50);
+        assert_eq!(at_or_before[0].delta, 50);
+
+        let missing_history = server
+            .get_address_balance(GetBalanceParams {
+                script_hash: make_script_hash(9),
+                block_height: Some(100),
+                block_range: None,
+            })
+            .unwrap();
+        assert_eq!(missing_history.len(), 1);
+        assert_eq!(missing_history[0].block_height, 0);
+        assert_eq!(missing_history[0].balance, 0);
+        assert_eq!(missing_history[0].delta, 0);
+    }
+
+    #[test]
+    fn test_get_address_balance_range_and_empty_range() {
+        let server = make_test_server("balance_range");
+        let script_hash = make_script_hash(2);
+        seed_balance_entries(
+            &server,
+            &[
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 10,
+                    delta: 50,
+                    balance: 50,
+                },
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 12,
+                    delta: 30,
+                    balance: 80,
+                },
+            ],
+        );
+
+        let range = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: Some(10..13),
+            })
+            .unwrap();
+        assert_eq!(range.len(), 2);
+        assert_eq!(range[0].block_height, 10);
+        assert_eq!(range[1].block_height, 12);
+
+        let empty = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: Some(20..20),
+            })
+            .unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_get_address_balance_delta_requires_selector_and_exact_miss_returns_none() {
+        let server = make_test_server("balance_delta_params");
+        let script_hash = make_script_hash(3);
+        seed_balance_entries(
+            &server,
+            &[BalanceHistoryEntry {
+                script_hash,
+                block_height: 12,
+                delta: 30,
+                balance: 80,
+            }],
+        );
+
+        let err = server
+            .get_address_balance_delta(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: None,
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("Block height or block range must be specified"));
+
+        let exact_miss = server
+            .get_address_balance_delta(GetBalanceParams {
+                script_hash,
+                block_height: Some(11),
+                block_range: None,
+            })
+            .unwrap();
+        assert_eq!(exact_miss.len(), 1);
+        assert!(exact_miss[0].is_none());
+    }
+
+    #[test]
+    fn test_batch_balance_queries_preserve_input_order_and_duplicates() {
+        let server = make_test_server("batch_balance_order");
+        let script_hash_a = make_script_hash(4);
+        let script_hash_b = make_script_hash(5);
+        seed_balance_entries(
+            &server,
+            &[
+                BalanceHistoryEntry {
+                    script_hash: script_hash_a,
+                    block_height: 10,
+                    delta: 50,
+                    balance: 50,
+                },
+                BalanceHistoryEntry {
+                    script_hash: script_hash_b,
+                    block_height: 11,
+                    delta: 7,
+                    balance: 7,
+                },
+                BalanceHistoryEntry {
+                    script_hash: script_hash_a,
+                    block_height: 12,
+                    delta: 30,
+                    balance: 80,
+                },
+            ],
+        );
+
+        let results = server
+            .get_addresses_balances(GetBalancesParams {
+                script_hashes: vec![script_hash_b, script_hash_a, script_hash_b],
+                block_height: Some(12),
+                block_range: None,
+            })
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].len(), 1);
+        assert_eq!(results[0][0].block_height, 11);
+        assert_eq!(results[0][0].balance, 7);
+        assert_eq!(results[1].len(), 1);
+        assert_eq!(results[1][0].block_height, 12);
+        assert_eq!(results[1][0].balance, 80);
+        assert_eq!(results[2].len(), 1);
+        assert_eq!(results[2][0].block_height, 11);
+        assert_eq!(results[2][0].balance, 7);
+    }
+
+    #[test]
     fn test_get_live_utxo_success() {
         use bitcoincore_rpc::bitcoin::OutPoint;
         use bitcoincore_rpc::bitcoin::Txid;
-        use usdb_util::USDBScriptHash;
 
         let server = make_test_server("get_live_utxo");
         let outpoint = OutPoint {

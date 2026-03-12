@@ -12,6 +12,8 @@
 - 重启后 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh)
 - 重启后多轮 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh)
 - 重启后混合 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh)
+- Undo retention 热窗口 reorg 场景：[src/btc/balance-history/scripts/regtest_undo_retention_reorg.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_undo_retention_reorg.sh)
+- Loader 切换场景：[src/btc/balance-history/scripts/regtest_loader_switch.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_loader_switch.sh)
 - 历史余额 oracle 场景：[src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
 - RPC 语义专项场景：[src/btc/balance-history/scripts/regtest_rpc_semantics.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_rpc_semantics.sh)
 - Snapshot 生成/恢复场景：[src/btc/balance-history/scripts/regtest_snapshot_recovery.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_recovery.sh)
@@ -47,7 +49,7 @@
 12. 服务重启辅助：停止并重启 balance-history，然后等待 RPC 再次 ready。
 13. 历史对拍辅助：按高度读取完整区块 JSON，配合独立 Python oracle 校验 `(address, height)` 余额。
 14. CLI 复用辅助：可在自定义 `root_dir` 下直接调用 `balance-history` 的 snapshot 子命令，避免脚本重复拼接 `cargo run`。
-15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖 `max_sync_block_height`，构造受限 stable height 的异常场景。
+15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖任意 `[sync]` 配置项，例如 `max_sync_block_height`、`undo_retention_blocks`、`local_loader_threshold`。
 
 ## 关闭与查询约束
 
