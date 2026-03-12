@@ -14,6 +14,8 @@
 - 重启后混合 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh)
 - Undo retention 热窗口 reorg 场景：[src/btc/balance-history/scripts/regtest_undo_retention_reorg.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_undo_retention_reorg.sh)
 - Loader 切换场景：[src/btc/balance-history/scripts/regtest_loader_switch.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_loader_switch.sh)
+- Spend graph 查询场景：[src/btc/balance-history/scripts/regtest_spend_graph_queries.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_spend_graph_queries.sh)
+- Multi-input 同块聚合查询场景：[src/btc/balance-history/scripts/regtest_multi_input_same_block_queries.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_input_same_block_queries.sh)
 - 历史余额 oracle 场景：[src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
 - RPC 语义专项场景：[src/btc/balance-history/scripts/regtest_rpc_semantics.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_rpc_semantics.sh)
 - Snapshot 生成/恢复场景：[src/btc/balance-history/scripts/regtest_snapshot_recovery.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_recovery.sh)
