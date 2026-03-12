@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 
+fn last_complete_blk_file_index(latest_blk_file_index: usize) -> Option<usize> {
+    latest_blk_file_index.checked_sub(1)
+}
+
 struct XorReader<R>
 where
     R: Read,
@@ -584,13 +588,30 @@ impl<UserData> BlockFileIndexer<UserData> {
 
         self.callback.on_index_begin(latest_blk_file_index)?;
 
-        let latest_blk_file_index = latest_blk_file_index - 1; // Exclude the last file which may be incomplete
+        let Some(last_complete_blk_file_index) =
+            last_complete_blk_file_index(latest_blk_file_index)
+        else {
+            self.callback.on_index_complete()?;
+            return Ok(());
+        };
 
-        self.build_index_by_file_range(0, latest_blk_file_index)?;
+        self.build_index_by_file_range(0, last_complete_blk_file_index)?;
 
         self.callback.on_index_complete()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_complete_blk_file_index;
+
+    #[test]
+    fn test_last_complete_blk_file_index_excludes_single_open_file() {
+        assert_eq!(last_complete_blk_file_index(0), None);
+        assert_eq!(last_complete_blk_file_index(1), Some(0));
+        assert_eq!(last_complete_blk_file_index(3), Some(2));
     }
 }
 

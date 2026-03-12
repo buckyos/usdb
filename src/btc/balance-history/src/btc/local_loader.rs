@@ -282,6 +282,13 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
     fn on_index_begin(&self, total: usize) -> Result<(), String> {
         self.output.start_load(total as u64);
 
+        if total == 0 {
+            self.output.println(
+                "No complete blk files available for LocalLoader yet; falling back to RPC reads during this sync.",
+            );
+            return Ok(());
+        }
+
         let latest_blk_file_index = total - 1; // Exclude the last file which may be incomplete
         let msg = format!(
             "Building block index from blk files 0 to {}...",
@@ -579,7 +586,12 @@ impl BlockLocalLoader {
         self.output.println("Saving block index to db...");
 
         let cache = self.block_index_cache.lock().unwrap();
-        let last_block_file_index = cache.calc_latest_block_file_index().unwrap();
+        let Some(last_block_file_index) = cache.calc_latest_block_file_index() else {
+            self.output.println(
+                "Local block index is empty after excluding the last open blk file; skipping persisted block index save.",
+            );
+            return Ok(());
+        };
         cache.save_to_db(last_block_file_index, &self.db)?;
 
         info!("Block index saved to db {}", last_block_file_index);

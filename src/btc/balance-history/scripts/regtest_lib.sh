@@ -193,24 +193,39 @@ port = ${BH_RPC_PORT}
 EOF
 }
 
-regtest_config_set_max_sync_block_height() {
+regtest_config_set_sync_value() {
   local config_path="$1"
-  local max_sync_block_height="$2"
+  local key="$2"
+  local value="$3"
 
-  python3 - "$config_path" "$max_sync_block_height" <<'PY'
+  python3 - "$config_path" "$key" "$value" <<'PY'
 from pathlib import Path
 import re
 import sys
 
 config_path = Path(sys.argv[1])
-max_height = sys.argv[2]
+key = sys.argv[2]
+value = sys.argv[3]
 content = config_path.read_text()
-new = f'max_sync_block_height = {max_height}'
-updated, count = re.subn(r'^max_sync_block_height = \d+$', new, content, count=1, flags=re.MULTILINE)
-if count != 1:
-    raise SystemExit(f'max_sync_block_height line not found in {config_path}')
+new = f'{key} = {value}'
+updated, count = re.subn(rf'^{re.escape(key)} = .+$', new, content, count=1, flags=re.MULTILINE)
+if count == 0:
+  sync_match = re.search(r'^\[sync\]$', content, flags=re.MULTILINE)
+  if not sync_match:
+    raise SystemExit(f'[sync] section not found in {config_path}')
+
+  insert_pos = sync_match.end()
+  updated = content[:insert_pos] + f'\n{new}' + content[insert_pos:]
+
 config_path.write_text(updated)
 PY
+}
+
+regtest_config_set_max_sync_block_height() {
+  local config_path="$1"
+  local max_sync_block_height="$2"
+
+  regtest_config_set_sync_value "$config_path" "max_sync_block_height" "$max_sync_block_height"
 }
 
 regtest_wait_balance_history_rpc_ready() {
