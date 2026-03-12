@@ -193,6 +193,26 @@ port = ${BH_RPC_PORT}
 EOF
 }
 
+regtest_config_set_max_sync_block_height() {
+  local config_path="$1"
+  local max_sync_block_height="$2"
+
+  python3 - "$config_path" "$max_sync_block_height" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+config_path = Path(sys.argv[1])
+max_height = sys.argv[2]
+content = config_path.read_text()
+new = f'max_sync_block_height = {max_height}'
+updated, count = re.subn(r'^max_sync_block_height = \d+$', new, content, count=1, flags=re.MULTILINE)
+if count != 1:
+    raise SystemExit(f'max_sync_block_height line not found in {config_path}')
+config_path.write_text(updated)
+PY
+}
+
 regtest_wait_balance_history_rpc_ready() {
   regtest_log "Waiting for balance-history RPC readiness"
 

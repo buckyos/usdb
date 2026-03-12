@@ -15,6 +15,12 @@
 - 历史余额 oracle 场景：[src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
 - RPC 语义专项场景：[src/btc/balance-history/scripts/regtest_rpc_semantics.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_rpc_semantics.sh)
 - Snapshot 生成/恢复场景：[src/btc/balance-history/scripts/regtest_snapshot_recovery.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_recovery.sh)
+- Snapshot 安装失败场景：[src/btc/balance-history/scripts/regtest_snapshot_install_failure.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_install_failure.sh)
+- Snapshot 恢复后重启场景：[src/btc/balance-history/scripts/regtest_snapshot_restart_recovery.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_restart_recovery.sh)
+- Snapshot 安装失败后重试场景：[src/btc/balance-history/scripts/regtest_snapshot_install_retry.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_install_retry.sh)
+- Snapshot 旧快照降级安装场景：[src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh)
+- Snapshot 重复安装场景：[src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh)
+- Snapshot 损坏文件安装失败场景：[src/btc/balance-history/scripts/regtest_snapshot_install_corrupt.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_snapshot_install_corrupt.sh)
 
 ## 设计目标
 
@@ -41,6 +47,7 @@
 12. 服务重启辅助：停止并重启 balance-history，然后等待 RPC 再次 ready。
 13. 历史对拍辅助：按高度读取完整区块 JSON，配合独立 Python oracle 校验 `(address, height)` 余额。
 14. CLI 复用辅助：可在自定义 `root_dir` 下直接调用 `balance-history` 的 snapshot 子命令，避免脚本重复拼接 `cargo run`。
+15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖 `max_sync_block_height`，构造受限 stable height 的异常场景。
 
 ## 关闭与查询约束
 
