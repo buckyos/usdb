@@ -19,7 +19,7 @@ use balance_history::{
 use bitcoincore_rpc::bitcoin::{Block, Txid};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use usdb_util::{BTCRpcClient, BTCRpcClientRef};
 
@@ -33,6 +33,107 @@ use traits::RpcBlockHintProvider;
 pub(crate) use traits::{
     BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, TransferTrackerApi,
 };
+
+const REORG_RECOVERY_ENERGY_FAILURE_ENV: &str =
+    "USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES";
+const REORG_RECOVERY_TRANSFER_RELOAD_FAILURE_ENV: &str =
+    "USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES";
+
+#[derive(Default)]
+struct ReorgRecoveryFaultInjector {
+    // Runtime-only failure budget for the first phase of resumable recovery.
+    // When non-zero, the next N recovery attempts fail before energy rollback runs.
+    energy_failure_budget: AtomicU32,
+    // Runtime-only failure budget for the second phase of resumable recovery.
+    // When non-zero, the next N recovery attempts fail before transfer reload runs.
+    transfer_reload_failure_budget: AtomicU32,
+}
+
+impl ReorgRecoveryFaultInjector {
+    fn from_env() -> Result<Self, String> {
+        let energy_failure_budget = Self::parse_env_budget(REORG_RECOVERY_ENERGY_FAILURE_ENV)?;
+        let transfer_reload_failure_budget =
+            Self::parse_env_budget(REORG_RECOVERY_TRANSFER_RELOAD_FAILURE_ENV)?;
+
+        if energy_failure_budget > 0 || transfer_reload_failure_budget > 0 {
+            warn!(
+                "Reorg recovery fault injection enabled: module=indexer, energy_failures={}, transfer_reload_failures={}",
+                energy_failure_budget, transfer_reload_failure_budget
+            );
+        }
+
+        Ok(Self {
+            energy_failure_budget: AtomicU32::new(energy_failure_budget),
+            transfer_reload_failure_budget: AtomicU32::new(transfer_reload_failure_budget),
+        })
+    }
+
+    fn parse_env_budget(name: &str) -> Result<u32, String> {
+        match std::env::var(name) {
+            Ok(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Ok(0);
+                }
+
+                trimmed.parse::<u32>().map_err(|e| {
+                    format!(
+                        "Invalid {} value {:?}: expected non-negative integer, error={}",
+                        name, raw, e
+                    )
+                })
+            }
+            Err(std::env::VarError::NotPresent) => Ok(0),
+            Err(e) => Err(format!("Failed to read {} from environment: {}", name, e)),
+        }
+    }
+
+    fn consume_budget(counter: &AtomicU32) -> Option<u32> {
+        let mut remaining = counter.load(Ordering::SeqCst);
+        loop {
+            if remaining == 0 {
+                return None;
+            }
+
+            match counter.compare_exchange(
+                remaining,
+                remaining - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return Some(remaining - 1),
+                Err(actual) => remaining = actual,
+            }
+        }
+    }
+
+    fn maybe_fail_energy_recovery(&self, target_height: u32) -> Result<(), String> {
+        let Some(remaining_after) = Self::consume_budget(&self.energy_failure_budget) else {
+            return Ok(());
+        };
+
+        let msg = format!(
+            "Injected reorg recovery energy failure: target_height={}, remaining_failures={}",
+            target_height, remaining_after
+        );
+        warn!("{}", msg);
+        Err(msg)
+    }
+
+    fn maybe_fail_transfer_reload(&self, target_height: u32) -> Result<(), String> {
+        let Some(remaining_after) = Self::consume_budget(&self.transfer_reload_failure_budget)
+        else {
+            return Ok(());
+        };
+
+        let msg = format!(
+            "Injected reorg recovery transfer reload failure: target_height={}, remaining_failures={}",
+            target_height, remaining_after
+        );
+        warn!("{}", msg);
+        Err(msg)
+    }
+}
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
@@ -48,6 +149,8 @@ pub struct InscriptionIndexer {
     balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
 
     status: Arc<dyn IndexStatusApi>,
+
+    reorg_recovery_fault_injector: ReorgRecoveryFaultInjector,
 
     // Shutdown signal
     should_stop: Arc<AtomicBool>,
@@ -129,6 +232,7 @@ impl InscriptionIndexer {
 
         let balance_monitor = BalanceMonitor::new(config.clone(), miner_pass_storage.clone())?;
         let status: Arc<dyn IndexStatusApi> = status;
+        let reorg_recovery_fault_injector = ReorgRecoveryFaultInjector::from_env()?;
 
         let ret = Self {
             config,
@@ -143,6 +247,7 @@ impl InscriptionIndexer {
             miner_pass_storage,
             balance_monitor,
             status,
+            reorg_recovery_fault_injector,
 
             should_stop: Arc::new(AtomicBool::new(false)),
         };
@@ -174,6 +279,7 @@ impl InscriptionIndexer {
             miner_pass_manager,
             balance_history_client,
             status,
+            reorg_recovery_fault_injector: ReorgRecoveryFaultInjector::default(),
             should_stop: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -571,11 +677,31 @@ impl InscriptionIndexer {
             )),
         );
 
+        self.reorg_recovery_fault_injector
+            .maybe_fail_energy_recovery(pending_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to inject pending upstream reorg energy recovery fault: target_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
         self.pass_energy_manager
             .rollback_to_pass_synced_height(pending_height)
             .map_err(|e| {
                 let msg = format!(
                     "Failed to rollback energy state during pending upstream reorg recovery: target_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        self.reorg_recovery_fault_injector
+            .maybe_fail_transfer_reload(pending_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to inject pending upstream reorg transfer reload fault: target_height={}, error={}",
                     pending_height, e
                 );
                 error!("{}", msg);

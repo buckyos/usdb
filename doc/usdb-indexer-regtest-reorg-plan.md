@@ -245,7 +245,8 @@
 2. 先做 `Case 1 / Case 2`
 3. 再做 `Case 3 / Case 4`
 4. 再做 `Case 5 / Case 6`
-5. 最后补 `Case 8 / Case 9` 这类 fault injection
+5. 再做 `Case 7`
+6. 最后补 `Case 8 / Case 9` 这类 fault injection
 
 原因：
 
@@ -270,8 +271,12 @@
 第二批再补：
 
 1. restart 类场景
-2. multi-block 复杂业务场景
-3. pending recovery fault injection 场景
+2. `src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh`
+3. `doc/usdb-indexer-regtest-live-ord-multi-block-reorg.md`
+4. `src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh`
+5. `src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh`
+6. `doc/usdb-indexer-regtest-pending-recovery-energy-failure.md`
+7. `doc/usdb-indexer-regtest-pending-recovery-transfer-reload-restart.md`
 
 ## 8. 当前决策
 

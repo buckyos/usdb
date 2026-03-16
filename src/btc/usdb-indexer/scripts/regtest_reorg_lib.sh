@@ -21,6 +21,8 @@ ORD_RPC_PORT="${ORD_RPC_PORT:-29330}"
 WALLET_NAME="${WALLET_NAME:-usdbreorg}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-reorg-a}"
 ORD_WALLET_NAME_B="${ORD_WALLET_NAME_B:-ord-reorg-b}"
+USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES:-}"
+USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES:-}"
 PREMINE_BLOCKS="${PREMINE_BLOCKS:-130}"
 ORD_FEE_RATE="${ORD_FEE_RATE:-1}"
 FUND_ORD_AMOUNT_BTC="${FUND_ORD_AMOUNT_BTC:-5.0}"
@@ -28,6 +30,10 @@ FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
 TRANSFER_CONFIRM_BLOCKS="${TRANSFER_CONFIRM_BLOCKS:-1}"
 REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
+PENALTY_FUND_AMOUNT_BTC="${PENALTY_FUND_AMOUNT_BTC:-0.50000000}"
+PENALTY_SPEND_AMOUNT_BTC="${PENALTY_SPEND_AMOUNT_BTC:-0.49950000}"
+PENALTY_FUND_CONFIRM_BLOCKS="${PENALTY_FUND_CONFIRM_BLOCKS:-1}"
+PENALTY_SPEND_CONFIRM_BLOCKS="${PENALTY_SPEND_CONFIRM_BLOCKS:-1}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -590,6 +596,33 @@ print(match.group(1) if match else "")
 PY
 }
 
+# Resolve the output index in a transaction that pays to the requested address.
+regtest_get_tx_vout_for_address() {
+  local txid="$1"
+  local address="$2"
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+    getrawtransaction "$txid" true | python3 -c 'import json, sys
+target_address = sys.argv[1]
+payload = json.load(sys.stdin)
+for vout in payload.get("vout", []):
+    output_index = vout.get("n")
+    if output_index is None:
+        continue
+    script_pub_key = vout.get("scriptPubKey", {})
+    addresses = []
+    address = script_pub_key.get("address")
+    if isinstance(address, str):
+        addresses.append(address)
+    extra_addresses = script_pub_key.get("addresses")
+    if isinstance(extra_addresses, list):
+        addresses.extend([item for item in extra_addresses if isinstance(item, str)])
+    if target_address in addresses:
+        print(output_index)
+        break
+else:
+    print("")' "$address"
+}
+
 regtest_start_ord_server() {
   regtest_log "Starting ord server (data_dir=${ORD_DATA_DIR}, http=${ORD_RPC_PORT})"
   regtest_run_ord --index-addresses --index-transactions server \
@@ -726,9 +759,20 @@ regtest_start_balance_history() {
 
 regtest_start_usdb_indexer() {
   regtest_log "Starting usdb-indexer service (root=${USDB_INDEXER_ROOT}, rpc=${USDB_RPC_PORT})"
+  local -a env_args=()
+  if [[ -n "$USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES" ]]; then
+    env_args+=(
+      "USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES=${USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES}"
+    )
+  fi
+  if [[ -n "$USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES" ]]; then
+    env_args+=(
+      "USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES=${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES}"
+    )
+  fi
   (
     cd "$REPO_ROOT"
-    cargo run --manifest-path src/btc/Cargo.toml -p usdb-indexer -- \
+    env "${env_args[@]}" cargo run --manifest-path src/btc/Cargo.toml -p usdb-indexer -- \
       --root-dir "$USDB_INDEXER_ROOT" \
       --skip-process-lock
   ) >"${USDB_INDEXER_LOG_FILE}" 2>&1 &
@@ -905,6 +949,30 @@ regtest_assert_usdb_db_scalar() {
     regtest_log "SQLite assertion failed: label=${label}"
     exit 1
   fi
+}
+
+regtest_wait_until_usdb_db_scalar_eq() {
+  local sql="$1"
+  local expected="$2"
+  local label="$3"
+  local start_ts now actual
+
+  regtest_log "Waiting until SQLite scalar equals expected: label=${label}, expected=${expected}, sql=${sql}"
+  start_ts="$(date +%s)"
+  while true; do
+    actual="$(regtest_usdb_db_scalar "$sql")"
+    if [[ "$actual" == "$expected" ]]; then
+      regtest_log "SQLite scalar converged: label=${label}, actual=${actual}"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for SQLite scalar: label=${label}, expected=${expected}, actual=${actual}, sql=${sql}"
+      exit 1
+    fi
+    sleep 1
+  done
 }
 
 regtest_assert_usdb_pass_snapshot_state() {
