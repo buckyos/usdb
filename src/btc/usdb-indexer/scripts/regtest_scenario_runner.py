@@ -192,8 +192,14 @@ class RegtestScenarioRunner:
         return hashlib.sha256(script_bytes).digest()[::-1].hex()
 
     def resolve_value(self, value: Any) -> Any:
+        # Scenario variables can appear anywhere inside JSON step payloads, not just
+        # at the top level, so resolve nested containers recursively.
         if isinstance(value, str) and value.startswith("$"):
             return self.resolve_ref(value[1:])
+        if isinstance(value, list):
+            return [self.resolve_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: self.resolve_value(item) for key, item in value.items()}
         return value
 
     def resolve_ref(self, path: str) -> Any:

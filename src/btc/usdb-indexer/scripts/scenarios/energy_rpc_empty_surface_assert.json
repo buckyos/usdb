@@ -79,8 +79,8 @@
           "mode": "at_or_before"
         }
       ],
-      "expected_code": -32011,
-      "message_contains": "PASS_NOT_FOUND"
+      "expected_code": -32012,
+      "message_contains": "ENERGY_NOT_FOUND"
     }
   ]
 }
