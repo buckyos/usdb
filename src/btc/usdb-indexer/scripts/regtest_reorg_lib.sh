@@ -828,6 +828,29 @@ regtest_wait_until_balance_history_block_commit_hash() {
     "$expected_hash"
 }
 
+regtest_wait_until_file_contains() {
+  local label="$1"
+  local file_path="$2"
+  local needle="$3"
+  local start_ts now
+
+  regtest_log "Waiting until ${label} contains: ${needle}"
+  start_ts="$(date +%s)"
+  while true; do
+    if [[ -f "$file_path" ]] && grep -Fq "$needle" "$file_path"; then
+      regtest_log "${label} contains expected text"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for ${label} to contain expected text. file=${file_path}, needle=${needle}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 regtest_usdb_miner_pass_db_path() {
   local preferred_path="${USDB_INDEXER_ROOT}/data/miner_pass.db"
   local legacy_path="${USDB_INDEXER_ROOT}/miner_pass.db"

@@ -150,9 +150,11 @@ impl BalanceHistoryIndexer {
             latest_block_height, last_synced_block_height
         ));
 
-        let (db, btc_client) = if latest_block_height - last_synced_block_height
-            > config.sync.local_loader_threshold as u32
-        {
+        // A restart after offline reorg can temporarily make the local synced height higher than
+        // the current canonical tip. Treat that as "not behind" for loader selection; the
+        // rollback path below will reconcile the durable state afterwards.
+        let blocks_behind = latest_block_height.saturating_sub(last_synced_block_height);
+        let (db, btc_client) = if blocks_behind > config.sync.local_loader_threshold as u32 {
             let msg = format!(
                 "Using LocalLoader BTC client as we are behind by more than {} blocks",
                 config.sync.local_loader_threshold
