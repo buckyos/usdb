@@ -122,14 +122,26 @@ impl InscriptionTransferTracker {
     }
 
     pub async fn init(&self) -> Result<(), String> {
+        self.reload_from_storage().await?;
+        info!("InscriptionTransferTracker initialized");
+        Ok(())
+    }
+
+    pub async fn reload_from_storage(&self) -> Result<(), String> {
+        info!("Reloading InscriptionTransferTracker from storage");
+        {
+            let mut inscriptions = self.inscriptions.lock().unwrap();
+            *inscriptions = MultiMap::new();
+        }
+        self.staged_blocks.lock().unwrap().clear();
+
         self.load_all_passes().await.map_err(|e| {
-            let msg = format!("Failed to load existing transfer records: {}", e);
+            let msg = format!("Failed to reload transfer records from storage: {}", e);
             error!("{}", msg);
             msg
         })?;
 
-        info!("InscriptionTransferTracker initialized");
-
+        info!("InscriptionTransferTracker reloaded from storage");
         Ok(())
     }
 

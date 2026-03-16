@@ -155,6 +155,11 @@ impl PassEnergyManager {
         self.storage.get_synced_block_height()
     }
 
+    #[cfg(test)]
+    pub fn set_synced_block_height_for_test(&self, block_height: u32) -> Result<(), String> {
+        self.storage.set_synced_block_height(block_height)
+    }
+
     pub fn begin_block_sync(&self, block_height: u32) -> Result<(), String> {
         // Mark this block as pending before any energy writes.
         // If process crashes mid-block, startup reconcile will roll back from this height.

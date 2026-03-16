@@ -3,7 +3,7 @@ use super::common::{
     test_script_hash,
 };
 use crate::balance::{BalanceMonitor, MockBalanceBackend, MockResponse, SerialBalanceLoader};
-use crate::config::ConfigManager;
+use crate::config::{ConfigManager, IndexerConfig};
 use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
@@ -12,7 +12,7 @@ use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
 use crate::index::{
     BalanceHistoryCommitApi, BlockHintProvider, IndexStatusApi, InscriptionIndexer,
-    TransferTrackerApi,
+    PassBlockCommitEntry, TransferTrackerApi,
 };
 use crate::inscription::{
     DiscoveredInscription, DiscoveredInvalidMint, DiscoveredMint, DiscoveredMintBatch,
@@ -58,19 +58,34 @@ impl BlockHintProvider for MockBlockHintProvider {
 #[derive(Default)]
 struct MockStatus {
     latest_height: AtomicU32,
+    snapshot: Mutex<Option<BalanceHistorySnapshotInfo>>,
     updates: Mutex<Vec<(Option<u32>, Option<u32>, Option<String>)>>,
 }
 
 impl MockStatus {
     fn new(latest_height: u32) -> Self {
+        let snapshot = BalanceHistorySnapshotInfo {
+            stable_height: latest_height,
+            stable_block_hash: Some("11".repeat(32)),
+            latest_block_commit: Some("22".repeat(32)),
+            commit_protocol_version: "1.0.0".to_string(),
+            commit_hash_algo: "sha256".to_string(),
+        };
         Self {
             latest_height: AtomicU32::new(latest_height),
+            snapshot: Mutex::new(Some(snapshot)),
             updates: Mutex::new(Vec::new()),
         }
     }
 
     fn update_count(&self) -> usize {
         self.updates.lock().unwrap().len()
+    }
+
+    fn set_snapshot(&self, snapshot: BalanceHistorySnapshotInfo) {
+        self.latest_height
+            .store(snapshot.stable_height, Ordering::SeqCst);
+        *self.snapshot.lock().unwrap() = Some(snapshot);
     }
 }
 
@@ -80,13 +95,7 @@ impl IndexStatusApi for MockStatus {
     }
 
     fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo> {
-        Some(BalanceHistorySnapshotInfo {
-            stable_height: self.latest_height.load(Ordering::SeqCst),
-            stable_block_hash: Some("11".repeat(32)),
-            latest_block_commit: Some("22".repeat(32)),
-            commit_protocol_version: "1.0.0".to_string(),
-            commit_hash_algo: "sha256".to_string(),
-        })
+        self.snapshot.lock().unwrap().clone()
     }
 
     fn update_index_status(
@@ -100,7 +109,30 @@ impl IndexStatusApi for MockStatus {
 }
 
 #[derive(Default)]
-struct MockBalanceHistoryCommitProvider;
+struct MockBalanceHistoryCommitProvider {
+    commits: Mutex<HashMap<u32, Option<balance_history::BlockCommitInfo>>>,
+}
+
+impl MockBalanceHistoryCommitProvider {
+    fn default_commit(block_height: u32) -> balance_history::BlockCommitInfo {
+        balance_history::BlockCommitInfo {
+            block_height,
+            btc_block_hash: "11".repeat(32),
+            balance_delta_root: "22".repeat(32),
+            block_commit: "33".repeat(32),
+            commit_protocol_version: "1.0.0".to_string(),
+            commit_hash_algo: "sha256".to_string(),
+        }
+    }
+
+    fn set_block_commit(
+        &self,
+        block_height: u32,
+        commit: Option<balance_history::BlockCommitInfo>,
+    ) {
+        self.commits.lock().unwrap().insert(block_height, commit);
+    }
+}
 
 impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
     fn get_block_commit<'a>(
@@ -113,16 +145,14 @@ impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
                 + 'a,
         >,
     > {
-        Box::pin(async move {
-            Ok(Some(balance_history::BlockCommitInfo {
-                block_height,
-                btc_block_hash: "11".repeat(32),
-                balance_delta_root: "22".repeat(32),
-                block_commit: "33".repeat(32),
-                commit_protocol_version: "1.0.0".to_string(),
-                commit_hash_algo: "sha256".to_string(),
-            }))
-        })
+        let commit = self
+            .commits
+            .lock()
+            .unwrap()
+            .get(&block_height)
+            .cloned()
+            .unwrap_or_else(|| Some(Self::default_commit(block_height)));
+        Box::pin(async move { Ok(commit) })
     }
 }
 
@@ -144,7 +174,9 @@ struct MockTransferTracker {
     staged_blocks: Mutex<HashSet<u32>>,
     commit_calls: AtomicU32,
     rollback_calls: AtomicU32,
+    reload_calls: AtomicU32,
     fail_commit_count: AtomicU32,
+    fail_reload_count: AtomicU32,
 }
 
 impl MockTransferTracker {
@@ -163,6 +195,11 @@ impl MockTransferTracker {
         self
     }
 
+    fn with_reload_failures(self, count: u32) -> Self {
+        self.fail_reload_count.store(count, Ordering::SeqCst);
+        self
+    }
+
     fn add_call_count(&self) -> usize {
         self.added.lock().unwrap().len()
     }
@@ -174,12 +211,31 @@ impl MockTransferTracker {
     fn rollback_call_count(&self) -> u32 {
         self.rollback_calls.load(Ordering::SeqCst)
     }
+
+    fn reload_call_count(&self) -> u32 {
+        self.reload_calls.load(Ordering::SeqCst)
+    }
 }
 
 impl TransferTrackerApi for MockTransferTracker {
     fn init<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
             self.init_called.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+
+    fn reload_from_storage<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.reload_calls.fetch_add(1, Ordering::SeqCst);
+            let remaining_failures = self.fail_reload_count.load(Ordering::SeqCst);
+            if remaining_failures > 0 {
+                self.fail_reload_count.fetch_sub(1, Ordering::SeqCst);
+                return Err("Injected mock transfer reload failure".to_string());
+            }
+            self.staged_blocks.lock().unwrap().clear();
             Ok(())
         })
     }
@@ -431,13 +487,15 @@ struct IndexerFixture {
     indexer: InscriptionIndexer,
 }
 
-fn build_indexer_fixture_with_hint_provider_at_root(
+fn build_indexer_fixture_with_runtime_deps_at_root(
     root_dir: PathBuf,
     inscription_source: Arc<dyn InscriptionSource>,
     block_hint_provider: Arc<dyn BlockHintProvider>,
     transfer_tracker: Arc<MockTransferTracker>,
     backend_responses: Vec<MockResponse>,
     energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
+    status: Arc<MockStatus>,
+    balance_history_commit_provider: Arc<dyn BalanceHistoryCommitApi>,
 ) -> IndexerFixture {
     std::fs::create_dir_all(&root_dir).unwrap();
     let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
@@ -458,11 +516,8 @@ fn build_indexer_fixture_with_hint_provider_at_root(
             .unwrap(),
     );
 
-    let status = Arc::new(MockStatus::new(1_000_000));
     let status_api: Arc<dyn IndexStatusApi> = status.clone();
     let transfer_tracker_api: Arc<dyn TransferTrackerApi> = transfer_tracker.clone();
-    let balance_history_commit_provider: Arc<dyn BalanceHistoryCommitApi> =
-        Arc::new(MockBalanceHistoryCommitProvider);
 
     let indexer = InscriptionIndexer::new_with_deps_for_test(
         config,
@@ -486,6 +541,26 @@ fn build_indexer_fixture_with_hint_provider_at_root(
         transfer_tracker,
         indexer,
     }
+}
+
+fn build_indexer_fixture_with_hint_provider_at_root(
+    root_dir: PathBuf,
+    inscription_source: Arc<dyn InscriptionSource>,
+    block_hint_provider: Arc<dyn BlockHintProvider>,
+    transfer_tracker: Arc<MockTransferTracker>,
+    backend_responses: Vec<MockResponse>,
+    energy_provider: Arc<dyn crate::index::energy::BalanceProvider>,
+) -> IndexerFixture {
+    build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir,
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        backend_responses,
+        energy_provider,
+        Arc::new(MockStatus::new(1_000_000)),
+        Arc::new(MockBalanceHistoryCommitProvider::default()),
+    )
 }
 
 fn build_indexer_fixture_with_hint_provider(
@@ -551,6 +626,43 @@ fn build_test_block(txs: Vec<Transaction>) -> Arc<Block> {
         header: constants::genesis_block(Network::Bitcoin).header,
         txdata: txs,
     })
+}
+
+fn write_test_config(root_dir: &PathBuf, genesis_block_height: u32) {
+    std::fs::create_dir_all(root_dir).unwrap();
+    let mut config = IndexerConfig::default();
+    config.usdb.genesis_block_height = genesis_block_height;
+    std::fs::write(
+        root_dir.join("config.json"),
+        serde_json::to_vec_pretty(&config).unwrap(),
+    )
+    .unwrap();
+}
+
+fn mock_balance_history_commit(
+    block_height: u32,
+    btc_block_byte: &str,
+    delta_root_byte: &str,
+    block_commit_byte: &str,
+) -> balance_history::BlockCommitInfo {
+    balance_history::BlockCommitInfo {
+        block_height,
+        btc_block_hash: btc_block_byte.repeat(64),
+        balance_delta_root: delta_root_byte.repeat(64),
+        block_commit: block_commit_byte.repeat(64),
+        commit_protocol_version: "1.0.0".to_string(),
+        commit_hash_algo: "sha256".to_string(),
+    }
+}
+
+fn snapshot_from_commit(commit: &balance_history::BlockCommitInfo) -> BalanceHistorySnapshotInfo {
+    BalanceHistorySnapshotInfo {
+        stable_height: commit.block_height,
+        stable_block_hash: Some(commit.btc_block_hash.clone()),
+        latest_block_commit: Some(commit.block_commit.clone()),
+        commit_protocol_version: commit.commit_protocol_version.clone(),
+        commit_hash_algo: commit.commit_hash_algo.clone(),
+    }
 }
 
 fn active_owner_set_at_height(
@@ -4272,4 +4384,409 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
     assert_eq!(snap_643.total_balance, 0);
 
     cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_once_rolls_back_when_upstream_height_regresses() {
+    let root_dir = test_root_dir("indexer_behavior", "sync_once_height_regresses");
+    write_test_config(&root_dir, 100);
+
+    let status = Arc::new(MockStatus::new(100));
+    let commit_provider = Arc::new(MockBalanceHistoryCommitProvider::default());
+    let upstream_commit_100 = mock_balance_history_commit(100, "a", "b", "c");
+    status.set_snapshot(snapshot_from_commit(&upstream_commit_100));
+    commit_provider.set_block_commit(100, Some(upstream_commit_100.clone()));
+
+    let fixture = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        Arc::new(MockBlockHintProvider::default()),
+        Arc::new(MockTransferTracker::default()),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status,
+        commit_provider,
+    );
+
+    let old_upstream_commit_105 = mock_balance_history_commit(105, "d", "e", "f");
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(100, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(105, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 100,
+            balance_history_block_height: 100,
+            balance_history_block_commit: upstream_commit_100.block_commit.clone(),
+            mutation_root: "1".repeat(64),
+            block_commit: "2".repeat(64),
+            commit_protocol_version: upstream_commit_100.commit_protocol_version.clone(),
+            commit_hash_algo: upstream_commit_100.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 105,
+            balance_history_block_height: 105,
+            balance_history_block_commit: old_upstream_commit_105.block_commit.clone(),
+            mutation_root: "3".repeat(64),
+            block_commit: "4".repeat(64),
+            commit_protocol_version: old_upstream_commit_105.commit_protocol_version.clone(),
+            commit_hash_algo: old_upstream_commit_105.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_upstream_commit_105))
+        .unwrap();
+
+    let synced = fixture.indexer.sync_once_for_test().await.unwrap();
+
+    assert_eq!(synced, 100);
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(100)
+    );
+    assert!(
+        fixture
+            .storage
+            .get_pass_block_commit(105)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .storage
+            .get_active_balance_snapshot(105)
+            .unwrap()
+            .is_none()
+    );
+    let anchor = fixture
+        .storage
+        .get_balance_history_snapshot_anchor()
+        .unwrap()
+        .unwrap();
+    assert_eq!(anchor.stable_height, 100);
+    assert_eq!(anchor.latest_block_commit, upstream_commit_100.block_commit);
+    assert_eq!(fixture.transfer_tracker.reload_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_once_rolls_back_and_replays_same_height_reorg() {
+    let root_dir = test_root_dir("indexer_behavior", "sync_once_same_height_reorg");
+    write_test_config(&root_dir, 100);
+
+    let reorg_height = 101u32;
+    let common_commit_100 = mock_balance_history_commit(100, "a", "b", "c");
+    let old_commit_101 = mock_balance_history_commit(101, "d", "e", "f");
+    let new_commit_101 = mock_balance_history_commit(101, "1", "2", "3");
+
+    let status = Arc::new(MockStatus::new(reorg_height));
+    status.set_snapshot(snapshot_from_commit(&new_commit_101));
+    let commit_provider = Arc::new(MockBalanceHistoryCommitProvider::default());
+    commit_provider.set_block_commit(100, Some(common_commit_100.clone()));
+    commit_provider.set_block_commit(101, Some(new_commit_101.clone()));
+
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(reorg_height, build_test_block(vec![])),
+    );
+    let fixture = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        block_hint_provider,
+        Arc::new(MockTransferTracker::default()),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status,
+        commit_provider,
+    );
+
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(100, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(reorg_height, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 100,
+            balance_history_block_height: 100,
+            balance_history_block_commit: common_commit_100.block_commit.clone(),
+            mutation_root: "4".repeat(64),
+            block_commit: "5".repeat(64),
+            commit_protocol_version: common_commit_100.commit_protocol_version.clone(),
+            commit_hash_algo: common_commit_100.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: reorg_height,
+            balance_history_block_height: reorg_height,
+            balance_history_block_commit: old_commit_101.block_commit.clone(),
+            mutation_root: "6".repeat(64),
+            block_commit: "7".repeat(64),
+            commit_protocol_version: old_commit_101.commit_protocol_version.clone(),
+            commit_hash_algo: old_commit_101.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_commit_101))
+        .unwrap();
+
+    let synced = fixture.indexer.sync_once_for_test().await.unwrap();
+
+    assert_eq!(synced, reorg_height);
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(reorg_height)
+    );
+    let replayed_commit = fixture
+        .storage
+        .get_pass_block_commit(reorg_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replayed_commit.balance_history_block_commit,
+        new_commit_101.block_commit
+    );
+    let anchor = fixture
+        .storage
+        .get_balance_history_snapshot_anchor()
+        .unwrap()
+        .unwrap();
+    assert_eq!(anchor.stable_height, reorg_height);
+    assert_eq!(anchor.latest_block_commit, new_commit_101.block_commit);
+    assert!(
+        fixture
+            .storage
+            .get_active_balance_snapshot(reorg_height)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(fixture.transfer_tracker.reload_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_once_retries_pending_reorg_recovery_after_energy_failure() {
+    let root_dir = test_root_dir("indexer_behavior", "sync_once_retry_pending_energy_failure");
+    write_test_config(&root_dir, 100);
+
+    let status = Arc::new(MockStatus::new(100));
+    let commit_provider = Arc::new(MockBalanceHistoryCommitProvider::default());
+    let upstream_commit_100 = mock_balance_history_commit(100, "a", "b", "c");
+    status.set_snapshot(snapshot_from_commit(&upstream_commit_100));
+    commit_provider.set_block_commit(100, Some(upstream_commit_100.clone()));
+
+    let fixture = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        Arc::new(MockBlockHintProvider::default()),
+        Arc::new(MockTransferTracker::default()),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status,
+        commit_provider,
+    );
+
+    let old_upstream_commit_105 = mock_balance_history_commit(105, "d", "e", "f");
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(100, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_active_balance_snapshot(105, 0, 0)
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 100,
+            balance_history_block_height: 100,
+            balance_history_block_commit: upstream_commit_100.block_commit.clone(),
+            mutation_root: "1".repeat(64),
+            block_commit: "2".repeat(64),
+            commit_protocol_version: upstream_commit_100.commit_protocol_version.clone(),
+            commit_hash_algo: upstream_commit_100.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 105,
+            balance_history_block_height: 105,
+            balance_history_block_commit: old_upstream_commit_105.block_commit.clone(),
+            mutation_root: "3".repeat(64),
+            block_commit: "4".repeat(64),
+            commit_protocol_version: old_upstream_commit_105.commit_protocol_version.clone(),
+            commit_hash_algo: old_upstream_commit_105.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture
+        .storage
+        .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_upstream_commit_105))
+        .unwrap();
+    fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(90)
+        .unwrap();
+
+    let first_err = fixture.indexer.sync_once_for_test().await.unwrap_err();
+    assert!(first_err.contains("pending upstream reorg recovery"));
+    assert_eq!(
+        fixture
+            .storage
+            .get_upstream_reorg_recovery_pending_height()
+            .unwrap(),
+        Some(100)
+    );
+    assert_eq!(
+        fixture.storage.get_synced_btc_block_height().unwrap(),
+        Some(100)
+    );
+
+    fixture
+        .pass_energy_manager
+        .set_synced_block_height_for_test(100)
+        .unwrap();
+
+    let synced = fixture.indexer.sync_once_for_test().await.unwrap();
+    assert_eq!(synced, 100);
+    assert_eq!(
+        fixture
+            .storage
+            .get_upstream_reorg_recovery_pending_height()
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .get_synced_block_height_for_test()
+            .unwrap(),
+        Some(100)
+    );
+    assert_eq!(fixture.transfer_tracker.reload_call_count(), 1);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_once_resumes_pending_reorg_recovery_after_restart() {
+    let root_dir = test_root_dir("indexer_behavior", "sync_once_resume_pending_after_restart");
+    write_test_config(&root_dir, 100);
+
+    let upstream_commit_100 = mock_balance_history_commit(100, "a", "b", "c");
+    let old_upstream_commit_105 = mock_balance_history_commit(105, "d", "e", "f");
+
+    let status1 = Arc::new(MockStatus::new(100));
+    status1.set_snapshot(snapshot_from_commit(&upstream_commit_100));
+    let commit_provider1 = Arc::new(MockBalanceHistoryCommitProvider::default());
+    commit_provider1.set_block_commit(100, Some(upstream_commit_100.clone()));
+    let fixture1 = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        Arc::new(MockBlockHintProvider::default()),
+        Arc::new(MockTransferTracker::default().with_reload_failures(1)),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status1,
+        commit_provider1,
+    );
+
+    fixture1
+        .storage
+        .upsert_active_balance_snapshot(100, 0, 0)
+        .unwrap();
+    fixture1
+        .storage
+        .upsert_active_balance_snapshot(105, 0, 0)
+        .unwrap();
+    fixture1
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 100,
+            balance_history_block_height: 100,
+            balance_history_block_commit: upstream_commit_100.block_commit.clone(),
+            mutation_root: "1".repeat(64),
+            block_commit: "2".repeat(64),
+            commit_protocol_version: upstream_commit_100.commit_protocol_version.clone(),
+            commit_hash_algo: upstream_commit_100.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture1
+        .storage
+        .upsert_pass_block_commit(&PassBlockCommitEntry {
+            block_height: 105,
+            balance_history_block_height: 105,
+            balance_history_block_commit: old_upstream_commit_105.block_commit.clone(),
+            mutation_root: "3".repeat(64),
+            block_commit: "4".repeat(64),
+            commit_protocol_version: old_upstream_commit_105.commit_protocol_version.clone(),
+            commit_hash_algo: old_upstream_commit_105.commit_hash_algo.clone(),
+        })
+        .unwrap();
+    fixture1
+        .storage
+        .upsert_balance_history_snapshot_anchor(&snapshot_from_commit(&old_upstream_commit_105))
+        .unwrap();
+
+    let first_err = fixture1.indexer.sync_once_for_test().await.unwrap_err();
+    assert!(first_err.contains("Injected mock transfer reload failure"));
+    assert_eq!(
+        fixture1
+            .storage
+            .get_upstream_reorg_recovery_pending_height()
+            .unwrap(),
+        Some(100)
+    );
+
+    drop(fixture1);
+
+    let status2 = Arc::new(MockStatus::new(100));
+    status2.set_snapshot(snapshot_from_commit(&upstream_commit_100));
+    let commit_provider2 = Arc::new(MockBalanceHistoryCommitProvider::default());
+    commit_provider2.set_block_commit(100, Some(upstream_commit_100.clone()));
+    let fixture2 = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        Arc::new(MockBlockHintProvider::default()),
+        Arc::new(MockTransferTracker::default()),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status2,
+        commit_provider2,
+    );
+
+    let synced = fixture2.indexer.sync_once_for_test().await.unwrap();
+    assert_eq!(synced, 100);
+    assert_eq!(
+        fixture2
+            .storage
+            .get_upstream_reorg_recovery_pending_height()
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        fixture2.storage.get_synced_btc_block_height().unwrap(),
+        Some(100)
+    );
+    assert_eq!(fixture2.transfer_tracker.reload_call_count(), 1);
+
+    cleanup_temp_dir(&fixture2.root_dir);
 }

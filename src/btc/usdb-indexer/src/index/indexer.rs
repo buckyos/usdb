@@ -277,11 +277,18 @@ impl InscriptionIndexer {
             match self.sync_once().await {
                 Ok(last_synced_height) => {
                     // Successfully synced once, and sleep for a while before next sync
-                    let new_height = self.wait_for_new_blocks(last_synced_height).await;
-                    info!(
-                        "New blocks detected. Last synced height: {}, new height: {}",
-                        last_synced_height, new_height
-                    );
+                    match self.wait_for_new_blocks(last_synced_height).await {
+                        Ok(new_height) => {
+                            info!(
+                                "New blocks detected. Last synced height: {}, new height: {}",
+                                last_synced_height, new_height
+                            );
+                        }
+                        Err(e) => {
+                            error!("Failed while waiting for new blocks: {}", e);
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                        }
+                    }
                 }
                 Err(e) => {
                     error!("Failed to sync inscriptions: {}", e);
@@ -313,6 +320,316 @@ impl InscriptionIndexer {
         })
     }
 
+    fn stored_pass_commit_matches_upstream(
+        local_commit: &crate::storage::StoredPassBlockCommitEntry,
+        upstream_commit: &balance_history::BlockCommitInfo,
+    ) -> bool {
+        local_commit.balance_history_block_height == upstream_commit.block_height
+            && local_commit.balance_history_block_commit == upstream_commit.block_commit
+            && local_commit.commit_protocol_version == upstream_commit.commit_protocol_version
+            && local_commit.commit_hash_algo == upstream_commit.commit_hash_algo
+    }
+
+    fn snapshot_anchor_matches_upstream(
+        local_anchor: &crate::storage::BalanceHistorySnapshotAnchor,
+        upstream_snapshot: &BalanceHistorySnapshotInfo,
+    ) -> Result<bool, String> {
+        let upstream_block_hash = upstream_snapshot.stable_block_hash.clone().ok_or_else(|| {
+            let msg = format!(
+                "Balance-history snapshot missing stable block hash at height {}",
+                upstream_snapshot.stable_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let upstream_block_commit =
+            upstream_snapshot
+                .latest_block_commit
+                .clone()
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Balance-history snapshot missing latest block commit at height {}",
+                        upstream_snapshot.stable_height
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+        Ok(
+            local_anchor.stable_height == upstream_snapshot.stable_height
+                && local_anchor.stable_block_hash == upstream_block_hash
+                && local_anchor.latest_block_commit == upstream_block_commit
+                && local_anchor.commit_protocol_version
+                    == upstream_snapshot.commit_protocol_version
+                && local_anchor.commit_hash_algo == upstream_snapshot.commit_hash_algo,
+        )
+    }
+
+    async fn detect_upstream_reorg_target(
+        &self,
+        current_height: u32,
+        latest_height: u32,
+        balance_history_snapshot: &BalanceHistorySnapshotInfo,
+        genesis_block_height: u32,
+    ) -> Result<Option<(u32, String)>, String> {
+        let mut drift_reasons = Vec::new();
+
+        if current_height > latest_height {
+            drift_reasons.push(format!(
+                "upstream stable height regressed: local_height={}, upstream_height={}",
+                current_height, latest_height
+            ));
+        }
+
+        if current_height == latest_height {
+            if let Some(local_anchor) = self
+                .miner_pass_storage
+                .get_balance_history_snapshot_anchor()?
+            {
+                if !Self::snapshot_anchor_matches_upstream(&local_anchor, balance_history_snapshot)?
+                {
+                    drift_reasons.push(format!(
+                        "adopted upstream snapshot anchor drifted at stable height {}",
+                        current_height
+                    ));
+                }
+            }
+        }
+
+        if current_height >= genesis_block_height {
+            if let Some(local_commit) = self
+                .miner_pass_storage
+                .get_pass_block_commit(current_height)?
+            {
+                match self
+                    .balance_history_client
+                    .get_block_commit(current_height)
+                    .await?
+                {
+                    Some(upstream_commit)
+                        if !Self::stored_pass_commit_matches_upstream(
+                            &local_commit,
+                            &upstream_commit,
+                        ) =>
+                    {
+                        drift_reasons.push(format!(
+                            "upstream block commit drifted at height {}",
+                            current_height
+                        ));
+                    }
+                    None => {
+                        drift_reasons.push(format!(
+                            "upstream block commit missing at height {}",
+                            current_height
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
+        if drift_reasons.is_empty() {
+            return Ok(None);
+        }
+
+        let rollback_target = self
+            .find_common_ancestor_height(current_height, latest_height, genesis_block_height)
+            .await?;
+        Ok(Some((rollback_target, drift_reasons.join("; "))))
+    }
+
+    async fn find_common_ancestor_height(
+        &self,
+        current_height: u32,
+        latest_height: u32,
+        genesis_block_height: u32,
+    ) -> Result<u32, String> {
+        let rollback_floor = genesis_block_height.saturating_sub(1);
+        let search_tip = current_height.min(latest_height);
+        if search_tip < genesis_block_height {
+            return Ok(rollback_floor);
+        }
+
+        for height in (genesis_block_height..=search_tip).rev() {
+            let Some(local_commit) = self.miner_pass_storage.get_pass_block_commit(height)? else {
+                warn!(
+                    "Missing local pass block commit during common-ancestor search, falling back to genesis: module=indexer, search_height={}, rollback_floor={}",
+                    height, rollback_floor
+                );
+                return Ok(rollback_floor);
+            };
+
+            let upstream_commit = self
+                .balance_history_client
+                .get_block_commit(height)
+                .await?
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Balance-history block commit is missing during common-ancestor search at height {}",
+                        height
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            if Self::stored_pass_commit_matches_upstream(&local_commit, &upstream_commit) {
+                return Ok(height);
+            }
+        }
+
+        Ok(rollback_floor)
+    }
+
+    // Detect upstream anchor drift, durably roll pass storage back to the common ancestor,
+    // then hand off to the resumable downstream recovery path.
+    async fn reconcile_upstream_reorg(
+        &self,
+        current_height: u32,
+        latest_height: u32,
+        balance_history_snapshot: &BalanceHistorySnapshotInfo,
+        genesis_block_height: u32,
+    ) -> Result<u32, String> {
+        let Some((rollback_target, drift_reason)) = self
+            .detect_upstream_reorg_target(
+                current_height,
+                latest_height,
+                balance_history_snapshot,
+                genesis_block_height,
+            )
+            .await?
+        else {
+            return Ok(current_height);
+        };
+
+        warn!(
+            "Detected upstream anchor drift, rolling back local indexer state: module=indexer, local_height={}, upstream_height={}, rollback_target={}, reason={}",
+            current_height, latest_height, rollback_target, drift_reason
+        );
+        self.status.update_index_status(
+            Some(current_height),
+            Some(latest_height),
+            Some(format!(
+                "Upstream reorg detected, rolling back to block {}",
+                rollback_target
+            )),
+        );
+
+        self.miner_pass_storage
+            .rollback_to_block_height_with_upstream_reorg_recovery_pending(rollback_target, None)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to rollback miner pass storage after upstream anchor drift: target_height={}, error={}",
+                    rollback_target, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        self.resume_pending_upstream_reorg_recovery(genesis_block_height)
+            .await?;
+
+        Ok(rollback_target)
+    }
+
+    // Finish the second half of upstream reorg recovery after pass rollback is already durable.
+    // This is intentionally idempotent and runs on every sync_once() so retries/restarts do not
+    // depend on re-detecting the original upstream drift event.
+    async fn resume_pending_upstream_reorg_recovery(
+        &self,
+        genesis_block_height: u32,
+    ) -> Result<(), String> {
+        let Some(pending_height) = self
+            .miner_pass_storage
+            .get_upstream_reorg_recovery_pending_height()?
+        else {
+            return Ok(());
+        };
+
+        let pass_synced_height = self
+            .miner_pass_storage
+            .get_synced_btc_block_height()?
+            .unwrap_or(0);
+        if pass_synced_height != pending_height {
+            let msg = format!(
+                "Pending upstream reorg recovery height mismatch: pending_height={}, pass_synced_height={}",
+                pending_height, pass_synced_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        warn!(
+            "Resuming pending upstream reorg recovery: module=indexer, target_height={}",
+            pending_height
+        );
+        self.status.update_index_status(
+            Some(pass_synced_height),
+            None,
+            Some(format!(
+                "Completing pending upstream reorg recovery at block {}",
+                pending_height
+            )),
+        );
+
+        self.pass_energy_manager
+            .rollback_to_pass_synced_height(pending_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to rollback energy state during pending upstream reorg recovery: target_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        self.transfer_tracker
+            .reload_from_storage()
+            .await
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to reload transfer tracker during pending upstream reorg recovery: target_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        self.miner_pass_storage
+            .assert_no_data_after_block_height(pending_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Data consistency check failed after pending upstream reorg recovery: synced_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        self.miner_pass_storage
+            .assert_balance_snapshot_consistency(pending_height, genesis_block_height)
+            .map_err(|e| {
+                let msg = format!(
+                    "Balance snapshot consistency check failed after pending upstream reorg recovery: synced_height={}, genesis_block_height={}, error={}",
+                    pending_height, genesis_block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        self.miner_pass_storage
+            .clear_upstream_reorg_recovery_pending_height()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to clear pending upstream reorg recovery marker after successful recovery: target_height={}, error={}",
+                    pending_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        info!(
+            "Pending upstream reorg recovery completed: module=indexer, target_height={}",
+            pending_height
+        );
+        Ok(())
+    }
+
     fn persist_balance_history_snapshot_anchor(
         &self,
         synced_height: u32,
@@ -341,7 +658,8 @@ impl InscriptionIndexer {
             })
     }
 
-    async fn wait_for_new_blocks(&self, last_synced_height: u32) -> u32 {
+    async fn wait_for_new_blocks(&self, last_synced_height: u32) -> Result<u32, String> {
+        let genesis_block_height = self.config.config().usdb.genesis_block_height;
         loop {
             let msg = format!(
                 "Waiting for new blocks... Last synced height: {}",
@@ -349,16 +667,36 @@ impl InscriptionIndexer {
             );
             self.status.update_index_status(None, None, Some(msg));
 
-            let latest_height = match self.status.balance_history_stable_height() {
-                Some(height) => height,
-                None => last_synced_height,
-            };
+            let latest_snapshot = self.status.balance_history_snapshot();
+            let latest_height = latest_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.stable_height)
+                .unwrap_or(last_synced_height);
             if latest_height > last_synced_height {
                 info!(
                     "New block detected: {} > {}",
                     latest_height, last_synced_height
                 );
-                return latest_height;
+                return Ok(latest_height);
+            }
+
+            if let Some(snapshot) = latest_snapshot {
+                if self
+                    .detect_upstream_reorg_target(
+                        last_synced_height,
+                        latest_height,
+                        &snapshot,
+                        genesis_block_height,
+                    )
+                    .await?
+                    .is_some()
+                {
+                    info!(
+                        "Detected upstream anchor drift while idle: module=indexer, synced_height={}, upstream_height={}",
+                        last_synced_height, latest_height
+                    );
+                    return Ok(latest_height);
+                }
             }
 
             // Sleep for a while before checking again
@@ -367,7 +705,7 @@ impl InscriptionIndexer {
             // Check for shutdown signal while waiting
             if self.check_shutdown() {
                 info!("Indexer shutdown requested. Exiting wait for new blocks.");
-                return last_synced_height;
+                return Ok(last_synced_height);
             }
         }
     }
@@ -376,9 +714,31 @@ impl InscriptionIndexer {
     async fn sync_once(&self) -> Result<u32, String> {
         let balance_history_snapshot = self.current_balance_history_snapshot()?;
         let latest_height = self.get_balance_history_stable_height()?;
+        let genesis_block_height = self.config.config().usdb.genesis_block_height;
+
+        // Get current synced height, ensure it's at least genesis_block_height - 1
+        let mut current_height = self
+            .miner_pass_storage
+            .get_synced_btc_block_height()?
+            .unwrap_or(0);
+        if current_height < genesis_block_height - 1 {
+            current_height = genesis_block_height - 1;
+        }
+
+        // Always finish an incomplete reorg recovery first. After the pass store has already
+        // rolled back, upstream drift may no longer be visible, so recovery cannot rely on
+        // "detect drift again" as the retry trigger.
+        self.resume_pending_upstream_reorg_recovery(genesis_block_height)
+            .await?;
+        current_height = self
+            .miner_pass_storage
+            .get_synced_btc_block_height()?
+            .unwrap_or(current_height);
+        if current_height < genesis_block_height - 1 {
+            current_height = genesis_block_height - 1;
+        }
 
         // Ensure we don't go below genesis block height
-        let genesis_block_height = self.config.config().usdb.genesis_block_height;
         if latest_height < genesis_block_height {
             let msg = format!(
                 "Latest block height {} is below genesis block height {}",
@@ -392,14 +752,14 @@ impl InscriptionIndexer {
             return Ok(latest_height);
         }
 
-        // Get current synced height, ensure it's at least genesis_block_height - 1
-        let mut current_height = self
-            .miner_pass_storage
-            .get_synced_btc_block_height()?
-            .unwrap_or(0);
-        if current_height < genesis_block_height - 1 {
-            current_height = genesis_block_height - 1;
-        }
+        current_height = self
+            .reconcile_upstream_reorg(
+                current_height,
+                latest_height,
+                &balance_history_snapshot,
+                genesis_block_height,
+            )
+            .await?;
 
         self.miner_pass_storage
             .assert_no_data_after_block_height(current_height)
@@ -585,6 +945,11 @@ impl InscriptionIndexer {
         block_range: std::ops::RangeInclusive<u32>,
     ) -> Result<u32, String> {
         self.sync_blocks(block_range).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn sync_once_for_test(&self) -> Result<u32, String> {
+        self.sync_once().await
     }
 
     #[cfg(test)]

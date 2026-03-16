@@ -18,6 +18,7 @@ const BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY: &str =
     "balance_history_snapshot_commit_protocol_version";
 const BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY: &str =
     "balance_history_snapshot_commit_hash_algo";
+const UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY: &str = "upstream_reorg_recovery_pending_height";
 
 // Default savepoint name for miner pass operations
 const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
@@ -408,30 +409,49 @@ impl MinerPassStorage {
     // Update btc synced block height
     pub fn update_synced_btc_block_height(&self, height: u32) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
+        Self::upsert_numeric_state_with_conn(&conn, BTC_SYNCED_BLOCK_HEIGHT_KEY, height as i64)
+    }
 
+    fn upsert_numeric_state_with_conn(
+        conn: &Connection,
+        name: &str,
+        value: i64,
+    ) -> Result<(), String> {
         conn.execute(
             "
             INSERT INTO state (name, value)
             VALUES (?1, ?2)
             ON CONFLICT(name) DO UPDATE SET value = excluded.value;
             ",
-            rusqlite::params![BTC_SYNCED_BLOCK_HEIGHT_KEY, height as i64],
+            rusqlite::params![name, value],
         )
         .map_err(|e| {
-            let msg = format!(
-                "Failed to update btc_synced_block_height in database: {}",
-                e
-            );
-            log::error!("{}", msg);
+            let msg = format!("Failed to update numeric state {} in database: {}", name, e);
+            error!("{}", msg);
             msg
         })?;
 
         Ok(())
     }
 
-    fn upsert_text_state(&self, name: &str, value: &str) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
+    fn delete_numeric_state_with_conn(conn: &Connection, name: &str) -> Result<(), String> {
+        conn.execute("DELETE FROM state WHERE name = ?1", rusqlite::params![name])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to delete numeric state {} from database: {}",
+                    name, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        Ok(())
+    }
 
+    fn upsert_text_state_with_conn(
+        conn: &Connection,
+        name: &str,
+        value: &str,
+    ) -> Result<(), String> {
         conn.execute(
             "
             INSERT INTO state_text (name, value)
@@ -447,6 +467,53 @@ impl MinerPassStorage {
         })?;
 
         Ok(())
+    }
+
+    fn delete_text_state_with_conn(conn: &Connection, name: &str) -> Result<(), String> {
+        conn.execute(
+            "DELETE FROM state_text WHERE name = ?1",
+            rusqlite::params![name],
+        )
+        .map_err(|e| {
+            let msg = format!("Failed to delete text state {} from database: {}", name, e);
+            error!("{}", msg);
+            msg
+        })?;
+        Ok(())
+    }
+
+    fn upsert_text_state(&self, name: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        Self::upsert_text_state_with_conn(&conn, name, value)
+    }
+
+    fn get_numeric_state(&self, name: &str) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_numeric_state_with_conn(&conn, name)
+    }
+
+    fn get_numeric_state_with_conn(conn: &Connection, name: &str) -> Result<Option<i64>, String> {
+        let mut stmt = conn
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare numeric state statement for {}: {}",
+                    name, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let value = stmt
+            .query_row([name], |row| row.get::<usize, i64>(0))
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to query numeric state {}: {}", name, e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(value)
     }
 
     fn get_text_state(&self, name: &str) -> Result<Option<String>, String> {
@@ -476,6 +543,14 @@ impl MinerPassStorage {
         &self,
         snapshot: &BalanceHistorySnapshotInfo,
     ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        Self::upsert_balance_history_snapshot_anchor_with_conn(&conn, snapshot)
+    }
+
+    fn upsert_balance_history_snapshot_anchor_with_conn(
+        conn: &Connection,
+        snapshot: &BalanceHistorySnapshotInfo,
+    ) -> Result<(), String> {
         let stable_block_hash = snapshot.stable_block_hash.clone().ok_or_else(|| {
             let msg = format!(
                 "Balance-history snapshot missing stable block hash at height {}",
@@ -493,43 +568,383 @@ impl MinerPassStorage {
             msg
         })?;
 
-        self.update_synced_btc_block_height(snapshot.stable_height)?;
-        self.upsert_text_state(BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY, &stable_block_hash)?;
-        self.upsert_text_state(
+        Self::upsert_numeric_state_with_conn(
+            conn,
+            BTC_SYNCED_BLOCK_HEIGHT_KEY,
+            snapshot.stable_height as i64,
+        )?;
+        Self::upsert_text_state_with_conn(
+            conn,
+            BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY,
+            &stable_block_hash,
+        )?;
+        Self::upsert_text_state_with_conn(
+            conn,
             BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY,
             &latest_block_commit,
         )?;
-        self.upsert_text_state(
+        Self::upsert_text_state_with_conn(
+            conn,
             BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY,
             &snapshot.commit_protocol_version,
         )?;
-        self.upsert_text_state(
+        Self::upsert_text_state_with_conn(
+            conn,
             BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY,
             &snapshot.commit_hash_algo,
         )?;
+        Self::upsert_numeric_state_with_conn(
+            conn,
+            BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY,
+            snapshot.stable_height as i64,
+        )?;
 
+        Ok(())
+    }
+
+    pub fn clear_balance_history_snapshot_anchor(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "
-            INSERT INTO state (name, value)
-            VALUES (?1, ?2)
-            ON CONFLICT(name) DO UPDATE SET value = excluded.value;
-            ",
-            rusqlite::params![
-                BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY,
-                snapshot.stable_height as i64,
-            ],
+        Self::clear_balance_history_snapshot_anchor_with_conn(&conn)
+    }
+
+    fn clear_balance_history_snapshot_anchor_with_conn(conn: &Connection) -> Result<(), String> {
+        Self::delete_numeric_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY)?;
+        Self::delete_text_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY)?;
+        Self::delete_text_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY)?;
+        Self::delete_text_state_with_conn(
+            conn,
+            BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY,
+        )?;
+        Self::delete_text_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY)?;
+        Ok(())
+    }
+
+    // Read the durable "reorg recovery still incomplete" marker.
+    // When present, sync must first finish downstream recovery (energy + in-memory tracker)
+    // before processing any new upstream blocks.
+    pub fn get_upstream_reorg_recovery_pending_height(&self) -> Result<Option<u32>, String> {
+        let value = self.get_numeric_state(UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)?;
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        if value < 0 {
+            let msg = format!(
+                "Invalid negative upstream reorg recovery pending height: {}",
+                value
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(Some(value as u32))
+    }
+
+    // Clear the durable reorg-recovery marker only after all downstream layers have
+    // been realigned to the already-rolled-back pass state.
+    pub fn clear_upstream_reorg_recovery_pending_height(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        Self::delete_numeric_state_with_conn(&conn, UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)
+    }
+
+    // Persist the "pass rollback is durable, downstream recovery still pending" marker
+    // inside the same sqlite transaction as the pass rollback itself.
+    fn mark_upstream_reorg_recovery_pending_with_conn(
+        conn: &Connection,
+        target_height: u32,
+    ) -> Result<(), String> {
+        Self::upsert_numeric_state_with_conn(
+            conn,
+            UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY,
+            target_height as i64,
+        )
+    }
+
+    // Shared rollback implementation.
+    // mark_upstream_reorg_recovery_pending=false:
+    //   plain local rollback, used when the caller does not need a resumable
+    //   cross-store recovery protocol.
+    // mark_upstream_reorg_recovery_pending=true:
+    //   rollback for upstream reorg handling; the pass rollback and pending marker
+    //   commit atomically so later retries/restarts can finish energy/tracker recovery.
+    fn rollback_to_block_height_internal(
+        &self,
+        target_height: u32,
+        target_anchor: Option<&BalanceHistorySnapshotInfo>,
+        mark_upstream_reorg_recovery_pending: bool,
+    ) -> Result<(), String> {
+        if let Some(anchor) = target_anchor {
+            if anchor.stable_height != target_height {
+                let msg = format!(
+                    "Rollback target anchor height mismatch: target_height={}, anchor_height={}",
+                    target_height, anchor.stable_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| {
+            let msg = format!(
+                "Failed to start miner pass rollback transaction at height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let surviving_pass_count: i64 = tx
+            .query_row(
+                "
+                SELECT COUNT(*)
+                FROM miner_passes
+                WHERE mint_block_height <= ?1;
+                ",
+                rusqlite::params![target_height as i64],
+                |row| row.get(0),
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to count surviving miner passes before rollback to height {}: {}",
+                    target_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        tx.execute("DROP TABLE IF EXISTS rollback_surviving_passes;", [])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to clear rollback temp table before rollback to height {}: {}",
+                    target_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if surviving_pass_count > 0 {
+            tx.execute(
+                "
+                CREATE TEMP TABLE rollback_surviving_passes AS
+                WITH latest AS (
+                    SELECT
+                        inscription_id,
+                        MAX(id) AS max_id
+                    FROM miner_pass_state_history
+                    WHERE block_height <= ?1
+                    GROUP BY inscription_id
+                )
+                SELECT
+                    m.inscription_id,
+                    m.inscription_number,
+                    m.mint_txid,
+                    m.mint_block_height,
+                    m.mint_owner,
+                    h.new_satpoint AS satpoint,
+                    m.eth_main,
+                    m.eth_collab,
+                    m.prev,
+                    h.new_owner AS owner,
+                    h.new_state AS state,
+                    m.invalid_code,
+                    m.invalid_reason,
+                    m.created_at
+                FROM miner_passes m
+                INNER JOIN latest l ON l.inscription_id = m.inscription_id
+                INNER JOIN miner_pass_state_history h ON h.id = l.max_id
+                WHERE m.mint_block_height <= ?1;
+                ",
+                rusqlite::params![target_height as i64],
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to materialize surviving miner passes before rollback to height {}: {}",
+                    target_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+            let rebuilt_count: i64 = tx
+                .query_row("SELECT COUNT(*) FROM rollback_surviving_passes;", [], |row| {
+                    row.get(0)
+                })
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to count rebuilt surviving miner passes before rollback to height {}: {}",
+                        target_height, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            if rebuilt_count != surviving_pass_count {
+                let msg = format!(
+                    "Rollback pass rebuild mismatch at target height {}: surviving_pass_count={}, rebuilt_count={}",
+                    target_height, surviving_pass_count, rebuilt_count
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        tx.execute(
+            "DELETE FROM miner_pass_state_history WHERE block_height > ?1;",
+            rusqlite::params![target_height as i64],
         )
         .map_err(|e| {
             let msg = format!(
-                "Failed to update balance-history snapshot height in database: {}",
-                e
+                "Failed to delete miner pass history after rollback target height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        tx.execute(
+            "DELETE FROM pass_block_commits WHERE block_height > ?1;",
+            rusqlite::params![target_height as i64],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to delete pass block commits after rollback target height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        tx.execute(
+            "DELETE FROM active_balance_snapshots WHERE block_height > ?1;",
+            rusqlite::params![target_height as i64],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to delete active balance snapshots after rollback target height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        tx.execute("DELETE FROM miner_passes;", []).map_err(|e| {
+            let msg = format!(
+                "Failed to clear miner pass current state before rollback to height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        if surviving_pass_count > 0 {
+            tx.execute(
+                "
+                INSERT INTO miner_passes (
+                    inscription_id,
+                    inscription_number,
+                    mint_txid,
+                    mint_block_height,
+                    mint_owner,
+                    satpoint,
+                    eth_main,
+                    eth_collab,
+                    prev,
+                    owner,
+                    state,
+                    invalid_code,
+                    invalid_reason,
+                    created_at
+                )
+                SELECT
+                    inscription_id,
+                    inscription_number,
+                    mint_txid,
+                    mint_block_height,
+                    mint_owner,
+                    satpoint,
+                    eth_main,
+                    eth_collab,
+                    prev,
+                    owner,
+                    state,
+                    invalid_code,
+                    invalid_reason,
+                    created_at
+                FROM rollback_surviving_passes
+                ORDER BY mint_block_height ASC, inscription_id ASC;
+                ",
+                [],
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to restore miner pass current state during rollback to height {}: {}",
+                    target_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        tx.execute("DROP TABLE IF EXISTS rollback_surviving_passes;", [])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to drop rollback temp table after rollback to height {}: {}",
+                    target_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        Self::clear_balance_history_snapshot_anchor_with_conn(&tx)?;
+        match target_anchor {
+            Some(anchor) => Self::upsert_balance_history_snapshot_anchor_with_conn(&tx, anchor)?,
+            None => {
+                Self::upsert_numeric_state_with_conn(
+                    &tx,
+                    BTC_SYNCED_BLOCK_HEIGHT_KEY,
+                    target_height as i64,
+                )?;
+            }
+        }
+
+        if mark_upstream_reorg_recovery_pending {
+            Self::mark_upstream_reorg_recovery_pending_with_conn(&tx, target_height)?;
+        } else {
+            Self::delete_numeric_state_with_conn(&tx, UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)?;
+        }
+
+        tx.commit().map_err(|e| {
+            let msg = format!(
+                "Failed to commit miner pass rollback transaction at height {}: {}",
+                target_height, e
             );
             error!("{}", msg);
             msg
         })?;
 
         Ok(())
+    }
+
+    // Generic rollback primitive for local storage only.
+    // This restores pass/history/snapshot/anchor state to target_height and leaves
+    // no "pending reorg recovery" marker behind.
+    pub fn rollback_to_block_height(
+        &self,
+        target_height: u32,
+        target_anchor: Option<&BalanceHistorySnapshotInfo>,
+    ) -> Result<(), String> {
+        self.rollback_to_block_height_internal(target_height, target_anchor, false)
+    }
+
+    // Upstream-reorg-specific rollback primitive.
+    // Difference from rollback_to_block_height():
+    // this variant atomically persists a durable recovery marker together with the pass
+    // rollback, because energy and transfer-tracker recovery happen afterwards and may fail.
+    pub fn rollback_to_block_height_with_upstream_reorg_recovery_pending(
+        &self,
+        target_height: u32,
+        target_anchor: Option<&BalanceHistorySnapshotInfo>,
+    ) -> Result<(), String> {
+        self.rollback_to_block_height_internal(target_height, target_anchor, true)
     }
 
     pub fn get_balance_history_snapshot_anchor(
@@ -960,6 +1375,87 @@ impl MinerPassStorage {
             );
             error!("{}", msg);
             return Err(msg);
+        }
+
+        // Check 5: there must be no persisted pass block commit after target height.
+        let mut pass_commit_stmt = conn
+            .prepare(
+                "
+            SELECT
+                block_height
+            FROM pass_block_commits
+            WHERE block_height > ?1
+            ORDER BY block_height ASC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future pass block commits: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let future_pass_commit_height: Option<i64> = pass_commit_stmt
+            .query_row(rusqlite::params![block_height as i64], |row| row.get(0))
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future pass block commits for block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(pass_commit_height) = future_pass_commit_height {
+            let msg = format!(
+                "Future pass block commit exists: target_block_height={}, pass_block_commit_height={}",
+                block_height, pass_commit_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        // Check 6: adopted upstream snapshot anchor must not remain above target height.
+        let mut anchor_stmt = conn
+            .prepare("SELECT value FROM state WHERE name = ?1")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future balance-history snapshot anchor: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let anchor_height: Option<i64> = anchor_stmt
+            .query_row([BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY], |row| row.get::<usize, i64>(0))
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future balance-history snapshot anchor height for target block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(anchor_height) = anchor_height {
+            if anchor_height < 0 {
+                let msg = format!(
+                    "Invalid negative balance-history snapshot anchor height: {}",
+                    anchor_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            if anchor_height as u32 > block_height {
+                let msg = format!(
+                    "Future balance-history snapshot anchor exists: target_block_height={}, anchor_height={}",
+                    block_height, anchor_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
         }
 
         Ok(())
@@ -4477,6 +4973,51 @@ mod tests {
     }
 
     #[test]
+    fn test_assert_no_data_after_block_height_detect_future_pass_block_commit() {
+        let dir = test_data_dir("guard_future_pass_block_commit");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "ab".repeat(32),
+                mutation_root: "cd".repeat(32),
+                block_commit: "ef".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future pass block commit exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_assert_no_data_after_block_height_detect_future_snapshot_anchor() {
+        let dir = test_data_dir("guard_future_snapshot_anchor");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 130,
+                stable_block_hash: Some("ab".repeat(32)),
+                latest_block_commit: Some("cd".repeat(32)),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        storage.update_synced_btc_block_height(100).unwrap();
+
+        let err = storage.assert_no_data_after_block_height(100).unwrap_err();
+        assert!(err.contains("Future balance-history snapshot anchor exists"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_assert_no_data_after_block_height_detect_future_synced_height() {
         let dir = test_data_dir("guard_future_synced");
         let storage = MinerPassStorage::new(&dir).unwrap();
@@ -4615,6 +5156,118 @@ mod tests {
         assert_eq!(commit.block_commit, "ef".repeat(32));
         assert_eq!(commit.commit_protocol_version, "1.0.0");
         assert_eq!(commit.commit_hash_algo, "sha256");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_rollback_to_block_height_rebuilds_current_state_and_clears_future_data() {
+        let dir = test_data_dir("rollback_to_block_height");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner1 = script_hash(51);
+        let owner2 = script_hash(52);
+
+        let pass1 = make_pass(71, 0, owner1, MinerPassState::Active, 100);
+        let pass2 = make_pass(72, 1, owner2, MinerPassState::Active, 130);
+        storage.add_new_mint_pass_at_height(&pass1, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &pass1.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        storage.add_new_mint_pass_at_height(&pass2, 130).unwrap();
+
+        storage
+            .upsert_active_balance_snapshot(100, 1_000, 1)
+            .unwrap();
+        storage.upsert_active_balance_snapshot(120, 900, 1).unwrap();
+        storage
+            .upsert_active_balance_snapshot(130, 1_800, 2)
+            .unwrap();
+
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 100,
+                balance_history_block_height: 100,
+                balance_history_block_commit: "11".repeat(32),
+                mutation_root: "22".repeat(32),
+                block_commit: "33".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "44".repeat(32),
+                mutation_root: "55".repeat(32),
+                block_commit: "66".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 130,
+                balance_history_block_height: 130,
+                balance_history_block_commit: "77".repeat(32),
+                mutation_root: "88".repeat(32),
+                block_commit: "99".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 130,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        storage.rollback_to_block_height(110, None).unwrap();
+
+        let restored = storage
+            .get_pass_by_inscription_id(&pass1.inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.state, MinerPassState::Active);
+        assert_eq!(restored.owner, owner1);
+        assert_eq!(restored.satpoint, pass1.satpoint);
+
+        assert!(
+            storage
+                .get_pass_by_inscription_id(&pass2.inscription_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(storage.get_active_balance_snapshot(120).unwrap().is_none());
+        assert!(storage.get_active_balance_snapshot(130).unwrap().is_none());
+        assert!(storage.get_pass_block_commit(120).unwrap().is_none());
+        assert!(storage.get_pass_block_commit(130).unwrap().is_none());
+        assert!(
+            storage
+                .get_balance_history_snapshot_anchor()
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(storage.get_synced_btc_block_height().unwrap(), Some(110));
+
+        let history_after_rollback = storage
+            .get_last_pass_history_at_or_before_height(&pass1.inscription_id, 200)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history_after_rollback.block_height, 100);
+        assert_eq!(history_after_rollback.state, MinerPassState::Active);
+
+        storage.assert_no_data_after_block_height(110).unwrap();
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

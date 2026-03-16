@@ -42,6 +42,8 @@ impl BlockHintProvider for RpcBlockHintProvider {
 pub(crate) trait TransferTrackerApi: Send + Sync {
     fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>>;
 
+    fn reload_from_storage<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>>;
+
     fn calc_create_satpoint<'a>(
         &'a self,
         inscription_id: &'a InscriptionId,
@@ -75,6 +77,10 @@ pub(crate) trait TransferTrackerApi: Send + Sync {
 impl TransferTrackerApi for InscriptionTransferTracker {
     fn init<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>> {
         Box::pin(async move { self.init().await })
+    }
+
+    fn reload_from_storage<'a>(&'a self) -> TransferTrackerFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.reload_from_storage().await })
     }
 
     fn calc_create_satpoint<'a>(
