@@ -287,3 +287,5 @@
 3. 再补 2 条 live ord reorg 场景。
 
 这样可以最快把这次 rollback / recovery 的主链路覆盖到真实 regtest，而不会一开始就把 fault injection、world-sim、所有业务组合一起卷进来。
+
+当前这批 case 全部落地后，下一步建议不是继续扩 case，而是把它们收进独立专项 runner，并补一份 framework 文档，降低后续维护成本。

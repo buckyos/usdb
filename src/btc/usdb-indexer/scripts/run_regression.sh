@@ -9,6 +9,7 @@ MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/src/btc/Cargo.toml}"
 RUN_REGTEST_SMOKE="${RUN_REGTEST_SMOKE:-1}"
 RUN_LIVE_ORD_E2E="${RUN_LIVE_ORD_E2E:-0}"
 RUN_LIVE_ORD_REALWORLD_SUITE="${RUN_LIVE_ORD_REALWORLD_SUITE:-0}"
+RUN_REORG_REGRESSION="${RUN_REORG_REGRESSION:-0}"
 
 log() {
   echo "[usdb-regression] $*"
@@ -147,6 +148,12 @@ main() {
     run_cmd "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
   else
     log "Skipping live ord e2e: RUN_LIVE_ORD_E2E=${RUN_LIVE_ORD_E2E}, RUN_LIVE_ORD_REALWORLD_SUITE=${RUN_LIVE_ORD_REALWORLD_SUITE}"
+  fi
+
+  if [[ "${RUN_REORG_REGRESSION}" == "1" ]]; then
+    run_cmd "${SCRIPT_DIR}/run_reorg_regression.sh"
+  else
+    log "Skipping reorg regression suite: RUN_REORG_REGRESSION=${RUN_REORG_REGRESSION}"
   fi
 
   log "Regression suite succeeded."
