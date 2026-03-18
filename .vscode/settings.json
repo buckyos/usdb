@@ -13,6 +13,8 @@
         "bitcoincore",
         "savepoint",
         "rusqlite",
+        "bucky",
+        "regtest",
     ],
     "rust-analyzer.linkedProjects": [
         "./src/btc/Cargo.toml"
