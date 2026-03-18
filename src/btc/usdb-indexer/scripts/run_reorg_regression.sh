@@ -57,6 +57,10 @@ run_smoke_reorg_suite() {
   run_case "$slot" "regtest_restart_reorg_smoke.sh"
   slot=$((slot + 1))
   run_case "$slot" "regtest_restart_same_height_reorg.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_restart_multi_reorg_smoke.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_restart_hybrid_reorg_smoke.sh"
 }
 
 run_live_ord_reorg_suite() {

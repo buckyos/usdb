@@ -289,3 +289,9 @@
 这样可以最快把这次 rollback / recovery 的主链路覆盖到真实 regtest，而不会一开始就把 fault injection、world-sim、所有业务组合一起卷进来。
 
 当前这批 case 全部落地后，下一步建议不是继续扩 case，而是把它们收进独立专项 runner，并补一份 framework 文档，降低后续维护成本。
+
+补完 runner 之后，如果还要继续补高价值覆盖，优先顺序建议是：
+
+1. restart multi-reorg：验证多轮 same-height replacement 不会只在第一轮有效。
+2. restart hybrid reorg：验证一次停机窗口里经历多阶段 canonical 切换后，最终 replay 仍能收敛到新链。
+3. 再决定是否把更长时段的压力类 reorg 引入 world-sim。

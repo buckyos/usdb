@@ -11,6 +11,8 @@
 - 空业务面同高度场景：[src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh)
 - restart 高度回退场景：[src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh)
 - restart 同高度场景：[src/btc/usdb-indexer/scripts/regtest_restart_same_height_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_same_height_reorg.sh)
+- restart 多轮 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_restart_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_multi_reorg_smoke.sh)
+- restart 混合 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_restart_hybrid_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_hybrid_reorg_smoke.sh)
 - live ord 单块 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_reorg_transfer_remint.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_reorg_transfer_remint.sh)
 - live ord 同高度场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_same_height_reorg_transfer_remint.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_same_height_reorg_transfer_remint.sh)
 - live ord 多块 rollback 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh)
@@ -29,7 +31,7 @@
    - `regtest_reorg_*`
    - `regtest_restart_*`
    - `regtest_pending_recovery_*`
-   - 负责 upstream anchor drift、rollback、restart resume、pending marker 生命周期
+   - 负责 upstream anchor drift、rollback、restart resume、多阶段离线 reorg、pending marker 生命周期
 3. live ord 业务层：
    - `regtest_live_ord_*`
    - 负责真实 mint / transfer / remint(prev) 以及多块业务 rollback
