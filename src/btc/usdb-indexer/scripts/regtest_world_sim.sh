@@ -54,6 +54,9 @@ SIM_GLOBAL_CROSS_CHECK_ENABLED="${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}"
 SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS="${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}"
 SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N="${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}"
 SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE="${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
+SIM_REORG_INTERVAL_BLOCKS="${SIM_REORG_INTERVAL_BLOCKS:-0}"
+SIM_REORG_DEPTH="${SIM_REORG_DEPTH:-3}"
+SIM_REORG_MAX_EVENTS="${SIM_REORG_MAX_EVENTS:-1}"
 
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
@@ -614,7 +617,7 @@ main() {
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -675,6 +678,9 @@ main() {
     "${self_check_args[@]}" \
     "${global_cross_check_args[@]}" \
     "${report_args[@]}" \
+    --reorg-interval-blocks "$SIM_REORG_INTERVAL_BLOCKS" \
+    --reorg-depth "$SIM_REORG_DEPTH" \
+    --reorg-max-events "$SIM_REORG_MAX_EVENTS" \
     --temp-dir "$WORK_DIR" \
     "${fail_fast_arg[@]}"
 

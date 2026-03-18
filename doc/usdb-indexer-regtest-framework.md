@@ -2,11 +2,15 @@
 
 本文档说明 `usdb-indexer` 当前的 regtest 脚本框架，目标是把通用 smoke、reorg、restart、live ord 和 pending recovery 场景组织成可复用、可批量执行的一套入口，而不是零散脚本集合。
 
+如果需要先理解整套测试栈里 `bitcoind`、`ord`、`balance-history`、`usdb-indexer` 和 `world-sim` 的连接关系，可先看拓扑说明：[doc/usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)。
+
 ## 入口文件
 
 - 共享库：[src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh)
 - 通用回归入口：[src/btc/usdb-indexer/scripts/run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
 - reorg 专项回归入口：[src/btc/usdb-indexer/scripts/run_reorg_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_reorg_regression.sh)
+- world-sim 回归入口：[src/btc/usdb-indexer/scripts/regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- world-sim reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - 空业务面高度回退场景：[src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh)
 - 空业务面同高度场景：[src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh)
 - restart 高度回退场景：[src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh)
@@ -35,6 +39,10 @@
 3. live ord 业务层：
    - `regtest_live_ord_*`
    - 负责真实 mint / transfer / remint(prev) 以及多块业务 rollback
+4. world-sim 压力层：
+   - `regtest_world_sim.sh`
+   - `regtest_world_sim_reorg.sh`
+   - 负责长时间随机业务流、交叉检查和多次 deterministic reorg 注入
 
 ## 共享库提供的能力
 
@@ -99,3 +107,4 @@ bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 1. 如果 reorg 场景继续增多，可以把 `run_reorg_regression.sh` 进一步拆成 smoke/live/fault 三个子套件。
 2. 如果专项场景开始需要声明式参数矩阵，可以再把 shell runner 演进成 Python 编排器。
 3. 如果 world-sim 后续开始覆盖 reorg，可以再决定是否把它并入同一个 runner。
+4. 当前已经有独立 `regtest_world_sim_reorg.sh`，但还没有并入默认 `run_regression.sh`。

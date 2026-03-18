@@ -90,6 +90,9 @@ def compare_reports(
         "global_cross_check_interval_blocks",
         "global_cross_check_leaderboard_top_n",
         "global_cross_check_owner_sample_size",
+        "reorg_interval_blocks",
+        "reorg_depth",
+        "reorg_max_events",
     ]
     for key in start_keys:
         if lhs_start.get(key) != rhs_start.get(key):
@@ -150,7 +153,7 @@ def parse_args() -> argparse.Namespace:
         default=(
             "block_height,actions,action_failed,verify_failed,"
             "agent_self_checked,agent_self_check_failed,"
-            "global_cross_checked,global_cross_check_failed,"
+            "global_cross_checked,global_cross_check_failed,reorg_applied,"
             "known_passes,tick_action_type_counts,"
             "pass_total,pass_active,pass_invalid,"
             "active_addresses,active_total_balance"

@@ -3,7 +3,7 @@
 该文档说明如何运行“持续随机仿真”模式：
 
 1. 启动本地 regtest `bitcoind`
-2. 启动 `ord` 临时服务（仅用于构造铭文交易）
+2. 启动 `ord server`（为 `ord wallet` 动作提供索引与 RPC）
 3. 启动 `balance-history`
 4. 启动 `usdb-indexer`
 5. 每个区块随机执行一组现实化操作并持续出块
@@ -11,10 +11,12 @@
 ## 脚本位置
 
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- [regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
 - [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
+- [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)
 
 ## 核心能力
 
@@ -47,10 +49,17 @@
   - active address 总余额
   - 能量榜首摘要
 - 支持固定 `seed`，保证场景可复现。
+- 支持可控 deterministic reorg 注入：
+  - 按固定 tick 间隔替换最近 `N` 个 canonical blocks
+  - reorg 后等待 `ord` / `balance-history` / `usdb-indexer` 全部收敛
+  - 重建模拟器本地 pass ownership 视图，再继续后续随机业务
 - 可选输出结构化 JSONL 报告（每个 tick 一条记录），便于后续离线分析。
   - tick 事件包含 `tick_action_type_counts`，便于“同 seed 双跑”时对比关键序列统计。
   - tick 事件的 `synced_height` 也是 `get_sync_status.synced_block_height` 的摘要值，不应解读成上游稳定高度。
+  - 如果启用 reorg 注入，报告中还会出现 `event = "reorg"` 的单独事件。
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
+
+`world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)。
 
 ## 运行示例
 
@@ -120,6 +129,9 @@ This wrapper preloads a high-pressure profile (default `200 agents` + `5000 bloc
 - `SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次全局交叉检查（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N`：每次检查的能量榜前 N 条（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE`：每次检查抽样的 active owner 数（默认 `16`，`0` 表示全量）
+- `SIM_REORG_INTERVAL_BLOCKS`：每隔多少个 tick 注入一次 deterministic reorg（默认 `0`，表示关闭）
+- `SIM_REORG_DEPTH`：每次 reorg 替换最近多少个 canonical blocks（默认 `3`）
+- `SIM_REORG_MAX_EVENTS`：单次运行最多注入多少次 reorg（默认 `1`，`0` 表示不限制）
 - `DIAG_TAIL_LINES`：失败诊断时每个日志文件打印的尾部行数（默认 `120`）
 
 ## 示例：长时间持续运行
@@ -138,6 +150,16 @@ src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 SIM_POLICY_MODE=scripted \
 SIM_SCRIPTED_CYCLE=mint,send_balance,transfer,remint,spend_balance,noop \
 src/btc/usdb-indexer/scripts/regtest_world_sim.sh
+```
+
+带 deterministic reorg 注入的组合回归示例：
+
+```bash
+SIM_POLICY_MODE=scripted \
+SIM_REORG_INTERVAL_BLOCKS=20 \
+SIM_REORG_DEPTH=3 \
+SIM_REORG_MAX_EVENTS=2 \
+src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh
 ```
 
 ## 同 seed 双跑一致性检查
@@ -166,3 +188,4 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh
 - 该模式优先用于“持续行为观测”与“协议回归压力验证”，不是严格确定性单测替代。
 - 若需要严格断言，请继续使用 `run_regression.sh` 与固定场景脚本。
 - 如果要分析“本地 durable 高度”和“上游稳定高度”是否同时收敛，应把 world-sim 摘要里的 `synced_height` 与单独拉取的 `get_sync_status.balance_history_stable_height` 结合起来看，而不是把摘要字段当成完整同步状态。
+- 如果启用了 reorg 注入，模拟器会在 replacement tip 上重建本地 ownership 视图；这一步的目标是保证后续随机动作继续基于新链，而不是沿用旧链缓存。

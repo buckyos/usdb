@@ -295,3 +295,9 @@
 1. restart multi-reorg：验证多轮 same-height replacement 不会只在第一轮有效。
 2. restart hybrid reorg：验证一次停机窗口里经历多阶段 canonical 切换后，最终 replay 仍能收敛到新链。
 3. 再决定是否把更长时段的压力类 reorg 引入 world-sim。
+
+当前 deterministic reorg 套件已经完成上述 1/2，下一阶段正式进入 3：
+
+1. 给 `regtest_world_simulator.py` 增加确定性 reorg 注入开关。
+2. 在 reorg 后重建模拟器本地 pass ownership 视图，避免后续动作沿用旧链缓存。
+3. 用独立入口脚本跑一条缩小版 `world-sim + reorg` 组合回归，再决定是否进入 determinism / long-run 双跑。

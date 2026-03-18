@@ -100,6 +100,9 @@ class Args:
     global_cross_check_interval_blocks: int
     global_cross_check_leaderboard_top_n: int
     global_cross_check_owner_sample_size: int
+    reorg_interval_blocks: int
+    reorg_depth: int
+    reorg_max_events: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -186,8 +189,11 @@ class RegtestWorldSimulator:
             "agent_self_check_fail": 0,
             "global_cross_check_ok": 0,
             "global_cross_check_fail": 0,
+            "reorg_ok": 0,
+            "reorg_fail": 0,
             "skip": 0,
         }
+        self.reorg_events_applied = 0
 
         self.report_path: Path | None = None
         self.report_fp: Any | None = None
@@ -219,6 +225,9 @@ class RegtestWorldSimulator:
                 "global_cross_check_interval_blocks": self.args.global_cross_check_interval_blocks,
                 "global_cross_check_leaderboard_top_n": self.args.global_cross_check_leaderboard_top_n,
                 "global_cross_check_owner_sample_size": self.args.global_cross_check_owner_sample_size,
+                "reorg_interval_blocks": self.args.reorg_interval_blocks,
+                "reorg_depth": self.args.reorg_depth,
+                "reorg_max_events": self.args.reorg_max_events,
             },
         )
 
@@ -503,6 +512,49 @@ class RegtestWorldSimulator:
                 raise WorldSimError(
                     "sync timeout: "
                     f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}"
+                )
+            time.sleep(0.8)
+
+    def wait_service_height_exact(self, target_height: int) -> None:
+        start = time.time()
+        while True:
+            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
+            usdb_height = self.rpc_usdb("get_synced_block_height", [])
+            usdb_height_num = 0 if usdb_height is None else int(usdb_height)
+
+            if bh_height == target_height and usdb_height_num == target_height:
+                return
+
+            if time.time() - start > self.args.sync_timeout_sec:
+                raise WorldSimError(
+                    "exact sync timeout: "
+                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}"
+                )
+            time.sleep(0.8)
+
+    def wait_ord_server_synced(self) -> None:
+        start = time.time()
+        status_url = self.args.ord_server_url.rstrip("/") + "/blockcount"
+        while True:
+            btc_height = int(self.run_btc_cli(None, ["getblockcount"]))
+            try:
+                with request.urlopen(status_url, timeout=self.args.rpc_timeout_sec) as resp:
+                    ord_height = int(resp.read().decode("utf-8").strip())
+            except Exception as e:  # noqa: BLE001
+                if time.time() - start > self.args.sync_timeout_sec:
+                    raise WorldSimError(
+                        f"ord sync timeout: target_height={btc_height}, error={e}"
+                    ) from e
+                time.sleep(0.8)
+                continue
+
+            if ord_height >= btc_height:
+                return
+
+            if time.time() - start > self.args.sync_timeout_sec:
+                raise WorldSimError(
+                    "ord sync timeout: "
+                    f"target_height={btc_height}, ord_height={ord_height}"
                 )
             time.sleep(0.8)
 
@@ -1280,6 +1332,211 @@ class RegtestWorldSimulator:
 
         return rows
 
+    def load_pass_energy_leaderboard_at_height(
+        self, block_height: int, scope: str
+    ) -> list[dict[str, Any]]:
+        page = 0
+        page_size = 256
+        rows: list[dict[str, Any]] = []
+
+        while True:
+            payload = self.rpc_usdb(
+                "get_pass_energy_leaderboard",
+                [
+                    {
+                        "at_height": block_height,
+                        "scope": scope,
+                        "page": page,
+                        "page_size": page_size,
+                    }
+                ],
+            )
+            if not isinstance(payload, dict):
+                raise WorldSimError(
+                    "invalid get_pass_energy_leaderboard payload: "
+                    f"block_height={block_height}, scope={scope}, page={page}, payload={payload}"
+                )
+
+            resolved_height = int(payload.get("resolved_height", -1))
+            if resolved_height != block_height:
+                raise WorldSimError(
+                    "leaderboard resolved height mismatch: "
+                    f"expected={block_height}, got={resolved_height}, scope={scope}, page={page}"
+                )
+
+            items = payload.get("items") or []
+            if not isinstance(items, list):
+                raise WorldSimError(
+                    "invalid leaderboard items type: "
+                    f"block_height={block_height}, scope={scope}, page={page}, items={items}"
+                )
+
+            if not items:
+                break
+            rows.extend(items)
+            if len(items) < page_size:
+                break
+            page += 1
+
+        return rows
+
+    def reset_local_chain_view(self) -> None:
+        self.pass_owner_by_id.clear()
+        for agent in self.agents:
+            agent.owned_passes.clear()
+            agent.active_pass_id = None
+            agent.invalid_passes.clear()
+            agent.last_action = "reorg_reset"
+            agent.cooldown = 0
+            agent.oracle_last_checked_height = None
+            agent.oracle_last_pass_id = None
+            agent.oracle_last_state = None
+            agent.oracle_last_energy = None
+            agent.oracle_last_owner_balance = None
+            agent.oracle_last_record_block_height = None
+
+    def rebuild_local_chain_view_from_height(self, block_height: int) -> dict[str, int]:
+        self.reset_local_chain_view()
+
+        owner_to_agent = {
+            agent.owner_script_hash: agent for agent in self.agents
+        }
+        rows = self.load_pass_energy_leaderboard_at_height(block_height, "all")
+        unknown_owner_rows = 0
+        active_owner_rows = 0
+
+        for row in rows:
+            inscription_id = str(row.get("inscription_id", ""))
+            owner = str(row.get("owner", ""))
+            state = str(row.get("state", ""))
+            if not inscription_id or not owner:
+                raise WorldSimError(
+                    f"invalid leaderboard row during reorg rebuild: row={row}"
+                )
+
+            agent = owner_to_agent.get(owner)
+            if agent is None:
+                unknown_owner_rows += 1
+                continue
+
+            agent.owned_passes.add(inscription_id)
+            self.pass_owner_by_id[inscription_id] = agent.agent_id
+
+            if state == "invalid":
+                agent.invalid_passes.add(inscription_id)
+            if state == "active":
+                if agent.active_pass_id is not None and agent.active_pass_id != inscription_id:
+                    raise WorldSimError(
+                        "duplicate active pass detected during reorg rebuild: "
+                        f"owner={owner}, existing={agent.active_pass_id}, new={inscription_id}"
+                    )
+                agent.active_pass_id = inscription_id
+                active_owner_rows += 1
+
+        if unknown_owner_rows > 0:
+            raise WorldSimError(
+                "reorg rebuild found rows owned by unknown script hashes: "
+                f"block_height={block_height}, unknown_owner_rows={unknown_owner_rows}"
+            )
+
+        return {
+            "loaded_pass_rows": len(rows),
+            "unknown_owner_rows": unknown_owner_rows,
+            "active_owner_rows": active_owner_rows,
+        }
+
+    def get_block_hash(self, block_height: int) -> str:
+        return self.run_btc_cli(None, ["getblockhash", str(block_height)])
+
+    def mine_one_empty_block(self) -> int:
+        self.run_btc_cli(
+            None,
+            [
+                "-named",
+                "generateblock",
+                f"output={self.args.mining_address}",
+                "transactions=[]",
+            ],
+        )
+        return int(self.run_btc_cli(None, ["getblockcount"]))
+
+    def should_trigger_reorg(self, tick: int, block_height: int) -> bool:
+        if self.args.reorg_interval_blocks <= 0:
+            return False
+        if self.args.reorg_depth <= 0:
+            return False
+        if tick % self.args.reorg_interval_blocks != 0:
+            return False
+        if self.args.reorg_max_events > 0 and self.reorg_events_applied >= self.args.reorg_max_events:
+            return False
+        return block_height > self.args.reorg_depth
+
+    def perform_reorg(self, tick: int, block_height: int) -> dict[str, Any]:
+        depth = min(self.args.reorg_depth, block_height - 1)
+        rollback_start_height = block_height - depth + 1
+        rollback_target_height = rollback_start_height - 1
+        original_tip_hash = self.get_block_hash(block_height)
+        rollback_start_hash = self.get_block_hash(rollback_start_height)
+
+        self.log(
+            "Applying deterministic reorg: "
+            f"tick={tick}, tip_height={block_height}, depth={depth}, "
+            f"rollback_start_height={rollback_start_height}, rollback_target_height={rollback_target_height}"
+        )
+
+        self.run_btc_cli(None, ["invalidateblock", rollback_start_hash])
+        self.wait_ord_server_synced()
+        self.wait_service_height_exact(rollback_target_height)
+
+        for _ in range(depth):
+            self.mine_one_empty_block()
+
+        self.wait_ord_server_synced()
+        self.wait_service_synced(block_height)
+
+        replacement_tip_hash = self.get_block_hash(block_height)
+        if replacement_tip_hash == original_tip_hash:
+            raise WorldSimError(
+                "deterministic reorg failed to change tip hash: "
+                f"tick={tick}, block_height={block_height}, tip_hash={replacement_tip_hash}"
+            )
+
+        bh_snapshot = self.rpc_balance_history("get_snapshot_info", [])
+        usdb_snapshot = self.rpc_usdb("get_snapshot_info", [])
+        bh_stable_hash = str((bh_snapshot or {}).get("stable_block_hash", ""))
+        usdb_stable_hash = str((usdb_snapshot or {}).get("stable_block_hash", ""))
+        if bh_stable_hash != replacement_tip_hash:
+            raise WorldSimError(
+                "balance-history stable hash mismatch after reorg: "
+                f"expected={replacement_tip_hash}, got={bh_stable_hash}"
+            )
+        if usdb_stable_hash != replacement_tip_hash:
+            raise WorldSimError(
+                "usdb stable hash mismatch after reorg: "
+                f"expected={replacement_tip_hash}, got={usdb_stable_hash}"
+            )
+
+        rebuild_info = self.rebuild_local_chain_view_from_height(block_height)
+        cross_check_info = self.run_global_cross_check(block_height, tick)
+        self.reorg_events_applied += 1
+        self.metrics["reorg_ok"] += 1
+
+        info = {
+            "tick": tick,
+            "depth": depth,
+            "rollback_start_height": rollback_start_height,
+            "rollback_target_height": rollback_target_height,
+            "tip_height": block_height,
+            "original_tip_hash": original_tip_hash,
+            "replacement_tip_hash": replacement_tip_hash,
+            "balance_history_stable_hash": bh_stable_hash,
+            "usdb_stable_hash": usdb_stable_hash,
+        }
+        info.update(rebuild_info)
+        info["global_cross_check_info"] = cross_check_info
+        self.emit_report("reorg", info)
+        return info
+
     def run_global_cross_check(self, block_height: int, tick: int) -> dict[str, Any]:
         start_ts = time.time()
         top_n = max(1, self.args.global_cross_check_leaderboard_top_n)
@@ -1541,7 +1798,10 @@ class RegtestWorldSimulator:
             f"global_cross_check_enabled={self.args.global_cross_check_enabled}, "
             f"global_cross_check_interval_blocks={self.args.global_cross_check_interval_blocks}, "
             f"global_cross_check_leaderboard_top_n={self.args.global_cross_check_leaderboard_top_n}, "
-            f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}"
+            f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}, "
+            f"reorg_interval_blocks={self.args.reorg_interval_blocks}, "
+            f"reorg_depth={self.args.reorg_depth}, "
+            f"reorg_max_events={self.args.reorg_max_events}"
         )
         if self.report_path is not None:
             self.log(f"Structured tick report enabled: path={self.report_path}")
@@ -1576,6 +1836,8 @@ class RegtestWorldSimulator:
             global_cross_check_failed = 0
             global_cross_check_fail_samples: list[str] = []
             global_cross_check_info: dict[str, Any] | None = None
+            reorg_applied = 0
+            reorg_info: dict[str, Any] | None = None
             refresh_failed_agent_ids: set[int] = set()
 
             for _ in range(action_slots):
@@ -1688,6 +1950,14 @@ class RegtestWorldSimulator:
                     if self.args.fail_fast:
                         raise
 
+            if self.should_trigger_reorg(tick, block_height):
+                try:
+                    reorg_info = self.perform_reorg(tick, block_height)
+                    reorg_applied = 1
+                except Exception:
+                    self.metrics["reorg_fail"] += 1
+                    raise
+
             summary = self.collect_summary(block_height)
             pass_stats = summary["pass_stats"] or {}
             latest_balance = summary["latest_balance"] or {}
@@ -1705,6 +1975,7 @@ class RegtestWorldSimulator:
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
                 f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
                 f"global_cross_checked={global_cross_checked}, global_cross_check_failed={global_cross_check_failed}, "
+                f"reorg_applied={reorg_applied}, "
                 f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, pass_active={active_count}, "
                 f"pass_invalid={invalid_count}, active_addresses={active_addresses}, "
                 f"active_total_balance={total_balance}, top_energy={top_energy}"
@@ -1731,6 +2002,7 @@ class RegtestWorldSimulator:
                     "agent_self_check_failed": self_check_failed,
                     "global_cross_checked": global_cross_checked,
                     "global_cross_check_failed": global_cross_check_failed,
+                    "reorg_applied": reorg_applied,
                     "known_passes": len(self.pass_owner_by_id),
                     "tick_action_type_counts": tick_action_type_counts,
                     "pass_total": total_count,
@@ -1744,6 +2016,7 @@ class RegtestWorldSimulator:
                     "verify_fail_samples": verify_fail_samples[:8],
                     "agent_self_check_fail_samples": self_check_fail_samples[:8],
                     "global_cross_check_info": global_cross_check_info,
+                    "reorg_info": reorg_info,
                     "global_cross_check_fail_samples": global_cross_check_fail_samples[
                         :8
                     ],
@@ -1849,6 +2122,24 @@ def parse_args() -> Args:
         default=16,
         help="How many active owners to sample per global cross-check (0 means all active owners)",
     )
+    parser.add_argument(
+        "--reorg-interval-blocks",
+        type=int,
+        default=0,
+        help="Inject a deterministic reorg every N mined ticks (0 disables reorg injection)",
+    )
+    parser.add_argument(
+        "--reorg-depth",
+        type=int,
+        default=3,
+        help="How many latest canonical blocks to replace when reorg injection triggers",
+    )
+    parser.add_argument(
+        "--reorg-max-events",
+        type=int,
+        default=1,
+        help="Maximum number of injected reorg events during one simulation run (0 means unlimited)",
+    )
     parsed = parser.parse_args()
 
     agent_wallets = [v for v in parsed.agent_wallets.split(",") if v]
@@ -1896,6 +2187,9 @@ def parse_args() -> Args:
         global_cross_check_interval_blocks=parsed.global_cross_check_interval_blocks,
         global_cross_check_leaderboard_top_n=parsed.global_cross_check_leaderboard_top_n,
         global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
+        reorg_interval_blocks=parsed.reorg_interval_blocks,
+        reorg_depth=parsed.reorg_depth,
+        reorg_max_events=parsed.reorg_max_events,
     )
 
 
