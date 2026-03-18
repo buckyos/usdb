@@ -373,7 +373,7 @@
 
 详细数据模型设计见：
 
-- [doc/balance-history-rollback数据模型设计.md](./balance-history-rollback%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B%E8%AE%BE%E8%AE%A1.md)
+- [doc/balance-history-rollback数据模型设计.md](./balance-history/balance-history-rollback%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B%E8%AE%BE%E8%AE%A1.md)
 
 建议动作：
 

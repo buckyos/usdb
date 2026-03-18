@@ -64,9 +64,9 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/db/db.rs](../src/btc/balance-history/src/db/db.rs#L17)
-- [src/btc/balance-history/src/db/db.rs](../src/btc/balance-history/src/db/db.rs#L395)
-- [src/btc/balance-history/src/db/db.rs](../src/btc/balance-history/src/db/db.rs#L645)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L17)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L395)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L645)
 
 ## 3.2 当前最关键的回滚障碍
 
@@ -89,9 +89,9 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/index/block.rs](../src/btc/balance-history/src/index/block.rs#L29)
-- [src/btc/balance-history/src/index/block.rs](../src/btc/balance-history/src/index/block.rs#L387)
-- [src/btc/balance-history/src/index/block.rs](../src/btc/balance-history/src/index/block.rs#L462)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L29)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L387)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L462)
 
 这点很关键，它意味着：
 
@@ -104,7 +104,7 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/db/db.rs](../src/btc/balance-history/src/db/db.rs#L782)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L782)
 
 这带来一个很重要的简化：
 

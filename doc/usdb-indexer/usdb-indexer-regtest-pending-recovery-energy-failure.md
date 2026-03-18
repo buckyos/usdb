@@ -10,7 +10,7 @@
 
 - [src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh)
 - [src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh)
-- [doc/usdb-indexer-regtest-reorg-plan.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-reorg-plan.md)
+- [doc/usdb-indexer-regtest-reorg-plan.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-reorg-plan.md)
 
 ## 场景编排
 

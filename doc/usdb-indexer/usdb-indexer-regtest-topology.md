@@ -175,7 +175,7 @@ sequenceDiagram
 
 ## 6. 推荐阅读顺序
 
-1. 测试框架入口：[usdb-indexer-regtest-framework.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-framework.md)
-2. world-sim 说明：[usdb-indexer-regtest-world-sim.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim.md)
-3. world-sim reorg 组合回归：[usdb-indexer-regtest-world-sim-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-reorg.md)
-4. 同步状态语义：[usdb-indexer-sync-status-model.md](/home/bucky/work/usdb/doc/usdb-indexer-sync-status-model.md)
+1. 测试框架入口：[usdb-indexer-regtest-framework.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-framework.md)
+2. world-sim 说明：[usdb-indexer-regtest-world-sim.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim.md)
+3. world-sim reorg 组合回归：[usdb-indexer-regtest-world-sim-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-reorg.md)
+4. 同步状态语义：[usdb-indexer-sync-status-model.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-sync-status-model.md)

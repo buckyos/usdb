@@ -2,7 +2,7 @@
 
 本文档说明 `usdb-indexer` 当前的 regtest 脚本框架，目标是把通用 smoke、reorg、restart、live ord 和 pending recovery 场景组织成可复用、可批量执行的一套入口，而不是零散脚本集合。
 
-如果需要先理解整套测试栈里 `bitcoind`、`ord`、`balance-history`、`usdb-indexer` 和 `world-sim` 的连接关系，可先看拓扑说明：[doc/usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)。
+如果需要先理解整套测试栈里 `bitcoind`、`ord`、`balance-history`、`usdb-indexer` 和 `world-sim` 的连接关系，可先看拓扑说明：[doc/usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
 
 ## 入口文件
 

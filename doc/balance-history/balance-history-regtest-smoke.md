@@ -11,7 +11,7 @@
 
 - [regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
 - [regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
-- [balance-history-regtest-framework.md](/home/bucky/work/usdb/doc/balance-history-regtest-framework.md)
+- [balance-history-regtest-framework.md](/home/bucky/work/usdb/doc/balance-history/balance-history-regtest-framework.md)
 
 ## 前置条件
 

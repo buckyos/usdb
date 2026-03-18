@@ -177,5 +177,5 @@ CLI watch 模式应：
 ## 8. 关联文档
 
 - RPC 规范：[usdb-indexer-rpc-v1.md](./usdb-indexer-rpc-v1.md)
-- 浏览器说明：[../web/usdb-indexer-browser/README.md](../web/usdb-indexer-browser/README.md)
+- 浏览器说明：[../../web/usdb-indexer-browser/README.md](../../web/usdb-indexer-browser/README.md)
 - Regtest E2E：[usdb-indexer-regtest-e2e-smoke.md](./usdb-indexer-regtest-e2e-smoke.md)

@@ -9,8 +9,8 @@
 
 脚本位置：
 
-- [src/btc/balance-history/scripts/regtest_reorg_smoke.sh](../src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
-- [src/btc/balance-history/scripts/regtest_lib.sh](../src/btc/balance-history/scripts/regtest_lib.sh)
+- [src/btc/balance-history/scripts/regtest_reorg_smoke.sh](../../src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
+- [src/btc/balance-history/scripts/regtest_lib.sh](../../src/btc/balance-history/scripts/regtest_lib.sh)
 - [doc/balance-history-regtest-framework.md](./balance-history-regtest-framework.md)
 
 ## 前置条件

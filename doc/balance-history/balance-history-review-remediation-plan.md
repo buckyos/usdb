@@ -72,9 +72,9 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/index/snapshot.rs](src/btc/balance-history/src/index/snapshot.rs#L277)
-- [src/btc/balance-history/src/index/snapshot.rs](src/btc/balance-history/src/index/snapshot.rs#L280)
-- [src/btc/balance-history/src/index/snapshot.rs](src/btc/balance-history/src/index/snapshot.rs#L283)
+- [src/btc/balance-history/src/index/snapshot.rs](../../src/btc/balance-history/src/index/snapshot.rs#L277)
+- [src/btc/balance-history/src/index/snapshot.rs](../../src/btc/balance-history/src/index/snapshot.rs#L280)
+- [src/btc/balance-history/src/index/snapshot.rs](../../src/btc/balance-history/src/index/snapshot.rs#L283)
 
 ### P0-2. 快照链路缺失 block commit 元数据，stable state 定义不闭合
 
@@ -92,10 +92,10 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/db/snapshot.rs](src/btc/balance-history/src/db/snapshot.rs#L13)
-- [src/btc/balance-history/src/index/snapshot.rs](src/btc/balance-history/src/index/snapshot.rs#L277)
-- [src/btc/balance-history/src/service/server.rs](src/btc/balance-history/src/service/server.rs#L168)
-- [src/btc/balance-history/src/service/server.rs](src/btc/balance-history/src/service/server.rs#L200)
+- [src/btc/balance-history/src/db/snapshot.rs](../../src/btc/balance-history/src/db/snapshot.rs#L13)
+- [src/btc/balance-history/src/index/snapshot.rs](../../src/btc/balance-history/src/index/snapshot.rs#L277)
+- [src/btc/balance-history/src/service/server.rs](../../src/btc/balance-history/src/service/server.rs#L168)
+- [src/btc/balance-history/src/service/server.rs](../../src/btc/balance-history/src/service/server.rs#L200)
 
 ### P0-3. 单批次 block flush 不是一个原子提交单元
 
@@ -114,14 +114,14 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/index/block.rs](src/btc/balance-history/src/index/block.rs#L571)
-- [src/btc/balance-history/src/index/block.rs](src/btc/balance-history/src/index/block.rs#L578)
-- [src/btc/balance-history/src/index/block.rs](src/btc/balance-history/src/index/block.rs#L635)
-- [src/btc/balance-history/src/index/block.rs](src/btc/balance-history/src/index/block.rs#L680)
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L588)
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L1027)
-- [src/btc/balance-history/src/index/indexer.rs](src/btc/balance-history/src/index/indexer.rs#L395)
-- [src/btc/balance-history/src/index/indexer.rs](src/btc/balance-history/src/index/indexer.rs#L454)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L571)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L578)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L635)
+- [src/btc/balance-history/src/index/block.rs](../../src/btc/balance-history/src/index/block.rs#L680)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L588)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L1027)
+- [src/btc/balance-history/src/index/indexer.rs](../../src/btc/balance-history/src/index/indexer.rs#L395)
+- [src/btc/balance-history/src/index/indexer.rs](../../src/btc/balance-history/src/index/indexer.rs#L454)
 
 ### P1-1. `clear_blocks()` 当前实现不能真正清空 block 相关列族
 
@@ -138,10 +138,10 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L1738)
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L1760)
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L1771)
-- [src/btc/balance-history/src/db/db.rs](src/btc/balance-history/src/db/db.rs#L1782)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L1738)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L1760)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L1771)
+- [src/btc/balance-history/src/db/db.rs](../../src/btc/balance-history/src/db/db.rs#L1782)
 
 ### P1-2. local loader 复用阈值判断存在下溢和误判风险
 
@@ -159,9 +159,9 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L392)
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L409)
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L412)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L392)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L409)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L412)
 
 ### P1-3. local loader 从 DB 恢复前缺少索引连续性与主链一致性校验
 
@@ -177,9 +177,9 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L48)
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L129)
-- [src/btc/balance-history/src/btc/local_loader.rs](src/btc/balance-history/src/btc/local_loader.rs#L412)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L48)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L129)
+- [src/btc/balance-history/src/btc/local_loader.rs](../../src/btc/balance-history/src/btc/local_loader.rs#L412)
 
 ### P2-1. latest verifier 没有锚定 stable height，而是对比 electrs 当前 tip
 
@@ -196,11 +196,11 @@
 
 相关代码：
 
-- [src/btc/balance-history/src/index/verify.rs](src/btc/balance-history/src/index/verify.rs#L30)
-- [src/btc/balance-history/src/index/verify.rs](src/btc/balance-history/src/index/verify.rs#L273)
-- [src/btc/balance-history/src/index/verify.rs](src/btc/balance-history/src/index/verify.rs#L279)
-- [src/btc/balance-history/src/index/verify.rs](src/btc/balance-history/src/index/verify.rs#L314)
-- [src/btc/balance-history/src/index/verify.rs](src/btc/balance-history/src/index/verify.rs#L319)
+- [src/btc/balance-history/src/index/verify.rs](../../src/btc/balance-history/src/index/verify.rs#L30)
+- [src/btc/balance-history/src/index/verify.rs](../../src/btc/balance-history/src/index/verify.rs#L273)
+- [src/btc/balance-history/src/index/verify.rs](../../src/btc/balance-history/src/index/verify.rs#L279)
+- [src/btc/balance-history/src/index/verify.rs](../../src/btc/balance-history/src/index/verify.rs#L314)
+- [src/btc/balance-history/src/index/verify.rs](../../src/btc/balance-history/src/index/verify.rs#L319)
 
 ## 5. 修复方案清单
 
@@ -587,5 +587,5 @@ warn!(
 - [doc/balance-history-rpc.md](./balance-history-rpc.md)
 - [doc/balance-history-rpc_en.md](./balance-history-rpc_en.md)
 - [doc/balance-history-regtest-smoke.md](./balance-history-regtest-smoke.md)
-- [doc/btc-reorg风险现状与改造计划.md](./btc-reorg%E9%A3%8E%E9%99%A9%E7%8E%B0%E7%8A%B6%E4%B8%8E%E6%94%B9%E9%80%A0%E8%AE%A1%E5%88%92.md)
+- [doc/btc-reorg风险现状与改造计划.md](../btc-reorg%E9%A3%8E%E9%99%A9%E7%8E%B0%E7%8A%B6%E4%B8%8E%E6%94%B9%E9%80%A0%E8%AE%A1%E5%88%92.md)
 - [doc/usdb-双链共识接入问题风险与改造清单.md](./usdb-%E5%8F%8C%E9%93%BE%E5%85%B1%E8%AF%86%E6%8E%A5%E5%85%A5%E9%97%AE%E9%A2%98%E9%A3%8E%E9%99%A9%E4%B8%8E%E6%94%B9%E9%80%A0%E6%B8%85%E5%8D%95.md)

@@ -46,7 +46,7 @@ http://127.0.0.1:8088/web/usdb-indexer-browser/
 - 页面不依赖构建工具，`index.html` + `styles.css` + `app.js` 即可运行。
 - 顶部 RPC 区域支持按网络预设（Mainnet/Regtest/Testnet/Signet/Testnet4）自动填充默认 endpoint。
 - 首页默认每 5 秒刷新一次，可点击“刷新”立即拉取最新状态。
-- 完整同步状态模型说明见：[../../doc/usdb-indexer-sync-status-model.md](../../doc/usdb-indexer-sync-status-model.md)。
+- 完整同步状态模型说明见：[../../doc/usdb-indexer/usdb-indexer-sync-status-model.md](../../doc/usdb-indexer/usdb-indexer-sync-status-model.md)。
 - 首页中的“同步高度”表示 usdb-indexer 本地 durable 已提交高度，“稳定高度”表示 balance-history 当前稳定高度，也是 usdb-indexer 的同步 ceiling。
 - 首页中的“当前进度 / 进度上限”对应 RPC 的 current / total，只用于进度展示，不应当解读成新的高度语义字段。
 - 能量排行榜点击某一行会自动联动到“当前能量状态”查询。

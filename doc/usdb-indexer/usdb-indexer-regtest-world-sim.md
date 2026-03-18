@@ -18,9 +18,9 @@
 - [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 - [run_live_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_reorg.sh)
-- [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)
-- [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-reorg-determinism.md)
-- [usdb-indexer-regtest-world-sim-live-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-live-reorg.md)
+- [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)
+- [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-reorg-determinism.md)
+- [usdb-indexer-regtest-world-sim-live-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-live-reorg.md)
 
 ## 核心能力
 
@@ -63,7 +63,7 @@
   - 如果启用 reorg 注入，报告中还会出现 `event = "reorg"` 的单独事件。
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 
-`world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)。
+`world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
 
 ## 运行示例
 
