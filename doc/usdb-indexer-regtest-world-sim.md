@@ -14,9 +14,11 @@
 - [regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
+- [regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
 - [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 - [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)
+- [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-reorg-determinism.md)
 
 ## 核心能力
 
@@ -177,11 +179,20 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh
 - `WORK_DIR`：双跑总工作目录
 - `RUN1_WORK_DIR`、`RUN2_WORK_DIR`：单次运行工作目录
 - `RUN1_REPORT_FILE`、`RUN2_REPORT_FILE`：两次报告路径
+- `BASE_BTC_RPC_PORT`、`BASE_BTC_P2P_PORT`、`BASE_BH_RPC_PORT`、`BASE_USDB_RPC_PORT`、`BASE_ORD_SERVER_PORT`：双跑的起始端口组
+- `PORT_STRIDE`：`run2` 相对 `run1` 的端口偏移，默认 `100`
 
 脚本会顺序运行两次 `regtest_world_sim.sh`，然后调用 `compare_world_sim_reports.py` 对比：
 
 - `session_end.final_metrics`
 - 每个 tick 的关键字段（默认不比较 txid/inscription id）
+- 如果报告里包含 `reorg` 事件，还会比较每次 reorg 的稳定字段（如 tick、rollback 高度、重建后的 pass 行数和 cross-check 摘要），但不会比较区块哈希这类天然会变化的字段
+
+带 deterministic reorg 的双跑入口：
+
+```bash
+src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh
+```
 
 ## 说明
 

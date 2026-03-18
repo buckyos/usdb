@@ -5,9 +5,11 @@
 ## 入口脚本
 
 - [src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
+- [src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
 - [src/btc/usdb-indexer/scripts/regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - [src/btc/usdb-indexer/scripts/regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [doc/usdb-indexer-regtest-world-sim.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim.md)
+- [doc/usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-reorg-determinism.md)
 
 ## 覆盖目标
 
@@ -51,3 +53,9 @@ World simulation finished successfully.
 1. `session_start` 中的 reorg 配置字段。
 2. 至少一条 `event = "reorg"` 的 JSONL 记录。
 3. `session_end.final_metrics.reorg_ok > 0` 且 `reorg_fail = 0`。
+
+如果还需要验证“同 seed 下带 reorg 的报告仍然可重复”，应继续执行：
+
+```bash
+src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh
+```

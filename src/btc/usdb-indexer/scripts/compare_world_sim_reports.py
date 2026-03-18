@@ -53,12 +53,46 @@ def collect_tick_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ticks
 
 
+def collect_named_events(events: list[dict[str, Any]], event_name: str) -> list[dict[str, Any]]:
+    matched = [evt for evt in events if str(evt.get("event")) == event_name]
+    matched.sort(key=lambda v: int(v.get("tick", 0)))
+    return matched
+
+
 def format_mismatch(prefix: str, left: Any, right: Any) -> str:
     return (
         f"{prefix}\n"
         f"  lhs={json.dumps(left, ensure_ascii=False, sort_keys=True)}\n"
         f"  rhs={json.dumps(right, ensure_ascii=False, sort_keys=True)}"
     )
+
+
+def normalize_reorg_event(evt: dict[str, Any]) -> dict[str, Any]:
+    cross_check = evt.get("global_cross_check_info")
+    normalized_cross_check: dict[str, Any] | None = None
+    if isinstance(cross_check, dict):
+        normalized_cross_check = {
+            "tick": cross_check.get("tick"),
+            "block_height": cross_check.get("block_height"),
+            "top_n": cross_check.get("top_n"),
+            "leaderboard_compared_count": cross_check.get("leaderboard_compared_count"),
+            "active_owner_count": cross_check.get("active_owner_count"),
+            "sampled_owner_count": cross_check.get("sampled_owner_count"),
+            "sampled_balance_sum": cross_check.get("sampled_balance_sum"),
+            "snapshot_total_balance": cross_check.get("snapshot_total_balance"),
+        }
+
+    return {
+        "tick": evt.get("tick"),
+        "depth": evt.get("depth"),
+        "rollback_start_height": evt.get("rollback_start_height"),
+        "rollback_target_height": evt.get("rollback_target_height"),
+        "tip_height": evt.get("tip_height"),
+        "loaded_pass_rows": evt.get("loaded_pass_rows"),
+        "unknown_owner_rows": evt.get("unknown_owner_rows"),
+        "active_owner_rows": evt.get("active_owner_rows"),
+        "global_cross_check_info": normalized_cross_check,
+    }
 
 
 def compare_reports(
@@ -139,6 +173,29 @@ def compare_reports(
                         rhs_tick.get(key),
                     )
                 )
+
+    lhs_reorgs = collect_named_events(lhs_events, "reorg")
+    rhs_reorgs = collect_named_events(rhs_events, "reorg")
+    if len(lhs_reorgs) != len(rhs_reorgs):
+        raise ReportCompareError(
+            format_mismatch(
+                "reorg event count mismatch",
+                {"reorg_count": len(lhs_reorgs)},
+                {"reorg_count": len(rhs_reorgs)},
+            )
+        )
+
+    for idx, (lhs_reorg, rhs_reorg) in enumerate(zip(lhs_reorgs, rhs_reorgs), start=1):
+        lhs_normalized = normalize_reorg_event(lhs_reorg)
+        rhs_normalized = normalize_reorg_event(rhs_reorg)
+        if lhs_normalized != rhs_normalized:
+            raise ReportCompareError(
+                format_mismatch(
+                    f"reorg event mismatch at index={idx}",
+                    lhs_normalized,
+                    rhs_normalized,
+                )
+            )
 
 
 def parse_args() -> argparse.Namespace:

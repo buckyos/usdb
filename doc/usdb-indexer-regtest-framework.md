@@ -11,6 +11,8 @@
 - reorg 专项回归入口：[src/btc/usdb-indexer/scripts/run_reorg_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_reorg_regression.sh)
 - world-sim 回归入口：[src/btc/usdb-indexer/scripts/regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - world-sim reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
+- world-sim determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
+- world-sim reorg determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
 - 空业务面高度回退场景：[src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_smoke.sh)
 - 空业务面同高度场景：[src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_same_height_reorg_smoke.sh)
 - restart 高度回退场景：[src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_restart_reorg_smoke.sh)
@@ -42,7 +44,9 @@
 4. world-sim 压力层：
    - `regtest_world_sim.sh`
    - `regtest_world_sim_reorg.sh`
-   - 负责长时间随机业务流、交叉检查和多次 deterministic reorg 注入
+   - `regtest_world_sim_determinism.sh`
+   - `regtest_world_sim_reorg_determinism.sh`
+   - 负责长时间随机业务流、交叉检查、多次 deterministic reorg 注入，以及同 seed 双跑一致性检查
 
 ## 共享库提供的能力
 
