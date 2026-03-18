@@ -17,8 +17,10 @@
 - [regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
 - [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
+- [run_live_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_reorg.sh)
 - [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-topology.md)
 - [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-reorg-determinism.md)
+- [usdb-indexer-regtest-world-sim-live-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer-regtest-world-sim-live-reorg.md)
 
 ## 核心能力
 
@@ -76,6 +78,14 @@ src/btc/usdb-indexer/scripts/run_live.sh
 ```
 
 This wrapper preloads a high-pressure profile (default `200 agents` + `5000 blocks`), and every variable at the top of the script is documented for quick tuning.
+
+Long-run live preset with periodic deterministic reorg:
+
+```bash
+src/btc/usdb-indexer/scripts/run_live_reorg.sh
+```
+
+This wrapper keeps the same long-run style, but enables periodic replacement-chain injection for soak testing.
 
 运行期间可同时打开前端页面观察动态变化：
 

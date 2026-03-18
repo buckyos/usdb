@@ -301,3 +301,9 @@
 1. 给 `regtest_world_simulator.py` 增加确定性 reorg 注入开关。
 2. 在 reorg 后重建模拟器本地 pass ownership 视图，避免后续动作沿用旧链缓存。
 3. 用独立入口脚本跑一条缩小版 `world-sim + reorg` 组合回归，再决定是否进入 determinism / long-run 双跑。
+
+上述缩小版回归和 `world-sim + reorg determinism double-run` 现已完成。当前下一阶段已经推进为：
+
+1. 补长时间 soak 入口 `run_live_reorg.sh`。
+2. 在 `adaptive` 策略和更长 block 区间下周期性注入 reorg。
+3. 持续观察 `verify_fail / agent_self_check_fail / global_cross_check_fail / reorg_fail` 是否保持为 `0`。
