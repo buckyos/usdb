@@ -296,10 +296,7 @@ impl UsdbIndexerService {
 
             progress.set_message(format!(
                 "synced={} stable={} genesis={} {}",
-                synced_height,
-                stable_height,
-                status.genesis_block_height,
-                message
+                synced_height, stable_height, status.genesis_block_height, message
             ));
 
             if status

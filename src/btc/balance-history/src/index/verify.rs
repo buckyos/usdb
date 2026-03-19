@@ -359,18 +359,16 @@ impl BalanceHistoryVerifier {
                 .await?;
 
             if electrs_balance.balance != balances[i] {
-                let address = Address::from_script(
-                    &electrs_balance.script_buf,
-                    self.config.btc.network(),
-                )
-                .map_err(|e| {
-                    let msg = format!(
-                        "Failed to parse address from script for script_hash {}: {}",
-                        script_hashes[i], e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+                let address =
+                    Address::from_script(&electrs_balance.script_buf, self.config.btc.network())
+                        .map_err(|e| {
+                            let msg = format!(
+                                "Failed to parse address from script for script_hash {}: {}",
+                                script_hashes[i], e
+                            );
+                            error!("{}", msg);
+                            msg
+                        })?;
 
                 let msg = format!(
                     "Balance mismatch for script_hash {} at stable block height {}: expected {}, got {}, address {}",

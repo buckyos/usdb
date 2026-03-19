@@ -1,6 +1,6 @@
 use super::db::{BalanceHistoryEntry, BlockCommitEntry};
-use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -884,7 +884,9 @@ mod tests {
 
     #[test]
     fn test_block_commit_round_trip() {
-        let dir = std::env::temp_dir().join("usdb").join("test_snapshot_block_commit");
+        let dir = std::env::temp_dir()
+            .join("usdb")
+            .join("test_snapshot_block_commit");
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("snapshot_block_commit_test.db");
         if db_path.exists() {

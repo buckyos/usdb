@@ -408,16 +408,14 @@ impl BlockLocalLoader {
             if last_block_file_index > current_last_blk_file {
                 warn!(
                     "Persisted block index is ahead of local blk files: module=local_loader, action=clear_and_rebuild, db_last_block_file_index={}, current_last_blk_file={}",
-                    last_block_file_index,
-                    current_last_blk_file
+                    last_block_file_index, current_last_blk_file
                 );
                 self.db.clear_blocks()?;
             } else if Self::should_try_restore_from_db(last_block_file_index, current_last_blk_file)
             {
-                if self.try_restore_block_index_from_db(
-                    last_block_file_index,
-                    current_last_blk_file,
-                )? {
+                if self
+                    .try_restore_block_index_from_db(last_block_file_index, current_last_blk_file)?
+                {
                     return Ok(());
                 }
             } else {
@@ -525,17 +523,14 @@ impl BlockLocalLoader {
                 self.output.println("Block index loaded from db.");
                 info!(
                     "Loaded persisted block index successfully: module=local_loader, db_last_block_file_index={}, current_last_blk_file={}",
-                    last_block_file_index,
-                    current_last_blk_file
+                    last_block_file_index, current_last_blk_file
                 );
                 Ok(true)
             }
             Err(reason) => {
                 warn!(
                     "Persisted block index validation failed: module=local_loader, reason={}, action=clear_and_rebuild, db_last_block_file_index={}, current_last_blk_file={}",
-                    reason,
-                    last_block_file_index,
-                    current_last_blk_file
+                    reason, last_block_file_index, current_last_blk_file
                 );
                 Ok(false)
             }
@@ -565,15 +560,18 @@ impl BlockLocalLoader {
             Ok(()) => Ok(()),
             Err(reason) => {
                 block_index_cache.lock().unwrap().clear();
-                db.clear_blocks()
-                    .map_err(|e| format!("{}; additionally failed to clear persisted block index: {}", reason, e))?;
+                db.clear_blocks().map_err(|e| {
+                    format!(
+                        "{}; additionally failed to clear persisted block index: {}",
+                        reason, e
+                    )
+                })?;
                 Err(reason)
             }
         }
     }
 
     fn rebuild_block_index(&self) -> Result<(), String> {
-
         let builder = BlocksIndexer::new(
             self.block_reader.clone(),
             self.block_index_cache.clone(),
@@ -797,7 +795,11 @@ mod tests {
             Err("MockBTCClient::get_block_by_height is not used in this test".to_string())
         }
 
-        async fn get_blocks(&self, _start_height: u32, _end_height: u32) -> Result<Vec<Block>, String> {
+        async fn get_blocks(
+            &self,
+            _start_height: u32,
+            _end_height: u32,
+        ) -> Result<Vec<Block>, String> {
             Err("MockBTCClient::get_blocks is not used in this test".to_string())
         }
 
@@ -853,8 +855,7 @@ mod tests {
         let cache = make_cache(&[(0, [1u8; 32], 0), (2, [2u8; 32], 0)]);
         let client = make_mock_client(&[(0, [1u8; 32]), (2, [2u8; 32])]);
 
-        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0)
-            .unwrap_err();
+        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0).unwrap_err();
         assert!(err.contains("not contiguous"));
     }
 
@@ -863,8 +864,7 @@ mod tests {
         let cache = make_cache(&[(0, [1u8; 32], 0), (1, [2u8; 32], 0), (2, [3u8; 32], 0)]);
         let client = make_mock_client(&[(0, [1u8; 32]), (1, [2u8; 32]), (2, [9u8; 32])]);
 
-        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0)
-            .unwrap_err();
+        let err = BlockLocalLoader::validate_loaded_block_index(&cache, &client, 0, 0).unwrap_err();
         assert!(err.contains("mismatch"));
     }
 
@@ -939,7 +939,8 @@ mod tests {
 
     fn load_real_test_base_config() -> BalanceHistoryConfig {
         let default_root = BalanceHistoryConfig::default().root_dir.clone();
-        BalanceHistoryConfig::load(&default_root).unwrap_or_else(|_| BalanceHistoryConfig::default())
+        BalanceHistoryConfig::load(&default_root)
+            .unwrap_or_else(|_| BalanceHistoryConfig::default())
     }
 
     fn prepare_subset_block_data_dir(tag: &str, file_count: usize) -> std::path::PathBuf {
@@ -984,19 +985,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root_dir);
         std::fs::create_dir_all(&root_dir).unwrap();
         config.root_dir = root_dir;
-        let subset_data_dir =
-            prepare_subset_block_data_dir(tag, TEST_SUBSET_BLK_FILE_COUNT);
+        let subset_data_dir = prepare_subset_block_data_dir(tag, TEST_SUBSET_BLK_FILE_COUNT);
         config.btc.data_dir = Some(subset_data_dir);
         let config = Arc::new(config);
 
         let client = BTCRpcClient::new(rpc_url, auth).unwrap();
         let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
 
-        let db = Arc::new(BalanceHistoryDB::open(
-            config.clone(),
-            BalanceHistoryDBMode::Normal,
-        )
-        .unwrap());
+        let db =
+            Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
 
         let status = Arc::new(SyncStatusManager::new());
         let output = Arc::new(IndexOutput::new(status));
@@ -1023,7 +1020,10 @@ mod tests {
     fn ensure_real_rpc_available(client: &BTCClientRef) -> bool {
         match client.get_latest_block_height() {
             Ok(height) => {
-                println!("real local-loader test connected to bitcoind RPC, latest height={}", height);
+                println!(
+                    "real local-loader test connected to bitcoind RPC, latest height={}",
+                    height
+                );
                 true
             }
             Err(err) => {
@@ -1046,7 +1046,10 @@ mod tests {
         heights
     }
 
-    fn make_subset_reader(tag: &str, file_count: usize) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
+    fn make_subset_reader(
+        tag: &str,
+        file_count: usize,
+    ) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
         let mut config = BalanceHistoryConfig::default();
         config.btc.data_dir = Some(prepare_subset_block_data_dir(tag, file_count));
         let config = Arc::new(config);
@@ -1060,7 +1063,11 @@ mod tests {
         make_subset_reader(tag, TEST_SUBSET_BLK_FILE_COUNT)
     }
 
-    fn make_live_reader_and_client() -> (Arc<BalanceHistoryConfig>, BTCClientRef, Arc<BlockFileReader>) {
+    fn make_live_reader_and_client() -> (
+        Arc<BalanceHistoryConfig>,
+        BTCClientRef,
+        Arc<BlockFileReader>,
+    ) {
         let config = Arc::new(load_real_test_base_config());
         let client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth()).unwrap();
         let client: BTCClientRef = Arc::new(Box::new(client) as Box<dyn BTCClient>);
@@ -1129,17 +1136,29 @@ mod tests {
 
         let latest_indexed_height = {
             let cache = loader.block_index_cache.lock().unwrap();
-            assert!(!cache.sorted_blocks.is_empty(), "local loader cache should not be empty");
+            assert!(
+                !cache.sorted_blocks.is_empty(),
+                "local loader cache should not be empty"
+            );
             cache.sorted_blocks.last().unwrap().0
         };
 
         for height in sample_heights(latest_indexed_height) {
             let loader_hash = loader.get_block_hash(height).unwrap();
             let rpc_hash = client.get_block_hash(height).unwrap();
-            assert_eq!(loader_hash, rpc_hash, "block hash mismatch at height {}", height);
+            assert_eq!(
+                loader_hash, rpc_hash,
+                "block hash mismatch at height {}",
+                height
+            );
 
             let block = loader.get_block_by_height(height).unwrap();
-            assert_eq!(block.block_hash(), rpc_hash, "block body/hash mismatch at height {}", height);
+            assert_eq!(
+                block.block_hash(),
+                rpc_hash,
+                "block body/hash mismatch at height {}",
+                height
+            );
         }
     }
 
@@ -1163,15 +1182,23 @@ mod tests {
         let restored = restore_loader
             .try_restore_block_index_from_db(last_block_file_index, current_last_blk_file)
             .unwrap();
-        assert!(restored, "expected persisted block index restore to succeed");
+        assert!(
+            restored,
+            "expected persisted block index restore to succeed"
+        );
 
         let latest_indexed_height = {
             let cache = restore_loader.block_index_cache.lock().unwrap();
-            assert!(!cache.sorted_blocks.is_empty(), "restored cache should not be empty");
+            assert!(
+                !cache.sorted_blocks.is_empty(),
+                "restored cache should not be empty"
+            );
             cache.sorted_blocks.last().unwrap().0
         };
 
-        let restored_hash = restore_loader.get_block_hash(latest_indexed_height).unwrap();
+        let restored_hash = restore_loader
+            .get_block_hash(latest_indexed_height)
+            .unwrap();
         let rpc_hash = client.get_block_hash(latest_indexed_height).unwrap();
         assert_eq!(restored_hash, rpc_hash);
     }
@@ -1221,16 +1248,24 @@ mod tests {
 
         let latest_indexed_height = {
             let cache = rebuild_loader.block_index_cache.lock().unwrap();
-            assert!(!cache.sorted_blocks.is_empty(), "rebuilt cache should not be empty");
+            assert!(
+                !cache.sorted_blocks.is_empty(),
+                "rebuilt cache should not be empty"
+            );
             for (expected_height, (height, _)) in cache.sorted_blocks.iter().enumerate() {
-                assert_eq!(*height, expected_height as u32, "rebuilt cache should be contiguous");
+                assert_eq!(
+                    *height, expected_height as u32,
+                    "rebuilt cache should be contiguous"
+                );
             }
             cache.sorted_blocks.last().unwrap().0
         };
 
         assert!(db.get_last_block_file_index().unwrap().is_some());
         assert!(!db.get_all_block_heights().unwrap().is_empty());
-        let rebuilt_hash = rebuild_loader.get_block_hash(latest_indexed_height).unwrap();
+        let rebuilt_hash = rebuild_loader
+            .get_block_hash(latest_indexed_height)
+            .unwrap();
         let rpc_hash = client.get_block_hash(latest_indexed_height).unwrap();
         assert_eq!(rebuilt_hash, rpc_hash);
     }
@@ -1324,7 +1359,10 @@ mod tests {
         let (_config, reader) = make_default_subset_reader("memory_profile");
         let (loaded_file_count, used_memory) =
             measure_blk_file_memory_usage(&reader, 0, TEST_SUBSET_BLK_FILE_COUNT);
-        assert!(loaded_file_count > 0, "expected memory profiling to load at least one blk file");
+        assert!(
+            loaded_file_count > 0,
+            "expected memory profiling to load at least one blk file"
+        );
         println!(
             "profiled blk reader memory usage: loaded_files={}, used_memory={} bytes",
             loaded_file_count, used_memory
@@ -1342,7 +1380,9 @@ mod tests {
         println!("Latest blk file index: {}", latest_index);
 
         let latest_complete_index = latest_index.saturating_sub(1);
-        let records = reader.load_blk_blocks_by_index(latest_complete_index).unwrap();
+        let records = reader
+            .load_blk_blocks_by_index(latest_complete_index)
+            .unwrap();
         assert!(
             !records.is_empty(),
             "expected latest complete blk file {} to contain blocks",
@@ -1406,8 +1446,14 @@ mod tests {
                 .get_block_by_file_index(file_index, last_record_index)
                 .unwrap();
 
-            assert_eq!(first_block.block_hash(), expected_blocks.first().unwrap().block_hash());
-            assert_eq!(last_block.block_hash(), expected_blocks.last().unwrap().block_hash());
+            assert_eq!(
+                first_block.block_hash(),
+                expected_blocks.first().unwrap().block_hash()
+            );
+            assert_eq!(
+                last_block.block_hash(),
+                expected_blocks.last().unwrap().block_hash()
+            );
         }
     }
 }

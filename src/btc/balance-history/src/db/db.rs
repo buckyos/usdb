@@ -539,7 +539,9 @@ impl BalanceHistoryDB {
         block_height.to_be_bytes()
     }
 
-    fn serialize_block_undo_meta_value(entry: &BlockUndoMetaEntry) -> [u8; BLOCK_UNDO_META_VALUE_LEN] {
+    fn serialize_block_undo_meta_value(
+        entry: &BlockUndoMetaEntry,
+    ) -> [u8; BLOCK_UNDO_META_VALUE_LEN] {
         let mut value = [0u8; BLOCK_UNDO_META_VALUE_LEN];
         value[..2].copy_from_slice(&entry.format_version.to_be_bytes());
         value[2..2 + BlockHash::LEN].copy_from_slice(entry.btc_block_hash.as_ref());
@@ -600,7 +602,9 @@ impl BalanceHistoryDB {
         key
     }
 
-    fn serialize_block_undo_utxo_value(entry: &BlockUndoUtxoEntry) -> [u8; BLOCK_UNDO_UTXO_VALUE_LEN] {
+    fn serialize_block_undo_utxo_value(
+        entry: &BlockUndoUtxoEntry,
+    ) -> [u8; BLOCK_UNDO_UTXO_VALUE_LEN] {
         let mut value = [0u8; BLOCK_UNDO_UTXO_VALUE_LEN];
         value[..UTXO_KEY_LEN].copy_from_slice(&Self::make_utxo_key(&entry.outpoint));
         let mut offset = UTXO_KEY_LEN;
@@ -1059,11 +1063,20 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        match self.db.get_cf(cf, Self::make_block_undo_meta_key(block_height)) {
-            Ok(Some(value)) => Ok(Some(Self::parse_block_undo_meta_value(block_height, &value)?)),
+        match self
+            .db
+            .get_cf(cf, Self::make_block_undo_meta_key(block_height))
+        {
+            Ok(Some(value)) => Ok(Some(Self::parse_block_undo_meta_value(
+                block_height,
+                &value,
+            )?)),
             Ok(None) => Ok(None),
             Err(e) => {
-                let msg = format!("Failed to get block undo meta at height {}: {}", block_height, e);
+                let msg = format!(
+                    "Failed to get block undo meta at height {}: {}",
+                    block_height, e
+                );
                 error!("{}", msg);
                 Err(msg)
             }
@@ -1314,7 +1327,11 @@ impl BalanceHistoryDB {
         self.append_delete_block_undo_bundle_to_batch(&mut batch, block_height)?;
 
         let previous_height = block_height.saturating_sub(1);
-        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, previous_height.to_be_bytes());
+        batch.put_cf(
+            meta_cf,
+            META_KEY_BTC_BLOCK_HEIGHT,
+            previous_height.to_be_bytes(),
+        );
 
         let mut write_options = WriteOptions::default();
         write_options.set_sync(false);
@@ -1375,16 +1392,14 @@ impl BalanceHistoryDB {
         let target_height = self
             .get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT)?
             .ok_or_else(|| {
-                let msg = "Missing rollback_target_height while rollback_in_progress=1"
-                    .to_string();
+                let msg = "Missing rollback_target_height while rollback_in_progress=1".to_string();
                 error!("{}", msg);
                 msg
             })?;
         let mut next_height = self
             .get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT)?
             .ok_or_else(|| {
-                let msg =
-                    "Missing rollback_next_height while rollback_in_progress=1".to_string();
+                let msg = "Missing rollback_next_height while rollback_in_progress=1".to_string();
                 error!("{}", msg);
                 msg
             })?;
@@ -1446,9 +1461,10 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        let iter = self
-            .db
-            .iterator_cf(meta_cf, IteratorMode::From(&0u32.to_be_bytes(), Direction::Forward));
+        let iter = self.db.iterator_cf(
+            meta_cf,
+            IteratorMode::From(&0u32.to_be_bytes(), Direction::Forward),
+        );
 
         let mut heights_to_prune = Vec::new();
         for item in iter {
@@ -1579,7 +1595,9 @@ impl BalanceHistoryDB {
                     error!("{}", msg);
                     return Err(msg);
                 }
-                Ok(Some(u32::from_be_bytes(value.as_slice().try_into().unwrap())))
+                Ok(Some(u32::from_be_bytes(
+                    value.as_slice().try_into().unwrap(),
+                )))
             }
             Ok(None) => Ok(None),
             Err(e) => {
@@ -2392,7 +2410,10 @@ impl BalanceHistoryDB {
 
         for item in iter {
             let (key, value) = item.map_err(|e| {
-                let msg = format!("Iterator error while generating block commit snapshot: {}", e);
+                let msg = format!(
+                    "Iterator error while generating block commit snapshot: {}",
+                    e
+                );
                 error!("{}", msg);
                 msg
             })?;
@@ -2428,7 +2449,10 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
-    pub fn put_block_commits_async(&self, block_commits: &[BlockCommitEntry]) -> Result<(), String> {
+    pub fn put_block_commits_async(
+        &self,
+        block_commits: &[BlockCommitEntry],
+    ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
 
         let block_commit_cf = self.db.cf_handle(BLOCK_COMMITS_CF).ok_or_else(|| {
@@ -2806,7 +2830,11 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        info!("Cleared column family {}: removed_keys={}", cf_name, keys.len());
+        info!(
+            "Cleared column family {}: removed_keys={}",
+            cf_name,
+            keys.len()
+        );
         Ok(keys.len())
     }
 
@@ -2851,9 +2879,7 @@ impl BalanceHistoryDB {
 
         info!(
             "Cleared all persisted block index state: blocks_removed={}, heights_removed={}, commits_removed={}",
-            removed_blocks,
-            removed_heights,
-            removed_commits
+            removed_blocks, removed_heights, removed_commits
         );
         Ok(())
     }
@@ -3298,7 +3324,8 @@ mod tests {
         };
         let spent_script = ScriptBuf::from(vec![9u8; 32]);
         let spent_script_hash = spent_script.to_usdb_script_hash();
-        db.put_utxo(&spent_outpoint, &spent_script_hash, 900).unwrap();
+        db.put_utxo(&spent_outpoint, &spent_script_hash, 900)
+            .unwrap();
 
         let new_outpoint = OutPoint {
             txid: Txid::from_slice(&[8u8; 32]).unwrap(),
@@ -3514,7 +3541,11 @@ mod tests {
         assert_eq!(restored.script_hash, existing_script_hash);
         assert_eq!(restored.value, 400);
         assert!(db.get_utxo(&new_outpoint).unwrap().is_none());
-        assert!(db.get_balance_delta_at_block_height(&new_script_hash, 12).unwrap().is_none());
+        assert!(
+            db.get_balance_delta_at_block_height(&new_script_hash, 12)
+                .unwrap()
+                .is_none()
+        );
         assert!(db.get_block_commit(12).unwrap().is_none());
         assert!(db.get_block_undo_bundle(12).unwrap().is_none());
         assert_eq!(db.get_btc_block_height().unwrap(), 11);
@@ -3636,17 +3667,28 @@ mod tests {
         assert!(db.get_block_commit(13).unwrap().is_none());
         assert!(db.get_block_undo_bundle(12).unwrap().is_none());
         assert!(db.get_block_undo_bundle(13).unwrap().is_none());
-        assert!(db
-            .get_balance_delta_at_block_height(&script_12, 12)
-            .unwrap()
-            .is_none());
-        assert!(db
-            .get_balance_delta_at_block_height(&script_13, 13)
-            .unwrap()
-            .is_none());
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(), None);
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(), None);
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(), None);
+        assert!(
+            db.get_balance_delta_at_block_height(&script_12, 12)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_balance_delta_at_block_height(&script_13, 13)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -3784,7 +3826,8 @@ mod tests {
 
         db.rollback_one_block(13).unwrap();
         db.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1).unwrap();
-        db.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, 11).unwrap();
+        db.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, 11)
+            .unwrap();
         db.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, 12).unwrap();
 
         let resumed = db.resume_rollback_if_needed().unwrap();
@@ -3792,8 +3835,17 @@ mod tests {
         assert_eq!(db.get_btc_block_height().unwrap(), 11);
         assert!(db.get_block_undo_bundle(12).unwrap().is_none());
         assert!(db.get_block_undo_bundle(13).unwrap().is_none());
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(), None);
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(), None);
-        assert_eq!(db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(), None);
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(),
+            None
+        );
     }
 }

@@ -508,9 +508,9 @@ impl BalanceHistoryIndexer {
             current_height,
             latest_btc_height,
         )? {
-                Some(height) => height,
-                None => return Ok(current_height),
-            };
+            Some(height) => height,
+            None => return Ok(current_height),
+        };
 
         warn!(
             "BTC reorg detected, rolling back local balance-history state: from_height={}, to_height={}",
@@ -615,12 +615,11 @@ impl BalanceHistoryIndexer {
             "Processing block batch [{} - {})",
             height_range.start, height_range.end
         ));
-        self.batch_block_processor
-            .process_blocks(
-                height_range.clone(),
-                latest_btc_height,
-                self.config.sync.undo_retention_blocks,
-            )?;
+        self.batch_block_processor.process_blocks(
+            height_range.clone(),
+            latest_btc_height,
+            self.config.sync.undo_retention_blocks,
+        )?;
 
         // self.db.flush_all()?;
 
@@ -658,8 +657,7 @@ impl BalanceHistoryIndexer {
         }
 
         let latest_btc_height = self.get_latest_block_height()?;
-        let hot_window_start =
-            latest_btc_height.saturating_sub(retention_blocks.saturating_sub(1));
+        let hot_window_start = latest_btc_height.saturating_sub(retention_blocks.saturating_sub(1));
         if last_height < hot_window_start {
             return Ok(());
         }
