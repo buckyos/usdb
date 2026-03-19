@@ -14,6 +14,7 @@ const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
 const BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY: &str = "balance_history_snapshot_height";
 const BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY: &str = "balance_history_snapshot_block_hash";
 const BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY: &str = "balance_history_snapshot_block_commit";
+const BALANCE_HISTORY_SNAPSHOT_STABLE_LAG_KEY: &str = "balance_history_snapshot_stable_lag";
 const BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY: &str =
     "balance_history_snapshot_commit_protocol_version";
 const BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY: &str =
@@ -99,6 +100,7 @@ pub struct BalanceHistorySnapshotAnchor {
     pub stable_height: u32,
     pub stable_block_hash: String,
     pub latest_block_commit: String,
+    pub stable_lag: u32,
     pub commit_protocol_version: String,
     pub commit_hash_algo: String,
 }
@@ -543,8 +545,27 @@ impl MinerPassStorage {
         &self,
         snapshot: &BalanceHistorySnapshotInfo,
     ) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
-        Self::upsert_balance_history_snapshot_anchor_with_conn(&conn, snapshot)
+        // Persist the whole upstream anchor atomically so partial state rows
+        // cannot leak if the process fails in the middle of the update.
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| {
+            let msg = format!(
+                "Failed to start transaction for balance-history snapshot anchor upsert at height {}: {}",
+                snapshot.stable_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Self::upsert_balance_history_snapshot_anchor_with_conn(&tx, snapshot)?;
+        tx.commit().map_err(|e| {
+            let msg = format!(
+                "Failed to commit balance-history snapshot anchor upsert at height {}: {}",
+                snapshot.stable_height, e
+            );
+            error!("{}", msg);
+            msg
+        })
     }
 
     fn upsert_balance_history_snapshot_anchor_with_conn(
@@ -583,6 +604,11 @@ impl MinerPassStorage {
             BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY,
             &latest_block_commit,
         )?;
+        Self::upsert_numeric_state_with_conn(
+            conn,
+            BALANCE_HISTORY_SNAPSHOT_STABLE_LAG_KEY,
+            snapshot.stable_lag as i64,
+        )?;
         Self::upsert_text_state_with_conn(
             conn,
             BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY,
@@ -603,14 +629,33 @@ impl MinerPassStorage {
     }
 
     pub fn clear_balance_history_snapshot_anchor(&self) -> Result<(), String> {
-        let conn = self.conn.lock().unwrap();
-        Self::clear_balance_history_snapshot_anchor_with_conn(&conn)
+        // Clearing the multi-key anchor is also one logical state transition.
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| {
+            let msg = format!(
+                "Failed to start transaction for clearing balance-history snapshot anchor: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Self::clear_balance_history_snapshot_anchor_with_conn(&tx)?;
+        tx.commit().map_err(|e| {
+            let msg = format!(
+                "Failed to commit clearing balance-history snapshot anchor: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })
     }
 
     fn clear_balance_history_snapshot_anchor_with_conn(conn: &Connection) -> Result<(), String> {
         Self::delete_numeric_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY)?;
         Self::delete_text_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_BLOCK_HASH_KEY)?;
         Self::delete_text_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_BLOCK_COMMIT_KEY)?;
+        Self::delete_numeric_state_with_conn(conn, BALANCE_HISTORY_SNAPSHOT_STABLE_LAG_KEY)?;
         Self::delete_text_state_with_conn(
             conn,
             BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY,
@@ -1000,6 +1045,21 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 msg
             })?;
+        let stable_lag = self
+            .get_numeric_state(BALANCE_HISTORY_SNAPSHOT_STABLE_LAG_KEY)?
+            .ok_or_else(|| {
+                let msg = "Missing balance-history snapshot stable lag in database".to_string();
+                error!("{}", msg);
+                msg
+            })?;
+        if stable_lag < 0 {
+            let msg = format!(
+                "Invalid negative balance-history snapshot stable lag: {}",
+                stable_lag
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
         let commit_protocol_version = self
             .get_text_state(BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY)?
             .ok_or_else(|| {
@@ -1021,6 +1081,7 @@ impl MinerPassStorage {
             stable_height: stable_height as u32,
             stable_block_hash,
             latest_block_commit,
+            stable_lag: stable_lag as u32,
             commit_protocol_version,
             commit_hash_algo,
         }))
@@ -5194,8 +5255,39 @@ mod tests {
         assert_eq!(anchor.stable_height, 321);
         assert_eq!(anchor.stable_block_hash, "ab".repeat(32));
         assert_eq!(anchor.latest_block_commit, "cd".repeat(32));
+        assert_eq!(anchor.stable_lag, 0);
         assert_eq!(anchor.commit_protocol_version, "1.0.0");
         assert_eq!(anchor.commit_hash_algo, "sha256");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_balance_history_snapshot_anchor_round_trip_with_non_zero_stable_lag() {
+        let dir = test_data_dir("balance_history_snapshot_anchor_round_trip_non_zero_stable_lag");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 321,
+                stable_block_hash: Some("ab".repeat(32)),
+                latest_block_commit: Some("cd".repeat(32)),
+                stable_lag: 2,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let anchor = storage
+            .get_balance_history_snapshot_anchor()
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchor.stable_height, 321);
+        assert_eq!(anchor.stable_lag, 2);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

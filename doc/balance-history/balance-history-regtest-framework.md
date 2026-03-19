@@ -6,6 +6,7 @@
 
 - 共享库：[src/btc/balance-history/scripts/regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
 - 基础 smoke 场景：[src/btc/balance-history/scripts/regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
+- stable lag smoke 场景：[src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh)
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
 - 多次 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh)
 - 深回滚 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh)
@@ -54,6 +55,7 @@
 13. 历史对拍辅助：按高度读取完整区块 JSON，配合独立 Python oracle 校验 `(address, height)` 余额。
 14. CLI 复用辅助：可在自定义 `root_dir` 下直接调用 `balance-history` 的 snapshot 子命令，避免脚本重复拼接 `cargo run`。
 15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖任意 `[sync]` 配置项，例如 `max_sync_block_height`、`undo_retention_blocks`、`local_loader_threshold`。
+16. Snapshot 辅助读取：可直接读取 `stable_height`、`stable_block_hash`、`stable_lag`，方便校验协议层稳定视图。
 
 ## 关闭与查询约束
 

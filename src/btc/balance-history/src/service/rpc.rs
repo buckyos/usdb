@@ -18,12 +18,11 @@ pub const BALANCE_HISTORY_API_VERSION: &str = "1.0.0";
 /// - balance snapshot queries use at-or-before semantics
 /// - delta queries use exact-height semantics
 pub const BALANCE_HISTORY_SEMANTICS_VERSION: &str = "balance-snapshot-at-or-before:v1";
-/// Fixed BTC lag promised by balance-history before a height is advertised as stable.
+/// Fixed protocol stable lag used by balance-history.
 ///
-/// `0` means the current implementation exposes its latest committed height
-/// directly as `stable_height`, without waiting for extra confirmation blocks.
-/// Once this becomes a non-zero protocol rule, it must change consistently on
-/// every node of the same network/protocol version.
+/// This is not a local tuning knob. Changing it changes the externally visible
+/// stable-view rule and therefore must be treated as a protocol/versioned
+/// change across all nodes on the same network.
 pub const BALANCE_HISTORY_STABLE_LAG: u32 = 0;
 
 /// Query parameters for a single script-hash balance request.

@@ -210,7 +210,7 @@ impl UsdbIndexerRpcServer {
             network: self.config.config().bitcoin.network().to_string(),
             stable_height: anchor.stable_height,
             stable_block_hash: anchor.stable_block_hash.clone(),
-            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            stable_lag: anchor.stable_lag,
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
@@ -1467,6 +1467,7 @@ mod tests {
             snapshot.consensus_identity.stable_block_hash,
             "aa".repeat(32)
         );
+        assert_eq!(snapshot.consensus_identity.stable_lag, 0);
         assert_eq!(
             snapshot.consensus_identity.balance_history_api_version,
             balance_history::BALANCE_HISTORY_API_VERSION
@@ -1554,6 +1555,37 @@ mod tests {
         drop(server_b);
         std::fs::remove_dir_all(root_dir_a).unwrap();
         std::fs::remove_dir_all(root_dir_b).unwrap();
+    }
+
+    #[test]
+    fn test_get_snapshot_info_uses_persisted_stable_lag() {
+        let (server, root_dir) = build_server("snapshot_info_stable_lag", 120);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: 2,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let snapshot = server.get_snapshot_info().unwrap().unwrap();
+        assert_eq!(snapshot.consensus_identity.stable_lag, 2);
+        assert_eq!(
+            snapshot.snapshot_id,
+            build_consensus_snapshot_id(&snapshot.consensus_identity)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]

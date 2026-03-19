@@ -13,6 +13,7 @@
 
 - [balance-history-regtest-framework.md](./balance-history-regtest-framework.md)
 - [balance-history-regtest-smoke.md](./balance-history-regtest-smoke.md)
+- [balance-history-regtest-stable-lag-smoke.md](./balance-history-regtest-stable-lag-smoke.md)
 - [balance-history-regtest-reorg-smoke.md](./balance-history-regtest-reorg-smoke.md)
 - [balance-history-regtest-multi-reorg-smoke.md](./balance-history-regtest-multi-reorg-smoke.md)
 - [balance-history-regtest-restart-reorg-smoke.md](./balance-history-regtest-restart-reorg-smoke.md)

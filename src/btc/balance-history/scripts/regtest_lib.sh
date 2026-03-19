@@ -117,6 +117,16 @@ regtest_get_snapshot_stable_hash() {
     | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_block_hash", ""))'
 }
 
+regtest_get_snapshot_stable_height() {
+  regtest_rpc_call_balance_history "get_snapshot_info" "[]" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_height", 0))'
+}
+
+regtest_get_snapshot_stable_lag() {
+  regtest_rpc_call_balance_history "get_snapshot_info" "[]" \
+    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_lag", 0))'
+}
+
 regtest_get_utxo_value_sat() {
   local txid="$1"
   local vout="$2"

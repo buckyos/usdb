@@ -7,6 +7,7 @@ use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
+use crate::service::BALANCE_HISTORY_STABLE_LAG;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -14,6 +15,14 @@ use usdb_util::USDBScriptHash;
 
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
+
+fn compute_stable_sync_target_height(
+    rpc_tip_height: u32,
+    max_sync_block_height: u32,
+    stable_lag: u32,
+) -> u32 {
+    max_sync_block_height.min(rpc_tip_height.saturating_sub(stable_lag))
+}
 
 // Find the highest local height that still matches the current canonical BTC chain.
 fn find_reorg_common_ancestor_height(
@@ -140,13 +149,14 @@ impl BalanceHistoryIndexer {
             error!("{}", msg);
             msg
         })?;
-        let latest_block_height = config
-            .sync
-            .max_sync_block_height
-            .min(rpc_latest_block_height);
+        let latest_block_height = compute_stable_sync_target_height(
+            rpc_latest_block_height,
+            config.sync.max_sync_block_height,
+            BALANCE_HISTORY_STABLE_LAG,
+        );
 
         output.println(&format!(
-            "Latest BTC block height: {}, Last synced block height: {}",
+            "Latest stable BTC block height: {}, Last synced block height: {}",
             latest_block_height, last_synced_block_height
         ));
 
@@ -239,11 +249,11 @@ impl BalanceHistoryIndexer {
             .btc_client
             .get_latest_block_height()
             .map(|h| h as u32)?;
-        let latest_block_height = self
-            .config
-            .sync
-            .max_sync_block_height
-            .min(rpc_latest_block_height);
+        let latest_block_height = compute_stable_sync_target_height(
+            rpc_latest_block_height,
+            self.config.sync.max_sync_block_height,
+            BALANCE_HISTORY_STABLE_LAG,
+        );
 
         Ok(latest_block_height)
     }
@@ -535,7 +545,7 @@ impl BalanceHistoryIndexer {
 
         // Get latest block height from BTC node
         let latest_btc_height = self.get_latest_block_height()?;
-        info!("Latest BTC block height: {}", latest_btc_height);
+        info!("Latest stable BTC block height: {}", latest_btc_height);
 
         // Get last synced block height from DB
         let last_synced_height = self.db.get_btc_block_height()?;
@@ -549,7 +559,7 @@ impl BalanceHistoryIndexer {
         if !self.output.is_index_started() {
             self.output.println("Starting indexer...");
             self.output.println(&format!(
-                "Latest BTC block height: {}, Last synced block height: {}",
+                "Latest stable BTC block height: {}, Last synced block height: {}",
                 latest_btc_height, last_synced_height
             ));
             self.output
@@ -562,7 +572,7 @@ impl BalanceHistoryIndexer {
 
         if latest_btc_height <= last_synced_height {
             info!(
-                "No new blocks to sync. Latest BTC height: {}, Last synced height: {}",
+                "No new stable blocks to sync. Latest stable height: {}, Last synced height: {}",
                 latest_btc_height, last_synced_height
             );
 
@@ -781,6 +791,18 @@ mod tests {
 
         let ancestor = find_reorg_common_ancestor_height(&db, &client, 2, 2).unwrap();
         assert_eq!(ancestor, None);
+    }
+
+    #[test]
+    fn test_compute_stable_sync_target_height_applies_stable_lag() {
+        assert_eq!(compute_stable_sync_target_height(100, u32::MAX, 2), 98);
+        assert_eq!(compute_stable_sync_target_height(100, 95, 2), 95);
+    }
+
+    #[test]
+    fn test_compute_stable_sync_target_height_saturates_at_zero() {
+        assert_eq!(compute_stable_sync_target_height(1, u32::MAX, 2), 0);
+        assert_eq!(compute_stable_sync_target_height(0, u32::MAX, 2), 0);
     }
 
     #[test]
