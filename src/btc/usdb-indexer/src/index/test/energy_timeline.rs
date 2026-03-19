@@ -88,7 +88,7 @@ fn expected_energy_by_formula(
     let mut energy = inherited_energy;
     let mut owner_balance = initial_balance;
     let mut active_block_height = initial_block_height;
-    let mut last_processed_height = initial_block_height;
+    let mut last_materialized_height = initial_block_height;
 
     for point in timeline_points {
         if point.block_height <= initial_block_height {
@@ -98,8 +98,16 @@ fn expected_energy_by_formula(
             break;
         }
 
-        let r = point.block_height - active_block_height;
-        let delta = calc_growth_delta(owner_balance, r);
+        // Match production semantics: between two persisted balance-change points,
+        // growth is added incrementally using the balance that was effective in
+        // that interval, instead of replaying the whole active window each time.
+        let growth_at_point =
+            calc_growth_delta(owner_balance, point.block_height - active_block_height);
+        let growth_at_last = calc_growth_delta(
+            owner_balance,
+            last_materialized_height - active_block_height,
+        );
+        let delta = growth_at_point.saturating_sub(growth_at_last);
         energy = energy.saturating_add(delta);
 
         if point.delta < 0 {
@@ -109,12 +117,17 @@ fn expected_energy_by_formula(
         }
 
         owner_balance = point.balance;
-        last_processed_height = point.block_height;
+        last_materialized_height = point.block_height;
     }
 
-    if last_processed_height < target_height {
-        let r = target_height - active_block_height;
-        let delta = calc_growth_delta(owner_balance, r);
+    if last_materialized_height < target_height {
+        let growth_at_target =
+            calc_growth_delta(owner_balance, target_height - active_block_height);
+        let growth_at_last = calc_growth_delta(
+            owner_balance,
+            last_materialized_height - active_block_height,
+        );
+        let delta = growth_at_target.saturating_sub(growth_at_last);
         energy = energy.saturating_add(delta);
     }
 
