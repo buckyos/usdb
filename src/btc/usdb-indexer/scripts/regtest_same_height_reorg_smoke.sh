@@ -55,10 +55,12 @@ main() {
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
   regtest_wait_until_balance_history_synced_eq "$TARGET_HEIGHT"
+  regtest_wait_balance_history_consensus_ready
 
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
   regtest_wait_until_usdb_synced_eq "$TARGET_HEIGHT"
+  regtest_wait_usdb_consensus_ready
 
   original_hash="$(regtest_get_bitcoin_block_hash "$TARGET_HEIGHT")"
   old_bh_commit_resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${TARGET_HEIGHT}]")"
@@ -91,11 +93,13 @@ main() {
   fi
 
   regtest_wait_until_balance_history_synced_eq "$TARGET_HEIGHT"
+  regtest_wait_balance_history_consensus_ready
   regtest_wait_until_balance_history_block_commit_hash "$TARGET_HEIGHT" "$replacement_hash"
   new_bh_commit_resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${TARGET_HEIGHT}]")"
   new_bh_commit="$(regtest_json_expr "$new_bh_commit_resp" "((data.get('result') or {}).get('block_commit', ''))")"
 
   regtest_wait_until_usdb_synced_eq "$TARGET_HEIGHT"
+  regtest_wait_usdb_consensus_ready
   regtest_wait_until_rpc_expr_eq \
     "usdb snapshot stable hash after same-height reorg" \
     regtest_rpc_call_usdb_indexer \
@@ -151,7 +155,9 @@ main() {
   continue_address="$(regtest_get_new_address)"
   regtest_mine_blocks 1 "$continue_address"
   regtest_wait_until_balance_history_synced_eq "$((TARGET_HEIGHT + 1))"
+  regtest_wait_balance_history_consensus_ready
   regtest_wait_until_usdb_synced_eq "$((TARGET_HEIGHT + 1))"
+  regtest_wait_usdb_consensus_ready
 
   regtest_log "USDB indexer same-height reorg smoke test succeeded."
   regtest_log "Logs: ${BALANCE_HISTORY_LOG_FILE}, ${USDB_INDEXER_LOG_FILE}"

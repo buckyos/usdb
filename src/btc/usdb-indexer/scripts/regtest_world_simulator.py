@@ -504,14 +504,32 @@ class RegtestWorldSimulator:
             bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
             usdb_height = self.rpc_usdb("get_synced_block_height", [])
             usdb_height_num = 0 if usdb_height is None else int(usdb_height)
+            bh_readiness = self.rpc_balance_history("get_readiness", [])
+            usdb_readiness = self.rpc_usdb("get_readiness", [])
+            bh_consensus_ready = bool(
+                bh_readiness.get("consensus_ready")
+                if isinstance(bh_readiness, dict)
+                else False
+            )
+            usdb_consensus_ready = bool(
+                usdb_readiness.get("consensus_ready")
+                if isinstance(usdb_readiness, dict)
+                else False
+            )
 
-            if bh_height >= target_height and usdb_height_num >= target_height:
+            if (
+                bh_height >= target_height
+                and usdb_height_num >= target_height
+                and bh_consensus_ready
+                and usdb_consensus_ready
+            ):
                 return
 
             if time.time() - start > self.args.sync_timeout_sec:
                 raise WorldSimError(
                     "sync timeout: "
-                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}"
+                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}, "
+                    f"bh_consensus_ready={bh_consensus_ready}, usdb_consensus_ready={usdb_consensus_ready}"
                 )
             time.sleep(0.8)
 
@@ -521,14 +539,32 @@ class RegtestWorldSimulator:
             bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
             usdb_height = self.rpc_usdb("get_synced_block_height", [])
             usdb_height_num = 0 if usdb_height is None else int(usdb_height)
+            bh_readiness = self.rpc_balance_history("get_readiness", [])
+            usdb_readiness = self.rpc_usdb("get_readiness", [])
+            bh_consensus_ready = bool(
+                bh_readiness.get("consensus_ready")
+                if isinstance(bh_readiness, dict)
+                else False
+            )
+            usdb_consensus_ready = bool(
+                usdb_readiness.get("consensus_ready")
+                if isinstance(usdb_readiness, dict)
+                else False
+            )
 
-            if bh_height == target_height and usdb_height_num == target_height:
+            if (
+                bh_height == target_height
+                and usdb_height_num == target_height
+                and bh_consensus_ready
+                and usdb_consensus_ready
+            ):
                 return
 
             if time.time() - start > self.args.sync_timeout_sec:
                 raise WorldSimError(
                     "exact sync timeout: "
-                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}"
+                    f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}, "
+                    f"bh_consensus_ready={bh_consensus_ready}, usdb_consensus_ready={usdb_consensus_ready}"
                 )
             time.sleep(0.8)
 

@@ -136,14 +136,17 @@ async fn main() {
     tokio::select! {
         _ = sigint => {
             output.println("Received Ctrl+C, shutting down...");
+            status_manager.set_shutdown_requested(true);
             indexer.stop();
         }
         _ = sigterm => {
             output.println("Received SIGTERM, shutting down...");
+            status_manager.set_shutdown_requested(true);
             indexer.stop();
         }
         _ = shutdown_rx.changed() => {
             output.println("Received RPC stop signal, shutting down...");
+            status_manager.set_shutdown_requested(true);
             indexer.stop();
         }
         ret = indexer.run() => {

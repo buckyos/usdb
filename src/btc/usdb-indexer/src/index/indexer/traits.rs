@@ -154,6 +154,7 @@ pub(crate) trait IndexStatusApi: Send + Sync {
         total: Option<u32>,
         message: Option<String>,
     );
+    fn set_upstream_reorg_recovery_pending(&self, pending: bool);
 }
 
 impl IndexStatusApi for StatusManager {
@@ -172,5 +173,9 @@ impl IndexStatusApi for StatusManager {
         message: Option<String>,
     ) {
         self.update_index_status(current, total, message);
+    }
+
+    fn set_upstream_reorg_recovery_pending(&self, pending: bool) {
+        self.set_upstream_reorg_recovery_pending(pending);
     }
 }

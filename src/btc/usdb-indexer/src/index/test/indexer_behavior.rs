@@ -60,6 +60,7 @@ struct MockStatus {
     latest_height: AtomicU32,
     snapshot: Mutex<Option<BalanceHistorySnapshotInfo>>,
     updates: Mutex<Vec<(Option<u32>, Option<u32>, Option<String>)>>,
+    upstream_reorg_recovery_pending: AtomicBool,
 }
 
 impl MockStatus {
@@ -79,6 +80,7 @@ impl MockStatus {
             latest_height: AtomicU32::new(latest_height),
             snapshot: Mutex::new(Some(snapshot)),
             updates: Mutex::new(Vec::new()),
+            upstream_reorg_recovery_pending: AtomicBool::new(false),
         }
     }
 
@@ -109,6 +111,11 @@ impl IndexStatusApi for MockStatus {
         message: Option<String>,
     ) {
         self.updates.lock().unwrap().push((current, total, message));
+    }
+
+    fn set_upstream_reorg_recovery_pending(&self, pending: bool) {
+        self.upstream_reorg_recovery_pending
+            .store(pending, Ordering::SeqCst);
     }
 }
 

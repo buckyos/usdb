@@ -15,7 +15,8 @@ use usdb_util::USDBScriptHash;
 use usdb_util::{
     CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, LocalStateActiveBalanceSnapshot,
     LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
-    build_consensus_snapshot_id, build_local_state_commit, build_system_state_id,
+    USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id, build_local_state_commit,
+    build_system_state_id,
 };
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -147,6 +148,7 @@ impl UsdbIndexerRpcServer {
             );
             *current = Some(handle);
         }
+        ret.status.set_rpc_alive(true);
 
         Ok(ret)
     }
@@ -161,6 +163,7 @@ impl UsdbIndexerRpcServer {
             .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             info!("USDB indexer RPC server closed.");
+            self.status.set_rpc_alive(false);
         }
     }
 
@@ -238,14 +241,10 @@ impl UsdbIndexerRpcServer {
         Ok(Some(snapshot))
     }
 
-    // Build a locally durable core-state commit without changing the meaning of snapshot_info.
-    // snapshot_info continues to describe only the upstream consensus anchor, while this method
-    // binds that anchor to local pass state and active-balance settlement state.
-    fn local_state_commit_info(&self) -> Result<Option<LocalStateCommitInfo>, JsonError> {
-        let Some(snapshot) = self.upstream_snapshot_info()? else {
-            return Ok(None);
-        };
-
+    fn build_local_state_commit_info_from_snapshot(
+        &self,
+        snapshot: &IndexerSnapshotInfo,
+    ) -> Result<LocalStateCommitInfo, JsonError> {
         let synced_height = snapshot.local_synced_block_height;
         let latest_pass_block_commit = self
             .indexer
@@ -295,16 +294,47 @@ impl UsdbIndexerRpcServer {
             usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
         };
 
-        Ok(Some(LocalStateCommitInfo {
+        Ok(LocalStateCommitInfo {
             local_synced_block_height: synced_height,
-            upstream_snapshot_id: snapshot.snapshot_id,
+            upstream_snapshot_id: snapshot.snapshot_id.clone(),
             latest_pass_block_commit,
             latest_active_balance_snapshot,
             local_state_commit: build_local_state_commit(&local_state_identity),
             local_state_identity,
             local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
             local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
-        }))
+        })
+    }
+
+    // Build a locally durable core-state commit without changing the meaning of snapshot_info.
+    // snapshot_info continues to describe only the upstream consensus anchor, while this method
+    // binds that anchor to local pass state and active-balance settlement state.
+    fn local_state_commit_info(&self) -> Result<Option<LocalStateCommitInfo>, JsonError> {
+        let Some(snapshot) = self.upstream_snapshot_info()? else {
+            return Ok(None);
+        };
+        self.build_local_state_commit_info_from_snapshot(&snapshot)
+            .map(Some)
+    }
+
+    fn build_system_state_info_from_local_state(
+        &self,
+        local_state: &LocalStateCommitInfo,
+    ) -> SystemStateInfo {
+        let system_state_identity = SystemStateIdentity {
+            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
+            local_state_commit: local_state.local_state_commit.clone(),
+        };
+
+        SystemStateInfo {
+            local_synced_block_height: local_state.local_synced_block_height,
+            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
+            local_state_commit: local_state.local_state_commit.clone(),
+            system_state_id: build_system_state_id(&system_state_identity),
+            system_state_identity,
+            system_state_id_hash_algo: SYSTEM_STATE_HASH_ALGO.to_string(),
+            system_state_id_version: SYSTEM_STATE_VERSION.to_string(),
+        }
     }
 
     fn system_state_info(&self) -> Result<Option<SystemStateInfo>, JsonError> {
@@ -312,20 +342,138 @@ impl UsdbIndexerRpcServer {
             return Ok(None);
         };
 
-        let system_state_identity = SystemStateIdentity {
-            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
-            local_state_commit: local_state.local_state_commit.clone(),
+        Ok(Some(
+            self.build_system_state_info_from_local_state(&local_state),
+        ))
+    }
+
+    fn readiness_info(&self) -> Result<ReadinessInfo, JsonError> {
+        let sync_status = self.status.get_index_status_snapshot();
+        let runtime = self.status.get_runtime_readiness();
+        let synced_height = self.synced_height()?;
+        let durable_reorg_recovery_pending = self
+            .indexer
+            .miner_pass_storage()
+            .get_upstream_reorg_recovery_pending_height()
+            .map_err(Self::to_internal_error)?
+            .is_some();
+        let reorg_recovery_pending =
+            runtime.upstream_reorg_recovery_pending || durable_reorg_recovery_pending;
+
+        let upstream_readiness = self.status.balance_history_readiness();
+        let upstream_snapshot = match self.upstream_snapshot_info() {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                error!(
+                    "Failed to build upstream snapshot readiness state: module=rpc_server, error={}",
+                    e.message
+                );
+                None
+            }
+        };
+        let local_state = match upstream_snapshot.as_ref() {
+            Some(snapshot) => match self.build_local_state_commit_info_from_snapshot(snapshot) {
+                Ok(info) => Some(info),
+                Err(e) => {
+                    error!(
+                        "Failed to build local state commit readiness state: module=rpc_server, error={}",
+                        e.message
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let system_state = local_state
+            .as_ref()
+            .map(|local_state| self.build_system_state_info_from_local_state(local_state));
+
+        let observed_upstream_height = sync_status.balance_history_stable_height.or_else(|| {
+            upstream_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.balance_history_stable_height)
+        });
+        let catching_up = match (synced_height, observed_upstream_height) {
+            (Some(local_height), Some(upstream_height)) => local_height < upstream_height,
+            _ => false,
         };
 
-        Ok(Some(SystemStateInfo {
-            local_synced_block_height: local_state.local_synced_block_height,
-            upstream_snapshot_id: local_state.upstream_snapshot_id,
-            local_state_commit: local_state.local_state_commit,
-            system_state_id: build_system_state_id(&system_state_identity),
-            system_state_identity,
-            system_state_id_hash_algo: SYSTEM_STATE_HASH_ALGO.to_string(),
-            system_state_id_version: SYSTEM_STATE_VERSION.to_string(),
-        }))
+        let mut blockers = Vec::new();
+        if !runtime.rpc_alive {
+            blockers.push(ReadinessBlocker::RpcNotListening);
+        }
+        if runtime.shutdown_requested {
+            blockers.push(ReadinessBlocker::ShutdownRequested);
+        }
+        if synced_height.is_none() {
+            blockers.push(ReadinessBlocker::SyncedHeightMissing);
+        }
+        if catching_up {
+            blockers.push(ReadinessBlocker::CatchingUp);
+        }
+        match upstream_readiness.as_ref() {
+            Some(readiness) => {
+                if !readiness.consensus_ready {
+                    blockers.push(ReadinessBlocker::UpstreamConsensusNotReady);
+                }
+            }
+            None => blockers.push(ReadinessBlocker::UpstreamReadinessUnknown),
+        }
+        if upstream_snapshot.is_none() {
+            blockers.push(ReadinessBlocker::UpstreamSnapshotMissing);
+        } else if let (Some(snapshot), Some(local_height)) =
+            (upstream_snapshot.as_ref(), synced_height)
+        {
+            if snapshot.balance_history_stable_height != local_height {
+                blockers.push(ReadinessBlocker::UpstreamSnapshotHeightMismatch);
+            }
+        }
+        if reorg_recovery_pending {
+            blockers.push(ReadinessBlocker::ReorgRecoveryPending);
+        }
+        if upstream_snapshot.is_some() && local_state.is_none() {
+            blockers.push(ReadinessBlocker::LocalStateCommitMissing);
+        }
+        if local_state.is_some() && system_state.is_none() {
+            blockers.push(ReadinessBlocker::SystemStateMissing);
+        }
+
+        let query_ready = runtime.rpc_alive
+            && !runtime.shutdown_requested
+            && !reorg_recovery_pending
+            && synced_height.is_some();
+        let consensus_ready = query_ready
+            && upstream_readiness
+                .as_ref()
+                .map(|readiness| readiness.consensus_ready)
+                .unwrap_or(false)
+            && !catching_up
+            && upstream_snapshot.is_some()
+            && local_state.is_some()
+            && system_state.is_some()
+            && blockers.is_empty();
+
+        Ok(ReadinessInfo {
+            service: USDB_INDEXER_SERVICE_NAME.to_string(),
+            rpc_alive: runtime.rpc_alive,
+            query_ready,
+            consensus_ready,
+            synced_block_height: synced_height,
+            balance_history_stable_height: observed_upstream_height,
+            upstream_snapshot_id: upstream_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.snapshot_id.clone()),
+            local_state_commit: local_state
+                .as_ref()
+                .map(|local_state| local_state.local_state_commit.clone()),
+            system_state_id: system_state
+                .as_ref()
+                .map(|system_state| system_state.system_state_id.clone()),
+            current: sync_status.current,
+            total: sync_status.total,
+            message: sync_status.message,
+            blockers,
+        })
     }
 
     fn resolve_height(&self, requested: Option<u32>) -> Result<u32, JsonError> {
@@ -665,6 +813,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "pass_block_commit".to_string(),
                 "local_state_commit_info".to_string(),
                 "system_state_info".to_string(),
+                "readiness".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
@@ -734,6 +883,10 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>> {
         self.system_state_info()
+    }
+
+    fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
+        self.readiness_info()
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
@@ -1240,6 +1393,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn stop(&self) -> JsonResult<()> {
         info!("Received stop command via USDB indexer RPC.");
+        self.status.set_shutdown_requested(true);
         if let Err(e) = self.shutdown_tx.send(()) {
             return Err(Self::to_internal_error(format!(
                 "Failed to send shutdown signal: {}",
@@ -1433,6 +1587,52 @@ mod tests {
         (server, root_dir)
     }
 
+    fn ready_balance_history_snapshot(stable_height: u32) -> balance_history::SnapshotInfo {
+        balance_history::SnapshotInfo {
+            stable_height,
+            stable_block_hash: Some("aa".repeat(32)),
+            latest_block_commit: Some("bb".repeat(32)),
+            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
+            commit_protocol_version: "1.0.0".to_string(),
+            commit_hash_algo: "sha256".to_string(),
+        }
+    }
+
+    fn ready_balance_history_readiness(stable_height: u32) -> balance_history::ReadinessInfo {
+        balance_history::ReadinessInfo {
+            service: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+            rpc_alive: true,
+            query_ready: true,
+            consensus_ready: true,
+            phase: balance_history::SyncPhase::Synced,
+            current: stable_height as u64,
+            total: stable_height as u64,
+            message: Some("synced".to_string()),
+            stable_height: Some(stable_height),
+            stable_block_hash: Some("aa".repeat(32)),
+            latest_block_commit: Some("bb".repeat(32)),
+            blockers: Vec::new(),
+        }
+    }
+
+    fn seed_upstream_anchor(server: &UsdbIndexerRpcServer, stable_height: u32) {
+        let snapshot = ready_balance_history_snapshot(stable_height);
+        server
+            .status
+            .set_balance_history_snapshot(Some(snapshot.clone()));
+        server
+            .status
+            .set_balance_history_readiness(Some(ready_balance_history_readiness(stable_height)));
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&snapshot)
+            .unwrap();
+    }
+
     #[test]
     fn test_get_snapshot_info_success() {
         let (server, root_dir) = build_server("snapshot_info", 120);
@@ -1493,6 +1693,117 @@ mod tests {
         assert_eq!(
             snapshot.snapshot_id,
             build_consensus_snapshot_id(&snapshot.consensus_identity)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_readiness_defaults_to_not_ready_before_rpc_alive() {
+        let (server, root_dir) = build_server("readiness_default_not_ready", 120);
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(!readiness.rpc_alive);
+        assert!(!readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::RpcNotListening)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_readiness_consensus_ready_when_caught_up_with_complete_state() {
+        let (server, root_dir) = build_server("readiness_consensus_ready", 120);
+        server.status.set_rpc_alive(true);
+        seed_upstream_anchor(&server, 120);
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(readiness.consensus_ready);
+        assert_eq!(readiness.synced_block_height, Some(120));
+        assert_eq!(readiness.balance_history_stable_height, Some(120));
+        assert!(readiness.upstream_snapshot_id.is_some());
+        assert!(readiness.local_state_commit.is_some());
+        assert!(readiness.system_state_id.is_some());
+        assert!(readiness.blockers.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_readiness_not_consensus_ready_while_catching_up() {
+        let (server, root_dir) = build_server("readiness_catching_up", 100);
+        server.status.set_rpc_alive(true);
+        seed_upstream_anchor(&server, 100);
+        server
+            .status
+            .set_balance_history_snapshot(Some(ready_balance_history_snapshot(105)));
+        server
+            .status
+            .set_balance_history_readiness(Some(ready_balance_history_readiness(105)));
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert_eq!(readiness.synced_block_height, Some(100));
+        assert_eq!(readiness.balance_history_stable_height, Some(105));
+        assert!(readiness.blockers.contains(&ReadinessBlocker::CatchingUp));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_readiness_not_query_ready_during_reorg_recovery() {
+        let (server, root_dir) = build_server("readiness_reorg_recovery", 100);
+        server.status.set_rpc_alive(true);
+        seed_upstream_anchor(&server, 100);
+        server.status.set_upstream_reorg_recovery_pending(true);
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(!readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::ReorgRecoveryPending)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_readiness_not_consensus_ready_when_upstream_not_ready() {
+        let (server, root_dir) = build_server("readiness_upstream_not_ready", 100);
+        server.status.set_rpc_alive(true);
+        seed_upstream_anchor(&server, 100);
+
+        let mut upstream_readiness = ready_balance_history_readiness(100);
+        upstream_readiness.consensus_ready = false;
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        server
+            .status
+            .set_balance_history_readiness(Some(upstream_readiness));
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::UpstreamConsensusNotReady)
         );
 
         drop(server);

@@ -6,6 +6,7 @@
 
 - [usdb-indexer-rpc-v1.md](./usdb-indexer-rpc-v1.md)
 - [usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)
+- [usdb-indexer-readiness-design.md](./usdb-indexer-readiness-design.md)
 
 ## Regtest 框架与规划
 

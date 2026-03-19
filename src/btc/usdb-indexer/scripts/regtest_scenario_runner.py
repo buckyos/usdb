@@ -141,8 +141,19 @@ class RegtestScenarioRunner:
                 "get_block_height",
             )
             height = int(result or 0)
-            if height >= target_height:
-                self.log(f"balance-history synced height={height}")
+            readiness = self.rpc_result(
+                self.rpc_call(
+                    self.args.balance_history_rpc_url, "get_readiness", []
+                ),
+                "get_readiness",
+            )
+            consensus_ready = bool(
+                readiness.get("consensus_ready") if isinstance(readiness, dict) else False
+            )
+            if height >= target_height and consensus_ready:
+                self.log(
+                    f"balance-history synced height={height}, consensus_ready=true"
+                )
                 return
             time.sleep(1)
 
@@ -159,8 +170,15 @@ class RegtestScenarioRunner:
                 "get_synced_block_height",
             )
             height = 0 if result is None else int(result)
-            if height >= target_height:
-                self.log(f"usdb-indexer synced height={height}")
+            readiness = self.rpc_result(
+                self.rpc_call(self.args.usdb_rpc_url, "get_readiness", []),
+                "get_readiness",
+            )
+            consensus_ready = bool(
+                readiness.get("consensus_ready") if isinstance(readiness, dict) else False
+            )
+            if height >= target_height and consensus_ready:
+                self.log(f"usdb-indexer synced height={height}, consensus_ready=true")
                 return
             time.sleep(1)
 

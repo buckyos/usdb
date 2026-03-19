@@ -169,6 +169,70 @@ pub struct SystemStateInfo {
     pub system_state_id_version: String,
 }
 
+/// Machine-readable blockers that keep usdb-indexer from a stricter ready state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReadinessBlocker {
+    /// RPC listener is not yet serving requests, so even liveness is not established.
+    RpcNotListening,
+    /// Shutdown has been requested and the node is draining toward exit.
+    ShutdownRequested,
+    /// No durable local synced height exists yet.
+    SyncedHeightMissing,
+    /// Local durable state is behind the latest upstream stable snapshot.
+    CatchingUp,
+    /// Upstream balance-history readiness has not been observed yet.
+    UpstreamReadinessUnknown,
+    /// Upstream balance-history is reachable but not consensus-ready.
+    UpstreamConsensusNotReady,
+    /// No adopted upstream snapshot anchor is currently available locally.
+    UpstreamSnapshotMissing,
+    /// Adopted upstream snapshot exists but is not aligned with the local durable height.
+    UpstreamSnapshotHeightMismatch,
+    /// Node is inside resumable upstream reorg recovery.
+    ReorgRecoveryPending,
+    /// Local core-state commit could not be built for the current durable height.
+    LocalStateCommitMissing,
+    /// Top-level system-state id could not be built for the current durable height.
+    SystemStateMissing,
+}
+
+/// Structured readiness state for liveness, local queries, and downstream consensus use.
+///
+/// `rpc_alive` is plain liveness. `query_ready` means local RPC queries are
+/// allowed against the node's current durable state. `consensus_ready` is
+/// stricter and only becomes true when the node has a complete upstream
+/// snapshot anchor, complete local/system commits, and no transient recovery
+/// work is still pending.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadinessInfo {
+    /// Fixed service identifier, currently `usdb-indexer`.
+    pub service: String,
+    /// True once the RPC server is listening and able to answer requests.
+    pub rpc_alive: bool,
+    /// True when ordinary local query traffic is allowed.
+    pub query_ready: bool,
+    /// True only when the current system state is safe for downstream consensus use.
+    pub consensus_ready: bool,
+    /// Local durable synced height, when available.
+    pub synced_block_height: Option<u32>,
+    /// Latest upstream stable height observed from balance-history, when available.
+    pub balance_history_stable_height: Option<u32>,
+    /// Current adopted upstream snapshot id, when available.
+    pub upstream_snapshot_id: Option<String>,
+    /// Current locally durable core-state commit, when available.
+    pub local_state_commit: Option<String>,
+    /// Current top-level system-state id, when available.
+    pub system_state_id: Option<String>,
+    /// Current progress counter mirrored from sync status.
+    pub current: u32,
+    /// Total progress target mirrored from sync status.
+    pub total: u32,
+    /// Optional human-readable status message.
+    pub message: Option<String>,
+    /// Machine-readable reasons keeping the service from a stricter ready state.
+    pub blockers: Vec<ReadinessBlocker>,
+}
+
 /// Parameters for `get_pass_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassSnapshotParams {
@@ -572,6 +636,13 @@ pub trait UsdbIndexerRpc {
     /// Returns the top-level system-state id for downstream consumers.
     #[rpc(name = "get_system_state_info")]
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>>;
+
+    /// Returns structured readiness state for liveness, local queries, and consensus use.
+    ///
+    /// Downstream callers must use `consensus_ready` instead of inferring
+    /// readiness from `get_network_type` or from free-form sync messages.
+    #[rpc(name = "get_readiness")]
+    fn get_readiness(&self) -> JsonResult<ReadinessInfo>;
 
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]

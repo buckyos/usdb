@@ -212,6 +212,22 @@ wait_rpc_ready() {
   exit 1
 }
 
+rpc_consensus_ready() {
+  local url="$1"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    -X POST "$url" \
+    -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"get_readiness","params":[]}' \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+r = d.get("result") or {}
+print(1 if r.get("consensus_ready") else 0)'
+}
+
 wait_http_ready() {
   local service_name="$1"
   local url="$2"
@@ -283,20 +299,51 @@ json_result_u32() {
 
 wait_until_balance_history_synced() {
   local target_height="$1"
-  local start_ts now resp synced
+  local start_ts now resp synced consensus_ready
   start_ts="$(date +%s)"
 
   while true; do
     resp="$(rpc_call "http://127.0.0.1:${BH_RPC_PORT}" "get_block_height" "[]" || true)"
     synced="$(echo "$resp" | json_result_u32 2>/dev/null || true)"
     synced="${synced:-0}"
-    if [[ "$synced" -ge "$target_height" ]]; then
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${BH_RPC_PORT}" 2>/dev/null || echo 0)"
+    if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       return
     fi
 
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
       log "balance-history sync timeout, last response: ${resp}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_until_usdb_consensus_ready() {
+  local target_height="$1"
+  local start_ts now resp synced consensus_ready
+  start_ts="$(date +%s)"
+
+  while true; do
+    resp="$(rpc_call "http://127.0.0.1:${USDB_RPC_PORT}" "get_synced_block_height" "[]" || true)"
+    synced="$(echo "$resp" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+r = d.get("result")
+print(0 if r is None else int(r))' 2>/dev/null || true)"
+    synced="${synced:-0}"
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_RPC_PORT}" 2>/dev/null || echo 0)"
+    if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      log "usdb-indexer readiness timeout: target_height=${target_height}, last_synced_response=${resp}"
       exit 1
     fi
     sleep 1
@@ -2105,6 +2152,7 @@ EOF
   USDB_INDEXER_PID=$!
 
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
+  wait_until_usdb_consensus_ready "$target_height"
 
   SCENARIO_FILE_PATH="$scenario_file"
 

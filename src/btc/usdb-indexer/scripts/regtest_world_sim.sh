@@ -361,13 +361,29 @@ wait_rpc_ready() {
   exit 1
 }
 
+rpc_consensus_ready() {
+  local url="$1"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    -X POST "$url" \
+    -H 'content-type: application/json' \
+    --data '{"jsonrpc":"2.0","id":1,"method":"get_readiness","params":[]}' \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+r = d.get("result") or {}
+print(1 if r.get("consensus_ready") else 0)'
+}
+
 json_result_u32() {
   python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("result", 0)))'
 }
 
 wait_until_balance_history_synced() {
   local target_height="$1"
-  local start_ts now resp synced
+  local start_ts now resp synced consensus_ready
   start_ts="$(date +%s)"
   while true; do
     resp="$(curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
@@ -375,7 +391,8 @@ wait_until_balance_history_synced() {
       --data '{"jsonrpc":"2.0","id":1,"method":"get_block_height","params":[]}' || true)"
     synced="$(echo "$resp" | json_result_u32 2>/dev/null || true)"
     synced="${synced:-0}"
-    if [[ "$synced" -ge "$target_height" ]]; then
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${BH_RPC_PORT}" 2>/dev/null || echo 0)"
+    if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       return
     fi
     now="$(date +%s)"
@@ -389,7 +406,7 @@ wait_until_balance_history_synced() {
 
 wait_until_usdb_synced() {
   local target_height="$1"
-  local start_ts now resp synced
+  local start_ts now resp synced consensus_ready
   start_ts="$(date +%s)"
   while true; do
     resp="$(curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
@@ -405,7 +422,8 @@ res = d.get("result")
 print(int(res) if res is not None else 0)
 ' 2>/dev/null || true)"
     synced="${synced:-0}"
-    if [[ "$synced" -ge "$target_height" ]]; then
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_RPC_PORT}" 2>/dev/null || echo 0)"
+    if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       return
     fi
     now="$(date +%s)"

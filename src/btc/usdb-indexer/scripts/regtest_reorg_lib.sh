@@ -236,6 +236,52 @@ regtest_wait_usdb_rpc_ready() {
   regtest_wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
 }
 
+regtest_wait_balance_history_consensus_ready() {
+  regtest_log "Waiting for balance-history consensus readiness"
+
+  local start_ts now readiness_resp consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    readiness_resp="$(regtest_rpc_call_balance_history "get_readiness" "[]")"
+    consensus_ready="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("consensus_ready") else "0")')"
+    if [[ "$consensus_ready" == "1" ]]; then
+      regtest_log "balance-history is consensus ready"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for balance-history consensus readiness. last_response=${readiness_resp}"
+      exit 1
+    fi
+
+    sleep 0.5
+  done
+}
+
+regtest_wait_usdb_consensus_ready() {
+  regtest_log "Waiting for usdb-indexer consensus readiness"
+
+  local start_ts now readiness_resp consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    readiness_resp="$(regtest_rpc_call_usdb_indexer "get_readiness" "[]")"
+    consensus_ready="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("consensus_ready") else "0")')"
+    if [[ "$consensus_ready" == "1" ]]; then
+      regtest_log "usdb-indexer is consensus ready"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for usdb-indexer consensus readiness. last_response=${readiness_resp}"
+      exit 1
+    fi
+
+    sleep 0.5
+  done
+}
+
 regtest_wait_until_rpc_expr_eq() {
   local label="$1"
   local rpc_func="$2"
@@ -842,12 +888,14 @@ regtest_restart_balance_history() {
   regtest_stop_balance_history
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
+  regtest_wait_balance_history_consensus_ready
 }
 
 regtest_restart_usdb_indexer() {
   regtest_stop_usdb_indexer
   regtest_start_usdb_indexer
   regtest_wait_usdb_rpc_ready
+  regtest_wait_usdb_consensus_ready
 }
 
 regtest_stop_bitcoind() {

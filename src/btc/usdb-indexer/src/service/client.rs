@@ -115,6 +115,12 @@ impl RpcClient {
             .await
     }
 
+    /// Returns structured readiness state for liveness, local queries, and consensus use.
+    pub async fn get_readiness(&self) -> Result<ReadinessInfo, String> {
+        self.rpc_call::<ReadinessInfo>("get_readiness", json!([]))
+            .await
+    }
+
     /// Returns a pass snapshot resolved at a target height.
     ///
     /// # Arguments

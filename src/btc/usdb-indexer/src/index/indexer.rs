@@ -619,17 +619,23 @@ impl InscriptionIndexer {
                 rollback_target
             )),
         );
+        // Flip the in-memory readiness flag immediately so RPC readiness drops as
+        // soon as reorg handling starts. The durable source of truth is still the
+        // SQLite pending marker written by rollback_to_block_height_with_upstream_reorg_recovery_pending().
+        self.status.set_upstream_reorg_recovery_pending(true);
 
-        self.miner_pass_storage
+        if let Err(e) = self
+            .miner_pass_storage
             .rollback_to_block_height_with_upstream_reorg_recovery_pending(rollback_target, None)
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to rollback miner pass storage after upstream anchor drift: target_height={}, error={}",
-                    rollback_target, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+        {
+            self.status.set_upstream_reorg_recovery_pending(false);
+            let msg = format!(
+                "Failed to rollback miner pass storage after upstream anchor drift: target_height={}, error={}",
+                rollback_target, e
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         self.resume_pending_upstream_reorg_recovery(genesis_block_height)
             .await?;
@@ -640,6 +646,13 @@ impl InscriptionIndexer {
     // Finish the second half of upstream reorg recovery after pass rollback is already durable.
     // This is intentionally idempotent and runs on every sync_once() so retries/restarts do not
     // depend on re-detecting the original upstream drift event.
+    //
+    // Readiness uses two layers here:
+    // - the in-memory flag is a live signal used to drop readiness immediately
+    // - the SQLite pending marker is the durable truth that survives restart
+    //
+    // The early None branch below defensively clears the in-memory flag so a stale
+    // runtime value cannot outlive the absence of the durable marker.
     async fn resume_pending_upstream_reorg_recovery(
         &self,
         genesis_block_height: u32,
@@ -648,8 +661,10 @@ impl InscriptionIndexer {
             .miner_pass_storage
             .get_upstream_reorg_recovery_pending_height()?
         else {
+            self.status.set_upstream_reorg_recovery_pending(false);
             return Ok(());
         };
+        self.status.set_upstream_reorg_recovery_pending(true);
 
         let pass_synced_height = self
             .miner_pass_storage
@@ -748,6 +763,7 @@ impl InscriptionIndexer {
                 error!("{}", msg);
                 msg
             })?;
+        self.status.set_upstream_reorg_recovery_pending(false);
 
         info!(
             "Pending upstream reorg recovery completed: module=indexer, target_height={}",

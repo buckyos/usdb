@@ -58,6 +58,8 @@
 2. 工作目录、bitcoind、balance-history、usdb-indexer、ord 服务生命周期。
 3. 空 replacement block、wallet funding、live ord inscription/send helper。
 4. `balance-history` / `usdb-indexer` RPC 调用与等待同步辅助。
+   - 包括 `regtest_wait_balance_history_consensus_ready`
+   - 包括 `regtest_wait_usdb_consensus_ready`
 5. SQLite 断言与 marker 生命周期轮询。
 6. pass snapshot / pass energy / pass stats / active balance snapshot 断言。
 7. `pass_block_commits`、`active_balance_snapshots`、`miner_passes` 当前态检查。
@@ -114,3 +116,28 @@ bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 2. 如果专项场景开始需要声明式参数矩阵，可以再把 shell runner 演进成 Python 编排器。
 3. 如果 world-sim 后续开始覆盖 reorg，可以再决定是否把它并入同一个 runner。
 4. 当前已经有独立 `regtest_world_sim_reorg.sh`，但还没有并入默认 `run_regression.sh`。
+
+## Readiness 约束
+
+`usdb-indexer` 侧新的 regtest helper 不再把 `get_network_type` 当成“系统已经可用于共识”的判据，而是区分两层：
+
+1. `regtest_wait_*_rpc_ready`
+   - 只验证 RPC listener 已可访问。
+2. `regtest_wait_*_consensus_ready`
+   - 轮询 `get_readiness`
+   - 只在 `consensus_ready=true` 时继续后续断言
+
+这样 restart / reorg / pending recovery 场景里的“服务还活着，但状态还没恢复完”的窗口，不会再被误判成 ready。
+
+目前这条约束已经扩展到更通用的入口：
+
+1. `regtest_e2e_smoke.sh`
+2. `regtest_live_ord_e2e.sh`
+3. `regtest_world_sim.sh`
+4. `regtest_scenario_runner.py`
+5. `regtest_world_simulator.py`
+
+这些入口里的“等待同步完成”现在都要求：
+
+1. 高度已追到目标高度
+2. `get_readiness.consensus_ready = true`

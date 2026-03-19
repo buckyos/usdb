@@ -1,8 +1,8 @@
 use crate::config::ConfigManagerRef;
 use crate::output::IndexOutputRef;
 use balance_history::{
-    RpcClient as BalanceHistoryRpcClient, RpcClientRef as BalanceHistoryClientRef,
-    SnapshotInfo as BalanceHistorySnapshotInfo,
+    ReadinessInfo as BalanceHistoryReadinessInfo, RpcClient as BalanceHistoryRpcClient,
+    RpcClientRef as BalanceHistoryClientRef, SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,25 @@ impl USDBInscriptionIndexStatus {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeReadinessStatus {
+    /// True once the usdb-indexer RPC server has bound its listener.
+    ///
+    /// This is plain liveness and must not be interpreted as "consensus ready".
+    pub rpc_alive: bool,
+    /// True while the node is inside upstream reorg recovery or has detected a
+    /// resumable recovery window that should block strict consumers.
+    ///
+    /// This flag is a live in-memory signal; the server also checks the durable
+    /// pending marker in SQLite so restart paths still report not-ready.
+    pub upstream_reorg_recovery_pending: bool,
+    /// True after shutdown has been requested but before the process has fully exited.
+    ///
+    /// This lets readiness drop immediately during drain/teardown instead of
+    /// waiting for the RPC listener to disappear.
+    pub shutdown_requested: bool,
+}
+
 #[derive(Clone)]
 pub struct StatusManager {
     btc_client: BTCRpcClientRef,
@@ -34,6 +53,8 @@ pub struct StatusManager {
 
     usdb_status: Arc<Mutex<USDBInscriptionIndexStatus>>,
     latest_balance_history_snapshot: Arc<Mutex<Option<BalanceHistorySnapshotInfo>>>,
+    latest_balance_history_readiness: Arc<Mutex<Option<BalanceHistoryReadinessInfo>>>,
+    runtime_readiness: Arc<Mutex<RuntimeReadinessStatus>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +86,8 @@ impl StatusManager {
             balance_history_client: Arc::new(balance_history_client),
             output,
             latest_balance_history_snapshot: Arc::new(Mutex::new(None)),
+            latest_balance_history_readiness: Arc::new(Mutex::new(None)),
+            runtime_readiness: Arc::new(Mutex::new(RuntimeReadinessStatus::default())),
             usdb_status,
         })
     }
@@ -79,6 +102,55 @@ impl StatusManager {
 
     pub fn balance_history_snapshot(&self) -> Option<BalanceHistorySnapshotInfo> {
         self.latest_balance_history_snapshot.lock().unwrap().clone()
+    }
+
+    pub fn set_balance_history_snapshot(&self, snapshot: Option<BalanceHistorySnapshotInfo>) {
+        *self.latest_balance_history_snapshot.lock().unwrap() = snapshot;
+    }
+
+    pub fn balance_history_readiness(&self) -> Option<BalanceHistoryReadinessInfo> {
+        self.latest_balance_history_readiness
+            .lock()
+            .unwrap()
+            .clone()
+    }
+
+    pub fn set_balance_history_readiness(&self, readiness: Option<BalanceHistoryReadinessInfo>) {
+        *self.latest_balance_history_readiness.lock().unwrap() = readiness;
+    }
+
+    pub fn set_rpc_alive(&self, rpc_alive: bool) {
+        let mut runtime = self.runtime_readiness.lock().unwrap();
+        if runtime.rpc_alive != rpc_alive {
+            let msg = format!("RPC alive: {}", rpc_alive);
+            info!("{}", msg);
+            self.output.println(&msg);
+        }
+        runtime.rpc_alive = rpc_alive;
+    }
+
+    pub fn set_upstream_reorg_recovery_pending(&self, pending: bool) {
+        let mut runtime = self.runtime_readiness.lock().unwrap();
+        if runtime.upstream_reorg_recovery_pending != pending {
+            let msg = format!("Upstream reorg recovery pending: {}", pending);
+            info!("{}", msg);
+            self.output.println(&msg);
+        }
+        runtime.upstream_reorg_recovery_pending = pending;
+    }
+
+    pub fn set_shutdown_requested(&self, shutdown_requested: bool) {
+        let mut runtime = self.runtime_readiness.lock().unwrap();
+        if runtime.shutdown_requested != shutdown_requested {
+            let msg = format!("Shutdown requested: {}", shutdown_requested);
+            info!("{}", msg);
+            self.output.println(&msg);
+        } 
+        runtime.shutdown_requested = shutdown_requested;
+    }
+
+    pub fn get_runtime_readiness(&self) -> RuntimeReadinessStatus {
+        self.runtime_readiness.lock().unwrap().clone()
     }
 
     pub fn update_index_status(
@@ -156,6 +228,8 @@ impl StatusManager {
                 let msg = format!("Failed to get Balance History sync status: {}", e);
                 error!("{}", msg);
                 self.output.balance_history_bar().set_message(msg.clone());
+                self.set_balance_history_snapshot(None);
+                self.set_balance_history_readiness(None);
                 msg
             })?;
 
@@ -173,11 +247,30 @@ impl StatusManager {
         }
 
         // Refresh the latest upstream stable snapshot from balance-history.
-        let balance_history_snapshot = self.balance_history_client.get_snapshot_info().await?;
-        {
-            let mut current_snapshot = self.latest_balance_history_snapshot.lock().unwrap();
-            *current_snapshot = Some(balance_history_snapshot);
-        }
+        let balance_history_snapshot = self
+            .balance_history_client
+            .get_snapshot_info()
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to get Balance History snapshot info: {}", e);
+                error!("{}", msg);
+                self.set_balance_history_snapshot(None);
+                self.set_balance_history_readiness(None);
+                msg
+            })?;
+        self.set_balance_history_snapshot(Some(balance_history_snapshot));
+
+        let balance_history_readiness =
+            self.balance_history_client
+                .get_readiness()
+                .await
+                .map_err(|e| {
+                    let msg = format!("Failed to get Balance History readiness: {}", e);
+                    error!("{}", msg);
+                    self.set_balance_history_readiness(None);
+                    msg
+                })?;
+        self.set_balance_history_readiness(Some(balance_history_readiness));
 
         Ok(())
     }
