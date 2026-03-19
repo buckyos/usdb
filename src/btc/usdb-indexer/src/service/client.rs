@@ -73,7 +73,7 @@ impl RpcClient {
             .await
     }
 
-    /// Returns the currently adopted upstream snapshot metadata.
+    /// Returns the current upstream snapshot metadata.
     pub async fn get_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, String> {
         self.rpc_call::<Option<IndexerSnapshotInfo>>("get_snapshot_info", json!([]))
             .await
@@ -101,11 +101,17 @@ impl RpcClient {
         .await
     }
 
-    /// Returns the current locally durable core-state commit anchored to the adopted upstream snapshot.
+    /// Returns the current locally durable core-state commit anchored to the current upstream snapshot.
     pub async fn get_local_state_commit_info(
         &self,
     ) -> Result<Option<LocalStateCommitInfo>, String> {
         self.rpc_call::<Option<LocalStateCommitInfo>>("get_local_state_commit_info", json!([]))
+            .await
+    }
+
+    /// Returns the top-level system-state id for downstream consumers such as ETHW.
+    pub async fn get_system_state_info(&self) -> Result<Option<SystemStateInfo>, String> {
+        self.rpc_call::<Option<SystemStateInfo>>("get_system_state_info", json!([]))
             .await
     }
 

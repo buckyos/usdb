@@ -495,7 +495,7 @@ impl InscriptionIndexer {
                 if !Self::snapshot_anchor_matches_upstream(&local_anchor, balance_history_snapshot)?
                 {
                     drift_reasons.push(format!(
-                        "adopted upstream snapshot anchor drifted at stable height {}",
+                        "upstream snapshot anchor drifted at stable height {}",
                         current_height
                     ));
                 }
@@ -925,7 +925,7 @@ impl InscriptionIndexer {
             })?;
 
         if current_height >= latest_height {
-            // Even on a no-op sync loop, persist the adopted upstream snapshot anchor.
+            // Even on a no-op sync loop, persist the current upstream snapshot anchor.
             // This backfills metadata for already-synced data directories and keeps
             // get_snapshot_info consistent after restart.
             self.persist_balance_history_snapshot_anchor(

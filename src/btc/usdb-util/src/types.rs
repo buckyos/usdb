@@ -75,6 +75,10 @@ pub const CONSENSUS_SNAPSHOT_ID_VERSION: &str = "btc-consensus-snapshot:v1";
 pub const LOCAL_STATE_COMMIT_HASH_ALGO: &str = "sha256";
 /// Version tag of the canonical usdb-index local-state commit serialization rule.
 pub const LOCAL_STATE_COMMIT_VERSION: &str = "usdb-local-state:v1";
+/// Hash algorithm used by canonical system-state ids consumed by downstream chains.
+pub const SYSTEM_STATE_ID_HASH_ALGO: &str = "sha256";
+/// Version tag of the canonical BTC-side system-state id serialization rule.
+pub const SYSTEM_STATE_ID_VERSION: &str = "btc-system-state:v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsensusSnapshotIdentity {
@@ -123,7 +127,7 @@ pub struct LocalStateActiveBalanceSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalStateCommitIdentity {
     /// Upstream consensus snapshot id adopted by the local node.
-    pub adopted_snapshot_id: String,
+    pub upstream_snapshot_id: String,
     /// Latest local durable height committed by usdb-indexer.
     pub local_synced_block_height: u32,
     /// Latest local pass commit at or before `local_synced_block_height`.
@@ -132,6 +136,14 @@ pub struct LocalStateCommitIdentity {
     pub latest_active_balance_snapshot: Option<LocalStateActiveBalanceSnapshot>,
     /// Version of the external usdb-index protocol contract.
     pub usdb_index_protocol_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SystemStateIdentity {
+    /// Upstream consensus snapshot id currently adopted by usdb-indexer.
+    pub upstream_snapshot_id: String,
+    /// Canonical local-state commit currently durable on the node.
+    pub local_state_commit: String,
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -180,7 +192,7 @@ pub fn build_consensus_snapshot_id(identity: &ConsensusSnapshotIdentity) -> Stri
 pub fn build_local_state_commit(identity: &LocalStateCommitIdentity) -> String {
     let mut hasher = Sha256::new();
     update_string_component(&mut hasher, LOCAL_STATE_COMMIT_VERSION);
-    update_string_component(&mut hasher, &identity.adopted_snapshot_id);
+    update_string_component(&mut hasher, &identity.upstream_snapshot_id);
     hasher.update(identity.local_synced_block_height.to_be_bytes());
 
     update_optional_marker(&mut hasher, identity.latest_pass_block_commit.is_some());
@@ -202,6 +214,18 @@ pub fn build_local_state_commit(identity: &LocalStateCommitIdentity) -> String {
     }
 
     update_string_component(&mut hasher, &identity.usdb_index_protocol_version);
+    encode_hex(&hasher.finalize())
+}
+
+/// Builds the canonical BTC-side system-state id consumed by downstream users such as ETHW.
+///
+/// This intentionally stays minimal: downstream systems only need one stable hash that binds
+/// together the adopted upstream snapshot and the current local durable state derived from it.
+pub fn build_system_state_id(identity: &SystemStateIdentity) -> String {
+    let mut hasher = Sha256::new();
+    update_string_component(&mut hasher, SYSTEM_STATE_ID_VERSION);
+    update_string_component(&mut hasher, &identity.upstream_snapshot_id);
+    update_string_component(&mut hasher, &identity.local_state_commit);
     encode_hex(&hasher.finalize())
 }
 
@@ -259,7 +283,7 @@ mod tests {
     #[test]
     fn test_build_local_state_commit_changes_with_component_changes() {
         let base = LocalStateCommitIdentity {
-            adopted_snapshot_id: "11".repeat(32),
+            upstream_snapshot_id: "11".repeat(32),
             local_synced_block_height: 123,
             latest_pass_block_commit: Some(LocalStatePassCommitIdentity {
                 block_height: 120,
@@ -287,5 +311,23 @@ mod tests {
         assert_eq!(base_commit.len(), 64);
         assert_eq!(changed_commit.len(), 64);
         assert_ne!(base_commit, changed_commit);
+    }
+
+    #[test]
+    fn test_build_system_state_id_changes_with_local_state_commit() {
+        let base = SystemStateIdentity {
+            upstream_snapshot_id: "aa".repeat(32),
+            local_state_commit: "bb".repeat(32),
+        };
+        let changed = SystemStateIdentity {
+            upstream_snapshot_id: "aa".repeat(32),
+            local_state_commit: "cc".repeat(32),
+        };
+
+        let base_id = build_system_state_id(&base);
+        let changed_id = build_system_state_id(&changed);
+        assert_eq!(base_id.len(), 64);
+        assert_eq!(changed_id.len(), 64);
+        assert_ne!(base_id, changed_id);
     }
 }

@@ -1476,7 +1476,7 @@ impl MinerPassStorage {
             return Err(msg);
         }
 
-        // Check 6: adopted upstream snapshot anchor must not remain above target height.
+        // Check 6: upstream snapshot anchor must not remain above target height.
         let mut anchor_stmt = conn
             .prepare("SELECT value FROM state WHERE name = ?1")
             .map_err(|e| {

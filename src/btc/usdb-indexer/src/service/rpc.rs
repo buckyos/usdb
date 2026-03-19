@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use usdb_util::{
     CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusSnapshotIdentity,
     LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot,
-    LocalStateCommitIdentity, LocalStatePassCommitIdentity,
+    LocalStateCommitIdentity, LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO,
+    SYSTEM_STATE_ID_VERSION, SystemStateIdentity,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -34,6 +35,10 @@ pub const SNAPSHOT_ID_VERSION: &str = CONSENSUS_SNAPSHOT_ID_VERSION;
 pub const LOCAL_STATE_HASH_ALGO: &str = LOCAL_STATE_COMMIT_HASH_ALGO;
 /// Version tag of the local-state commit derivation rule exposed by the RPC layer.
 pub const LOCAL_STATE_VERSION: &str = LOCAL_STATE_COMMIT_VERSION;
+/// Hash algorithm name used when deriving `SystemStateInfo.system_state_id`.
+pub const SYSTEM_STATE_HASH_ALGO: &str = SYSTEM_STATE_ID_HASH_ALGO;
+/// Version tag of the system-state id derivation rule exposed by the RPC layer.
+pub const SYSTEM_STATE_VERSION: &str = SYSTEM_STATE_ID_VERSION;
 
 /// Service metadata returned by `get_rpc_info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +70,7 @@ pub struct IndexerSyncStatus {
     pub message: Option<String>,
 }
 
-/// Adopted upstream snapshot metadata plus the local commit point that adopted it.
+/// Upstream snapshot metadata plus the local commit point that adopted it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexerSnapshotInfo {
     /// Local durable commit height in usdb-indexer when this anchor was adopted.
@@ -73,12 +78,12 @@ pub struct IndexerSnapshotInfo {
     /// `snapshot_id`, which must stay stable across nodes observing the same
     /// upstream consensus snapshot.
     pub local_synced_block_height: u32,
-    /// Upstream stable height reported by balance-history for the adopted snapshot.
+    /// Upstream stable height reported by balance-history for the current upstream snapshot.
     /// This is the external snapshot ceiling, not a local usdb-indexer progress field.
     pub balance_history_stable_height: u32,
-    /// Stable BTC block hash returned by balance-history for the adopted snapshot.
+    /// Stable BTC block hash returned by balance-history for the current upstream snapshot.
     pub stable_block_hash: String,
-    /// Latest logical block commit returned by balance-history for the adopted snapshot.
+    /// Latest logical block commit returned by balance-history for the current upstream snapshot.
     pub latest_block_commit: String,
     /// Shared consensus identity derived only from globally reproducible fields.
     pub consensus_identity: ConsensusSnapshotIdentity,
@@ -124,13 +129,13 @@ pub struct PassBlockCommitInfo {
     pub commit_hash_algo: String,
 }
 
-/// Locally durable core-state commit anchored to one adopted upstream snapshot.
+/// Locally durable core-state commit anchored to one upstream snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalStateCommitInfo {
     /// Local durable synced height represented by this state commit.
     pub local_synced_block_height: u32,
-    /// Upstream consensus snapshot id adopted when deriving this local state.
-    pub adopted_snapshot_id: String,
+    /// Upstream consensus snapshot id used when deriving this local state.
+    pub upstream_snapshot_id: String,
     /// Latest pass block commit at or before `local_synced_block_height`.
     pub latest_pass_block_commit: Option<LocalStatePassCommitIdentity>,
     /// Exact active-balance snapshot at `local_synced_block_height`, when present.
@@ -143,6 +148,25 @@ pub struct LocalStateCommitInfo {
     pub local_state_commit_hash_algo: String,
     /// Version tag of the local-state commit derivation rule.
     pub local_state_commit_version: String,
+}
+
+/// Single top-level system-state id for downstream consumers such as ETHW.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemStateInfo {
+    /// Local durable synced height represented by this system state.
+    pub local_synced_block_height: u32,
+    /// Upstream consensus snapshot id currently adopted by the node.
+    pub upstream_snapshot_id: String,
+    /// Current locally durable core-state commit anchored to that upstream snapshot.
+    pub local_state_commit: String,
+    /// Shared identity struct used as the canonical system-state hash input.
+    pub system_state_identity: SystemStateIdentity,
+    /// Canonical system-state id derived from `system_state_identity`.
+    pub system_state_id: String,
+    /// Hash algorithm used to derive `system_state_id`.
+    pub system_state_id_hash_algo: String,
+    /// Version tag of the system-state id derivation rule.
+    pub system_state_id_version: String,
 }
 
 /// Parameters for `get_pass_snapshot`.
@@ -530,7 +554,7 @@ pub trait UsdbIndexerRpc {
     #[rpc(name = "get_synced_block_height")]
     fn get_synced_block_height(&self) -> JsonResult<Option<u64>>;
 
-    /// Returns the currently adopted upstream snapshot metadata.
+    /// Returns the current upstream snapshot metadata.
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>>;
 
@@ -544,6 +568,10 @@ pub trait UsdbIndexerRpc {
     /// Returns the current locally durable core-state commit.
     #[rpc(name = "get_local_state_commit_info")]
     fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>>;
+
+    /// Returns the top-level system-state id for downstream consumers.
+    #[rpc(name = "get_system_state_info")]
+    fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>>;
 
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]

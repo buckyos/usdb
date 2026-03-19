@@ -14,8 +14,8 @@ use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 use usdb_util::{
     CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, LocalStateActiveBalanceSnapshot,
-    LocalStateCommitIdentity, LocalStatePassCommitIdentity, build_consensus_snapshot_id,
-    build_local_state_commit,
+    LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
+    build_consensus_snapshot_id, build_local_state_commit, build_system_state_id,
 };
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -195,7 +195,7 @@ impl UsdbIndexerRpcServer {
             .map_err(Self::to_internal_error)
     }
 
-    fn adopted_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
+    fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
         let Some(anchor) = self
             .indexer
             .miner_pass_storage()
@@ -239,10 +239,10 @@ impl UsdbIndexerRpcServer {
     }
 
     // Build a locally durable core-state commit without changing the meaning of snapshot_info.
-    // snapshot_info continues to describe only the adopted upstream consensus anchor, while this
-    // method binds that anchor to local pass state and active-balance settlement state.
+    // snapshot_info continues to describe only the upstream consensus anchor, while this method
+    // binds that anchor to local pass state and active-balance settlement state.
     fn local_state_commit_info(&self) -> Result<Option<LocalStateCommitInfo>, JsonError> {
-        let Some(snapshot) = self.adopted_snapshot_info()? else {
+        let Some(snapshot) = self.upstream_snapshot_info()? else {
             return Ok(None);
         };
 
@@ -288,7 +288,7 @@ impl UsdbIndexerRpcServer {
         };
 
         let local_state_identity = LocalStateCommitIdentity {
-            adopted_snapshot_id: snapshot.snapshot_id.clone(),
+            upstream_snapshot_id: snapshot.snapshot_id.clone(),
             local_synced_block_height: synced_height,
             latest_pass_block_commit: latest_pass_block_commit.clone(),
             latest_active_balance_snapshot: latest_active_balance_snapshot.clone(),
@@ -297,13 +297,34 @@ impl UsdbIndexerRpcServer {
 
         Ok(Some(LocalStateCommitInfo {
             local_synced_block_height: synced_height,
-            adopted_snapshot_id: snapshot.snapshot_id,
+            upstream_snapshot_id: snapshot.snapshot_id,
             latest_pass_block_commit,
             latest_active_balance_snapshot,
             local_state_commit: build_local_state_commit(&local_state_identity),
             local_state_identity,
             local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
             local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
+        }))
+    }
+
+    fn system_state_info(&self) -> Result<Option<SystemStateInfo>, JsonError> {
+        let Some(local_state) = self.local_state_commit_info()? else {
+            return Ok(None);
+        };
+
+        let system_state_identity = SystemStateIdentity {
+            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
+            local_state_commit: local_state.local_state_commit.clone(),
+        };
+
+        Ok(Some(SystemStateInfo {
+            local_synced_block_height: local_state.local_synced_block_height,
+            upstream_snapshot_id: local_state.upstream_snapshot_id,
+            local_state_commit: local_state.local_state_commit,
+            system_state_id: build_system_state_id(&system_state_identity),
+            system_state_identity,
+            system_state_id_hash_algo: SYSTEM_STATE_HASH_ALGO.to_string(),
+            system_state_id_version: SYSTEM_STATE_VERSION.to_string(),
         }))
     }
 
@@ -643,6 +664,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "snapshot_info".to_string(),
                 "pass_block_commit".to_string(),
                 "local_state_commit_info".to_string(),
+                "system_state_info".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
@@ -681,7 +703,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>> {
-        self.adopted_snapshot_info()
+        self.upstream_snapshot_info()
     }
 
     fn get_pass_block_commit(
@@ -708,6 +730,10 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>> {
         self.local_state_commit_info()
+    }
+
+    fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>> {
+        self.system_state_info()
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
@@ -1250,7 +1276,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
         LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
-        ToUSDBScriptHash, USDBScriptHash, build_local_state_commit,
+        SystemStateIdentity, ToUSDBScriptHash, USDBScriptHash, build_local_state_commit,
+        build_system_state_id,
     };
 
     fn test_root_dir(tag: &str) -> PathBuf {
@@ -1627,7 +1654,7 @@ mod tests {
         assert_eq!(
             info.local_state_identity,
             LocalStateCommitIdentity {
-                adopted_snapshot_id: info.adopted_snapshot_id.clone(),
+                upstream_snapshot_id: info.upstream_snapshot_id.clone(),
                 local_synced_block_height: 120,
                 latest_pass_block_commit: info.latest_pass_block_commit.clone(),
                 latest_active_balance_snapshot: info.latest_active_balance_snapshot.clone(),
@@ -1637,6 +1664,67 @@ mod tests {
         assert_eq!(
             info.local_state_commit,
             build_local_state_commit(&info.local_state_identity)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_system_state_info_success() {
+        let (server, root_dir) = build_server_with_genesis("system_state_info_success", 120, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "cc".repeat(32),
+                mutation_root: "dd".repeat(32),
+                block_commit: "ee".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(120, 5_000, 2)
+            .unwrap();
+
+        let local = server.get_local_state_commit_info().unwrap().unwrap();
+        let system = server.get_system_state_info().unwrap().unwrap();
+        assert_eq!(system.local_synced_block_height, 120);
+        assert_eq!(system.upstream_snapshot_id, local.upstream_snapshot_id);
+        assert_eq!(system.local_state_commit, local.local_state_commit);
+        assert_eq!(
+            system.system_state_identity,
+            SystemStateIdentity {
+                upstream_snapshot_id: system.upstream_snapshot_id.clone(),
+                local_state_commit: system.local_state_commit.clone(),
+            }
+        );
+        assert_eq!(system.system_state_id_hash_algo, SYSTEM_STATE_HASH_ALGO);
+        assert_eq!(system.system_state_id_version, SYSTEM_STATE_VERSION);
+        assert_eq!(
+            system.system_state_id,
+            build_system_state_id(&system.system_state_identity)
         );
 
         drop(server);
