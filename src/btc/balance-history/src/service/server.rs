@@ -9,6 +9,10 @@ use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBui
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
+use usdb_util::{
+    BALANCE_HISTORY_SERVICE_NAME, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+    ConsensusStateReference,
+};
 
 // Public version string of the first balance-history block commit protocol.
 const COMMIT_PROTOCOL_VERSION: &str = "1.0.0";
@@ -118,6 +122,147 @@ impl BalanceHistoryRpcServer {
         } else {
             warn!("RPC server handle not found.");
         }
+    }
+
+    fn to_internal_error(message: String) -> JsonError {
+        JsonError {
+            code: ErrorCode::InternalError,
+            message,
+            data: None,
+        }
+    }
+
+    fn to_consensus_error(code: ConsensusRpcErrorCode, data: ConsensusRpcErrorData) -> JsonError {
+        JsonError {
+            code: ErrorCode::ServerError(code.code()),
+            message: code.as_str().to_string(),
+            data: Some(serde_json::to_value(data).unwrap_or_else(|e| {
+                serde_json::json!({
+                    "service": BALANCE_HISTORY_SERVICE_NAME,
+                    "detail": format!("Failed to serialize structured consensus error data: {}", e),
+                })
+            })),
+        }
+    }
+
+    fn build_snapshot_info(&self) -> Result<SnapshotInfo, String> {
+        let stable_height = self.db.get_btc_block_height()?;
+        let latest_commit = self.db.get_block_commit(stable_height)?;
+
+        Ok(SnapshotInfo {
+            stable_height,
+            stable_block_hash: latest_commit
+                .as_ref()
+                .map(|entry| format!("{:x}", entry.btc_block_hash)),
+            latest_block_commit: latest_commit
+                .as_ref()
+                .map(|entry| encode_hex(&entry.block_commit)),
+            stable_lag: BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+        })
+    }
+
+    fn build_consensus_state_reference(
+        &self,
+        snapshot: Option<&SnapshotInfo>,
+    ) -> ConsensusStateReference {
+        let Some(snapshot) = snapshot else {
+            return ConsensusStateReference::default();
+        };
+
+        ConsensusStateReference {
+            snapshot_id: None,
+            stable_height: Some(snapshot.stable_height),
+            stable_block_hash: snapshot.stable_block_hash.clone(),
+            balance_history_api_version: Some(snapshot.balance_history_api_version.clone()),
+            balance_history_semantics_version: Some(
+                snapshot.balance_history_semantics_version.clone(),
+            ),
+            usdb_index_protocol_version: None,
+            local_state_commit: None,
+            system_state_id: None,
+        }
+    }
+
+    fn build_consensus_error_data(
+        &self,
+        requested_height: Option<u32>,
+        snapshot: Option<&SnapshotInfo>,
+        detail: impl Into<Option<String>>,
+    ) -> ConsensusRpcErrorData {
+        let readiness = self.readiness_info().ok();
+        let mut data = ConsensusRpcErrorData::new(BALANCE_HISTORY_SERVICE_NAME);
+        data.requested_height = requested_height;
+        data.upstream_stable_height = snapshot.map(|value| value.stable_height);
+        data.consensus_ready = readiness.as_ref().map(|value| value.consensus_ready);
+        data.actual_state = self.build_consensus_state_reference(snapshot);
+        data.detail = detail.into();
+        data
+    }
+
+    fn resolve_queryable_snapshot(&self) -> Result<SnapshotInfo, JsonError> {
+        let snapshot = self
+            .build_snapshot_info()
+            .map_err(Self::to_internal_error)?;
+        if snapshot.stable_block_hash.is_none() || snapshot.latest_block_commit.is_none() {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotNotReady,
+                self.build_consensus_error_data(
+                    None,
+                    Some(&snapshot),
+                    Some(
+                        "Current stable snapshot is incomplete: missing stable block hash or latest block commit"
+                            .to_string(),
+                    ),
+                ),
+            ));
+        }
+
+        Ok(snapshot)
+    }
+
+    fn validate_requested_height(&self, requested_height: u32) -> Result<SnapshotInfo, JsonError> {
+        let snapshot = self.resolve_queryable_snapshot()?;
+        if requested_height > snapshot.stable_height {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::HeightNotSynced,
+                self.build_consensus_error_data(
+                    Some(requested_height),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested height {} is above current stable height {}",
+                        requested_height, snapshot.stable_height
+                    )),
+                ),
+            ));
+        }
+
+        Ok(snapshot)
+    }
+
+    fn validate_requested_range(
+        &self,
+        range: &std::ops::Range<u32>,
+    ) -> Result<SnapshotInfo, JsonError> {
+        let snapshot = self.resolve_queryable_snapshot()?;
+        if !range.is_empty() && range.end.saturating_sub(1) > snapshot.stable_height {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::HeightNotSynced,
+                self.build_consensus_error_data(
+                    Some(range.end.saturating_sub(1)),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested range [{} , {}) exceeds current stable height {}",
+                        range.start, range.end, snapshot.stable_height
+                    )),
+                ),
+            ));
+        }
+
+        Ok(snapshot)
     }
 
     fn readiness_info(&self) -> Result<ReadinessInfo, String> {
@@ -240,38 +385,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     }
 
     fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo> {
-        let stable_height = self.db.get_btc_block_height().map_err(|e| JsonError {
-            code: ErrorCode::InternalError,
-            message: format!("Failed to get stable height: {}", e),
-            data: None,
-        })?;
-
-        let latest_commit = self
-            .db
-            .get_block_commit(stable_height)
-            .map_err(|e| JsonError {
-                code: ErrorCode::InternalError,
-                message: format!(
-                    "Failed to get block commit at height {}: {}",
-                    stable_height, e
-                ),
-                data: None,
-            })?;
-
-        Ok(SnapshotInfo {
-            stable_height,
-            stable_block_hash: latest_commit
-                .as_ref()
-                .map(|entry| format!("{:x}", entry.btc_block_hash)),
-            latest_block_commit: latest_commit
-                .as_ref()
-                .map(|entry| encode_hex(&entry.block_commit)),
-            stable_lag: BALANCE_HISTORY_STABLE_LAG,
-            balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
-            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
-            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
-            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
-        })
+        self.resolve_queryable_snapshot()
     }
 
     fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
@@ -307,16 +421,18 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>> {
         if let Some(height) = params.block_height {
+            self.validate_requested_height(height)?;
             // This endpoint uses at-or-before semantics:
             // return the latest balance record with block_height <= query height.
             // Callers that need exact block delta should use get_address_balance_delta.
             let ret = self
                 .db
                 .get_balance_at_block_height(&params.script_hash, height)
-                .map_err(|e| JsonError {
-                    code: ErrorCode::InternalError,
-                    message: format!("Failed to get balance at block height {}: {}", height, e),
-                    data: None,
+                .map_err(|e| {
+                    Self::to_internal_error(format!(
+                        "Failed to get balance at block height {}: {}",
+                        height, e
+                    ))
                 })?;
 
             let ret = AddressBalance {
@@ -332,13 +448,13 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
                 return Ok(Vec::new());
             }
 
+            self.validate_requested_range(&range)?;
+
             let ret = self
                 .db
                 .get_balance_in_range(&params.script_hash, range.start, range.end)
-                .map_err(|e| JsonError {
-                    code: ErrorCode::InternalError,
-                    message: format!("Failed to get balance in block range: {}", e),
-                    data: None,
+                .map_err(|e| {
+                    Self::to_internal_error(format!("Failed to get balance in block range: {}", e))
                 })?;
 
             let balances: Vec<AddressBalance> = ret
@@ -352,13 +468,12 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
             Ok(balances)
         } else {
+            self.resolve_queryable_snapshot()?;
             let ret = self
                 .db
                 .get_latest_balance(&params.script_hash)
-                .map_err(|e| JsonError {
-                    code: ErrorCode::InternalError,
-                    message: format!("Failed to get latest balance: {}", e),
-                    data: None,
+                .map_err(|e| {
+                    Self::to_internal_error(format!("Failed to get latest balance: {}", e))
                 })?;
             let ret = AddressBalance {
                 block_height: ret.block_height,
@@ -506,9 +621,12 @@ mod tests {
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::BlockHash;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use jsonrpc_core::ErrorCode as JsonErrorCode;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::USDBScriptHash;
+    use usdb_util::{
+        BALANCE_HISTORY_SERVICE_NAME, ConsensusRpcErrorCode, ConsensusRpcErrorData, USDBScriptHash,
+    };
 
     fn make_test_server(tag: &str) -> BalanceHistoryRpcServer {
         let nanos = SystemTime::now()
@@ -546,25 +664,56 @@ mod tests {
             .unwrap();
     }
 
+    fn seed_stable_commit(server: &BalanceHistoryRpcServer, block_height: u32, byte: u8) {
+        let commit = BlockCommitEntry {
+            block_height,
+            btc_block_hash: BlockHash::from_slice(&[byte; 32]).unwrap(),
+            balance_delta_root: [byte.wrapping_add(1); 32],
+            block_commit: [byte.wrapping_add(2); 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), block_height, &[commit])
+            .unwrap();
+    }
+
+    fn decode_consensus_error_data(err: &JsonError) -> ConsensusRpcErrorData {
+        serde_json::from_value(err.data.clone().expect("missing structured error data"))
+            .expect("invalid structured error data")
+    }
+
     #[test]
     fn test_get_snapshot_info_without_commit() {
         let server = make_test_server("empty");
 
-        let snapshot = server.get_snapshot_info().unwrap();
-        assert_eq!(snapshot.stable_height, 0);
-        assert_eq!(snapshot.stable_block_hash, None);
-        assert_eq!(snapshot.latest_block_commit, None);
-        assert_eq!(snapshot.stable_lag, BALANCE_HISTORY_STABLE_LAG);
+        let err = server.get_snapshot_info().unwrap_err();
+        match err.code {
+            JsonErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
         assert_eq!(
-            snapshot.balance_history_api_version,
-            BALANCE_HISTORY_API_VERSION
+            err.message,
+            ConsensusRpcErrorCode::SnapshotNotReady.as_str()
+        );
+
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, BALANCE_HISTORY_SERVICE_NAME);
+        assert_eq!(data.upstream_stable_height, Some(0));
+        assert_eq!(data.actual_state.stable_height, Some(0));
+        assert_eq!(
+            data.actual_state.balance_history_api_version.as_deref(),
+            Some(BALANCE_HISTORY_API_VERSION)
         );
         assert_eq!(
-            snapshot.balance_history_semantics_version,
-            BALANCE_HISTORY_SEMANTICS_VERSION
+            data.actual_state
+                .balance_history_semantics_version
+                .as_deref(),
+            Some(BALANCE_HISTORY_SEMANTICS_VERSION)
         );
-        assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
-        assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+        assert_eq!(data.actual_state.stable_block_hash, None);
+        assert_eq!(data.consensus_ready, Some(false));
     }
 
     #[test]
@@ -603,6 +752,48 @@ mod tests {
         );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_address_balance_returns_height_not_synced_for_future_height() {
+        let server = make_test_server("future_height");
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let err = server
+            .get_address_balance(GetBalanceParams {
+                script_hash: make_script_hash(1),
+                block_height: Some(13),
+                block_range: None,
+            })
+            .unwrap_err();
+        match err.code {
+            JsonErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HeightNotSynced.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, ConsensusRpcErrorCode::HeightNotSynced.as_str());
+
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, BALANCE_HISTORY_SERVICE_NAME);
+        assert_eq!(data.requested_height, Some(13));
+        assert_eq!(data.upstream_stable_height, Some(12));
+        assert_eq!(data.consensus_ready, Some(false));
+        assert_eq!(data.actual_state.stable_height, Some(12));
+        assert_eq!(
+            data.actual_state.stable_block_hash,
+            Some(format!("{:x}", commit.btc_block_hash))
+        );
     }
 
     #[test]
@@ -792,6 +983,7 @@ mod tests {
                 },
             ],
         );
+        seed_stable_commit(&server, 100, 21);
 
         let latest = server
             .get_address_balance(GetBalanceParams {
@@ -851,6 +1043,7 @@ mod tests {
                 },
             ],
         );
+        seed_stable_commit(&server, 12, 31);
 
         let range = server
             .get_address_balance(GetBalanceParams {
@@ -939,6 +1132,7 @@ mod tests {
                 },
             ],
         );
+        seed_stable_commit(&server, 12, 41);
 
         let results = server
             .get_addresses_balances(GetBalancesParams {

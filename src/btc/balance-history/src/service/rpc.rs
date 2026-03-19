@@ -220,6 +220,9 @@ pub trait BalanceHistoryRpc {
     ///
     /// The response includes the stable block height, the canonical block hash
     /// recorded at that height, and the latest logical block-commit metadata.
+    ///
+    /// Returns shared consensus error `SNAPSHOT_NOT_READY` when the local DB
+    /// has a height but the advertised stable snapshot is still incomplete.
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo>;
 
@@ -247,13 +250,17 @@ pub trait BalanceHistoryRpc {
     ///   half-open range `[start, end)`
     /// - with neither selector: returns one-element vector containing the latest
     ///   persisted balance record overall
+    ///
+    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when the requested
+    /// height or range exceeds the current stable height.
     #[rpc(name = "get_address_balance")]
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>>;
 
     /// Returns balance records for multiple script hashes.
     ///
     /// The output order matches `params.script_hashes`. Each element uses the
-    /// same selector semantics as `get_address_balance`.
+    /// same selector semantics as `get_address_balance`, including shared
+    /// consensus error `HEIGHT_NOT_SYNCED` for future heights/ranges.
     #[rpc(name = "get_addresses_balances")]
     fn get_addresses_balances(
         &self,

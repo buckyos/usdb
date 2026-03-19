@@ -167,7 +167,42 @@
 2. `rpc_alive=true` 只说明服务活着，不说明快照适合共识消费；
 3. 下游若要做严格 gating，应使用 `consensus_ready=true`。
 
-### 5) `get_address_balance`
+### 5) `get_snapshot_info`
+
+返回当前 stable snapshot 元数据。
+
+请求：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "get_snapshot_info",
+  "params": [],
+  "id": 1
+}
+```
+
+结果示例：
+
+```json
+{
+  "stable_height": 812345,
+  "stable_block_hash": "000000...",
+  "latest_block_commit": "4f7c...",
+  "stable_lag": 0,
+  "balance_history_api_version": "1.0.0",
+  "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+  "commit_protocol_version": "1.0.0",
+  "commit_hash_algo": "sha256"
+}
+```
+
+说明：
+
+- 当 stable snapshot 尚不完整，例如 stable height 已存在，但 `stable_block_hash` 或 `latest_block_commit` 尚不可用时，返回共享共识错误 `SNAPSHOT_NOT_READY`；
+- 新的错误返回会携带结构化 `data`，其中包含当前 `stable_height`、`consensus_ready` 与 `actual_state`，供下游做自动判定。
+
+### 6) `get_address_balance`
 
 查询单个地址（script hash）余额历史。
 
@@ -241,8 +276,9 @@
 
 - 当 `block_range` 为空区间（`start == end`）时返回空数组 `[]`。
 - 若目标地址暂无数据，返回默认零值记录（`block_height=0, delta=0, balance=0`）。
+- 当 `block_height` 或 `block_range` 超出当前 `stable_height` 时，返回共享共识错误 `HEIGHT_NOT_SYNCED`，而不是隐式回退到当前可用高度。
 
-### 6) `get_addresses_balances`
+### 7) `get_addresses_balances`
 
 批量查询多个地址余额历史。
 
@@ -257,6 +293,53 @@
 ```
 
 结果：二维数组，外层顺序与 `script_hashes` 输入顺序一致，每个元素是对应地址的 `AddressBalance[]`。
+
+- 对高度/区间的合法性约束与 `get_address_balance` 相同；
+- 若任一请求高度越过当前 `stable_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`。
+
+## 统一错误模型（共识查询层）
+
+对外 JSON-RPC 仍然保留标准：
+
+- `InvalidParams`
+- `InternalError`
+
+此外，`balance-history` 已开始接入跨服务共享的共识错误契约，当前已实际用于：
+
+- `SNAPSHOT_NOT_READY` (`-32041`)
+- `HEIGHT_NOT_SYNCED` (`-32040`)
+
+错误示例：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "error": {
+    "code": -32040,
+    "message": "HEIGHT_NOT_SYNCED",
+    "data": {
+      "service": "balance-history",
+      "requested_height": 900130,
+      "local_synced_height": null,
+      "upstream_stable_height": 900123,
+      "consensus_ready": false,
+      "expected_state": {},
+      "actual_state": {
+        "stable_height": 900123,
+        "stable_block_hash": "000000..."
+      },
+      "detail": "Requested height 900130 is above current stable height 900123"
+    }
+  },
+  "id": 1
+}
+```
+
+说明：
+
+- `message` 是稳定的机器可读错误名；
+- `data.actual_state` 描述服务当时实际看到的 stable 视图；
+- 下游不应再仅靠错误字符串自由文本判断是否可重试或是否属于快照漂移。
 
 ### 7) `stop`
 

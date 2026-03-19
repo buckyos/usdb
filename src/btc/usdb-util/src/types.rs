@@ -79,6 +79,166 @@ pub const LOCAL_STATE_COMMIT_VERSION: &str = "usdb-local-state:v1";
 pub const SYSTEM_STATE_ID_HASH_ALGO: &str = "sha256";
 /// Version tag of the canonical BTC-side system-state id serialization rule.
 pub const SYSTEM_STATE_ID_VERSION: &str = "btc-system-state:v1";
+/// Shared JSON-RPC error code returned when the requested height is not yet
+/// covered by the service's current durable or stable view.
+pub const CONSENSUS_RPC_ERR_HEIGHT_NOT_SYNCED: i64 = -32040;
+/// Shared JSON-RPC error code returned when the service is alive but the
+/// currently advertised snapshot is not safe for downstream consensus use.
+pub const CONSENSUS_RPC_ERR_SNAPSHOT_NOT_READY: i64 = -32041;
+/// Shared JSON-RPC error code returned when the caller's expected snapshot id
+/// does not match the service's current snapshot identity.
+pub const CONSENSUS_RPC_ERR_SNAPSHOT_ID_MISMATCH: i64 = -32042;
+/// Shared JSON-RPC error code returned when the caller's expected stable BTC
+/// block hash does not match the service's current stable anchor.
+pub const CONSENSUS_RPC_ERR_BLOCK_HASH_MISMATCH: i64 = -32043;
+/// Shared JSON-RPC error code returned when a versioned protocol or semantics
+/// field required by the caller does not match the service's current value.
+pub const CONSENSUS_RPC_ERR_VERSION_MISMATCH: i64 = -32044;
+/// Shared JSON-RPC error code returned when the caller expects a different
+/// locally durable core-state commit from the one currently exposed.
+pub const CONSENSUS_RPC_ERR_LOCAL_STATE_COMMIT_MISMATCH: i64 = -32045;
+/// Shared JSON-RPC error code returned when the caller expects a different
+/// top-level system-state id from the one currently exposed.
+pub const CONSENSUS_RPC_ERR_SYSTEM_STATE_ID_MISMATCH: i64 = -32046;
+/// Shared JSON-RPC error code returned when the query is valid and within the
+/// durable range, but no record exists for the requested object/key.
+pub const CONSENSUS_RPC_ERR_NO_RECORD: i64 = -32047;
+
+/// Shared consensus-layer JSON-RPC error contract used by BTC-side services.
+///
+/// These error names intentionally do not cover service-specific business
+/// conditions such as `PASS_NOT_FOUND` or `INVALID_PAGINATION`. They are only
+/// for cross-service, downstream-consumable readiness/anchor/version failures.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConsensusRpcErrorCode {
+    HeightNotSynced,
+    SnapshotNotReady,
+    SnapshotIdMismatch,
+    BlockHashMismatch,
+    VersionMismatch,
+    LocalStateCommitMismatch,
+    SystemStateIdMismatch,
+    NoRecord,
+}
+
+impl ConsensusRpcErrorCode {
+    /// Stable JSON-RPC server error integer used on the wire.
+    pub fn code(self) -> i64 {
+        match self {
+            Self::HeightNotSynced => CONSENSUS_RPC_ERR_HEIGHT_NOT_SYNCED,
+            Self::SnapshotNotReady => CONSENSUS_RPC_ERR_SNAPSHOT_NOT_READY,
+            Self::SnapshotIdMismatch => CONSENSUS_RPC_ERR_SNAPSHOT_ID_MISMATCH,
+            Self::BlockHashMismatch => CONSENSUS_RPC_ERR_BLOCK_HASH_MISMATCH,
+            Self::VersionMismatch => CONSENSUS_RPC_ERR_VERSION_MISMATCH,
+            Self::LocalStateCommitMismatch => CONSENSUS_RPC_ERR_LOCAL_STATE_COMMIT_MISMATCH,
+            Self::SystemStateIdMismatch => CONSENSUS_RPC_ERR_SYSTEM_STATE_ID_MISMATCH,
+            Self::NoRecord => CONSENSUS_RPC_ERR_NO_RECORD,
+        }
+    }
+
+    /// Stable symbolic name used as the JSON-RPC `message` field.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HeightNotSynced => "HEIGHT_NOT_SYNCED",
+            Self::SnapshotNotReady => "SNAPSHOT_NOT_READY",
+            Self::SnapshotIdMismatch => "SNAPSHOT_ID_MISMATCH",
+            Self::BlockHashMismatch => "BLOCK_HASH_MISMATCH",
+            Self::VersionMismatch => "VERSION_MISMATCH",
+            Self::LocalStateCommitMismatch => "LOCAL_STATE_COMMIT_MISMATCH",
+            Self::SystemStateIdMismatch => "SYSTEM_STATE_ID_MISMATCH",
+            Self::NoRecord => "NO_RECORD",
+        }
+    }
+}
+
+/// Optional consensus-state selectors that a downstream caller can pin when it
+/// wants exact cross-service or cross-chain reproducibility.
+///
+/// This struct is intentionally broader than any single service. Unused fields
+/// may remain `None` for services that do not expose that layer directly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ConsensusStateReference {
+    /// Expected upstream consensus snapshot id.
+    pub snapshot_id: Option<String>,
+    /// Expected upstream stable BTC height.
+    pub stable_height: Option<u32>,
+    /// Expected upstream stable BTC block hash.
+    pub stable_block_hash: Option<String>,
+    /// Expected balance-history public API version.
+    pub balance_history_api_version: Option<String>,
+    /// Expected balance-history query semantics version.
+    pub balance_history_semantics_version: Option<String>,
+    /// Expected usdb-index public protocol version.
+    pub usdb_index_protocol_version: Option<String>,
+    /// Expected local-state commit from usdb-indexer.
+    pub local_state_commit: Option<String>,
+    /// Expected top-level system-state id from usdb-indexer.
+    pub system_state_id: Option<String>,
+}
+
+impl ConsensusStateReference {
+    /// Returns true when the caller did not pin any consensus-side selector.
+    pub fn is_empty(&self) -> bool {
+        self.snapshot_id.is_none()
+            && self.stable_height.is_none()
+            && self.stable_block_hash.is_none()
+            && self.balance_history_api_version.is_none()
+            && self.balance_history_semantics_version.is_none()
+            && self.usdb_index_protocol_version.is_none()
+            && self.local_state_commit.is_none()
+            && self.system_state_id.is_none()
+    }
+}
+
+/// Shared request-side context that downstream consumers can attach to
+/// consensus-sensitive queries.
+///
+/// Phase 1 only standardizes this structure in `usdb-util`. Individual RPC
+/// methods can adopt it incrementally without forcing every existing query to
+/// change at once.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ConsensusQueryContext {
+    /// Optional requested logical height associated with the query.
+    pub requested_height: Option<u32>,
+    /// Optional consensus-state selectors the caller expects the service to honor.
+    pub expected_state: ConsensusStateReference,
+}
+
+/// Shared structured `data` payload for consensus-layer JSON-RPC errors.
+///
+/// `expected_state` mirrors the caller's pinned selectors, while `actual_state`
+/// describes the service's current observed state at the time the error was
+/// produced. This lets downstream verifiers distinguish real mismatches from
+/// mere liveness/readiness issues without parsing free-form error strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ConsensusRpcErrorData {
+    /// Service emitting the error, for example `balance-history` or `usdb-indexer`.
+    pub service: String,
+    /// Optional requested logical height associated with the failed query.
+    pub requested_height: Option<u32>,
+    /// Optional locally durable synced height on the emitting service.
+    pub local_synced_height: Option<u32>,
+    /// Optional upstream stable height observed by the emitting service.
+    pub upstream_stable_height: Option<u32>,
+    /// Optional current consensus-ready flag at the time of failure.
+    pub consensus_ready: Option<bool>,
+    /// Optional request-side selectors supplied by the caller.
+    pub expected_state: ConsensusStateReference,
+    /// Service-side state observed when the error was raised.
+    pub actual_state: ConsensusStateReference,
+    /// Optional short detail string for operator debugging.
+    pub detail: Option<String>,
+}
+
+impl ConsensusRpcErrorData {
+    /// Builds an empty structured payload for one service.
+    pub fn new(service: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+            ..Default::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsensusSnapshotIdentity {
@@ -329,5 +489,66 @@ mod tests {
         assert_eq!(base_id.len(), 64);
         assert_eq!(changed_id.len(), 64);
         assert_ne!(base_id, changed_id);
+    }
+
+    #[test]
+    fn test_consensus_rpc_error_code_contract_is_stable() {
+        assert_eq!(
+            ConsensusRpcErrorCode::HeightNotSynced.code(),
+            CONSENSUS_RPC_ERR_HEIGHT_NOT_SYNCED
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::HeightNotSynced.as_str(),
+            "HEIGHT_NOT_SYNCED"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::SnapshotNotReady.code(),
+            CONSENSUS_RPC_ERR_SNAPSHOT_NOT_READY
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::SnapshotIdMismatch.code(),
+            CONSENSUS_RPC_ERR_SNAPSHOT_ID_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::BlockHashMismatch.code(),
+            CONSENSUS_RPC_ERR_BLOCK_HASH_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::VersionMismatch.code(),
+            CONSENSUS_RPC_ERR_VERSION_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::LocalStateCommitMismatch.code(),
+            CONSENSUS_RPC_ERR_LOCAL_STATE_COMMIT_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::SystemStateIdMismatch.code(),
+            CONSENSUS_RPC_ERR_SYSTEM_STATE_ID_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::NoRecord.code(),
+            CONSENSUS_RPC_ERR_NO_RECORD
+        );
+        assert_eq!(ConsensusRpcErrorCode::NoRecord.as_str(), "NO_RECORD");
+    }
+
+    #[test]
+    fn test_consensus_state_reference_is_empty() {
+        let empty = ConsensusStateReference::default();
+        assert!(empty.is_empty());
+
+        let non_empty = ConsensusStateReference {
+            snapshot_id: Some("aa".repeat(32)),
+            ..Default::default()
+        };
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn test_consensus_rpc_error_data_new_sets_service() {
+        let data = ConsensusRpcErrorData::new("balance-history");
+        assert_eq!(data.service, "balance-history");
+        assert!(data.expected_state.is_empty());
+        assert!(data.actual_state.is_empty());
     }
 }

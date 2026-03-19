@@ -5,11 +5,24 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::ops::Range;
-use usdb_util::USDBScriptHash;
+use usdb_util::{ConsensusRpcErrorData, USDBScriptHash};
 
 pub struct RpcClient {
     url: String,
     client: Client,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcEnvelope<T> {
+    result: Option<T>,
+    error: Option<RpcErrorPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcErrorPayload {
+    code: i64,
+    message: String,
+    data: Option<Value>,
 }
 
 impl RpcClient {
@@ -155,7 +168,7 @@ impl RpcClient {
             "id": 1
         });
 
-        let resp: Value = self
+        let resp: RpcEnvelope<T> = self
             .client
             .post(url)
             .json(&request)
@@ -174,17 +187,95 @@ impl RpcClient {
                 msg
             })?;
 
-        if let Some(err) = resp.get("error") {
-            let msg = format!("RPC Error: {:?}, resp {:?}", err, resp);
+        if let Some(err) = resp.error {
+            let msg = Self::format_rpc_error(method, &err);
             log::error!("{}", msg);
             return Err(msg);
         }
 
-        Ok(serde_json::from_value(resp["result"].clone()).map_err(|e| {
-            let msg = format!("Failed to parse RPC result: {}", e);
+        resp.result.ok_or_else(|| {
+            let msg = format!("RPC response for method {} missing both result and error", method);
             log::error!("{}", msg);
             msg
-        })?)
+        })
+    }
+
+    fn format_rpc_error(method: &str, err: &RpcErrorPayload) -> String {
+        let mut msg = format!(
+            "RPC Error: method={}, code={}, message={}",
+            method, err.code, err.message
+        );
+
+        if let Some(data) = &err.data {
+            if let Ok(structured) = serde_json::from_value::<ConsensusRpcErrorData>(data.clone()) {
+                msg.push_str(&format!(
+                    ", service={}, requested_height={:?}, local_synced_height={:?}, upstream_stable_height={:?}, consensus_ready={:?}, detail={:?}, actual_state={:?}",
+                    structured.service,
+                    structured.requested_height,
+                    structured.local_synced_height,
+                    structured.upstream_stable_height,
+                    structured.consensus_ready,
+                    structured.detail,
+                    structured.actual_state,
+                ));
+            } else {
+                msg.push_str(&format!(", data={}", data));
+            }
+        }
+
+        msg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_format_rpc_error_with_structured_consensus_data() {
+        let msg = RpcClient::format_rpc_error(
+            "get_snapshot_info",
+            &RpcErrorPayload {
+                code: -32041,
+                message: "SNAPSHOT_NOT_READY".to_string(),
+                data: Some(json!({
+                    "service": "balance-history",
+                    "requested_height": 12,
+                    "local_synced_height": null,
+                    "upstream_stable_height": 10,
+                    "consensus_ready": false,
+                    "expected_state": {},
+                    "actual_state": {
+                        "stable_height": 10,
+                        "stable_block_hash": "aa"
+                    },
+                    "detail": "stable snapshot incomplete"
+                })),
+            },
+        );
+
+        assert!(msg.contains("method=get_snapshot_info"));
+        assert!(msg.contains("code=-32041"));
+        assert!(msg.contains("message=SNAPSHOT_NOT_READY"));
+        assert!(msg.contains("service=balance-history"));
+        assert!(msg.contains("requested_height=Some(12)"));
+        assert!(msg.contains("upstream_stable_height=Some(10)"));
+    }
+
+    #[test]
+    fn test_format_rpc_error_with_unstructured_data_falls_back_to_json() {
+        let msg = RpcClient::format_rpc_error(
+            "get_address_balance",
+            &RpcErrorPayload {
+                code: -32040,
+                message: "HEIGHT_NOT_SYNCED".to_string(),
+                data: Some(json!({"foo": "bar"})),
+            },
+        );
+
+        assert!(msg.contains("method=get_address_balance"));
+        assert!(msg.contains("data={\"foo\":\"bar\"}"));
     }
 }
 

@@ -50,6 +50,25 @@
 - 分页查询必须带 `at_height`（或由首包回传 `resolved_height` 并在后续分页复用）。
 - 排序固定并可重放，避免跨页重复/遗漏。
 
+### 3.5 ETHW 验块必须绑定历史 state ref，而不是当前 head
+
+如果 ETHW 区块在出块时记录了：
+
+- `btc_height`
+- `snapshot_id`
+- `system_state_id`
+- `pass info / energy`
+
+那么验证方收到该区块后，必须基于 **`btc_height` 对应的历史状态** 进行校验，而不是直接读取当前 head 状态。
+
+这意味着：
+
+- BTC 侧即使已经从 `H` 前进到 `H+1`，仍然应当允许验证高度 `H` 的历史 `pass info`
+- “当前 head 前进”不应直接导致 `SNAPSHOT_ID_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
+- 只有在服务能够重建高度 `H` 的历史状态，但重建出的 `snapshot_id / system_state_id` 与区块记录不一致时，才属于真正的 mismatch
+
+因此，后续共识化接口需要补一层历史 state ref 查询能力，而不仅仅是“返回当前 snapshot/system state”。
+
 ---
 
 ## 4. 数据模型

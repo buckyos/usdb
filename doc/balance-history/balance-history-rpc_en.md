@@ -67,7 +67,40 @@ Returns the latest synced BTC height stored in database.
 
 Returns current sync status.
 
-### 4) `get_address_balance`
+### 4) `get_readiness`
+
+Returns structured readiness state for:
+
+1. plain RPC liveness;
+2. ordinary query serving;
+3. strict downstream consensus use.
+
+Downstream callers should gate on `consensus_ready=true` instead of treating
+`get_network_type` reachability as readiness.
+
+### 5) `get_snapshot_info`
+
+Returns metadata for the current stable snapshot.
+
+Example result:
+
+```json
+{
+  "stable_height": 812345,
+  "stable_block_hash": "000000...",
+  "latest_block_commit": "4f7c...",
+  "stable_lag": 0,
+  "balance_history_api_version": "1.0.0",
+  "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+  "commit_protocol_version": "1.0.0",
+  "commit_hash_algo": "sha256"
+}
+```
+
+When the stable snapshot is not yet complete, this method now returns the
+shared consensus error `SNAPSHOT_NOT_READY` with structured JSON `data`.
+
+### 6) `get_address_balance`
 
 Queries balance history for one script hash.
 
@@ -95,22 +128,55 @@ Notes:
 
 - Empty range (`start == end`) returns `[]`.
 - If no data exists for the address, service returns a zero entry: `block_height=0, delta=0, balance=0`.
+- If `block_height` or `block_range` exceeds current `stable_height`, the
+  method returns shared consensus error `HEIGHT_NOT_SYNCED`.
 
-### 5) `get_addresses_balances`
+### 7) `get_addresses_balances`
 
 Batch version of `get_address_balance`.
 
 - Input: `script_hashes[]` plus optional `block_height` / `block_range`.
 - Output: 2D array, outer order matches input `script_hashes` order.
+- Height/range validation matches `get_address_balance`, including
+  `HEIGHT_NOT_SYNCED` for future stable heights.
 
-### 6) `stop`
+### 8) `stop`
 
 Sends shutdown signal to service for graceful stop.
 
 ## Error Handling
 
-- Internal failures are returned as JSON-RPC `InternalError`.
-- RPC clients should log `method`, parameter summary, and raw error payload for troubleshooting.
+- Transport-level issues still use JSON-RPC standard errors such as `InvalidParams`
+  and `InternalError`.
+- Consensus-sensitive query failures are being migrated to the shared BTC-side
+  error contract. Currently adopted here:
+  - `HEIGHT_NOT_SYNCED` (`-32040`)
+  - `SNAPSHOT_NOT_READY` (`-32041`)
+- These errors include structured `data` with fields such as:
+  - `service`
+  - `requested_height`
+  - `upstream_stable_height`
+  - `consensus_ready`
+  - `actual_state`
+
+Example:
+
+```json
+{
+  "code": -32040,
+  "message": "HEIGHT_NOT_SYNCED",
+  "data": {
+    "service": "balance-history",
+    "requested_height": 900130,
+    "upstream_stable_height": 900123,
+    "consensus_ready": false,
+    "actual_state": {
+      "stable_height": 900123,
+      "stable_block_hash": "000000..."
+    }
+  }
+}
+```
 
 ## curl Examples
 
