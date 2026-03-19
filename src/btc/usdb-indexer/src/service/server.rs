@@ -13,7 +13,8 @@ use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 use usdb_util::{
-    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, LocalStateActiveBalanceSnapshot,
+    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+    ConsensusSnapshotIdentity, ConsensusStateReference, LocalStateActiveBalanceSnapshot,
     LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
     USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id, build_local_state_commit,
     build_system_state_id,
@@ -191,11 +192,170 @@ impl UsdbIndexerRpcServer {
         }
     }
 
+    /// Convert a shared consensus error code plus structured context into a
+    /// stable JSON-RPC server error payload that downstream validators can
+    /// machine-parse without depending on free-form text.
+    fn to_consensus_error(code: ConsensusRpcErrorCode, data: ConsensusRpcErrorData) -> JsonError {
+        JsonError {
+            code: ErrorCode::ServerError(code.code()),
+            message: code.as_str().to_string(),
+            data: Some(serde_json::to_value(data).unwrap_or_else(|e| {
+                json!({
+                    "service": USDB_INDEXER_SERVICE_NAME,
+                    "detail": format!("Failed to serialize structured consensus error data: {}", e),
+                })
+            })),
+        }
+    }
+
     fn synced_height(&self) -> Result<Option<u32>, JsonError> {
         self.indexer
             .miner_pass_storage()
             .get_synced_btc_block_height()
             .map_err(Self::to_internal_error)
+    }
+
+    /// Build the current externally visible state reference that is attached to
+    /// consensus-facing RPC errors. This lets callers compare the service's
+    /// actual state with the state they expected to query against.
+    fn build_consensus_state_reference(
+        &self,
+        snapshot: Option<&IndexerSnapshotInfo>,
+        local_state: Option<&LocalStateCommitInfo>,
+        system_state: Option<&SystemStateInfo>,
+    ) -> ConsensusStateReference {
+        ConsensusStateReference {
+            snapshot_id: snapshot.map(|value| value.snapshot_id.clone()),
+            stable_height: snapshot.map(|value| value.balance_history_stable_height),
+            stable_block_hash: snapshot.map(|value| value.stable_block_hash.clone()),
+            balance_history_api_version: snapshot
+                .map(|value| value.consensus_identity.balance_history_api_version.clone()),
+            balance_history_semantics_version: snapshot.map(|value| {
+                value
+                    .consensus_identity
+                    .balance_history_semantics_version
+                    .clone()
+            }),
+            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
+            local_state_commit: local_state.map(|value| value.local_state_commit.clone()),
+            system_state_id: system_state.map(|value| value.system_state_id.clone()),
+        }
+    }
+
+    /// Populate the structured `data` payload shared by consensus-facing RPC
+    /// errors. The payload is intentionally richer than the error code so
+    /// downstream consumers can distinguish not-ready, height drift, and state
+    /// mismatch cases without parsing the message string.
+    fn build_consensus_error_data(
+        &self,
+        requested_height: Option<u32>,
+        snapshot: Option<&IndexerSnapshotInfo>,
+        local_state: Option<&LocalStateCommitInfo>,
+        system_state: Option<&SystemStateInfo>,
+        detail: impl Into<Option<String>>,
+    ) -> ConsensusRpcErrorData {
+        let readiness = self.readiness_info().ok();
+        let mut data = ConsensusRpcErrorData::new(USDB_INDEXER_SERVICE_NAME);
+        data.requested_height = requested_height;
+        data.local_synced_height = readiness
+            .as_ref()
+            .and_then(|value| value.synced_block_height);
+        data.upstream_stable_height = readiness
+            .as_ref()
+            .and_then(|value| value.balance_history_stable_height);
+        data.consensus_ready = readiness.as_ref().map(|value| value.consensus_ready);
+        data.actual_state =
+            self.build_consensus_state_reference(snapshot, local_state, system_state);
+        data.detail = detail.into();
+        data
+    }
+
+    /// Require a durable adopted upstream snapshot anchor. Current-state RPCs
+    /// should fail closed when no snapshot anchor exists instead of returning a
+    /// loosely defined "empty" success value.
+    fn require_upstream_snapshot_info(&self) -> Result<IndexerSnapshotInfo, JsonError> {
+        let snapshot = self.upstream_snapshot_info()?;
+        snapshot.ok_or_else(|| {
+            Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotNotReady,
+                self.build_consensus_error_data(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("No adopted upstream snapshot anchor available".to_string()),
+                ),
+            )
+        })
+    }
+
+    /// Require the current local-state commit derived from the adopted
+    /// upstream snapshot. This keeps current-state RPCs aligned on a single
+    /// "not ready" contract when the durable state has not been established.
+    fn require_local_state_commit_info(&self) -> Result<LocalStateCommitInfo, JsonError> {
+        let snapshot = self.require_upstream_snapshot_info()?;
+        let local_state = self.build_local_state_commit_info_from_snapshot(&snapshot)?;
+        Ok(local_state)
+    }
+
+    /// Require the top-level system-state identity that ETHW-style consumers
+    /// use as the fixed external state reference for validation.
+    fn require_system_state_info(&self) -> Result<SystemStateInfo, JsonError> {
+        let snapshot = self.require_upstream_snapshot_info()?;
+        let local_state = self.build_local_state_commit_info_from_snapshot(&snapshot)?;
+        Ok(self.build_system_state_info_from_local_state(&local_state))
+    }
+
+    /// Validate a caller-supplied height against the current durable synced
+    /// height and return the exact height the query is allowed to read. This
+    /// fails with a structured consensus error instead of silently clamping or
+    /// falling back, because consensus-sensitive callers must know whether they
+    /// are reading the requested historical state or not.
+    fn resolve_height_with_consensus_error(
+        &self,
+        requested: Option<u32>,
+    ) -> Result<u32, JsonError> {
+        let snapshot = self.upstream_snapshot_info()?;
+        let local_state = snapshot.as_ref().and_then(|snapshot| {
+            self.build_local_state_commit_info_from_snapshot(snapshot)
+                .ok()
+        });
+        let system_state = local_state
+            .as_ref()
+            .map(|local_state| self.build_system_state_info_from_local_state(local_state));
+
+        let synced_height = self.synced_height()?;
+        let synced_height = synced_height.ok_or_else(|| {
+            Self::to_consensus_error(
+                ConsensusRpcErrorCode::HeightNotSynced,
+                self.build_consensus_error_data(
+                    requested,
+                    snapshot.as_ref(),
+                    local_state.as_ref(),
+                    system_state.as_ref(),
+                    Some("No durable synced height available".to_string()),
+                ),
+            )
+        })?;
+
+        let resolved = requested.unwrap_or(synced_height);
+        if resolved > synced_height {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::HeightNotSynced,
+                self.build_consensus_error_data(
+                    Some(resolved),
+                    snapshot.as_ref(),
+                    local_state.as_ref(),
+                    system_state.as_ref(),
+                    Some(format!(
+                        "Requested height {} is above current synced height {}",
+                        resolved, synced_height
+                    )),
+                ),
+            ));
+        }
+
+        Ok(resolved)
     }
 
     fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
@@ -852,7 +1012,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>> {
-        self.upstream_snapshot_info()
+        Ok(Some(self.require_upstream_snapshot_info()?))
     }
 
     fn get_pass_block_commit(
@@ -878,11 +1038,11 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     }
 
     fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>> {
-        self.local_state_commit_info()
+        Ok(Some(self.require_local_state_commit_info()?))
     }
 
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>> {
-        self.system_state_info()
+        Ok(Some(self.require_system_state_info()?))
     }
 
     fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
@@ -1355,18 +1515,35 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetActiveBalanceSnapshotParams,
     ) -> JsonResult<RpcActiveBalanceSnapshot> {
-        let synced_height = self.resolve_height(Some(params.block_height))?;
-        let snapshot = self
+        let upstream_snapshot = self.upstream_snapshot_info()?;
+        let local_state = upstream_snapshot.as_ref().and_then(|snapshot| {
+            self.build_local_state_commit_info_from_snapshot(snapshot)
+                .ok()
+        });
+        let system_state = local_state
+            .as_ref()
+            .map(|local_state| self.build_system_state_info_from_local_state(local_state));
+        let requested_height =
+            self.resolve_height_with_consensus_error(Some(params.block_height))?;
+        let active_balance_snapshot = self
             .indexer
             .miner_pass_storage()
-            .get_active_balance_snapshot(synced_height)
+            .get_active_balance_snapshot(requested_height)
             .map_err(Self::to_internal_error)?;
 
-        let Some(snapshot) = snapshot else {
-            return Err(Self::to_business_error(
-                ERR_SNAPSHOT_NOT_FOUND,
-                "SNAPSHOT_NOT_FOUND",
-                json!({"block_height": synced_height}),
+        let Some(snapshot) = active_balance_snapshot else {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::NoRecord,
+                self.build_consensus_error_data(
+                    Some(requested_height),
+                    upstream_snapshot.as_ref(),
+                    local_state.as_ref(),
+                    system_state.as_ref(),
+                    Some(format!(
+                        "No active balance snapshot recorded at exact height {}",
+                        requested_height
+                    )),
+                ),
             ));
         };
 
@@ -1429,9 +1606,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
-        LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
-        SystemStateIdentity, ToUSDBScriptHash, USDBScriptHash, build_local_state_commit,
-        build_system_state_id,
+        ConsensusRpcErrorCode, ConsensusRpcErrorData, LocalStateActiveBalanceSnapshot,
+        LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
+        ToUSDBScriptHash, USDBScriptHash, build_local_state_commit, build_system_state_id,
     };
 
     fn test_root_dir(tag: &str) -> PathBuf {
@@ -1633,6 +1810,11 @@ mod tests {
             .unwrap();
     }
 
+    fn decode_consensus_error_data(err: &JsonError) -> ConsensusRpcErrorData {
+        serde_json::from_value(err.data.clone().expect("missing structured error data"))
+            .expect("invalid structured error data")
+    }
+
     #[test]
     fn test_get_snapshot_info_success() {
         let (server, root_dir) = build_server("snapshot_info", 120);
@@ -1694,6 +1876,30 @@ mod tests {
             snapshot.snapshot_id,
             build_consensus_snapshot_id(&snapshot.consensus_identity)
         );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_snapshot_info_returns_snapshot_not_ready_when_anchor_missing() {
+        let (server, root_dir) = build_server("snapshot_info_not_ready", 120);
+
+        let err = server.get_snapshot_info().unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(
+            err.message,
+            ConsensusRpcErrorCode::SnapshotNotReady.as_str()
+        );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.actual_state.snapshot_id, None);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -2075,6 +2281,55 @@ mod tests {
     }
 
     #[test]
+    fn test_get_local_state_commit_info_returns_snapshot_not_ready_when_anchor_missing() {
+        let (server, root_dir) =
+            build_server_with_genesis("local_state_commit_not_ready", 120, 100);
+
+        let err = server.get_local_state_commit_info().unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(
+            err.message,
+            ConsensusRpcErrorCode::SnapshotNotReady.as_str()
+        );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.actual_state.local_state_commit, None);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_system_state_info_returns_snapshot_not_ready_when_anchor_missing() {
+        let (server, root_dir) = build_server_with_genesis("system_state_not_ready", 120, 100);
+
+        let err = server.get_system_state_info().unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(
+            err.message,
+            ConsensusRpcErrorCode::SnapshotNotReady.as_str()
+        );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.actual_state.system_state_id, None);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_local_state_commit_info_uses_latest_pass_commit_at_or_before_synced_height() {
         let (server, root_dir) =
             build_server_with_genesis("local_state_commit_latest_pass", 125, 100);
@@ -2132,6 +2387,62 @@ mod tests {
                 active_address_count: 3,
             })
         );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_active_balance_snapshot_returns_height_not_synced_for_future_height() {
+        let (server, root_dir) =
+            build_server_with_genesis("active_balance_future_height", 120, 100);
+        seed_upstream_anchor(&server, 120);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(120, 5_000, 2)
+            .unwrap();
+
+        let err = server
+            .get_active_balance_snapshot(GetActiveBalanceSnapshotParams { block_height: 121 })
+            .unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HeightNotSynced.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, ConsensusRpcErrorCode::HeightNotSynced.as_str());
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.requested_height, Some(121));
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.upstream_stable_height, Some(120));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_active_balance_snapshot_returns_no_record_at_valid_height() {
+        let (server, root_dir) = build_server_with_genesis("active_balance_no_record", 120, 100);
+        seed_upstream_anchor(&server, 120);
+
+        let err = server
+            .get_active_balance_snapshot(GetActiveBalanceSnapshotParams { block_height: 120 })
+            .unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::NoRecord.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, ConsensusRpcErrorCode::NoRecord.as_str());
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.upstream_stable_height, Some(120));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

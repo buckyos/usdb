@@ -206,11 +206,39 @@
 
 返回 `usdb-indexer` 已持久化提交的最新高度（SQLite savepoint commit 后高度）。
 
+### 5) `get_snapshot_info`
+
+返回当前 adopted upstream snapshot 元数据。
+
+说明：
+
+- 成功时返回当前本地采用的 `balance-history` snapshot 信息；
+- 若当前还没有 adopted upstream snapshot anchor，则返回共享共识错误 `SNAPSHOT_NOT_READY`；
+- 这条接口描述的是当前本地 adopted 的 upstream snapshot，不是按历史高度回放的 state ref。
+
+### 6) `get_local_state_commit_info`
+
+返回当前 locally durable core-state commit。
+
+说明：
+
+- 成功时返回 `local_state_commit` 与组成它的结构化字段；
+- 若当前还没有可用的 adopted snapshot/local state，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
+
+### 7) `get_system_state_info`
+
+返回当前 top-level system state id。
+
+说明：
+
+- 成功时返回 `system_state_id` 及其 identity；
+- 若当前还没有完整的 current local/system state，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
+
 ---
 
 ## 5.2 矿工证（Pass）查询
 
-### 5) `get_pass_snapshot`
+### 8) `get_pass_snapshot`
 
 按 inscription 查询某高度快照。
 
@@ -229,7 +257,7 @@
 - 静态字段来自 `miner_passes`（`mint_owner/eth_main/prev/invalid_*`）。
 - 若 `at_height` 为空，则自动使用 `synced_block_height` 并返回 `resolved_height`。
 
-### 6) `get_pass_history`
+### 9) `get_pass_history`
 
 查询某 inscription 的历史事件流。
 
@@ -252,7 +280,7 @@
 - `order` 仅允许 `asc` / `desc`。
 - `page` 从 `0` 开始。
 
-### 7) `get_active_passes_at_height`
+### 10) `get_active_passes_at_height`
 
 查询某高度活跃矿工证集合（历史视图）。
 
@@ -285,7 +313,7 @@
 
 - 固定按 `(block_height DESC, event_id DESC)`。
 
-### 8) `get_pass_stats_at_height`
+### 11) `get_pass_stats_at_height`
 
 查询某高度下的 pass 状态聚合统计（历史视图）。
 
@@ -311,7 +339,7 @@
 }
 ```
 
-### 9) `get_owner_active_pass_at_height`
+### 12) `get_owner_active_pass_at_height`
 
 查询某地址在高度 `h` 是否有活跃矿工证（按历史视图）。
 
@@ -330,7 +358,7 @@
 - `PassSnapshot`：存在唯一活跃 pass
 - 若出现多条，返回 `DUPLICATE_ACTIVE_OWNER`（硬错误）
 
-### 10) `get_invalid_passes`
+### 13) `get_invalid_passes`
 
 查询无效 mint 记录，便于外部排障。
 
@@ -356,7 +384,7 @@
 
 ## 5.3 能量查询
 
-### 11) `get_pass_energy`
+### 14) `get_pass_energy`
 
 查询某 inscription 在目标高度的能量快照。
 
@@ -375,7 +403,7 @@
 - `exact`：仅接受该高度存在记录
 - `at_or_before`：返回 `<= block_height` 的最近记录（推荐默认）
 
-### 12) `get_pass_energy_range`
+### 15) `get_pass_energy_range`
 
 查询某 inscription 在区间内的能量记录（用于可视化时间线）。
 
@@ -400,7 +428,7 @@
 - `total`：闭区间内总记录数（用于分页）。
 - `items`：当前页记录。
 
-### 13) `get_pass_energy_leaderboard`
+### 16) `get_pass_energy_leaderboard`
 
 查询某高度 pass 的能量排行榜（按 `energy DESC`）。
 
@@ -443,7 +471,7 @@
 
 ## 5.4 活跃地址余额快照
 
-### 14) `get_active_balance_snapshot`
+### 17) `get_active_balance_snapshot`
 
 查询指定高度快照（精确高度）。
 
@@ -455,9 +483,14 @@
 }
 ```
 
-返回：`ActiveBalanceSnapshot` 或 `SNAPSHOT_NOT_FOUND`。
+返回：`ActiveBalanceSnapshot`。
 
-### 15) `get_latest_active_balance_snapshot`
+错误：
+
+- 若 `block_height > synced_block_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`
+- 若高度合法，但该高度没有 exact active balance snapshot，返回共享共识错误 `NO_RECORD`
+
+### 18) `get_latest_active_balance_snapshot`
 
 查询最近一次已落库快照。
 
@@ -465,17 +498,57 @@
 
 ## 5.5 管理
 
-### 16) `stop`
+### 19) `stop`
 
 触发索引器优雅停止（建议默认仅 localhost 可访问）。
 
 ---
 
-## 6. 错误码（业务层）
+## 6. 错误码
+
+### 6.1 共享共识错误（跨服务）
+
+当前 `usdb-indexer` 已开始接入共享共识错误契约：
+
+- `-32040 HEIGHT_NOT_SYNCED`
+- `-32041 SNAPSHOT_NOT_READY`
+- `-32047 NO_RECORD`
+
+这些错误会携带结构化 `data`，包含：
+
+- `service`
+- `requested_height`
+- `local_synced_height`
+- `upstream_stable_height`
+- `consensus_ready`
+- `actual_state`
+
+示例：
+
+```json
+{
+  "code": -32041,
+  "message": "SNAPSHOT_NOT_READY",
+  "data": {
+    "service": "usdb-indexer",
+    "requested_height": null,
+    "local_synced_height": 900123,
+    "upstream_stable_height": 900123,
+    "consensus_ready": false,
+    "actual_state": {
+      "snapshot_id": null,
+      "local_state_commit": null,
+      "system_state_id": null
+    },
+    "detail": "No adopted upstream snapshot anchor available"
+  }
+}
+```
+
+### 6.2 业务层错误
 
 除标准 JSON-RPC 错误外，建议统一扩展：
 
-- `-32010 HEIGHT_NOT_SYNCED`
 - `-32011 PASS_NOT_FOUND`
 - `-32012 ENERGY_NOT_FOUND`
 - `-32013 SNAPSHOT_NOT_FOUND`
@@ -488,11 +561,11 @@
 
 ```json
 {
-  "code": -32010,
-  "message": "HEIGHT_NOT_SYNCED",
+  "code": -32011,
+  "message": "PASS_NOT_FOUND",
   "data": {
-    "requested_height": 900500,
-    "synced_height": 900123
+    "inscription_id": "txidi0",
+    "resolved_height": 900123
   }
 }
 ```

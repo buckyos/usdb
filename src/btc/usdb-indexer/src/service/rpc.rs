@@ -619,6 +619,9 @@ pub trait UsdbIndexerRpc {
     fn get_synced_block_height(&self) -> JsonResult<Option<u64>>;
 
     /// Returns the current upstream snapshot metadata.
+    ///
+    /// Returns shared consensus error `SNAPSHOT_NOT_READY` when no adopted
+    /// upstream snapshot anchor is currently available.
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<Option<IndexerSnapshotInfo>>;
 
@@ -630,10 +633,17 @@ pub trait UsdbIndexerRpc {
     ) -> JsonResult<Option<PassBlockCommitInfo>>;
 
     /// Returns the current locally durable core-state commit.
+    ///
+    /// Returns shared consensus error `SNAPSHOT_NOT_READY` when the node does
+    /// not yet have a complete adopted upstream snapshot anchor from which the
+    /// current local state can be derived.
     #[rpc(name = "get_local_state_commit_info")]
     fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>>;
 
     /// Returns the top-level system-state id for downstream consumers.
+    ///
+    /// Returns shared consensus error `SNAPSHOT_NOT_READY` when the node does
+    /// not yet have a complete current local/system state to expose.
     #[rpc(name = "get_system_state_info")]
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>>;
 
@@ -696,6 +706,10 @@ pub trait UsdbIndexerRpc {
     fn get_invalid_passes(&self, params: GetInvalidPassesParams) -> JsonResult<InvalidPassesPage>;
 
     /// Returns active-balance snapshot at exact height.
+    ///
+    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when `block_height`
+    /// exceeds current local durable sync progress, and `NO_RECORD` when the
+    /// height is valid but no exact active-balance snapshot exists there.
     #[rpc(name = "get_active_balance_snapshot")]
     fn get_active_balance_snapshot(
         &self,

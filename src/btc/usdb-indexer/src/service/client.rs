@@ -2,6 +2,7 @@ use super::rpc::*;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use usdb_util::ConsensusRpcErrorData;
 
 /// JSON-RPC client for querying and controlling `usdb-indexer`.
 ///
@@ -10,6 +11,19 @@ use serde_json::{Value, json};
 pub struct RpcClient {
     url: String,
     client: Client,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcEnvelope<T> {
+    result: Option<T>,
+    error: Option<RpcErrorPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RpcErrorPayload {
+    code: i64,
+    message: String,
+    data: Option<Value>,
 }
 
 impl RpcClient {
@@ -439,7 +453,7 @@ impl RpcClient {
             "id": 1
         });
 
-        let resp: Value = self
+        let resp: RpcEnvelope<T> = self
             .client
             .post(&self.url)
             .json(&request)
@@ -464,25 +478,106 @@ impl RpcClient {
                 msg
             })?;
 
-        if let Some(err) = resp.get("error") {
-            let msg = format!(
-                "USDB indexer RPC returned error: method={}, url={}, error={:?}, response={:?}",
-                method, self.url, err, resp
-            );
+        if let Some(err) = resp.error {
+            let msg = self.format_rpc_error(method, &err);
             error!("{}", msg);
             return Err(msg);
         }
 
-        serde_json::from_value(resp["result"].clone()).map_err(|e| {
+        resp.result.ok_or_else(|| {
             let msg = format!(
-                "Failed to deserialize usdb-indexer RPC result: method={}, url={}, error={}, response={:?}",
-                method, self.url, e, resp
+                "USDB indexer RPC response missing both result and error: method={}, url={}",
+                method, self.url
             );
             error!("{}", msg);
             msg
         })
     }
+
+    fn format_rpc_error(&self, method: &str, err: &RpcErrorPayload) -> String {
+        let mut msg = format!(
+            "USDB indexer RPC returned error: method={}, url={}, code={}, message={}",
+            method, self.url, err.code, err.message
+        );
+
+        if let Some(data) = &err.data {
+            if let Ok(structured) = serde_json::from_value::<ConsensusRpcErrorData>(data.clone()) {
+                msg.push_str(&format!(
+                    ", service={}, requested_height={:?}, local_synced_height={:?}, upstream_stable_height={:?}, consensus_ready={:?}, detail={:?}, actual_state={:?}",
+                    structured.service,
+                    structured.requested_height,
+                    structured.local_synced_height,
+                    structured.upstream_stable_height,
+                    structured.consensus_ready,
+                    structured.detail,
+                    structured.actual_state,
+                ));
+            } else {
+                msg.push_str(&format!(", data={}", data));
+            }
+        }
+
+        msg
+    }
 }
 
 /// Shared `Arc` wrapper type for `RpcClient`.
 pub type RpcClientRef = std::sync::Arc<RpcClient>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_format_rpc_error_with_structured_consensus_data() {
+        let client = RpcClient {
+            url: "http://127.0.0.1:28020".to_string(),
+            client: Client::new(),
+        };
+        let msg = client.format_rpc_error(
+            "get_system_state_info",
+            &RpcErrorPayload {
+                code: -32041,
+                message: "SNAPSHOT_NOT_READY".to_string(),
+                data: Some(json!({
+                    "service": "usdb-indexer",
+                    "requested_height": 120,
+                    "local_synced_height": 120,
+                    "upstream_stable_height": 120,
+                    "consensus_ready": false,
+                    "expected_state": {},
+                    "actual_state": {
+                        "snapshot_id": "aa"
+                    },
+                    "detail": "No adopted upstream snapshot anchor available"
+                })),
+            },
+        );
+
+        assert!(msg.contains("method=get_system_state_info"));
+        assert!(msg.contains("code=-32041"));
+        assert!(msg.contains("message=SNAPSHOT_NOT_READY"));
+        assert!(msg.contains("service=usdb-indexer"));
+        assert!(msg.contains("requested_height=Some(120)"));
+    }
+
+    #[test]
+    fn test_format_rpc_error_with_unstructured_data_falls_back_to_json() {
+        let client = RpcClient {
+            url: "http://127.0.0.1:28020".to_string(),
+            client: Client::new(),
+        };
+        let msg = client.format_rpc_error(
+            "get_active_balance_snapshot",
+            &RpcErrorPayload {
+                code: -32047,
+                message: "NO_RECORD".to_string(),
+                data: Some(json!({"foo": "bar"})),
+            },
+        );
+
+        assert!(msg.contains("method=get_active_balance_snapshot"));
+        assert!(msg.contains("data={\"foo\":\"bar\"}"));
+    }
+}
