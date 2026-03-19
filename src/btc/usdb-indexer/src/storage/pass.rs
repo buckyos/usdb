@@ -232,6 +232,16 @@ impl MinerPassStorage {
                 commit_hash_algo TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS balance_history_snapshot_history (
+                block_height INTEGER PRIMARY KEY,
+                stable_block_hash TEXT NOT NULL,
+                latest_block_commit TEXT NOT NULL,
+                stable_lag INTEGER NOT NULL,
+                commit_protocol_version TEXT NOT NULL,
+                commit_hash_algo TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
             ",
         )
         .map_err(|e| {
@@ -624,6 +634,63 @@ impl MinerPassStorage {
             BALANCE_HISTORY_SNAPSHOT_HEIGHT_KEY,
             snapshot.stable_height as i64,
         )?;
+        Self::upsert_balance_history_snapshot_history_with_conn(
+            conn,
+            snapshot.stable_height,
+            &stable_block_hash,
+            &latest_block_commit,
+            snapshot.stable_lag,
+            &snapshot.commit_protocol_version,
+            &snapshot.commit_hash_algo,
+        )?;
+
+        Ok(())
+    }
+
+    fn upsert_balance_history_snapshot_history_with_conn(
+        conn: &Connection,
+        block_height: u32,
+        stable_block_hash: &str,
+        latest_block_commit: &str,
+        stable_lag: u32,
+        commit_protocol_version: &str,
+        commit_hash_algo: &str,
+    ) -> Result<(), String> {
+        conn.execute(
+            "
+            INSERT INTO balance_history_snapshot_history (
+                block_height,
+                stable_block_hash,
+                latest_block_commit,
+                stable_lag,
+                commit_protocol_version,
+                commit_hash_algo
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(block_height) DO UPDATE SET
+                stable_block_hash = excluded.stable_block_hash,
+                latest_block_commit = excluded.latest_block_commit,
+                stable_lag = excluded.stable_lag,
+                commit_protocol_version = excluded.commit_protocol_version,
+                commit_hash_algo = excluded.commit_hash_algo;
+            ",
+            rusqlite::params![
+                block_height as i64,
+                stable_block_hash,
+                latest_block_commit,
+                stable_lag as i64,
+                commit_protocol_version,
+                commit_hash_algo,
+            ],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to upsert balance-history snapshot history at height {}: {}",
+                block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
 
         Ok(())
     }
@@ -871,6 +938,19 @@ impl MinerPassStorage {
             msg
         })?;
 
+        tx.execute(
+            "DELETE FROM balance_history_snapshot_history WHERE block_height > ?1;",
+            rusqlite::params![target_height as i64],
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to delete balance-history snapshot history after rollback target height {}: {}",
+                target_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
         tx.execute("DELETE FROM miner_passes;", []).map_err(|e| {
             let msg = format!(
                 "Failed to clear miner pass current state before rollback to height {}: {}",
@@ -1079,6 +1159,93 @@ impl MinerPassStorage {
 
         Ok(Some(BalanceHistorySnapshotAnchor {
             stable_height: stable_height as u32,
+            stable_block_hash,
+            latest_block_commit,
+            stable_lag: stable_lag as u32,
+            commit_protocol_version,
+            commit_hash_algo,
+        }))
+    }
+
+    pub fn get_balance_history_snapshot_anchor_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<BalanceHistorySnapshotAnchor>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT
+                    block_height,
+                    stable_block_hash,
+                    latest_block_commit,
+                    stable_lag,
+                    commit_protocol_version,
+                    commit_hash_algo
+                FROM balance_history_snapshot_history
+                WHERE block_height = ?1
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare balance-history snapshot history query at height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let row = stmt
+            .query_row(rusqlite::params![block_height as i64], |row| {
+                Ok((
+                    row.get::<usize, i64>(0)?,
+                    row.get::<usize, String>(1)?,
+                    row.get::<usize, String>(2)?,
+                    row.get::<usize, i64>(3)?,
+                    row.get::<usize, String>(4)?,
+                    row.get::<usize, String>(5)?,
+                ))
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query balance-history snapshot history at height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let Some((
+            stored_height,
+            stable_block_hash,
+            latest_block_commit,
+            stable_lag,
+            commit_protocol_version,
+            commit_hash_algo,
+        )) = row
+        else {
+            return Ok(None);
+        };
+
+        if stored_height < 0 {
+            let msg = format!(
+                "Invalid negative balance-history snapshot history height: {}",
+                stored_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if stable_lag < 0 {
+            let msg = format!(
+                "Invalid negative balance-history snapshot history stable lag at height {}: {}",
+                block_height, stable_lag
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(Some(BalanceHistorySnapshotAnchor {
+            stable_height: stored_height as u32,
             stable_block_hash,
             latest_block_commit,
             stable_lag: stable_lag as u32,
@@ -1576,6 +1743,46 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 return Err(msg);
             }
+        }
+
+        // Check 7: there must be no persisted upstream snapshot history after target height.
+        let mut snapshot_history_stmt = conn
+            .prepare(
+                "
+            SELECT
+                block_height
+            FROM balance_history_snapshot_history
+            WHERE block_height > ?1
+            ORDER BY block_height ASC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to validate future balance-history snapshot history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let future_snapshot_history_height: Option<i64> = snapshot_history_stmt
+            .query_row(rusqlite::params![block_height as i64], |row| row.get(0))
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query future balance-history snapshot history for target block height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if let Some(snapshot_history_height) = future_snapshot_history_height {
+            let msg = format!(
+                "Future balance-history snapshot history exists: target_block_height={}, snapshot_history_height={}",
+                block_height, snapshot_history_height
+            );
+            error!("{}", msg);
+            return Err(msg);
         }
 
         Ok(())
@@ -5293,6 +5500,66 @@ mod tests {
     }
 
     #[test]
+    fn test_balance_history_snapshot_history_round_trip_at_exact_height() {
+        let dir = test_data_dir("balance_history_snapshot_history_round_trip");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("11".repeat(32)),
+                latest_block_commit: Some("22".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_balance_history_snapshot_anchor(&BalanceHistorySnapshotInfo {
+                stable_height: 130,
+                stable_block_hash: Some("33".repeat(32)),
+                latest_block_commit: Some("44".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let anchor_120 = storage
+            .get_balance_history_snapshot_anchor_at_height(120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchor_120.stable_height, 120);
+        assert_eq!(anchor_120.stable_block_hash, "11".repeat(32));
+        assert_eq!(anchor_120.latest_block_commit, "22".repeat(32));
+
+        let anchor_130 = storage
+            .get_balance_history_snapshot_anchor_at_height(130)
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchor_130.stable_height, 130);
+        assert_eq!(anchor_130.stable_block_hash, "33".repeat(32));
+        assert_eq!(anchor_130.latest_block_commit, "44".repeat(32));
+
+        assert!(
+            storage
+                .get_balance_history_snapshot_anchor_at_height(121)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_block_commit_round_trip() {
         let dir = test_data_dir("pass_block_commit_round_trip");
         let storage = MinerPassStorage::new(&dir).unwrap();
@@ -5475,6 +5742,12 @@ mod tests {
         assert!(storage.get_active_balance_snapshot(130).unwrap().is_none());
         assert!(storage.get_pass_block_commit(120).unwrap().is_none());
         assert!(storage.get_pass_block_commit(130).unwrap().is_none());
+        assert!(
+            storage
+                .get_balance_history_snapshot_anchor_at_height(130)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             storage
                 .get_balance_history_snapshot_anchor()

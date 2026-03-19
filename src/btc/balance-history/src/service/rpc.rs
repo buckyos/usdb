@@ -4,7 +4,7 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use usdb_util::USDBScriptHash;
+use usdb_util::{ConsensusSnapshotIdentity, USDBScriptHash};
 
 /// Public RPC/API version of balance-history.
 ///
@@ -104,6 +104,40 @@ pub struct SnapshotInfo {
     /// Version of the balance-history commit protocol exposed by this service.
     pub commit_protocol_version: String,
     /// Hash algorithm used to build `latest_block_commit`.
+    pub commit_hash_algo: String,
+}
+
+/// Parameters for resolving the exact historical consensus state reference at one BTC height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetStateRefAtHeightParams {
+    /// Exact committed BTC block height whose historical state reference should be returned.
+    pub block_height: u32,
+}
+
+/// Historical consensus state reference for one exact balance-history height.
+///
+/// This is distinct from `get_snapshot_info`, which only reports the current
+/// stable head. ETHW-style validators use this structure to pin validation to
+/// one historical BTC state instead of whatever the current head happens to be.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalSnapshotStateRef {
+    /// Exact BTC block height whose stable state is being described.
+    pub block_height: u32,
+    /// Canonical stable BTC block hash recorded at `block_height`.
+    pub stable_block_hash: String,
+    /// Logical balance-history block commit recorded at `block_height`.
+    pub latest_block_commit: String,
+    /// Canonical consensus snapshot identity for this exact height.
+    pub consensus_identity: ConsensusSnapshotIdentity,
+    /// Canonical snapshot id derived from `consensus_identity`.
+    pub snapshot_id: String,
+    /// Hash algorithm used to derive `snapshot_id`.
+    pub snapshot_id_hash_algo: String,
+    /// Version tag of the consensus snapshot-id derivation rule.
+    pub snapshot_id_version: String,
+    /// Version of the balance-history block commit protocol.
+    pub commit_protocol_version: String,
+    /// Hash algorithm used by `latest_block_commit`.
     pub commit_hash_algo: String,
 }
 
@@ -233,6 +267,21 @@ pub trait BalanceHistoryRpc {
     /// from `get_network_type` or from free-form sync messages.
     #[rpc(name = "get_readiness")]
     fn get_readiness(&self) -> JsonResult<ReadinessInfo>;
+
+    /// Returns the exact historical consensus state reference at one BTC height.
+    ///
+    /// This endpoint is intended for downstream validators that must re-check a
+    /// block against the historical BTC state observed at height `block_height`,
+    /// not against the service's current head.
+    ///
+    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when `block_height`
+    /// is above the current stable height, and `SNAPSHOT_NOT_READY` when the
+    /// current stable view is not yet safe for consensus use.
+    #[rpc(name = "get_state_ref_at_height")]
+    fn get_state_ref_at_height(
+        &self,
+        params: GetStateRefAtHeightParams,
+    ) -> JsonResult<HistoricalSnapshotStateRef>;
 
     /// Returns logical block-commit metadata for one exact BTC block height.
     ///

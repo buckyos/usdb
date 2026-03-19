@@ -79,6 +79,12 @@ pub const LOCAL_STATE_COMMIT_VERSION: &str = "usdb-local-state:v1";
 pub const SYSTEM_STATE_ID_HASH_ALGO: &str = "sha256";
 /// Version tag of the canonical BTC-side system-state id serialization rule.
 pub const SYSTEM_STATE_ID_VERSION: &str = "btc-system-state:v1";
+/// Version of the usdb-index derived-state formula set that participates in
+/// BTC-side consensus snapshot identity calculation.
+pub const USDB_INDEX_FORMULA_VERSION: &str = "pass-energy-formula:v1";
+/// Version of the external usdb-index protocol contract shared across BTC-side
+/// services and downstream consumers such as ETHW.
+pub const USDB_INDEX_PROTOCOL_VERSION: &str = "1.0.0";
 /// Shared JSON-RPC error code returned when the requested height is not yet
 /// covered by the service's current durable or stable view.
 pub const CONSENSUS_RPC_ERR_HEIGHT_NOT_SYNCED: i64 = -32040;

@@ -202,7 +202,56 @@
 - 当 stable snapshot 尚不完整，例如 stable height 已存在，但 `stable_block_hash` 或 `latest_block_commit` 尚不可用时，返回共享共识错误 `SNAPSHOT_NOT_READY`；
 - 新的错误返回会携带结构化 `data`，其中包含当前 `stable_height`、`consensus_ready` 与 `actual_state`，供下游做自动判定。
 
-### 6) `get_address_balance`
+### 6) `get_state_ref_at_height`
+
+返回指定高度的历史 consensus state ref。
+
+请求：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "get_state_ref_at_height",
+  "params": [{
+    "block_height": 812345
+  }],
+  "id": 1
+}
+```
+
+结果示例：
+
+```json
+{
+  "block_height": 812345,
+  "stable_block_hash": "000000...",
+  "latest_block_commit": "4f7c...",
+  "consensus_identity": {
+    "source_chain": "BTC",
+    "network": "regtest",
+    "stable_height": 812345,
+    "stable_block_hash": "000000...",
+    "stable_lag": 0,
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "usdb_index_formula_version": "pass-energy-formula:v1",
+    "usdb_index_protocol_version": "1.0.0"
+  },
+  "snapshot_id": "....",
+  "snapshot_id_hash_algo": "sha256",
+  "snapshot_id_version": "btc-consensus-snapshot:v1",
+  "commit_protocol_version": "1.0.0",
+  "commit_hash_algo": "sha256"
+}
+```
+
+说明：
+
+- 这条接口回答的是“高度 `H` 的历史 state ref”，不是当前 head 的 snapshot；
+- 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
+- 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
+
+### 7) `get_address_balance`
 
 查询单个地址（script hash）余额历史。
 
@@ -278,7 +327,7 @@
 - 若目标地址暂无数据，返回默认零值记录（`block_height=0, delta=0, balance=0`）。
 - 当 `block_height` 或 `block_range` 超出当前 `stable_height` 时，返回共享共识错误 `HEIGHT_NOT_SYNCED`，而不是隐式回退到当前可用高度。
 
-### 7) `get_addresses_balances`
+### 8) `get_addresses_balances`
 
 批量查询多个地址余额历史。
 
@@ -341,7 +390,7 @@
 - `data.actual_state` 描述服务当时实际看到的 stable 视图；
 - 下游不应再仅靠错误字符串自由文本判断是否可重试或是否属于快照漂移。
 
-### 7) `stop`
+### 9) `stop`
 
 向服务发送停止信号，触发优雅退出。
 

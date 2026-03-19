@@ -1,4 +1,7 @@
-use super::rpc::{AddressBalance, BlockCommitInfo, ReadinessInfo, SnapshotInfo, UtxoInfo};
+use super::rpc::{
+    AddressBalance, BlockCommitInfo, GetStateRefAtHeightParams, HistoricalSnapshotStateRef,
+    ReadinessInfo, SnapshotInfo, UtxoInfo,
+};
 use crate::status::SyncStatus;
 use bitcoincore_rpc::bitcoin::OutPoint;
 use reqwest::Client;
@@ -64,6 +67,18 @@ impl RpcClient {
     pub async fn get_readiness(&self) -> Result<ReadinessInfo, String> {
         self.rpc_call::<ReadinessInfo>(&self.url, "get_readiness", json!([]))
             .await
+    }
+
+    pub async fn get_state_ref_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<HistoricalSnapshotStateRef, String> {
+        self.rpc_call::<HistoricalSnapshotStateRef>(
+            &self.url,
+            "get_state_ref_at_height",
+            json!([GetStateRefAtHeightParams { block_height }]),
+        )
+        .await
     }
 
     pub async fn get_block_commit(
@@ -194,7 +209,10 @@ impl RpcClient {
         }
 
         resp.result.ok_or_else(|| {
-            let msg = format!("RPC response for method {} missing both result and error", method);
+            let msg = format!(
+                "RPC response for method {} missing both result and error",
+                method
+            );
             log::error!("{}", msg);
             msg
         })

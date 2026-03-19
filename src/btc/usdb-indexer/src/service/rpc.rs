@@ -6,6 +6,8 @@ use usdb_util::{
     LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot,
     LocalStateCommitIdentity, LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO,
     SYSTEM_STATE_ID_VERSION, SystemStateIdentity,
+    USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
+    USDB_INDEX_PROTOCOL_VERSION as UTIL_USDB_INDEX_PROTOCOL_VERSION,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -25,8 +27,8 @@ pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 /// Business error code returned when internal state invariants are violated during RPC resolution.
 pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
-pub const USDB_INDEX_FORMULA_VERSION: &str = "pass-energy-formula:v1";
-pub const USDB_INDEX_PROTOCOL_VERSION: &str = "1.0.0";
+pub const USDB_INDEX_FORMULA_VERSION: &str = UTIL_USDB_INDEX_FORMULA_VERSION;
+pub const USDB_INDEX_PROTOCOL_VERSION: &str = UTIL_USDB_INDEX_PROTOCOL_VERSION;
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
 pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
 /// Version tag of the consensus snapshot-id derivation rule exposed by the RPC layer.
@@ -167,6 +169,31 @@ pub struct SystemStateInfo {
     pub system_state_id_hash_algo: String,
     /// Version tag of the system-state id derivation rule.
     pub system_state_id_version: String,
+}
+
+/// Parameters for resolving the historical state reference at one exact BTC height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetStateRefAtHeightParams {
+    /// Exact BTC block height whose locally durable historical state should be returned.
+    pub block_height: u32,
+}
+
+/// Historical `usdb-indexer` state reference reconstructed for one exact BTC height.
+///
+/// This object intentionally separates current-head introspection from
+/// historical validation: downstream consumers can pin validation to the exact
+/// upstream snapshot, local-state commit, and system-state id observed at one
+/// durable height without depending on the node's current head.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoricalStateRefInfo {
+    /// Exact BTC block height whose durable local state is being described.
+    pub block_height: u32,
+    /// Historical upstream snapshot view adopted at `block_height`.
+    pub snapshot_info: IndexerSnapshotInfo,
+    /// Historical locally durable core-state commit at `block_height`.
+    pub local_state_commit_info: LocalStateCommitInfo,
+    /// Historical top-level system-state id at `block_height`.
+    pub system_state_info: SystemStateInfo,
 }
 
 /// Machine-readable blockers that keep usdb-indexer from a stricter ready state.
@@ -646,6 +673,20 @@ pub trait UsdbIndexerRpc {
     /// not yet have a complete current local/system state to expose.
     #[rpc(name = "get_system_state_info")]
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>>;
+
+    /// Returns the exact historical upstream/local/system state reference at one BTC height.
+    ///
+    /// This endpoint is intended for downstream validators that need to
+    /// re-check a previously produced block against the historical BTC-side
+    /// state at `block_height`, not against the node's current head.
+    ///
+    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when `block_height`
+    /// exceeds current durable sync progress.
+    #[rpc(name = "get_state_ref_at_height")]
+    fn get_state_ref_at_height(
+        &self,
+        params: GetStateRefAtHeightParams,
+    ) -> JsonResult<HistoricalStateRefInfo>;
 
     /// Returns structured readiness state for liveness, local queries, and consensus use.
     ///

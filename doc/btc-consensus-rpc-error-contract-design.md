@@ -46,6 +46,10 @@
 - `SYSTEM_STATE_ID_MISMATCH`
 - `NO_RECORD`
 
+后续针对 ETHW 的历史验块场景，还需要补一类“历史 state ref 已不可重建/未保留”的错误。
+这类错误不属于当前第一阶段已落地集合，但应在后续阶段单独引入，不能混进
+`*_MISMATCH`。
+
 ### 2.3 业务域错误
 
 继续保留服务各自的业务错误，不强行统一，例如：
@@ -185,6 +189,57 @@
 
 本设计第一阶段先不把它编码进共享错误码集合，但后续开发历史 `state ref` 查询 RPC 时，应把这类错误单独拉出来，而不是混成 mismatch。
 
+### 6.4 ETHW 验块要求服务能回答“高度 H 的 state ref 是什么”
+
+当前第一阶段已经有这些状态对象：
+
+- `snapshot_id`
+- `local_state_commit`
+- `system_state_id`
+
+但当前接口仍然主要回答 **current-head view**：
+
+- `get_snapshot_info`
+- `get_local_state_commit_info`
+- `get_system_state_info`
+
+它们能够回答：
+
+- “服务当前 head 对应的状态是什么”
+
+却还不能直接回答：
+
+- “高度 `H` 对应的历史 `snapshot_id / local_state_commit / system_state_id` 是什么”
+
+而 ETHW 验块真正需要的是后者。
+
+典型流程：
+
+1. 矿工 A 在 BTC 高度 `H` 时读取：
+   - `snapshot_id`
+   - `system_state_id`
+   - 自己 pass 的 `energy/pass info`
+2. 矿工 A 产出 ETHW 区块，并把 `(H, snapshot_id, system_state_id, pass info)` 固定进区块。
+3. 其他矿工稍后校验该区块时，BTC 头部可能已经前进到 `H+1` 甚至更高。
+4. 校验方仍然需要查询 **高度 `H` 的历史 state ref**，再在这份历史状态下复查 pass 信息。
+
+因此后续必须补一层“历史 state ref 查询”能力，而不是让验证方直接读取当前 head 状态。
+
+### 6.5 历史 state ref 查询的判定顺序
+
+对未来的历史 `state ref` 查询 RPC，建议统一采用以下判定顺序：
+
+1. `requested_height > 当前 durable/stable 范围`
+   - 返回 `HEIGHT_NOT_SYNCED`
+2. `requested_height` 合法，但该高度历史 state ref 已不可重建或未保留
+   - 返回未来扩展错误，例如 `STATE_NOT_RETAINED` / `HISTORY_NOT_AVAILABLE`
+3. 能重建高度 `H` 的历史 state ref，但与调用方 `expected_state` 不一致
+   - 返回 `SNAPSHOT_ID_MISMATCH` / `LOCAL_STATE_COMMIT_MISMATCH` / `SYSTEM_STATE_ID_MISMATCH`
+4. 能重建且一致
+   - 返回成功结果
+
+这样可以避免把“服务没有这份历史数据”误判成“状态不匹配”。
+
 ## 7. 第一阶段实施范围
 
 本阶段只做两件事：
@@ -221,14 +276,29 @@
   - `get_system_state_info`
   - `get_active_balance_snapshot`
 
-同时开始设计历史 `state ref` 查询能力，至少要支持：
+同时冻结历史 `state ref` 查询设计，至少要支持：
 
 - 在 `requested_height = H` 上重建并返回 `snapshot_id / local_state_commit / system_state_id`
 - 让 ETHW 验块使用“区块声明的历史 state ref”进行校验，而不是读取当前 head 状态
 
+当前代码已经开始落第一版：
+
+- `balance-history.get_state_ref_at_height`
+- `usdb-indexer.get_state_ref_at_height`
+
+它们先解决“查询高度 `H` 的历史 state ref”这个基础能力；
+而 `expected_state` 的 `*_MISMATCH` 校验、以及 `STATE_NOT_RETAINED` 这类错误，
+仍属于下一阶段扩展。
+
 ### Phase 3
 
-补共享 helper：
+在 `balance-history / usdb-indexer` 中逐步实现：
+
+- 历史 `state ref` 查询 RPC
+- `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE` 这类错误
+- 基于 `expected_state` 的 `*_MISMATCH` 校验
+
+并补共享 helper：
 
 - 从 `ConsensusRpcErrorCode` 构造 JSON-RPC error
 - 从 `ConsensusQueryContext` 做 selector 校验

@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 use usdb_util::{
-    BALANCE_HISTORY_SERVICE_NAME, ConsensusRpcErrorCode, ConsensusRpcErrorData,
-    ConsensusStateReference,
+    BALANCE_HISTORY_SERVICE_NAME, CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION,
+    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+    ConsensusSnapshotIdentity, ConsensusStateReference, USDB_INDEX_FORMULA_VERSION,
+    USDB_INDEX_PROTOCOL_VERSION, build_consensus_snapshot_id,
 };
 
 // Public version string of the first balance-history block commit protocol.
@@ -165,6 +167,64 @@ impl BalanceHistoryRpcServer {
         })
     }
 
+    fn build_consensus_snapshot_identity(
+        &self,
+        stable_height: u32,
+        stable_block_hash: &str,
+    ) -> ConsensusSnapshotIdentity {
+        ConsensusSnapshotIdentity {
+            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+            network: self.config.btc.network().to_string(),
+            stable_height,
+            stable_block_hash: stable_block_hash.to_string(),
+            stable_lag: BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        }
+    }
+
+    fn build_state_ref_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<HistoricalSnapshotStateRef, JsonError> {
+        self.validate_requested_height(block_height)?;
+
+        let commit = self
+            .db
+            .get_block_commit(block_height)
+            .map_err(|e| {
+                Self::to_internal_error(format!(
+                    "Failed to get block commit while building state ref at height {}: {}",
+                    block_height, e
+                ))
+            })?
+            .ok_or_else(|| {
+                Self::to_internal_error(format!(
+                    "Missing block commit at height {} while building historical state ref",
+                    block_height
+                ))
+            })?;
+
+        let stable_block_hash = format!("{:x}", commit.btc_block_hash);
+        let consensus_identity =
+            self.build_consensus_snapshot_identity(block_height, &stable_block_hash);
+        let snapshot_id = build_consensus_snapshot_id(&consensus_identity);
+
+        Ok(HistoricalSnapshotStateRef {
+            block_height,
+            stable_block_hash,
+            latest_block_commit: encode_hex(&commit.block_commit),
+            consensus_identity,
+            snapshot_id,
+            snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
+            snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+        })
+    }
+
     fn build_consensus_state_reference(
         &self,
         snapshot: Option<&SnapshotInfo>,
@@ -173,15 +233,26 @@ impl BalanceHistoryRpcServer {
             return ConsensusStateReference::default();
         };
 
+        let snapshot_id =
+            snapshot
+                .stable_block_hash
+                .as_ref()
+                .map(|stable_block_hash| {
+                    build_consensus_snapshot_id(&self.build_consensus_snapshot_identity(
+                        snapshot.stable_height,
+                        stable_block_hash,
+                    ))
+                });
+
         ConsensusStateReference {
-            snapshot_id: None,
+            snapshot_id,
             stable_height: Some(snapshot.stable_height),
             stable_block_hash: snapshot.stable_block_hash.clone(),
             balance_history_api_version: Some(snapshot.balance_history_api_version.clone()),
             balance_history_semantics_version: Some(
                 snapshot.balance_history_semantics_version.clone(),
             ),
-            usdb_index_protocol_version: None,
+            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
             local_state_commit: None,
             system_state_id: None,
         }
@@ -394,6 +465,13 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             message: format!("Failed to build readiness info: {}", e),
             data: None,
         })
+    }
+
+    fn get_state_ref_at_height(
+        &self,
+        params: GetStateRefAtHeightParams,
+    ) -> JsonResult<HistoricalSnapshotStateRef> {
+        self.build_state_ref_at_height(params.block_height)
     }
 
     fn get_block_commit(&self, block_height: u32) -> JsonResult<Option<BlockCommitInfo>> {
@@ -752,6 +830,98 @@ mod tests {
         );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_success() {
+        let server = make_test_server("state_ref_at_height_success");
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let state_ref = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams { block_height: 12 })
+            .unwrap();
+        assert_eq!(state_ref.block_height, 12);
+        assert_eq!(
+            state_ref.stable_block_hash,
+            format!("{:x}", commit.btc_block_hash)
+        );
+        assert_eq!(
+            state_ref.latest_block_commit,
+            encode_hex(&commit.block_commit)
+        );
+        assert_eq!(state_ref.consensus_identity.stable_height, 12);
+        assert_eq!(
+            state_ref.consensus_identity.stable_block_hash,
+            format!("{:x}", commit.btc_block_hash)
+        );
+        assert_eq!(
+            state_ref.consensus_identity.balance_history_api_version,
+            BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            state_ref
+                .consensus_identity
+                .balance_history_semantics_version,
+            BALANCE_HISTORY_SEMANTICS_VERSION
+        );
+        assert_eq!(
+            state_ref.snapshot_id,
+            build_consensus_snapshot_id(&state_ref.consensus_identity)
+        );
+        assert_eq!(
+            state_ref.snapshot_id_hash_algo,
+            CONSENSUS_SNAPSHOT_ID_HASH_ALGO
+        );
+        assert_eq!(state_ref.snapshot_id_version, CONSENSUS_SNAPSHOT_ID_VERSION);
+        assert_eq!(state_ref.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
+        assert_eq!(state_ref.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_returns_height_not_synced_for_future_height() {
+        let server = make_test_server("state_ref_at_height_future");
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams { block_height: 13 })
+            .unwrap_err();
+        match err.code {
+            JsonErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HeightNotSynced.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, ConsensusRpcErrorCode::HeightNotSynced.as_str());
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(13));
+        assert_eq!(data.upstream_stable_height, Some(12));
+        assert_eq!(
+            data.actual_state.snapshot_id,
+            Some(build_consensus_snapshot_id(
+                &server
+                    .build_consensus_snapshot_identity(12, &format!("{:x}", commit.btc_block_hash))
+            ))
+        );
     }
 
     #[test]

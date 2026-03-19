@@ -69,6 +69,21 @@
 
 因此，后续共识化接口需要补一层历史 state ref 查询能力，而不仅仅是“返回当前 snapshot/system state”。
 
+更具体地说，当前这些接口：
+
+- `get_snapshot_info`
+- `get_local_state_commit_info`
+- `get_system_state_info`
+
+都只是 **current-head introspection**，只能回答“现在这台 `usdb-indexer` 的当前状态是什么”。
+
+它们不能单独满足 ETHW 验块，因为 ETHW 校验需要的是：
+
+- “高度 `H` 的历史 state ref 是什么”
+- “我拿区块里固定的 `(snapshot_id, system_state_id)` 去校验高度 `H`，是否仍然一致”
+
+所以 `v1` 当前态接口和后续历史 state ref 接口，在语义上必须明确分层。
+
 ---
 
 ## 4. 数据模型
@@ -145,6 +160,42 @@
   "active_address_count": 4321
 }
 ```
+
+## 4.6 HistoricalStateRef
+
+这是为 ETHW 验块补充的历史状态引用结构。第一版接口已经落地，
+用于回答“高度 `H` 上，这台服务承诺的历史 state ref 是什么”。
+
+当前第一版仍有边界：
+
+- 已支持 exact-height 历史 state ref 查询
+- 还未支持基于 `expected_state` 的 `*_MISMATCH` 校验
+- 还未单独区分 `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE`
+
+建议字段：
+
+```json
+{
+  "block_height": 900123,
+  "snapshot_info": {
+    "snapshot_id": "snapshot-...",
+    "balance_history_stable_height": 900123,
+    "stable_block_hash": "000000..."
+  },
+  "local_state_commit_info": {
+    "local_state_commit": "local-..."
+  },
+  "system_state_info": {
+    "system_state_id": "system-..."
+  }
+}
+```
+
+语义：
+
+- 表示“高度 `H` 上，这台服务可重建并承诺的历史 state ref”
+- 该对象将作为 ETHW 验块时的固定外部状态引用
+- 第一版实现通过一个包装对象把 `snapshot_info / local_state_commit_info / system_state_info` 固定到同一历史高度上
 
 ---
 
@@ -233,6 +284,44 @@
 
 - 成功时返回 `system_state_id` 及其 identity；
 - 若当前还没有完整的 current local/system state，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
+
+### 7.x) `get_state_ref_at_height`
+
+这条接口已作为第一版历史 state ref 查询落地。
+
+参数建议：
+
+```json
+{
+  "block_height": 900123
+}
+```
+
+返回建议：
+
+```json
+{
+  "block_height": 900123,
+  "snapshot_info": {
+    "snapshot_id": "snapshot-...",
+    "balance_history_stable_height": 900123,
+    "stable_block_hash": "000000..."
+  },
+  "local_state_commit_info": {
+    "local_state_commit": "local-..."
+  },
+  "system_state_info": {
+    "system_state_id": "system-..."
+  }
+}
+```
+
+当前语义：
+
+- 这是 **历史 state ref** 查询，不是当前 head 查询
+- BTC 头部即使已经前进，仍然应允许查询被保留窗口内的历史 state ref
+- 当前第一版返回该高度的历史 `snapshot_info / local_state_commit_info / system_state_info`
+- 后续 ETHW 验块应优先使用这条接口固定 `(height, state ref)`，再用相同上下文复查 pass/energy
 
 ---
 
@@ -544,6 +633,18 @@
   }
 }
 ```
+
+后续还需要再补一类共享错误：
+
+- `STATE_NOT_RETAINED` 或 `HISTORY_NOT_AVAILABLE`
+
+它的语义是：
+
+- 请求高度本身合法
+- 服务也不是 not-ready
+- 但对应高度的历史 state ref 已不再保留或无法重建
+
+这类情况不能混成 `*_MISMATCH`，否则 ETHW 验块会把“服务没有这份历史数据”误判成“区块记录的状态错误”。
 
 ### 6.2 业务层错误
 

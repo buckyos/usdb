@@ -129,6 +129,20 @@ impl RpcClient {
             .await
     }
 
+    /// Returns the exact historical upstream/local/system state reference at one BTC height.
+    pub async fn get_state_ref_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<HistoricalStateRefInfo, String> {
+        self.rpc_call::<HistoricalStateRefInfo>(
+            "get_state_ref_at_height",
+            json!([{
+                "block_height": block_height,
+            }]),
+        )
+        .await
+    }
+
     /// Returns structured readiness state for liveness, local queries, and consensus use.
     pub async fn get_readiness(&self) -> Result<ReadinessInfo, String> {
         self.rpc_call::<ReadinessInfo>("get_readiness", json!([]))

@@ -401,9 +401,55 @@ impl UsdbIndexerRpcServer {
         Ok(Some(snapshot))
     }
 
-    fn build_local_state_commit_info_from_snapshot(
+    fn upstream_snapshot_info_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<IndexerSnapshotInfo, JsonError> {
+        let anchor = self
+            .indexer
+            .miner_pass_storage()
+            .get_balance_history_snapshot_anchor_at_height(block_height)
+            .map_err(Self::to_internal_error)?
+            .ok_or_else(|| {
+                Self::to_internal_error(format!(
+                    "Missing balance-history snapshot history at height {} while building historical state ref",
+                    block_height
+                ))
+            })?;
+
+        let consensus_identity = ConsensusSnapshotIdentity {
+            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+            network: self.config.config().bitcoin.network().to_string(),
+            stable_height: anchor.stable_height,
+            stable_block_hash: anchor.stable_block_hash.clone(),
+            stable_lag: anchor.stable_lag,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
+            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
+
+        let mut snapshot = IndexerSnapshotInfo {
+            local_synced_block_height: block_height,
+            balance_history_stable_height: anchor.stable_height,
+            stable_block_hash: anchor.stable_block_hash,
+            latest_block_commit: anchor.latest_block_commit,
+            consensus_identity,
+            commit_protocol_version: anchor.commit_protocol_version,
+            commit_hash_algo: anchor.commit_hash_algo,
+            snapshot_id: String::new(),
+            snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
+            snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
+        };
+        snapshot.snapshot_id = build_consensus_snapshot_id(&snapshot.consensus_identity);
+        Ok(snapshot)
+    }
+
+    fn build_local_state_commit_info_at_height(
         &self,
         snapshot: &IndexerSnapshotInfo,
+        require_latest_balance_snapshot_consistency: bool,
     ) -> Result<LocalStateCommitInfo, JsonError> {
         let synced_height = snapshot.local_synced_block_height;
         let latest_pass_block_commit = self
@@ -422,10 +468,12 @@ impl UsdbIndexerRpcServer {
         let latest_active_balance_snapshot = if synced_height < genesis_block_height {
             None
         } else {
-            self.indexer
-                .miner_pass_storage()
-                .assert_balance_snapshot_consistency(synced_height, genesis_block_height)
-                .map_err(Self::to_internal_error)?;
+            if require_latest_balance_snapshot_consistency {
+                self.indexer
+                    .miner_pass_storage()
+                    .assert_balance_snapshot_consistency(synced_height, genesis_block_height)
+                    .map_err(Self::to_internal_error)?;
+            }
 
             let snapshot = self
                 .indexer
@@ -434,7 +482,7 @@ impl UsdbIndexerRpcServer {
                 .map_err(Self::to_internal_error)?
                 .ok_or_else(|| {
                     Self::to_internal_error(format!(
-                        "Missing active balance snapshot at synced height {} after consistency check",
+                        "Missing active balance snapshot at height {} while building local state commit",
                         synced_height
                     ))
                 })?;
@@ -464,6 +512,13 @@ impl UsdbIndexerRpcServer {
             local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
             local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
         })
+    }
+
+    fn build_local_state_commit_info_from_snapshot(
+        &self,
+        snapshot: &IndexerSnapshotInfo,
+    ) -> Result<LocalStateCommitInfo, JsonError> {
+        self.build_local_state_commit_info_at_height(snapshot, true)
     }
 
     // Build a locally durable core-state commit without changing the meaning of snapshot_info.
@@ -505,6 +560,24 @@ impl UsdbIndexerRpcServer {
         Ok(Some(
             self.build_system_state_info_from_local_state(&local_state),
         ))
+    }
+
+    fn build_historical_state_ref_info(
+        &self,
+        block_height: u32,
+    ) -> Result<HistoricalStateRefInfo, JsonError> {
+        let snapshot_info = self.upstream_snapshot_info_at_height(block_height)?;
+        let local_state_commit_info =
+            self.build_local_state_commit_info_at_height(&snapshot_info, false)?;
+        let system_state_info =
+            self.build_system_state_info_from_local_state(&local_state_commit_info);
+
+        Ok(HistoricalStateRefInfo {
+            block_height,
+            snapshot_info,
+            local_state_commit_info,
+            system_state_info,
+        })
     }
 
     fn readiness_info(&self) -> Result<ReadinessInfo, JsonError> {
@@ -1043,6 +1116,15 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_system_state_info(&self) -> JsonResult<Option<SystemStateInfo>> {
         Ok(Some(self.require_system_state_info()?))
+    }
+
+    fn get_state_ref_at_height(
+        &self,
+        params: GetStateRefAtHeightParams,
+    ) -> JsonResult<HistoricalStateRefInfo> {
+        let requested_height =
+            self.resolve_height_with_consensus_error(Some(params.block_height))?;
+        self.build_historical_state_ref_info(requested_height)
     }
 
     fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
@@ -2275,6 +2357,143 @@ mod tests {
             system.system_state_id,
             build_system_state_id(&system.system_state_identity)
         );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_success() {
+        let (server, root_dir) = build_server_with_genesis("state_ref_at_height_success", 130, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("11".repeat(32)),
+                latest_block_commit: Some("22".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 130,
+                stable_block_hash: Some("33".repeat(32)),
+                latest_block_commit: Some("44".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "55".repeat(32),
+                mutation_root: "66".repeat(32),
+                block_commit: "77".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(120, 5_000, 2)
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(130, 7_000, 3)
+            .unwrap();
+
+        let state_ref = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams { block_height: 120 })
+            .unwrap();
+        assert_eq!(state_ref.block_height, 120);
+        assert_eq!(state_ref.snapshot_info.local_synced_block_height, 120);
+        assert_eq!(state_ref.snapshot_info.balance_history_stable_height, 120);
+        assert_eq!(state_ref.snapshot_info.stable_block_hash, "11".repeat(32));
+        assert_eq!(state_ref.snapshot_info.latest_block_commit, "22".repeat(32));
+        assert_eq!(
+            state_ref.snapshot_info.snapshot_id,
+            build_consensus_snapshot_id(&state_ref.snapshot_info.consensus_identity)
+        );
+        assert_eq!(
+            state_ref.local_state_commit_info.local_synced_block_height,
+            120
+        );
+        assert_eq!(
+            state_ref.local_state_commit_info.latest_pass_block_commit,
+            Some(LocalStatePassCommitIdentity {
+                block_height: 120,
+                block_commit: "77".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+        );
+        assert_eq!(
+            state_ref
+                .local_state_commit_info
+                .latest_active_balance_snapshot,
+            Some(LocalStateActiveBalanceSnapshot {
+                block_height: 120,
+                total_balance: 5_000,
+                active_address_count: 2,
+            })
+        );
+        assert_eq!(
+            state_ref.local_state_commit_info.local_state_commit,
+            build_local_state_commit(&state_ref.local_state_commit_info.local_state_identity)
+        );
+        assert_eq!(
+            state_ref.system_state_info.system_state_id,
+            build_system_state_id(&state_ref.system_state_info.system_state_identity)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_returns_height_not_synced_for_future_height() {
+        let (server, root_dir) = build_server_with_genesis("state_ref_at_height_future", 120, 100);
+        seed_upstream_anchor(&server, 120);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(120, 5_000, 2)
+            .unwrap();
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams { block_height: 121 })
+            .unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HeightNotSynced.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(err.message, ConsensusRpcErrorCode::HeightNotSynced.as_str());
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
+        assert_eq!(data.requested_height, Some(121));
+        assert_eq!(data.local_synced_height, Some(120));
+        assert_eq!(data.upstream_stable_height, Some(120));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
