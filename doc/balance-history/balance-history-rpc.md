@@ -123,7 +123,51 @@
 }
 ```
 
-### 4) `get_address_balance`
+### 4) `get_readiness`
+
+返回结构化 readiness 状态，用于区分：
+
+1. RPC 是否可访问；
+2. 普通查询是否可用；
+3. 当前 stable snapshot 是否可被下游用于共识消费。
+
+请求：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "get_readiness",
+  "params": [],
+  "id": 1
+}
+```
+
+结果示例：
+
+```json
+{
+  "service": "balance-history",
+  "rpc_alive": true,
+  "query_ready": true,
+  "consensus_ready": false,
+  "phase": "Indexing",
+  "current": 800000,
+  "total": 900000,
+  "message": "Syncing blocks 799001 to 900000",
+  "stable_height": 800000,
+  "stable_block_hash": "....",
+  "latest_block_commit": "....",
+  "blockers": ["CatchingUp"]
+}
+```
+
+说明：
+
+1. 不应再用 `get_network_type` 代替 readiness 判断；
+2. `rpc_alive=true` 只说明服务活着，不说明快照适合共识消费；
+3. 下游若要做严格 gating，应使用 `consensus_ready=true`。
+
+### 5) `get_address_balance`
 
 查询单个地址（script hash）余额历史。
 
@@ -198,7 +242,7 @@
 - 当 `block_range` 为空区间（`start == end`）时返回空数组 `[]`。
 - 若目标地址暂无数据，返回默认零值记录（`block_height=0, delta=0, balance=0`）。
 
-### 5) `get_addresses_balances`
+### 6) `get_addresses_balances`
 
 批量查询多个地址余额历史。
 
@@ -214,7 +258,7 @@
 
 结果：二维数组，外层顺序与 `script_hashes` 输入顺序一致，每个元素是对应地址的 `AddressBalance[]`。
 
-### 6) `stop`
+### 7) `stop`
 
 向服务发送停止信号，触发优雅退出。
 

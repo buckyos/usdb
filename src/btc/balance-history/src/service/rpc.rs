@@ -1,4 +1,4 @@
-use crate::status::SyncStatus;
+use crate::status::{SyncPhase, SyncStatus};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
@@ -107,6 +107,61 @@ pub struct SnapshotInfo {
     pub commit_hash_algo: String,
 }
 
+/// Machine-readable blockers that keep balance-history from being consensus-ready.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReadinessBlocker {
+    /// RPC listener is not yet serving requests, so even liveness is not established.
+    RpcNotListening,
+    /// Service is still in early bootstrap before any query-capable state exists.
+    Initializing,
+    /// Service is running a load/install path that should not be treated as ready.
+    Loading,
+    /// Service is still catching up to the current stable target height.
+    CatchingUp,
+    /// Durable state is being rolled back or resumed after an interrupted rollback.
+    RollbackInProgress,
+    /// Shutdown has been requested and the node is draining toward exit.
+    ShutdownRequested,
+    /// Stable height exists but its canonical BTC block hash is not yet available.
+    StableBlockHashMissing,
+    /// Stable height exists but the logical block commit at that height is not yet available.
+    LatestBlockCommitMissing,
+}
+
+/// Structured readiness state for both local monitoring and downstream gating.
+///
+/// `rpc_alive` is plain liveness. `query_ready` means the service is in a state
+/// where ordinary DB-backed queries are expected to work. `consensus_ready`
+/// is stricter and only becomes true when the currently advertised stable
+/// snapshot is complete and the service is not in a transient recovery state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadinessInfo {
+    /// Fixed service identifier, currently `balance-history`.
+    pub service: String,
+    /// True once the RPC server is listening and able to answer requests.
+    pub rpc_alive: bool,
+    /// True when ordinary query traffic is allowed.
+    pub query_ready: bool,
+    /// True only when the current stable snapshot is safe for downstream consensus use.
+    pub consensus_ready: bool,
+    /// Current sync phase from the high-level sync status tracker.
+    pub phase: SyncPhase,
+    /// Current progress counter mirrored from sync status.
+    pub current: u64,
+    /// Total progress target mirrored from sync status.
+    pub total: u64,
+    /// Optional human-readable status message.
+    pub message: Option<String>,
+    /// Current stable height, when it can be read from the local DB.
+    pub stable_height: Option<u32>,
+    /// Stable BTC block hash at `stable_height`, when available.
+    pub stable_block_hash: Option<String>,
+    /// Latest logical block commit at `stable_height`, when available.
+    pub latest_block_commit: Option<String>,
+    /// Machine-readable reasons keeping the service from a stricter ready state.
+    pub blockers: Vec<ReadinessBlocker>,
+}
+
 /// Logical block-commit metadata recorded for one exact BTC block height.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockCommitInfo {
@@ -167,6 +222,14 @@ pub trait BalanceHistoryRpc {
     /// recorded at that height, and the latest logical block-commit metadata.
     #[rpc(name = "get_snapshot_info")]
     fn get_snapshot_info(&self) -> JsonResult<SnapshotInfo>;
+
+    /// Returns structured readiness state for liveness, query serving, and consensus use.
+    ///
+    /// This endpoint is intentionally stricter than a simple "RPC reachable"
+    /// probe: callers must use `consensus_ready` instead of inferring readiness
+    /// from `get_network_type` or from free-form sync messages.
+    #[rpc(name = "get_readiness")]
+    fn get_readiness(&self) -> JsonResult<ReadinessInfo>;
 
     /// Returns logical block-commit metadata for one exact BTC block height.
     ///

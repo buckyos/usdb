@@ -98,6 +98,7 @@ impl BalanceHistoryRpcServer {
             assert!(current.is_none(), "RPC server is already running");
             *current = Some(handle);
         }
+        ret.status.set_rpc_alive(true);
 
         Ok(ret)
     }
@@ -113,15 +114,87 @@ impl BalanceHistoryRpcServer {
 
             tokio::time::sleep(Duration::from_millis(500)).await;
             info!("RPC server closed.");
+            self.status.set_rpc_alive(false);
         } else {
             warn!("RPC server handle not found.");
         }
+    }
+
+    fn readiness_info(&self) -> Result<ReadinessInfo, String> {
+        let sync_status = self.status.get_status();
+        let runtime = self.status.get_runtime_readiness();
+        let stable_height = self.db.get_btc_block_height()?;
+        let latest_commit = self.db.get_block_commit(stable_height)?;
+        let stable_block_hash = latest_commit
+            .as_ref()
+            .map(|entry| format!("{:x}", entry.btc_block_hash));
+        let latest_block_commit = latest_commit
+            .as_ref()
+            .map(|entry| encode_hex(&entry.block_commit));
+
+        let mut blockers = Vec::new();
+        if !runtime.rpc_alive {
+            blockers.push(ReadinessBlocker::RpcNotListening);
+        }
+
+        match sync_status.phase {
+            crate::status::SyncPhase::Initializing => blockers.push(ReadinessBlocker::Initializing),
+            crate::status::SyncPhase::Loading => blockers.push(ReadinessBlocker::Loading),
+            crate::status::SyncPhase::Indexing | crate::status::SyncPhase::Synced => {}
+        }
+
+        if runtime.rollback_in_progress {
+            blockers.push(ReadinessBlocker::RollbackInProgress);
+        }
+        if runtime.shutdown_requested {
+            blockers.push(ReadinessBlocker::ShutdownRequested);
+        }
+        if sync_status.phase == crate::status::SyncPhase::Indexing
+            && sync_status.total > 0
+            && sync_status.current < sync_status.total
+        {
+            blockers.push(ReadinessBlocker::CatchingUp);
+        }
+        if stable_block_hash.is_none() {
+            blockers.push(ReadinessBlocker::StableBlockHashMissing);
+        }
+        if latest_block_commit.is_none() {
+            blockers.push(ReadinessBlocker::LatestBlockCommitMissing);
+        }
+
+        let query_ready = runtime.rpc_alive
+            && !runtime.rollback_in_progress
+            && !runtime.shutdown_requested
+            && !matches!(
+                sync_status.phase,
+                crate::status::SyncPhase::Initializing | crate::status::SyncPhase::Loading
+            );
+        let consensus_ready = query_ready
+            && sync_status.current >= sync_status.total
+            && stable_block_hash.is_some()
+            && latest_block_commit.is_some();
+
+        Ok(ReadinessInfo {
+            service: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+            rpc_alive: runtime.rpc_alive,
+            query_ready,
+            consensus_ready,
+            phase: sync_status.phase,
+            current: sync_status.current,
+            total: sync_status.total,
+            message: sync_status.message,
+            stable_height: Some(stable_height),
+            stable_block_hash,
+            latest_block_commit,
+            blockers,
+        })
     }
 }
 
 impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     fn stop(&self) -> JsonResult<()> {
         info!("Received stop command via RPC.");
+        self.status.set_shutdown_requested(true);
         if let Err(e) = self.shutdown_tx.send(()) {
             let msg = format!("Failed to send shutdown signal: {}", e);
             log::error!("{}", msg);
@@ -198,6 +271,14 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
             commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+        })
+    }
+
+    fn get_readiness(&self) -> JsonResult<ReadinessInfo> {
+        self.readiness_info().map_err(|e| JsonError {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to build readiness info: {}", e),
+            data: None,
         })
     }
 
@@ -522,6 +603,134 @@ mod tests {
         );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
+    }
+
+    #[test]
+    fn test_get_readiness_defaults_to_not_ready_before_rpc_alive() {
+        let server = make_test_server("readiness_defaults");
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(!readiness.rpc_alive);
+        assert!(!readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert_eq!(readiness.phase, crate::status::SyncPhase::Initializing);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::RpcNotListening)
+        );
+        assert!(readiness.blockers.contains(&ReadinessBlocker::Initializing));
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::StableBlockHashMissing)
+        );
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::LatestBlockCommitMissing)
+        );
+    }
+
+    #[test]
+    fn test_get_readiness_consensus_ready_when_caught_up_with_complete_snapshot() {
+        let server = make_test_server("readiness_ready");
+        server.status.set_rpc_alive(true);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Indexing, None);
+        server.status.update_total(12, None);
+        server.status.update_current(12, None);
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .unwrap();
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(readiness.consensus_ready);
+        assert_eq!(readiness.phase, crate::status::SyncPhase::Indexing);
+        assert_eq!(readiness.current, 12);
+        assert_eq!(readiness.total, 12);
+        assert_eq!(readiness.stable_height, Some(12));
+        assert_eq!(
+            readiness.stable_block_hash,
+            Some(format!("{:x}", commit.btc_block_hash))
+        );
+        assert_eq!(
+            readiness.latest_block_commit,
+            Some(encode_hex(&commit.block_commit))
+        );
+        assert!(readiness.blockers.is_empty());
+    }
+
+    #[test]
+    fn test_get_readiness_not_consensus_ready_while_catching_up() {
+        let server = make_test_server("readiness_catching_up");
+        server.status.set_rpc_alive(true);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Indexing, None);
+        server.status.update_total(20, None);
+        server.status.update_current(12, None);
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
+            .unwrap();
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(readiness.blockers.contains(&ReadinessBlocker::CatchingUp));
+    }
+
+    #[test]
+    fn test_get_readiness_not_query_ready_during_rollback() {
+        let server = make_test_server("readiness_rollback");
+        server.status.set_rpc_alive(true);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Indexing, None);
+        server.status.update_total(12, None);
+        server.status.update_current(12, None);
+        server.status.set_rollback_in_progress(true);
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
+            .unwrap();
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(!readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::RollbackInProgress)
+        );
     }
 
     #[test]

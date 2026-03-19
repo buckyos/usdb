@@ -263,7 +263,12 @@ impl BalanceHistoryIndexer {
     }
 
     fn resume_pending_rollback_if_needed(&self) -> Result<bool, String> {
+        if self.db.is_rollback_in_progress()? {
+            self.output.status().set_rollback_in_progress(true);
+        }
+
         let resumed = self.db.resume_rollback_if_needed()?;
+        self.output.status().set_rollback_in_progress(false);
         if resumed {
             warn!("Resumed pending balance-history rollback from persisted meta state");
             self.output
@@ -531,7 +536,12 @@ impl BalanceHistoryIndexer {
             current_height, ancestor_height
         ));
 
-        self.db.rollback_to_block_height(ancestor_height)?;
+        self.output.status().set_rollback_in_progress(true);
+        let rollback_result = self.db.rollback_to_block_height(ancestor_height);
+        if rollback_result.is_ok() {
+            self.output.status().set_rollback_in_progress(false);
+        }
+        rollback_result?;
         self.utxo_cache.clear();
         self.balance_cache.clear();
 

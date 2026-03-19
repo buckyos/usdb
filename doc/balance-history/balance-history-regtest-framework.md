@@ -56,6 +56,7 @@
 14. CLI 复用辅助：可在自定义 `root_dir` 下直接调用 `balance-history` 的 snapshot 子命令，避免脚本重复拼接 `cargo run`。
 15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖任意 `[sync]` 配置项，例如 `max_sync_block_height`、`undo_retention_blocks`、`local_loader_threshold`。
 16. Snapshot 辅助读取：可直接读取 `stable_height`、`stable_block_hash`、`stable_lag`，方便校验协议层稳定视图。
+17. readiness 辅助等待：可显式等待 `get_readiness().consensus_ready = true`，避免把 RPC 可连接误当成快照已可用于共识。
 
 ## 关闭与查询约束
 

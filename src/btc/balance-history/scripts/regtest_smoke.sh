@@ -55,6 +55,7 @@ main() {
   fi
 
   regtest_wait_until_synced_height "$TARGET_HEIGHT"
+  regtest_wait_balance_history_consensus_ready
 
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
     local receiver_address txid expected_height script_hash balance_resp got_balance expected_sat
@@ -69,6 +70,7 @@ main() {
 
     expected_height=$((TARGET_HEIGHT + 1))
     regtest_wait_until_synced_height "$expected_height"
+    regtest_wait_balance_history_consensus_ready
 
     script_hash="$(regtest_address_to_script_hash "$receiver_address")"
     balance_resp="$(regtest_rpc_call_balance_history "get_address_balance" "[{\"script_hash\":\"${script_hash}\",\"block_height\":${expected_height},\"block_range\":null}]")"

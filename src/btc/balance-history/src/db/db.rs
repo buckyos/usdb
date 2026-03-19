@@ -1433,6 +1433,10 @@ impl BalanceHistoryDB {
         Ok(true)
     }
 
+    pub fn is_rollback_in_progress(&self) -> Result<bool, String> {
+        Ok(self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? == Some(1))
+    }
+
     pub fn prune_undo_before_height(&self, min_retained_height: u32) -> Result<usize, String> {
         if self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? == Some(1) {
             warn!(

@@ -84,6 +84,7 @@ main() {
   regtest_log "Observed protocol stable_lag=${stable_lag}"
   expected_stable_height=$((TARGET_TIP_HEIGHT - stable_lag))
   regtest_wait_until_synced_height "$expected_stable_height"
+  regtest_wait_balance_history_consensus_ready
   assert_snapshot_matches_expected "$TARGET_TIP_HEIGHT" "$expected_stable_height" "$stable_lag"
 
   regtest_log "Mining ${EXTRA_BLOCKS} extra blocks to verify the service keeps exposing tip-lag"
@@ -93,6 +94,7 @@ main() {
   new_tip_height=$((TARGET_TIP_HEIGHT + EXTRA_BLOCKS))
   new_stable_height=$((new_tip_height - stable_lag))
   regtest_wait_until_synced_height "$new_stable_height"
+  regtest_wait_balance_history_consensus_ready
   assert_snapshot_matches_expected "$new_tip_height" "$new_stable_height" "$stable_lag"
 
   regtest_log "Stable lag smoke test succeeded."

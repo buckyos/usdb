@@ -1,4 +1,4 @@
-use super::rpc::{AddressBalance, BlockCommitInfo, SnapshotInfo, UtxoInfo};
+use super::rpc::{AddressBalance, BlockCommitInfo, ReadinessInfo, SnapshotInfo, UtxoInfo};
 use crate::status::SyncStatus;
 use bitcoincore_rpc::bitcoin::OutPoint;
 use reqwest::Client;
@@ -45,6 +45,11 @@ impl RpcClient {
     // Read the current stable snapshot metadata, including the latest logical block commit.
     pub async fn get_snapshot_info(&self) -> Result<SnapshotInfo, String> {
         self.rpc_call::<SnapshotInfo>(&self.url, "get_snapshot_info", json!([]))
+            .await
+    }
+
+    pub async fn get_readiness(&self) -> Result<ReadinessInfo, String> {
+        self.rpc_call::<ReadinessInfo>(&self.url, "get_readiness", json!([]))
             .await
     }
 

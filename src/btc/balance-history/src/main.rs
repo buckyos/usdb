@@ -231,12 +231,15 @@ async fn main_run(root_dir: PathBuf, max_block_height: Option<u32>, skip_process
 
     tokio::select! {
         _ = sigint => {
+            output.status().set_shutdown_requested(true);
             output.println("Received Ctrl+C, shutting down...");
         }
         _ = sigterm => {
+            output.status().set_shutdown_requested(true);
             output.println("Received SIGTERM, shutting down...");
         }
         _ = shutdown_rx.changed() => {
+            output.status().set_shutdown_requested(true);
             output.println("Shutdown signal received from RPC, shutting down...");
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }

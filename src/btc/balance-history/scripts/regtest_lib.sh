@@ -252,6 +252,28 @@ regtest_wait_balance_history_rpc_ready() {
   exit 1
 }
 
+regtest_wait_balance_history_consensus_ready() {
+  regtest_log "Waiting for balance-history consensus readiness"
+
+  local start_ts now readiness_resp consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    readiness_resp="$(regtest_rpc_call_balance_history "get_readiness" "[]")"
+    consensus_ready="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("consensus_ready") else "0")')"
+    if [[ "$consensus_ready" == "1" ]]; then
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Consensus readiness timeout, last response: ${readiness_resp}"
+      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 regtest_start_bitcoind() {
   regtest_log "Starting bitcoind regtest on rpcport=${BTC_RPC_PORT}, port=${BTC_P2P_PORT}, bin=${BITCOIND_BIN}"
   "$BITCOIND_BIN" \
