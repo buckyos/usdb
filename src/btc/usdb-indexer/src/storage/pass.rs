@@ -5005,6 +5005,11 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("ab".repeat(32)),
                 latest_block_commit: Some("cd".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
                 commit_protocol_version: "1.0.0".to_string(),
                 commit_hash_algo: "sha256".to_string(),
             })
@@ -5113,6 +5118,11 @@ mod tests {
                 stable_height: 321,
                 stable_block_hash: Some("ab".repeat(32)),
                 latest_block_commit: Some("cd".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
                 commit_protocol_version: "1.0.0".to_string(),
                 commit_hash_algo: "sha256".to_string(),
             })
@@ -5227,6 +5237,11 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
                 commit_protocol_version: "1.0.0".to_string(),
                 commit_hash_algo: "sha256".to_string(),
             })

@@ -68,6 +68,10 @@ impl MockStatus {
             stable_height: latest_height,
             stable_block_hash: Some("11".repeat(32)),
             latest_block_commit: Some("22".repeat(32)),
+            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
             commit_protocol_version: "1.0.0".to_string(),
             commit_hash_algo: "sha256".to_string(),
         };
@@ -660,6 +664,10 @@ fn snapshot_from_commit(commit: &balance_history::BlockCommitInfo) -> BalanceHis
         stable_height: commit.block_height,
         stable_block_hash: Some(commit.btc_block_hash.clone()),
         latest_block_commit: Some(commit.block_commit.clone()),
+        stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+        balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+        balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+            .to_string(),
         commit_protocol_version: commit.commit_protocol_version.clone(),
         commit_hash_algo: commit.commit_hash_algo.clone(),
     }

@@ -6,6 +6,26 @@ use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use usdb_util::USDBScriptHash;
 
+/// Public RPC/API version of balance-history.
+///
+/// Bump this when the externally visible JSON-RPC contract changes in an
+/// incompatible way, such as response-shape changes or renamed fields.
+pub const BALANCE_HISTORY_API_VERSION: &str = "1.0.0";
+/// Version tag of the balance-history query semantics contract.
+///
+/// This describes how callers should interpret historical balance lookups.
+/// The current value explicitly means:
+/// - balance snapshot queries use at-or-before semantics
+/// - delta queries use exact-height semantics
+pub const BALANCE_HISTORY_SEMANTICS_VERSION: &str = "balance-snapshot-at-or-before:v1";
+/// Fixed BTC lag promised by balance-history before a height is advertised as stable.
+///
+/// `0` means the current implementation exposes its latest committed height
+/// directly as `stable_height`, without waiting for extra confirmation blocks.
+/// Once this becomes a non-zero protocol rule, it must change consistently on
+/// every node of the same network/protocol version.
+pub const BALANCE_HISTORY_STABLE_LAG: u32 = 0;
+
 /// Query parameters for a single script-hash balance request.
 ///
 /// The request supports exactly one of the optional selectors below in normal
@@ -68,6 +88,20 @@ pub struct SnapshotInfo {
     pub stable_block_hash: Option<String>,
     /// Latest logical block commit at `stable_height`, encoded as lowercase hex.
     pub latest_block_commit: Option<String>,
+    /// Fixed stable lag promised by this balance-history instance for the current network.
+    ///
+    /// Downstream services must treat this as part of the stable-view identity,
+    /// not as a local tuning parameter.
+    pub stable_lag: u32,
+    /// Public API version of balance-history snapshot/query RPCs.
+    ///
+    /// This tracks response-contract compatibility, not commit-hash rules.
+    pub balance_history_api_version: String,
+    /// Version of the balance-history query semantics contract.
+    ///
+    /// This tells downstream consumers how to interpret point-in-time balance
+    /// queries and whether the service uses exact-height or at-or-before rules.
+    pub balance_history_semantics_version: String,
     /// Version of the balance-history commit protocol exposed by this service.
     pub commit_protocol_version: String,
     /// Hash algorithm used to build `latest_block_commit`.

@@ -7,12 +7,14 @@ use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use ord::InscriptionId;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
+use usdb_util::{
+    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, build_consensus_snapshot_id,
+};
 
 fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -21,26 +23,6 @@ fn encode_hex(bytes: &[u8]) -> String {
         let _ = write!(&mut output, "{:02x}", byte);
     }
     output
-}
-
-fn build_snapshot_id(network: &str, snapshot: &IndexerSnapshotInfo) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(SNAPSHOT_ID_VERSION.as_bytes());
-    hasher.update(b"|");
-    hasher.update(network.as_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.local_synced_block_height.to_be_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.balance_history_stable_height.to_be_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.stable_block_hash.as_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.latest_block_commit.as_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.commit_protocol_version.as_bytes());
-    hasher.update(b"|");
-    hasher.update(snapshot.commit_hash_algo.as_bytes());
-    encode_hex(&hasher.finalize())
 }
 
 #[derive(Clone, Debug)]
@@ -221,6 +203,18 @@ impl UsdbIndexerRpcServer {
             return Ok(None);
         };
 
+        let consensus_identity = ConsensusSnapshotIdentity {
+            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+            network: self.config.config().bitcoin.network().to_string(),
+            stable_height: anchor.stable_height,
+            stable_block_hash: anchor.stable_block_hash.clone(),
+            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
+            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
         let mut snapshot = IndexerSnapshotInfo {
             local_synced_block_height: self
                 .indexer
@@ -231,16 +225,14 @@ impl UsdbIndexerRpcServer {
             balance_history_stable_height: anchor.stable_height,
             stable_block_hash: anchor.stable_block_hash,
             latest_block_commit: anchor.latest_block_commit,
+            consensus_identity,
             commit_protocol_version: anchor.commit_protocol_version,
             commit_hash_algo: anchor.commit_hash_algo,
             snapshot_id: String::new(),
             snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
             snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
         };
-        snapshot.snapshot_id = build_snapshot_id(
-            &self.config.config().bitcoin.network().to_string(),
-            &snapshot,
-        );
+        snapshot.snapshot_id = build_consensus_snapshot_id(&snapshot.consensus_identity);
         Ok(Some(snapshot))
     }
 
@@ -1311,6 +1303,11 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
                 commit_protocol_version: "1.0.0".to_string(),
                 commit_hash_algo: "sha256".to_string(),
             })
@@ -1321,14 +1318,102 @@ mod tests {
         assert_eq!(snapshot.balance_history_stable_height, 120);
         assert_eq!(snapshot.stable_block_hash, "aa".repeat(32));
         assert_eq!(snapshot.latest_block_commit, "bb".repeat(32));
+        assert_eq!(
+            snapshot.consensus_identity.source_chain,
+            CONSENSUS_SOURCE_CHAIN_BTC
+        );
+        assert_eq!(snapshot.consensus_identity.stable_height, 120);
+        assert_eq!(
+            snapshot.consensus_identity.stable_block_hash,
+            "aa".repeat(32)
+        );
+        assert_eq!(
+            snapshot.consensus_identity.balance_history_api_version,
+            balance_history::BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            snapshot
+                .consensus_identity
+                .balance_history_semantics_version,
+            balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+        );
+        assert_eq!(
+            snapshot.consensus_identity.usdb_index_formula_version,
+            USDB_INDEX_FORMULA_VERSION
+        );
+        assert_eq!(
+            snapshot.consensus_identity.usdb_index_protocol_version,
+            USDB_INDEX_PROTOCOL_VERSION
+        );
         assert_eq!(snapshot.commit_protocol_version, "1.0.0");
         assert_eq!(snapshot.commit_hash_algo, "sha256");
         assert_eq!(snapshot.snapshot_id_hash_algo, SNAPSHOT_ID_HASH_ALGO);
         assert_eq!(snapshot.snapshot_id_version, SNAPSHOT_ID_VERSION);
-        assert!(!snapshot.snapshot_id.is_empty());
+        assert_eq!(
+            snapshot.snapshot_id,
+            build_consensus_snapshot_id(&snapshot.consensus_identity)
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_snapshot_info_snapshot_id_ignores_local_synced_height() {
+        let (server_a, root_dir_a) = build_server("snapshot_id_ignore_local_a", 120);
+        server_a
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let (server_b, root_dir_b) = build_server("snapshot_id_ignore_local_b", 135);
+        server_b
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server_b
+            .indexer
+            .miner_pass_storage()
+            .update_synced_btc_block_height(135)
+            .unwrap();
+
+        let snapshot_a = server_a.get_snapshot_info().unwrap().unwrap();
+        let snapshot_b = server_b.get_snapshot_info().unwrap().unwrap();
+        assert_ne!(
+            snapshot_a.local_synced_block_height,
+            snapshot_b.local_synced_block_height
+        );
+        assert_eq!(snapshot_a.consensus_identity, snapshot_b.consensus_identity);
+        assert_eq!(snapshot_a.snapshot_id, snapshot_b.snapshot_id);
+
+        drop(server_a);
+        drop(server_b);
+        std::fs::remove_dir_all(root_dir_a).unwrap();
+        std::fs::remove_dir_all(root_dir_b).unwrap();
     }
 
     #[test]

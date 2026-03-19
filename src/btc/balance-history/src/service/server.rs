@@ -193,6 +193,9 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             latest_block_commit: latest_commit
                 .as_ref()
                 .map(|entry| encode_hex(&entry.block_commit)),
+            stable_lag: BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
             commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
         })
@@ -396,7 +399,10 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     fn get_live_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
         let utxo = self.db.get_utxo(&outpoint).map_err(|e| JsonError {
             code: ErrorCode::InternalError,
-            message: format!("Failed to get utxo {}:{}: {}", outpoint.txid, outpoint.vout, e),
+            message: format!(
+                "Failed to get utxo {}:{}: {}",
+                outpoint.txid, outpoint.vout, e
+            ),
             data: None,
         })?;
 
@@ -413,7 +419,9 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry};
+    use crate::db::{
+        BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry,
+    };
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::BlockHash;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
@@ -451,7 +459,10 @@ mod tests {
     }
 
     fn seed_balance_entries(server: &BalanceHistoryRpcServer, entries: &[BalanceHistoryEntry]) {
-        server.db.put_address_history_async(&entries.to_vec()).unwrap();
+        server
+            .db
+            .put_address_history_async(&entries.to_vec())
+            .unwrap();
     }
 
     #[test]
@@ -462,6 +473,15 @@ mod tests {
         assert_eq!(snapshot.stable_height, 0);
         assert_eq!(snapshot.stable_block_hash, None);
         assert_eq!(snapshot.latest_block_commit, None);
+        assert_eq!(snapshot.stable_lag, BALANCE_HISTORY_STABLE_LAG);
+        assert_eq!(
+            snapshot.balance_history_api_version,
+            BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            snapshot.balance_history_semantics_version,
+            BALANCE_HISTORY_SEMANTICS_VERSION
+        );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
     }
@@ -490,6 +510,15 @@ mod tests {
         assert_eq!(
             snapshot.latest_block_commit,
             Some(encode_hex(&commit.block_commit))
+        );
+        assert_eq!(snapshot.stable_lag, BALANCE_HISTORY_STABLE_LAG);
+        assert_eq!(
+            snapshot.balance_history_api_version,
+            BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            snapshot.balance_history_semantics_version,
+            BALANCE_HISTORY_SEMANTICS_VERSION
         );
         assert_eq!(snapshot.commit_protocol_version, COMMIT_PROTOCOL_VERSION);
         assert_eq!(snapshot.commit_hash_algo, COMMIT_HASH_ALGO);
@@ -657,7 +686,10 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidParams);
-        assert!(err.message.contains("Block height or block range must be specified"));
+        assert!(
+            err.message
+                .contains("Block height or block range must be specified")
+        );
 
         let exact_miss = server
             .get_address_balance_delta(GetBalanceParams {
@@ -732,10 +764,7 @@ mod tests {
         let script_hash = USDBScriptHash::from_byte_array([3u8; 32]);
         server.db.put_utxo(&outpoint, &script_hash, 12345).unwrap();
 
-        let loaded = server
-            .get_live_utxo(outpoint.clone())
-            .unwrap()
-            .unwrap();
+        let loaded = server.get_live_utxo(outpoint.clone()).unwrap().unwrap();
         assert_eq!(loaded.txid, outpoint.txid.to_string());
         assert_eq!(loaded.vout, outpoint.vout);
         assert_eq!(loaded.script_hash, format!("{:x}", script_hash));

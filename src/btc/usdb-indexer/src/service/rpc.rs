@@ -1,6 +1,9 @@
 use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
+use usdb_util::{
+    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusSnapshotIdentity,
+};
 
 /// Business error code returned when the requested height is above local durable sync progress.
 pub const ERR_HEIGHT_NOT_SYNCED: i64 = -32010;
@@ -19,10 +22,12 @@ pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 /// Business error code returned when internal state invariants are violated during RPC resolution.
 pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
+pub const USDB_INDEX_FORMULA_VERSION: &str = "pass-energy-formula:v1";
+pub const USDB_INDEX_PROTOCOL_VERSION: &str = "1.0.0";
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
-pub const SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
-/// Version tag of the local snapshot-id derivation rule exposed by the RPC layer.
-pub const SNAPSHOT_ID_VERSION: &str = "usdb-indexer-snapshot:v1";
+pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
+/// Version tag of the consensus snapshot-id derivation rule exposed by the RPC layer.
+pub const SNAPSHOT_ID_VERSION: &str = CONSENSUS_SNAPSHOT_ID_VERSION;
 
 /// Service metadata returned by `get_rpc_info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +63,9 @@ pub struct IndexerSyncStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexerSnapshotInfo {
     /// Local durable commit height in usdb-indexer when this anchor was adopted.
-    /// This is the indexer's own committed height, not an upstream service height.
+    /// This is local progress metadata only and is intentionally excluded from
+    /// `snapshot_id`, which must stay stable across nodes observing the same
+    /// upstream consensus snapshot.
     pub local_synced_block_height: u32,
     /// Upstream stable height reported by balance-history for the adopted snapshot.
     /// This is the external snapshot ceiling, not a local usdb-indexer progress field.
@@ -67,15 +74,17 @@ pub struct IndexerSnapshotInfo {
     pub stable_block_hash: String,
     /// Latest logical block commit returned by balance-history for the adopted snapshot.
     pub latest_block_commit: String,
+    /// Shared consensus identity derived only from globally reproducible fields.
+    pub consensus_identity: ConsensusSnapshotIdentity,
     /// Balance-history commit protocol version used for `latest_block_commit`.
     pub commit_protocol_version: String,
     /// Hash algorithm used by both upstream block commit and local snapshot id.
     pub commit_hash_algo: String,
-    /// Canonical snapshot id derived from network plus adopted upstream snapshot metadata.
+    /// Canonical consensus snapshot id derived from `consensus_identity`.
     pub snapshot_id: String,
     /// Hash algorithm used to derive `snapshot_id`.
     pub snapshot_id_hash_algo: String,
-    /// Version tag of the local snapshot id derivation rule.
+    /// Version tag of the consensus snapshot id derivation rule.
     pub snapshot_id_version: String,
 }
 

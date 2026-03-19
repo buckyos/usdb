@@ -1,6 +1,8 @@
 use crate::USDBScriptHash;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{OutPoint, Txid};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -62,6 +64,64 @@ pub struct BalanceHistoryData {
 }
 
 pub type BalanceHistoryDataRef = Arc<BalanceHistoryData>;
+
+/// Fixed source-chain tag used by BTC-side consensus snapshot identifiers.
+pub const CONSENSUS_SOURCE_CHAIN_BTC: &str = "BTC";
+/// Hash algorithm used by canonical consensus snapshot ids.
+pub const CONSENSUS_SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
+/// Version tag of the canonical consensus snapshot-id serialization rule.
+pub const CONSENSUS_SNAPSHOT_ID_VERSION: &str = "btc-consensus-snapshot:v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConsensusSnapshotIdentity {
+    /// Fixed chain namespace, currently `BTC`.
+    pub source_chain: String,
+    /// Bitcoin network name, such as `mainnet` or `regtest`.
+    pub network: String,
+    /// Stable BTC height committed by the upstream balance-history snapshot.
+    pub stable_height: u32,
+    /// Stable BTC block hash paired with `stable_height`.
+    pub stable_block_hash: String,
+    /// Fixed lag rule used when interpreting `stable_height`.
+    pub stable_lag: u32,
+    /// Externally visible RPC/API version of balance-history.
+    pub balance_history_api_version: String,
+    /// Historical query semantics version of balance-history.
+    pub balance_history_semantics_version: String,
+    /// Version of the usdb-index derived-state formula set.
+    pub usdb_index_formula_version: String,
+    /// Version of the usdb-index external protocol contract.
+    pub usdb_index_protocol_version: String,
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut output, "{:02x}", byte);
+    }
+    output
+}
+
+fn update_string_component(hasher: &mut Sha256, value: &str) {
+    hasher.update((value.len() as u32).to_be_bytes());
+    hasher.update(value.as_bytes());
+}
+
+pub fn build_consensus_snapshot_id(identity: &ConsensusSnapshotIdentity) -> String {
+    let mut hasher = Sha256::new();
+    update_string_component(&mut hasher, CONSENSUS_SNAPSHOT_ID_VERSION);
+    update_string_component(&mut hasher, &identity.source_chain);
+    update_string_component(&mut hasher, &identity.network);
+    hasher.update(identity.stable_height.to_be_bytes());
+    update_string_component(&mut hasher, &identity.stable_block_hash);
+    hasher.update(identity.stable_lag.to_be_bytes());
+    update_string_component(&mut hasher, &identity.balance_history_api_version);
+    update_string_component(&mut hasher, &identity.balance_history_semantics_version);
+    update_string_component(&mut hasher, &identity.usdb_index_formula_version);
+    update_string_component(&mut hasher, &identity.usdb_index_protocol_version);
+    encode_hex(&hasher.finalize())
+}
 
 pub struct OutPointCodec;
 
