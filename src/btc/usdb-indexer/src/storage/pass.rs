@@ -1124,6 +1124,65 @@ impl MinerPassStorage {
         Ok(entry)
     }
 
+    pub fn get_latest_pass_block_commit_at_or_before(
+        &self,
+        block_height: u32,
+    ) -> Result<Option<StoredPassBlockCommitEntry>, String> {
+        // Local pass commits are emitted only on heights that actually mutate pass state.
+        // Callers that need a durable "current local pass commit" therefore must resolve the
+        // latest commit at or before the synced height instead of requiring an exact-height row.
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT
+                    block_height,
+                    balance_history_block_height,
+                    balance_history_block_commit,
+                    mutation_root,
+                    block_commit,
+                    commit_protocol_version,
+                    commit_hash_algo
+                FROM pass_block_commits
+                WHERE block_height <= ?1
+                ORDER BY block_height DESC
+                LIMIT 1
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare latest pass block commit query at or before height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let entry = stmt
+            .query_row(rusqlite::params![block_height as i64], |row| {
+                Ok(StoredPassBlockCommitEntry {
+                    block_height: row.get::<usize, i64>(0)? as u32,
+                    balance_history_block_height: row.get::<usize, i64>(1)? as u32,
+                    balance_history_block_commit: row.get(2)?,
+                    mutation_root: row.get(3)?,
+                    block_commit: row.get(4)?,
+                    commit_protocol_version: row.get(5)?,
+                    commit_hash_algo: row.get(6)?,
+                })
+            })
+            .optional()
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query latest pass block commit at or before height {}: {}",
+                    block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(entry)
+    }
+
     // Get last synced btc block height
     pub fn get_synced_btc_block_height(&self) -> Result<Option<u32>, String> {
         let conn = self.conn.lock().unwrap();
@@ -5166,6 +5225,63 @@ mod tests {
         assert_eq!(commit.block_commit, "ef".repeat(32));
         assert_eq!(commit.commit_protocol_version, "1.0.0");
         assert_eq!(commit.commit_hash_algo, "sha256");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_latest_pass_block_commit_at_or_before_returns_nearest_entry() {
+        let dir = test_data_dir("latest_pass_block_commit_at_or_before");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 100,
+                balance_history_block_height: 100,
+                balance_history_block_commit: "11".repeat(32),
+                mutation_root: "22".repeat(32),
+                block_commit: "33".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        storage
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 130,
+                balance_history_block_height: 130,
+                balance_history_block_commit: "44".repeat(32),
+                mutation_root: "55".repeat(32),
+                block_commit: "66".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+
+        let before_first = storage
+            .get_latest_pass_block_commit_at_or_before(99)
+            .unwrap();
+        assert!(before_first.is_none());
+
+        let exact = storage
+            .get_latest_pass_block_commit_at_or_before(100)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.block_height, 100);
+        assert_eq!(exact.block_commit, "33".repeat(32));
+
+        let nearest = storage
+            .get_latest_pass_block_commit_at_or_before(120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(nearest.block_height, 100);
+        assert_eq!(nearest.block_commit, "33".repeat(32));
+
+        let latest = storage
+            .get_latest_pass_block_commit_at_or_before(130)
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.block_height, 130);
+        assert_eq!(latest.block_commit, "66".repeat(32));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

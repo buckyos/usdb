@@ -101,6 +101,14 @@ impl RpcClient {
         .await
     }
 
+    /// Returns the current locally durable core-state commit anchored to the adopted upstream snapshot.
+    pub async fn get_local_state_commit_info(
+        &self,
+    ) -> Result<Option<LocalStateCommitInfo>, String> {
+        self.rpc_call::<Option<LocalStateCommitInfo>>("get_local_state_commit_info", json!([]))
+            .await
+    }
+
     /// Returns a pass snapshot resolved at a target height.
     ///
     /// # Arguments

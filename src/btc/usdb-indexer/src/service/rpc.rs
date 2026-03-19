@@ -3,6 +3,8 @@ use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use usdb_util::{
     CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusSnapshotIdentity,
+    LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot,
+    LocalStateCommitIdentity, LocalStatePassCommitIdentity,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -28,6 +30,10 @@ pub const USDB_INDEX_PROTOCOL_VERSION: &str = "1.0.0";
 pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
 /// Version tag of the consensus snapshot-id derivation rule exposed by the RPC layer.
 pub const SNAPSHOT_ID_VERSION: &str = CONSENSUS_SNAPSHOT_ID_VERSION;
+/// Hash algorithm name used when deriving `LocalStateCommitInfo.local_state_commit`.
+pub const LOCAL_STATE_HASH_ALGO: &str = LOCAL_STATE_COMMIT_HASH_ALGO;
+/// Version tag of the local-state commit derivation rule exposed by the RPC layer.
+pub const LOCAL_STATE_VERSION: &str = LOCAL_STATE_COMMIT_VERSION;
 
 /// Service metadata returned by `get_rpc_info`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +122,27 @@ pub struct PassBlockCommitInfo {
     pub commit_protocol_version: String,
     /// Hash algorithm used by both `mutation_root` and `block_commit`.
     pub commit_hash_algo: String,
+}
+
+/// Locally durable core-state commit anchored to one adopted upstream snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalStateCommitInfo {
+    /// Local durable synced height represented by this state commit.
+    pub local_synced_block_height: u32,
+    /// Upstream consensus snapshot id adopted when deriving this local state.
+    pub adopted_snapshot_id: String,
+    /// Latest pass block commit at or before `local_synced_block_height`.
+    pub latest_pass_block_commit: Option<LocalStatePassCommitIdentity>,
+    /// Exact active-balance snapshot at `local_synced_block_height`, when present.
+    pub latest_active_balance_snapshot: Option<LocalStateActiveBalanceSnapshot>,
+    /// Shared identity struct used as the canonical hash input.
+    pub local_state_identity: LocalStateCommitIdentity,
+    /// Canonical local-state commit derived from `local_state_identity`.
+    pub local_state_commit: String,
+    /// Hash algorithm used to derive `local_state_commit`.
+    pub local_state_commit_hash_algo: String,
+    /// Version tag of the local-state commit derivation rule.
+    pub local_state_commit_version: String,
 }
 
 /// Parameters for `get_pass_snapshot`.
@@ -513,6 +540,10 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassBlockCommitParams,
     ) -> JsonResult<Option<PassBlockCommitInfo>>;
+
+    /// Returns the current locally durable core-state commit.
+    #[rpc(name = "get_local_state_commit_info")]
+    fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>>;
 
     /// Returns one pass snapshot at a target height.
     #[rpc(name = "get_pass_snapshot")]

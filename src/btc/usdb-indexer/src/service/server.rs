@@ -13,7 +13,9 @@ use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 use usdb_util::{
-    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, build_consensus_snapshot_id,
+    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity, LocalStateActiveBalanceSnapshot,
+    LocalStateCommitIdentity, LocalStatePassCommitIdentity, build_consensus_snapshot_id,
+    build_local_state_commit,
 };
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -234,6 +236,75 @@ impl UsdbIndexerRpcServer {
         };
         snapshot.snapshot_id = build_consensus_snapshot_id(&snapshot.consensus_identity);
         Ok(Some(snapshot))
+    }
+
+    // Build a locally durable core-state commit without changing the meaning of snapshot_info.
+    // snapshot_info continues to describe only the adopted upstream consensus anchor, while this
+    // method binds that anchor to local pass state and active-balance settlement state.
+    fn local_state_commit_info(&self) -> Result<Option<LocalStateCommitInfo>, JsonError> {
+        let Some(snapshot) = self.adopted_snapshot_info()? else {
+            return Ok(None);
+        };
+
+        let synced_height = snapshot.local_synced_block_height;
+        let latest_pass_block_commit = self
+            .indexer
+            .miner_pass_storage()
+            .get_latest_pass_block_commit_at_or_before(synced_height)
+            .map_err(Self::to_internal_error)?
+            .map(|entry| LocalStatePassCommitIdentity {
+                block_height: entry.block_height,
+                block_commit: entry.block_commit,
+                commit_protocol_version: entry.commit_protocol_version,
+                commit_hash_algo: entry.commit_hash_algo,
+            });
+
+        let genesis_block_height = self.config.config().usdb.genesis_block_height;
+        let latest_active_balance_snapshot = if synced_height < genesis_block_height {
+            None
+        } else {
+            self.indexer
+                .miner_pass_storage()
+                .assert_balance_snapshot_consistency(synced_height, genesis_block_height)
+                .map_err(Self::to_internal_error)?;
+
+            let snapshot = self
+                .indexer
+                .miner_pass_storage()
+                .get_active_balance_snapshot(synced_height)
+                .map_err(Self::to_internal_error)?
+                .ok_or_else(|| {
+                    Self::to_internal_error(format!(
+                        "Missing active balance snapshot at synced height {} after consistency check",
+                        synced_height
+                    ))
+                })?;
+
+            Some(LocalStateActiveBalanceSnapshot {
+                block_height: snapshot.block_height,
+                total_balance: snapshot.total_balance,
+                active_address_count: snapshot.active_address_count,
+            })
+        };
+
+        let local_state_identity = LocalStateCommitIdentity {
+            adopted_snapshot_id: snapshot.snapshot_id.clone(),
+            local_synced_block_height: synced_height,
+            latest_pass_block_commit: latest_pass_block_commit.clone(),
+            latest_active_balance_snapshot: latest_active_balance_snapshot.clone(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
+
+        Ok(Some(LocalStateCommitInfo {
+            local_synced_block_height: synced_height,
+            adopted_snapshot_id: snapshot.snapshot_id,
+            latest_pass_block_commit,
+            latest_active_balance_snapshot,
+            local_state_commit: build_local_state_commit(&local_state_identity),
+            local_state_identity,
+            local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
+            local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
+        }))
     }
 
     fn resolve_height(&self, requested: Option<u32>) -> Result<u32, JsonError> {
@@ -571,6 +642,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             features: vec![
                 "snapshot_info".to_string(),
                 "pass_block_commit".to_string(),
+                "local_state_commit_info".to_string(),
                 "pass_snapshot".to_string(),
                 "pass_history".to_string(),
                 "active_passes_at_height".to_string(),
@@ -632,6 +704,10 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             commit_protocol_version: entry.commit_protocol_version,
             commit_hash_algo: entry.commit_hash_algo,
         }))
+    }
+
+    fn get_local_state_commit_info(&self) -> JsonResult<Option<LocalStateCommitInfo>> {
+        self.local_state_commit_info()
     }
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
@@ -1159,7 +1235,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ConfigManager;
+    use crate::config::{ConfigManager, IndexerConfig};
     use crate::index::energy_formula::calc_growth_delta;
     use crate::index::{InscriptionIndexer, MinerPassState, PassBlockCommitEntry};
     use crate::output::IndexOutput;
@@ -1172,7 +1248,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+    use usdb_util::{
+        LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
+        ToUSDBScriptHash, USDBScriptHash, build_local_state_commit,
+    };
 
     fn test_root_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -1272,6 +1351,40 @@ mod tests {
 
     fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
         let root_dir = test_root_dir(tag);
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let output = Arc::new(IndexOutput::new());
+        let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
+        let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
+
+        indexer
+            .miner_pass_storage()
+            .update_synced_btc_block_height(synced_height)
+            .unwrap();
+
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(());
+        let server = UsdbIndexerRpcServer::new(
+            config,
+            status,
+            indexer,
+            "127.0.0.1:0".parse().unwrap(),
+            shutdown_tx,
+        );
+        (server, root_dir)
+    }
+
+    fn build_server_with_genesis(
+        tag: &str,
+        synced_height: u32,
+        genesis_block_height: u32,
+    ) -> (UsdbIndexerRpcServer, PathBuf) {
+        let root_dir = test_root_dir(tag);
+        let mut config_file = IndexerConfig::default();
+        config_file.usdb.genesis_block_height = genesis_block_height;
+        std::fs::write(
+            root_dir.join("config.json"),
+            serde_json::to_vec_pretty(&config_file).unwrap(),
+        )
+        .unwrap();
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
@@ -1447,6 +1560,147 @@ mod tests {
         assert_eq!(commit.block_commit, "cc".repeat(32));
         assert_eq!(commit.commit_protocol_version, "1.0.0");
         assert_eq!(commit.commit_hash_algo, "sha256");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_local_state_commit_info_success() {
+        let (server, root_dir) = build_server_with_genesis("local_state_commit_success", 120, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 120,
+                stable_block_hash: Some("aa".repeat(32)),
+                latest_block_commit: Some("bb".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "cc".repeat(32),
+                mutation_root: "dd".repeat(32),
+                block_commit: "ee".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(120, 5_000, 2)
+            .unwrap();
+
+        let info = server.get_local_state_commit_info().unwrap().unwrap();
+        assert_eq!(info.local_synced_block_height, 120);
+        assert_eq!(info.local_state_commit_hash_algo, LOCAL_STATE_HASH_ALGO);
+        assert_eq!(info.local_state_commit_version, LOCAL_STATE_VERSION);
+        assert_eq!(
+            info.latest_pass_block_commit,
+            Some(LocalStatePassCommitIdentity {
+                block_height: 120,
+                block_commit: "ee".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+        );
+        assert_eq!(
+            info.latest_active_balance_snapshot,
+            Some(LocalStateActiveBalanceSnapshot {
+                block_height: 120,
+                total_balance: 5_000,
+                active_address_count: 2,
+            })
+        );
+        assert_eq!(
+            info.local_state_identity,
+            LocalStateCommitIdentity {
+                adopted_snapshot_id: info.adopted_snapshot_id.clone(),
+                local_synced_block_height: 120,
+                latest_pass_block_commit: info.latest_pass_block_commit.clone(),
+                latest_active_balance_snapshot: info.latest_active_balance_snapshot.clone(),
+                usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+            }
+        );
+        assert_eq!(
+            info.local_state_commit,
+            build_local_state_commit(&info.local_state_identity)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_local_state_commit_info_uses_latest_pass_commit_at_or_before_synced_height() {
+        let (server, root_dir) =
+            build_server_with_genesis("local_state_commit_latest_pass", 125, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&balance_history::SnapshotInfo {
+                stable_height: 125,
+                stable_block_hash: Some("11".repeat(32)),
+                latest_block_commit: Some("22".repeat(32)),
+                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
+                    .to_string(),
+                balance_history_semantics_version:
+                    balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_pass_block_commit(&PassBlockCommitEntry {
+                block_height: 120,
+                balance_history_block_height: 120,
+                balance_history_block_commit: "33".repeat(32),
+                mutation_root: "44".repeat(32),
+                block_commit: "55".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+            .unwrap();
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(125, 7_500, 3)
+            .unwrap();
+
+        let info = server.get_local_state_commit_info().unwrap().unwrap();
+        assert_eq!(info.local_synced_block_height, 125);
+        assert_eq!(
+            info.latest_pass_block_commit,
+            Some(LocalStatePassCommitIdentity {
+                block_height: 120,
+                block_commit: "55".repeat(32),
+                commit_protocol_version: "1.0.0".to_string(),
+                commit_hash_algo: "sha256".to_string(),
+            })
+        );
+        assert_eq!(
+            info.latest_active_balance_snapshot,
+            Some(LocalStateActiveBalanceSnapshot {
+                block_height: 125,
+                total_balance: 7_500,
+                active_address_count: 3,
+            })
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
