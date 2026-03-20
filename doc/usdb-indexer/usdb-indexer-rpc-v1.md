@@ -346,7 +346,15 @@
 ```json
 {
   "inscription_id": "txidi0",
-  "at_height": 900123
+  "at_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "local_state_commit": "local-...",
+      "system_state_id": "system-..."
+    }
+  }
 }
 ```
 
@@ -355,6 +363,9 @@
 - 使用 `history <= at_height` 解析动态状态（`state/owner/satpoint`）。
 - 静态字段来自 `miner_passes`（`mint_owner/eth_main/prev/invalid_*`）。
 - 若 `at_height` 为空，则自动使用 `synced_block_height` 并返回 `resolved_height`。
+- `context` 可选；若传入，服务会先校验该高度的历史 state ref 是否满足 `expected_state`。
+- 若 `at_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
+- 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误。
 
 ### 9) `get_pass_history`
 
@@ -493,6 +504,13 @@
 {
   "inscription_id": "txidi0",
   "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "system_state_id": "system-..."
+    }
+  },
   "mode": "at_or_before"
 }
 ```
@@ -501,6 +519,12 @@
 
 - `exact`：仅接受该高度存在记录
 - `at_or_before`：返回 `<= block_height` 的最近记录（推荐默认）
+
+补充语义：
+
+- `context` 可选；若传入，服务会先校验该高度的历史 state ref 是否满足 `expected_state`。
+- 若 `block_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
+- mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
 
 ### 15) `get_pass_energy_range`
 
@@ -611,6 +635,11 @@
 
 - `-32040 HEIGHT_NOT_SYNCED`
 - `-32041 SNAPSHOT_NOT_READY`
+- `-32042 SNAPSHOT_ID_MISMATCH`
+- `-32043 BLOCK_HASH_MISMATCH`
+- `-32044 VERSION_MISMATCH`
+- `-32045 LOCAL_STATE_COMMIT_MISMATCH`
+- `-32046 SYSTEM_STATE_ID_MISMATCH`
 - `-32047 NO_RECORD`
 
 这些错误会携带结构化 `data`，包含：

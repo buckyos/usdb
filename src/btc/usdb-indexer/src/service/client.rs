@@ -176,11 +176,24 @@ impl RpcClient {
         inscription_id: &str,
         at_height: Option<u32>,
     ) -> Result<Option<PassSnapshot>, String> {
+        self.get_pass_snapshot_with_context(inscription_id, at_height, None)
+            .await
+    }
+
+    /// Returns a pass snapshot resolved at a target height while also
+    /// enforcing optional historical consensus selectors.
+    pub async fn get_pass_snapshot_with_context(
+        &self,
+        inscription_id: &str,
+        at_height: Option<u32>,
+        context: Option<ConsensusQueryContext>,
+    ) -> Result<Option<PassSnapshot>, String> {
         self.rpc_call::<Option<PassSnapshot>>(
             "get_pass_snapshot",
-            json!([{
-                "inscription_id": inscription_id,
-                "at_height": at_height,
+            json!([GetPassSnapshotParams {
+                inscription_id: inscription_id.to_string(),
+                at_height,
+                context,
             }]),
         )
         .await
@@ -311,12 +324,26 @@ impl RpcClient {
         block_height: Option<u32>,
         mode: Option<&str>,
     ) -> Result<PassEnergySnapshot, String> {
+        self.get_pass_energy_with_context(inscription_id, block_height, mode, None)
+            .await
+    }
+
+    /// Returns one pass energy snapshot while also enforcing optional
+    /// historical consensus selectors.
+    pub async fn get_pass_energy_with_context(
+        &self,
+        inscription_id: &str,
+        block_height: Option<u32>,
+        mode: Option<&str>,
+        context: Option<ConsensusQueryContext>,
+    ) -> Result<PassEnergySnapshot, String> {
         self.rpc_call::<PassEnergySnapshot>(
             "get_pass_energy",
-            json!([{
-                "inscription_id": inscription_id,
-                "block_height": block_height,
-                "mode": mode,
+            json!([GetPassEnergyParams {
+                inscription_id: inscription_id.to_string(),
+                block_height,
+                context,
+                mode: mode.map(|value| value.to_string()),
             }]),
         )
         .await

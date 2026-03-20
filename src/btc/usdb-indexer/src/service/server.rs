@@ -400,6 +400,54 @@ impl UsdbIndexerRpcServer {
         Ok(resolved)
     }
 
+    /// Resolve the effective query height for pass/energy RPCs while
+    /// optionally enforcing a caller-supplied consensus context.
+    ///
+    /// Compatibility rule:
+    /// - without `context`, legacy business-query behavior is preserved
+    /// - with `context`, height resolution and readiness switch to the shared
+    ///   consensus contract and the historical state ref at that height must
+    ///   match the caller's expected selectors
+    fn resolve_height_for_contextual_query(
+        &self,
+        requested_height: Option<u32>,
+        context: Option<&ConsensusQueryContext>,
+    ) -> Result<u32, JsonError> {
+        if let Some(context_requested_height) = context.and_then(|value| value.requested_height) {
+            if let Some(explicit_height) = requested_height {
+                if explicit_height != context_requested_height {
+                    return Err(Self::to_invalid_params(format!(
+                        "Query height {} does not match ConsensusQueryContext.requested_height {}",
+                        explicit_height, context_requested_height
+                    )));
+                }
+            }
+        }
+
+        let effective_requested_height =
+            requested_height.or(context.and_then(|value| value.requested_height));
+        let resolved_height = if context.is_some() {
+            self.resolve_height_with_consensus_error(effective_requested_height)?
+        } else {
+            self.resolve_height(effective_requested_height)?
+        };
+
+        let Some(context) = context else {
+            return Ok(resolved_height);
+        };
+        if context.expected_state.is_empty() {
+            return Ok(resolved_height);
+        }
+
+        let state_ref = self.build_historical_state_ref_info(resolved_height)?;
+        self.validate_historical_state_ref_expected_state(
+            resolved_height,
+            &state_ref,
+            &context.expected_state,
+        )?;
+        Ok(resolved_height)
+    }
+
     fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
         let Some(anchor) = self
             .indexer
@@ -1381,7 +1429,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_pass_snapshot(&self, params: GetPassSnapshotParams) -> JsonResult<Option<PassSnapshot>> {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
-        let resolved_height = self.resolve_height(params.at_height)?;
+        let resolved_height =
+            self.resolve_height_for_contextual_query(params.at_height, params.context.as_ref())?;
         self.build_pass_snapshot(&inscription_id, resolved_height)
     }
 
@@ -1545,7 +1594,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
     fn get_pass_energy(&self, params: GetPassEnergyParams) -> JsonResult<PassEnergySnapshot> {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
-        let query_height = self.resolve_height(params.block_height)?;
+        let query_height =
+            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
         let mode = params.mode.unwrap_or_else(|| "at_or_before".to_string());
 
         let record = match mode.as_str() {
@@ -2138,6 +2188,15 @@ mod tests {
             .indexer
             .miner_pass_storage()
             .upsert_balance_history_snapshot_anchor(&snapshot)
+            .unwrap();
+    }
+
+    fn seed_state_ref_context(server: &UsdbIndexerRpcServer, block_height: u32) {
+        seed_upstream_anchor(server, block_height);
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_active_balance_snapshot(block_height, 5_000, 2)
             .unwrap();
     }
 
@@ -3169,6 +3228,7 @@ mod tests {
             .get_pass_snapshot(GetPassSnapshotParams {
                 inscription_id: pass.inscription_id.to_string(),
                 at_height: Some(101),
+                context: None,
             })
             .unwrap()
             .unwrap();
@@ -3191,6 +3251,78 @@ mod tests {
         assert_eq!(history.items.len(), 2);
         assert_eq!(history.items[0].event_type, "mint");
         assert_eq!(history.items[1].event_type, "state_update");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_snapshot_rejects_mismatched_context_height() {
+        let (server, root_dir) = build_server("snapshot_context_height_mismatch", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(21, 121, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_state_ref_context(&server, 101);
+
+        let err = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(101),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(102),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+            })
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_snapshot_returns_snapshot_id_mismatch_with_context() {
+        let (server, root_dir) = build_server("snapshot_context_snapshot_mismatch", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(22, 122, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                101,
+            )
+            .unwrap();
+        seed_state_ref_context(&server, 101);
+
+        let err = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(101),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(101),
+                    expected_state: ConsensusStateReference {
+                        snapshot_id: Some("ff".repeat(32)),
+                        ..Default::default()
+                    },
+                }),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(101));
+        assert_eq!(data.expected_state.snapshot_id, Some("ff".repeat(32)));
+        assert_eq!(data.actual_state.stable_height, Some(101));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -3389,6 +3521,7 @@ mod tests {
             .get_pass_energy(GetPassEnergyParams {
                 inscription_id: pass.inscription_id.to_string(),
                 block_height: Some(130),
+                context: None,
                 mode: Some("at_or_before".to_string()),
             })
             .unwrap();
@@ -3402,12 +3535,81 @@ mod tests {
             .get_pass_energy(GetPassEnergyParams {
                 inscription_id: pass.inscription_id.to_string(),
                 block_height: Some(120),
+                context: None,
                 mode: Some("exact".to_string()),
             })
             .unwrap();
         assert_eq!(exact.query_block_height, 120);
         assert_eq!(exact.record_block_height, 120);
         assert_eq!(exact.energy, 500);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_rejects_mismatched_context_height() {
+        let (server, root_dir) = build_server("energy_context_height_mismatch", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(23, 123, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 500);
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(121),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+                mode: Some("exact".to_string()),
+            })
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_returns_system_state_mismatch_with_context() {
+        let (server, root_dir) = build_server("energy_context_system_mismatch", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(24, 124, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 500);
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(120),
+                    expected_state: ConsensusStateReference {
+                        system_state_id: Some("dd".repeat(32)),
+                        ..Default::default()
+                    },
+                }),
+                mode: Some("exact".to_string()),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SystemStateIdMismatch.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.expected_state.system_state_id, Some("dd".repeat(32)));
+        assert!(data.actual_state.system_state_id.is_some());
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

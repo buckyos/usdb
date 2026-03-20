@@ -273,6 +273,11 @@ pub struct GetPassSnapshotParams {
     pub inscription_id: String,
     /// Optional query height; `None` resolves to the current local synced height.
     pub at_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    ///
+    /// When present, the service validates the historical state reference at
+    /// the resolved height before returning the pass snapshot.
+    pub context: Option<ConsensusQueryContext>,
 }
 
 /// Pass snapshot resolved at a target height.
@@ -432,6 +437,11 @@ pub struct GetPassEnergyParams {
     pub inscription_id: String,
     /// Optional query height; `None` resolves to the current local synced height.
     pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    ///
+    /// When present, the service validates the historical state reference at
+    /// the resolved height before returning the energy snapshot.
+    pub context: Option<ConsensusQueryContext>,
     /// Query mode:
     /// - `exact`: read only the record exactly at `block_height`.
     /// - `at_or_before`: read latest record at or before `block_height`,
