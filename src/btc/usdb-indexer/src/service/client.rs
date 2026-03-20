@@ -2,7 +2,7 @@ use super::rpc::*;
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use usdb_util::ConsensusRpcErrorData;
+use usdb_util::{ConsensusQueryContext, ConsensusRpcErrorData};
 
 /// JSON-RPC client for querying and controlling `usdb-indexer`.
 ///
@@ -134,10 +134,22 @@ impl RpcClient {
         &self,
         block_height: u32,
     ) -> Result<HistoricalStateRefInfo, String> {
+        self.get_state_ref_at_height_with_context(block_height, None)
+            .await
+    }
+
+    /// Returns the exact historical state reference at one BTC height while
+    /// also enforcing optional caller-supplied consensus selectors.
+    pub async fn get_state_ref_at_height_with_context(
+        &self,
+        block_height: u32,
+        context: Option<ConsensusQueryContext>,
+    ) -> Result<HistoricalStateRefInfo, String> {
         self.rpc_call::<HistoricalStateRefInfo>(
             "get_state_ref_at_height",
-            json!([{
-                "block_height": block_height,
+            json!([GetStateRefAtHeightParams {
+                block_height,
+                context,
             }]),
         )
         .await

@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::ops::Range;
-use usdb_util::{ConsensusRpcErrorData, USDBScriptHash};
+use usdb_util::{ConsensusQueryContext, ConsensusRpcErrorData, USDBScriptHash};
 
 pub struct RpcClient {
     url: String,
@@ -73,10 +73,22 @@ impl RpcClient {
         &self,
         block_height: u32,
     ) -> Result<HistoricalSnapshotStateRef, String> {
+        self.get_state_ref_at_height_with_context(block_height, None)
+            .await
+    }
+
+    pub async fn get_state_ref_at_height_with_context(
+        &self,
+        block_height: u32,
+        context: Option<ConsensusQueryContext>,
+    ) -> Result<HistoricalSnapshotStateRef, String> {
         self.rpc_call::<HistoricalSnapshotStateRef>(
             &self.url,
             "get_state_ref_at_height",
-            json!([GetStateRefAtHeightParams { block_height }]),
+            json!([GetStateRefAtHeightParams {
+                block_height,
+                context,
+            }]),
         )
         .await
     }

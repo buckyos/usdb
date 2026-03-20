@@ -286,17 +286,19 @@
 - `balance-history.get_state_ref_at_height`
 - `usdb-indexer.get_state_ref_at_height`
 
-它们先解决“查询高度 `H` 的历史 state ref”这个基础能力；
-而 `expected_state` 的 `*_MISMATCH` 校验、以及 `STATE_NOT_RETAINED` 这类错误，
-仍属于下一阶段扩展。
+当前仓库已经落到第二步：
+
+- 已支持“查询高度 `H` 的历史 state ref”这个基础能力
+- 已支持历史 `state ref` 查询上基于 `expected_state` 的 `*_MISMATCH` 校验
+- 尚未引入 `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE`
 
 ### Phase 3
 
 在 `balance-history / usdb-indexer` 中逐步实现：
 
-- 历史 `state ref` 查询 RPC
 - `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE` 这类错误
-- 基于 `expected_state` 的 `*_MISMATCH` 校验
+- 将 `ConsensusQueryContext` 继续扩展到 ETHW 真正依赖的 pass / energy 查询
+- 增加针对历史 state ref 校验的 regtest / integration coverage
 
 并补共享 helper：
 

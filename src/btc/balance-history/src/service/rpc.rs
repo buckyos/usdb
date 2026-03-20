@@ -4,7 +4,7 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use usdb_util::{ConsensusSnapshotIdentity, USDBScriptHash};
+use usdb_util::{ConsensusQueryContext, ConsensusSnapshotIdentity, USDBScriptHash};
 
 /// Public RPC/API version of balance-history.
 ///
@@ -112,6 +112,12 @@ pub struct SnapshotInfo {
 pub struct GetStateRefAtHeightParams {
     /// Exact committed BTC block height whose historical state reference should be returned.
     pub block_height: u32,
+    /// Optional consensus selectors pinned by the caller for exact historical validation.
+    ///
+    /// When present, the service must verify the historical state reconstructed
+    /// at `block_height` matches the caller's expected snapshot selectors
+    /// instead of silently returning a different but currently valid state ref.
+    pub context: Option<ConsensusQueryContext>,
 }
 
 /// Historical consensus state reference for one exact balance-history height.

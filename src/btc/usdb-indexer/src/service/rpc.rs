@@ -2,10 +2,10 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use usdb_util::{
-    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusSnapshotIdentity,
-    LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot,
-    LocalStateCommitIdentity, LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO,
-    SYSTEM_STATE_ID_VERSION, SystemStateIdentity,
+    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext,
+    ConsensusSnapshotIdentity, LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION,
+    LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
+    SYSTEM_STATE_ID_HASH_ALGO, SYSTEM_STATE_ID_VERSION, SystemStateIdentity,
     USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
     USDB_INDEX_PROTOCOL_VERSION as UTIL_USDB_INDEX_PROTOCOL_VERSION,
 };
@@ -176,6 +176,12 @@ pub struct SystemStateInfo {
 pub struct GetStateRefAtHeightParams {
     /// Exact BTC block height whose locally durable historical state should be returned.
     pub block_height: u32,
+    /// Optional consensus selectors pinned by the caller for exact historical validation.
+    ///
+    /// This lets downstream validators re-check a historical `(height, state)`
+    /// tuple recorded in an ETHW block instead of accepting any state ref that
+    /// happens to be reconstructable for the same height.
+    pub context: Option<ConsensusQueryContext>,
 }
 
 /// Historical `usdb-indexer` state reference reconstructed for one exact BTC height.

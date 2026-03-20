@@ -166,10 +166,10 @@
 这是为 ETHW 验块补充的历史状态引用结构。第一版接口已经落地，
 用于回答“高度 `H` 上，这台服务承诺的历史 state ref 是什么”。
 
-当前第一版仍有边界：
+当前阶段的能力边界：
 
 - 已支持 exact-height 历史 state ref 查询
-- 还未支持基于 `expected_state` 的 `*_MISMATCH` 校验
+- 已支持基于 `expected_state` 的 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
 - 还未单独区分 `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE`
 
 建议字段：
@@ -293,7 +293,15 @@
 
 ```json
 {
-  "block_height": 900123
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "local_state_commit": "local-...",
+      "system_state_id": "system-..."
+    }
+  }
 }
 ```
 
@@ -321,6 +329,8 @@
 - 这是 **历史 state ref** 查询，不是当前 head 查询
 - BTC 头部即使已经前进，仍然应允许查询被保留窗口内的历史 state ref
 - 当前第一版返回该高度的历史 `snapshot_info / local_state_commit_info / system_state_info`
+- `context` 可选；传入 `expected_state` 后，服务会在该高度做 selector 校验
+- 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误
 - 后续 ETHW 验块应优先使用这条接口固定 `(height, state ref)`，再用相同上下文复查 pass/energy
 
 ---

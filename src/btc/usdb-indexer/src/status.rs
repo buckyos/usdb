@@ -145,7 +145,7 @@ impl StatusManager {
             let msg = format!("Shutdown requested: {}", shutdown_requested);
             info!("{}", msg);
             self.output.println(&msg);
-        } 
+        }
         runtime.shutdown_requested = shutdown_requested;
     }
 

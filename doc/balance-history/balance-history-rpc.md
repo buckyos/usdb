@@ -213,7 +213,14 @@
   "jsonrpc": "2.0",
   "method": "get_state_ref_at_height",
   "params": [{
-    "block_height": 812345
+    "block_height": 812345,
+    "context": {
+      "requested_height": 812345,
+      "expected_state": {
+        "snapshot_id": "snapshot-expected-...",
+        "stable_block_hash": "000000..."
+      }
+    }
   }],
   "id": 1
 }
@@ -248,6 +255,9 @@
 说明：
 
 - 这条接口回答的是“高度 `H` 的历史 state ref”，不是当前 head 的 snapshot；
+- `context` 可选；不传时只返回该高度的历史 state ref；
+- 传入 `context.expected_state` 后，服务会对该高度的历史 state ref 做严格校验；
+- 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`；
 - 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
 - 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
 
