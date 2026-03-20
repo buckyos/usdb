@@ -270,6 +270,35 @@ impl UsdbIndexerRpcServer {
         data
     }
 
+    /// Best-effort current-state snapshot used only to enrich structured error
+    /// payloads.
+    ///
+    /// Historical lookup helpers should not require the current adopted state
+    /// to be complete on their success path. When a historical row is missing,
+    /// we still want `actual_state` in the error payload to describe what this
+    /// node currently exposes, but that context is diagnostic only and not a
+    /// precondition for resolving the historical row itself.
+    fn current_state_for_error_payload(
+        &self,
+    ) -> Result<
+        (
+            Option<IndexerSnapshotInfo>,
+            Option<LocalStateCommitInfo>,
+            Option<SystemStateInfo>,
+        ),
+        JsonError,
+    > {
+        let current_snapshot = self.upstream_snapshot_info()?;
+        let current_local_state = current_snapshot.as_ref().and_then(|snapshot| {
+            self.build_local_state_commit_info_from_snapshot(snapshot)
+                .ok()
+        });
+        let current_system_state = current_local_state
+            .as_ref()
+            .map(|local_state| self.build_system_state_info_from_local_state(local_state));
+        Ok((current_snapshot, current_local_state, current_system_state))
+    }
+
     fn build_consensus_error_data_for_state(
         &self,
         requested_height: Option<u32>,
@@ -501,10 +530,22 @@ impl UsdbIndexerRpcServer {
             .get_balance_history_snapshot_anchor_at_height(block_height)
             .map_err(Self::to_internal_error)?
             .ok_or_else(|| {
-                Self::to_internal_error(format!(
-                    "Missing balance-history snapshot history at height {} while building historical state ref",
-                    block_height
-                ))
+                let (current_snapshot, current_local_state, current_system_state) = self
+                    .current_state_for_error_payload()
+                    .unwrap_or((None, None, None));
+                Self::to_consensus_error(
+                    ConsensusRpcErrorCode::HistoryNotAvailable,
+                    self.build_consensus_error_data(
+                        Some(block_height),
+                        current_snapshot.as_ref(),
+                        current_local_state.as_ref(),
+                        current_system_state.as_ref(),
+                        Some(format!(
+                            "Missing balance-history snapshot history at height {} while building historical state ref",
+                            block_height
+                        )),
+                    ),
+                )
             })?;
 
         let consensus_identity = ConsensusSnapshotIdentity {
@@ -571,10 +612,33 @@ impl UsdbIndexerRpcServer {
                 .get_active_balance_snapshot(synced_height)
                 .map_err(Self::to_internal_error)?
                 .ok_or_else(|| {
-                    Self::to_internal_error(format!(
-                        "Missing active balance snapshot at height {} while building local state commit",
-                        synced_height
-                    ))
+                    if require_latest_balance_snapshot_consistency {
+                        Self::to_internal_error(format!(
+                            "Missing active balance snapshot at height {} while building local state commit",
+                            synced_height
+                        ))
+                    } else {
+                        let current_snapshot = self.upstream_snapshot_info().ok().flatten();
+                        let current_local_state = current_snapshot.as_ref().and_then(|snapshot| {
+                            self.build_local_state_commit_info_from_snapshot(snapshot).ok()
+                        });
+                        let current_system_state = current_local_state.as_ref().map(|local_state| {
+                            self.build_system_state_info_from_local_state(local_state)
+                        });
+                        Self::to_consensus_error(
+                            ConsensusRpcErrorCode::HistoryNotAvailable,
+                            self.build_consensus_error_data(
+                                Some(synced_height),
+                                current_snapshot.as_ref(),
+                                current_local_state.as_ref(),
+                                current_system_state.as_ref(),
+                                Some(format!(
+                                    "Missing active balance snapshot at height {} while building historical local state commit",
+                                    synced_height
+                                )),
+                            ),
+                        )
+                    }
                 })?;
 
             Some(LocalStateActiveBalanceSnapshot {
@@ -3041,6 +3105,32 @@ mod tests {
     }
 
     #[test]
+    fn test_get_state_ref_at_height_returns_history_not_available_when_balance_snapshot_missing() {
+        let (server, root_dir) =
+            build_server_with_genesis("state_ref_at_height_history_not_available", 120, 100);
+        seed_upstream_anchor(&server, 120);
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 120,
+                context: None,
+            })
+            .unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HistoryNotAvailable.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.actual_state.stable_height, Some(120));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_local_state_commit_info_returns_snapshot_not_ready_when_anchor_missing() {
         let (server, root_dir) =
             build_server_with_genesis("local_state_commit_not_ready", 120, 100);
@@ -3323,6 +3413,51 @@ mod tests {
         assert_eq!(data.requested_height, Some(101));
         assert_eq!(data.expected_state.snapshot_id, Some("ff".repeat(32)));
         assert_eq!(data.actual_state.stable_height, Some(101));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_snapshot_returns_history_not_available_when_context_state_ref_missing() {
+        let (server, root_dir) =
+            build_server_with_genesis("snapshot_context_history_not_available", 120, 100);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(25, 125, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        storage
+            .update_state_at_height(
+                &pass.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                101,
+            )
+            .unwrap();
+        seed_upstream_anchor(&server, 101);
+
+        let err = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(101),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(101),
+                    expected_state: ConsensusStateReference {
+                        snapshot_id: Some("aa".repeat(32)),
+                        ..Default::default()
+                    },
+                }),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HistoryNotAvailable.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(101));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

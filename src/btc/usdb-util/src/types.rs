@@ -109,6 +109,12 @@ pub const CONSENSUS_RPC_ERR_SYSTEM_STATE_ID_MISMATCH: i64 = -32046;
 /// Shared JSON-RPC error code returned when the query is valid and within the
 /// durable range, but no record exists for the requested object/key.
 pub const CONSENSUS_RPC_ERR_NO_RECORD: i64 = -32047;
+/// Shared JSON-RPC error code reserved for heights that have fallen below the
+/// node's explicit retention floor.
+pub const CONSENSUS_RPC_ERR_STATE_NOT_RETAINED: i64 = -32048;
+/// Shared JSON-RPC error code returned when historical data should exist
+/// logically, but this node cannot currently reconstruct it.
+pub const CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE: i64 = -32049;
 
 /// Shared consensus-layer JSON-RPC error contract used by BTC-side services.
 ///
@@ -125,6 +131,8 @@ pub enum ConsensusRpcErrorCode {
     LocalStateCommitMismatch,
     SystemStateIdMismatch,
     NoRecord,
+    StateNotRetained,
+    HistoryNotAvailable,
 }
 
 impl ConsensusRpcErrorCode {
@@ -139,6 +147,8 @@ impl ConsensusRpcErrorCode {
             Self::LocalStateCommitMismatch => CONSENSUS_RPC_ERR_LOCAL_STATE_COMMIT_MISMATCH,
             Self::SystemStateIdMismatch => CONSENSUS_RPC_ERR_SYSTEM_STATE_ID_MISMATCH,
             Self::NoRecord => CONSENSUS_RPC_ERR_NO_RECORD,
+            Self::StateNotRetained => CONSENSUS_RPC_ERR_STATE_NOT_RETAINED,
+            Self::HistoryNotAvailable => CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE,
         }
     }
 
@@ -153,6 +163,8 @@ impl ConsensusRpcErrorCode {
             Self::LocalStateCommitMismatch => "LOCAL_STATE_COMMIT_MISMATCH",
             Self::SystemStateIdMismatch => "SYSTEM_STATE_ID_MISMATCH",
             Self::NoRecord => "NO_RECORD",
+            Self::StateNotRetained => "STATE_NOT_RETAINED",
+            Self::HistoryNotAvailable => "HISTORY_NOT_AVAILABLE",
         }
     }
 }
@@ -536,6 +548,22 @@ mod tests {
             CONSENSUS_RPC_ERR_NO_RECORD
         );
         assert_eq!(ConsensusRpcErrorCode::NoRecord.as_str(), "NO_RECORD");
+        assert_eq!(
+            ConsensusRpcErrorCode::StateNotRetained.code(),
+            CONSENSUS_RPC_ERR_STATE_NOT_RETAINED
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::StateNotRetained.as_str(),
+            "STATE_NOT_RETAINED"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::HistoryNotAvailable.code(),
+            CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::HistoryNotAvailable.as_str(),
+            "HISTORY_NOT_AVAILABLE"
+        );
     }
 
     #[test]

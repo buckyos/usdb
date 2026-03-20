@@ -331,6 +331,7 @@
 - 当前第一版返回该高度的历史 `snapshot_info / local_state_commit_info / system_state_info`
 - `context` 可选；传入 `expected_state` 后，服务会在该高度做 selector 校验
 - 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误
+- 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`
 - 后续 ETHW 验块应优先使用这条接口固定 `(height, state ref)`，再用相同上下文复查 pass/energy
 
 ---
@@ -366,6 +367,7 @@
 - `context` 可选；若传入，服务会先校验该高度的历史 state ref 是否满足 `expected_state`。
 - 若 `at_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
 - 当前已支持 `snapshot_id / stable_block_hash / version / local_state_commit / system_state_id` 的 mismatch 错误。
+- 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
 
 ### 9) `get_pass_history`
 
@@ -525,6 +527,7 @@
 - `context` 可选；若传入，服务会先校验该高度的历史 state ref 是否满足 `expected_state`。
 - 若 `block_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
 - mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
+- 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
 
 ### 15) `get_pass_energy_range`
 
@@ -641,6 +644,8 @@
 - `-32045 LOCAL_STATE_COMMIT_MISMATCH`
 - `-32046 SYSTEM_STATE_ID_MISMATCH`
 - `-32047 NO_RECORD`
+- `-32048 STATE_NOT_RETAINED`
+- `-32049 HISTORY_NOT_AVAILABLE`
 
 这些错误会携带结构化 `data`，包含：
 

@@ -209,10 +209,18 @@ impl BalanceHistoryRpcServer {
                 ))
             })?
             .ok_or_else(|| {
-                Self::to_internal_error(format!(
-                    "Missing block commit at height {} while building historical state ref",
-                    block_height
-                ))
+                let snapshot = self.build_snapshot_info().ok();
+                Self::to_consensus_error(
+                    ConsensusRpcErrorCode::HistoryNotAvailable,
+                    self.build_consensus_error_data(
+                        Some(block_height),
+                        snapshot.as_ref(),
+                        Some(format!(
+                            "Missing block commit at height {} while building historical state ref",
+                            block_height
+                        )),
+                    ),
+                )
             })?;
 
         let stable_block_hash = format!("{:x}", commit.btc_block_hash);
@@ -1149,6 +1157,46 @@ mod tests {
                     .build_consensus_snapshot_identity(12, &format!("{:x}", commit.btc_block_hash))
             ))
         );
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_returns_history_not_available_when_commit_missing() {
+        let server = make_test_server("state_ref_at_height_history_not_available");
+        let script_hash = make_script_hash(7);
+        seed_balance_entries(
+            &server,
+            &[
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 12,
+                    delta: 50,
+                    balance: 50,
+                },
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 13,
+                    delta: 30,
+                    balance: 80,
+                },
+            ],
+        );
+        seed_stable_commit(&server, 13, 9);
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 12,
+                context: None,
+            })
+            .unwrap_err();
+        match err.code {
+            JsonErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::HistoryNotAvailable.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(12));
+        assert_eq!(data.upstream_stable_height, Some(13));
     }
 
     #[test]

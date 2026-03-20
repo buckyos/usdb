@@ -258,6 +258,7 @@
 - `context` 可选；不传时只返回该高度的历史 state ref；
 - 传入 `context.expected_state` 后，服务会对该高度的历史 state ref 做严格校验；
 - 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`；
+- 若高度合法，但该节点当前缺少构造该历史 state ref 所需的 block commit，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`；
 - 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
 - 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
 

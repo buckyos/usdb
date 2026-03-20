@@ -45,10 +45,13 @@
 - `LOCAL_STATE_COMMIT_MISMATCH`
 - `SYSTEM_STATE_ID_MISMATCH`
 - `NO_RECORD`
+- `STATE_NOT_RETAINED`
+- `HISTORY_NOT_AVAILABLE`
 
-后续针对 ETHW 的历史验块场景，还需要补一类“历史 state ref 已不可重建/未保留”的错误。
-这类错误不属于当前第一阶段已落地集合，但应在后续阶段单独引入，不能混进
-`*_MISMATCH`。
+其中：
+
+- `HISTORY_NOT_AVAILABLE` 已开始用于“高度合法，但该节点当前无法重建所需历史 state ref”的场景
+- `STATE_NOT_RETAINED` 仍是保留码位，等待 retention floor 元数据落地后再真正启用
 
 ### 2.3 业务域错误
 
@@ -63,7 +66,7 @@
 
 ## 3. 共享错误码区间
 
-第一版统一放在 `-32040..-32047`：
+当前统一放在 `-32040..-32049`：
 
 | Name | Code | 含义 |
 | --- | ---: | --- |
@@ -75,6 +78,8 @@
 | `LOCAL_STATE_COMMIT_MISMATCH` | `-32045` | 调用方预期的 local state commit 与当前不一致 |
 | `SYSTEM_STATE_ID_MISMATCH` | `-32046` | 调用方预期的 system state id 与当前不一致 |
 | `NO_RECORD` | `-32047` | 查询合法、范围合法，但该对象/键没有记录 |
+| `STATE_NOT_RETAINED` | `-32048` | 查询高度已落到该节点明确的历史保留窗口之外 |
+| `HISTORY_NOT_AVAILABLE` | `-32049` | 查询高度合法，但该节点当前无法重建所需历史状态 |
 
 ## 4. 共享请求上下文
 
@@ -290,13 +295,15 @@
 
 - 已支持“查询高度 `H` 的历史 state ref”这个基础能力
 - 已支持历史 `state ref` 查询上基于 `expected_state` 的 `*_MISMATCH` 校验
-- 尚未引入 `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE`
+- 已开始把“高度合法但历史辅助数据缺口”的路径收敛成 `HISTORY_NOT_AVAILABLE`
+- `STATE_NOT_RETAINED` 仍待 retention floor 元数据落地后启用
 
 ### Phase 3
 
 在 `balance-history / usdb-indexer` 中逐步实现：
 
-- `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE` 这类错误
+- retention floor 元数据
+- `STATE_NOT_RETAINED` 的真实返回路径
 - 将 `ConsensusQueryContext` 继续扩展到 ETHW 真正依赖的 pass / energy 查询
 - 增加针对历史 state ref 校验的 regtest / integration coverage
 
