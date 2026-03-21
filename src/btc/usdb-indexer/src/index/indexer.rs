@@ -14,6 +14,7 @@ use crate::inscription::{
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use balance_history::{
+    HistoricalSnapshotStateRef as BalanceHistoryHistoricalStateRef,
     RpcClient as BalanceHistoryRpcClient, SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use bitcoincore_rpc::bitcoin::{Block, Txid};
@@ -471,6 +472,18 @@ impl InscriptionIndexer {
         )
     }
 
+    fn stored_snapshot_anchor_matches_historical_state_ref(
+        local_anchor: &crate::storage::BalanceHistorySnapshotAnchor,
+        upstream_state_ref: &balance_history::HistoricalSnapshotStateRef,
+    ) -> bool {
+        local_anchor.stable_height == upstream_state_ref.block_height
+            && local_anchor.stable_block_hash == upstream_state_ref.stable_block_hash
+            && local_anchor.latest_block_commit == upstream_state_ref.latest_block_commit
+            && local_anchor.stable_lag == upstream_state_ref.consensus_identity.stable_lag
+            && local_anchor.commit_protocol_version == upstream_state_ref.commit_protocol_version
+            && local_anchor.commit_hash_algo == upstream_state_ref.commit_hash_algo
+    }
+
     async fn detect_upstream_reorg_target(
         &self,
         current_height: u32,
@@ -578,7 +591,35 @@ impl InscriptionIndexer {
                     msg
                 })?;
 
-            if Self::stored_pass_commit_matches_upstream(&local_commit, &upstream_commit) {
+            let Some(local_snapshot_anchor) = self
+                .miner_pass_storage
+                .get_balance_history_snapshot_anchor_at_height(height)?
+            else {
+                if Self::stored_pass_commit_matches_upstream(&local_commit, &upstream_commit) {
+                    return Ok(height);
+                }
+                continue;
+            };
+
+            let upstream_state_ref = self
+                .balance_history_client
+                .get_state_ref_at_height(height)
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "Balance-history historical state ref is missing during common-ancestor search at height {}: {}",
+                        height, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            if Self::stored_pass_commit_matches_upstream(&local_commit, &upstream_commit)
+                && Self::stored_snapshot_anchor_matches_historical_state_ref(
+                    &local_snapshot_anchor,
+                    &upstream_state_ref,
+                )
+            {
                 return Ok(height);
             }
         }
@@ -772,6 +813,89 @@ impl InscriptionIndexer {
         Ok(())
     }
 
+    fn snapshot_info_from_historical_state_ref(
+        state_ref: BalanceHistoryHistoricalStateRef,
+    ) -> BalanceHistorySnapshotInfo {
+        BalanceHistorySnapshotInfo {
+            stable_height: state_ref.block_height,
+            stable_block_hash: Some(state_ref.stable_block_hash),
+            latest_block_commit: Some(state_ref.latest_block_commit),
+            stable_lag: state_ref.consensus_identity.stable_lag,
+            balance_history_api_version: state_ref.consensus_identity.balance_history_api_version,
+            balance_history_semantics_version: state_ref
+                .consensus_identity
+                .balance_history_semantics_version,
+            commit_protocol_version: state_ref.commit_protocol_version,
+            commit_hash_algo: state_ref.commit_hash_algo,
+        }
+    }
+
+    // Backfill exact-height upstream snapshot-history rows for already durable local
+    // heights. This lets historical ETHW-style validation resolve the upstream
+    // anchor that was in force at one exact BTC height even after head advances.
+    async fn backfill_balance_history_snapshot_history(
+        &self,
+        start_height: u32,
+        end_height: u32,
+    ) -> Result<(), String> {
+        if start_height > end_height {
+            return Ok(());
+        }
+
+        let Some(first_missing_height) = self
+            .miner_pass_storage
+            .get_first_missing_balance_history_snapshot_history_height(start_height, end_height)?
+        else {
+            return Ok(());
+        };
+
+        info!(
+            "Backfilling balance-history snapshot history: module=indexer, start_height={}, end_height={}",
+            first_missing_height, end_height
+        );
+
+        for height in first_missing_height..=end_height {
+            if self
+                .miner_pass_storage
+                .get_balance_history_snapshot_anchor_at_height(height)?
+                .is_some()
+            {
+                continue;
+            }
+
+            warn!(
+                "Backfilling balance-history snapshot history at height {}: no snapshot anchor found, attempting to load historical state ref",
+                height
+            );
+            
+            let state_ref = self
+                .balance_history_client
+                .get_state_ref_at_height(height)
+                .await
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to load balance-history historical state ref while backfilling upstream snapshot history: height={}, error={}",
+                        height, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            let snapshot = Self::snapshot_info_from_historical_state_ref(state_ref);
+            self.miner_pass_storage
+                .upsert_balance_history_snapshot_history_entry(&snapshot)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to persist backfilled balance-history snapshot history: height={}, error={}",
+                        height, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+        }
+
+        Ok(())
+    }
+
     fn persist_balance_history_snapshot_anchor(
         &self,
         synced_height: u32,
@@ -876,6 +1000,8 @@ impl InscriptionIndexer {
             .miner_pass_storage
             .get_synced_btc_block_height()?
             .unwrap_or(current_height);
+
+        // Always enforce the genesis block height as the minimum starting point
         if current_height < genesis_block_height - 1 {
             current_height = genesis_block_height - 1;
         }
@@ -948,6 +1074,8 @@ impl InscriptionIndexer {
                 current_height,
                 &balance_history_snapshot,
             )?;
+            self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
+                .await?;
             let msg = format!(
                 "No new blocks to sync. Current height: {}, Latest height: {}",
                 current_height, latest_height
@@ -984,6 +1112,8 @@ impl InscriptionIndexer {
         let current_height = ret.unwrap();
 
         self.persist_balance_history_snapshot_anchor(current_height, &balance_history_snapshot)?;
+        self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
+            .await?;
 
         Ok(current_height)
     }

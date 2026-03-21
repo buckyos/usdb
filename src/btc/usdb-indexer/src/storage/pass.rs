@@ -578,6 +578,41 @@ impl MinerPassStorage {
         })
     }
 
+    // Persist one exact-height upstream snapshot-history row without mutating the
+    // current adopted anchor or synced-height pointers.
+    pub fn upsert_balance_history_snapshot_history_entry(
+        &self,
+        snapshot: &BalanceHistorySnapshotInfo,
+    ) -> Result<(), String> {
+        let stable_block_hash = snapshot.stable_block_hash.clone().ok_or_else(|| {
+            let msg = format!(
+                "Balance-history snapshot missing stable block hash at height {}",
+                snapshot.stable_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let latest_block_commit = snapshot.latest_block_commit.clone().ok_or_else(|| {
+            let msg = format!(
+                "Balance-history snapshot missing latest block commit at height {}",
+                snapshot.stable_height
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let conn = self.conn.lock().unwrap();
+        Self::upsert_balance_history_snapshot_history_with_conn(
+            &conn,
+            snapshot.stable_height,
+            &stable_block_hash,
+            &latest_block_commit,
+            snapshot.stable_lag,
+            &snapshot.commit_protocol_version,
+            &snapshot.commit_hash_algo,
+        )
+    }
+
     fn upsert_balance_history_snapshot_anchor_with_conn(
         conn: &Connection,
         snapshot: &BalanceHistorySnapshotInfo,
@@ -1252,6 +1287,90 @@ impl MinerPassStorage {
             commit_protocol_version,
             commit_hash_algo,
         }))
+    }
+
+    pub fn get_first_missing_balance_history_snapshot_history_height(
+        &self,
+        start_height: u32,
+        end_height: u32,
+    ) -> Result<Option<u32>, String> {
+        if start_height > end_height {
+            return Ok(None);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                SELECT block_height
+                FROM balance_history_snapshot_history
+                WHERE block_height BETWEEN ?1 AND ?2
+                ORDER BY block_height ASC
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare balance-history snapshot history coverage query for range [{}-{}]: {}",
+                    start_height, end_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![start_height as i64, end_height as i64])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query balance-history snapshot history coverage for range [{}-{}]: {}",
+                    start_height, end_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut expected_height = start_height;
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read balance-history snapshot history coverage row for range [{}-{}]: {}",
+                start_height, end_height, e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let stored_height: i64 = row.get(0).map_err(|e| {
+                let msg = format!(
+                    "Failed to decode balance-history snapshot history height for range [{}-{}]: {}",
+                    start_height, end_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if stored_height < 0 {
+                let msg = format!(
+                    "Invalid negative balance-history snapshot history height {} in range [{}-{}]",
+                    stored_height, start_height, end_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+
+            let stored_height = stored_height as u32;
+            if stored_height > expected_height {
+                return Ok(Some(expected_height));
+            }
+            if stored_height == expected_height {
+                expected_height = expected_height.saturating_add(1);
+                if expected_height > end_height {
+                    return Ok(None);
+                }
+            }
+        }
+
+        if expected_height <= end_height {
+            Ok(Some(expected_height))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn upsert_pass_block_commit(&self, entry: &PassBlockCommitEntry) -> Result<(), String> {

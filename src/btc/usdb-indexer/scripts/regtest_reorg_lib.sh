@@ -153,6 +153,49 @@ regtest_rpc_call_usdb_indexer() {
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
 
+regtest_get_usdb_state_ref_response() {
+  local block_height="$1"
+  regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "[{\"block_height\":${block_height}}]"
+}
+
+regtest_build_consensus_context_json() {
+  local requested_height="$1"
+  local snapshot_id="$2"
+  local stable_block_hash="$3"
+  local local_state_commit="$4"
+  local system_state_id="$5"
+
+  python3 - "$requested_height" "$snapshot_id" "$stable_block_hash" "$local_state_commit" "$system_state_id" <<'PY'
+import json
+import sys
+
+requested_height = int(sys.argv[1])
+snapshot_id = sys.argv[2]
+stable_block_hash = sys.argv[3]
+local_state_commit = sys.argv[4]
+system_state_id = sys.argv[5]
+
+print(json.dumps({
+    "requested_height": requested_height,
+    "expected_state": {
+        "snapshot_id": snapshot_id,
+        "stable_block_hash": stable_block_hash,
+        "local_state_commit": local_state_commit,
+        "system_state_id": system_state_id,
+    },
+}))
+PY
+}
+
+regtest_assert_usdb_consensus_error() {
+  local response="$1"
+  local expected_code="$2"
+  local expected_message="$3"
+
+  regtest_assert_json_expr "$response" "((data.get('error') or {}).get('code'))" "$expected_code"
+  regtest_assert_json_expr "$response" "((data.get('error') or {}).get('message'))" "$expected_message"
+}
+
 regtest_rpc_call_usdb_json_retry() {
   local method="$1"
   local params="${2:-[]}"
@@ -459,6 +502,23 @@ regtest_create_usdb_indexer_config() {
   }
 }
 EOF
+}
+
+regtest_update_usdb_genesis_block_height() {
+  local new_height="$1"
+  local config_path="${USDB_INDEXER_ROOT}/config.json"
+
+  python3 - "$config_path" "$new_height" <<'PY'
+import json
+import pathlib
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+new_height = int(sys.argv[2])
+payload = json.loads(config_path.read_text())
+payload.setdefault("usdb", {})["genesis_block_height"] = new_height
+config_path.write_text(json.dumps(payload, indent=2) + "\n")
+PY
 }
 
 regtest_start_bitcoind() {
@@ -982,6 +1042,26 @@ if row is None or row[0] is None:
     print("")
 else:
     print(row[0])
+PY
+}
+
+regtest_usdb_db_exec() {
+  local sql="$1"
+  local db_path
+  db_path="$(regtest_usdb_miner_pass_db_path)"
+
+  python3 - "$db_path" "$sql" <<'PY'
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+sql = sys.argv[2]
+conn = sqlite3.connect(db_path)
+try:
+    conn.executescript(sql)
+    conn.commit()
+finally:
+    conn.close()
 PY
 }
 

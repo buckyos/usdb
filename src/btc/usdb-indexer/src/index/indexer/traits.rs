@@ -5,6 +5,7 @@ use crate::inscription::InscriptionTransferItem;
 use crate::status::StatusManager;
 use balance_history::{
     BlockCommitInfo as BalanceHistoryBlockCommitInfo, RpcClient as BalanceHistoryRpcClient,
+    HistoricalSnapshotStateRef as BalanceHistoryHistoricalStateRef,
     SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use bitcoincore_rpc::bitcoin::Block;
@@ -134,6 +135,11 @@ pub(crate) trait BalanceHistoryCommitApi: Send + Sync {
         &'a self,
         block_height: u32,
     ) -> BalanceHistoryFuture<'a, Result<Option<BalanceHistoryBlockCommitInfo>, String>>;
+
+    fn get_state_ref_at_height<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> BalanceHistoryFuture<'a, Result<BalanceHistoryHistoricalStateRef, String>>;
 }
 
 impl BalanceHistoryCommitApi for BalanceHistoryRpcClient {
@@ -142,6 +148,13 @@ impl BalanceHistoryCommitApi for BalanceHistoryRpcClient {
         block_height: u32,
     ) -> BalanceHistoryFuture<'a, Result<Option<BalanceHistoryBlockCommitInfo>, String>> {
         Box::pin(async move { self.get_block_commit(block_height).await })
+    }
+
+    fn get_state_ref_at_height<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> BalanceHistoryFuture<'a, Result<BalanceHistoryHistoricalStateRef, String>> {
+        Box::pin(async move { self.get_state_ref_at_height(block_height).await })
     }
 }
 

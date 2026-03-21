@@ -122,6 +122,7 @@ impl IndexStatusApi for MockStatus {
 #[derive(Default)]
 struct MockBalanceHistoryCommitProvider {
     commits: Mutex<HashMap<u32, Option<balance_history::BlockCommitInfo>>>,
+    state_refs: Mutex<HashMap<u32, balance_history::HistoricalSnapshotStateRef>>,
 }
 
 impl MockBalanceHistoryCommitProvider {
@@ -142,6 +143,43 @@ impl MockBalanceHistoryCommitProvider {
         commit: Option<balance_history::BlockCommitInfo>,
     ) {
         self.commits.lock().unwrap().insert(block_height, commit);
+    }
+
+    fn default_state_ref(block_height: u32) -> balance_history::HistoricalSnapshotStateRef {
+        let commit = Self::default_commit(block_height);
+        let stable_block_hash = commit.btc_block_hash.clone();
+        let latest_block_commit = commit.block_commit.clone();
+        let consensus_identity = usdb_util::ConsensusSnapshotIdentity {
+            source_chain: usdb_util::CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+            network: "regtest".to_string(),
+            stable_height: block_height,
+            stable_block_hash: stable_block_hash.clone(),
+            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
+            usdb_index_formula_version: usdb_util::USDB_INDEX_FORMULA_VERSION.to_string(),
+            usdb_index_protocol_version: usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
+        balance_history::HistoricalSnapshotStateRef {
+            block_height,
+            stable_block_hash,
+            latest_block_commit,
+            snapshot_id: usdb_util::build_consensus_snapshot_id(&consensus_identity),
+            consensus_identity,
+            snapshot_id_hash_algo: usdb_util::CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
+            snapshot_id_version: usdb_util::CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
+            commit_protocol_version: commit.commit_protocol_version,
+            commit_hash_algo: commit.commit_hash_algo,
+        }
+    }
+
+    fn set_state_ref(
+        &self,
+        block_height: u32,
+        state_ref: balance_history::HistoricalSnapshotStateRef,
+    ) {
+        self.state_refs.lock().unwrap().insert(block_height, state_ref);
     }
 }
 
@@ -164,6 +202,26 @@ impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
             .cloned()
             .unwrap_or_else(|| Some(Self::default_commit(block_height)));
         Box::pin(async move { Ok(commit) })
+    }
+
+    fn get_state_ref_at_height<'a>(
+        &'a self,
+        block_height: u32,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<balance_history::HistoricalSnapshotStateRef, String>>
+                + Send
+                + 'a,
+        >,
+    > {
+        let state_ref = self
+            .state_refs
+            .lock()
+            .unwrap()
+            .get(&block_height)
+            .cloned()
+            .unwrap_or_else(|| Self::default_state_ref(block_height));
+        Box::pin(async move { Ok(state_ref) })
     }
 }
 

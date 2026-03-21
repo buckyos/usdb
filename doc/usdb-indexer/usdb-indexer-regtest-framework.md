@@ -23,6 +23,9 @@
 - live ord 单块 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_reorg_transfer_remint.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_reorg_transfer_remint.sh)
 - live ord 同高度场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_same_height_reorg_transfer_remint.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_same_height_reorg_transfer_remint.sh)
 - live ord 多块 rollback 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh)
+- live ord 历史校验 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh)
+- live ord 历史校验 floor/restart 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh)
+- live ord 历史校验 history-not-available 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh)
 - pending recovery energy failure 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh)
 - pending recovery transfer reload restart 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh)
 
@@ -42,6 +45,7 @@
 3. live ord 业务层：
    - `regtest_live_ord_*`
    - 负责真实 mint / transfer / remint(prev) 以及多块业务 rollback
+   - 也覆盖 ETHW 风格历史校验请求在 head 前进、same-height reorg、历史窗口上升、历史辅助数据缺失时的错误分流
 4. world-sim 压力层：
    - `regtest_world_sim.sh`
    - `regtest_world_sim_reorg.sh`
@@ -66,6 +70,12 @@
 8. runtime fault injection 环境变量透传：
    - `USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES`
    - `USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES`
+9. ETHW 风格历史校验 helper：
+   - `regtest_get_usdb_state_ref_response`
+   - `regtest_build_consensus_context_json`
+   - `regtest_assert_usdb_consensus_error`
+   - `regtest_update_usdb_genesis_block_height`
+   - `regtest_usdb_db_exec`
 
 ## 推荐运行方式
 
@@ -88,6 +98,17 @@ bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 ```bash
 BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
 RUN_LIVE_ORD_REORG_SUITE=0 \
+bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
+```
+
+只跑历史校验专项：
+
+```bash
+BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
+ORD_BIN=/home/bucky/ord/target/release/ord \
+RUN_SMOKE_REORG_SUITE=0 \
+RUN_LIVE_ORD_REORG_SUITE=0 \
+RUN_PENDING_RECOVERY_SUITE=0 \
 bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 ```
 

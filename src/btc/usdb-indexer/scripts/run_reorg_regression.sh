@@ -10,6 +10,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 RUN_SMOKE_REORG_SUITE="${RUN_SMOKE_REORG_SUITE:-1}"
 RUN_LIVE_ORD_REORG_SUITE="${RUN_LIVE_ORD_REORG_SUITE:-1}"
 RUN_PENDING_RECOVERY_SUITE="${RUN_PENDING_RECOVERY_SUITE:-1}"
+RUN_HISTORICAL_VALIDATION_SUITE="${RUN_HISTORICAL_VALIDATION_SUITE:-1}"
 
 BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-30132}"
 BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-30133}"
@@ -79,6 +80,15 @@ run_pending_recovery_suite() {
   run_case "$slot" "regtest_pending_recovery_transfer_reload_restart.sh"
 }
 
+run_historical_validation_suite() {
+  local slot=30
+  run_case "$slot" "regtest_live_ord_historical_validation_reorg.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_historical_validation_floor_restart.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_historical_validation_history_not_available.sh"
+}
+
 main() {
   log "Repo root: ${REPO_ROOT}"
   log "Bitcoin bin dir: ${BITCOIN_BIN_DIR}"
@@ -100,6 +110,12 @@ main() {
     run_pending_recovery_suite
   else
     log "Skipping pending recovery suite: RUN_PENDING_RECOVERY_SUITE=${RUN_PENDING_RECOVERY_SUITE}"
+  fi
+
+  if [[ "${RUN_HISTORICAL_VALIDATION_SUITE}" == "1" ]]; then
+    run_historical_validation_suite
+  else
+    log "Skipping historical validation suite: RUN_HISTORICAL_VALIDATION_SUITE=${RUN_HISTORICAL_VALIDATION_SUITE}"
   fi
 
   log "USDB reorg regression suite succeeded."
