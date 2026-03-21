@@ -299,6 +299,42 @@ impl UsdbIndexerRpcServer {
         Ok((current_snapshot, current_local_state, current_system_state))
     }
 
+    fn history_retention_floor(&self) -> u32 {
+        self.config.config().usdb.genesis_block_height
+    }
+
+    /// Fail closed when a historical query asks for a height that the node has
+    /// not promised to retain. In the current phase the retention floor is the
+    /// configured BTC genesis height rather than per-component persisted
+    /// metadata. This keeps the contract simple until real prune support exists.
+    fn ensure_history_height_retained(
+        &self,
+        requested_height: u32,
+        component: &str,
+    ) -> Result<(), JsonError> {
+        let retention_floor = self.history_retention_floor();
+        if requested_height >= retention_floor {
+            return Ok(());
+        }
+
+        let (current_snapshot, current_local_state, current_system_state) = self
+            .current_state_for_error_payload()
+            .unwrap_or((None, None, None));
+        Err(Self::to_consensus_error(
+            ConsensusRpcErrorCode::StateNotRetained,
+            self.build_consensus_error_data(
+                Some(requested_height),
+                current_snapshot.as_ref(),
+                current_local_state.as_ref(),
+                current_system_state.as_ref(),
+                Some(format!(
+                    "Requested height {} is below {} retention floor {}",
+                    requested_height, component, retention_floor
+                )),
+            ),
+        ))
+    }
+
     fn build_consensus_error_data_for_state(
         &self,
         requested_height: Option<u32>,
@@ -524,6 +560,8 @@ impl UsdbIndexerRpcServer {
         &self,
         block_height: u32,
     ) -> Result<IndexerSnapshotInfo, JsonError> {
+        self.ensure_history_height_retained(block_height, "historical state")?;
+
         let anchor = self
             .indexer
             .miner_pass_storage()
@@ -599,6 +637,10 @@ impl UsdbIndexerRpcServer {
         let latest_active_balance_snapshot = if synced_height < genesis_block_height {
             None
         } else {
+            if !require_latest_balance_snapshot_consistency {
+                self.ensure_history_height_retained(synced_height, "historical state")?;
+            }
+
             if require_latest_balance_snapshot_consistency {
                 self.indexer
                     .miner_pass_storage()
@@ -1495,6 +1537,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let resolved_height =
             self.resolve_height_for_contextual_query(params.at_height, params.context.as_ref())?;
+        self.ensure_history_height_retained(resolved_height, "historical state")?;
         self.build_pass_snapshot(&inscription_id, resolved_height)
     }
 
@@ -1660,6 +1703,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         let inscription_id = self.parse_inscription_id(&params.inscription_id)?;
         let query_height =
             self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
+        self.ensure_history_height_retained(query_height, "historical state")?;
         let mode = params.mode.unwrap_or_else(|| "at_or_before".to_string());
 
         let record = match mode.as_str() {
@@ -2154,6 +2198,17 @@ mod tests {
 
     fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
         let root_dir = test_root_dir(tag);
+        let mut config_file = IndexerConfig::default();
+        // Test helpers that use synthetic low BTC heights should not inherit the
+        // production-like default genesis height, otherwise retention-floor
+        // checks would classify every query as pruned before the fixture data
+        // is even inserted.
+        config_file.usdb.genesis_block_height = 0;
+        std::fs::write(
+            root_dir.join("config.json"),
+            serde_json::to_vec_pretty(&config_file).unwrap(),
+        )
+        .unwrap();
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
@@ -2381,7 +2436,7 @@ mod tests {
     fn test_get_readiness_consensus_ready_when_caught_up_with_complete_state() {
         let (server, root_dir) = build_server("readiness_consensus_ready", 120);
         server.status.set_rpc_alive(true);
-        seed_upstream_anchor(&server, 120);
+        seed_state_ref_context(&server, 120);
 
         let readiness = server.get_readiness().unwrap();
         assert!(readiness.rpc_alive);
@@ -3131,6 +3186,37 @@ mod tests {
     }
 
     #[test]
+    fn test_get_state_ref_at_height_returns_state_not_retained_below_genesis() {
+        let (server, root_dir) =
+            build_server_with_genesis("state_ref_at_height_below_genesis", 120, 110);
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 109,
+                context: None,
+            })
+            .unwrap_err();
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::StateNotRetained.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(109));
+        assert!(
+            data.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("historical state retention floor 110")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_local_state_commit_info_returns_snapshot_not_ready_when_anchor_missing() {
         let (server, root_dir) =
             build_server_with_genesis("local_state_commit_not_ready", 120, 100);
@@ -3464,6 +3550,42 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_snapshot_returns_state_not_retained_below_pass_history_floor() {
+        let (server, root_dir) = build_server_with_genesis("snapshot_state_not_retained", 120, 110);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(26, 126, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(109),
+                context: None,
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::StateNotRetained.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(109));
+        assert!(
+            data.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("historical state retention floor 110")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_owner_active_pass_duplicate_owner_error() {
         let (server, root_dir) = build_server("duplicate_owner", 200);
         let storage = server.indexer.miner_pass_storage();
@@ -3745,6 +3867,44 @@ mod tests {
         assert_eq!(data.requested_height, Some(120));
         assert_eq!(data.expected_state.system_state_id, Some("dd".repeat(32)));
         assert!(data.actual_state.system_state_id.is_some());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_returns_state_not_retained_below_energy_history_floor() {
+        let (server, root_dir) = build_server_with_genesis("energy_state_not_retained", 130, 121);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(27, 127, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_state_ref_context(&server, 130);
+        seed_energy_record(&server, &pass, 120, 500);
+
+        let err = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                mode: Some("exact".to_string()),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::StateNotRetained.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert!(
+            data.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("historical state retention floor 121")
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

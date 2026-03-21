@@ -51,7 +51,7 @@
 其中：
 
 - `HISTORY_NOT_AVAILABLE` 已开始用于“高度合法，但该节点当前无法重建所需历史 state ref”的场景
-- `STATE_NOT_RETAINED` 仍是保留码位，等待 retention floor 元数据落地后再真正启用
+- `STATE_NOT_RETAINED` 已用于“高度低于节点当前承诺保留的历史窗口下界”的场景
 
 ### 2.3 业务域错误
 
@@ -296,16 +296,15 @@
 - 已支持“查询高度 `H` 的历史 state ref”这个基础能力
 - 已支持历史 `state ref` 查询上基于 `expected_state` 的 `*_MISMATCH` 校验
 - 已开始把“高度合法但历史辅助数据缺口”的路径收敛成 `HISTORY_NOT_AVAILABLE`
-- `STATE_NOT_RETAINED` 仍待 retention floor 元数据落地后启用
+- 已在 `usdb-indexer` 中把 `STATE_NOT_RETAINED` 收敛成基于 `genesis_block_height` 的统一历史保留窗口下界
 
 ### Phase 3
 
 在 `balance-history / usdb-indexer` 中逐步实现：
 
-- retention floor 元数据
-- `STATE_NOT_RETAINED` 的真实返回路径
 - 将 `ConsensusQueryContext` 继续扩展到 ETHW 真正依赖的 pass / energy 查询
 - 增加针对历史 state ref 校验的 regtest / integration coverage
+- 若未来引入真实 prune，再把统一下界扩展成持久化 retention floor 元数据
 
 并补共享 helper：
 
