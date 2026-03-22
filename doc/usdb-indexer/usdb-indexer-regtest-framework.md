@@ -26,6 +26,7 @@
 - live ord 历史校验 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh)
 - live ord 历史校验 floor/restart 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh)
 - live ord 历史校验 history-not-available 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh)
+- live ord validator historical-context e2e 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh)
 - pending recovery energy failure 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh)
 - pending recovery transfer reload restart 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh)
 

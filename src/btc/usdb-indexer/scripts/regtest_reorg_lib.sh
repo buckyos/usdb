@@ -325,6 +325,30 @@ regtest_wait_usdb_consensus_ready() {
   done
 }
 
+regtest_wait_usdb_state_ref_available() {
+  local target_height="$1"
+  local start_ts now resp error_code
+
+  regtest_log "Waiting until usdb-indexer historical state ref is available at height ${target_height}"
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(regtest_get_usdb_state_ref_response "$target_height")"
+    error_code="$(regtest_json_expr "$resp" "((data.get('error') or {}).get('code'))")"
+    if [[ "$error_code" == "None" ]]; then
+      regtest_log "usdb-indexer historical state ref is available at height ${target_height}"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for usdb-indexer historical state ref at height ${target_height}. last_response=${resp}"
+      exit 1
+    fi
+
+    sleep 0.5
+  done
+}
+
 regtest_wait_until_rpc_expr_eq() {
   local label="$1"
   local rpc_func="$2"

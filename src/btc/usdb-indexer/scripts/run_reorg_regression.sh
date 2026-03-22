@@ -87,6 +87,8 @@ run_historical_validation_suite() {
   run_case "$slot" "regtest_live_ord_historical_validation_floor_restart.sh"
   slot=$((slot + 1))
   run_case "$slot" "regtest_live_ord_historical_validation_history_not_available.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_historical_context_e2e.sh"
 }
 
 main() {

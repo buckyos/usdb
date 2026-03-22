@@ -181,6 +181,7 @@ EOF
   regtest_wait_until_usdb_synced_eq "$historical_height"
   regtest_wait_balance_history_consensus_ready
   regtest_wait_usdb_consensus_ready
+  regtest_wait_usdb_state_ref_available "$historical_height"
 
   state_ref_resp="$(regtest_get_usdb_state_ref_response "$historical_height")"
   regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
