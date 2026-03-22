@@ -1173,6 +1173,24 @@ regtest_stop_ord_server() {
     regtest_log "Stopping ord server process pid=${ORD_SERVER_PID}"
     regtest_stop_process "$ORD_SERVER_PID"
   fi
+
+  # Be defensive: ord server may outlive the original background shell process
+  # or respawn under a different pid. Sweep any process still bound to this
+  # workspace/data-dir so repeated regtests do not leak regtest ord servers.
+  if [[ -n "${ORD_DATA_DIR:-}" ]] && [[ -n "${ORD_RPC_PORT:-}" ]]; then
+    while IFS= read -r pid; do
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        regtest_log "Stopping residual ord server process pid=${pid} for data_dir=${ORD_DATA_DIR}, http_port=${ORD_RPC_PORT}"
+        regtest_stop_process "$pid"
+      fi
+    done < <(
+      ps -eo pid=,args= | awk -v data_dir="$ORD_DATA_DIR" -v http_port="$ORD_RPC_PORT" '
+        index($0, "/ord ") && index($0, " server ") && index($0, " --data-dir " data_dir) && index($0, " --http-port " http_port) {
+          print $1
+        }
+      '
+    )
+  fi
   ORD_SERVER_PID=""
 }
 
