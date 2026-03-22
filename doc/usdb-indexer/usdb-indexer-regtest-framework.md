@@ -4,6 +4,8 @@
 
 如果需要先理解整套测试栈里 `bitcoind`、`ord`、`balance-history`、`usdb-indexer` 和 `world-sim` 的连接关系，可先看拓扑说明：[doc/usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
 
+如果需要先理解 validator 风格 block-body payload 的设计与后续脚本分层，可先看：[doc/usdb-indexer/usdb-indexer-validator-block-body-e2e-design.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-validator-block-body-e2e-design.md)。
+
 ## 入口文件
 
 - 共享库：[src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh)
@@ -26,6 +28,9 @@
 - live ord 历史校验 reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_reorg.sh)
 - live ord 历史校验 floor/restart 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_floor_restart.sh)
 - live ord 历史校验 history-not-available 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_historical_validation_history_not_available.sh)
+- live ord validator block-body happy-path 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh)
+- live ord validator block-body reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh)
+- live ord validator block-body retention 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_retention.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_retention.sh)
 - live ord validator historical-context e2e 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh)
 - pending recovery energy failure 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_energy_failure.sh)
 - pending recovery transfer reload restart 场景：[src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_restart.sh)

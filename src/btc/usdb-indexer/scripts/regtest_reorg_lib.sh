@@ -187,6 +187,214 @@ print(json.dumps({
 PY
 }
 
+regtest_write_validator_payload_v1() {
+  local payload_file="$1"
+  local state_ref_resp="$2"
+  local pass_snapshot_resp="$3"
+  local pass_energy_resp="$4"
+
+  python3 - "$payload_file" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp" <<'PY'
+import json
+import pathlib
+import sys
+
+payload_file = pathlib.Path(sys.argv[1])
+state_ref = json.loads(sys.argv[2])["result"]
+pass_snapshot = json.loads(sys.argv[3])["result"]
+pass_energy = json.loads(sys.argv[4])["result"]
+
+payload = {
+    "payload_version": "1.0.0",
+    "external_state": {
+        "btc_height": state_ref["block_height"],
+        "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
+        "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
+        "system_state_id": state_ref["system_state_info"]["system_state_id"],
+        "usdb_index_protocol_version": (
+            (state_ref["system_state_info"].get("system_state_identity") or {}).get("usdb_index_protocol_version")
+            or (state_ref["local_state_commit_info"].get("local_state_identity") or {}).get("usdb_index_protocol_version")
+            or (state_ref["snapshot_info"].get("consensus_identity") or {}).get("usdb_index_protocol_version")
+        ),
+    },
+    "miner_selection": {
+        "inscription_id": pass_snapshot["inscription_id"],
+        "owner": pass_snapshot["owner"],
+        "state": pass_snapshot["state"],
+        "energy": pass_energy["energy"],
+        "resolved_height": pass_snapshot["resolved_height"],
+        "query_block_height": pass_energy["query_block_height"],
+    },
+}
+
+payload_file.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+regtest_validator_payload_expr() {
+  local payload_file="$1"
+  local expression="$2"
+
+  python3 - "$payload_file" "$expression" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+expression = sys.argv[2]
+print(eval(expression, {"__builtins__": {}}, {"data": payload}))
+PY
+}
+
+regtest_validator_payload_context_json() {
+  local payload_file="$1"
+
+  python3 - "$payload_file" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+state = payload["external_state"]
+
+print(json.dumps({
+    "requested_height": state["btc_height"],
+    "expected_state": {
+        "snapshot_id": state["snapshot_id"],
+        "stable_block_hash": state["stable_block_hash"],
+        "local_state_commit": state["local_state_commit"],
+        "system_state_id": state["system_state_id"],
+        "usdb_index_protocol_version": state["usdb_index_protocol_version"],
+    },
+}))
+PY
+}
+
+regtest_build_validator_state_ref_params() {
+  local payload_file="$1"
+  local block_height context_json
+
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+
+  python3 - "$block_height" "$context_json" <<'PY'
+import json
+import sys
+
+block_height = int(sys.argv[1])
+context = json.loads(sys.argv[2])
+print(json.dumps([{
+    "block_height": block_height,
+    "context": context,
+}]))
+PY
+}
+
+regtest_build_validator_pass_snapshot_params() {
+  local payload_file="$1"
+  local pass_id block_height context_json
+
+  pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+
+  python3 - "$pass_id" "$block_height" "$context_json" <<'PY'
+import json
+import sys
+
+inscription_id = sys.argv[1]
+block_height = int(sys.argv[2])
+context = json.loads(sys.argv[3])
+print(json.dumps([{
+    "inscription_id": inscription_id,
+    "at_height": block_height,
+    "context": context,
+}]))
+PY
+}
+
+regtest_build_validator_pass_energy_params() {
+  local payload_file="$1"
+  local pass_id block_height context_json
+
+  pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+
+  python3 - "$pass_id" "$block_height" "$context_json" <<'PY'
+import json
+import sys
+
+inscription_id = sys.argv[1]
+block_height = int(sys.argv[2])
+context = json.loads(sys.argv[3])
+print(json.dumps([{
+    "inscription_id": inscription_id,
+    "block_height": block_height,
+    "mode": "at_or_before",
+    "context": context,
+}]))
+PY
+}
+
+regtest_validate_validator_payload_success() {
+  local payload_file="$1"
+  local block_height pass_id expected_owner expected_state expected_energy
+  local expected_snapshot_id expected_system_state_id
+  local state_ref_params snapshot_params energy_params resp
+
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  expected_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
+  expected_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
+  expected_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['energy']")"
+  expected_snapshot_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['snapshot_id']")"
+  expected_system_state_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['system_state_id']")"
+
+  state_ref_params="$(regtest_build_validator_state_ref_params "$payload_file")"
+  snapshot_params="$(regtest_build_validator_pass_snapshot_params "$payload_file")"
+  energy_params="$(regtest_build_validator_pass_energy_params "$payload_file")"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "$state_ref_params")"
+  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('block_height')" "$block_height"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('snapshot_info') or {}).get('snapshot_id')" "$expected_snapshot_id"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('system_state_info') or {}).get('system_state_id')" "$expected_system_state_id"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('owner')" "$expected_owner"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$expected_state"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('resolved_height')" "$block_height"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
+  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$expected_energy"
+}
+
+regtest_validate_validator_payload_consensus_error() {
+  local payload_file="$1"
+  local expected_code="$2"
+  local expected_message="$3"
+  local state_ref_params snapshot_params energy_params resp
+
+  state_ref_params="$(regtest_build_validator_state_ref_params "$payload_file")"
+  snapshot_params="$(regtest_build_validator_pass_snapshot_params "$payload_file")"
+  energy_params="$(regtest_build_validator_pass_energy_params "$payload_file")"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "$state_ref_params")"
+  regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+  regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
+  regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+}
+
 regtest_assert_usdb_consensus_error() {
   local response="$1"
   local expected_code="$2"
