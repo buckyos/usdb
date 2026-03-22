@@ -59,6 +59,25 @@ class ActionExpectation:
 
 
 @dataclass
+class ValidatorSample:
+    sample_id: str
+    tick: int
+    block_height: int
+    inscription_id: str
+    owner: str
+    state: str
+    energy: int
+    snapshot_id: str
+    stable_block_hash: str
+    local_state_commit: str
+    system_state_id: str
+    expected_consensus_error: str | None = None
+    invalidated_by_reorg_tick: int | None = None
+    validated: bool = False
+    validated_tick: int | None = None
+
+
+@dataclass
 class Args:
     btc_cli: str
     bitcoin_dir: str
@@ -103,6 +122,10 @@ class Args:
     reorg_interval_blocks: int
     reorg_depth: int
     reorg_max_events: int
+    validator_sample_enabled: bool
+    validator_sample_interval_blocks: int
+    validator_sample_size: int
+    validator_sample_min_head_advance: int
 
     @property
     def rpc_timeout_sec(self) -> float:
@@ -191,9 +214,12 @@ class RegtestWorldSimulator:
             "global_cross_check_fail": 0,
             "reorg_ok": 0,
             "reorg_fail": 0,
+            "validator_sample_ok": 0,
+            "validator_sample_fail": 0,
             "skip": 0,
         }
         self.reorg_events_applied = 0
+        self.validator_samples: list[ValidatorSample] = []
 
         self.report_path: Path | None = None
         self.report_fp: Any | None = None
@@ -228,6 +254,10 @@ class RegtestWorldSimulator:
                 "reorg_interval_blocks": self.args.reorg_interval_blocks,
                 "reorg_depth": self.args.reorg_depth,
                 "reorg_max_events": self.args.reorg_max_events,
+                "validator_sample_enabled": self.args.validator_sample_enabled,
+                "validator_sample_interval_blocks": self.args.validator_sample_interval_blocks,
+                "validator_sample_size": self.args.validator_sample_size,
+                "validator_sample_min_head_advance": self.args.validator_sample_min_head_advance,
             },
         )
 
@@ -498,6 +528,275 @@ class RegtestWorldSimulator:
         )
         return result if isinstance(result, dict) else None
 
+    def get_state_ref_at_height(
+        self, block_height: int, context: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        params: dict[str, Any] = {"block_height": block_height}
+        if context is not None:
+            params["context"] = context
+        result = self.rpc_usdb("get_state_ref_at_height", [params])
+        return result if isinstance(result, dict) else None
+
+    def raw_usdb_rpc(self, method: str, params: Any) -> dict[str, Any]:
+        payload = self.rpc_call(self.args.usdb_rpc_url, method, params)
+        if not isinstance(payload, dict):
+            raise WorldSimError(f"{method} returned non-dict payload: {payload}")
+        return payload
+
+    @staticmethod
+    def build_consensus_context_from_state_ref(state_ref: dict[str, Any]) -> dict[str, Any]:
+        snapshot_info = state_ref.get("snapshot_info") or {}
+        local_state_info = state_ref.get("local_state_commit_info") or {}
+        system_state_info = state_ref.get("system_state_info") or {}
+        return {
+            "requested_height": int(state_ref.get("block_height", 0)),
+            "expected_state": {
+                "snapshot_id": snapshot_info.get("snapshot_id"),
+                "stable_block_hash": snapshot_info.get("stable_block_hash"),
+                "local_state_commit": local_state_info.get("local_state_commit"),
+                "system_state_id": system_state_info.get("system_state_id"),
+            },
+        }
+
+    def should_capture_validator_sample(self, tick: int) -> bool:
+        if not self.args.validator_sample_enabled:
+            return False
+        interval = self.args.validator_sample_interval_blocks
+        if interval <= 0:
+            return False
+        return tick % interval == 0
+
+    def capture_validator_samples(self, block_height: int, tick: int) -> list[str]:
+        rows = self.load_all_active_passes_at_height(block_height)
+        if not rows:
+            return []
+
+        candidate_ids = sorted(
+            {
+                str(row.get("inscription_id", ""))
+                for row in rows
+                if str(row.get("inscription_id", ""))
+            }
+        )
+        if not candidate_ids:
+            return []
+
+        sample_size = self.args.validator_sample_size
+        if sample_size <= 0 or sample_size >= len(candidate_ids):
+            selected_ids = candidate_ids
+        else:
+            selected_ids = sorted(self.diag_rng.sample(candidate_ids, sample_size))
+
+        state_ref = self.get_state_ref_at_height(block_height)
+        if state_ref is None:
+            raise WorldSimError(
+                f"validator sample capture missing state ref: tick={tick}, block_height={block_height}"
+            )
+        context = self.build_consensus_context_from_state_ref(state_ref)
+        snapshot_info = state_ref.get("snapshot_info") or {}
+        local_state_info = state_ref.get("local_state_commit_info") or {}
+        system_state_info = state_ref.get("system_state_info") or {}
+
+        captured: list[str] = []
+        for inscription_id in selected_ids:
+            snapshot = self.rpc_usdb(
+                "get_pass_snapshot",
+                [
+                    {
+                        "inscription_id": inscription_id,
+                        "at_height": block_height,
+                        "context": context,
+                    }
+                ],
+            )
+            energy = self.rpc_usdb(
+                "get_pass_energy",
+                [
+                    {
+                        "inscription_id": inscription_id,
+                        "block_height": block_height,
+                        "mode": "at_or_before",
+                        "context": context,
+                    }
+                ],
+            )
+            if not isinstance(snapshot, dict) or not isinstance(energy, dict):
+                raise WorldSimError(
+                    "validator sample capture missing pass payload: "
+                    f"tick={tick}, block_height={block_height}, inscription_id={inscription_id}, "
+                    f"snapshot={snapshot}, energy={energy}"
+                )
+
+            sample = ValidatorSample(
+                sample_id=f"h{block_height}:{inscription_id}",
+                tick=tick,
+                block_height=block_height,
+                inscription_id=inscription_id,
+                owner=str(snapshot.get("owner", "")),
+                state=str(snapshot.get("state", "")),
+                energy=int(energy.get("energy", 0)),
+                snapshot_id=str(snapshot_info.get("snapshot_id", "")),
+                stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
+                local_state_commit=str(local_state_info.get("local_state_commit", "")),
+                system_state_id=str(system_state_info.get("system_state_id", "")),
+            )
+            self.validator_samples.append(sample)
+            captured.append(sample.sample_id)
+
+        if captured:
+            self.emit_report(
+                "validator_sample_capture",
+                {
+                    "tick": tick,
+                    "block_height": block_height,
+                    "sample_ids": captured,
+                    "count": len(captured),
+                },
+            )
+        return captured
+
+    def validate_pending_validator_samples(
+        self, block_height: int, tick: int
+    ) -> tuple[int, int, list[str]]:
+        if not self.args.validator_sample_enabled:
+            return 0, 0, []
+
+        checked = 0
+        failed = 0
+        fail_samples: list[str] = []
+        min_advance = max(1, self.args.validator_sample_min_head_advance)
+
+        for sample in self.validator_samples:
+            if sample.validated:
+                continue
+            if block_height < sample.block_height + min_advance:
+                continue
+
+            checked += 1
+            context = {
+                "requested_height": sample.block_height,
+                "expected_state": {
+                    "snapshot_id": sample.snapshot_id,
+                    "stable_block_hash": sample.stable_block_hash,
+                    "local_state_commit": sample.local_state_commit,
+                    "system_state_id": sample.system_state_id,
+                },
+            }
+            try:
+                if sample.expected_consensus_error is not None:
+                    state_ref_payload = self.raw_usdb_rpc(
+                        "get_state_ref_at_height",
+                        [{"block_height": sample.block_height, "context": context}],
+                    )
+                    error = state_ref_payload.get("error")
+                    actual_error = (
+                        str((error or {}).get("message", "")) if isinstance(error, dict) else ""
+                    )
+                    if actual_error != sample.expected_consensus_error:
+                        raise WorldSimError(
+                            "validator sample expected consensus error mismatch: "
+                            f"sample={sample.sample_id}, expected={sample.expected_consensus_error}, got={actual_error or state_ref_payload}"
+                        )
+
+                    sample.validated = True
+                    sample.validated_tick = tick
+                    self.metrics["validator_sample_ok"] += 1
+                    self.emit_report(
+                        "validator_sample_validation",
+                        {
+                            "tick": tick,
+                            "head_block_height": block_height,
+                            "sample_id": sample.sample_id,
+                            "sample_block_height": sample.block_height,
+                            "result": "expected_mismatch",
+                            "expected_error": sample.expected_consensus_error,
+                            "invalidated_by_reorg_tick": sample.invalidated_by_reorg_tick,
+                        },
+                    )
+                    continue
+
+                state_ref = self.get_state_ref_at_height(sample.block_height, context)
+                if state_ref is None:
+                    raise WorldSimError(
+                        f"missing historical state ref for sample={sample.sample_id}"
+                    )
+                snapshot = self.rpc_usdb(
+                    "get_pass_snapshot",
+                    [
+                        {
+                            "inscription_id": sample.inscription_id,
+                            "at_height": sample.block_height,
+                            "context": context,
+                        }
+                    ],
+                )
+                energy = self.rpc_usdb(
+                    "get_pass_energy",
+                    [
+                        {
+                            "inscription_id": sample.inscription_id,
+                            "block_height": sample.block_height,
+                            "mode": "at_or_before",
+                            "context": context,
+                        }
+                    ],
+                )
+                if not isinstance(snapshot, dict) or not isinstance(energy, dict):
+                    raise WorldSimError(
+                        "validator sample validation returned invalid payload types: "
+                        f"sample={sample.sample_id}, snapshot={snapshot}, energy={energy}"
+                    )
+
+                actual_owner = str(snapshot.get("owner", ""))
+                actual_state = str(snapshot.get("state", ""))
+                actual_energy = int(energy.get("energy", 0))
+                if actual_owner != sample.owner:
+                    raise WorldSimError(
+                        f"sample={sample.sample_id}, expected_owner={sample.owner}, got_owner={actual_owner}"
+                    )
+                if actual_state != sample.state:
+                    raise WorldSimError(
+                        f"sample={sample.sample_id}, expected_state={sample.state}, got_state={actual_state}"
+                    )
+                if actual_energy != sample.energy:
+                    raise WorldSimError(
+                        f"sample={sample.sample_id}, expected_energy={sample.energy}, got_energy={actual_energy}"
+                    )
+
+                sample.validated = True
+                sample.validated_tick = tick
+                self.metrics["validator_sample_ok"] += 1
+                self.emit_report(
+                    "validator_sample_validation",
+                    {
+                        "tick": tick,
+                        "head_block_height": block_height,
+                        "sample_id": sample.sample_id,
+                        "sample_block_height": sample.block_height,
+                        "result": "ok",
+                        "invalidated_by_reorg_tick": sample.invalidated_by_reorg_tick,
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                self.metrics["validator_sample_fail"] += 1
+                fail_samples.append(f"sample={sample.sample_id},error={e}")
+                self.emit_report(
+                    "validator_sample_validation",
+                    {
+                        "tick": tick,
+                        "head_block_height": block_height,
+                        "sample_id": sample.sample_id,
+                        "sample_block_height": sample.block_height,
+                        "result": "fail",
+                        "error": str(e),
+                    },
+                )
+                if self.args.fail_fast:
+                    raise
+
+        return checked, failed, fail_samples[:8]
+
     def wait_service_synced(self, target_height: int) -> None:
         start = time.time()
         while True:
@@ -565,6 +864,53 @@ class RegtestWorldSimulator:
                     "exact sync timeout: "
                     f"target_height={target_height}, bh_height={bh_height}, usdb_height={usdb_height_num}, "
                     f"bh_consensus_ready={bh_consensus_ready}, usdb_consensus_ready={usdb_consensus_ready}"
+                )
+            time.sleep(0.8)
+
+    def wait_balance_history_height_exact(self, target_height: int) -> None:
+        start = time.time()
+        while True:
+            bh_height = int(self.rpc_balance_history("get_block_height", []) or 0)
+            bh_readiness = self.rpc_balance_history("get_readiness", [])
+            bh_consensus_ready = bool(
+                bh_readiness.get("consensus_ready")
+                if isinstance(bh_readiness, dict)
+                else False
+            )
+            if bh_height == target_height and bh_consensus_ready:
+                return
+            if time.time() - start > self.args.sync_timeout_sec:
+                raise WorldSimError(
+                    "balance-history exact sync timeout: "
+                    f"target_height={target_height}, bh_height={bh_height}, "
+                    f"bh_consensus_ready={bh_consensus_ready}"
+                )
+            time.sleep(0.8)
+
+    def wait_snapshot_hashes(self, target_height: int, target_hash: str) -> tuple[str, str]:
+        start = time.time()
+        while True:
+            bh_snapshot = self.rpc_balance_history("get_snapshot_info", [])
+            usdb_snapshot = self.rpc_usdb("get_snapshot_info", [])
+            bh_stable_hash = str((bh_snapshot or {}).get("stable_block_hash", ""))
+            usdb_stable_hash = str((usdb_snapshot or {}).get("stable_block_hash", ""))
+            bh_stable_height = int((bh_snapshot or {}).get("stable_height", -1))
+            usdb_stable_height = int((usdb_snapshot or {}).get("balance_history_stable_height", -1))
+
+            if (
+                bh_stable_height == target_height
+                and usdb_stable_height == target_height
+                and bh_stable_hash == target_hash
+                and usdb_stable_hash == target_hash
+            ):
+                return bh_stable_hash, usdb_stable_hash
+
+            if time.time() - start > self.args.sync_timeout_sec:
+                raise WorldSimError(
+                    "snapshot hash sync timeout after reorg: "
+                    f"target_height={target_height}, target_hash={target_hash}, "
+                    f"bh_stable_height={bh_stable_height}, bh_stable_hash={bh_stable_hash}, "
+                    f"usdb_stable_height={usdb_stable_height}, usdb_stable_hash={usdb_stable_hash}"
                 )
             time.sleep(0.8)
 
@@ -1522,7 +1868,12 @@ class RegtestWorldSimulator:
 
         self.run_btc_cli(None, ["invalidateblock", rollback_start_hash])
         self.wait_ord_server_synced()
-        self.wait_service_height_exact(rollback_target_height)
+        # On regtest, balance-history rolls back immediately after invalidateblock,
+        # while usdb-indexer may only converge after replacement blocks appear.
+        # Waiting for both services to hit the rollback target can hang here even
+        # though final replacement-tip reconciliation works. For world-sim we only
+        # need the upstream rollback to be visible before mining the replacement chain.
+        self.wait_balance_history_height_exact(rollback_target_height)
 
         for _ in range(depth):
             self.mine_one_empty_block()
@@ -1537,10 +1888,9 @@ class RegtestWorldSimulator:
                 f"tick={tick}, block_height={block_height}, tip_hash={replacement_tip_hash}"
             )
 
-        bh_snapshot = self.rpc_balance_history("get_snapshot_info", [])
-        usdb_snapshot = self.rpc_usdb("get_snapshot_info", [])
-        bh_stable_hash = str((bh_snapshot or {}).get("stable_block_hash", ""))
-        usdb_stable_hash = str((usdb_snapshot or {}).get("stable_block_hash", ""))
+        bh_stable_hash, usdb_stable_hash = self.wait_snapshot_hashes(
+            block_height, replacement_tip_hash
+        )
         if bh_stable_hash != replacement_tip_hash:
             raise WorldSimError(
                 "balance-history stable hash mismatch after reorg: "
@@ -1554,6 +1904,14 @@ class RegtestWorldSimulator:
 
         rebuild_info = self.rebuild_local_chain_view_from_height(block_height)
         cross_check_info = self.run_global_cross_check(block_height, tick)
+        invalidated_sample_ids: list[str] = []
+        for sample in self.validator_samples:
+            if sample.validated:
+                continue
+            if rollback_start_height <= sample.block_height <= block_height:
+                sample.expected_consensus_error = "SNAPSHOT_ID_MISMATCH"
+                sample.invalidated_by_reorg_tick = tick
+                invalidated_sample_ids.append(sample.sample_id)
         self.reorg_events_applied += 1
         self.metrics["reorg_ok"] += 1
 
@@ -1570,6 +1928,7 @@ class RegtestWorldSimulator:
         }
         info.update(rebuild_info)
         info["global_cross_check_info"] = cross_check_info
+        info["validator_sample_invalidated_ids"] = invalidated_sample_ids
         self.emit_report("reorg", info)
         return info
 
@@ -1835,6 +2194,10 @@ class RegtestWorldSimulator:
             f"global_cross_check_interval_blocks={self.args.global_cross_check_interval_blocks}, "
             f"global_cross_check_leaderboard_top_n={self.args.global_cross_check_leaderboard_top_n}, "
             f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}, "
+            f"validator_sample_enabled={self.args.validator_sample_enabled}, "
+            f"validator_sample_interval_blocks={self.args.validator_sample_interval_blocks}, "
+            f"validator_sample_size={self.args.validator_sample_size}, "
+            f"validator_sample_min_head_advance={self.args.validator_sample_min_head_advance}, "
             f"reorg_interval_blocks={self.args.reorg_interval_blocks}, "
             f"reorg_depth={self.args.reorg_depth}, "
             f"reorg_max_events={self.args.reorg_max_events}"
@@ -1872,6 +2235,11 @@ class RegtestWorldSimulator:
             global_cross_check_failed = 0
             global_cross_check_fail_samples: list[str] = []
             global_cross_check_info: dict[str, Any] | None = None
+            validator_sample_captured = 0
+            validator_sample_capture_ids: list[str] = []
+            validator_sample_checked = 0
+            validator_sample_failed = 0
+            validator_sample_fail_samples: list[str] = []
             reorg_applied = 0
             reorg_info: dict[str, Any] | None = None
             refresh_failed_agent_ids: set[int] = set()
@@ -1994,6 +2362,31 @@ class RegtestWorldSimulator:
                     self.metrics["reorg_fail"] += 1
                     raise
 
+            if self.should_capture_validator_sample(tick):
+                try:
+                    validator_sample_capture_ids = self.capture_validator_samples(
+                        block_height, tick
+                    )
+                    validator_sample_captured = len(validator_sample_capture_ids)
+                except Exception as e:  # noqa: BLE001
+                    validator_sample_failed = 1
+                    self.metrics["validator_sample_fail"] += 1
+                    validator_sample_fail_samples.append(f"capture_error={e}")
+                    self.log(
+                        "WARN validator sample capture failed: "
+                        f"tick={tick}, block_height={block_height}, error={e}"
+                    )
+                    if self.args.fail_fast:
+                        raise
+
+            (
+                validator_sample_checked,
+                validator_sample_failed_runtime,
+                validator_sample_fail_runtime_samples,
+            ) = self.validate_pending_validator_samples(block_height, tick)
+            validator_sample_failed += validator_sample_failed_runtime
+            validator_sample_fail_samples.extend(validator_sample_fail_runtime_samples)
+
             summary = self.collect_summary(block_height)
             pass_stats = summary["pass_stats"] or {}
             latest_balance = summary["latest_balance"] or {}
@@ -2011,6 +2404,8 @@ class RegtestWorldSimulator:
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
                 f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
                 f"global_cross_checked={global_cross_checked}, global_cross_check_failed={global_cross_check_failed}, "
+                f"validator_sample_captured={validator_sample_captured}, validator_sample_checked={validator_sample_checked}, "
+                f"validator_sample_failed={validator_sample_failed}, "
                 f"reorg_applied={reorg_applied}, "
                 f"known_passes={len(self.pass_owner_by_id)}, pass_total={total_count}, pass_active={active_count}, "
                 f"pass_invalid={invalid_count}, active_addresses={active_addresses}, "
@@ -2038,6 +2433,10 @@ class RegtestWorldSimulator:
                     "agent_self_check_failed": self_check_failed,
                     "global_cross_checked": global_cross_checked,
                     "global_cross_check_failed": global_cross_check_failed,
+                    "validator_sample_captured": validator_sample_captured,
+                    "validator_sample_capture_ids": validator_sample_capture_ids,
+                    "validator_sample_checked": validator_sample_checked,
+                    "validator_sample_failed": validator_sample_failed,
                     "reorg_applied": reorg_applied,
                     "known_passes": len(self.pass_owner_by_id),
                     "tick_action_type_counts": tick_action_type_counts,
@@ -2052,6 +2451,7 @@ class RegtestWorldSimulator:
                     "verify_fail_samples": verify_fail_samples[:8],
                     "agent_self_check_fail_samples": self_check_fail_samples[:8],
                     "global_cross_check_info": global_cross_check_info,
+                    "validator_sample_fail_samples": validator_sample_fail_samples[:8],
                     "reorg_info": reorg_info,
                     "global_cross_check_fail_samples": global_cross_check_fail_samples[
                         :8
@@ -2159,6 +2559,29 @@ def parse_args() -> Args:
         help="How many active owners to sample per global cross-check (0 means all active owners)",
     )
     parser.add_argument(
+        "--enable-validator-sample",
+        action="store_true",
+        help="Enable low-frequency validator-style historical payload sampling and delayed validation",
+    )
+    parser.add_argument(
+        "--validator-sample-interval-blocks",
+        type=int,
+        default=0,
+        help="Capture validator samples every N mined blocks (0 disables sampling)",
+    )
+    parser.add_argument(
+        "--validator-sample-size",
+        type=int,
+        default=1,
+        help="How many active passes to sample per validator capture interval (0 means all)",
+    )
+    parser.add_argument(
+        "--validator-sample-min-head-advance",
+        type=int,
+        default=2,
+        help="How many new head blocks must pass before validating a captured historical sample",
+    )
+    parser.add_argument(
         "--reorg-interval-blocks",
         type=int,
         default=0,
@@ -2223,6 +2646,10 @@ def parse_args() -> Args:
         global_cross_check_interval_blocks=parsed.global_cross_check_interval_blocks,
         global_cross_check_leaderboard_top_n=parsed.global_cross_check_leaderboard_top_n,
         global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
+        validator_sample_enabled=parsed.enable_validator_sample,
+        validator_sample_interval_blocks=parsed.validator_sample_interval_blocks,
+        validator_sample_size=parsed.validator_sample_size,
+        validator_sample_min_head_advance=parsed.validator_sample_min_head_advance,
         reorg_interval_blocks=parsed.reorg_interval_blocks,
         reorg_depth=parsed.reorg_depth,
         reorg_max_events=parsed.reorg_max_events,

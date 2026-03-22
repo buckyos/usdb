@@ -11,6 +11,8 @@
 ## 脚本位置
 
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- [regtest_world_sim_validator_context.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh)
+- [regtest_world_sim_validator_context_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh)
 - [regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
@@ -19,6 +21,8 @@
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 - [run_live_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_reorg.sh)
 - [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)
+- [usdb-indexer-regtest-world-sim-validator-sampled.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-sampled.md)
+- [usdb-indexer-regtest-world-sim-validator-sampled-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-sampled-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-reorg-determinism.md)
 - [usdb-indexer-regtest-world-sim-live-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-live-reorg.md)
 
@@ -61,6 +65,10 @@
   - tick 事件包含 `tick_action_type_counts`，便于“同 seed 双跑”时对比关键序列统计。
   - tick 事件的 `synced_height` 也是 `get_sync_status.synced_block_height` 的摘要值，不应解读成上游稳定高度。
   - 如果启用 reorg 注入，报告中还会出现 `event = "reorg"` 的单独事件。
+- 可选启用 validator sampled historical validation：
+  - 周期性抓取当前高度的一张或多张 active pass 历史样本
+  - 在 head 继续前进后，按历史 `ConsensusQueryContext` 重新校验 `state ref / pass snapshot / pass energy`
+  - 报告中会出现 `event = "validator_sample_capture"` 与 `event = "validator_sample_validation"`
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 
 `world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
@@ -141,6 +149,10 @@ This wrapper keeps the same long-run style, but enables periodic replacement-cha
 - `SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次全局交叉检查（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N`：每次检查的能量榜前 N 条（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE`：每次检查抽样的 active owner 数（默认 `16`，`0` 表示全量）
+- `SIM_VALIDATOR_SAMPLE_ENABLED`：是否启用 validator sampled validation（默认 `0`）
+- `SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS`：每隔多少块抓取一次历史 validator sample（默认 `0`，表示关闭）
+- `SIM_VALIDATOR_SAMPLE_SIZE`：每次抓取多少张 active pass（默认 `1`）
+- `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE`：head 至少前进多少块后再回查历史 sample（默认 `2`）
 - `SIM_REORG_INTERVAL_BLOCKS`：每隔多少个 tick 注入一次 deterministic reorg（默认 `0`，表示关闭）
 - `SIM_REORG_DEPTH`：每次 reorg 替换最近多少个 canonical blocks（默认 `3`）
 - `SIM_REORG_MAX_EVENTS`：单次运行最多注入多少次 reorg（默认 `1`，`0` 表示不限制）
@@ -172,6 +184,30 @@ SIM_REORG_INTERVAL_BLOCKS=20 \
 SIM_REORG_DEPTH=3 \
 SIM_REORG_MAX_EVENTS=2 \
 src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh
+```
+
+带 validator sampled historical validation 的示例：
+
+```bash
+SIM_POLICY_MODE=adaptive \
+SIM_VALIDATOR_SAMPLE_ENABLED=1 \
+SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS=6 \
+SIM_VALIDATOR_SAMPLE_SIZE=1 \
+SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE=2 \
+src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh
+```
+
+带 validator sampled validation + deterministic reorg 的示例：
+
+```bash
+SIM_POLICY_MODE=adaptive \
+SIM_VALIDATOR_SAMPLE_ENABLED=1 \
+SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS=6 \
+SIM_VALIDATOR_SAMPLE_SIZE=1 \
+SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE=2 \
+SIM_REORG_INTERVAL_BLOCKS=10 \
+SIM_REORG_DEPTH=2 \
+src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh
 ```
 
 ## 同 seed 双跑一致性检查

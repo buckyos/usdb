@@ -11,6 +11,7 @@
 ## Regtest 框架与规划
 
 - [usdb-indexer-regtest-framework.md](./usdb-indexer-regtest-framework.md)
+- [usdb-indexer-next-stage-combined-test-plan.md](./usdb-indexer-next-stage-combined-test-plan.md)
 - [usdb-indexer-regtest-reorg-plan.md](./usdb-indexer-regtest-reorg-plan.md)
 - [usdb-indexer-regtest-topology.md](./usdb-indexer-regtest-topology.md)
 - [usdb-indexer-regtest-e2e-smoke.md](./usdb-indexer-regtest-e2e-smoke.md)
@@ -35,6 +36,8 @@
 ## World-Sim
 
 - [usdb-indexer-regtest-world-sim.md](./usdb-indexer-regtest-world-sim.md)
+- [usdb-indexer-regtest-world-sim-validator-sampled.md](./usdb-indexer-regtest-world-sim-validator-sampled.md)
+- [usdb-indexer-regtest-world-sim-validator-sampled-reorg.md](./usdb-indexer-regtest-world-sim-validator-sampled-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg.md](./usdb-indexer-regtest-world-sim-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg-determinism.md](./usdb-indexer-regtest-world-sim-reorg-determinism.md)
 - [usdb-indexer-regtest-world-sim-live-reorg.md](./usdb-indexer-regtest-world-sim-live-reorg.md)

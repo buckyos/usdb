@@ -6,12 +6,16 @@
 
 如果需要先理解 validator 风格 block-body payload 的设计与后续脚本分层，可先看：[doc/usdb-indexer/usdb-indexer-validator-block-body-e2e-design.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-validator-block-body-e2e-design.md)。
 
+如果需要看“下一阶段综合测试计划”和当前优先级，可先看：[doc/usdb-indexer/usdb-indexer-next-stage-combined-test-plan.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-next-stage-combined-test-plan.md)。
+
 ## 入口文件
 
 - 共享库：[src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh)
 - 通用回归入口：[src/btc/usdb-indexer/scripts/run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
 - reorg 专项回归入口：[src/btc/usdb-indexer/scripts/run_reorg_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_reorg_regression.sh)
 - world-sim 回归入口：[src/btc/usdb-indexer/scripts/regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
+- world-sim validator sampled 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh)
+- world-sim validator sampled + reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh)
 - world-sim reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - world-sim determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
 - world-sim reorg determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
@@ -65,11 +69,13 @@
    - 覆盖单 pass、多 pass、真实 energy 竞争、payload 篡改、历史竞争态、same-height reorg、retention / history-not-available
 5. world-sim 压力层：
    - `regtest_world_sim.sh`
+   - `regtest_world_sim_validator_context.sh`
+   - `regtest_world_sim_validator_context_reorg.sh`
    - `regtest_world_sim_reorg.sh`
    - `regtest_world_sim_determinism.sh`
    - `regtest_world_sim_reorg_determinism.sh`
    - `run_live_reorg.sh`
-   - 负责长时间随机业务流、交叉检查、多次 deterministic reorg 注入、同 seed 双跑一致性检查，以及更长时段的 soak
+   - 负责长时间随机业务流、交叉检查、validator sampled historical validation、多次 deterministic reorg 注入、同 seed 双跑一致性检查，以及更长时段的 soak
 
 ## 共享库提供的能力
 
