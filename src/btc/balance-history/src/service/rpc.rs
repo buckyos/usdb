@@ -4,7 +4,9 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use usdb_util::{ConsensusQueryContext, ConsensusSnapshotIdentity, USDBScriptHash};
+use usdb_util::{
+    ConsensusQueryContext, ConsensusSnapshotIdentity, ConsensusStateReference, USDBScriptHash,
+};
 
 /// Public RPC/API version of balance-history.
 ///
@@ -105,6 +107,103 @@ pub struct SnapshotInfo {
     pub commit_protocol_version: String,
     /// Hash algorithm used to build `latest_block_commit`.
     pub commit_hash_algo: String,
+}
+
+/// Normalized inputs required to derive one current `ConsensusStateReference`
+/// from a balance-history snapshot plus network context.
+///
+/// This keeps the hash-sensitive snapshot-id assembly logic out of server call
+/// sites while still making the conversion inputs explicit.
+#[derive(Debug, Clone)]
+pub struct SnapshotStateReferenceSeed {
+    pub network: String,
+    pub snapshot: SnapshotInfo,
+}
+
+impl From<SnapshotStateReferenceSeed> for ConsensusStateReference {
+    fn from(seed: SnapshotStateReferenceSeed) -> Self {
+        let snapshot_id = seed
+            .snapshot
+            .stable_block_hash
+            .as_ref()
+            .map(|stable_block_hash| {
+                let identity = ConsensusSnapshotIdentity {
+                    source_chain: usdb_util::CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+                    network: seed.network,
+                    stable_height: seed.snapshot.stable_height,
+                    stable_block_hash: stable_block_hash.clone(),
+                    stable_lag: seed.snapshot.stable_lag,
+                    balance_history_api_version: seed.snapshot.balance_history_api_version.clone(),
+                    balance_history_semantics_version: seed
+                        .snapshot
+                        .balance_history_semantics_version
+                        .clone(),
+                    usdb_index_formula_version: usdb_util::USDB_INDEX_FORMULA_VERSION.to_string(),
+                    usdb_index_protocol_version: usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string(),
+                };
+                usdb_util::build_consensus_snapshot_id(&identity)
+            });
+
+        Self {
+            snapshot_id,
+            stable_height: Some(seed.snapshot.stable_height),
+            stable_block_hash: seed.snapshot.stable_block_hash,
+            balance_history_api_version: Some(seed.snapshot.balance_history_api_version),
+            balance_history_semantics_version: Some(
+                seed.snapshot.balance_history_semantics_version,
+            ),
+            usdb_index_protocol_version: Some(usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string()),
+            local_state_commit: None,
+            system_state_id: None,
+        }
+    }
+}
+
+impl From<HistoricalSnapshotStateRef> for SnapshotInfo {
+    fn from(state_ref: HistoricalSnapshotStateRef) -> Self {
+        Self {
+            stable_height: state_ref.block_height,
+            stable_block_hash: Some(state_ref.stable_block_hash),
+            latest_block_commit: Some(state_ref.latest_block_commit),
+            stable_lag: state_ref.consensus_identity.stable_lag,
+            balance_history_api_version: state_ref.consensus_identity.balance_history_api_version,
+            balance_history_semantics_version: state_ref
+                .consensus_identity
+                .balance_history_semantics_version,
+            commit_protocol_version: state_ref.commit_protocol_version,
+            commit_hash_algo: state_ref.commit_hash_algo,
+        }
+    }
+}
+
+impl From<&HistoricalSnapshotStateRef> for ConsensusStateReference {
+    fn from(state_ref: &HistoricalSnapshotStateRef) -> Self {
+        Self {
+            snapshot_id: Some(state_ref.snapshot_id.clone()),
+            stable_height: Some(state_ref.block_height),
+            stable_block_hash: Some(state_ref.stable_block_hash.clone()),
+            balance_history_api_version: Some(
+                state_ref
+                    .consensus_identity
+                    .balance_history_api_version
+                    .clone(),
+            ),
+            balance_history_semantics_version: Some(
+                state_ref
+                    .consensus_identity
+                    .balance_history_semantics_version
+                    .clone(),
+            ),
+            usdb_index_protocol_version: Some(
+                state_ref
+                    .consensus_identity
+                    .usdb_index_protocol_version
+                    .clone(),
+            ),
+            local_state_commit: None,
+            system_state_id: None,
+        }
+    }
 }
 
 /// Parameters for resolving the exact historical consensus state reference at one BTC height.

@@ -14,7 +14,6 @@ use crate::inscription::{
 use crate::status::StatusManagerRef;
 use crate::storage::{MinePassStorageSavePointGuard, MinerPassStorage, MinerPassStorageRef};
 use balance_history::{
-    HistoricalSnapshotStateRef as BalanceHistoryHistoricalStateRef,
     RpcClient as BalanceHistoryRpcClient, SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use bitcoincore_rpc::bitcoin::{Block, Txid};
@@ -813,23 +812,6 @@ impl InscriptionIndexer {
         Ok(())
     }
 
-    fn snapshot_info_from_historical_state_ref(
-        state_ref: BalanceHistoryHistoricalStateRef,
-    ) -> BalanceHistorySnapshotInfo {
-        BalanceHistorySnapshotInfo {
-            stable_height: state_ref.block_height,
-            stable_block_hash: Some(state_ref.stable_block_hash),
-            latest_block_commit: Some(state_ref.latest_block_commit),
-            stable_lag: state_ref.consensus_identity.stable_lag,
-            balance_history_api_version: state_ref.consensus_identity.balance_history_api_version,
-            balance_history_semantics_version: state_ref
-                .consensus_identity
-                .balance_history_semantics_version,
-            commit_protocol_version: state_ref.commit_protocol_version,
-            commit_hash_algo: state_ref.commit_hash_algo,
-        }
-    }
-
     // Backfill exact-height upstream snapshot-history rows for already durable local
     // heights. This lets historical ETHW-style validation resolve the upstream
     // anchor that was in force at one exact BTC height even after head advances.
@@ -867,7 +849,7 @@ impl InscriptionIndexer {
                 "Backfilling balance-history snapshot history at height {}: no snapshot anchor found, attempting to load historical state ref",
                 height
             );
-            
+
             let state_ref = self
                 .balance_history_client
                 .get_state_ref_at_height(height)
@@ -880,7 +862,7 @@ impl InscriptionIndexer {
                     error!("{}", msg);
                     msg
                 })?;
-            let snapshot = Self::snapshot_info_from_historical_state_ref(state_ref);
+            let snapshot: BalanceHistorySnapshotInfo = state_ref.into();
             self.miner_pass_storage
                 .upsert_balance_history_snapshot_history_entry(&snapshot)
                 .map_err(|e| {

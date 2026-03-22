@@ -14,10 +14,8 @@ use tokio::sync::watch;
 use usdb_util::USDBScriptHash;
 use usdb_util::{
     CONSENSUS_SOURCE_CHAIN_BTC, ConsensusQueryContext, ConsensusRpcErrorCode,
-    ConsensusRpcErrorData, ConsensusSnapshotIdentity, ConsensusStateReference,
-    LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
-    SystemStateIdentity, USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id,
-    build_local_state_commit, build_system_state_id,
+    ConsensusRpcErrorData, ConsensusStateReference, LocalStateActiveBalanceSnapshot,
+    LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id,
 };
 
 fn encode_hex(bytes: &[u8]) -> String {
@@ -224,22 +222,28 @@ impl UsdbIndexerRpcServer {
         local_state: Option<&LocalStateCommitInfo>,
         system_state: Option<&SystemStateInfo>,
     ) -> ConsensusStateReference {
-        ConsensusStateReference {
-            snapshot_id: snapshot.map(|value| value.snapshot_id.clone()),
-            stable_height: snapshot.map(|value| value.balance_history_stable_height),
-            stable_block_hash: snapshot.map(|value| value.stable_block_hash.clone()),
-            balance_history_api_version: snapshot
-                .map(|value| value.consensus_identity.balance_history_api_version.clone()),
-            balance_history_semantics_version: snapshot.map(|value| {
-                value
-                    .consensus_identity
-                    .balance_history_semantics_version
-                    .clone()
-            }),
-            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
-            local_state_commit: local_state.map(|value| value.local_state_commit.clone()),
-            system_state_id: system_state.map(|value| value.system_state_id.clone()),
+        let mut reference = snapshot
+            .map(ConsensusStateReference::from)
+            .unwrap_or_default();
+
+        // For current-state error payloads we expose the protocol version of
+        // the currently running usdb-indexer binary, not whichever nested
+        // sub-structure happened to be present. Historical state-ref RPCs keep
+        // using the version recorded in their historical identities.
+        if snapshot.is_some() || local_state.is_some() || system_state.is_some() {
+            reference.usdb_index_protocol_version = Some(USDB_INDEX_PROTOCOL_VERSION.to_string());
         }
+
+        if let Some(local_state) = local_state {
+            reference.local_state_commit = Some(local_state.local_state_commit.clone());
+        }
+
+        if let Some(system_state) = system_state {
+            reference.system_state_id = Some(system_state.system_state_id.clone());
+            reference.local_state_commit = Some(system_state.local_state_commit.clone());
+        }
+
+        reference
     }
 
     /// Populate the structured `data` payload shared by consensus-facing RPC
@@ -523,37 +527,23 @@ impl UsdbIndexerRpcServer {
             return Ok(None);
         };
 
-        let consensus_identity = ConsensusSnapshotIdentity {
-            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+        let local_synced_block_height = self
+            .indexer
+            .miner_pass_storage()
+            .get_synced_btc_block_height()
+            .map_err(Self::to_internal_error)?
+            .unwrap_or(anchor.stable_height);
+
+        Ok(Some(IndexerSnapshotInfo::from(IndexerSnapshotInfoSeed {
             network: self.config.config().bitcoin.network().to_string(),
-            stable_height: anchor.stable_height,
-            stable_block_hash: anchor.stable_block_hash.clone(),
-            stable_lag: anchor.stable_lag,
-            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
-            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
-                .to_string(),
-            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
-        };
-        let mut snapshot = IndexerSnapshotInfo {
-            local_synced_block_height: self
-                .indexer
-                .miner_pass_storage()
-                .get_synced_btc_block_height()
-                .map_err(Self::to_internal_error)?
-                .unwrap_or(anchor.stable_height),
+            local_synced_block_height,
             balance_history_stable_height: anchor.stable_height,
             stable_block_hash: anchor.stable_block_hash,
             latest_block_commit: anchor.latest_block_commit,
-            consensus_identity,
+            stable_lag: anchor.stable_lag,
             commit_protocol_version: anchor.commit_protocol_version,
             commit_hash_algo: anchor.commit_hash_algo,
-            snapshot_id: String::new(),
-            snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
-            snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
-        };
-        snapshot.snapshot_id = build_consensus_snapshot_id(&snapshot.consensus_identity);
-        Ok(Some(snapshot))
+        })))
     }
 
     fn upstream_snapshot_info_at_height(
@@ -586,33 +576,16 @@ impl UsdbIndexerRpcServer {
                 )
             })?;
 
-        let consensus_identity = ConsensusSnapshotIdentity {
-            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+        Ok(IndexerSnapshotInfo::from(IndexerSnapshotInfoSeed {
             network: self.config.config().bitcoin.network().to_string(),
-            stable_height: anchor.stable_height,
-            stable_block_hash: anchor.stable_block_hash.clone(),
-            stable_lag: anchor.stable_lag,
-            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
-            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
-                .to_string(),
-            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
-        };
-
-        let mut snapshot = IndexerSnapshotInfo {
             local_synced_block_height: block_height,
             balance_history_stable_height: anchor.stable_height,
             stable_block_hash: anchor.stable_block_hash,
             latest_block_commit: anchor.latest_block_commit,
-            consensus_identity,
+            stable_lag: anchor.stable_lag,
             commit_protocol_version: anchor.commit_protocol_version,
             commit_hash_algo: anchor.commit_hash_algo,
-            snapshot_id: String::new(),
-            snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
-            snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
-        };
-        snapshot.snapshot_id = build_consensus_snapshot_id(&snapshot.consensus_identity);
-        Ok(snapshot)
+        }))
     }
 
     fn build_local_state_commit_info_at_height(
@@ -690,24 +663,12 @@ impl UsdbIndexerRpcServer {
             })
         };
 
-        let local_state_identity = LocalStateCommitIdentity {
-            upstream_snapshot_id: snapshot.snapshot_id.clone(),
-            local_synced_block_height: synced_height,
-            latest_pass_block_commit: latest_pass_block_commit.clone(),
-            latest_active_balance_snapshot: latest_active_balance_snapshot.clone(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
-        };
-
-        Ok(LocalStateCommitInfo {
+        Ok(LocalStateCommitInfo::from(LocalStateCommitInfoSeed {
             local_synced_block_height: synced_height,
             upstream_snapshot_id: snapshot.snapshot_id.clone(),
             latest_pass_block_commit,
             latest_active_balance_snapshot,
-            local_state_commit: build_local_state_commit(&local_state_identity),
-            local_state_identity,
-            local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
-            local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
-        })
+        }))
     }
 
     fn build_local_state_commit_info_from_snapshot(
@@ -732,20 +693,7 @@ impl UsdbIndexerRpcServer {
         &self,
         local_state: &LocalStateCommitInfo,
     ) -> SystemStateInfo {
-        let system_state_identity = SystemStateIdentity {
-            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
-            local_state_commit: local_state.local_state_commit.clone(),
-        };
-
-        SystemStateInfo {
-            local_synced_block_height: local_state.local_synced_block_height,
-            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
-            local_state_commit: local_state.local_state_commit.clone(),
-            system_state_id: build_system_state_id(&system_state_identity),
-            system_state_identity,
-            system_state_id_hash_algo: SYSTEM_STATE_HASH_ALGO.to_string(),
-            system_state_id_version: SYSTEM_STATE_VERSION.to_string(),
-        }
+        SystemStateInfo::from(local_state)
     }
 
     fn system_state_info(&self) -> Result<Option<SystemStateInfo>, JsonError> {
@@ -768,23 +716,19 @@ impl UsdbIndexerRpcServer {
         let system_state_info =
             self.build_system_state_info_from_local_state(&local_state_commit_info);
 
-        Ok(HistoricalStateRefInfo {
+        Ok(HistoricalStateRefInfo::from(HistoricalStateRefInfoSeed {
             block_height,
             snapshot_info,
             local_state_commit_info,
             system_state_info,
-        })
+        }))
     }
 
     fn build_consensus_state_reference_from_historical_state_ref(
         &self,
         state_ref: &HistoricalStateRefInfo,
     ) -> ConsensusStateReference {
-        self.build_consensus_state_reference(
-            Some(&state_ref.snapshot_info),
-            Some(&state_ref.local_state_commit_info),
-            Some(&state_ref.system_state_info),
-        )
+        ConsensusStateReference::from(state_ref)
     }
 
     fn validate_historical_state_ref_expected_state(

@@ -4,9 +4,9 @@ use super::super::transfer::{
 use crate::inscription::InscriptionTransferItem;
 use crate::status::StatusManager;
 use balance_history::{
-    BlockCommitInfo as BalanceHistoryBlockCommitInfo, RpcClient as BalanceHistoryRpcClient,
+    BlockCommitInfo as BalanceHistoryBlockCommitInfo,
     HistoricalSnapshotStateRef as BalanceHistoryHistoricalStateRef,
-    SnapshotInfo as BalanceHistorySnapshotInfo,
+    RpcClient as BalanceHistoryRpcClient, SnapshotInfo as BalanceHistorySnapshotInfo,
 };
 use bitcoincore_rpc::bitcoin::Block;
 use ord::InscriptionId;

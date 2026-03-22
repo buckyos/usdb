@@ -245,64 +245,21 @@ impl BalanceHistoryRpcServer {
         &self,
         snapshot: Option<&SnapshotInfo>,
     ) -> ConsensusStateReference {
-        let Some(snapshot) = snapshot else {
+        let Some(snapshot) = snapshot.cloned() else {
             return ConsensusStateReference::default();
         };
 
-        let snapshot_id =
-            snapshot
-                .stable_block_hash
-                .as_ref()
-                .map(|stable_block_hash| {
-                    build_consensus_snapshot_id(&self.build_consensus_snapshot_identity(
-                        snapshot.stable_height,
-                        stable_block_hash,
-                    ))
-                });
-
-        ConsensusStateReference {
-            snapshot_id,
-            stable_height: Some(snapshot.stable_height),
-            stable_block_hash: snapshot.stable_block_hash.clone(),
-            balance_history_api_version: Some(snapshot.balance_history_api_version.clone()),
-            balance_history_semantics_version: Some(
-                snapshot.balance_history_semantics_version.clone(),
-            ),
-            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
-            local_state_commit: None,
-            system_state_id: None,
-        }
+        ConsensusStateReference::from(SnapshotStateReferenceSeed {
+            network: self.config.btc.network().to_string(),
+            snapshot,
+        })
     }
 
     fn build_consensus_state_reference_from_historical_state_ref(
         &self,
         state_ref: &HistoricalSnapshotStateRef,
     ) -> ConsensusStateReference {
-        ConsensusStateReference {
-            snapshot_id: Some(state_ref.snapshot_id.clone()),
-            stable_height: Some(state_ref.block_height),
-            stable_block_hash: Some(state_ref.stable_block_hash.clone()),
-            balance_history_api_version: Some(
-                state_ref
-                    .consensus_identity
-                    .balance_history_api_version
-                    .clone(),
-            ),
-            balance_history_semantics_version: Some(
-                state_ref
-                    .consensus_identity
-                    .balance_history_semantics_version
-                    .clone(),
-            ),
-            usdb_index_protocol_version: Some(
-                state_ref
-                    .consensus_identity
-                    .usdb_index_protocol_version
-                    .clone(),
-            ),
-            local_state_commit: None,
-            system_state_id: None,
-        }
+        ConsensusStateReference::from(state_ref)
     }
 
     fn build_consensus_error_data_for_state(

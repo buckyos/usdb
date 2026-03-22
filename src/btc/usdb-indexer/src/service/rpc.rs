@@ -3,10 +3,10 @@ use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use usdb_util::{
     CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext,
-    ConsensusSnapshotIdentity, LOCAL_STATE_COMMIT_HASH_ALGO, LOCAL_STATE_COMMIT_VERSION,
-    LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity, LocalStatePassCommitIdentity,
-    SYSTEM_STATE_ID_HASH_ALGO, SYSTEM_STATE_ID_VERSION, SystemStateIdentity,
-    USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
+    ConsensusSnapshotIdentity, ConsensusStateReference, LOCAL_STATE_COMMIT_HASH_ALGO,
+    LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
+    LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO, SYSTEM_STATE_ID_VERSION,
+    SystemStateIdentity, USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
     USDB_INDEX_PROTOCOL_VERSION as UTIL_USDB_INDEX_PROTOCOL_VERSION,
 };
 
@@ -101,6 +101,83 @@ pub struct IndexerSnapshotInfo {
     pub snapshot_id_version: String,
 }
 
+/// Normalized inputs required to derive one `IndexerSnapshotInfo`.
+///
+/// Keeping this seed separate avoids repeating the same consensus-identity and
+/// snapshot-id assembly logic at multiple call sites.
+#[derive(Debug, Clone)]
+pub struct IndexerSnapshotInfoSeed {
+    pub network: String,
+    pub local_synced_block_height: u32,
+    pub balance_history_stable_height: u32,
+    pub stable_block_hash: String,
+    pub latest_block_commit: String,
+    pub stable_lag: u32,
+    pub commit_protocol_version: String,
+    pub commit_hash_algo: String,
+}
+
+impl From<IndexerSnapshotInfoSeed> for IndexerSnapshotInfo {
+    fn from(seed: IndexerSnapshotInfoSeed) -> Self {
+        let consensus_identity = ConsensusSnapshotIdentity {
+            source_chain: usdb_util::CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
+            network: seed.network,
+            stable_height: seed.balance_history_stable_height,
+            stable_block_hash: seed.stable_block_hash.clone(),
+            stable_lag: seed.stable_lag,
+            balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
+            balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+                .to_string(),
+            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
+        let snapshot_id = usdb_util::build_consensus_snapshot_id(&consensus_identity);
+
+        Self {
+            local_synced_block_height: seed.local_synced_block_height,
+            balance_history_stable_height: seed.balance_history_stable_height,
+            stable_block_hash: seed.stable_block_hash,
+            latest_block_commit: seed.latest_block_commit,
+            consensus_identity,
+            commit_protocol_version: seed.commit_protocol_version,
+            commit_hash_algo: seed.commit_hash_algo,
+            snapshot_id,
+            snapshot_id_hash_algo: SNAPSHOT_ID_HASH_ALGO.to_string(),
+            snapshot_id_version: SNAPSHOT_ID_VERSION.to_string(),
+        }
+    }
+}
+
+impl From<&IndexerSnapshotInfo> for ConsensusStateReference {
+    fn from(snapshot: &IndexerSnapshotInfo) -> Self {
+        Self {
+            snapshot_id: Some(snapshot.snapshot_id.clone()),
+            stable_height: Some(snapshot.balance_history_stable_height),
+            stable_block_hash: Some(snapshot.stable_block_hash.clone()),
+            balance_history_api_version: Some(
+                snapshot
+                    .consensus_identity
+                    .balance_history_api_version
+                    .clone(),
+            ),
+            balance_history_semantics_version: Some(
+                snapshot
+                    .consensus_identity
+                    .balance_history_semantics_version
+                    .clone(),
+            ),
+            usdb_index_protocol_version: Some(
+                snapshot
+                    .consensus_identity
+                    .usdb_index_protocol_version
+                    .clone(),
+            ),
+            local_state_commit: None,
+            system_state_id: None,
+        }
+    }
+}
+
 /// Parameters for `get_pass_block_commit`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassBlockCommitParams {
@@ -152,6 +229,59 @@ pub struct LocalStateCommitInfo {
     pub local_state_commit_version: String,
 }
 
+/// Normalized inputs required to derive one `LocalStateCommitInfo`.
+#[derive(Debug, Clone)]
+pub struct LocalStateCommitInfoSeed {
+    pub local_synced_block_height: u32,
+    pub upstream_snapshot_id: String,
+    pub latest_pass_block_commit: Option<LocalStatePassCommitIdentity>,
+    pub latest_active_balance_snapshot: Option<LocalStateActiveBalanceSnapshot>,
+}
+
+impl From<LocalStateCommitInfoSeed> for LocalStateCommitInfo {
+    fn from(seed: LocalStateCommitInfoSeed) -> Self {
+        let local_state_identity = LocalStateCommitIdentity {
+            upstream_snapshot_id: seed.upstream_snapshot_id.clone(),
+            local_synced_block_height: seed.local_synced_block_height,
+            latest_pass_block_commit: seed.latest_pass_block_commit.clone(),
+            latest_active_balance_snapshot: seed.latest_active_balance_snapshot.clone(),
+            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
+        };
+        let local_state_commit = usdb_util::build_local_state_commit(&local_state_identity);
+
+        Self {
+            local_synced_block_height: seed.local_synced_block_height,
+            upstream_snapshot_id: seed.upstream_snapshot_id,
+            latest_pass_block_commit: seed.latest_pass_block_commit,
+            latest_active_balance_snapshot: seed.latest_active_balance_snapshot,
+            local_state_identity,
+            local_state_commit,
+            local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
+            local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
+        }
+    }
+}
+
+impl From<&LocalStateCommitInfo> for ConsensusStateReference {
+    fn from(local_state: &LocalStateCommitInfo) -> Self {
+        Self {
+            snapshot_id: Some(local_state.upstream_snapshot_id.clone()),
+            stable_height: None,
+            stable_block_hash: None,
+            balance_history_api_version: None,
+            balance_history_semantics_version: None,
+            usdb_index_protocol_version: Some(
+                local_state
+                    .local_state_identity
+                    .usdb_index_protocol_version
+                    .clone(),
+            ),
+            local_state_commit: Some(local_state.local_state_commit.clone()),
+            system_state_id: None,
+        }
+    }
+}
+
 /// Single top-level system-state id for downstream consumers such as ETHW.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStateInfo {
@@ -169,6 +299,41 @@ pub struct SystemStateInfo {
     pub system_state_id_hash_algo: String,
     /// Version tag of the system-state id derivation rule.
     pub system_state_id_version: String,
+}
+
+impl From<&LocalStateCommitInfo> for SystemStateInfo {
+    fn from(local_state: &LocalStateCommitInfo) -> Self {
+        let system_state_identity = SystemStateIdentity {
+            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
+            local_state_commit: local_state.local_state_commit.clone(),
+        };
+        let system_state_id = usdb_util::build_system_state_id(&system_state_identity);
+
+        Self {
+            local_synced_block_height: local_state.local_synced_block_height,
+            upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
+            local_state_commit: local_state.local_state_commit.clone(),
+            system_state_identity,
+            system_state_id,
+            system_state_id_hash_algo: SYSTEM_STATE_HASH_ALGO.to_string(),
+            system_state_id_version: SYSTEM_STATE_VERSION.to_string(),
+        }
+    }
+}
+
+impl From<&SystemStateInfo> for ConsensusStateReference {
+    fn from(system_state: &SystemStateInfo) -> Self {
+        Self {
+            snapshot_id: Some(system_state.upstream_snapshot_id.clone()),
+            stable_height: None,
+            stable_block_hash: None,
+            balance_history_api_version: None,
+            balance_history_semantics_version: None,
+            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
+            local_state_commit: Some(system_state.local_state_commit.clone()),
+            system_state_id: Some(system_state.system_state_id.clone()),
+        }
+    }
 }
 
 /// Parameters for resolving the historical state reference at one exact BTC height.
@@ -200,6 +365,39 @@ pub struct HistoricalStateRefInfo {
     pub local_state_commit_info: LocalStateCommitInfo,
     /// Historical top-level system-state id at `block_height`.
     pub system_state_info: SystemStateInfo,
+}
+
+/// Normalized inputs required to derive one `HistoricalStateRefInfo`.
+///
+/// Keeping this seed explicit makes it easier to audit which three exact
+/// historical sub-views are bundled into one validator-facing state ref.
+#[derive(Debug, Clone)]
+pub struct HistoricalStateRefInfoSeed {
+    pub block_height: u32,
+    pub snapshot_info: IndexerSnapshotInfo,
+    pub local_state_commit_info: LocalStateCommitInfo,
+    pub system_state_info: SystemStateInfo,
+}
+
+impl From<HistoricalStateRefInfoSeed> for HistoricalStateRefInfo {
+    fn from(seed: HistoricalStateRefInfoSeed) -> Self {
+        Self {
+            block_height: seed.block_height,
+            snapshot_info: seed.snapshot_info,
+            local_state_commit_info: seed.local_state_commit_info,
+            system_state_info: seed.system_state_info,
+        }
+    }
+}
+
+impl From<&HistoricalStateRefInfo> for ConsensusStateReference {
+    fn from(state_ref: &HistoricalStateRefInfo) -> Self {
+        let mut reference = ConsensusStateReference::from(&state_ref.snapshot_info);
+        reference.local_state_commit =
+            Some(state_ref.local_state_commit_info.local_state_commit.clone());
+        reference.system_state_id = Some(state_ref.system_state_info.system_state_id.clone());
+        reference
+    }
 }
 
 /// Machine-readable blockers that keep usdb-indexer from a stricter ready state.

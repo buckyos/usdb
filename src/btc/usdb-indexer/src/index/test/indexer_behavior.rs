@@ -179,7 +179,10 @@ impl MockBalanceHistoryCommitProvider {
         block_height: u32,
         state_ref: balance_history::HistoricalSnapshotStateRef,
     ) {
-        self.state_refs.lock().unwrap().insert(block_height, state_ref);
+        self.state_refs
+            .lock()
+            .unwrap()
+            .insert(block_height, state_ref);
     }
 }
 
