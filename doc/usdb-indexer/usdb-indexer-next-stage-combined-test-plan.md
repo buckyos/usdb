@@ -77,6 +77,32 @@
 - winner 重算与 payload 记录一致
 - 当前 head 前进后历史关系仍可重放
 
+执行任务：
+
+1. `3-pass candidate-set happy-path`
+   - payload 显式记录 `winner + candidate_passes`
+   - validator 在同一历史 context 下重查 3 张 pass，并重算 winner
+   - 后续块让当前 winner 真实发生状态变化，旧 payload 仍按历史视图成立
+2. `5-pass candidate-set tamper`
+   - 扩到 5 张候选 pass
+   - 篡改 payload 中记录的 winner
+   - validator 通过本地重算识别 payload 被篡改
+3. `5-pass candidate-set reorg`
+   - same-height replacement 覆盖 candidate-set payload 所在高度
+   - 历史 state ref、winner、candidate_passes 在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
+
+当前状态：
+
+- 第一批 3 条 candidate-set 场景已完成并接入 `run_reorg_regression.sh`
+- 当前已覆盖：
+  - `3-pass candidate-set happy-path`
+  - `5-pass candidate-set tamper`
+  - `5-pass candidate-set reorg`
+- 现阶段这些脚本已经证明：
+  - validator 可在同一历史 context 下重查 `winner + candidate_passes`
+  - winner 篡改可被本地重算识别
+  - same-height replacement 可稳定使旧 candidate-set payload 落到 `SNAPSHOT_ID_MISMATCH`
+
 ### Phase C: Version Mismatch / Upgrade
 
 目标：

@@ -113,6 +113,12 @@ run_validator_block_body_suite() {
   run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_reorg.sh"
   slot=$((slot + 1))
   run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_tamper.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_three_pass_candidate_set.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_five_pass_candidate_set_tamper.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_five_pass_candidate_set_reorg.sh"
 }
 
 main() {

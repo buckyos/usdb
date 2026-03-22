@@ -336,29 +336,20 @@ dst.write_text(json.dumps(payload, indent=2) + "\n")
 PY
 }
 
-regtest_write_validator_competition_payload_for_passes_at_height() {
-  local payload_file="$1"
-  local block_height="$2"
-  local winner_id="$3"
-  shift 3
+regtest_build_validator_candidate_entries_for_passes_at_height() {
+  local block_height="$1"
+  shift
   local candidate_ids=("$@")
 
-  local state_ref_resp candidate_entries_json winner_snapshot_resp winner_energy_resp
-  local inscription_id pass_snapshot_resp pass_energy_resp candidate_entry_json
-
-  regtest_wait_usdb_state_ref_available "$block_height"
-  state_ref_resp="$(regtest_get_usdb_state_ref_response "$block_height")"
-  regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
+  local candidate_entries_json inscription_id pass_snapshot_resp pass_energy_resp candidate_entry_json
 
   candidate_entries_json="[]"
-  winner_snapshot_resp=""
-  winner_energy_resp=""
   for inscription_id in "${candidate_ids[@]}"; do
     pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
-    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True"
+    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True" >/dev/null
 
     pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
-    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
+    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True" >/dev/null
 
     candidate_entry_json="$(regtest_build_validator_candidate_entry_json "$pass_snapshot_resp" "$pass_energy_resp")"
     candidate_entries_json="$(python3 - "$candidate_entries_json" "$candidate_entry_json" <<'PY'
@@ -370,6 +361,53 @@ entries.append(json.loads(sys.argv[2]))
 print(json.dumps(entries))
 PY
 )"
+  done
+
+  printf '%s' "$candidate_entries_json"
+}
+
+regtest_choose_validator_candidate_set_winner_json() {
+  local candidate_entries_json="$1"
+
+  python3 - "$candidate_entries_json" <<'PY'
+import json
+import sys
+
+candidates = json.loads(sys.argv[1])
+winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+print(json.dumps(winner))
+PY
+}
+
+regtest_choose_validator_candidate_set_winner_id() {
+  local candidate_entries_json="$1"
+  regtest_choose_validator_candidate_set_winner_json "$candidate_entries_json" | \
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["inscription_id"])'
+}
+
+regtest_write_validator_candidate_set_payload_for_passes_at_height() {
+  local payload_file="$1"
+  local block_height="$2"
+  local winner_id="$3"
+  shift 3
+  local candidate_ids=("$@")
+
+  local state_ref_resp candidate_entries_json winner_snapshot_resp winner_energy_resp
+  local inscription_id pass_snapshot_resp pass_energy_resp
+
+  regtest_wait_usdb_state_ref_available "$block_height"
+  state_ref_resp="$(regtest_get_usdb_state_ref_response "$block_height")"
+  regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
+
+  candidate_entries_json="$(regtest_build_validator_candidate_entries_for_passes_at_height "$block_height" "${candidate_ids[@]}")"
+  winner_snapshot_resp=""
+  winner_energy_resp=""
+  for inscription_id in "${candidate_ids[@]}"; do
+    pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
+    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True"
+
+    pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
+    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
 
     if [[ "$inscription_id" == "$winner_id" ]]; then
       winner_snapshot_resp="$pass_snapshot_resp"
@@ -388,6 +426,10 @@ PY
     "$winner_snapshot_resp" \
     "$winner_energy_resp" \
     "$candidate_entries_json"
+}
+
+regtest_write_validator_competition_payload_for_passes_at_height() {
+  regtest_write_validator_candidate_set_payload_for_passes_at_height "$@"
 }
 
 regtest_validator_payload_expr() {
@@ -534,7 +576,7 @@ regtest_validate_validator_payload_success() {
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$expected_energy"
 }
 
-regtest_validate_validator_competition_payload_success() {
+regtest_validate_validator_candidate_set_payload_success() {
   local payload_file="$1"
   local context_json candidate_count winner_id winner_owner winner_state winner_energy
   local computed_winner_json computed_winner_id computed_winner_owner computed_winner_state computed_winner_energy
@@ -615,7 +657,11 @@ PY
   fi
 }
 
-regtest_validate_validator_competition_payload_tampered_selection() {
+regtest_validate_validator_competition_payload_success() {
+  regtest_validate_validator_candidate_set_payload_success "$@"
+}
+
+regtest_validate_validator_candidate_set_payload_tampered_selection() {
   local payload_file="$1"
   local computed_winner_json computed_winner_id winner_id
 
@@ -641,7 +687,11 @@ PY
   fi
 }
 
-regtest_validate_validator_competition_payload_consensus_error() {
+regtest_validate_validator_competition_payload_tampered_selection() {
+  regtest_validate_validator_candidate_set_payload_tampered_selection "$@"
+}
+
+regtest_validate_validator_candidate_set_payload_consensus_error() {
   local payload_file="$1"
   local expected_code="$2"
   local expected_message="$3"
@@ -685,6 +735,10 @@ PY
     resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
     regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
   done
+}
+
+regtest_validate_validator_competition_payload_consensus_error() {
+  regtest_validate_validator_candidate_set_payload_consensus_error "$@"
 }
 
 regtest_validate_validator_payload_consensus_error() {

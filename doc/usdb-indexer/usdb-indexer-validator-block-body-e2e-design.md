@@ -212,7 +212,37 @@ validator 风格脚本应始终分两步：
 - 基础历史 RPC 查询仍能重放真实链上状态
 - 但 validator 本地的 `winner == recomputed(candidate_passes, selection_rule)` 校验必须失败
 
-### 6.9 Reorg
+### 6.9 Three-Pass Candidate-Set
+
+- `regtest_live_ord_validator_block_body_three_pass_candidate_set.sh`
+
+覆盖：
+
+- 同一历史高度下 3 张 pass 组成 `candidate_passes`
+- payload 显式记录 `winner + candidate_passes + selection_rule`
+- validator 在同一历史 context 下重查 3 张 pass，并重算 winner
+- 后续块让当前 winner 真实发生 `transfer` 等状态变化，旧 payload 仍按历史视图成立
+
+### 6.10 Five-Pass Candidate-Set Tamper
+
+- `regtest_live_ord_validator_block_body_five_pass_candidate_set_tamper.sh`
+
+覆盖：
+
+- 同一历史高度下 5 张 pass 组成更接近真实 validator 候选集合的 `candidate_set`
+- 在不改 `external_state` 的前提下篡改 payload 中记录的 winner
+- validator 通过本地重算 `winner == recomputed(candidate_passes, selection_rule)` 识别篡改
+
+### 6.11 Five-Pass Candidate-Set Reorg
+
+- `regtest_live_ord_validator_block_body_five_pass_candidate_set_reorg.sh`
+
+覆盖：
+
+- same-height replacement 覆盖 5-pass candidate-set payload 所在高度
+- 旧 payload 的 `state ref / winner / candidate_passes` 在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
+
+### 6.12 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -220,7 +250,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.10 Retention / Missing History
+### 6.13 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 
