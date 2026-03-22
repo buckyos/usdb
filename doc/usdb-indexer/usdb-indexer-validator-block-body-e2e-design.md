@@ -136,7 +136,29 @@ validator 风格脚本应始终分两步：
 - 原始历史高度验证通过
 - BTC head 前进后，旧 payload 仍可验证通过
 
-### 6.2 Reorg
+### 6.2 State Advance
+
+- `regtest_live_ord_validator_block_body_state_advance.sh`
+
+覆盖：
+
+- payload 生成后，后续块对同一张 pass 触发真实变化：
+  - `transfer`
+  - `remint(prev)`
+- 旧 payload 仍按各自历史 `context` 验证通过
+- 当前 head 上同一业务对象的 owner / state / energy 已经和旧 payload 不同
+
+### 6.3 Competing Payloads
+
+- `regtest_live_ord_validator_block_body_competing_payloads.sh`
+
+覆盖：
+
+- 同一张 pass 在不同高度生成多份历史 payload
+- 每份 payload 只能在各自 `expected_state` 下成立
+- payload-A / payload-B 互相串用时返回 `SNAPSHOT_ID_MISMATCH`
+
+### 6.4 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -144,7 +166,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.3 Retention / Missing History
+### 6.5 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 
