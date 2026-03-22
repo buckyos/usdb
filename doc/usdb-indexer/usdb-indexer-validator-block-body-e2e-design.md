@@ -158,7 +158,61 @@ validator 风格脚本应始终分两步：
 - 每份 payload 只能在各自 `expected_state` 下成立
 - payload-A / payload-B 互相串用时返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.4 Reorg
+### 6.4 Two-Pass Competition
+
+- `regtest_live_ord_validator_block_body_two_pass_competition.sh`
+
+覆盖：
+
+- 同一历史高度 `H` 下存在两张合法候选 pass
+- `winner` 与 `candidates` 被固定进同一份 block-body payload
+- validator 在同一历史 `external_state` 下重查两张 pass 的 `snapshot / energy / state`
+- validator 证明 `winner` 满足 `max_energy + inscription_id` tie-break 选择规则，而不是只校验单张 pass
+- 后续块让 winner 本身发生真实状态变化后，旧 payload 仍按 `H` 通过
+
+### 6.5 Two-Pass Real Energy Advantage
+
+- `regtest_live_ord_validator_block_body_two_pass_energy_advantage.sh`
+
+覆盖：
+
+- 同一历史高度 `H` 下两张候选 pass 存在真实 `energy` 差异，而不是都落到 `0` 后只走 tie-break
+- `H` 时 `pass1.energy > pass2.energy`，payload 记录 `pass1` 为 winner
+- 后续块通过给 `pass2` owner 追加真实 BTC balance 并等待 energy 增长，使当前 head 上的赢家翻转为 `pass2`
+- validator 仍能按 `H` 的历史 `external_state` 证明旧 payload 合法
+- 新高度的 payload 会切换到新的 winner，从而证明“历史赢家”和“当前赢家”都能按各自上下文独立成立
+
+### 6.6 Two-Pass Competing Payloads
+
+- `regtest_live_ord_validator_block_body_two_pass_competing_payloads.sh`
+
+覆盖：
+
+- 同一组候选 pass 在 `H` 与 `H+1` 生成两份不同的多 pass payload
+- 两份 payload 的 `snapshot_id / system_state_id / candidate_count / winner` 会发生变化
+- 每份 payload 只能在各自历史视图下成立
+- 跨高度串用 payload 时返回 `SNAPSHOT_ID_MISMATCH`
+
+### 6.7 Two-Pass Reorg
+
+- `regtest_live_ord_validator_block_body_two_pass_reorg.sh`
+
+覆盖：
+
+- 针对多 pass competition payload 执行 same-height reorg
+- 旧 payload 的 state ref、winner pass、candidate passes 全部在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
+
+### 6.8 Two-Pass Payload Tamper
+
+- `regtest_live_ord_validator_block_body_two_pass_tamper.sh`
+
+覆盖：
+
+- 在不改 `external_state` 的前提下篡改 multi-pass payload 的 `winner`
+- 基础历史 RPC 查询仍能重放真实链上状态
+- 但 validator 本地的 `winner == recomputed(candidate_passes, selection_rule)` 校验必须失败
+
+### 6.9 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -166,7 +220,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.5 Retention / Missing History
+### 6.10 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 

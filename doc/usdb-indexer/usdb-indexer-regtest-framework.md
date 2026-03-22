@@ -31,6 +31,11 @@
 - live ord validator block-body happy-path 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh)
 - live ord validator block-body state-advance 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_state_advance.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_state_advance.sh)
 - live ord validator block-body competing-payloads 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_competing_payloads.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_competing_payloads.sh)
+- live ord validator block-body two-pass competition 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_competition.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_competition.sh)
+- live ord validator block-body two-pass real-energy-advantage 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_energy_advantage.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_energy_advantage.sh)
+- live ord validator block-body two-pass competing-payloads 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_competing_payloads.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_competing_payloads.sh)
+- live ord validator block-body two-pass reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_reorg.sh)
+- live ord validator block-body two-pass tamper 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_tamper.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_two_pass_tamper.sh)
 - live ord validator block-body reorg 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh)
 - live ord validator block-body retention 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_retention.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_retention.sh)
 - live ord validator historical-context e2e 场景：[src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_validator_historical_context_e2e.sh)
@@ -54,7 +59,11 @@
    - `regtest_live_ord_*`
    - 负责真实 mint / transfer / remint(prev) 以及多块业务 rollback
    - 也覆盖 ETHW 风格历史校验请求在 head 前进、same-height reorg、历史窗口上升、历史辅助数据缺失时的错误分流
-4. world-sim 压力层：
+4. validator block-body 层：
+   - `regtest_live_ord_validator_*`
+   - 负责更贴近 ETHW block body 的 `external_state + miner_selection + candidate_passes`
+   - 覆盖单 pass、多 pass、真实 energy 竞争、payload 篡改、历史竞争态、same-height reorg、retention / history-not-available
+5. world-sim 压力层：
    - `regtest_world_sim.sh`
    - `regtest_world_sim_reorg.sh`
    - `regtest_world_sim_determinism.sh`
@@ -117,6 +126,18 @@ ORD_BIN=/home/bucky/ord/target/release/ord \
 RUN_SMOKE_REORG_SUITE=0 \
 RUN_LIVE_ORD_REORG_SUITE=0 \
 RUN_PENDING_RECOVERY_SUITE=0 \
+bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
+```
+
+只跑 validator block-body 专项：
+
+```bash
+BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
+ORD_BIN=/home/bucky/ord/target/release/ord \
+RUN_SMOKE_REORG_SUITE=0 \
+RUN_LIVE_ORD_REORG_SUITE=0 \
+RUN_PENDING_RECOVERY_SUITE=0 \
+RUN_HISTORICAL_VALIDATION_SUITE=0 \
 bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 ```
 

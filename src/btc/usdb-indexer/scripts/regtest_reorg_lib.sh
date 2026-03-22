@@ -231,6 +231,165 @@ payload_file.write_text(json.dumps(payload, indent=2) + "\n")
 PY
 }
 
+regtest_build_validator_candidate_entry_json() {
+  local pass_snapshot_resp="$1"
+  local pass_energy_resp="$2"
+
+  python3 - "$pass_snapshot_resp" "$pass_energy_resp" <<'PY'
+import json
+import sys
+
+pass_snapshot = json.loads(sys.argv[1])["result"]
+pass_energy = json.loads(sys.argv[2])["result"]
+
+print(json.dumps({
+    "inscription_id": pass_snapshot["inscription_id"],
+    "owner": pass_snapshot["owner"],
+    "state": pass_snapshot["state"],
+    "energy": pass_energy["energy"],
+    "resolved_height": pass_snapshot["resolved_height"],
+    "query_block_height": pass_energy["query_block_height"],
+}))
+PY
+}
+
+regtest_write_validator_competition_payload_v1() {
+  local payload_file="$1"
+  local state_ref_resp="$2"
+  local winner_snapshot_resp="$3"
+  local winner_energy_resp="$4"
+  local candidate_entries_json="$5"
+
+  python3 - "$payload_file" "$state_ref_resp" "$winner_snapshot_resp" "$winner_energy_resp" "$candidate_entries_json" <<'PY'
+import json
+import pathlib
+import sys
+
+payload_file = pathlib.Path(sys.argv[1])
+state_ref = json.loads(sys.argv[2])["result"]
+winner_snapshot = json.loads(sys.argv[3])["result"]
+winner_energy = json.loads(sys.argv[4])["result"]
+candidates = json.loads(sys.argv[5])
+
+payload = {
+    "payload_version": "1.1.0",
+    "external_state": {
+        "btc_height": state_ref["block_height"],
+        "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
+        "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
+        "system_state_id": state_ref["system_state_info"]["system_state_id"],
+        "usdb_index_protocol_version": (
+            (state_ref["system_state_info"].get("system_state_identity") or {}).get("usdb_index_protocol_version")
+            or (state_ref["local_state_commit_info"].get("local_state_identity") or {}).get("usdb_index_protocol_version")
+            or (state_ref["snapshot_info"].get("consensus_identity") or {}).get("usdb_index_protocol_version")
+        ),
+    },
+    "miner_selection": {
+        "inscription_id": winner_snapshot["inscription_id"],
+        "owner": winner_snapshot["owner"],
+        "state": winner_snapshot["state"],
+        "energy": winner_energy["energy"],
+        "resolved_height": winner_snapshot["resolved_height"],
+        "query_block_height": winner_energy["query_block_height"],
+    },
+    "selection_rule": {
+        "kind": "max_energy",
+        "tie_breaker": "inscription_id_lexicographic_asc",
+    },
+    "candidate_passes": candidates,
+}
+
+payload_file.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+regtest_write_validator_competition_payload_tampered_winner() {
+  local src_payload_file="$1"
+  local dst_payload_file="$2"
+  local winner_inscription_id="$3"
+
+  python3 - "$src_payload_file" "$dst_payload_file" "$winner_inscription_id" <<'PY'
+import json
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+dst = pathlib.Path(sys.argv[2])
+winner_id = sys.argv[3]
+payload = json.loads(src.read_text())
+candidates = payload.get("candidate_passes") or []
+match = next((item for item in candidates if item.get("inscription_id") == winner_id), None)
+if match is None:
+    raise SystemExit(f"winner candidate not found: {winner_id}")
+
+payload["miner_selection"] = {
+    "inscription_id": match["inscription_id"],
+    "owner": match["owner"],
+    "state": match["state"],
+    "energy": match["energy"],
+    "resolved_height": match["resolved_height"],
+    "query_block_height": match["query_block_height"],
+}
+
+dst.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+regtest_write_validator_competition_payload_for_passes_at_height() {
+  local payload_file="$1"
+  local block_height="$2"
+  local winner_id="$3"
+  shift 3
+  local candidate_ids=("$@")
+
+  local state_ref_resp candidate_entries_json winner_snapshot_resp winner_energy_resp
+  local inscription_id pass_snapshot_resp pass_energy_resp candidate_entry_json
+
+  regtest_wait_usdb_state_ref_available "$block_height"
+  state_ref_resp="$(regtest_get_usdb_state_ref_response "$block_height")"
+  regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
+
+  candidate_entries_json="[]"
+  winner_snapshot_resp=""
+  winner_energy_resp=""
+  for inscription_id in "${candidate_ids[@]}"; do
+    pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
+    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True"
+
+    pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
+    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
+
+    candidate_entry_json="$(regtest_build_validator_candidate_entry_json "$pass_snapshot_resp" "$pass_energy_resp")"
+    candidate_entries_json="$(python3 - "$candidate_entries_json" "$candidate_entry_json" <<'PY'
+import json
+import sys
+
+entries = json.loads(sys.argv[1])
+entries.append(json.loads(sys.argv[2]))
+print(json.dumps(entries))
+PY
+)"
+
+    if [[ "$inscription_id" == "$winner_id" ]]; then
+      winner_snapshot_resp="$pass_snapshot_resp"
+      winner_energy_resp="$pass_energy_resp"
+    fi
+  done
+
+  if [[ -z "$winner_snapshot_resp" || -z "$winner_energy_resp" ]]; then
+    regtest_log "Winner ${winner_id} not found in candidate set"
+    exit 1
+  fi
+
+  regtest_write_validator_competition_payload_v1 \
+    "$payload_file" \
+    "$state_ref_resp" \
+    "$winner_snapshot_resp" \
+    "$winner_energy_resp" \
+    "$candidate_entries_json"
+}
+
 regtest_validator_payload_expr() {
   local payload_file="$1"
   local expression="$2"
@@ -373,6 +532,159 @@ regtest_validate_validator_payload_success() {
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$expected_energy"
+}
+
+regtest_validate_validator_competition_payload_success() {
+  local payload_file="$1"
+  local context_json candidate_count winner_id winner_owner winner_state winner_energy
+  local computed_winner_json computed_winner_id computed_winner_owner computed_winner_state computed_winner_energy
+  local idx candidate_id candidate_owner candidate_state candidate_energy candidate_height energy_height
+  local snapshot_params energy_params resp
+
+  regtest_validate_validator_payload_success "$payload_file"
+
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  candidate_count="$(regtest_validator_payload_expr "$payload_file" "((data.get('candidate_passes') or []).__len__())")"
+  winner_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  winner_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
+  winner_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
+  winner_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['energy']")"
+
+  for idx in $(seq 0 $((candidate_count - 1))); do
+    candidate_id="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['inscription_id']")"
+    candidate_owner="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['owner']")"
+    candidate_state="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['state']")"
+    candidate_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['energy']")"
+    candidate_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['resolved_height']")"
+    energy_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['query_block_height']")"
+
+    snapshot_params="$(python3 - "$candidate_id" "$candidate_height" "$context_json" <<'PY'
+import json
+import sys
+print(json.dumps([{
+    "inscription_id": sys.argv[1],
+    "at_height": int(sys.argv[2]),
+    "context": json.loads(sys.argv[3]),
+}]))
+PY
+)"
+    resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+    regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('owner')" "$candidate_owner"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$candidate_state"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('resolved_height')" "$candidate_height"
+
+    energy_params="$(python3 - "$candidate_id" "$energy_height" "$context_json" <<'PY'
+import json
+import sys
+print(json.dumps([{
+    "inscription_id": sys.argv[1],
+    "block_height": int(sys.argv[2]),
+    "mode": "at_or_before",
+    "context": json.loads(sys.argv[3]),
+}]))
+PY
+)"
+    resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
+    regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$energy_height"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$candidate_energy"
+  done
+
+  computed_winner_json="$(python3 - "$payload_file" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+candidates = payload.get("candidate_passes") or []
+winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+print(json.dumps(winner))
+PY
+)"
+  computed_winner_id="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inscription_id"])')"
+  computed_winner_owner="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["owner"])')"
+  computed_winner_state="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
+  computed_winner_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["energy"])')"
+
+  if [[ "$winner_id" != "$computed_winner_id" || "$winner_owner" != "$computed_winner_owner" || "$winner_state" != "$computed_winner_state" || "$winner_energy" != "$computed_winner_energy" ]]; then
+    regtest_log "Competition payload winner does not match candidate ordering: winner_id=${winner_id}, computed_winner_id=${computed_winner_id}"
+    exit 1
+  fi
+}
+
+regtest_validate_validator_competition_payload_tampered_selection() {
+  local payload_file="$1"
+  local computed_winner_json computed_winner_id winner_id
+
+  regtest_validate_validator_payload_success "$payload_file"
+
+  computed_winner_json="$(python3 - "$payload_file" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+candidates = payload.get("candidate_passes") or []
+winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+print(json.dumps(winner))
+PY
+)"
+  computed_winner_id="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inscription_id"])')"
+  winner_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+
+  if [[ "$winner_id" == "$computed_winner_id" ]]; then
+    regtest_log "Expected tampered competition payload to disagree with computed winner, but both are ${winner_id}"
+    exit 1
+  fi
+}
+
+regtest_validate_validator_competition_payload_consensus_error() {
+  local payload_file="$1"
+  local expected_code="$2"
+  local expected_message="$3"
+  local context_json block_height candidate_count idx candidate_id candidate_height energy_height
+  local state_ref_params snapshot_params energy_params resp
+
+  regtest_validate_validator_payload_consensus_error "$payload_file" "$expected_code" "$expected_message"
+
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  candidate_count="$(regtest_validator_payload_expr "$payload_file" "((data.get('candidate_passes') or []).__len__())")"
+
+  for idx in $(seq 0 $((candidate_count - 1))); do
+    candidate_id="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['inscription_id']")"
+    candidate_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['resolved_height']")"
+    energy_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['query_block_height']")"
+
+    snapshot_params="$(python3 - "$candidate_id" "$candidate_height" "$context_json" <<'PY'
+import json
+import sys
+print(json.dumps([{
+    "inscription_id": sys.argv[1],
+    "at_height": int(sys.argv[2]),
+    "context": json.loads(sys.argv[3]),
+}]))
+PY
+)"
+    resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+    regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+
+    energy_params="$(python3 - "$candidate_id" "$energy_height" "$context_json" <<'PY'
+import json
+import sys
+print(json.dumps([{
+    "inscription_id": sys.argv[1],
+    "block_height": int(sys.argv[2]),
+    "mode": "at_or_before",
+    "context": json.loads(sys.argv[3]),
+}]))
+PY
+)"
+    resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
+    regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+  done
 }
 
 regtest_validate_validator_payload_consensus_error() {
@@ -1365,6 +1677,17 @@ regtest_assert_usdb_pass_snapshot_state() {
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$inscription_id"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('resolved_height')" "$block_height"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$expected_state"
+}
+
+regtest_get_usdb_pass_snapshot_response() {
+  local inscription_id="$1"
+  local block_height="$2"
+  local resp
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
+  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
+  regtest_assert_json_expr "$resp" "data.get('result') is not None" "True"
+  echo "$resp"
 }
 
 regtest_assert_usdb_pass_snapshot_missing() {

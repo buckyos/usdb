@@ -11,6 +11,7 @@ RUN_SMOKE_REORG_SUITE="${RUN_SMOKE_REORG_SUITE:-1}"
 RUN_LIVE_ORD_REORG_SUITE="${RUN_LIVE_ORD_REORG_SUITE:-1}"
 RUN_PENDING_RECOVERY_SUITE="${RUN_PENDING_RECOVERY_SUITE:-1}"
 RUN_HISTORICAL_VALIDATION_SUITE="${RUN_HISTORICAL_VALIDATION_SUITE:-1}"
+RUN_VALIDATOR_BLOCK_BODY_SUITE="${RUN_VALIDATOR_BLOCK_BODY_SUITE:-1}"
 
 BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-30132}"
 BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-30133}"
@@ -91,6 +92,29 @@ run_historical_validation_suite() {
   run_case "$slot" "regtest_live_ord_validator_historical_context_e2e.sh"
 }
 
+run_validator_block_body_suite() {
+  local slot=40
+  run_case "$slot" "regtest_live_ord_validator_block_body_e2e.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_state_advance.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_competing_payloads.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_reorg.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_retention.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_competition.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_energy_advantage.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_competing_payloads.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_reorg.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_two_pass_tamper.sh"
+}
+
 main() {
   log "Repo root: ${REPO_ROOT}"
   log "Bitcoin bin dir: ${BITCOIN_BIN_DIR}"
@@ -118,6 +142,12 @@ main() {
     run_historical_validation_suite
   else
     log "Skipping historical validation suite: RUN_HISTORICAL_VALIDATION_SUITE=${RUN_HISTORICAL_VALIDATION_SUITE}"
+  fi
+
+  if [[ "${RUN_VALIDATOR_BLOCK_BODY_SUITE}" == "1" ]]; then
+    run_validator_block_body_suite
+  else
+    log "Skipping validator block-body suite: RUN_VALIDATOR_BLOCK_BODY_SUITE=${RUN_VALIDATOR_BLOCK_BODY_SUITE}"
   fi
 
   log "USDB reorg regression suite succeeded."
