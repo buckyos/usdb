@@ -134,14 +134,17 @@
 2. regtest
    - `regtest_reorg_smoke.sh`
    - `regtest_same_height_reorg_smoke.sh`
-   - 这些脚本现在会在关键断言前等待 `regtest_wait_usdb_consensus_ready`
+   - `regtest_e2e_smoke.sh`
+   - `regtest_live_ord_e2e.sh`
+   - `regtest_world_sim.sh`
+   - 这些入口现在都已经在关键断言前等待 `regtest_wait_usdb_consensus_ready` 或等价的 readiness helper
 
 ## 8. 后续可扩展项
 
-第一版还没有做的内容：
+当前仍未完成的内容：
 
-- 对 `world-sim` / `e2e_smoke` 全部入口统一切换到 `get_readiness`
 - 在 regtest 中显式断言 `consensus_ready=false` 的中间窗口
 - 把 `blockers` 进一步细分成 `query_blockers` / `consensus_blockers`
+- 把 readiness 的负向断言扩展到更多 restart / world-sim / historical validation 场景
 
-当前阶段先把主链路拉直：服务端、单元测试、reorg smoke 和 restart/recovery 语义先统一到结构化 readiness 上。
+当前阶段主链路已经拉直：服务端、单元测试、smoke、live ord、world-sim、reorg/restart/recovery 语义都已统一到结构化 readiness 上。

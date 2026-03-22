@@ -683,15 +683,19 @@
 }
 ```
 
-后续还需要再补一类共享错误：
+当前历史校验相关接口已经补齐这类共享错误：
 
-- `STATE_NOT_RETAINED` 或 `HISTORY_NOT_AVAILABLE`
+- `STATE_NOT_RETAINED`
+- `HISTORY_NOT_AVAILABLE`
 
-它的语义是：
+它们的当前语义是：
 
-- 请求高度本身合法
-- 服务也不是 not-ready
-- 但对应高度的历史 state ref 已不再保留或无法重建
+- `STATE_NOT_RETAINED`
+  - 请求高度本身合法
+  - 但已低于当前统一历史保留窗口下界（现阶段即 `genesis_block_height`）
+- `HISTORY_NOT_AVAILABLE`
+  - 请求高度仍在保留窗口内
+  - 但节点当前缺少重建该高度历史 state ref 所需的辅助数据
 
 这类情况不能混成 `*_MISMATCH`，否则 ETHW 验块会把“服务没有这份历史数据”误判成“区块记录的状态错误”。
 
@@ -734,27 +738,50 @@
 
 ---
 
-## 8. v1 实现建议（分阶段）
+## 8. 当前完成度与后续阶段
 
-- **Phase A（最小可用）**：
-  - `get_rpc_info`
-  - `get_network_type`
-  - `get_sync_status`
-  - `get_synced_block_height`
-  - `get_pass_snapshot`
-  - `get_active_passes_at_height`
-  - `get_pass_stats_at_height`
-  - `get_pass_energy`
-  - `get_active_balance_snapshot`
-  - `get_latest_active_balance_snapshot`
+### 8.1 当前已完成
 
-- **Phase B（增强）**：
-  - `get_pass_history`
-  - `get_owner_active_pass_at_height`
-  - `get_pass_energy_range`
-  - `get_pass_energy_leaderboard`
-  - `get_invalid_passes`
-  - `stop`
+当前仓库已经完成或落到第一版的接口包括：
+
+- `get_rpc_info`
+- `get_network_type`
+- `get_sync_status`
+- `get_synced_block_height`
+- `get_snapshot_info`
+- `get_local_state_commit_info`
+- `get_system_state_info`
+- `get_state_ref_at_height`
+- `get_pass_snapshot`
+- `get_active_passes_at_height`
+- `get_pass_stats_at_height`
+- `get_pass_energy`
+- `get_active_balance_snapshot`
+- `get_latest_active_balance_snapshot`
+
+其中与 ETHW 强一致历史校验直接相关的主链路已经具备：
+
+- `get_state_ref_at_height`
+- `get_pass_snapshot(context=...)`
+- `get_pass_energy(context=...)`
+- `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE / *_MISMATCH`
+
+### 8.2 后续阶段
+
+后续更偏增强项而不是协议缺口：
+
+- `get_pass_history`
+- `get_owner_active_pass_at_height`
+- `get_pass_energy_range`
+- `get_pass_energy_leaderboard`
+- `get_invalid_passes`
+- `stop`
+
+以及：
+
+- 将 `ConsensusQueryContext` 继续扩展到更多外围查询面
+- 若未来引入真实 prune，再把统一下界演进成真实 retention floor
+- 推进更贴近 ETHW 最终 block body 的 validator 联调
 
 ---
 
