@@ -59,8 +59,17 @@ class ActionExpectation:
 
 
 @dataclass
+class ValidatorSampleCandidate:
+    inscription_id: str
+    owner: str
+    state: str
+    energy: int
+
+
+@dataclass
 class ValidatorSample:
     sample_id: str
+    mode: str
     tick: int
     block_height: int
     inscription_id: str
@@ -71,6 +80,8 @@ class ValidatorSample:
     stable_block_hash: str
     local_state_commit: str
     system_state_id: str
+    candidates: list[ValidatorSampleCandidate] = field(default_factory=list)
+    winner_inscription_id: str | None = None
     expected_consensus_error: str | None = None
     invalidated_by_reorg_tick: int | None = None
     validated: bool = False
@@ -123,6 +134,7 @@ class Args:
     reorg_depth: int
     reorg_max_events: int
     validator_sample_enabled: bool
+    validator_sample_mode: str
     validator_sample_interval_blocks: int
     validator_sample_size: int
     validator_sample_min_head_advance: int
@@ -152,6 +164,14 @@ class RegtestWorldSimulator:
         "output in wallet but not in ord server",
     )
 
+    @staticmethod
+    def choose_candidate_set_winner(
+        candidates: list[ValidatorSampleCandidate],
+    ) -> ValidatorSampleCandidate:
+        if not candidates:
+            raise WorldSimError("candidate-set winner selection requires at least one candidate")
+        return min(candidates, key=lambda item: (-int(item.energy), item.inscription_id))
+
     def __init__(self, args: Args) -> None:
         if len(args.agent_wallets) != len(args.agent_addresses):
             raise WorldSimError(
@@ -165,6 +185,11 @@ class RegtestWorldSimulator:
         if self.args.policy_mode not in {"adaptive", "scripted"}:
             raise WorldSimError(
                 f"unsupported policy_mode={self.args.policy_mode}, expected adaptive or scripted"
+            )
+        if self.args.validator_sample_mode not in {"single", "candidate_set"}:
+            raise WorldSimError(
+                "unsupported validator_sample_mode="
+                f"{self.args.validator_sample_mode}, expected single or candidate_set"
             )
         if not self.args.scripted_cycle:
             raise WorldSimError("scripted_cycle must not be empty")
@@ -255,6 +280,7 @@ class RegtestWorldSimulator:
                 "reorg_depth": self.args.reorg_depth,
                 "reorg_max_events": self.args.reorg_max_events,
                 "validator_sample_enabled": self.args.validator_sample_enabled,
+                "validator_sample_mode": self.args.validator_sample_mode,
                 "validator_sample_interval_blocks": self.args.validator_sample_interval_blocks,
                 "validator_sample_size": self.args.validator_sample_size,
                 "validator_sample_min_head_advance": self.args.validator_sample_min_head_advance,
@@ -566,6 +592,43 @@ class RegtestWorldSimulator:
             return False
         return tick % interval == 0
 
+    def build_validator_sample_candidate(
+        self, inscription_id: str, block_height: int, context: dict[str, Any]
+    ) -> ValidatorSampleCandidate:
+        snapshot = self.rpc_usdb(
+            "get_pass_snapshot",
+            [
+                {
+                    "inscription_id": inscription_id,
+                    "at_height": block_height,
+                    "context": context,
+                }
+            ],
+        )
+        energy = self.rpc_usdb(
+            "get_pass_energy",
+            [
+                {
+                    "inscription_id": inscription_id,
+                    "block_height": block_height,
+                    "mode": "at_or_before",
+                    "context": context,
+                }
+            ],
+        )
+        if not isinstance(snapshot, dict) or not isinstance(energy, dict):
+            raise WorldSimError(
+                "validator sample capture missing pass payload: "
+                f"block_height={block_height}, inscription_id={inscription_id}, "
+                f"snapshot={snapshot}, energy={energy}"
+            )
+        return ValidatorSampleCandidate(
+            inscription_id=inscription_id,
+            owner=str(snapshot.get("owner", "")),
+            state=str(snapshot.get("state", "")),
+            energy=int(energy.get("energy", 0)),
+        )
+
     def capture_validator_samples(self, block_height: int, tick: int) -> list[str]:
         rows = self.load_all_active_passes_at_height(block_height)
         if not rows:
@@ -598,50 +661,52 @@ class RegtestWorldSimulator:
         system_state_info = state_ref.get("system_state_info") or {}
 
         captured: list[str] = []
-        for inscription_id in selected_ids:
-            snapshot = self.rpc_usdb(
-                "get_pass_snapshot",
-                [
-                    {
-                        "inscription_id": inscription_id,
-                        "at_height": block_height,
-                        "context": context,
-                    }
-                ],
-            )
-            energy = self.rpc_usdb(
-                "get_pass_energy",
-                [
-                    {
-                        "inscription_id": inscription_id,
-                        "block_height": block_height,
-                        "mode": "at_or_before",
-                        "context": context,
-                    }
-                ],
-            )
-            if not isinstance(snapshot, dict) or not isinstance(energy, dict):
-                raise WorldSimError(
-                    "validator sample capture missing pass payload: "
-                    f"tick={tick}, block_height={block_height}, inscription_id={inscription_id}, "
-                    f"snapshot={snapshot}, energy={energy}"
-                )
-
+        if self.args.validator_sample_mode == "candidate_set":
+            candidates = [
+                self.build_validator_sample_candidate(inscription_id, block_height, context)
+                for inscription_id in selected_ids
+            ]
+            winner = self.choose_candidate_set_winner(candidates)
+            sample_hash = hashlib.sha256(",".join(selected_ids).encode("utf-8")).hexdigest()[:12]
             sample = ValidatorSample(
-                sample_id=f"h{block_height}:{inscription_id}",
+                sample_id=f"h{block_height}:candidate_set:{sample_hash}",
+                mode="candidate_set",
                 tick=tick,
                 block_height=block_height,
-                inscription_id=inscription_id,
-                owner=str(snapshot.get("owner", "")),
-                state=str(snapshot.get("state", "")),
-                energy=int(energy.get("energy", 0)),
+                inscription_id=winner.inscription_id,
+                owner=winner.owner,
+                state=winner.state,
+                energy=winner.energy,
                 snapshot_id=str(snapshot_info.get("snapshot_id", "")),
                 stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
                 local_state_commit=str(local_state_info.get("local_state_commit", "")),
                 system_state_id=str(system_state_info.get("system_state_id", "")),
+                candidates=candidates,
+                winner_inscription_id=winner.inscription_id,
             )
             self.validator_samples.append(sample)
             captured.append(sample.sample_id)
+        else:
+            for inscription_id in selected_ids:
+                candidate = self.build_validator_sample_candidate(
+                    inscription_id, block_height, context
+                )
+                sample = ValidatorSample(
+                    sample_id=f"h{block_height}:{inscription_id}",
+                    mode="single",
+                    tick=tick,
+                    block_height=block_height,
+                    inscription_id=inscription_id,
+                    owner=candidate.owner,
+                    state=candidate.state,
+                    energy=candidate.energy,
+                    snapshot_id=str(snapshot_info.get("snapshot_id", "")),
+                    stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
+                    local_state_commit=str(local_state_info.get("local_state_commit", "")),
+                    system_state_id=str(system_state_info.get("system_state_id", "")),
+                )
+                self.validator_samples.append(sample)
+                captured.append(sample.sample_id)
 
         if captured:
             self.emit_report(
@@ -649,8 +714,16 @@ class RegtestWorldSimulator:
                 {
                     "tick": tick,
                     "block_height": block_height,
+                    "mode": self.args.validator_sample_mode,
                     "sample_ids": captured,
                     "count": len(captured),
+                    "sample_size": len(selected_ids),
+                    "candidate_ids": selected_ids,
+                    "winner_ids": [
+                        sample.winner_inscription_id
+                        for sample in self.validator_samples
+                        if sample.sample_id in captured and sample.winner_inscription_id is not None
+                    ],
                 },
             )
         return captured
@@ -708,8 +781,10 @@ class RegtestWorldSimulator:
                             "head_block_height": block_height,
                             "sample_id": sample.sample_id,
                             "sample_block_height": sample.block_height,
+                            "mode": sample.mode,
                             "result": "expected_mismatch",
                             "expected_error": sample.expected_consensus_error,
+                            "winner_inscription_id": sample.winner_inscription_id,
                             "invalidated_by_reorg_tick": sample.invalidated_by_reorg_tick,
                         },
                     )
@@ -720,48 +795,53 @@ class RegtestWorldSimulator:
                     raise WorldSimError(
                         f"missing historical state ref for sample={sample.sample_id}"
                     )
-                snapshot = self.rpc_usdb(
-                    "get_pass_snapshot",
-                    [
-                        {
-                            "inscription_id": sample.inscription_id,
-                            "at_height": sample.block_height,
-                            "context": context,
-                        }
-                    ],
-                )
-                energy = self.rpc_usdb(
-                    "get_pass_energy",
-                    [
-                        {
-                            "inscription_id": sample.inscription_id,
-                            "block_height": sample.block_height,
-                            "mode": "at_or_before",
-                            "context": context,
-                        }
-                    ],
-                )
-                if not isinstance(snapshot, dict) or not isinstance(energy, dict):
-                    raise WorldSimError(
-                        "validator sample validation returned invalid payload types: "
-                        f"sample={sample.sample_id}, snapshot={snapshot}, energy={energy}"
-                    )
+                if sample.mode == "candidate_set":
+                    actual_candidates = [
+                        self.build_validator_sample_candidate(
+                            candidate.inscription_id, sample.block_height, context
+                        )
+                        for candidate in sample.candidates
+                    ]
+                    for expected, actual in zip(sample.candidates, actual_candidates, strict=True):
+                        if actual.owner != expected.owner:
+                            raise WorldSimError(
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
+                                f"expected_owner={expected.owner}, got_owner={actual.owner}"
+                            )
+                        if actual.state != expected.state:
+                            raise WorldSimError(
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
+                                f"expected_state={expected.state}, got_state={actual.state}"
+                            )
+                        if actual.energy != expected.energy:
+                            raise WorldSimError(
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
+                                f"expected_energy={expected.energy}, got_energy={actual.energy}"
+                            )
 
-                actual_owner = str(snapshot.get("owner", ""))
-                actual_state = str(snapshot.get("state", ""))
-                actual_energy = int(energy.get("energy", 0))
-                if actual_owner != sample.owner:
-                    raise WorldSimError(
-                        f"sample={sample.sample_id}, expected_owner={sample.owner}, got_owner={actual_owner}"
+                    actual_winner = self.choose_candidate_set_winner(actual_candidates)
+                    if actual_winner.inscription_id != sample.winner_inscription_id:
+                        raise WorldSimError(
+                            "validator sample candidate-set winner mismatch: "
+                            f"sample={sample.sample_id}, expected_winner={sample.winner_inscription_id}, "
+                            f"got_winner={actual_winner.inscription_id}"
+                        )
+                else:
+                    actual = self.build_validator_sample_candidate(
+                        sample.inscription_id, sample.block_height, context
                     )
-                if actual_state != sample.state:
-                    raise WorldSimError(
-                        f"sample={sample.sample_id}, expected_state={sample.state}, got_state={actual_state}"
-                    )
-                if actual_energy != sample.energy:
-                    raise WorldSimError(
-                        f"sample={sample.sample_id}, expected_energy={sample.energy}, got_energy={actual_energy}"
-                    )
+                    if actual.owner != sample.owner:
+                        raise WorldSimError(
+                            f"sample={sample.sample_id}, expected_owner={sample.owner}, got_owner={actual.owner}"
+                        )
+                    if actual.state != sample.state:
+                        raise WorldSimError(
+                            f"sample={sample.sample_id}, expected_state={sample.state}, got_state={actual.state}"
+                        )
+                    if actual.energy != sample.energy:
+                        raise WorldSimError(
+                            f"sample={sample.sample_id}, expected_energy={sample.energy}, got_energy={actual.energy}"
+                        )
 
                 sample.validated = True
                 sample.validated_tick = tick
@@ -773,7 +853,9 @@ class RegtestWorldSimulator:
                         "head_block_height": block_height,
                         "sample_id": sample.sample_id,
                         "sample_block_height": sample.block_height,
+                        "mode": sample.mode,
                         "result": "ok",
+                        "winner_inscription_id": sample.winner_inscription_id,
                         "invalidated_by_reorg_tick": sample.invalidated_by_reorg_tick,
                     },
                 )
@@ -2195,6 +2277,7 @@ class RegtestWorldSimulator:
             f"global_cross_check_leaderboard_top_n={self.args.global_cross_check_leaderboard_top_n}, "
             f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}, "
             f"validator_sample_enabled={self.args.validator_sample_enabled}, "
+            f"validator_sample_mode={self.args.validator_sample_mode}, "
             f"validator_sample_interval_blocks={self.args.validator_sample_interval_blocks}, "
             f"validator_sample_size={self.args.validator_sample_size}, "
             f"validator_sample_min_head_advance={self.args.validator_sample_min_head_advance}, "
@@ -2404,6 +2487,7 @@ class RegtestWorldSimulator:
                 f"active_agent_count={self.active_agent_count}, actions={action_slots}, action_failed={action_failed}, "
                 f"agent_self_checked={self_checked_count}, agent_self_check_failed={self_check_failed}, "
                 f"global_cross_checked={global_cross_checked}, global_cross_check_failed={global_cross_check_failed}, "
+                f"validator_sample_mode={self.args.validator_sample_mode}, "
                 f"validator_sample_captured={validator_sample_captured}, validator_sample_checked={validator_sample_checked}, "
                 f"validator_sample_failed={validator_sample_failed}, "
                 f"reorg_applied={reorg_applied}, "
@@ -2433,6 +2517,7 @@ class RegtestWorldSimulator:
                     "agent_self_check_failed": self_check_failed,
                     "global_cross_checked": global_cross_checked,
                     "global_cross_check_failed": global_cross_check_failed,
+                    "validator_sample_mode": self.args.validator_sample_mode,
                     "validator_sample_captured": validator_sample_captured,
                     "validator_sample_capture_ids": validator_sample_capture_ids,
                     "validator_sample_checked": validator_sample_checked,
@@ -2570,10 +2655,16 @@ def parse_args() -> Args:
         help="Capture validator samples every N mined blocks (0 disables sampling)",
     )
     parser.add_argument(
+        "--validator-sample-mode",
+        default="single",
+        choices=["single", "candidate_set"],
+        help="Capture individual pass samples or one multi-pass candidate-set sample per interval",
+    )
+    parser.add_argument(
         "--validator-sample-size",
         type=int,
         default=1,
-        help="How many active passes to sample per validator capture interval (0 means all)",
+        help="How many active passes to sample per validator capture interval (0 means all active passes)",
     )
     parser.add_argument(
         "--validator-sample-min-head-advance",
@@ -2647,6 +2738,7 @@ def parse_args() -> Args:
         global_cross_check_leaderboard_top_n=parsed.global_cross_check_leaderboard_top_n,
         global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
         validator_sample_enabled=parsed.enable_validator_sample,
+        validator_sample_mode=parsed.validator_sample_mode,
         validator_sample_interval_blocks=parsed.validator_sample_interval_blocks,
         validator_sample_size=parsed.validator_sample_size,
         validator_sample_min_head_advance=parsed.validator_sample_min_head_advance,

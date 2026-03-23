@@ -15,7 +15,9 @@
 - reorg 专项回归入口：[src/btc/usdb-indexer/scripts/run_reorg_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_reorg_regression.sh)
 - world-sim 回归入口：[src/btc/usdb-indexer/scripts/regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - world-sim validator sampled 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh)
+- world-sim validator candidate-set sampled 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh)
 - world-sim validator sampled + reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh)
+- world-sim validator candidate-set sampled + reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set_reorg.sh)
 - world-sim reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - world-sim determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
 - world-sim reorg determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
@@ -85,7 +87,9 @@
 5. world-sim 压力层：
    - `regtest_world_sim.sh`
    - `regtest_world_sim_validator_context.sh`
+   - `regtest_world_sim_validator_candidate_set.sh`
    - `regtest_world_sim_validator_context_reorg.sh`
+   - `regtest_world_sim_validator_candidate_set_reorg.sh`
    - `regtest_world_sim_reorg.sh`
    - `regtest_world_sim_determinism.sh`
    - `regtest_world_sim_reorg_determinism.sh`

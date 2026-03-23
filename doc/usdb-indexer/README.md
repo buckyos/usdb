@@ -37,6 +37,7 @@
 
 - [usdb-indexer-regtest-world-sim.md](./usdb-indexer-regtest-world-sim.md)
 - [usdb-indexer-regtest-world-sim-validator-sampled.md](./usdb-indexer-regtest-world-sim-validator-sampled.md)
+- [usdb-indexer-regtest-world-sim-validator-candidate-set.md](./usdb-indexer-regtest-world-sim-validator-candidate-set.md)
 - [usdb-indexer-regtest-world-sim-validator-sampled-reorg.md](./usdb-indexer-regtest-world-sim-validator-sampled-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg.md](./usdb-indexer-regtest-world-sim-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg-determinism.md](./usdb-indexer-regtest-world-sim-reorg-determinism.md)

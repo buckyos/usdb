@@ -56,6 +56,11 @@
   - head 前进后历史样本仍可验证
   - 落在 replacement 区间内的旧样本稳定返回 `SNAPSHOT_ID_MISMATCH`
   - 默认 reorg wrapper 已收敛到稳定命中 `expected_mismatch` 的参数组合
+- `candidate-set` sampled validation 第一批已完成：
+  - 同一采样点固定 `winner + candidate_passes`
+  - validator 在历史 context 下重查多张 pass，并按 `max_energy + inscription_id` 重算 winner
+  - 已补普通 wrapper 和 `deterministic reorg` wrapper
+  - 已验证 world-sim 下 `candidate_set` 样本既可正常回放，也能在 replacement 区间内稳定落到 `expected_mismatch`
 
 完成标准：
 
@@ -158,9 +163,9 @@
 
 当前按下面顺序推进：
 
-1. 先落 `Phase A` 第一版
-2. 稳定后再扩到 `Phase B`
-3. 之后才补 `Phase C / D`
+1. `Phase A` sampled validator 已扩到 `candidate-set`
+2. 继续把更复杂的 validator 选择逻辑往 world-sim 渗透
+3. 再视需要回补更大规模和更长期的 sampled validation soak
 
 ## 5. 备注
 
