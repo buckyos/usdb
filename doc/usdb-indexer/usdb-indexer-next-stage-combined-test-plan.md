@@ -110,6 +110,27 @@
 - 补 `snapshot_id / system_state_id / protocol_version / semantics_version` 的升级边界
 - 验证历史 payload 在版本变化后稳定落到 `VERSION_MISMATCH`
 
+执行任务：
+
+1. `single-pass protocol version mismatch`
+   - 篡改 validator payload 的 `usdb_index_protocol_version`
+   - `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 必须统一返回 `VERSION_MISMATCH`
+2. `single-pass semantics version mismatch`
+   - 篡改 validator payload 的 `balance_history_semantics_version`
+   - 历史 context 路径必须稳定返回 `VERSION_MISMATCH`
+3. `candidate-set protocol version mismatch`
+   - 在多 pass `winner + candidate_passes` payload 上重复版本篡改
+   - 不只覆盖单 pass，还覆盖 candidate-set 的批量历史校验路径
+4. `candidate-set semantics version mismatch`
+   - 在多 pass `winner + candidate_passes` payload 上重复语义版本篡改
+   - 验证批量历史校验路径对 `balance_history_semantics_version` 同样 fail-closed
+5. `balance-history API version mismatch`
+   - 篡改 validator payload 的 `balance_history_api_version`
+   - `state ref / pass snapshot / pass energy` 必须统一返回 `VERSION_MISMATCH`
+6. `version matrix after head advance`
+   - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
+   - BTC head 前进后，原 payload 仍通过，三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
+
 ### Phase D: Restart / Crash Consistency
 
 目标：

@@ -242,7 +242,62 @@ validator 风格脚本应始终分两步：
 - same-height replacement 覆盖 5-pass candidate-set payload 所在高度
 - 旧 payload 的 `state ref / winner / candidate_passes` 在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.12 Reorg
+### 6.12 Protocol Version Mismatch
+
+- `regtest_live_ord_validator_block_body_protocol_version_mismatch.sh`
+
+覆盖：
+
+- 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_protocol_version`
+- `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 都稳定返回 `VERSION_MISMATCH`
+
+### 6.13 Semantics Version Mismatch
+
+- `regtest_live_ord_validator_block_body_semantics_version_mismatch.sh`
+
+覆盖：
+
+- 在不改历史高度和业务对象的前提下，篡改 payload 的 `balance_history_semantics_version`
+- 历史 context 路径稳定返回 `VERSION_MISMATCH`
+
+### 6.14 Candidate-Set Protocol Version Mismatch
+
+- `regtest_live_ord_validator_block_body_candidate_set_protocol_version_mismatch.sh`
+
+覆盖：
+
+- 在 `winner + candidate_passes` payload 上篡改 `usdb_index_protocol_version`
+- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
+
+### 6.15 Candidate-Set Semantics Version Mismatch
+
+- `regtest_live_ord_validator_block_body_candidate_set_semantics_version_mismatch.sh`
+
+覆盖：
+
+- 在 `winner + candidate_passes` payload 上篡改 `balance_history_semantics_version`
+- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
+
+### 6.16 API Version Mismatch
+
+- `regtest_live_ord_validator_block_body_api_version_mismatch.sh`
+
+覆盖：
+
+- 在单 pass payload 上篡改 `balance_history_api_version`
+- `state ref / pass snapshot / pass energy` 都稳定返回 `VERSION_MISMATCH`
+
+### 6.17 Version Matrix After Head Advance
+
+- `regtest_live_ord_validator_block_body_version_matrix.sh`
+
+覆盖：
+
+- 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
+- BTC head 前进后，原 payload 继续通过
+- 三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
+
+### 6.18 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -250,7 +305,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.13 Retention / Missing History
+### 6.19 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 

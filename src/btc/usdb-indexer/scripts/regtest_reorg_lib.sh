@@ -209,6 +209,12 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "balance_history_api_version": (
+            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_api_version")
+        ),
+        "balance_history_semantics_version": (
+            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_semantics_version")
+        ),
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
         "usdb_index_protocol_version": (
@@ -277,6 +283,12 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
+        "balance_history_api_version": (
+            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_api_version")
+        ),
+        "balance_history_semantics_version": (
+            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_semantics_version")
+        ),
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
         "usdb_index_protocol_version": (
@@ -332,6 +344,28 @@ payload["miner_selection"] = {
     "query_block_height": match["query_block_height"],
 }
 
+dst.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+regtest_write_validator_payload_tampered_external_state_field() {
+  local src_payload_file="$1"
+  local dst_payload_file="$2"
+  local field_name="$3"
+  local field_value="$4"
+
+  python3 - "$src_payload_file" "$dst_payload_file" "$field_name" "$field_value" <<'PY'
+import json
+import pathlib
+import sys
+
+src = pathlib.Path(sys.argv[1])
+dst = pathlib.Path(sys.argv[2])
+field_name = sys.argv[3]
+field_value = sys.argv[4]
+
+payload = json.loads(src.read_text())
+payload.setdefault("external_state", {})[field_name] = field_value
 dst.write_text(json.dumps(payload, indent=2) + "\n")
 PY
 }
@@ -463,6 +497,8 @@ print(json.dumps({
     "expected_state": {
         "snapshot_id": state["snapshot_id"],
         "stable_block_hash": state["stable_block_hash"],
+        "balance_history_api_version": state.get("balance_history_api_version"),
+        "balance_history_semantics_version": state.get("balance_history_semantics_version"),
         "local_state_commit": state["local_state_commit"],
         "system_state_id": state["system_state_id"],
         "usdb_index_protocol_version": state["usdb_index_protocol_version"],

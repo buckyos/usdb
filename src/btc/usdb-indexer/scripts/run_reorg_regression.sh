@@ -119,6 +119,18 @@ run_validator_block_body_suite() {
   run_case "$slot" "regtest_live_ord_validator_block_body_five_pass_candidate_set_tamper.sh"
   slot=$((slot + 1))
   run_case "$slot" "regtest_live_ord_validator_block_body_five_pass_candidate_set_reorg.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_protocol_version_mismatch.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_semantics_version_mismatch.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_candidate_set_protocol_version_mismatch.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_candidate_set_semantics_version_mismatch.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_api_version_mismatch.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_version_matrix.sh"
 }
 
 main() {
