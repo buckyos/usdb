@@ -297,7 +297,38 @@ validator 风格脚本应始终分两步：
 - BTC head 前进后，原 payload 继续通过
 - 三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
 
-### 6.18 Reorg
+### 6.18 Payload-Version Upgrade
+
+- `regtest_live_ord_validator_block_body_payload_version_upgrade.sh`
+
+覆盖：
+
+- 同一条链上先生成 `payload_version=1.0.0` 的单 pass payload
+- 后续高度再生成 `payload_version=1.1.0` 的 candidate-set payload
+- validator 在同一升级窗口内同时接受旧 schema 和新 schema 的历史回放
+- BTC head 再前进后，两代 payload 仍能按各自历史 context 独立成立
+
+### 6.19 Payload-Version Upgrade Restart
+
+- `regtest_live_ord_validator_block_body_payload_version_upgrade_restart.sh`
+
+覆盖：
+
+- 先生成 `v1.0` 和 `v1.1` 两代 payload
+- `balance-history` 与 `usdb-indexer` 重启后，历史 `state ref` 与 mixed payload replay 仍然成立
+- 证明 schema 升级窗口不依赖进程内缓存
+
+### 6.20 Payload-Version Upgrade Reorg
+
+- `regtest_live_ord_validator_block_body_payload_version_upgrade_reorg.sh`
+
+覆盖：
+
+- 先生成旧 `v1.0` payload，再生成新 `v1.1` payload
+- same-height replacement 只覆盖新 payload 所在高度
+- 旧 `v1.0` payload 仍成立，而新 `v1.1` payload 稳定返回 `SNAPSHOT_ID_MISMATCH`
+
+### 6.21 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -305,7 +336,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.19 Retention / Missing History
+### 6.22 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 

@@ -335,9 +335,7 @@ cleanup() {
     stop_process "$BALANCE_HISTORY_PID"
   fi
 
-  if [[ -n "$ORD_SERVER_PID" ]] && kill -0 "$ORD_SERVER_PID" 2>/dev/null; then
-    stop_process "$ORD_SERVER_PID"
-  fi
+  stop_ord_server
 
   if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
     "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
@@ -345,6 +343,33 @@ cleanup() {
   if [[ -n "$BITCOIND_PID" ]]; then
     stop_process "$BITCOIND_PID"
   fi
+}
+
+stop_ord_server() {
+  if [[ -n "$ORD_SERVER_PID" ]]; then
+    log "Stopping ord server process pid=${ORD_SERVER_PID}"
+    stop_process "$ORD_SERVER_PID"
+  fi
+
+  # Be defensive: world-sim has historically leaked orphaned ord server
+  # processes after the parent shell exited. Sweep any matching server still
+  # bound to this workspace so repeated runs do not accumulate regtest ords.
+  if [[ -n "${ORD_DATA_DIR:-}" ]] && [[ -n "${ORD_SERVER_PORT:-}" ]]; then
+    while IFS= read -r pid; do
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        log "Stopping residual ord server process pid=${pid} for data_dir=${ORD_DATA_DIR}, http_port=${ORD_SERVER_PORT}"
+        stop_process "$pid"
+      fi
+    done < <(
+      ps -eo pid=,args= | awk -v data_dir="$ORD_DATA_DIR" -v http_port="$ORD_SERVER_PORT" '
+        index($0, "/ord ") && index($0, " server ") && index($0, " --data-dir " data_dir) && index($0, " --http-port " http_port) {
+          print $1
+        }
+      '
+    )
+  fi
+
+  ORD_SERVER_PID=""
 }
 
 wait_rpc_ready() {

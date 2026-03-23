@@ -481,6 +481,11 @@ print(eval(expression, {"__builtins__": {}}, {"data": payload}))
 PY
 }
 
+regtest_validator_payload_version() {
+  local payload_file="$1"
+  regtest_validator_payload_expr "$payload_file" "data['payload_version']"
+}
+
 regtest_validator_payload_context_json() {
   local payload_file="$1"
 
@@ -775,6 +780,46 @@ PY
 
 regtest_validate_validator_competition_payload_consensus_error() {
   regtest_validate_validator_candidate_set_payload_consensus_error "$@"
+}
+
+regtest_validate_validator_payload_versioned_success() {
+  local payload_file="$1"
+  local payload_version
+
+  payload_version="$(regtest_validator_payload_version "$payload_file")"
+  case "$payload_version" in
+    1.0.0)
+      regtest_validate_validator_payload_success "$payload_file"
+      ;;
+    1.1.0)
+      regtest_validate_validator_competition_payload_success "$payload_file"
+      ;;
+    *)
+      regtest_log "Unsupported validator payload_version for success validation: ${payload_version}"
+      exit 1
+      ;;
+  esac
+}
+
+regtest_validate_validator_payload_versioned_consensus_error() {
+  local payload_file="$1"
+  local expected_code="$2"
+  local expected_message="$3"
+  local payload_version
+
+  payload_version="$(regtest_validator_payload_version "$payload_file")"
+  case "$payload_version" in
+    1.0.0)
+      regtest_validate_validator_payload_consensus_error "$payload_file" "$expected_code" "$expected_message"
+      ;;
+    1.1.0)
+      regtest_validate_validator_competition_payload_consensus_error "$payload_file" "$expected_code" "$expected_message"
+      ;;
+    *)
+      regtest_log "Unsupported validator payload_version for consensus-error validation: ${payload_version}"
+      exit 1
+      ;;
+  esac
 }
 
 regtest_validate_validator_payload_consensus_error() {

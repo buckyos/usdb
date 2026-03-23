@@ -131,6 +131,12 @@ run_validator_block_body_suite() {
   run_case "$slot" "regtest_live_ord_validator_block_body_api_version_mismatch.sh"
   slot=$((slot + 1))
   run_case "$slot" "regtest_live_ord_validator_block_body_version_matrix.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_payload_version_upgrade.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_payload_version_upgrade_restart.sh"
+  slot=$((slot + 1))
+  run_case "$slot" "regtest_live_ord_validator_block_body_payload_version_upgrade_reorg.sh"
 }
 
 main() {

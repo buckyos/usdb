@@ -130,6 +130,15 @@
 6. `version matrix after head advance`
    - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
    - BTC head 前进后，原 payload 仍通过，三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
+7. `payload-version upgrade coexistence`
+   - 同一条链上先生成 `v1.0` 单 pass payload，再生成 `v1.1` candidate-set payload
+   - validator 必须在同一升级窗口内接受两代 schema 的历史回放
+8. `payload-version upgrade restart`
+   - mixed payload 生成后重启 `balance-history / usdb-indexer`
+   - 历史 `state ref` 与两代 payload replay 都必须保持成立
+9. `payload-version upgrade reorg`
+   - same-height replacement 只覆盖新 `v1.1` payload 所在高度
+   - 旧 `v1.0` payload 仍通过，新 `v1.1` payload 稳定落到 `SNAPSHOT_ID_MISMATCH`
 
 ### Phase D: Restart / Crash Consistency
 
