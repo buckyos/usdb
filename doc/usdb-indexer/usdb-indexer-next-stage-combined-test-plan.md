@@ -13,6 +13,11 @@
 
 下一阶段的重点不再是继续横向加很多相似脚本，而是补“跨功能组合”的高价值测试层，验证这些能力叠加后仍然稳定。
 
+目前这份计划里的 `Phase A-D` 已经基本完成，因此本文档同时承担两层角色：
+
+- 作为这一轮综合测试升级的备案与收口
+- 作为下一轮增强测试的优先级入口
+
 ## 2. 当前共识
 
 ### 2.1 retention 现状
@@ -25,7 +30,9 @@
 
 所以短期内不应把“真实 prune 回归”排到最高优先级；等真实 retention feature 出现后，再引入新的 floor 元数据和专项回归。
 
-### 2.2 下一阶段最有价值的方向
+### 2.2 本轮综合测试结果
+
+当前这轮综合测试已经完成：
 
 1. `world-sim × validator payload sampled validation`
 2. 更贴近最终 ETHW 选择逻辑的 `3~5 pass candidate-set`
@@ -162,15 +169,38 @@
 2. `validator block-body not-ready window`
 3. `candidate-set crash recovery`
 
-## 4. 当前执行顺序
+## 4. 当前收口结论
 
-当前按下面顺序推进：
+按当前实现与回归脚本状态，这一轮 `Phase A-D` 可以认为已经完成，当前已经具备：
 
-1. `Phase A` sampled validator 已扩到 `candidate-set`
-2. 继续把更复杂的 validator 选择逻辑往 world-sim 渗透
-3. 再视需要把 `candidate_set sampled soak` 扩到更大规模和更长时段
+1. 单 `pass` 与 `candidate-set` 的历史 `state ref` / validator payload 回放
+2. head 前进、same-height reorg、restart、crash、not-ready window 下的历史校验
+3. `protocol / semantics / api` 版本不匹配与 mixed payload upgrade path
+4. world-sim 下的 sampled validator replay、`candidate-set` sampled validation、tamper 检测与 soak
 
-## 5. 备注
+换句话说，当前缺的已经不再是“这一轮计划里的核心能力”，而是下一轮更大规模、更接近真实 ETHW 使用方式的增强层。
+
+## 5. Next Wave
+
+如果继续补充，下一轮更值得投入的方向是：
+
+1. `world-sim × candidate-set` 更深组合
+   - 更大规模 `candidate_set sampled soak`
+   - 更复杂 winner 选择逻辑
+   - 更贴近真实 ETHW validator 的 sampled payload 结构
+2. 更贴近最终 ETHW block body 的选择证明
+   - 不只是明文 `winner + candidate_passes`
+   - 而是更接近 `candidate_set_commit / selection proof` 一类结构
+3. 更大规模和更长时段的性能 / 稳定性矩阵
+   - `candidate-set` 数量扩大
+   - validator replay 开销评估
+   - 长时 soak 下的稳定性观察
+4. 未来真实 prune / retention feature 上线后的新专项
+   - 真实 retention floor
+   - floor bump 后的历史 payload 行为
+   - 与 `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE` 的边界重新收口
+
+## 6. 备注
 
 如果未来真实 prune / retention floor 演进上线，需要新开一个独立阶段，把：
 
