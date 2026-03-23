@@ -345,6 +345,37 @@ validator 风格脚本应始终分两步：
 - retention floor 抬高后返回 `STATE_NOT_RETAINED`
 - 历史辅助数据缺失时返回 `HISTORY_NOT_AVAILABLE`
 
+### 6.23 Restart Consistency
+
+- `regtest_live_ord_validator_block_body_restart_consistency.sh`
+
+覆盖：
+
+- 单 pass payload 生成后，`balance-history / usdb-indexer` 优雅重启
+- 服务离线窗口内 BTC head 前进
+- 重启追平后，旧 payload 仍按原历史 context 成立
+
+### 6.24 Not-Ready Window
+
+- `regtest_live_ord_validator_block_body_not_ready_window.sh`
+
+覆盖：
+
+- payload 已生成
+- 服务重启并落后于当前 BTC head
+- `rpc_alive=true` 但 `consensus_ready=false` 窗口内，validator 回放稳定返回 `SNAPSHOT_NOT_READY`
+- 完成 catch-up 后，同一 payload 恢复可验证
+
+### 6.25 Candidate-Set Crash Recovery
+
+- `regtest_live_ord_validator_block_body_candidate_set_crash_recovery.sh`
+
+覆盖：
+
+- candidate-set payload 生成后，`balance-history / usdb-indexer` 被 `kill -9`
+- 服务崩溃窗口内 BTC head 前进
+- 重启追平后，历史 candidate-set payload 仍可按原 context 回放
+
 ## 7. 当前阶段的取舍
 
 当前设计刻意不做这些事情：

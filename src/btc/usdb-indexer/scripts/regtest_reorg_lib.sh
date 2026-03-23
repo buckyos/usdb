@@ -980,6 +980,30 @@ regtest_wait_usdb_consensus_ready() {
   done
 }
 
+regtest_wait_usdb_rpc_alive_but_not_consensus_ready() {
+  regtest_log "Waiting for usdb-indexer rpc_alive=true and consensus_ready=false"
+
+  local start_ts now readiness_resp rpc_alive consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    readiness_resp="$(regtest_rpc_call_usdb_indexer "get_readiness" "[]")"
+    rpc_alive="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("rpc_alive") else "0")')"
+    consensus_ready="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("consensus_ready") else "0")')"
+    if [[ "$rpc_alive" == "1" && "$consensus_ready" == "0" ]]; then
+      regtest_log "usdb-indexer reached rpc_alive=true, consensus_ready=false"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for usdb-indexer readiness window. last_response=${readiness_resp}"
+      exit 1
+    fi
+
+    sleep 0.2
+  done
+}
+
 regtest_wait_usdb_state_ref_available() {
   local target_height="$1"
   local start_ts now resp error_code
@@ -1611,6 +1635,24 @@ regtest_stop_usdb_indexer() {
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1 || true
     regtest_stop_process "$USDB_INDEXER_PID"
+  fi
+  USDB_INDEXER_PID=""
+}
+
+regtest_crash_balance_history() {
+  if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+    regtest_log "Crashing balance-history process pid=${BALANCE_HISTORY_PID}"
+    kill -9 "$BALANCE_HISTORY_PID" >/dev/null 2>&1 || true
+    wait "$BALANCE_HISTORY_PID" >/dev/null 2>&1 || true
+  fi
+  BALANCE_HISTORY_PID=""
+}
+
+regtest_crash_usdb_indexer() {
+  if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
+    regtest_log "Crashing usdb-indexer process pid=${USDB_INDEXER_PID}"
+    kill -9 "$USDB_INDEXER_PID" >/dev/null 2>&1 || true
+    wait "$USDB_INDEXER_PID" >/dev/null 2>&1 || true
   fi
   USDB_INDEXER_PID=""
 }

@@ -148,6 +148,12 @@
 - 历史辅助索引写入过程被打断后的恢复行为
 - `rpc_alive=true` 但 `consensus_ready=false` 窗口的 validator 行为
 
+当前第一批已覆盖：
+
+1. `validator block-body restart consistency`
+2. `validator block-body not-ready window`
+3. `candidate-set crash recovery`
+
 ## 4. 当前执行顺序
 
 当前按下面顺序推进：

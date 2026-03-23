@@ -469,6 +469,56 @@ impl UsdbIndexerRpcServer {
         Ok(resolved)
     }
 
+    /// Fail closed for validator-style historical queries whenever the current
+    /// node is not consensus-ready.
+    ///
+    /// Historical context RPCs are used to replay a BTC-backed validator view.
+    /// During catch-up, restart recovery, or upstream-not-ready windows, the
+    /// node may still be alive and have some durable rows locally, but callers
+    /// must not treat that partial view as a stable consensus answer.
+    fn ensure_consensus_query_ready(
+        &self,
+        requested_height: Option<u32>,
+        query_name: &str,
+    ) -> Result<(), JsonError> {
+        let readiness = self.readiness_info()?;
+        // Direct unit tests invoke server methods without going through the
+        // HTTP listener, so `rpc_alive=false` can be a pure fixture artifact.
+        // Only enforce the live not-ready contract once the RPC surface is
+        // actually up and serving requests.
+        if !readiness.rpc_alive || readiness.consensus_ready {
+            return Ok(());
+        }
+
+        let (current_snapshot, current_local_state, current_system_state) = self
+            .current_state_for_error_payload()
+            .unwrap_or((None, None, None));
+        let blockers = readiness
+            .blockers
+            .iter()
+            .map(|blocker| format!("{:?}", blocker))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        Err(Self::to_consensus_error(
+            ConsensusRpcErrorCode::SnapshotNotReady,
+            self.build_consensus_error_data(
+                requested_height,
+                current_snapshot.as_ref(),
+                current_local_state.as_ref(),
+                current_system_state.as_ref(),
+                Some(format!(
+                    "{} requires consensus_ready=true, current readiness is rpc_alive={}, query_ready={}, consensus_ready={}, blockers=[{}]",
+                    query_name,
+                    readiness.rpc_alive,
+                    readiness.query_ready,
+                    readiness.consensus_ready,
+                    blockers
+                )),
+            ),
+        ))
+    }
+
     /// Resolve the effective query height for pass/energy RPCs while
     /// optionally enforcing a caller-supplied consensus context.
     ///
@@ -491,6 +541,13 @@ impl UsdbIndexerRpcServer {
                     )));
                 }
             }
+        }
+
+        if context.is_some() {
+            self.ensure_consensus_query_ready(
+                requested_height.or(context.and_then(|value| value.requested_height)),
+                "validator contextual query",
+            )?;
         }
 
         let effective_requested_height =
@@ -1462,6 +1519,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     ) -> JsonResult<HistoricalStateRefInfo> {
         let expected_state =
             self.validate_consensus_query_context(params.block_height, params.context.as_ref())?;
+        self.ensure_consensus_query_ready(Some(params.block_height), "historical state ref query")?;
         let requested_height =
             self.resolve_height_with_consensus_error(Some(params.block_height))?;
         let state_ref = self.build_historical_state_ref_info(requested_height)?;
@@ -3161,6 +3219,41 @@ mod tests {
     }
 
     #[test]
+    fn test_get_state_ref_at_height_returns_snapshot_not_ready_when_consensus_not_ready() {
+        let (server, root_dir) =
+            build_server_with_genesis("state_ref_at_height_not_ready", 120, 100);
+        seed_state_ref_context(&server, 120);
+        server.status.set_rpc_alive(true);
+
+        let mut upstream_readiness = ready_balance_history_readiness(120);
+        upstream_readiness.consensus_ready = false;
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        server
+            .status
+            .set_balance_history_readiness(Some(upstream_readiness));
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 120,
+                context: None,
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.consensus_ready, Some(false));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_local_state_commit_info_returns_snapshot_not_ready_when_anchor_missing() {
         let (server, root_dir) =
             build_server_with_genesis("local_state_commit_not_ready", 120, 100);
@@ -3494,6 +3587,48 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_snapshot_returns_snapshot_not_ready_when_context_consensus_not_ready() {
+        let (server, root_dir) = build_server_with_genesis("snapshot_context_not_ready", 120, 100);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(27, 127, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_state_ref_context(&server, 101);
+        server.status.set_rpc_alive(true);
+
+        let mut upstream_readiness = ready_balance_history_readiness(101);
+        upstream_readiness.consensus_ready = false;
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        server
+            .status
+            .set_balance_history_readiness(Some(upstream_readiness));
+
+        let err = server
+            .get_pass_snapshot(GetPassSnapshotParams {
+                inscription_id: pass.inscription_id.to_string(),
+                at_height: Some(101),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(101),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(101));
+        assert_eq!(data.consensus_ready, Some(false));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_pass_snapshot_returns_state_not_retained_below_pass_history_floor() {
         let (server, root_dir) = build_server_with_genesis("snapshot_state_not_retained", 120, 110);
         let storage = server.indexer.miner_pass_storage();
@@ -3811,6 +3946,50 @@ mod tests {
         assert_eq!(data.requested_height, Some(120));
         assert_eq!(data.expected_state.system_state_id, Some("dd".repeat(32)));
         assert!(data.actual_state.system_state_id.is_some());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_energy_returns_snapshot_not_ready_when_context_consensus_not_ready() {
+        let (server, root_dir) = build_server("energy_context_not_ready", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(28, 128, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, 500);
+        seed_state_ref_context(&server, 120);
+        server.status.set_rpc_alive(true);
+
+        let mut upstream_readiness = ready_balance_history_readiness(120);
+        upstream_readiness.consensus_ready = false;
+        upstream_readiness.blockers = vec![balance_history::ReadinessBlocker::CatchingUp];
+        server
+            .status
+            .set_balance_history_readiness(Some(upstream_readiness));
+
+        let err = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(120),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+                mode: Some("exact".to_string()),
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::SnapshotNotReady.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.consensus_ready, Some(false));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
