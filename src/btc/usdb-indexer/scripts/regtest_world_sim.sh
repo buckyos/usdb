@@ -56,6 +56,7 @@ SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N="${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_T
 SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE="${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
 SIM_VALIDATOR_SAMPLE_ENABLED="${SIM_VALIDATOR_SAMPLE_ENABLED:-0}"
 SIM_VALIDATOR_SAMPLE_MODE="${SIM_VALIDATOR_SAMPLE_MODE:-single}"
+SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED="${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}"
 SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS="${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS:-0}"
 SIM_VALIDATOR_SAMPLE_SIZE="${SIM_VALIDATOR_SAMPLE_SIZE:-1}"
 SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE="${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-2}"
@@ -665,7 +666,7 @@ main() {
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -701,6 +702,9 @@ main() {
       --validator-sample-size "$SIM_VALIDATOR_SAMPLE_SIZE"
       --validator-sample-min-head-advance "$SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE"
     )
+    if [[ "$SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED" == "1" ]]; then
+      validator_sample_args+=(--enable-validator-sample-tamper-check)
+    fi
   fi
 
   python3 "$WORLD_SIMULATOR" \

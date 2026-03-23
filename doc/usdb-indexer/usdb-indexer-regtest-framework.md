@@ -18,6 +18,7 @@
 - world-sim validator candidate-set sampled 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh)
 - world-sim validator sampled + reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh)
 - world-sim validator candidate-set sampled + reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set_reorg.sh)
+- world-sim validator candidate-set soak 入口：[src/btc/usdb-indexer/scripts/run_live_validator_candidate_set.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_validator_candidate_set.sh)
 - world-sim reorg 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - world-sim determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
 - world-sim reorg determinism 入口：[src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
@@ -90,6 +91,7 @@
    - `regtest_world_sim_validator_candidate_set.sh`
    - `regtest_world_sim_validator_context_reorg.sh`
    - `regtest_world_sim_validator_candidate_set_reorg.sh`
+   - `run_live_validator_candidate_set.sh`
    - `regtest_world_sim_reorg.sh`
    - `regtest_world_sim_determinism.sh`
    - `regtest_world_sim_reorg_determinism.sh`

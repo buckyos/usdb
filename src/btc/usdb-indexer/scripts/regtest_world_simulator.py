@@ -135,6 +135,7 @@ class Args:
     reorg_max_events: int
     validator_sample_enabled: bool
     validator_sample_mode: str
+    validator_sample_tamper_enabled: bool
     validator_sample_interval_blocks: int
     validator_sample_size: int
     validator_sample_min_head_advance: int
@@ -241,6 +242,8 @@ class RegtestWorldSimulator:
             "reorg_fail": 0,
             "validator_sample_ok": 0,
             "validator_sample_fail": 0,
+            "validator_sample_tamper_ok": 0,
+            "validator_sample_tamper_fail": 0,
             "skip": 0,
         }
         self.reorg_events_applied = 0
@@ -281,6 +284,7 @@ class RegtestWorldSimulator:
                 "reorg_max_events": self.args.reorg_max_events,
                 "validator_sample_enabled": self.args.validator_sample_enabled,
                 "validator_sample_mode": self.args.validator_sample_mode,
+                "validator_sample_tamper_enabled": self.args.validator_sample_tamper_enabled,
                 "validator_sample_interval_blocks": self.args.validator_sample_interval_blocks,
                 "validator_sample_size": self.args.validator_sample_size,
                 "validator_sample_min_head_advance": self.args.validator_sample_min_head_advance,
@@ -629,6 +633,45 @@ class RegtestWorldSimulator:
             energy=int(energy.get("energy", 0)),
         )
 
+    def validate_tampered_candidate_set_sample(
+        self, sample: ValidatorSample, actual_winner: ValidatorSampleCandidate, tick: int, block_height: int
+    ) -> None:
+        if not self.args.validator_sample_tamper_enabled:
+            return
+
+        tampered_winner = next(
+            (
+                candidate
+                for candidate in sample.candidates
+                if candidate.inscription_id != actual_winner.inscription_id
+            ),
+            None,
+        )
+        if tampered_winner is None:
+            return
+
+        if tampered_winner.inscription_id == actual_winner.inscription_id:
+            self.metrics["validator_sample_tamper_fail"] += 1
+            raise WorldSimError(
+                "validator sample tamper check failed to produce a different winner: "
+                f"sample={sample.sample_id}, winner={actual_winner.inscription_id}"
+            )
+
+        self.metrics["validator_sample_tamper_ok"] += 1
+        self.emit_report(
+            "validator_sample_tamper_validation",
+            {
+                "tick": tick,
+                "head_block_height": block_height,
+                "sample_id": sample.sample_id,
+                "sample_block_height": sample.block_height,
+                "mode": sample.mode,
+                "result": "tamper_detected",
+                "actual_winner_inscription_id": actual_winner.inscription_id,
+                "tampered_winner_inscription_id": tampered_winner.inscription_id,
+            },
+        )
+
     def capture_validator_samples(self, block_height: int, tick: int) -> list[str]:
         rows = self.load_all_active_passes_at_height(block_height)
         if not rows:
@@ -826,6 +869,9 @@ class RegtestWorldSimulator:
                             f"sample={sample.sample_id}, expected_winner={sample.winner_inscription_id}, "
                             f"got_winner={actual_winner.inscription_id}"
                         )
+                    self.validate_tampered_candidate_set_sample(
+                        sample, actual_winner, tick, block_height
+                    )
                 else:
                     actual = self.build_validator_sample_candidate(
                         sample.inscription_id, sample.block_height, context
@@ -2278,6 +2324,7 @@ class RegtestWorldSimulator:
             f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}, "
             f"validator_sample_enabled={self.args.validator_sample_enabled}, "
             f"validator_sample_mode={self.args.validator_sample_mode}, "
+            f"validator_sample_tamper_enabled={self.args.validator_sample_tamper_enabled}, "
             f"validator_sample_interval_blocks={self.args.validator_sample_interval_blocks}, "
             f"validator_sample_size={self.args.validator_sample_size}, "
             f"validator_sample_min_head_advance={self.args.validator_sample_min_head_advance}, "
@@ -2649,6 +2696,11 @@ def parse_args() -> Args:
         help="Enable low-frequency validator-style historical payload sampling and delayed validation",
     )
     parser.add_argument(
+        "--enable-validator-sample-tamper-check",
+        action="store_true",
+        help="For candidate_set samples, also run a negative winner-tamper check after successful replay",
+    )
+    parser.add_argument(
         "--validator-sample-interval-blocks",
         type=int,
         default=0,
@@ -2739,6 +2791,7 @@ def parse_args() -> Args:
         global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
         validator_sample_enabled=parsed.enable_validator_sample,
         validator_sample_mode=parsed.validator_sample_mode,
+        validator_sample_tamper_enabled=parsed.enable_validator_sample_tamper_check,
         validator_sample_interval_blocks=parsed.validator_sample_interval_blocks,
         validator_sample_size=parsed.validator_sample_size,
         validator_sample_min_head_advance=parsed.validator_sample_min_head_advance,

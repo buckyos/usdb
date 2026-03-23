@@ -13,6 +13,8 @@
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - [regtest_world_sim_validator_context.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context.sh)
 - [regtest_world_sim_validator_context_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh)
+- [regtest_world_sim_validator_candidate_set.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh)
+- [regtest_world_sim_validator_candidate_set_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set_reorg.sh)
 - [regtest_world_sim_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg.sh)
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
@@ -22,9 +24,11 @@
 - [run_live_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_reorg.sh)
 - [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)
 - [usdb-indexer-regtest-world-sim-validator-sampled.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-sampled.md)
+- [usdb-indexer-regtest-world-sim-validator-candidate-set.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-candidate-set.md)
 - [usdb-indexer-regtest-world-sim-validator-sampled-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-sampled-reorg.md)
 - [usdb-indexer-regtest-world-sim-reorg-determinism.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-reorg-determinism.md)
 - [usdb-indexer-regtest-world-sim-live-reorg.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-live-reorg.md)
+- [usdb-indexer-regtest-world-sim-validator-candidate-set-soak.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim-validator-candidate-set-soak.md)
 
 ## 核心能力
 
@@ -68,7 +72,9 @@
 - 可选启用 validator sampled historical validation：
   - 周期性抓取当前高度的一张或多张 active pass 历史样本
   - 在 head 继续前进后，按历史 `ConsensusQueryContext` 重新校验 `state ref / pass snapshot / pass energy`
+  - `candidate_set` 模式下还会重算 winner，并可选执行 wrong-winner / tamper 检测
   - 报告中会出现 `event = "validator_sample_capture"` 与 `event = "validator_sample_validation"`
+  - 如果打开 tamper 检测，还会出现 `event = "validator_sample_tamper_validation"`
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
 
 `world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
@@ -150,6 +156,8 @@ This wrapper keeps the same long-run style, but enables periodic replacement-cha
 - `SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N`：每次检查的能量榜前 N 条（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE`：每次检查抽样的 active owner 数（默认 `16`，`0` 表示全量）
 - `SIM_VALIDATOR_SAMPLE_ENABLED`：是否启用 validator sampled validation（默认 `0`）
+- `SIM_VALIDATOR_SAMPLE_MODE`：`single` 或 `candidate_set`（默认 `single`）
+- `SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED`：是否在 `candidate_set` 回放成功后追加 wrong-winner / tamper 检测（默认 `0`）
 - `SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS`：每隔多少块抓取一次历史 validator sample（默认 `0`，表示关闭）
 - `SIM_VALIDATOR_SAMPLE_SIZE`：每次抓取多少张 active pass（默认 `1`）
 - `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE`：head 至少前进多少块后再回查历史 sample（默认 `2`）
@@ -208,6 +216,18 @@ SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE=2 \
 SIM_REORG_INTERVAL_BLOCKS=10 \
 SIM_REORG_DEPTH=2 \
 src/btc/usdb-indexer/scripts/regtest_world_sim_validator_context_reorg.sh
+```
+
+带 candidate-set sampled validation 的示例：
+
+```bash
+SIM_VALIDATOR_SAMPLE_ENABLED=1 \
+SIM_VALIDATOR_SAMPLE_MODE=candidate_set \
+SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED=1 \
+SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS=6 \
+SIM_VALIDATOR_SAMPLE_SIZE=3 \
+SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE=2 \
+src/btc/usdb-indexer/scripts/regtest_world_sim_validator_candidate_set.sh
 ```
 
 ## 同 seed 双跑一致性检查

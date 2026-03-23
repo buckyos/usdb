@@ -43,6 +43,7 @@ world-sim simulator 在 `candidate_set` 模式下会：
    - `get_pass_energy`
 3. 要求每张 candidate 的 `owner / state / energy` 都和采样时一致
 4. 再次本地重算 winner，要求与采样时一致
+5. 如果启用 tamper 检测，再构造一个 wrong-winner 版本的 payload，并要求 validator 本地重算能识别篡改
 
 如果样本落在 deterministic reorg replacement 区间内，则期望返回：
 
@@ -51,6 +52,7 @@ world-sim simulator 在 `candidate_set` 模式下会：
 ## 4. 关键参数
 
 - `SIM_VALIDATOR_SAMPLE_MODE=candidate_set`
+- `SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED=1`
 - `SIM_VALIDATOR_SAMPLE_SIZE=3`
 - `SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS`
 - `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE`
@@ -68,11 +70,13 @@ reorg wrapper 还会额外打开：
 - `validator_sample_mode = candidate_set`
 - `validator_sample_capture`
 - `validator_sample_validation`
+- `validator_sample_tamper_validation`
 - `winner_inscription_id`
 
 最终 `session_end.final_metrics` 中：
 
 - `validator_sample_fail = 0`
+- `validator_sample_tamper_fail = 0`
 
 reorg wrapper 下允许出现：
 

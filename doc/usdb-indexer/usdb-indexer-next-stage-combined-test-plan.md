@@ -61,6 +61,9 @@
   - validator 在历史 context 下重查多张 pass，并按 `max_energy + inscription_id` 重算 winner
   - 已补普通 wrapper 和 `deterministic reorg` wrapper
   - 已验证 world-sim 下 `candidate_set` 样本既可正常回放，也能在 replacement 区间内稳定落到 `expected_mismatch`
+  - 当前又补上：
+    - wrong-winner / tamper 检测
+    - 更长时段 `candidate_set sampled soak` 入口
 
 完成标准：
 
@@ -165,7 +168,7 @@
 
 1. `Phase A` sampled validator 已扩到 `candidate-set`
 2. 继续把更复杂的 validator 选择逻辑往 world-sim 渗透
-3. 再视需要回补更大规模和更长期的 sampled validation soak
+3. 再视需要把 `candidate_set sampled soak` 扩到更大规模和更长时段
 
 ## 5. 备注
 
