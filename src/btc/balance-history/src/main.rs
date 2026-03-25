@@ -96,6 +96,11 @@ enum BalanceHistoryCommands {
         /// Specify the expected hash of the snapshot file for verification
         #[arg(long)]
         hash: Option<String>,
+
+        /// Optional sidecar manifest file describing the expected installed state.
+        /// If omitted, the installer will look for `<snapshot>.manifest.json` next to the snapshot DB.
+        #[arg(long)]
+        manifest: Option<String>,
     },
 
     Verify {
@@ -391,7 +396,11 @@ async fn main() {
             println!("Snapshot generated successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::InstallSnapshot { source, hash }) => {
+        Some(BalanceHistoryCommands::InstallSnapshot {
+            source,
+            hash,
+            manifest,
+        }) => {
             // Init file logging
             let file_name = format!(
                 "{}_install_snapshot",
@@ -435,6 +444,34 @@ async fn main() {
                 std::process::exit(1);
             }
 
+            let manifest_path = if let Some(ref manifest) = manifest {
+                let mut path = PathBuf::from(manifest);
+                if path.is_relative() {
+                    path = root_dir.join("snapshots").join(manifest);
+                    println!("Resolved relative snapshot manifest path to: {:?}", path);
+                }
+                Some(path)
+            } else {
+                let auto_manifest = crate::index::manifest_path_for_snapshot_file(&file_path);
+                if auto_manifest.exists() {
+                    println!(
+                        "Using snapshot manifest discovered next to snapshot file: {:?}",
+                        auto_manifest
+                    );
+                    Some(auto_manifest)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(ref manifest_path) = manifest_path {
+                if !manifest_path.exists() {
+                    error!("Snapshot manifest does not exist: {:?}", manifest_path);
+                    println!("Snapshot manifest does not exist: {:?}", manifest_path);
+                    std::process::exit(1);
+                }
+            }
+
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
@@ -464,6 +501,7 @@ async fn main() {
             let data = crate::index::SnapshotData {
                 file: file_path.clone(),
                 hash: hash.clone(),
+                manifest_file: manifest_path,
             };
             let snapshot_installer =
                 crate::index::SnapshotInstaller::new(config.clone(), db, output.clone());

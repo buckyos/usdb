@@ -1,4 +1,9 @@
 use super::rpc::*;
+use super::{
+    COMMIT_HASH_ALGO, COMMIT_PROTOCOL_VERSION,
+    build_consensus_snapshot_identity as shared_build_consensus_snapshot_identity,
+    build_historical_state_ref_at_height, encode_commit_hex as encode_hex,
+};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
@@ -11,25 +16,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 use usdb_util::{
     BALANCE_HISTORY_SERVICE_NAME, CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION,
-    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusQueryContext, ConsensusRpcErrorCode,
-    ConsensusRpcErrorData, ConsensusSnapshotIdentity, ConsensusStateReference,
-    USDB_INDEX_FORMULA_VERSION, USDB_INDEX_PROTOCOL_VERSION, build_consensus_snapshot_id,
+    ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusSnapshotIdentity,
+    ConsensusStateReference, build_consensus_snapshot_id,
 };
-
-// Public version string of the first balance-history block commit protocol.
-const COMMIT_PROTOCOL_VERSION: &str = "1.0.0";
-// Hash algorithm used by both balance delta roots and rolling block commits.
-const COMMIT_HASH_ALGO: &str = "sha256";
-
-// encode_hex converts internal commit bytes to the lowercase hex strings returned by RPC.
-fn encode_hex(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write;
-        let _ = write!(&mut output, "{:02x}", byte);
-    }
-    output
-}
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
@@ -180,17 +169,7 @@ impl BalanceHistoryRpcServer {
         stable_height: u32,
         stable_block_hash: &str,
     ) -> ConsensusSnapshotIdentity {
-        ConsensusSnapshotIdentity {
-            source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
-            network: self.config.btc.network().to_string(),
-            stable_height,
-            stable_block_hash: stable_block_hash.to_string(),
-            stable_lag: BALANCE_HISTORY_STABLE_LAG,
-            balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
-            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
-            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
-        }
+        shared_build_consensus_snapshot_identity(&self.config, stable_height, stable_block_hash)
     }
 
     fn build_state_ref_at_height(
@@ -199,9 +178,7 @@ impl BalanceHistoryRpcServer {
     ) -> Result<HistoricalSnapshotStateRef, JsonError> {
         self.validate_requested_height(block_height)?;
 
-        let commit = self
-            .db
-            .get_block_commit(block_height)
+        build_historical_state_ref_at_height(&self.config, &self.db, block_height)
             .map_err(|e| {
                 Self::to_internal_error(format!(
                     "Failed to get block commit while building state ref at height {}: {}",
@@ -221,24 +198,7 @@ impl BalanceHistoryRpcServer {
                         )),
                     ),
                 )
-            })?;
-
-        let stable_block_hash = format!("{:x}", commit.btc_block_hash);
-        let consensus_identity =
-            self.build_consensus_snapshot_identity(block_height, &stable_block_hash);
-        let snapshot_id = build_consensus_snapshot_id(&consensus_identity);
-
-        Ok(HistoricalSnapshotStateRef {
-            block_height,
-            stable_block_hash,
-            latest_block_commit: encode_hex(&commit.block_commit),
-            consensus_identity,
-            snapshot_id,
-            snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
-            snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
-            commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
-            commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
-        })
+            })
     }
 
     fn build_consensus_state_reference(

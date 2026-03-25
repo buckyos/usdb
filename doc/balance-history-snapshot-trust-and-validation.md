@@ -185,7 +185,7 @@
 - **单节点被污染**
 - 而不是“全网立即被污染”
 
-## 6. 当前已有但未接入安装流程的能力
+## 6. 当前已有但不适合接入默认安装流程的能力
 
 `balance-history` 本身其实已经有校验器：
 
@@ -197,14 +197,26 @@
 - 指定高度验证
 - 地址级验证
 
-这说明当前系统并不是完全没有语义校验能力，而是：
+但这层能力更准确地说是：
 
-- **安装流程默认没有把这层校验串进去**
+- **`balance-history` 正确性的离线 QA / 开发期校验工具**
+- 而不是“snapshot 安装后应该默认执行的生产路径”
+
+原因是：
+
+1. 它依赖本地 electrs / BTC 数据源
+2. 这类依赖不会跟正式节点部署一起发布
+3. 校验速度慢，尤其在后续高度上不可接受
+4. electrs 对部分高频地址存在已知稳定性问题
+5. 它校验的是 `balance-history` 对 BTC 历史的解释是否正确，而不只是 snapshot 文件本身
 
 所以当前更准确的状态是：
 
-- 系统具备“可验证能力”
-- 但当前安装流程仍然是“默认信任 + 可选 hash”
+- 系统具备“离线可验证能力”
+- 但默认安装路径应聚焦：
+  - 文件 hash
+  - manifest
+  - 安装后本地 state ref 一致性
 
 ## 7. 风险分层
 
@@ -313,23 +325,29 @@
 
 - 如果 manifest 本身也被攻击者伪造，这一层仍不足以建立最终信任
 
-## 8.3 第三层：post-install verify
+## 8.3 第三层：发布前 QA 与运行期门禁
 
 目标：
 
-- 在安装后做真正的语义级验证
+- 把“离线正确性校验”和“安装期可信安装”明确分层
 
 建议：
 
-- 提供显式 `post-install verify` 模式
-- 安装完成后自动调用 [verify.rs](/home/bucky/work/usdb/src/btc/balance-history/src/index/verify.rs)
-- 可分为：
-  - 抽样验证
-  - 全量验证
+1. `verify.rs` 保留为：
+   - snapshot 发布前 QA
+   - 开发调试
+   - 人工排障
+2. 默认安装流程不再依赖 electrs 对照验证
+3. 生产路径应优先补：
+   - manifest 签名 / 可信分发
+   - readiness gate
+   - 运行期 state ref / snapshot_id 健康检查
 
-这一步虽然更慢，但可以显著提高：
+也就是说：
 
-- 对错误快照的发现能力
+- `verify.rs` 仍然有价值
+- 但它的价值在“发布前验证”和“开发期正确性校验”
+- 而不是“每个节点安装 snapshot 后都默认跑一遍”
 
 ## 9. 对 Docker / 部署层的含义
 
@@ -340,7 +358,6 @@
 - 快照恢复不应只是“把文件 mount 进去然后 install”
 - 还应配套：
   - hash / manifest
-  - 可选 post-install verify
   - readiness gate
 
 也就是说，一个更完整的 Docker 快照流程应是：
@@ -348,8 +365,8 @@
 1. 恢复快照文件
 2. 校验 hash / manifest
 3. 安装到 staging
-4. 可选做 post-install verify
-5. 通过后才进入服务 ready
+4. 通过本地 state ref 比对后再 swap
+5. readiness gate 通过后才进入服务 ready
 
 ## 10. 当前结论
 
@@ -362,8 +379,9 @@
 4. 即使错误快照被装入，影响通常主要局限在本节点及其下游依赖，而不是立即污染全网
 5. 后续若要把快照正式引入 Docker / 节点部署流程，应优先补：
    - manifest + expected state ref
-   - post-install verify
+   - manifest 签名 / 可信分发
    - readiness gate
 6. 第一阶段 manifest 推荐采用独立 sidecar 文件：
    - `snapshot_<height>.db`
    - `snapshot_<height>.manifest.json`
+7. `verify.rs` 应保留为离线 QA / 发布前校验工具，而不是默认安装流程的一部分

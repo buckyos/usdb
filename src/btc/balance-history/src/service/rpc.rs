@@ -224,7 +224,7 @@ pub struct GetStateRefAtHeightParams {
 /// This is distinct from `get_snapshot_info`, which only reports the current
 /// stable head. ETHW-style validators use this structure to pin validation to
 /// one historical BTC state instead of whatever the current head happens to be.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoricalSnapshotStateRef {
     /// Exact BTC block height whose stable state is being described.
     pub block_height: u32,
