@@ -265,6 +265,8 @@ pub enum ReadinessBlocker {
     StableBlockHashMissing,
     /// Stable height exists but the logical block commit at that height is not yet available.
     LatestBlockCommitMissing,
+    /// Local DB came from snapshot install without manifest-backed provenance verification.
+    SnapshotInstallUnverified,
 }
 
 /// Structured readiness state for both local monitoring and downstream gating.

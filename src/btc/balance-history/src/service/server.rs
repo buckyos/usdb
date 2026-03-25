@@ -478,6 +478,9 @@ impl BalanceHistoryRpcServer {
         let runtime = self.status.get_runtime_readiness();
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
+        let snapshot_install_used = self.db.get_snapshot_install_used()?;
+        let snapshot_install_manifest_verified =
+            self.db.get_snapshot_install_manifest_verified()?;
         let stable_block_hash = latest_commit
             .as_ref()
             .map(|entry| format!("{:x}", entry.btc_block_hash));
@@ -514,6 +517,9 @@ impl BalanceHistoryRpcServer {
         if latest_block_commit.is_none() {
             blockers.push(ReadinessBlocker::LatestBlockCommitMissing);
         }
+        if snapshot_install_used && snapshot_install_manifest_verified == Some(false) {
+            blockers.push(ReadinessBlocker::SnapshotInstallUnverified);
+        }
 
         let query_ready = runtime.rpc_alive
             && !runtime.rollback_in_progress
@@ -525,7 +531,8 @@ impl BalanceHistoryRpcServer {
         let consensus_ready = query_ready
             && sync_status.current >= sync_status.total
             && stable_block_hash.is_some()
-            && latest_block_commit.is_some();
+            && latest_block_commit.is_some()
+            && !(snapshot_install_used && snapshot_install_manifest_verified == Some(false));
 
         Ok(ReadinessInfo {
             service: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
@@ -1327,6 +1334,39 @@ mod tests {
             Some(encode_hex(&commit.block_commit))
         );
         assert!(readiness.blockers.is_empty());
+    }
+
+    #[test]
+    fn test_get_readiness_not_consensus_ready_for_unverified_snapshot_install() {
+        let server = make_test_server("readiness_snapshot_install_unverified");
+        server.status.set_rpc_alive(true);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Indexing, None);
+        server.status.update_total(12, None);
+        server.status.update_current(12, None);
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
+            .unwrap();
+        server.db.put_snapshot_install_state(false).unwrap();
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.rpc_alive);
+        assert!(readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&ReadinessBlocker::SnapshotInstallUnverified)
+        );
     }
 
     #[test]

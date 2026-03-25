@@ -340,6 +340,7 @@
 2. 默认安装流程不再依赖 electrs 对照验证
 3. 生产路径应优先补：
    - manifest 签名 / 可信分发
+   - snapshot install provenance
    - readiness gate
    - 运行期 state ref / snapshot_id 健康检查
 
@@ -366,7 +367,8 @@
 2. 校验 hash / manifest
 3. 安装到 staging
 4. 通过本地 state ref 比对后再 swap
-5. readiness gate 通过后才进入服务 ready
+5. 如果是“通过 snapshot install 导入但未验证 manifest”的 DB，则不进入 `consensus_ready`
+6. readiness gate 通过后才进入服务 ready
 
 ## 10. 当前结论
 
@@ -380,8 +382,10 @@
 5. 后续若要把快照正式引入 Docker / 节点部署流程，应优先补：
    - manifest + expected state ref
    - manifest 签名 / 可信分发
+   - snapshot install provenance
    - readiness gate
 6. 第一阶段 manifest 推荐采用独立 sidecar 文件：
    - `snapshot_<height>.db`
    - `snapshot_<height>.manifest.json`
 7. `verify.rs` 应保留为离线 QA / 发布前校验工具，而不是默认安装流程的一部分
+8. 如果节点通过 snapshot install 导入 DB 但未完成 manifest-backed provenance 校验，则节点可以保持 `query_ready=true`，但应降为 `consensus_ready=false`

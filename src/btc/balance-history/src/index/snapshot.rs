@@ -558,7 +558,32 @@ impl SnapshotInstaller {
 
         if let Some(manifest) = manifest.as_ref() {
             self.validate_staged_manifest(&staging_db, &meta, manifest)?;
+            staging_db.put_snapshot_install_state(true).map_err(|e| {
+                let msg = format!(
+                    "Failed to persist verified snapshot install provenance at block height {}: {}",
+                    meta.block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        } else {
+            staging_db.put_snapshot_install_state(false).map_err(|e| {
+                let msg = format!(
+                    "Failed to persist unverified snapshot install provenance at block height {}: {}",
+                    meta.block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
         }
+        staging_db.flush_all().map_err(|e| {
+            let msg = format!(
+                "Failed to flush snapshot install provenance metadata at block height {}: {}",
+                meta.block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
 
         let output = self.output.clone();
         self.swap_staging_db_into_place(staging_db, staging_root)?;
@@ -1097,6 +1122,13 @@ mod tests {
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
+        assert!(reopened_db.get_snapshot_install_used().unwrap());
+        assert_eq!(
+            reopened_db
+                .get_snapshot_install_manifest_verified()
+                .unwrap(),
+            Some(false)
+        );
 
         let old_balance = reopened_db
             .get_balance_delta_at_block_height(&old_script_hash, 3)
@@ -1269,6 +1301,13 @@ mod tests {
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 10);
+        assert!(reopened_db.get_snapshot_install_used().unwrap());
+        assert_eq!(
+            reopened_db
+                .get_snapshot_install_manifest_verified()
+                .unwrap(),
+            Some(true)
+        );
         assert!(reopened_db.get_block_commit(10).unwrap().is_some());
     }
 
@@ -1330,6 +1369,13 @@ mod tests {
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
+        assert!(!reopened_db.get_snapshot_install_used().unwrap());
+        assert_eq!(
+            reopened_db
+                .get_snapshot_install_manifest_verified()
+                .unwrap(),
+            None
+        );
         assert!(reopened_db.get_block_commit(10).unwrap().is_none());
     }
 }

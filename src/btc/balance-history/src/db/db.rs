@@ -34,6 +34,8 @@ pub const META_KEY_ROLLBACK_TARGET_HEIGHT: &str = "rollback_target_height";
 pub const META_KEY_ROLLBACK_NEXT_HEIGHT: &str = "rollback_next_height";
 pub const META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT: &str = "rollback_supported_from_height";
 pub const META_KEY_UNDO_RETAINED_FROM_HEIGHT: &str = "undo_retained_from_height";
+pub const META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
+pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_manifest_verified";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
@@ -1543,6 +1545,47 @@ impl BalanceHistoryDB {
 
     pub fn get_rollback_supported_from_height(&self) -> Result<Option<u32>, String> {
         self.get_u32_meta(META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT)
+    }
+
+    /// Records that the current durable DB was populated via snapshot install.
+    ///
+    /// `manifest_verified=true` means the installer validated the staged
+    /// historical state ref against a trusted sidecar manifest before swap.
+    /// `manifest_verified=false` means the DB came from snapshot install but
+    /// no manifest-backed provenance check was performed.
+    pub fn put_snapshot_install_state(&self, manifest_verified: bool) -> Result<(), String> {
+        self.put_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED, 1)?;
+        self.put_u32_meta(
+            META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED,
+            if manifest_verified { 1 } else { 0 },
+        )
+    }
+
+    /// Returns true when this DB was populated through snapshot install.
+    pub fn get_snapshot_install_used(&self) -> Result<bool, String> {
+        Ok(self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED)? == Some(1))
+    }
+
+    /// Returns manifest verification status for snapshot-installed DBs.
+    ///
+    /// `None` means no snapshot-install provenance is recorded, which covers
+    /// legacy DBs and nodes that synchronized from zero without snapshot install.
+    pub fn get_snapshot_install_manifest_verified(&self) -> Result<Option<bool>, String> {
+        Ok(
+            match self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED)? {
+                Some(0) => Some(false),
+                Some(1) => Some(true),
+                Some(value) => {
+                    let msg = format!(
+                        "Invalid snapshot install manifest verification meta value: {}",
+                        value
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                None => None,
+            },
+        )
     }
 
     fn put_u32_meta(&self, key: &str, value: u32) -> Result<(), String> {
