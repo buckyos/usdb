@@ -234,18 +234,30 @@ trusted_keys_file = "trusted_snapshot_keys.json"
 
 当前更推荐的做法是：
 
-1. 先把 snapshot signing 的文件格式固定下来
-2. 后续补一个 repo 内置的小工具，例如：
-   - keygen
-   - public-key export
-   - trusted key set append/update
-3. 再把这套流程接进 Docker / 发布脚本
+1. 使用 `balance-history snapshot-keygen` 生成标准文件
+2. 将生成的私钥文件只放在 snapshot 发布机
+3. 将 trusted key set 作为普通节点配置的一部分分发
+4. 再把这套流程接进 Docker / 发布脚本
 
 原因是：
 
 - 可以保证生成格式和 install 逻辑完全一致
 - 可以减少人工转换错误
 - 可以把 key rotation / signer onboarding 做成标准流程
+
+当前内置生成命令示例：
+
+```bash
+balance-history --root-dir /path/to/balance-history snapshot-keygen \
+  --key-id snapshot-signer-1 \
+  --out-dir keys
+```
+
+默认会生成：
+
+- `snapshot-signer-1.signing-key.json`
+- `snapshot-signer-1.public-key.json`
+- `snapshot-signer-1.trusted-keys.json`
 
 ## 11. 当前阶段的实际建议
 

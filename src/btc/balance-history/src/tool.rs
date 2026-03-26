@@ -1,6 +1,10 @@
+mod snapshot_keygen;
+
 use daemonize::Daemonize;
 use std::fs::File;
 use std::path::Path;
+
+pub use snapshot_keygen::*;
 
 pub fn clear_db_files(db_dir: &Path) -> Result<(), String> {
     if db_dir.exists() {

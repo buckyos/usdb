@@ -67,6 +67,21 @@ struct InstallSnapshotSource {
     block_height: Option<u32>,
 }
 
+#[derive(Args, Debug, Clone)]
+struct SnapshotKeygenArgs {
+    /// Logical signer identifier written into manifest.signing_key_id.
+    #[arg(long)]
+    key_id: String,
+
+    /// Output directory for generated key files. Relative paths are resolved against root_dir.
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+
+    /// Overwrite existing key files in the output directory.
+    #[arg(long, default_value_t = false)]
+    force: bool,
+}
+
 #[derive(Subcommand, Debug, Clone)]
 #[command(rename_all = "kebab-case")]
 enum BalanceHistoryCommands {
@@ -98,6 +113,12 @@ enum BalanceHistoryCommands {
         /// If omitted, the installer will look for `<snapshot>.manifest.json` next to the snapshot DB.
         #[arg(long)]
         manifest: Option<String>,
+    },
+
+    /// Generate one snapshot signing key and matching public-key export files.
+    SnapshotKeygen {
+        #[clap(flatten)]
+        args: SnapshotKeygenArgs,
     },
 
     Verify {
@@ -503,6 +524,41 @@ async fn main() {
             }
 
             println!("Snapshot installed successfully.");
+            return;
+        }
+        Some(BalanceHistoryCommands::SnapshotKeygen { args }) => {
+            let file_name = format!(
+                "{}_snapshot_keygen",
+                usdb_util::BALANCE_HISTORY_SERVICE_NAME
+            );
+            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+                .with_service_root_dir(root_dir.clone())
+                .with_file_name(&file_name)
+                .enable_console(true);
+            usdb_util::init_log(config);
+
+            let out_dir = if let Some(path) = args.out_dir.as_ref() {
+                if path.is_absolute() {
+                    path.clone()
+                } else {
+                    root_dir.join(path)
+                }
+            } else {
+                root_dir.clone()
+            };
+
+            let output =
+                crate::tool::generate_snapshot_key_files(&out_dir, &args.key_id, args.force)
+                    .unwrap_or_else(|e| {
+                        error!("Failed to generate snapshot signing key files: {}", e);
+                        println!("Failed to generate snapshot signing key files: {}", e);
+                        std::process::exit(1);
+                    });
+
+            println!("Snapshot signing key generated successfully.");
+            println!("signing_key_file={}", output.signing_key_file.display());
+            println!("public_key_file={}", output.public_key_file.display());
+            println!("trusted_keys_file={}", output.trusted_keys_file.display());
             return;
         }
         Some(BalanceHistoryCommands::VerifySnapshot {}) => {
