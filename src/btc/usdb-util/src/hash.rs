@@ -60,14 +60,14 @@ pub fn parse_script_hash_any(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use electrum_client::{ScriptHash as ElectrumScriptHash, ToElectrumScriptHash};
+    use electrum_client::ToElectrumScriptHash;
 
     #[test]
     fn test_script_hash() {
         let script = Script::builder()
             .push_opcode(bitcoincore_rpc::bitcoin::blockdata::opcodes::all::OP_DUP)
             .push_opcode(bitcoincore_rpc::bitcoin::blockdata::opcodes::all::OP_HASH160)
-            .push_slice(&[0u8; 20])
+            .push_slice([0u8; 20])
             .push_opcode(bitcoincore_rpc::bitcoin::blockdata::opcodes::all::OP_EQUALVERIFY)
             .push_opcode(bitcoincore_rpc::bitcoin::blockdata::opcodes::all::OP_CHECKSIG)
             .into_script();

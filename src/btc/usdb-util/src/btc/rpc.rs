@@ -76,20 +76,15 @@ impl BTCRpcClient {
     }
 
     fn on_error(&self, error: &bitcoincore_rpc::Error) {
-        match error {
-            bitcoincore_rpc::Error::JsonRpc(rpc_err) => {
-                match rpc_err {
-                    bitcoincore_rpc::jsonrpc::Error::Transport(_transport_err) => {
-                        // Transport error occurred, the bitcoind node might be restart with new auth cookie file
-                        // So we try to update the client to use the new auth info
-                        if self.is_auth_cookie() {
-                            let _ = self.update_client();
-                        }
-                    }
-                    _ => {}
-                }
+        if let bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Transport(
+            _transport_err,
+        )) = error
+        {
+            // Transport error occurred, the bitcoind node might be restart with new auth cookie
+            // file. Try to recreate the client so the latest cookie gets picked up.
+            if self.is_auth_cookie() {
+                let _ = self.update_client();
             }
-            _ => {}
         }
     }
 
@@ -330,7 +325,7 @@ mod tests {
         // Use get_block to verify
         let begin_tick = std::time::Instant::now();
         for height in start_height..=end_height {
-            let block = client.get_block(height).unwrap();
+            let _block = client.get_block(height).unwrap();
             //assert_eq!(block, blocks[(height - start_height) as usize]);
         }
         let end_tick = std::time::Instant::now();

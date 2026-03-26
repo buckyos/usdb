@@ -1,5 +1,5 @@
-mod btc;
 mod electrs;
+mod rpc;
 
-pub use btc::*;
 pub use electrs::*;
+pub use rpc::*;

@@ -162,7 +162,7 @@ impl ElectrsClient {
         &self,
         script: &Script,
     ) -> Result<Vec<GetHistoryRes>, String> {
-        let his = self.client.script_get_history(&script).map_err(|e| {
+        let his = self.client.script_get_history(script).map_err(|e| {
             let msg = format!("Failed to get history for script {}: {}", script, e);
             error!("{}", msg);
             msg
@@ -334,7 +334,7 @@ mod tests {
             .get_history(&address.script_pubkey().to_usdb_script_hash())
             .await
             .expect("Failed to get history");
-        assert!(history.len() > 0);
+        assert!(!history.is_empty());
 
         let txid =
             Txid::from_str("32939f1cb22341c54c6db5dc0833acffbcefe822b3f82e6adf0de289a424fd53")
@@ -374,7 +374,7 @@ mod tests {
             .get_history(&script_hash)
             .await
             .expect("Failed to get history");
-        assert!(history.len() > 0);
+        assert!(!history.is_empty());
         println!("History for address {}: {}", address, history.len());
     }
 }
