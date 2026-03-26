@@ -169,6 +169,32 @@ impl SnapshotDB {
         &self.path
     }
 
+    /// Finalize one generated snapshot DB into a single-file artifact suitable for hashing
+    /// and detached-signature distribution.
+    ///
+    /// SnapshotDB uses SQLite WAL mode during writes for generation throughput. Before the
+    /// snapshot can be hashed and published, all WAL content must be checkpointed back into
+    /// the main `.db` file; otherwise the published file hash would not describe the final
+    /// durable snapshot artifact. This helper performs the checkpoint and then closes the
+    /// connection by consuming `self`.
+    pub fn finalize_for_distribution(self) -> Result<PathBuf, String> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to checkpoint snapshot WAL before distribution for {}: {}",
+                    self.path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let path = self.path.clone();
+        drop(self);
+        Ok(path)
+    }
+
     /// Get the current block height of the snapshot (returns None if no snapshot exists)
     pub fn current_block_height(&self) -> Result<Option<u64>, String> {
         let mut stmt = self
@@ -914,6 +940,47 @@ mod tests {
         let loaded = snapshot_db.get_block_commit_entries(10, None).unwrap();
         assert_eq!(loaded, entries);
         assert_eq!(snapshot_db.stat_block_commit_entries_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_finalize_for_distribution_collapses_wal_into_main_db() {
+        let dir = std::env::temp_dir()
+            .join("usdb")
+            .join("test_snapshot_finalize_for_distribution");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("snapshot_finalize_test.db");
+        let wal_path = dir.join("snapshot_finalize_test.db-wal");
+        let shm_path = dir.join("snapshot_finalize_test.db-shm");
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal_path);
+        let _ = std::fs::remove_file(&shm_path);
+
+        let mut snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        snapshot_db
+            .put_block_commit_entries(&[BlockCommitEntry {
+                block_height: 7,
+                btc_block_hash: BlockHash::from_slice(&[7u8; 32]).unwrap(),
+                balance_delta_root: [8u8; 32],
+                block_commit: [9u8; 32],
+            }])
+            .unwrap();
+        snapshot_db.update_meta(&SnapshotMeta::new(7)).unwrap();
+
+        assert!(
+            wal_path.exists(),
+            "sqlite wal file should exist before distribution finalization"
+        );
+
+        let finalized_path = snapshot_db.finalize_for_distribution().unwrap();
+        assert_eq!(finalized_path, db_path);
+        assert!(
+            !wal_path.exists(),
+            "sqlite wal file should be collapsed after distribution finalization"
+        );
+        assert!(
+            !shm_path.exists(),
+            "sqlite shm file should be cleaned after distribution finalization"
+        );
     }
 
     #[test]

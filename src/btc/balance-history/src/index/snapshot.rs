@@ -54,13 +54,17 @@ impl SnapshotIndexer {
             return Err(msg);
         }
 
-        // If target block height is less than last synced height, some UTXO data may be missing, so we show a warning
+        // Historical balance snapshots are supported because the DB stores point-in-time
+        // balance rows by height. UTXO snapshots are different: the current UTXO CF only
+        // contains live tip state, so exporting UTXOs for an older height would silently
+        // mix a historical block commit/state_ref with a tip UTXO view.
         if with_utxo && target_block_height != last_synced_height {
             let msg = format!(
-                "Target block height {} is less than last synced BTC block height {}. UTXO data may be incomplete.",
+                "Historical UTXO snapshots are not supported: target block height {} must match last synced BTC block height {} when with_utxo=true",
                 target_block_height, last_synced_height
             );
             self.output.eprintln(&msg);
+            return Err(msg);
         }
 
         self.output.start_load(0);
@@ -158,14 +162,32 @@ impl SnapshotIndexer {
             self.output.println(&msg);
         }
 
-        let db_path = snapshot_db.lock().unwrap().path().to_owned();
+        // Finally, update snapshot meta with counts
+        snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
+        let snapshot_db = Arc::try_unwrap(snapshot_db).map_err(|_| {
+            let msg =
+                "Failed to acquire exclusive ownership of generated snapshot DB before finalization"
+                    .to_string();
+            self.output.eprintln(&msg);
+            msg
+        })?;
+        let snapshot_db = snapshot_db.into_inner().map_err(|_| {
+            let msg = "Generated snapshot DB mutex was poisoned before finalization".to_string();
+            self.output.eprintln(&msg);
+            msg
+        })?;
+        let db_path = snapshot_db.finalize_for_distribution().map_err(|e| {
+            let msg = format!(
+                "Failed to finalize snapshot database for distribution: {}",
+                e
+            );
+            self.output.eprintln(&msg);
+            msg
+        })?;
         self.output.println(&format!(
             "Snapshot database created at {}",
             db_path.display()
         ));
-
-        // Finally, update snapshot meta with counts
-        snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
 
         let file_hash = SnapshotHash::calc_hash(&db_path).map_err(|e| {
             let msg = format!(
@@ -1903,5 +1925,78 @@ mod tests {
             })
             .unwrap_err();
         assert!(err.contains("requires signature sidecar"));
+    }
+
+    #[test]
+    fn test_create_snapshot_rejects_historical_utxo_export() {
+        let root_dir = temp_root("snapshot_historical_utxo_rejected");
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir.clone();
+        let config = Arc::new(config);
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(10).unwrap();
+        live_db
+            .put_block_commits_async(&[BlockCommitEntry {
+                block_height: 10,
+                btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+                balance_delta_root: [11u8; 32],
+                block_commit: [12u8; 32],
+            }])
+            .unwrap();
+        let live_db = Arc::new(live_db);
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let snapshot_indexer = SnapshotIndexer::new(config.clone(), live_db, output);
+        let err = snapshot_indexer.run(9, true).unwrap_err();
+        assert!(err.contains("Historical UTXO snapshots are not supported"));
+    }
+
+    #[test]
+    fn test_create_snapshot_manifest_hash_matches_finalized_db_file() {
+        let root_dir = temp_root("snapshot_manifest_hash_matches_finalized_db");
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir.clone();
+        let config = Arc::new(config);
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(10).unwrap();
+        live_db
+            .put_address_history_async(&vec![BalanceHistoryEntry {
+                script_hash: ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash(),
+                block_height: 10,
+                delta: 75,
+                balance: 75,
+            }])
+            .unwrap();
+        live_db
+            .put_block_commits_async(&[BlockCommitEntry {
+                block_height: 10,
+                btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+                balance_delta_root: [11u8; 32],
+                block_commit: [12u8; 32],
+            }])
+            .unwrap();
+        let live_db = Arc::new(live_db);
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let snapshot_indexer = SnapshotIndexer::new(config.clone(), live_db, output);
+        snapshot_indexer.run(10, false).unwrap();
+
+        let snapshot_path = root_dir.join("snapshots").join("snapshot_10.db");
+        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
+        let manifest = SnapshotManifest::load(&manifest_path).unwrap();
+        let actual_hash = SnapshotHash::calc_hash(&snapshot_path).unwrap();
+        assert_eq!(manifest.file_sha256, actual_hash);
+        assert!(
+            !snapshot_path.with_extension("db-wal").exists(),
+            "finalized snapshot should not leave sqlite wal sidecar behind"
+        );
+        assert!(
+            !snapshot_path.with_extension("db-shm").exists(),
+            "finalized snapshot should not leave sqlite shm sidecar behind"
+        );
     }
 }
