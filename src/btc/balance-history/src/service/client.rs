@@ -2,6 +2,7 @@ use super::rpc::{
     AddressBalance, BlockCommitInfo, GetStateRefAtHeightParams, HistoricalSnapshotStateRef,
     ReadinessInfo, SnapshotInfo, UtxoInfo,
 };
+use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::SyncStatus;
 use bitcoincore_rpc::bitcoin::OutPoint;
 use reqwest::Client;
@@ -67,6 +68,18 @@ impl RpcClient {
     pub async fn get_readiness(&self) -> Result<ReadinessInfo, String> {
         self.rpc_call::<ReadinessInfo>(&self.url, "get_readiness", json!([]))
             .await
+    }
+
+    // Read detailed snapshot-install provenance for the current local DB, if any.
+    pub async fn get_snapshot_provenance(
+        &self,
+    ) -> Result<Option<SnapshotInstallProvenance>, String> {
+        self.rpc_call::<Option<SnapshotInstallProvenance>>(
+            &self.url,
+            "get_snapshot_provenance",
+            json!([]),
+        )
+        .await
     }
 
     pub async fn get_state_ref_at_height(

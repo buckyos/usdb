@@ -6,6 +6,7 @@ use super::{
 };
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
+use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use jsonrpc_core::IoHandler;
@@ -478,9 +479,18 @@ impl BalanceHistoryRpcServer {
         let runtime = self.status.get_runtime_readiness();
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
-        let snapshot_install_used = self.db.get_snapshot_install_used()?;
+        let snapshot_provenance = self.db.get_snapshot_install_provenance()?;
+        let snapshot_install_used = if snapshot_provenance.is_some() {
+            true
+        } else {
+            self.db.get_snapshot_install_used()?
+        };
         let snapshot_install_manifest_verified =
-            self.db.get_snapshot_install_manifest_verified()?;
+            if let Some(provenance) = snapshot_provenance.as_ref() {
+                Some(provenance.legacy_manifest_verified())
+            } else {
+                self.db.get_snapshot_install_manifest_verified()?
+            };
         let stable_block_hash = latest_commit
             .as_ref()
             .map(|entry| format!("{:x}", entry.btc_block_hash));
@@ -546,8 +556,21 @@ impl BalanceHistoryRpcServer {
             stable_height: Some(stable_height),
             stable_block_hash,
             latest_block_commit,
+            snapshot_origin: snapshot_provenance
+                .as_ref()
+                .map(|value| value.origin.clone()),
+            snapshot_verification_state: snapshot_provenance
+                .as_ref()
+                .map(|value| value.verification_state.clone()),
+            snapshot_signing_key_id: snapshot_provenance
+                .as_ref()
+                .and_then(|value| value.signing_key_id.clone()),
             blockers,
         })
+    }
+
+    fn snapshot_provenance(&self) -> Result<Option<SnapshotInstallProvenance>, String> {
+        self.db.get_snapshot_install_provenance()
     }
 }
 
@@ -607,6 +630,14 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         self.readiness_info().map_err(|e| JsonError {
             code: ErrorCode::InternalError,
             message: format!("Failed to build readiness info: {}", e),
+            data: None,
+        })
+    }
+
+    fn get_snapshot_provenance(&self) -> JsonResult<Option<SnapshotInstallProvenance>> {
+        self.snapshot_provenance().map_err(|e| JsonError {
+            code: ErrorCode::InternalError,
+            message: format!("Failed to get snapshot provenance: {}", e),
             data: None,
         })
     }
@@ -847,6 +878,9 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use crate::db::{
         BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry,
+    };
+    use crate::snapshot_provenance::{
+        SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
     };
     use crate::status::SyncStatusManager;
     use bitcoincore_rpc::bitcoin::BlockHash;
@@ -1366,6 +1400,71 @@ mod tests {
             readiness
                 .blockers
                 .contains(&ReadinessBlocker::SnapshotInstallUnverified)
+        );
+    }
+
+    #[test]
+    fn test_get_snapshot_provenance_and_readiness_summary() {
+        let server = make_test_server("readiness_snapshot_provenance");
+        server.status.set_rpc_alive(true);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Indexing, None);
+        server.status.update_total(12, None);
+        server.status.update_current(12, None);
+
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
+            balance_delta_root: [10u8; 32],
+            block_commit: [11u8; 32],
+        };
+        server
+            .db
+            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
+            .unwrap();
+        server
+            .db
+            .put_snapshot_install_provenance(&SnapshotInstallProvenance {
+                origin: SnapshotInstallOrigin::SnapshotInstall,
+                trust_mode: crate::config::SnapshotTrustMode::Signed,
+                verification_state: SnapshotVerificationState::SignatureVerified,
+                manifest_present: true,
+                manifest_verified: true,
+                signature_present: true,
+                signature_verified: true,
+                manifest_version: Some("balance-history-snapshot-manifest:v1".to_string()),
+                signature_scheme: Some("ed25519".to_string()),
+                signing_key_id: Some("trusted-signer".to_string()),
+                snapshot_file_sha256: Some("aa".repeat(32)),
+                snapshot_id: Some("bb".repeat(32)),
+                installed_block_height: 12,
+            })
+            .unwrap();
+
+        let readiness = server.get_readiness().unwrap();
+        assert!(readiness.consensus_ready);
+        assert_eq!(
+            readiness.snapshot_origin,
+            Some(SnapshotInstallOrigin::SnapshotInstall)
+        );
+        assert_eq!(
+            readiness.snapshot_verification_state,
+            Some(SnapshotVerificationState::SignatureVerified)
+        );
+        assert_eq!(
+            readiness.snapshot_signing_key_id,
+            Some("trusted-signer".to_string())
+        );
+
+        let provenance = server.get_snapshot_provenance().unwrap().unwrap();
+        assert_eq!(
+            provenance.verification_state,
+            SnapshotVerificationState::SignatureVerified
+        );
+        assert_eq!(
+            provenance.signing_key_id,
+            Some("trusted-signer".to_string())
         );
     }
 

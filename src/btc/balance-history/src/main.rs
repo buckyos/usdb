@@ -8,6 +8,7 @@ mod db;
 mod index;
 mod output;
 mod service;
+mod snapshot_provenance;
 mod status;
 mod tool;
 mod web_server;
@@ -92,10 +93,6 @@ enum BalanceHistoryCommands {
     InstallSnapshot {
         #[clap(flatten)]
         source: InstallSnapshotSource,
-
-        /// Specify the expected hash of the snapshot file for verification
-        #[arg(long)]
-        hash: Option<String>,
 
         /// Optional sidecar manifest file describing the expected installed state.
         /// If omitted, the installer will look for `<snapshot>.manifest.json` next to the snapshot DB.
@@ -396,11 +393,7 @@ async fn main() {
             println!("Snapshot generated successfully.");
             return;
         }
-        Some(BalanceHistoryCommands::InstallSnapshot {
-            source,
-            hash,
-            manifest,
-        }) => {
+        Some(BalanceHistoryCommands::InstallSnapshot { source, manifest }) => {
             // Init file logging
             let file_name = format!(
                 "{}_install_snapshot",
@@ -500,7 +493,6 @@ async fn main() {
 
             let data = crate::index::SnapshotData {
                 file: file_path.clone(),
-                hash: hash.clone(),
                 manifest_file: manifest_path,
             };
             let snapshot_installer =

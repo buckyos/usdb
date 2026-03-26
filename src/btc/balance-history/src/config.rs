@@ -115,6 +115,46 @@ fn default_rpc_port() -> u16 {
     BALANCE_HISTORY_SERVICE_HTTP_PORT
 }
 
+/// Trust policy applied when installing snapshot sidecars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotTrustMode {
+    /// Allow snapshot installs without manifest or detached signature checks.
+    Dev,
+    /// Require a manifest-backed staged state-ref validation, but not a signature.
+    Manifest,
+    /// Require both manifest-backed staged validation and a trusted detached signature.
+    Signed,
+}
+
+fn default_snapshot_trust_mode() -> SnapshotTrustMode {
+    SnapshotTrustMode::Dev
+}
+
+/// Snapshot signing and trust configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotConfig {
+    /// Trust mode enforced by snapshot install.
+    #[serde(default = "default_snapshot_trust_mode")]
+    pub trust_mode: SnapshotTrustMode,
+    /// Optional Ed25519 signing-key file used when creating snapshot manifests.
+    #[serde(default)]
+    pub signing_key_file: Option<PathBuf>,
+    /// Optional trusted public-key set used when verifying detached signatures.
+    #[serde(default)]
+    pub trusted_keys_file: Option<PathBuf>,
+}
+
+impl Default for SnapshotConfig {
+    fn default() -> Self {
+        Self {
+            trust_mode: default_snapshot_trust_mode(),
+            signing_key_file: None,
+            trusted_keys_file: None,
+        }
+    }
+}
+
 impl Default for RpcServer {
     fn default() -> Self {
         RpcServer {
@@ -139,6 +179,8 @@ pub struct BalanceHistoryConfig {
 
     pub sync: IndexConfig,
     pub rpc_server: RpcServer,
+    #[serde(default)]
+    pub snapshot: SnapshotConfig,
 }
 
 impl Default for BalanceHistoryConfig {
@@ -150,6 +192,7 @@ impl Default for BalanceHistoryConfig {
             electrs: ElectrsConfig::default(),
             sync: IndexConfig::default(),
             rpc_server: RpcServer::default(),
+            snapshot: SnapshotConfig::default(),
         }
     }
 }
@@ -194,6 +237,31 @@ impl BalanceHistoryConfig {
 
     pub fn snapshot_dir(&self) -> PathBuf {
         self.root_dir.join("snapshots")
+    }
+
+    /// Resolves a service-local path against `root_dir` when the input is relative.
+    pub fn resolve_service_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root_dir.join(path)
+        }
+    }
+
+    /// Returns the configured snapshot signing-key path, if any.
+    pub fn snapshot_signing_key_path(&self) -> Option<PathBuf> {
+        self.snapshot
+            .signing_key_file
+            .as_deref()
+            .map(|path| self.resolve_service_path(path))
+    }
+
+    /// Returns the configured trusted snapshot key-set path, if any.
+    pub fn snapshot_trusted_keys_path(&self) -> Option<PathBuf> {
+        self.snapshot
+            .trusted_keys_file
+            .as_deref()
+            .map(|path| self.resolve_service_path(path))
     }
 }
 

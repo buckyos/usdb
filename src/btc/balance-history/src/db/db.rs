@@ -1,5 +1,6 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
+use crate::snapshot_provenance::SnapshotInstallProvenance;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
 use rocksdb::{
@@ -36,6 +37,7 @@ pub const META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT: &str = "rollback_supported_fr
 pub const META_KEY_UNDO_RETAINED_FROM_HEIGHT: &str = "undo_retained_from_height";
 pub const META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
 pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_manifest_verified";
+pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provenance";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
@@ -1547,6 +1549,23 @@ impl BalanceHistoryDB {
         self.get_u32_meta(META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT)
     }
 
+    /// Records snapshot-install provenance in both structured and legacy meta keys.
+    pub fn put_snapshot_install_provenance(
+        &self,
+        provenance: &SnapshotInstallProvenance,
+    ) -> Result<(), String> {
+        self.put_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE, provenance)?;
+        self.put_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED, 1)?;
+        self.put_u32_meta(
+            META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED,
+            if provenance.legacy_manifest_verified() {
+                1
+            } else {
+                0
+            },
+        )
+    }
+
     /// Records that the current durable DB was populated via snapshot install.
     ///
     /// `manifest_verified=true` means the installer validated the staged
@@ -1563,6 +1582,9 @@ impl BalanceHistoryDB {
 
     /// Returns true when this DB was populated through snapshot install.
     pub fn get_snapshot_install_used(&self) -> Result<bool, String> {
+        if self.get_snapshot_install_provenance()?.is_some() {
+            return Ok(true);
+        }
         Ok(self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_USED)? == Some(1))
     }
 
@@ -1571,6 +1593,9 @@ impl BalanceHistoryDB {
     /// `None` means no snapshot-install provenance is recorded, which covers
     /// legacy DBs and nodes that synchronized from zero without snapshot install.
     pub fn get_snapshot_install_manifest_verified(&self) -> Result<Option<bool>, String> {
+        if let Some(provenance) = self.get_snapshot_install_provenance()? {
+            return Ok(Some(provenance.legacy_manifest_verified()));
+        }
         Ok(
             match self.get_u32_meta(META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED)? {
                 Some(0) => Some(false),
@@ -1588,6 +1613,13 @@ impl BalanceHistoryDB {
         )
     }
 
+    /// Returns structured snapshot-install provenance when the DB came from snapshot install.
+    pub fn get_snapshot_install_provenance(
+        &self,
+    ) -> Result<Option<SnapshotInstallProvenance>, String> {
+        self.get_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE)
+    }
+
     fn put_u32_meta(&self, key: &str, value: u32) -> Result<(), String> {
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", META_CF);
@@ -1603,6 +1635,26 @@ impl BalanceHistoryDB {
                 error!("{}", msg);
                 msg
             })
+    }
+
+    fn put_json_meta<T: serde::Serialize>(&self, key: &str, value: &T) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let encoded = serde_json::to_vec(value).map_err(|e| {
+            let msg = format!("Failed to serialize JSON meta key {}: {}", key, e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+        self.db.put_cf_opt(cf, key, encoded, &ops).map_err(|e| {
+            let msg = format!("Failed to write JSON meta key {}: {}", key, e);
+            error!("{}", msg);
+            msg
+        })
     }
 
     fn delete_meta_key(&self, key: &str) -> Result<(), String> {
@@ -1649,6 +1701,32 @@ impl BalanceHistoryDB {
             Ok(None) => Ok(None),
             Err(e) => {
                 let msg = format!("Failed to read meta key {}: {}", key, e);
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    fn get_json_meta<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        match self.db.get_cf(cf, key) {
+            Ok(Some(value)) => serde_json::from_slice(value.as_slice())
+                .map(Some)
+                .map_err(|e| {
+                    let msg = format!("Failed to parse JSON meta key {}: {}", key, e);
+                    error!("{}", msg);
+                    msg
+                }),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!("Failed to read JSON meta key {}: {}", key, e);
                 error!("{}", msg);
                 Err(msg)
             }

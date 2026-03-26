@@ -1,10 +1,15 @@
-use crate::config::BalanceHistoryConfigRef;
+use crate::config::{BalanceHistoryConfigRef, SnapshotTrustMode};
 use crate::db::{
     BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry,
     BlockCommitEntry, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use crate::service::{HistoricalSnapshotStateRef, build_historical_state_ref_at_height};
+use crate::snapshot_provenance::{
+    SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
+};
+use base64::Engine as _;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +19,8 @@ use usdb_util::{USDBScriptHash, UTXOEntry};
 
 /// Version tag for the first external snapshot manifest sidecar format.
 pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v1";
+/// Detached signature scheme name used by signed snapshot manifests.
+pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
 
 pub struct SnapshotIndexer {
     config: BalanceHistoryConfigRef,
@@ -182,6 +189,11 @@ impl SnapshotIndexer {
             self.output.eprintln(&msg);
             msg
         })?;
+        let signing_key = self
+            .config
+            .snapshot_signing_key_path()
+            .map(|path| SnapshotSigningKeyFile::load(&path))
+            .transpose()?;
         let manifest = SnapshotManifest::build(
             db_path
                 .file_name()
@@ -197,6 +209,7 @@ impl SnapshotIndexer {
                 .to_string(),
             file_hash,
             state_ref,
+            signing_key.as_ref().map(|key| key.key_id.clone()),
         );
         let manifest_path = manifest_path_for_snapshot_file(&db_path);
         manifest.save(&manifest_path).map_err(|e| {
@@ -212,6 +225,17 @@ impl SnapshotIndexer {
             "Snapshot manifest written to {}",
             manifest_path.display()
         ));
+        if let Some(signing_key) = signing_key {
+            let signature_path = signature_path_for_manifest_file(&manifest_path);
+            let signature = signing_key
+                .to_signing_key()?
+                .sign(&manifest.canonical_bytes()?);
+            save_signature_file(&signature_path, &signature)?;
+            self.output.println(&format!(
+                "Snapshot manifest signature written to {}",
+                signature_path.display()
+            ));
+        }
 
         Ok(())
     }
@@ -316,10 +340,8 @@ impl SnapshotCallback for SnapshotGenerator {
 
 #[derive(Clone, Debug)]
 pub struct SnapshotData {
+    /// Path to the snapshot DB file to be installed.
     pub file: PathBuf,
-
-    /// Optional expected file hash provided directly by the operator or CLI.
-    pub hash: Option<String>,
 
     /// Optional sidecar manifest file describing the expected installed state.
     pub manifest_file: Option<PathBuf>,
@@ -335,6 +357,37 @@ pub struct SnapshotManifest {
     pub file_sha256: String,
     /// Exact historical consensus state expected after installation.
     pub state_ref: HistoricalSnapshotStateRef,
+    /// Detached signature scheme used for the optional sidecar signature file.
+    #[serde(default)]
+    pub signature_scheme: Option<String>,
+    /// Logical signer identifier that must match a trusted install key.
+    #[serde(default)]
+    pub signing_key_id: Option<String>,
+    /// Unix timestamp when this manifest was generated.
+    #[serde(default)]
+    pub generated_at: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotSigningKeyFile {
+    /// Logical signer identifier stored in manifests and matched during install.
+    pub key_id: String,
+    /// Ed25519 secret key encoded as base64(raw 32-byte seed).
+    pub secret_key_base64: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotTrustedKeySet {
+    /// Trusted public keys accepted for signed snapshot manifests.
+    pub keys: Vec<SnapshotTrustedPublicKey>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotTrustedPublicKey {
+    /// Logical signer identifier referenced by manifests.
+    pub key_id: String,
+    /// Ed25519 public key encoded as base64(raw 32-byte bytes).
+    pub public_key_base64: String,
 }
 
 impl SnapshotManifest {
@@ -342,13 +395,36 @@ impl SnapshotManifest {
         file_name: String,
         file_sha256: String,
         state_ref: HistoricalSnapshotStateRef,
+        signing_key_id: Option<String>,
     ) -> Self {
         Self {
             manifest_version: SNAPSHOT_MANIFEST_VERSION.to_string(),
             file_name,
             file_sha256,
             state_ref,
+            signature_scheme: signing_key_id
+                .as_ref()
+                .map(|_| SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string()),
+            signing_key_id,
+            generated_at: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            ),
         }
+    }
+
+    /// Returns the canonical JSON bytes covered by the detached signature.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(self).map_err(|e| {
+            let msg = format!(
+                "Failed to serialize canonical snapshot manifest {} for signing: {}",
+                self.file_name, e
+            );
+            error!("{}", msg);
+            msg
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -401,10 +477,172 @@ impl SnapshotManifest {
     }
 }
 
+impl SnapshotSigningKeyFile {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let data = std::fs::read_to_string(path).map_err(|e| {
+            let msg = format!(
+                "Failed to read snapshot signing key {}: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        serde_json::from_str(&data).map_err(|e| {
+            let msg = format!(
+                "Failed to parse snapshot signing key {} as JSON: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    pub fn to_signing_key(&self) -> Result<SigningKey, String> {
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(self.secret_key_base64.as_bytes())
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to decode base64 Ed25519 secret key for signer {}: {}",
+                    self.key_id, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let secret_key: [u8; 32] = raw.as_slice().try_into().map_err(|_| {
+            let msg = format!(
+                "Invalid Ed25519 secret key length for signer {}: expected 32 bytes, got {}",
+                self.key_id,
+                raw.len()
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        Ok(SigningKey::from_bytes(&secret_key))
+    }
+}
+
+impl SnapshotTrustedKeySet {
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let data = std::fs::read_to_string(path).map_err(|e| {
+            let msg = format!(
+                "Failed to read trusted snapshot keys {}: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        serde_json::from_str(&data).map_err(|e| {
+            let msg = format!(
+                "Failed to parse trusted snapshot keys {} as JSON: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    pub fn find_verifying_key(&self, key_id: &str) -> Result<Option<VerifyingKey>, String> {
+        let Some(entry) = self.keys.iter().find(|entry| entry.key_id == key_id) else {
+            return Ok(None);
+        };
+        entry.to_verifying_key().map(Some)
+    }
+}
+
+impl SnapshotTrustedPublicKey {
+    pub fn to_verifying_key(&self) -> Result<VerifyingKey, String> {
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(self.public_key_base64.as_bytes())
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to decode base64 Ed25519 public key for trusted signer {}: {}",
+                    self.key_id, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let public_key: [u8; 32] = raw.as_slice().try_into().map_err(|_| {
+            let msg = format!(
+                "Invalid Ed25519 public key length for trusted signer {}: expected 32 bytes, got {}",
+                self.key_id,
+                raw.len()
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        VerifyingKey::from_bytes(&public_key).map_err(|e| {
+            let msg = format!(
+                "Failed to construct Ed25519 verifying key for trusted signer {}: {}",
+                self.key_id, e
+            );
+            error!("{}", msg);
+            msg
+        })
+    }
+}
+
+/// Returns the default sidecar manifest path for one snapshot DB file.
 pub fn manifest_path_for_snapshot_file(file: &Path) -> PathBuf {
     let mut path = file.to_path_buf();
     path.set_extension("manifest.json");
     path
+}
+
+/// Returns the detached signature sidecar path for one manifest file.
+pub fn signature_path_for_manifest_file(file: &Path) -> PathBuf {
+    let mut path = file.to_path_buf();
+    path.set_extension("sig");
+    path
+}
+
+fn save_signature_file(path: &Path, signature: &Signature) -> Result<(), String> {
+    let encoded = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+    std::fs::write(path, encoded).map_err(|e| {
+        let msg = format!(
+            "Failed to write snapshot signature sidecar {}: {}",
+            path.display(),
+            e
+        );
+        error!("{}", msg);
+        msg
+    })
+}
+
+fn load_signature_file(path: &Path) -> Result<Signature, String> {
+    let data = std::fs::read_to_string(path).map_err(|e| {
+        let msg = format!(
+            "Failed to read snapshot signature sidecar {}: {}",
+            path.display(),
+            e
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(data.trim().as_bytes())
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to decode base64 snapshot signature {}: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+    let signature_bytes: [u8; 64] = raw.as_slice().try_into().map_err(|_| {
+        let msg = format!(
+            "Invalid Ed25519 signature length in {}: expected 64 bytes, got {}",
+            path.display(),
+            raw.len()
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    Ok(Signature::from_bytes(&signature_bytes))
 }
 
 pub struct SnapshotInstaller {
@@ -426,6 +664,7 @@ impl SnapshotInstaller {
         info!("Starting snapshot installation from {:?}", data,);
 
         self.output.start_load(0);
+        let trust_mode = self.config.snapshot.trust_mode.clone();
 
         let manifest = if let Some(manifest_file) = data.manifest_file.as_ref() {
             self.output.println(&format!(
@@ -435,6 +674,121 @@ impl SnapshotInstaller {
             Some(SnapshotManifest::load(manifest_file)?)
         } else {
             None
+        };
+
+        if manifest.is_none()
+            && matches!(
+                trust_mode,
+                SnapshotTrustMode::Manifest | SnapshotTrustMode::Signed
+            )
+        {
+            let msg = format!(
+                "Snapshot install requires a manifest in {:?} trust mode, but none was provided for {}",
+                trust_mode,
+                data.file.display()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let signature_path = data
+            .manifest_file
+            .as_ref()
+            .map(|manifest_file| signature_path_for_manifest_file(manifest_file));
+        let signature_present = signature_path
+            .as_ref()
+            .map(|path| path.exists())
+            .unwrap_or(false);
+        let signature_verified = if matches!(trust_mode, SnapshotTrustMode::Signed) {
+            let manifest = manifest.as_ref().ok_or_else(|| {
+                let msg = format!(
+                    "Signed snapshot install requires a manifest for {}",
+                    data.file.display()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let signature_scheme = manifest.signature_scheme.as_deref().ok_or_else(|| {
+                let msg = format!(
+                    "Signed snapshot install requires manifest.signature_scheme for {}",
+                    data.file.display()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if signature_scheme != SNAPSHOT_SIGNATURE_SCHEME_ED25519 {
+                let msg = format!(
+                    "Unsupported snapshot signature scheme {} for {} (expected {})",
+                    signature_scheme,
+                    data.file.display(),
+                    SNAPSHOT_SIGNATURE_SCHEME_ED25519
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            let signing_key_id = manifest.signing_key_id.as_deref().ok_or_else(|| {
+                let msg = format!(
+                    "Signed snapshot install requires manifest.signing_key_id for {}",
+                    data.file.display()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let signature_path = signature_path.as_ref().ok_or_else(|| {
+                let msg = format!(
+                    "Signed snapshot install requires a signature sidecar path for {}",
+                    data.file.display()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if !signature_path.exists() {
+                let msg = format!(
+                    "Signed snapshot install requires signature sidecar {}, but it does not exist",
+                    signature_path.display()
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            let trusted_keys_path = self.config.snapshot_trusted_keys_path().ok_or_else(|| {
+                let msg = format!(
+                    "Signed snapshot install requires snapshot.trusted_keys_file in config for {}",
+                    data.file.display()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            let trusted_keys = SnapshotTrustedKeySet::load(&trusted_keys_path)?;
+            let verifying_key = trusted_keys
+                .find_verifying_key(signing_key_id)?
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Snapshot signer {} is not trusted by {}",
+                        signing_key_id,
+                        trusted_keys_path.display()
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            let signature = load_signature_file(signature_path)?;
+            verifying_key
+                .verify(&manifest.canonical_bytes()?, &signature)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Snapshot signature verification failed for manifest {} signed by {}: {}",
+                        data.manifest_file
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<unknown>".to_string()),
+                        signing_key_id,
+                        e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            true
+        } else {
+            false
         };
 
         // First check hash is correct
@@ -467,22 +821,9 @@ impl SnapshotInstaller {
             }
         }
 
-        let expected_hash = match (data.hash.as_ref(), manifest.as_ref()) {
-            (Some(hash), Some(manifest)) => {
-                if hash.to_ascii_lowercase() != manifest.file_sha256.to_ascii_lowercase() {
-                    let msg = format!(
-                        "Snapshot hash mismatch between CLI input and manifest: {} != {}",
-                        hash, manifest.file_sha256
-                    );
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-                Some(hash.clone())
-            }
-            (Some(hash), None) => Some(hash.clone()),
-            (None, Some(manifest)) => Some(manifest.file_sha256.clone()),
-            (None, None) => None,
-        };
+        let expected_hash = manifest
+            .as_ref()
+            .map(|manifest| manifest.file_sha256.clone());
 
         if let Some(hash) = expected_hash {
             self.output.println("Verifying snapshot file hash...");
@@ -558,24 +899,46 @@ impl SnapshotInstaller {
 
         if let Some(manifest) = manifest.as_ref() {
             self.validate_staged_manifest(&staging_db, &meta, manifest)?;
-            staging_db.put_snapshot_install_state(true).map_err(|e| {
-                let msg = format!(
-                    "Failed to persist verified snapshot install provenance at block height {}: {}",
-                    meta.block_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-        } else {
-            staging_db.put_snapshot_install_state(false).map_err(|e| {
-                let msg = format!(
-                    "Failed to persist unverified snapshot install provenance at block height {}: {}",
-                    meta.block_height, e
-                );
-                error!("{}", msg);
-                msg
-            })?;
         }
+        let provenance = SnapshotInstallProvenance {
+            origin: SnapshotInstallOrigin::SnapshotInstall,
+            trust_mode,
+            verification_state: if signature_verified {
+                SnapshotVerificationState::SignatureVerified
+            } else if manifest.is_some() {
+                SnapshotVerificationState::ManifestVerified
+            } else {
+                SnapshotVerificationState::ManifestMissing
+            },
+            manifest_present: manifest.is_some(),
+            manifest_verified: manifest.is_some(),
+            signature_present,
+            signature_verified,
+            manifest_version: manifest
+                .as_ref()
+                .map(|value| value.manifest_version.clone()),
+            signature_scheme: manifest
+                .as_ref()
+                .and_then(|value| value.signature_scheme.clone()),
+            signing_key_id: manifest
+                .as_ref()
+                .and_then(|value| value.signing_key_id.clone()),
+            snapshot_file_sha256: manifest.as_ref().map(|value| value.file_sha256.clone()),
+            snapshot_id: manifest
+                .as_ref()
+                .map(|value| value.state_ref.snapshot_id.clone()),
+            installed_block_height: meta.block_height,
+        };
+        staging_db
+            .put_snapshot_install_provenance(&provenance)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to persist snapshot install provenance at block height {}: {}",
+                    meta.block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
         staging_db.flush_all().map_err(|e| {
             let msg = format!(
                 "Failed to flush snapshot install provenance metadata at block height {}: {}",
@@ -1027,7 +1390,43 @@ mod tests {
                 .to_string(),
             SnapshotHash::calc_hash(snapshot_path).unwrap(),
             state_ref,
+            None,
         )
+    }
+
+    fn write_signing_material(
+        root_dir: &Path,
+        key_id: &str,
+        seed_byte: u8,
+    ) -> (PathBuf, PathBuf, SigningKey) {
+        let signing_key = SigningKey::from_bytes(&[seed_byte; 32]);
+        let signing_key_path = root_dir.join("snapshot_signing_key.json");
+        let trusted_keys_path = root_dir.join("trusted_snapshot_keys.json");
+        let signing_key_file = SnapshotSigningKeyFile {
+            key_id: key_id.to_string(),
+            secret_key_base64: base64::engine::general_purpose::STANDARD
+                .encode(signing_key.to_bytes()),
+        };
+        let trusted_keys_file = SnapshotTrustedKeySet {
+            keys: vec![SnapshotTrustedPublicKey {
+                key_id: key_id.to_string(),
+                public_key_base64: base64::engine::general_purpose::STANDARD
+                    .encode(signing_key.verifying_key().to_bytes()),
+            }],
+        };
+
+        std::fs::write(
+            &signing_key_path,
+            serde_json::to_vec_pretty(&signing_key_file).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &trusted_keys_path,
+            serde_json::to_vec_pretty(&trusted_keys_file).unwrap(),
+        )
+        .unwrap();
+
+        (signing_key_path, trusted_keys_path, signing_key)
     }
 
     #[test]
@@ -1114,7 +1513,6 @@ mod tests {
         installer
             .install(SnapshotData {
                 file: snapshot_path,
-                hash: None,
                 manifest_file: None,
             })
             .unwrap();
@@ -1293,7 +1691,6 @@ mod tests {
         installer
             .install(SnapshotData {
                 file: snapshot_path,
-                hash: None,
                 manifest_file: Some(manifest_path),
             })
             .unwrap();
@@ -1360,7 +1757,6 @@ mod tests {
         let err = installer
             .install(SnapshotData {
                 file: snapshot_path,
-                hash: None,
                 manifest_file: Some(manifest_path),
             })
             .unwrap_err();
@@ -1377,5 +1773,135 @@ mod tests {
             None
         );
         assert!(reopened_db.get_block_commit(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_install_accepts_signed_manifest_when_trusted() {
+        let root_dir = temp_root("install_manifest_signed_ok");
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir.clone();
+        config.snapshot.trust_mode = SnapshotTrustMode::Signed;
+        let (_, trusted_keys_path, signing_key) =
+            write_signing_material(&root_dir, "snapshot-signer-1", 42);
+        config.snapshot.trusted_keys_file = Some(trusted_keys_path);
+        let config = Arc::new(config);
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(3).unwrap();
+        let live_db = Arc::new(live_db);
+
+        let snapshot_path = root_dir.join("install_source_snapshot_signed.db");
+        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
+        let signature_path = signature_path_for_manifest_file(&manifest_path);
+        let new_commit = BlockCommitEntry {
+            block_height: 10,
+            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            balance_delta_root: [11u8; 32],
+            block_commit: [12u8; 32],
+        };
+
+        {
+            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
+            snapshot_db
+                .put_block_commit_entries(std::slice::from_ref(&new_commit))
+                .unwrap();
+
+            let mut meta = SnapshotMeta::new(10);
+            meta.block_commit_count = 1;
+            snapshot_db.update_meta(&meta).unwrap();
+        }
+
+        let mut manifest =
+            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
+        manifest.signature_scheme = Some(SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string());
+        manifest.signing_key_id = Some("snapshot-signer-1".to_string());
+        manifest.save(&manifest_path).unwrap();
+        let signature = signing_key.sign(&manifest.canonical_bytes().unwrap());
+        save_signature_file(&signature_path, &signature).unwrap();
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        installer
+            .install(SnapshotData {
+                file: snapshot_path,
+                manifest_file: Some(manifest_path),
+            })
+            .unwrap();
+
+        let reopened_db =
+            BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let provenance = reopened_db
+            .get_snapshot_install_provenance()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            provenance.verification_state,
+            SnapshotVerificationState::SignatureVerified
+        );
+        assert!(provenance.signature_present);
+        assert!(provenance.signature_verified);
+        assert_eq!(
+            provenance.signing_key_id,
+            Some("snapshot-signer-1".to_string())
+        );
+        assert_eq!(
+            reopened_db
+                .get_snapshot_install_manifest_verified()
+                .unwrap(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_install_rejects_signed_mode_without_signature_sidecar() {
+        let root_dir = temp_root("install_manifest_signed_missing_sig");
+        let mut config = BalanceHistoryConfig::default();
+        config.root_dir = root_dir.clone();
+        config.snapshot.trust_mode = SnapshotTrustMode::Signed;
+        let (_, trusted_keys_path, _) = write_signing_material(&root_dir, "snapshot-signer-1", 7);
+        config.snapshot.trusted_keys_file = Some(trusted_keys_path);
+        let config = Arc::new(config);
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(3).unwrap();
+        let live_db = Arc::new(live_db);
+
+        let snapshot_path = root_dir.join("install_source_snapshot_signed_missing_sig.db");
+        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
+        let new_commit = BlockCommitEntry {
+            block_height: 10,
+            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            balance_delta_root: [11u8; 32],
+            block_commit: [12u8; 32],
+        };
+
+        {
+            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
+            snapshot_db
+                .put_block_commit_entries(std::slice::from_ref(&new_commit))
+                .unwrap();
+
+            let mut meta = SnapshotMeta::new(10);
+            meta.block_commit_count = 1;
+            snapshot_db.update_meta(&meta).unwrap();
+        }
+
+        let mut manifest =
+            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
+        manifest.signature_scheme = Some(SNAPSHOT_SIGNATURE_SCHEME_ED25519.to_string());
+        manifest.signing_key_id = Some("snapshot-signer-1".to_string());
+        manifest.save(&manifest_path).unwrap();
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        let err = installer
+            .install(SnapshotData {
+                file: snapshot_path,
+                manifest_file: Some(manifest_path),
+            })
+            .unwrap_err();
+        assert!(err.contains("requires signature sidecar"));
     }
 }

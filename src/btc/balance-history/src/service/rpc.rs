@@ -1,3 +1,6 @@
+use crate::snapshot_provenance::{
+    SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
+};
 use crate::status::{SyncPhase, SyncStatus};
 use bitcoincore_rpc::bitcoin::OutPoint;
 use jsonrpc_core::Result as JsonResult;
@@ -299,6 +302,12 @@ pub struct ReadinessInfo {
     pub stable_block_hash: Option<String>,
     /// Latest logical block commit at `stable_height`, when available.
     pub latest_block_commit: Option<String>,
+    /// Snapshot-install origin summary when the local DB came from snapshot install.
+    pub snapshot_origin: Option<SnapshotInstallOrigin>,
+    /// Snapshot verification summary when the local DB came from snapshot install.
+    pub snapshot_verification_state: Option<SnapshotVerificationState>,
+    /// Signer identifier for trusted snapshot installs, when present.
+    pub snapshot_signing_key_id: Option<String>,
     /// Machine-readable reasons keeping the service from a stricter ready state.
     pub blockers: Vec<ReadinessBlocker>,
 }
@@ -374,6 +383,10 @@ pub trait BalanceHistoryRpc {
     /// from `get_network_type` or from free-form sync messages.
     #[rpc(name = "get_readiness")]
     fn get_readiness(&self) -> JsonResult<ReadinessInfo>;
+
+    /// Returns detailed snapshot-install provenance for the current local DB, when available.
+    #[rpc(name = "get_snapshot_provenance")]
+    fn get_snapshot_provenance(&self) -> JsonResult<Option<SnapshotInstallProvenance>>;
 
     /// Returns the exact historical consensus state reference at one BTC height.
     ///
