@@ -1,0 +1,25 @@
+services:
+  btc-node:
+    command:
+      - -printtoconsole
+      - -server=1
+      - -txindex=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=${BTC_RPC_PORT:-8332}
+      - -port=${BTC_P2P_PORT:-8333}
+      - -fallbackfee=${BTC_FALLBACK_FEE:-0.0002}
+
+  snapshot-loader:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+      SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+
+  balance-history:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+
+  usdb-indexer:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+      INSCRIPTION_SOURCE: ${INSCRIPTION_SOURCE:-bitcoind}

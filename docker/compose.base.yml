@@ -1,0 +1,163 @@
+services:
+  btc-node:
+    image: ${BTC_NODE_IMAGE:-ruimarinho/bitcoin-core:26}
+    restart: unless-stopped
+    command:
+      - -printtoconsole
+      - -server=1
+      - -txindex=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=${BTC_RPC_PORT:-8332}
+      - -port=${BTC_P2P_PORT:-8333}
+      - -fallbackfee=${BTC_FALLBACK_FEE:-0.0002}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}
+    ports:
+      - "${BTC_RPC_BIND_PORT:-8332}:${BTC_RPC_PORT:-8332}"
+      - "${BTC_P2P_BIND_PORT:-8333}:${BTC_P2P_PORT:-8333}"
+    networks:
+      - usdb-net
+
+  snapshot-loader:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.usdb-services
+    image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
+    restart: "no"
+    entrypoint: ["/opt/usdb/docker/scripts/snapshot_loader.sh"]
+    environment:
+      BH_ROOT_DIR: ${BH_ROOT_DIR:-/data/balance-history}
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-cookie}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-}
+      ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28030}
+      ELECTRS_RPC_URL: ${ELECTRS_RPC_URL:-tcp://electrs:50001}
+      BH_RPC_PORT: ${BH_RPC_PORT:-28010}
+      BH_SYNC_LOCAL_LOADER_THRESHOLD: ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-500}
+      BH_SYNC_BATCH_SIZE: ${BH_SYNC_BATCH_SIZE:-128}
+      BH_SYNC_MAX_SYNC_BLOCK_HEIGHT: ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
+      BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-dev}
+      BH_SNAPSHOT_SIGNING_KEY_FILE: ${BH_SNAPSHOT_SIGNING_KEY_FILE:-}
+      BH_SNAPSHOT_TRUSTED_KEYS_FILE: ${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-}
+      SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+      BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:-}
+      BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - balance-history-data:${BH_ROOT_DIR:-/data/balance-history}
+      - ${SNAPSHOT_HOST_DIR:-./docker/manifests}:/snapshots:ro
+      - ${SNAPSHOT_KEYS_HOST_DIR:-./docker/manifests}:/run/usdb/keys:ro
+    networks:
+      - usdb-net
+
+  balance-history:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.usdb-services
+    image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_balance_history.sh"]
+    depends_on:
+      snapshot-loader:
+        condition: service_completed_successfully
+    environment:
+      BH_ROOT_DIR: ${BH_ROOT_DIR:-/data/balance-history}
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-cookie}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-}
+      ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28030}
+      ELECTRS_RPC_URL: ${ELECTRS_RPC_URL:-tcp://electrs:50001}
+      BH_RPC_PORT: ${BH_RPC_PORT:-28010}
+      BH_SYNC_LOCAL_LOADER_THRESHOLD: ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-500}
+      BH_SYNC_BATCH_SIZE: ${BH_SYNC_BATCH_SIZE:-128}
+      BH_SYNC_MAX_SYNC_BLOCK_HEIGHT: ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
+      BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-dev}
+      BH_SNAPSHOT_SIGNING_KEY_FILE: ${BH_SNAPSHOT_SIGNING_KEY_FILE:-}
+      BH_SNAPSHOT_TRUSTED_KEYS_FILE: ${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-}
+      WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-120}
+      BH_EXTRA_ARGS: ${BH_EXTRA_ARGS:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - balance-history-data:${BH_ROOT_DIR:-/data/balance-history}
+      - ${SNAPSHOT_KEYS_HOST_DIR:-./docker/manifests}:/run/usdb/keys:ro
+    ports:
+      - "${BH_BIND_PORT:-28010}:${BH_RPC_PORT:-28010}"
+    networks:
+      - usdb-net
+
+  usdb-indexer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.usdb-services
+    image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_usdb_indexer.sh"]
+    depends_on:
+      balance-history:
+        condition: service_started
+    environment:
+      USDB_INDEXER_ROOT_DIR: ${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-cookie}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-}
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}
+      ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28030}
+      INSCRIPTION_SOURCE: ${INSCRIPTION_SOURCE:-bitcoind}
+      INSCRIPTION_FIXTURE_FILE: ${INSCRIPTION_FIXTURE_FILE:-}
+      INSCRIPTION_SOURCE_SHADOW_COMPARE: ${INSCRIPTION_SOURCE_SHADOW_COMPARE:-false}
+      INSCRIPTION_SOURCE_SHADOW_FAIL_FAST: ${INSCRIPTION_SOURCE_SHADOW_FAIL_FAST:-false}
+      USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:-900000}
+      USDB_INDEXER_RPC_PORT: ${USDB_INDEXER_RPC_PORT:-28020}
+      USDB_RPC_SERVER_ENABLED: ${USDB_RPC_SERVER_ENABLED:-true}
+      PASS_ENERGY_LEADERBOARD_CACHE_ENABLED: ${PASS_ENERGY_LEADERBOARD_CACHE_ENABLED:-true}
+      PASS_ENERGY_LEADERBOARD_CACHE_TOP_K: ${PASS_ENERGY_LEADERBOARD_CACHE_TOP_K:-1000}
+      WAIT_FOR_BH_TIMEOUT_SECS: ${WAIT_FOR_BH_TIMEOUT_SECS:-120}
+      USDB_INDEXER_EXTRA_ARGS: ${USDB_INDEXER_EXTRA_ARGS:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - usdb-indexer-data:${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}
+    ports:
+      - "${USDB_INDEXER_BIND_PORT:-28020}:${USDB_INDEXER_RPC_PORT:-28020}"
+    networks:
+      - usdb-net
+
+  ethw-node:
+    image: ${ETHW_IMAGE:-usdb-ethw:local}
+    restart: unless-stopped
+    depends_on:
+      usdb-indexer:
+        condition: service_started
+    environment:
+      ETHW_COMMAND: ${ETHW_COMMAND:-}
+    command: ["bash", "-lc", "if [ -n \"$ETHW_COMMAND\" ]; then exec $ETHW_COMMAND; else echo 'ETHW_COMMAND is not set'; exit 1; fi"]
+    volumes:
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}
+    ports:
+      - "${ETHW_HTTP_BIND_PORT:-8545}:${ETHW_HTTP_PORT:-8545}"
+      - "${ETHW_WS_BIND_PORT:-8546}:${ETHW_WS_PORT:-8546}"
+      - "${ETHW_P2P_BIND_PORT:-30303}:${ETHW_P2P_PORT:-30303}"
+    networks:
+      - usdb-net
+
+volumes:
+  btc-data:
+  balance-history-data:
+  usdb-indexer-data:
+  ethw-data:
+
+networks:
+  usdb-net:
+    name: ${USDB_DOCKER_NETWORK:-usdb-net}

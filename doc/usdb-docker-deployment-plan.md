@@ -22,6 +22,29 @@
 
 ## 2. 当前结论
 
+## 2.0 第一阶段已落地范围
+
+当前第一阶段已经落地的是：
+
+- `usdb/docker` 基本目录结构
+- `balance-history` / `usdb-indexer` 服务镜像构建入口
+- `joiner` 模式 compose 骨架
+- `dev-sim` 模式 compose 骨架
+- `balance-history` 的可选 snapshot-loader
+- `balance-history` / `usdb-indexer` 的配置渲染脚本
+
+当前明确还没有落地的是：
+
+- `bootstrap-init` 冷启动编排
+- `ord` 容器及其 compose profile
+- `usdb-indexer` 快照恢复
+- 发布级镜像与签名分发流程
+
+因此第一阶段 Docker 重点是：
+
+- 先让新节点加入和单机模拟有统一的可运行入口
+- 而不是一次性覆盖全部部署生命周期
+
 ## 2.1 现有 e2e 测试继续与 Docker 分离
 
 当前已经存在的脚本型 e2e：
@@ -64,6 +87,23 @@
 - 启动模式
 - 快照格式
 - 发布节奏
+
+同时建议把本地运行期文件单独收口到：
+
+- `usdb/docker/local`
+
+这个目录用于存放：
+
+- 实际 `.env`
+- 快照文件与 sidecar manifest
+- 受信公钥集
+- 本地 bootnodes / service manifest
+
+原则是：
+
+- `docker/` 里保留模板、脚本、compose
+- `docker/local/` 里保留本机实际运行配置
+- 容器运行期数据库优先继续使用 Docker volume，而不是提交一套 rootfs
 
 ## 2.3 快照是可选能力，不是前置条件
 
@@ -160,6 +200,8 @@
 - 不再重复冷启动逻辑
 - 直接接入已有网络
 - 可选使用 `balance-history` 快照加速追上同步
+- 默认不包含 `ord`
+- 默认 `usdb-indexer` 使用 `inscription_source = "bitcoind"`
 
 ## 3.3 `dev-sim`
 
@@ -180,6 +222,19 @@
 这个模式的目标不是替代现有脚本 e2e，而是提供：
 
 - 一条更容易上手的一键式本地运行入口
+
+当前第一阶段的 `dev-sim` 仍保持：
+
+- `bitcoind regtest`
+- `balance-history`
+- `usdb-indexer`
+- `ethw/geth`
+
+但 `usdb-indexer` 仍先使用：
+
+- `inscription_source = "bitcoind"`
+
+`ord` 仍只应视为开发期依赖，后续也只进入 `dev-sim` profile，不进入默认 `joiner`。
 
 ## 4. 镜像与编排策略
 
@@ -285,12 +340,23 @@
 
 ```text
 usdb/docker/
+  README.md
+  Dockerfile.usdb-services
   compose.base.yml
-  compose.bootstrap.yml
   compose.joiner.yml
   compose.dev-sim.yml
   env/
+    joiner.env.example
+    dev-sim.env.example
+  local/
+    README.md
   scripts/
+    render_balance_history_config.sh
+    render_usdb_indexer_config.sh
+    snapshot_loader.sh
+    start_balance_history.sh
+    start_usdb_indexer.sh
+    wait_for_tcp.sh
   manifests/
 ```
 
@@ -298,14 +364,14 @@ usdb/docker/
 
 - `compose.base.yml`
   - 公共服务定义
-- `compose.bootstrap.yml`
-  - 冷启动相关 profile
 - `compose.joiner.yml`
   - 普通节点加入
 - `compose.dev-sim.yml`
   - 单机开发和模拟
 - `env/`
   - 环境变量模板
+- `local/`
+  - gitignored 的本地运行期配置
 - `scripts/`
   - 启动、初始化、快照恢复脚本
 - `manifests/`
@@ -315,10 +381,11 @@ usdb/docker/
 
 推荐按下面顺序推进：
 
-1. 先建立 `usdb/docker` 基本目录结构
-2. 先做 `joiner` 与 `dev-sim` 的最小可运行版本
-3. 加入 `balance-history` 快照可选恢复能力
-4. 最后再补 `bootstrap` 的正式冷启动流程
+1. 已完成：建立 `usdb/docker` 基本目录结构
+2. 已完成：做 `joiner` 与 `dev-sim` 的最小可运行版本
+3. 已完成：加入 `balance-history` 快照可选恢复骨架
+4. 下一阶段：补 `bootstrap` 的正式冷启动流程
+5. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
 
 原因：
 

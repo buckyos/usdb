@@ -1,0 +1,37 @@
+services:
+  btc-node:
+    command:
+      - -regtest=1
+      - -printtoconsole
+      - -server=1
+      - -txindex=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=${BTC_RPC_PORT:-28132}
+      - -port=${BTC_P2P_PORT:-28133}
+      - -fallbackfee=${BTC_FALLBACK_FEE:-0.0002}
+    ports:
+      - "${BTC_RPC_BIND_PORT:-28132}:${BTC_RPC_PORT:-28132}"
+      - "${BTC_P2P_BIND_PORT:-28133}:${BTC_P2P_PORT:-28133}"
+
+  snapshot-loader:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-regtest}
+      SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+
+  balance-history:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-regtest}
+      BH_RPC_PORT: ${BH_RPC_PORT:-28110}
+    ports:
+      - "${BH_BIND_PORT:-28110}:${BH_RPC_PORT:-28110}"
+
+  usdb-indexer:
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:-regtest}
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}
+      INSCRIPTION_SOURCE: ${INSCRIPTION_SOURCE:-bitcoind}
+      USDB_INDEXER_RPC_PORT: ${USDB_INDEXER_RPC_PORT:-28120}
+      USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:-1}
+    ports:
+      - "${USDB_INDEXER_BIND_PORT:-28120}:${USDB_INDEXER_RPC_PORT:-28120}"

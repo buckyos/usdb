@@ -1,0 +1,26 @@
+FROM rust:1.86-bookworm AS builder
+
+WORKDIR /workspace/src/btc
+
+COPY src/btc /workspace/src/btc
+
+RUN cargo build --release -p balance-history -p usdb-indexer
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /workspace/src/btc/target/release/balance-history /usr/local/bin/balance-history
+COPY --from=builder /workspace/src/btc/target/release/usdb-indexer /usr/local/bin/usdb-indexer
+COPY docker/scripts /opt/usdb/docker/scripts
+
+ENV PATH="/opt/usdb/docker/scripts:${PATH}"
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]
