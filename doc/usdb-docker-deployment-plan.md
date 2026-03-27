@@ -35,15 +35,33 @@
 
 当前明确还没有落地的是：
 
-- `bootstrap-init` 冷启动编排
 - `ord` 容器及其 compose profile
 - `usdb-indexer` 快照恢复
 - 发布级镜像与签名分发流程
+- 全自动 ETHW genesis 生成与正式网 bootstrap 发布流程
 
 因此第一阶段 Docker 重点是：
 
 - 先让新节点加入和单机模拟有统一的可运行入口
 - 而不是一次性覆盖全部部署生命周期
+
+同时，冷启动已经补到最小可执行骨架：
+
+- `compose.bootstrap.yml`
+- `bootstrap-init` one-shot 容器
+
+当前它的职责是：
+
+- 准备共享 bootstrap 目录
+- 接收并复制 canonical ETHW genesis
+- 可选复制 ETHW / SourceDAO bootstrap 配置
+- 记录一份 `bootstrap-manifest.json`
+
+它当前还不负责：
+
+- 在容器内生成 ETHW genesis
+- 发送链上初始化交易
+- 完成正式发布流程
 
 ## 2.1 现有 e2e 测试继续与 Docker 分离
 
@@ -188,6 +206,8 @@
 - 需要初始化链和系统配置
 - 可能需要导入 `balance-history` 快照
 - 需要执行一次性的 bootstrap 流程
+
+当前第一阶段已经支持最小 bootstrap 入口，但它仍是“输入准备器”，不是完整冷启动自动化器。
 
 ## 3.2 `joiner`
 
@@ -343,14 +363,17 @@ usdb/docker/
   README.md
   Dockerfile.usdb-services
   compose.base.yml
+  compose.bootstrap.yml
   compose.joiner.yml
   compose.dev-sim.yml
   env/
+    bootstrap.env.example
     joiner.env.example
     dev-sim.env.example
   local/
     README.md
   scripts/
+    bootstrap_init.sh
     render_balance_history_config.sh
     render_usdb_indexer_config.sh
     snapshot_loader.sh
@@ -364,6 +387,8 @@ usdb/docker/
 
 - `compose.base.yml`
   - 公共服务定义
+- `compose.bootstrap.yml`
+  - 冷启动 bootstrap overlay
 - `compose.joiner.yml`
   - 普通节点加入
 - `compose.dev-sim.yml`
@@ -384,8 +409,10 @@ usdb/docker/
 1. 已完成：建立 `usdb/docker` 基本目录结构
 2. 已完成：做 `joiner` 与 `dev-sim` 的最小可运行版本
 3. 已完成：加入 `balance-history` 快照可选恢复骨架
-4. 下一阶段：补 `bootstrap` 的正式冷启动流程
-5. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
+4. 已完成：补 `bootstrap-init` 最小冷启动编排
+5. 下一阶段：补 ETHW canonical genesis 生成 / 分发流程
+6. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
+7. 下一阶段：补 DAO / Dividend 初始化 hook
 
 原因：
 

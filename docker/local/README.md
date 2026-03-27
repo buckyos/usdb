@@ -7,6 +7,12 @@ Recommended layout:
 
 ```text
 docker/local/
+  bootstrap/
+    env/
+      bootstrap.env
+    snapshots/
+    keys/
+    manifests/
   joiner/
     env/
       joiner.env

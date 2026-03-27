@@ -1,0 +1,41 @@
+services:
+  snapshot-loader:
+    environment:
+      SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+
+  bootstrap-init:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.usdb-services
+    image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
+    restart: "no"
+    entrypoint: ["/opt/usdb/docker/scripts/bootstrap_init.sh"]
+    depends_on:
+      snapshot-loader:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
+      BOOTSTRAP_REQUIRE_ETHW_GENESIS: ${BOOTSTRAP_REQUIRE_ETHW_GENESIS:-true}
+      ETHW_BOOTSTRAP_GENESIS_FILE: ${ETHW_BOOTSTRAP_GENESIS_FILE:-}
+      ETHW_BOOTSTRAP_CONFIG_FILE: ${ETHW_BOOTSTRAP_CONFIG_FILE:-}
+      SOURCE_DAO_CONFIG_FILE: ${SOURCE_DAO_CONFIG_FILE:-}
+      BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:-}
+      BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:-}
+      BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-dev}
+      BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
+    volumes:
+      - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}
+      - ${BOOTSTRAP_HOST_DIR:-./docker/local/bootstrap/manifests}:/bootstrap-input:ro
+      - ${SNAPSHOT_HOST_DIR:-./docker/local/bootstrap/snapshots}:/snapshots:ro
+    networks:
+      - usdb-net
+
+  ethw-node:
+    depends_on:
+      bootstrap-init:
+        condition: service_completed_successfully
+    volumes:
+      - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}:ro
+
+volumes:
+  bootstrap-artifacts:

@@ -10,7 +10,6 @@ Current scope:
 
 Current non-goals:
 
-- no built-in `bootstrap-init` flow yet
 - no built-in `ord` container yet outside development simulation
 - no `usdb-indexer` snapshot support yet
 - no extra snapshot management for `bitcoind` or `ethw`
@@ -25,6 +24,8 @@ Current non-goals:
   - mainnet-style joiner overlay
 - `compose.dev-sim.yml`
   - regtest/local simulation overlay
+- `compose.bootstrap.yml`
+  - cold-start bootstrap overlay
 - `env/*.env.example`
   - example environment files
 - `local/`
@@ -53,6 +54,13 @@ Then edit:
 - `ETHW_IMAGE`
 - `ETHW_COMMAND`
 - snapshot-related variables if you want `balance-history` snapshot restore
+
+For cold start, use:
+
+```bash
+mkdir -p docker/local/bootstrap/env
+cp docker/env/bootstrap.env.example docker/local/bootstrap/env/bootstrap.env
+```
 
 ## Joiner Mode
 
@@ -98,6 +106,32 @@ Current `dev-sim` still keeps `usdb-indexer` on `inscription_source=bitcoind`.
 `ord` is a development-only dependency and will only be added to a future
 `dev-sim` profile, not to the default `joiner` stack.
 
+## Bootstrap Mode
+
+Recommended command:
+
+```bash
+docker compose \
+  --env-file docker/local/bootstrap/env/bootstrap.env \
+  -f docker/compose.base.yml \
+  -f docker/compose.bootstrap.yml \
+  up --build
+```
+
+Current bootstrap scope:
+
+- prepare a shared `/bootstrap` volume
+- require or copy a canonical ETHW genesis file
+- optionally copy ETHW / SourceDAO bootstrap config files
+- record a `bootstrap-manifest.json` for downstream inspection
+- reuse the existing `snapshot-loader` flow for `balance-history`
+
+Current bootstrap non-goals:
+
+- it does not generate ETHW genesis by itself
+- it does not yet run DAO / Dividend initialization transactions
+- it does not yet implement a full canonical release flow
+
 ## Local Runtime Files
 
 Do not treat Docker runtime config as a full committed rootfs.
@@ -112,6 +146,11 @@ Recommended local layout:
 
 ```text
 docker/local/
+  bootstrap/
+    env/bootstrap.env
+    snapshots/
+    keys/
+    manifests/
   joiner/
     env/joiner.env
     snapshots/
@@ -130,6 +169,7 @@ Use this directory for:
 - snapshot DB / manifest / signature files
 - trusted snapshot key sets
 - local bootnodes or service manifests
+- local bootstrap genesis and bootstrap config files
 
 Do not use it for:
 
@@ -176,7 +216,8 @@ read-only into the USDB service containers.
 
 Planned follow-ups:
 
-- `bootstrap-init` and canonical bootstrap-genesis flow
+- canonical bootstrap-genesis generation and publication flow
+- DAO / Dividend initialization hooks after cold start
 - optional `ord` container/profile
 - `usdb-indexer` snapshot restore
 - published image tags and release-oriented manifests
