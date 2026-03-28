@@ -158,6 +158,19 @@
 - `usdb-indexer` 快照后续按需要增加
 - `bitcoind` 与 `ethw/geth` 暂不纳入额外快照体系
 
+同时，当前 Docker 快照恢复不是只靠“数据目录是否非空”来判断是否完成安装，而是拆成两层：
+
+1. Compose 启动顺序约束
+- `snapshot-loader` 是 one-shot init service
+- `balance-history` 通过 `depends_on: condition: service_completed_successfully` 等待它成功退出
+
+2. 本地 marker gate
+- 当 `SNAPSHOT_MODE=balance-history` 时，`snapshot-loader` 在安装成功后会在共享数据目录写入完成 marker
+- `balance-history` 启动前会检查这个 marker
+- 没有 marker、或 marker 与当前快照输入不匹配时，`balance-history` 会直接 fail fast，不会绕过快照安装进入运行
+
+这样可以避免残留目录、半安装状态或错误快照被误当成“首次启动已完成”。
+
 ## 2.5 `bitcoind` 默认跟随 Docker 一起部署
 
 当前推荐默认模式是：
@@ -222,6 +235,17 @@
 - 可选使用 `balance-history` 快照加速追上同步
 - 默认不包含 `ord`
 - 默认 `usdb-indexer` 使用 `inscription_source = "bitcoind"`
+
+如果启用 `SNAPSHOT_MODE=balance-history`，joiner 启动链路是：
+
+1. `snapshot-loader` 先执行安装，或命中“现有 DB 与 marker 匹配”的跳过路径
+2. `balance-history` 再检查 marker 并启动
+3. `usdb-indexer` 最后依赖 `balance-history`
+
+如果不启用快照：
+
+- `snapshot-loader` 直接 no-op 成功退出
+- `balance-history` 正常从 0 开始同步
 
 ## 3.3 `dev-sim`
 
@@ -301,6 +325,17 @@
 - `none`：完全从 0 开始同步
 - `balance-history`：恢复 `balance-history` 快照后继续同步
 
+推荐的状态模型是：
+
+- `SNAPSHOT_MODE=none`
+  - `snapshot-loader` 直接成功退出
+  - `balance-history` 不要求任何 snapshot marker
+
+- `SNAPSHOT_MODE=balance-history`
+  - `snapshot-loader` 必须先成功完成安装，或确认现有 DB 与 marker 匹配
+  - 安装成功后写入 `snapshot-loader.done.json`
+  - `balance-history` 启动前必须看到合法 marker，否则直接失败
+
 ## 5.2 快照不建议 baking 到镜像
 
 当前不推荐把快照直接做进镜像。
@@ -316,6 +351,15 @@
 
 - 用 volume / bind mount / 远程下载
 - 由 `snapshot-loader` 恢复到工作目录
+
+建议 marker 至少记录：
+
+- `snapshot_mode`
+- `snapshot_file`
+- `snapshot_manifest`
+- `installed_at`
+
+这样既能表达“只在首次安装”，也能表达“当前 volume 中安装的是哪一份快照”。
 
 ## 6. `bitcoind` 部署策略
 

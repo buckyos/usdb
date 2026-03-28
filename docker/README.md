@@ -190,7 +190,19 @@ When enabled, `snapshot-loader`:
 
 1. renders `balance-history/config.toml`
 2. runs `balance-history install-snapshot`
-3. exits successfully before `balance-history` starts
+3. writes a success marker under the shared `balance-history` root
+4. exits successfully before `balance-history` starts
+
+`balance-history` then performs its own local gate:
+
+- if `SNAPSHOT_MODE=balance-history`, it requires the snapshot-loader marker
+- if the marker is missing or does not match the configured snapshot inputs, startup fails fast
+- if `SNAPSHOT_MODE=none`, no marker is required and the service starts from zero-sync state
+
+This split is intentional:
+
+- Compose controls startup ordering
+- the marker gate controls startup validity inside the shared volume
 
 Important:
 
