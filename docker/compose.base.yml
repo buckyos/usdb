@@ -50,8 +50,8 @@ services:
     volumes:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - balance-history-data:${BH_ROOT_DIR:-/data/balance-history}
-      - ${SNAPSHOT_HOST_DIR:-./docker/manifests}:/snapshots:ro
-      - ${SNAPSHOT_KEYS_HOST_DIR:-./docker/manifests}:/run/usdb/keys:ro
+      - ${SNAPSHOT_HOST_DIR:-./manifests}:/snapshots:ro
+      - ${SNAPSHOT_KEYS_HOST_DIR:-./manifests}:/run/usdb/keys:ro
     networks:
       - usdb-net
 
@@ -91,7 +91,7 @@ services:
     volumes:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - balance-history-data:${BH_ROOT_DIR:-/data/balance-history}
-      - ${SNAPSHOT_KEYS_HOST_DIR:-./docker/manifests}:/run/usdb/keys:ro
+      - ${SNAPSHOT_KEYS_HOST_DIR:-./manifests}:/run/usdb/keys:ro
     ports:
       - "${BH_BIND_PORT:-28010}:${BH_RPC_PORT:-28010}"
     networks:

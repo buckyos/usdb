@@ -16,26 +16,61 @@ services:
     environment:
       BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
       BOOTSTRAP_REQUIRE_ETHW_GENESIS: ${BOOTSTRAP_REQUIRE_ETHW_GENESIS:-true}
-      ETHW_BOOTSTRAP_GENESIS_FILE: ${ETHW_BOOTSTRAP_GENESIS_FILE:-}
-      ETHW_BOOTSTRAP_CONFIG_FILE: ${ETHW_BOOTSTRAP_CONFIG_FILE:-}
-      SOURCE_DAO_CONFIG_FILE: ${SOURCE_DAO_CONFIG_FILE:-}
+      ETHW_BOOTSTRAP_TRUST_MODE: ${ETHW_BOOTSTRAP_TRUST_MODE:-none}
+      ETHW_BOOTSTRAP_GENESIS_INPUT_FILE: ${ETHW_BOOTSTRAP_GENESIS_INPUT_FILE:-}
+      ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE: ${ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE:-}
+      ETHW_BOOTSTRAP_CONFIG_INPUT_FILE: ${ETHW_BOOTSTRAP_CONFIG_INPUT_FILE:-}
+      SOURCE_DAO_CONFIG_INPUT_FILE: ${SOURCE_DAO_CONFIG_INPUT_FILE:-}
       BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:-}
       BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:-}
       BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-dev}
       BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
     volumes:
       - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}
-      - ${BOOTSTRAP_HOST_DIR:-./docker/local/bootstrap/manifests}:/bootstrap-input:ro
-      - ${SNAPSHOT_HOST_DIR:-./docker/local/bootstrap/snapshots}:/snapshots:ro
+      - ${BOOTSTRAP_HOST_DIR:-./local/bootstrap/manifests}:/bootstrap-input:ro
+      - ${SNAPSHOT_HOST_DIR:-./local/bootstrap/snapshots}:/snapshots:ro
+    networks:
+      - usdb-net
+
+  ethw-init:
+    image: ${ETHW_IMAGE:-usdb-ethw:local}
+    restart: "no"
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/ethw_init.sh"]
+    depends_on:
+      bootstrap-init:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
+      ETHW_DATA_DIR: ${ETHW_DATA_DIR:-/data/ethw}
+      ETHW_BOOTSTRAP_TRUST_MODE: ${ETHW_BOOTSTRAP_TRUST_MODE:-none}
+      ETHW_CANONICAL_GENESIS_FILE: ${ETHW_CANONICAL_GENESIS_FILE:-}
+      ETHW_CANONICAL_GENESIS_MANIFEST_FILE: ${ETHW_CANONICAL_GENESIS_MANIFEST_FILE:-}
+      ETHW_INIT_COMMAND: ${ETHW_INIT_COMMAND:-}
+    volumes:
+      - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}:ro
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}
+      - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
     networks:
       - usdb-net
 
   ethw-node:
     depends_on:
-      bootstrap-init:
+      usdb-indexer:
+        condition: service_started
+      ethw-init:
         condition: service_completed_successfully
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_ethw_node.sh"]
+    environment:
+      ETHW_COMMAND: ${ETHW_COMMAND:-}
+      BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
+      ETHW_DATA_DIR: ${ETHW_DATA_DIR:-/data/ethw}
+      ETHW_BOOTSTRAP_TRUST_MODE: ${ETHW_BOOTSTRAP_TRUST_MODE:-none}
+      ETHW_CANONICAL_GENESIS_FILE: ${ETHW_CANONICAL_GENESIS_FILE:-}
+      ETHW_CANONICAL_GENESIS_MANIFEST_FILE: ${ETHW_CANONICAL_GENESIS_MANIFEST_FILE:-}
     volumes:
       - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}:ro
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}
+      - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
 
 volumes:
   bootstrap-artifacts:

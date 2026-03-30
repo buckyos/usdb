@@ -49,6 +49,11 @@ mkdir -p docker/local/joiner/env
 cp docker/env/joiner.env.example docker/local/joiner/env/joiner.env
 ```
 
+Path note:
+
+- the example bind-mounted host paths inside `env/*.env.example` are written relative to the `docker/` compose directory
+- for example, `SNAPSHOT_HOST_DIR=./local/joiner/snapshots` resolves to `usdb/docker/local/joiner/snapshots`
+
 Then edit:
 
 - `ETHW_IMAGE`
@@ -121,9 +126,11 @@ docker compose \
 Current bootstrap scope:
 
 - prepare a shared `/bootstrap` volume
-- require or copy a canonical ETHW genesis file
+- require or copy a canonical ETHW genesis artifact
+- optionally validate an ETHW genesis manifest against the copied genesis file
 - optionally copy ETHW / SourceDAO bootstrap config files
 - record a `bootstrap-manifest.json` for downstream inspection
+- run a dedicated `ethw-init` one-shot `geth init` flow before `ethw-node`
 - reuse the existing `snapshot-loader` flow for `balance-history`
 
 Current bootstrap non-goals:
@@ -169,13 +176,29 @@ Use this directory for:
 - snapshot DB / manifest / signature files
 - trusted snapshot key sets
 - local bootnodes or service manifests
-- local bootstrap genesis and bootstrap config files
+- local bootstrap genesis artifact files and bootstrap config files
 
 Do not use it for:
 
 - production signing private keys
 - published release artifacts
 - long-lived chain state databases
+
+For bootstrap flows, the recommended local files are:
+
+- `docker/local/bootstrap/manifests/ethw-genesis.json`
+- `docker/local/bootstrap/manifests/ethw-genesis.manifest.json`
+- optional `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
+- optional `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
+
+Brief distinction:
+
+- `ethw-genesis.json`
+  - the actual genesis content consumed by `geth init`
+- `ethw-genesis.manifest.json`
+  - a sidecar description of that genesis artifact
+  - currently used to validate `file_sha256`
+  - later can also carry `genesis_hash`, `chain_id`, `network_id`, and release metadata
 
 ## Snapshot Restore
 
@@ -224,12 +247,35 @@ Generated configs support:
 The recommended default is cookie auth with the `bitcoind` data directory mounted
 read-only into the USDB service containers.
 
+## ETHW Bootstrap Artifact
+
+The current bootstrap flow is artifact-first.
+
+Recommended production-style flow:
+
+1. generate a canonical ETHW genesis JSON outside the Docker stack
+2. publish it together with a sidecar manifest
+3. let `bootstrap-init` validate and stage the artifact under `/bootstrap`
+4. let `ethw-init` initialize the local `ethw-data` volume from that staged artifact
+
+Current trust modes:
+
+- `ETHW_BOOTSTRAP_TRUST_MODE=none`
+  - genesis manifest is optional
+- `ETHW_BOOTSTRAP_TRUST_MODE=manifest`
+  - requires `ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE`
+  - validates `file_sha256` against the copied genesis file
+
+`ethw-init` writes its own marker into the shared ETHW data volume.
+`ethw-node` requires a matching marker before it will start.
+
 ## Next Stage
 
 Planned follow-ups:
 
-- canonical bootstrap-genesis generation and publication flow
 - DAO / Dividend initialization hooks after cold start
+- signed ETHW genesis manifests and trusted-key validation
+- development-only genesis generation flow from `go-ethereum dumpgenesis`
 - optional `ord` container/profile
 - `usdb-indexer` snapshot restore
 - published image tags and release-oriented manifests

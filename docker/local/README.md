@@ -36,7 +36,7 @@ Suggested usage:
 - `keys/`
   - trusted snapshot public-key sets
 - `manifests/`
-  - bootnodes manifests, local service manifests, or other local metadata
+  - bootnodes manifests, ETHW genesis artifact manifests, local service manifests, or other local metadata
 
 Do not store:
 

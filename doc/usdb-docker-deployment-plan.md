@@ -53,9 +53,11 @@
 当前它的职责是：
 
 - 准备共享 bootstrap 目录
-- 接收并复制 canonical ETHW genesis
+- 接收并复制 canonical ETHW genesis artifact
+- 按 trust mode 校验 ETHW genesis manifest
 - 可选复制 ETHW / SourceDAO bootstrap 配置
 - 记录一份 `bootstrap-manifest.json`
+- 驱动独立的 `ethw-init` one-shot 对本地 datadir 执行 `geth init`
 
 它当前还不负责：
 
@@ -222,6 +224,21 @@
 
 当前第一阶段已经支持最小 bootstrap 入口，但它仍是“输入准备器”，不是完整冷启动自动化器。
 
+当前 ETHW 冷启动链路也拆成两层：
+
+1. canonical artifact consume
+- `bootstrap-init` 负责接收 `ethw-genesis.json`
+- 如果启用 manifest trust mode，还会校验 `ethw-genesis.manifest.json` 中的 `file_sha256`
+- 校验通过后，把产物写入共享 `/bootstrap`
+
+2. local datadir init
+- `ethw-init` 是 one-shot init service
+- 它负责对共享 `ethw-data` 执行一次 `geth init`
+- 成功后会写入本地 marker
+- `ethw-node` 启动前要求 marker 与当前 genesis artifact 匹配
+
+这样可以把“canonical genesis 的分发”和“本地节点的数据目录初始化”分成两个独立责任边界。
+
 ## 3.2 `joiner`
 
 用于：
@@ -310,6 +327,9 @@
 - `bootstrap-init`
   - one-shot 容器
   - 用于冷启动期的一次性初始化
+- `ethw-init`
+  - one-shot 容器
+  - 用于 ETHW datadir 的一次性 `geth init`
 
 ## 5. 快照策略
 
@@ -335,6 +355,12 @@
   - `snapshot-loader` 必须先成功完成安装，或确认现有 DB 与 marker 匹配
   - 安装成功后写入 `snapshot-loader.done.json`
   - `balance-history` 启动前必须看到合法 marker，否则直接失败
+
+ETHW canonical genesis consume 也建议使用同样的 marker 设计：
+
+- `bootstrap-init` 写共享 bootstrap artifact
+- `ethw-init` 初始化本地 datadir 后写 `ethw-init.done.json`
+- `ethw-node` 启动前必须看到与当前 genesis artifact 匹配的 marker
 
 ## 5.2 快照不建议 baking 到镜像
 
@@ -454,9 +480,11 @@ usdb/docker/
 2. 已完成：做 `joiner` 与 `dev-sim` 的最小可运行版本
 3. 已完成：加入 `balance-history` 快照可选恢复骨架
 4. 已完成：补 `bootstrap-init` 最小冷启动编排
-5. 下一阶段：补 ETHW canonical genesis 生成 / 分发流程
-6. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
-7. 下一阶段：补 DAO / Dividend 初始化 hook
+5. 已完成：补 ETHW canonical genesis artifact consume 与 `ethw-init`
+6. 下一阶段：补 signed ETHW genesis manifest 与 trusted-key 验证
+7. 下一阶段：补开发期 `dumpgenesis` 生成模式接入 Docker
+8. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
+9. 下一阶段：补 DAO / Dividend 初始化 hook
 
 原因：
 
