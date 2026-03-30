@@ -220,7 +220,6 @@
 
 ### 2.7.1 近期优先项
 
-- ETHW signed genesis manifest + trusted keys
 - 容器级 smoke，把 `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` 串起来实跑
 - ETHW 节点标准启动模板
   - `miner`
@@ -267,7 +266,8 @@
 
 1. canonical artifact consume
 - `bootstrap-init` 负责接收 `ethw-genesis.json`
-- 如果启用 manifest trust mode，还会校验 `ethw-genesis.manifest.json` 中的 `file_sha256`
+- 如果启用 `manifest` / `signed` trust mode，还会校验 `ethw-genesis.manifest.json`
+- 在 `signed` 模式下，还会校验 `ethw-genesis.manifest.sig` 与 trusted keys
 - 校验通过后，把产物写入共享 `/bootstrap`
 
 2. local datadir init

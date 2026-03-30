@@ -2,6 +2,13 @@ FROM rust:1.89-bookworm AS builder
 
 WORKDIR /workspace/src/btc
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        clang \
+        libclang-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY src/btc /workspace/src/btc
 
 RUN cargo build --release -p balance-history -p usdb-indexer
@@ -13,6 +20,7 @@ RUN apt-get update \
         bash \
         ca-certificates \
         curl \
+        openssl \
         tini \
     && rm -rf /var/lib/apt/lists/*
 

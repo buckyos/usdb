@@ -24,7 +24,11 @@ copy_optional_file() {
 
 ethw_genesis_copied="false"
 ethw_genesis_manifest_copied="false"
+ethw_genesis_signature_copied="false"
+ethw_genesis_trusted_keys_copied="false"
 ethw_genesis_manifest_verified="false"
+ethw_genesis_signature_verified="false"
+ethw_genesis_signing_key_id="null"
 ethw_genesis_sha256="null"
 ethw_config_copied="false"
 sourcedao_config_copied="false"
@@ -41,15 +45,33 @@ if [[ "${ethw_genesis_copied}" == "true" ]]; then
   if copy_optional_file "${ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE:-}" "ethw-genesis.manifest.json"; then
     ethw_genesis_manifest_copied="true"
   fi
+  if copy_optional_file "${ETHW_BOOTSTRAP_GENESIS_SIG_INPUT_FILE:-}" "ethw-genesis.manifest.sig"; then
+    ethw_genesis_signature_copied="true"
+  fi
+  if copy_optional_file "${ETHW_BOOTSTRAP_TRUSTED_KEYS_INPUT_FILE:-}" "trusted-ethw-genesis-keys.json"; then
+    ethw_genesis_trusted_keys_copied="true"
+  fi
   copied_genesis="${bootstrap_dir}/ethw-genesis.json"
   copied_genesis_manifest=""
+  copied_genesis_signature=""
+  copied_trusted_keys=""
   if [[ "${ethw_genesis_manifest_copied}" == "true" ]]; then
     copied_genesis_manifest="${bootstrap_dir}/ethw-genesis.manifest.json"
   fi
-  validate_ethw_genesis_artifact "${ethw_bootstrap_trust_mode}" "${copied_genesis}" "${copied_genesis_manifest}"
+  if [[ "${ethw_genesis_signature_copied}" == "true" ]]; then
+    copied_genesis_signature="${bootstrap_dir}/ethw-genesis.manifest.sig"
+  fi
+  if [[ "${ethw_genesis_trusted_keys_copied}" == "true" ]]; then
+    copied_trusted_keys="${bootstrap_dir}/trusted-ethw-genesis-keys.json"
+  fi
+  validate_ethw_genesis_artifact "${ethw_bootstrap_trust_mode}" "${copied_genesis}" "${copied_genesis_manifest}" "${copied_genesis_signature}" "${copied_trusted_keys}"
   ethw_genesis_sha256="\"$(json_escape "$(sha256_file "${copied_genesis}")")\""
   if [[ -n "${copied_genesis_manifest}" ]]; then
     ethw_genesis_manifest_verified="true"
+  fi
+  if [[ "${ethw_bootstrap_trust_mode}" == "signed" ]]; then
+    ethw_genesis_signature_verified="true"
+    ethw_genesis_signing_key_id="\"$(json_escape "$(json_extract_string_field "${copied_genesis_manifest}" "signing_key_id")")\""
   fi
 fi
 
@@ -75,6 +97,12 @@ cat >"${manifest_path}" <<EOF
   "ethw_genesis_manifest_copied": ${ethw_genesis_manifest_copied},
   "ethw_genesis_manifest_path": $(if [[ "${ethw_genesis_manifest_copied}" == "true" ]]; then printf '"%s"' "$(json_escape "${bootstrap_dir}/ethw-genesis.manifest.json")"; else printf 'null'; fi),
   "ethw_genesis_manifest_verified": ${ethw_genesis_manifest_verified},
+  "ethw_genesis_signature_copied": ${ethw_genesis_signature_copied},
+  "ethw_genesis_signature_path": $(if [[ "${ethw_genesis_signature_copied}" == "true" ]]; then printf '"%s"' "$(json_escape "${bootstrap_dir}/ethw-genesis.manifest.sig")"; else printf 'null'; fi),
+  "ethw_genesis_signature_verified": ${ethw_genesis_signature_verified},
+  "ethw_genesis_signing_key_id": ${ethw_genesis_signing_key_id},
+  "ethw_genesis_trusted_keys_copied": ${ethw_genesis_trusted_keys_copied},
+  "ethw_genesis_trusted_keys_path": $(if [[ "${ethw_genesis_trusted_keys_copied}" == "true" ]]; then printf '"%s"' "$(json_escape "${bootstrap_dir}/trusted-ethw-genesis-keys.json")"; else printf 'null'; fi),
   "ethw_genesis_sha256": ${ethw_genesis_sha256},
   "ethw_bootstrap_config_copied": ${ethw_config_copied},
   "ethw_bootstrap_config_path": $(if [[ "${ethw_config_copied}" == "true" ]]; then printf '"%s"' "$(json_escape "${bootstrap_dir}/ethw-bootstrap-config.json")"; else printf 'null'; fi),

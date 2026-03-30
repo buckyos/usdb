@@ -42,6 +42,12 @@ You still need to provide:
 - an `ethw/geth` image for `ethw-node`
 - optionally a `bitcoind` image override if you do not want the default
 
+The current bootstrap helpers assume:
+
+- the ETHW image includes `bash`
+- the ETHW image includes `sha256sum`
+- if `ETHW_BOOTSTRAP_TRUST_MODE=signed`, the ETHW image also includes `openssl`
+
 Recommended environment variable setup:
 
 ```bash
@@ -127,7 +133,8 @@ Current bootstrap scope:
 
 - prepare a shared `/bootstrap` volume
 - require or copy a canonical ETHW genesis artifact
-- optionally validate an ETHW genesis manifest against the copied genesis file
+- validate an ETHW genesis manifest against the copied genesis file
+- optionally validate a detached ETHW genesis manifest signature against trusted keys
 - optionally copy ETHW / SourceDAO bootstrap config files
 - record a `bootstrap-manifest.json` for downstream inspection
 - run a dedicated `ethw-init` one-shot `geth init` flow before `ethw-node`
@@ -188,8 +195,10 @@ For bootstrap flows, the recommended local files are:
 
 - `docker/local/bootstrap/manifests/ethw-genesis.json`
 - `docker/local/bootstrap/manifests/ethw-genesis.manifest.json`
+- optional `docker/local/bootstrap/manifests/ethw-genesis.manifest.sig`
 - optional `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
 - optional `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
+- optional `docker/local/bootstrap/keys/trusted_ethw_genesis_keys.json`
 
 Brief distinction:
 
@@ -197,8 +206,12 @@ Brief distinction:
   - the actual genesis content consumed by `geth init`
 - `ethw-genesis.manifest.json`
   - a sidecar description of that genesis artifact
-  - currently used to validate `file_sha256`
+  - used to validate `file_sha256`
   - later can also carry `genesis_hash`, `chain_id`, `network_id`, and release metadata
+- `ethw-genesis.manifest.sig`
+  - detached Ed25519 signature over the exact manifest file bytes
+- `trusted_ethw_genesis_keys.json`
+  - trusted public-key set used when `ETHW_BOOTSTRAP_TRUST_MODE=signed`
 
 ## Snapshot Restore
 
@@ -265,16 +278,37 @@ Current trust modes:
 - `ETHW_BOOTSTRAP_TRUST_MODE=manifest`
   - requires `ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE`
   - validates `file_sha256` against the copied genesis file
+- `ETHW_BOOTSTRAP_TRUST_MODE=signed`
+  - requires `ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE`
+  - requires `ETHW_BOOTSTRAP_GENESIS_SIG_INPUT_FILE`
+  - requires `ETHW_BOOTSTRAP_TRUSTED_KEYS_INPUT_FILE`
+  - validates `file_sha256`
+  - requires `manifest.signature_scheme=ed25519`
+  - requires `manifest.signing_key_id`
+  - verifies the detached signature against the trusted key set
 
 `ethw-init` writes its own marker into the shared ETHW data volume.
 `ethw-node` requires a matching marker before it will start.
+
+The trusted key file format intentionally matches the `balance-history` snapshot
+trusted-key JSON shape:
+
+```json
+{
+  "keys": [
+    {
+      "key_id": "ethw-genesis-signer-1",
+      "public_key_base64": "<base64 of raw 32-byte ed25519 public key>"
+    }
+  ]
+}
+```
 
 ## Next Stage
 
 Planned follow-ups:
 
 - `sourcedao-bootstrap` one-shot job after cold start
-- signed ETHW genesis manifests and trusted-key validation
 - container-level smoke for the bootstrap chain
 - standardized ETHW node startup templates and joiner peer config
 - development-only genesis generation flow from `go-ethereum dumpgenesis`

@@ -35,6 +35,7 @@ Suggested usage:
   - `balance-history` snapshot DB, manifest, and signature files
 - `keys/`
   - trusted snapshot public-key sets
+  - trusted ETHW genesis manifest public-key sets
 - `manifests/`
   - bootnodes manifests, ETHW genesis artifact manifests, local service manifests, or other local metadata
 
