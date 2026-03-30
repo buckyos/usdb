@@ -65,6 +65,16 @@
 - 发送链上初始化交易
 - 完成正式发布流程
 
+其中和完整 SourceDAO 链上部署相关的动作，后续建议拆成独立的：
+
+- `sourcedao-bootstrap` one-shot job
+
+而不是继续叠加到 `bootstrap-init` 中。
+
+详细设计见：
+
+- `doc/sourcedao-bootstrap-job-plan.md`
+
 ## 2.1 现有 e2e 测试继续与 Docker 分离
 
 当前已经存在的脚本型 e2e：
@@ -203,6 +213,35 @@
 - `ethw/geth` 也有自己的链数据同步和数据库恢复机制，不宜现在额外引入一套外部快照体系
 
 后续如有必要，可以再单独优化。
+
+## 2.7 除 `sourcedao-bootstrap` 外的剩余任务
+
+当前除 `sourcedao-bootstrap` 之外，Docker 体系还剩下这些主要工作。
+
+### 2.7.1 近期优先项
+
+- ETHW signed genesis manifest + trusted keys
+- 容器级 smoke，把 `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` 串起来实跑
+- ETHW 节点标准启动模板
+  - `miner`
+  - `full`
+  - `joiner`
+- `joiner` 入网配置约定
+  - bootnodes / static peers / 推荐网络参数
+
+### 2.7.2 发布级仍缺的部分
+
+- 发布级镜像 tag / artifact 版本规则
+- ETHW genesis artifact 的正式分发约定
+- 受信公钥和签名发布流程
+- 更完整的 readiness / health / 运维说明
+
+### 2.7.3 后续优化项
+
+- `ord` 的 `dev-sim` profile
+- `usdb-indexer` snapshot restore
+- development-only `dumpgenesis` 生成模式
+- 更完整的多节点 devnet 编排
 
 ## 3. 部署模式
 

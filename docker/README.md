@@ -273,8 +273,10 @@ Current trust modes:
 
 Planned follow-ups:
 
-- DAO / Dividend initialization hooks after cold start
+- `sourcedao-bootstrap` one-shot job after cold start
 - signed ETHW genesis manifests and trusted-key validation
+- container-level smoke for the bootstrap chain
+- standardized ETHW node startup templates and joiner peer config
 - development-only genesis generation flow from `go-ethereum dumpgenesis`
 - optional `ord` container/profile
 - `usdb-indexer` snapshot restore
