@@ -47,6 +47,10 @@ fn default_rpc_server_port() -> u16 {
     USDB_INDEXER_SERVICE_HTTP_PORT
 }
 
+fn default_rpc_server_host() -> String {
+    "127.0.0.1".to_string()
+}
+
 fn default_rpc_server_enabled() -> bool {
     true
 }
@@ -102,6 +106,10 @@ pub struct USDBConfig {
     #[serde(default = "default_inscription_source_shadow_fail_fast")]
     pub inscription_source_shadow_fail_fast: bool,
 
+    // JSON-RPC server listen host for usdb-indexer external query APIs.
+    #[serde(default = "default_rpc_server_host")]
+    pub rpc_server_host: String,
+
     // JSON-RPC server listen port for usdb-indexer external query APIs.
     #[serde(default = "default_rpc_server_port")]
     pub rpc_server_port: u16,
@@ -132,6 +140,7 @@ impl Default for USDBConfig {
             inscription_fixture_file: default_inscription_fixture_file(),
             inscription_source_shadow_compare: default_inscription_source_shadow_compare(),
             inscription_source_shadow_fail_fast: default_inscription_source_shadow_fail_fast(),
+            rpc_server_host: default_rpc_server_host(),
             rpc_server_port: default_rpc_server_port(),
             rpc_server_enabled: default_rpc_server_enabled(),
             pass_energy_leaderboard_cache_enabled: default_pass_energy_leaderboard_cache_enabled(),

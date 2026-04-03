@@ -1,6 +1,6 @@
 services:
   btc-node:
-    image: ${BTC_NODE_IMAGE:-ruimarinho/bitcoin-core:26}
+    image: ${BTC_NODE_IMAGE:-ruimarinho/bitcoin-core:latest}
     restart: unless-stopped
     command:
       - -printtoconsole
@@ -12,7 +12,7 @@ services:
       - -port=${BTC_P2P_PORT:-8333}
       - -fallbackfee=${BTC_FALLBACK_FEE:-0.0002}
     volumes:
-      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}
+      - btc-data:${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
     ports:
       - "${BTC_RPC_BIND_PORT:-8332}:${BTC_RPC_PORT:-8332}"
       - "${BTC_P2P_BIND_PORT:-8333}:${BTC_P2P_PORT:-8333}"

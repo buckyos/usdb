@@ -68,6 +68,7 @@ batch_size = ${BH_SYNC_BATCH_SIZE:-128}
 max_sync_block_height = ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
 
 [rpc_server]
+host = "${BH_RPC_HOST:-0.0.0.0}"
 port = ${BH_RPC_PORT:-28010}
 
 [snapshot]

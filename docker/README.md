@@ -88,6 +88,8 @@ docker compose \
 Notes:
 
 - `btc-node` is included by default, but `balance-history` and `usdb-indexer` only depend on the configured `BTC_RPC_URL`.
+- `BTC_NODE_DATA_DIR` is the path used inside the `btc-node` container.
+- `BTC_DATA_DIR` is the path where the same shared volume is mounted inside USDB service containers.
 - If you want to use an external BTC RPC, update:
   - `BTC_RPC_URL`
   - `BTC_DATA_DIR`
@@ -145,6 +147,25 @@ Current bootstrap non-goals:
 - it does not generate ETHW genesis by itself
 - it does not yet run DAO / Dividend initialization transactions
 - it does not yet implement a full canonical release flow
+
+## Container Smoke
+
+Recommended command:
+
+```bash
+docker/scripts/run_container_smoke.sh
+```
+
+This smoke currently:
+
+- combines `compose.base.yml + compose.dev-sim.yml + compose.bootstrap.yml`
+- uses `bitcoind` in `regtest`
+- exercises the `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` lifecycle
+- validates the signed ETHW genesis manifest path
+- uses `usdb-services:local` as a temporary fake `ETHW_IMAGE` so the bootstrap lifecycle can be exercised before a real ETHW image is wired in
+
+By default the script cleans up containers, volumes, and temporary input files.
+Set `KEEP_RUNNING=1` if you want to inspect the stack after the smoke run.
 
 ## Local Runtime Files
 
@@ -260,6 +281,11 @@ Generated configs support:
 The recommended default is cookie auth with the `bitcoind` data directory mounted
 read-only into the USDB service containers.
 
+When `BTC_NETWORK=regtest`, the cookie file normally lives under the network
+subdirectory, for example:
+
+- `BTC_COOKIE_FILE=/data/bitcoind/regtest/.cookie`
+
 ## ETHW Bootstrap Artifact
 
 The current bootstrap flow is artifact-first.
@@ -309,7 +335,6 @@ trusted-key JSON shape:
 Planned follow-ups:
 
 - `sourcedao-bootstrap` one-shot job after cold start
-- container-level smoke for the bootstrap chain
 - standardized ETHW node startup templates and joiner peer config
 - development-only genesis generation flow from `go-ethereum dumpgenesis`
 - optional `ord` container/profile

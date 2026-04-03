@@ -110,7 +110,11 @@ impl UsdbIndexerRpcServer {
         indexer: Arc<InscriptionIndexer>,
         shutdown_tx: watch::Sender<()>,
     ) -> Result<Self, String> {
-        let addr = format!("127.0.0.1:{}", config.config().usdb.rpc_server_port)
+        let addr = format!(
+            "{}:{}",
+            config.config().usdb.rpc_server_host,
+            config.config().usdb.rpc_server_port
+        )
             .parse()
             .map_err(|e| {
                 let msg = format!("Failed to parse usdb-indexer RPC server address: {}", e);
@@ -2293,6 +2297,9 @@ mod tests {
             stable_height: Some(stable_height),
             stable_block_hash: Some("aa".repeat(32)),
             latest_block_commit: Some("bb".repeat(32)),
+            snapshot_origin: None,
+            snapshot_verification_state: None,
+            snapshot_signing_key_id: None,
             blockers: Vec::new(),
         }
     }

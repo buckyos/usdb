@@ -107,8 +107,15 @@ impl Default for IndexConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RpcServer {
+    #[serde(default = "default_rpc_host")]
+    pub host: String,
+
     #[serde(default = "default_rpc_port")]
     pub port: u16,
+}
+
+fn default_rpc_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_rpc_port() -> u16 {
@@ -158,6 +165,7 @@ impl Default for SnapshotConfig {
 impl Default for RpcServer {
     fn default() -> Self {
         RpcServer {
+            host: default_rpc_host(),
             port: default_rpc_port(),
         }
     }

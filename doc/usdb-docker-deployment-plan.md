@@ -220,7 +220,6 @@
 
 ### 2.7.1 近期优先项
 
-- 容器级 smoke，把 `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` 串起来实跑
 - ETHW 节点标准启动模板
   - `miner`
   - `full`
@@ -520,10 +519,11 @@ usdb/docker/
 3. 已完成：加入 `balance-history` 快照可选恢复骨架
 4. 已完成：补 `bootstrap-init` 最小冷启动编排
 5. 已完成：补 ETHW canonical genesis artifact consume 与 `ethw-init`
-6. 下一阶段：补 signed ETHW genesis manifest 与 trusted-key 验证
-7. 下一阶段：补开发期 `dumpgenesis` 生成模式接入 Docker
-8. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
-9. 下一阶段：补 DAO / Dividend 初始化 hook
+6. 已完成：补 signed ETHW genesis manifest 与 trusted-key 验证
+7. 已完成：补容器级 smoke，把 `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` 串起来实跑
+8. 下一阶段：补开发期 `dumpgenesis` 生成模式接入 Docker
+9. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
+10. 下一阶段：补 DAO / Dividend 初始化 hook
 
 原因：
 

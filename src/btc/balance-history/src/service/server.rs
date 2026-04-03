@@ -59,7 +59,7 @@ impl BalanceHistoryRpcServer {
         db: BalanceHistoryDBRef,
         shutdown_tx: watch::Sender<()>,
     ) -> Result<Self, String> {
-        let addr = format!("127.0.0.1:{}", config.rpc_server.port)
+        let addr = format!("{}:{}", config.rpc_server.host, config.rpc_server.port)
             .parse()
             .map_err(|e| {
                 let msg = format!("Failed to parse RPC server address: {}", e);
