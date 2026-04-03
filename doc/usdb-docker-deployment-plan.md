@@ -75,6 +75,10 @@
 
 - `doc/sourcedao-bootstrap-job-plan.md`
 
+统一本地控制台的总体设计见：
+
+- `doc/usdb-control-console-plan.md`
+
 ## 2.1 现有 e2e 测试继续与 Docker 分离
 
 当前已经存在的脚本型 e2e：

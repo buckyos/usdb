@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>USDB Control Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+    <div class="noise"></div>
+    <main class="shell">
+        <header class="hero">
+            <div class="hero-copy">
+                <p class="eyebrow">USDB CONTROL CONSOLE</p>
+                <h1>System Overview</h1>
+                <p class="subtitle">统一查看 BTC / USDB / ETHW 本地服务状态、bootstrap 产物与运维入口。</p>
+            </div>
+            <div class="hero-actions">
+                <button id="refresh-btn" type="button">刷新状态</button>
+                <p class="hint">首页优先做只读总览，钱包与写操作后续接入。</p>
+            </div>
+        </header>
+
+        <section class="grid grid-4">
+            <article class="card metric">
+                <h2>更新时间</h2>
+                <p id="metric-updated-at" class="value">-</p>
+            </article>
+            <article class="card metric">
+                <h2>BTC 网络</h2>
+                <p id="metric-btc-network" class="value">-</p>
+            </article>
+            <article class="card metric">
+                <h2>稳定高度</h2>
+                <p id="metric-stable-height" class="value">-</p>
+            </article>
+            <article class="card metric">
+                <h2>ETHW 区块高度</h2>
+                <p id="metric-ethw-height" class="value">-</p>
+            </article>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>服务状态</h2>
+                <p id="services-summary" class="hint">-</p>
+            </div>
+            <div class="service-grid">
+                <article class="service-card" id="service-balance-history">
+                    <div class="service-head">
+                        <h3>balance-history</h3>
+                        <span class="pill" data-kind="state">-</span>
+                    </div>
+                    <p class="rpc-url" data-field="rpc-url">-</p>
+                    <div class="kv" data-field="details"></div>
+                    <p class="error" data-field="error"></p>
+                </article>
+                <article class="service-card" id="service-usdb-indexer">
+                    <div class="service-head">
+                        <h3>usdb-indexer</h3>
+                        <span class="pill" data-kind="state">-</span>
+                    </div>
+                    <p class="rpc-url" data-field="rpc-url">-</p>
+                    <div class="kv" data-field="details"></div>
+                    <p class="error" data-field="error"></p>
+                </article>
+                <article class="service-card" id="service-ethw">
+                    <div class="service-head">
+                        <h3>ETHW / Geth</h3>
+                        <span class="pill" data-kind="state">-</span>
+                    </div>
+                    <p class="rpc-url" data-field="rpc-url">-</p>
+                    <div class="kv" data-field="details"></div>
+                    <p class="error" data-field="error"></p>
+                </article>
+            </div>
+        </section>
+
+        <section class="grid grid-3">
+            <article class="card">
+                <div class="card-head">
+                    <h2>Bootstrap Manifest</h2>
+                    <span id="bootstrap-manifest-state" class="pill" data-kind="file">-</span>
+                </div>
+                <p id="bootstrap-manifest-path" class="path">-</p>
+                <div id="bootstrap-manifest-details" class="detail-grid"></div>
+                <p id="bootstrap-manifest-error" class="error"></p>
+            </article>
+
+            <article class="card">
+                <div class="card-head">
+                    <h2>Snapshot Marker</h2>
+                    <span id="snapshot-marker-state" class="pill" data-kind="file">-</span>
+                </div>
+                <p id="snapshot-marker-path" class="path">-</p>
+                <div id="snapshot-marker-details" class="detail-grid"></div>
+                <p id="snapshot-marker-error" class="error"></p>
+            </article>
+
+            <article class="card">
+                <div class="card-head">
+                    <h2>ETHW Init Marker</h2>
+                    <span id="ethw-marker-state" class="pill" data-kind="file">-</span>
+                </div>
+                <p id="ethw-marker-path" class="path">-</p>
+                <div id="ethw-marker-details" class="detail-grid"></div>
+                <p id="ethw-marker-error" class="error"></p>
+            </article>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>Explorer 入口</h2>
+                <p class="hint">现有两个页面先保留为独立 service explorer，由控制台统一跳转。</p>
+            </div>
+            <div class="link-grid">
+                <a id="link-balance-history" class="link-card" href="/explorers/balance-history/">
+                    <strong>Balance History Explorer</strong>
+                    <span>查看地址余额、同步状态与 UTXO 细节</span>
+                </a>
+                <a id="link-usdb-indexer" class="link-card" href="/explorers/usdb-indexer/">
+                    <strong>USDB Indexer Explorer</strong>
+                    <span>查看矿工证、能量、排行与协议状态</span>
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <script src="./app.js"></script>
+</body>
+</html>

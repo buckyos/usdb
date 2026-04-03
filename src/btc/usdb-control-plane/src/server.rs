@@ -1,0 +1,398 @@
+use crate::config::ControlPlaneConfig;
+use crate::models::{
+    ArtifactSummary, BalanceHistoryServiceSummary, BootstrapSummary, EthwServiceSummary,
+    ExplorerLinks, OverviewResponse, ServiceProbe, ServicesSummary, UsdbIndexerServiceSummary,
+};
+use crate::rpc_client::{RpcClient, decode_hex_quantity};
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::{get, get_service};
+use axum::{Router, serve};
+use serde_json::Value;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+use tower_http::services::ServeDir;
+use usdb_util::USDB_CONTROL_PLANE_SERVICE_NAME;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<ControlPlaneConfig>,
+    pub rpc_client: RpcClient,
+}
+
+pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
+    let console_root = config.resolve_runtime_path(&config.web.console_root)?;
+    ensure_dir_exists("console web root", &console_root)?;
+
+    let bh_explorer_root =
+        config.resolve_runtime_path(&config.web.balance_history_explorer_root)?;
+    ensure_dir_exists("balance-history explorer root", &bh_explorer_root)?;
+
+    let indexer_explorer_root =
+        config.resolve_runtime_path(&config.web.usdb_indexer_explorer_root)?;
+    ensure_dir_exists("usdb-indexer explorer root", &indexer_explorer_root)?;
+
+    let rpc_client = RpcClient::new()?;
+    let listen_addr: SocketAddr = config.listen_addr().parse().map_err(|e| {
+        let msg = format!("Invalid listen address {}: {}", config.listen_addr(), e);
+        error!("{}", msg);
+        msg
+    })?;
+    let console_root_label = config.web.console_root.display().to_string();
+
+    let state = AppState {
+        config: Arc::new(config),
+        rpc_client,
+    };
+
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/system/overview", get(get_overview))
+        .route("/api/system/services", get(get_services))
+        .route("/api/system/bootstrap", get(get_bootstrap))
+        .nest_service(
+            "/explorers/balance-history",
+            get_service(ServeDir::new(bh_explorer_root).append_index_html_on_directories(true)),
+        )
+        .nest_service(
+            "/explorers/usdb-indexer",
+            get_service(
+                ServeDir::new(indexer_explorer_root).append_index_html_on_directories(true),
+            ),
+        )
+        .fallback_service(get_service(
+            ServeDir::new(console_root).append_index_html_on_directories(true),
+        ))
+        .with_state(state);
+
+    info!(
+        "Starting USDB control plane: listen_addr={}, console_root={}",
+        listen_addr, console_root_label
+    );
+    serve(
+        tokio::net::TcpListener::bind(listen_addr)
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to bind control plane on {}: {}", listen_addr, e);
+                error!("{}", msg);
+                msg
+            })?,
+        app,
+    )
+    .await
+    .map_err(|e| {
+        let msg = format!("Control plane server exited with error: {}", e);
+        error!("{}", msg);
+        msg
+    })
+}
+
+async fn healthz() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "service": USDB_CONTROL_PLANE_SERVICE_NAME,
+        "ok": true,
+    }))
+}
+
+async fn get_overview(State(state): State<AppState>) -> Result<Json<OverviewResponse>, StatusCode> {
+    Ok(Json(build_overview(&state).await))
+}
+
+async fn get_services(State(state): State<AppState>) -> Result<Json<ServicesSummary>, StatusCode> {
+    Ok(Json(build_services_summary(&state).await))
+}
+
+async fn get_bootstrap(
+    State(state): State<AppState>,
+) -> Result<Json<BootstrapSummary>, StatusCode> {
+    Ok(Json(build_bootstrap_summary(&state)))
+}
+
+async fn build_overview(state: &AppState) -> OverviewResponse {
+    OverviewResponse {
+        service: USDB_CONTROL_PLANE_SERVICE_NAME.to_string(),
+        generated_at_ms: current_unix_ms(),
+        services: build_services_summary(state).await,
+        bootstrap: build_bootstrap_summary(state),
+        explorers: ExplorerLinks {
+            control_console: "/".to_string(),
+            balance_history: "/explorers/balance-history/".to_string(),
+            usdb_indexer: "/explorers/usdb-indexer/".to_string(),
+        },
+    }
+}
+
+async fn build_services_summary(state: &AppState) -> ServicesSummary {
+    let balance_history = probe_balance_history(state).await;
+    let usdb_indexer = probe_usdb_indexer(state).await;
+    let ethw = probe_ethw(state).await;
+    ServicesSummary {
+        balance_history,
+        usdb_indexer,
+        ethw,
+    }
+}
+
+fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
+    BootstrapSummary {
+        bootstrap_manifest: read_artifact_summary(
+            &state.config,
+            &state.config.bootstrap.bootstrap_manifest,
+        ),
+        snapshot_marker: read_artifact_summary(
+            &state.config,
+            &state.config.bootstrap.snapshot_marker,
+        ),
+        ethw_init_marker: read_artifact_summary(
+            &state.config,
+            &state.config.bootstrap.ethw_init_marker,
+        ),
+    }
+}
+
+async fn probe_balance_history(state: &AppState) -> ServiceProbe<BalanceHistoryServiceSummary> {
+    let rpc_url = state.config.rpc.balance_history_url.clone();
+    let started = Instant::now();
+    let (network, readiness) = tokio::join!(
+        state.rpc_client.balance_history_network(&rpc_url),
+        state.rpc_client.balance_history_readiness(&rpc_url)
+    );
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let network_error = network.as_ref().err().cloned();
+    let readiness_error = readiness.as_ref().err().cloned();
+
+    let reachable = network.is_ok() || readiness.is_ok();
+    let data = if network.is_ok() || readiness.is_ok() {
+        let readiness = readiness.ok();
+        Some(BalanceHistoryServiceSummary {
+            network: network.ok(),
+            rpc_alive: readiness.as_ref().map(|item| item.rpc_alive),
+            query_ready: readiness.as_ref().map(|item| item.query_ready),
+            consensus_ready: readiness.as_ref().map(|item| item.consensus_ready),
+            phase: readiness.as_ref().map(|item| item.phase.clone()),
+            message: readiness.as_ref().and_then(|item| item.message.clone()),
+            current: readiness.as_ref().map(|item| item.current),
+            total: readiness.as_ref().map(|item| item.total),
+            stable_height: readiness.as_ref().and_then(|item| item.stable_height),
+            stable_block_hash: readiness
+                .as_ref()
+                .and_then(|item| item.stable_block_hash.clone()),
+            latest_block_commit: readiness
+                .as_ref()
+                .and_then(|item| item.latest_block_commit.clone()),
+            snapshot_verification_state: readiness
+                .as_ref()
+                .and_then(|item| item.snapshot_verification_state.clone()),
+            snapshot_signing_key_id: readiness
+                .as_ref()
+                .and_then(|item| item.snapshot_signing_key_id.clone()),
+            blockers: readiness
+                .as_ref()
+                .map(|item| item.blockers.clone())
+                .unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+
+    ServiceProbe {
+        name: "balance-history".to_string(),
+        rpc_url,
+        reachable,
+        latency_ms: Some(latency_ms),
+        error: merge_errors(&[network_error, readiness_error]),
+        data,
+    }
+}
+
+async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerServiceSummary> {
+    let rpc_url = state.config.rpc.usdb_indexer_url.clone();
+    let started = Instant::now();
+    let (network, readiness) = tokio::join!(
+        state.rpc_client.usdb_indexer_network(&rpc_url),
+        state.rpc_client.usdb_indexer_readiness(&rpc_url)
+    );
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let network_error = network.as_ref().err().cloned();
+    let readiness_error = readiness.as_ref().err().cloned();
+
+    let reachable = network.is_ok() || readiness.is_ok();
+    let data = if network.is_ok() || readiness.is_ok() {
+        let readiness = readiness.ok();
+        Some(UsdbIndexerServiceSummary {
+            network: network.ok(),
+            rpc_alive: readiness.as_ref().map(|item| item.rpc_alive),
+            query_ready: readiness.as_ref().map(|item| item.query_ready),
+            consensus_ready: readiness.as_ref().map(|item| item.consensus_ready),
+            message: readiness.as_ref().and_then(|item| item.message.clone()),
+            current: readiness.as_ref().map(|item| item.current),
+            total: readiness.as_ref().map(|item| item.total),
+            synced_block_height: readiness.as_ref().and_then(|item| item.synced_block_height),
+            balance_history_stable_height: readiness
+                .as_ref()
+                .and_then(|item| item.balance_history_stable_height),
+            upstream_snapshot_id: readiness
+                .as_ref()
+                .and_then(|item| item.upstream_snapshot_id.clone()),
+            local_state_commit: readiness
+                .as_ref()
+                .and_then(|item| item.local_state_commit.clone()),
+            system_state_id: readiness
+                .as_ref()
+                .and_then(|item| item.system_state_id.clone()),
+            blockers: readiness
+                .as_ref()
+                .map(|item| item.blockers.clone())
+                .unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+
+    ServiceProbe {
+        name: "usdb-indexer".to_string(),
+        rpc_url,
+        reachable,
+        latency_ms: Some(latency_ms),
+        error: merge_errors(&[network_error, readiness_error]),
+        data,
+    }
+}
+
+async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
+    let rpc_url = state.config.rpc.ethw_url.clone();
+    let started = Instant::now();
+    let (client_version, chain_id, network_id, block_number, syncing) = tokio::join!(
+        state.rpc_client.ethw_client_version(&rpc_url),
+        state.rpc_client.ethw_chain_id(&rpc_url),
+        state.rpc_client.ethw_network_id(&rpc_url),
+        state.rpc_client.ethw_block_number(&rpc_url),
+        state.rpc_client.ethw_syncing(&rpc_url)
+    );
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let client_version_error = client_version.as_ref().err().cloned();
+    let chain_id_error = chain_id.as_ref().err().cloned();
+    let network_id_error = network_id.as_ref().err().cloned();
+    let block_number_error = block_number.as_ref().err().cloned();
+    let syncing_error = syncing.as_ref().err().cloned();
+    let reachable = client_version.is_ok()
+        || chain_id.is_ok()
+        || network_id.is_ok()
+        || block_number.is_ok()
+        || syncing.is_ok();
+
+    let block_number_value = block_number
+        .as_ref()
+        .ok()
+        .and_then(|value| decode_hex_quantity(value).ok());
+
+    let data = if reachable {
+        Some(EthwServiceSummary {
+            client_version: client_version.ok(),
+            chain_id: chain_id.ok(),
+            network_id: network_id.ok(),
+            block_number: block_number_value,
+            syncing: syncing.ok(),
+        })
+    } else {
+        None
+    };
+
+    ServiceProbe {
+        name: "ethw".to_string(),
+        rpc_url,
+        reachable,
+        latency_ms: Some(latency_ms),
+        error: merge_errors(&[
+            client_version_error,
+            chain_id_error,
+            network_id_error,
+            block_number_error,
+            syncing_error,
+        ]),
+        data,
+    }
+}
+
+fn read_artifact_summary(config: &ControlPlaneConfig, configured_path: &Path) -> ArtifactSummary {
+    let resolved = config
+        .resolve_runtime_path(configured_path)
+        .unwrap_or_else(|_| configured_path.to_path_buf());
+    let path_str = resolved.display().to_string();
+    if !resolved.exists() {
+        return ArtifactSummary {
+            path: path_str,
+            exists: false,
+            error: Some("artifact file does not exist".to_string()),
+            data: None,
+        };
+    }
+
+    match std::fs::read_to_string(&resolved) {
+        Ok(content) => match serde_json::from_str::<Value>(&content) {
+            Ok(data) => ArtifactSummary {
+                path: path_str,
+                exists: true,
+                error: None,
+                data: Some(data),
+            },
+            Err(e) => ArtifactSummary {
+                path: path_str,
+                exists: true,
+                error: Some(format!("failed to parse JSON: {}", e)),
+                data: None,
+            },
+        },
+        Err(e) => ArtifactSummary {
+            path: path_str,
+            exists: true,
+            error: Some(format!("failed to read file: {}", e)),
+            data: None,
+        },
+    }
+}
+
+fn merge_errors(errors: &[Option<String>]) -> Option<String> {
+    let values: Vec<String> = errors.iter().filter_map(|item| item.clone()).collect();
+    if values.is_empty() {
+        None
+    } else {
+        Some(values.join(" | "))
+    }
+}
+
+fn ensure_dir_exists(label: &str, path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        let msg = format!("{} does not exist: {}", label, path.display());
+        error!("{}", msg);
+        return Err(msg);
+    }
+    if !path.is_dir() {
+        let msg = format!("{} is not a directory: {}", label, path.display());
+        error!("{}", msg);
+        return Err(msg);
+    }
+    Ok(())
+}
+
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_errors_skips_empty_entries() {
+        let merged = merge_errors(&[None, Some("a".to_string()), Some("b".to_string())]);
+        assert_eq!(merged, Some("a | b".to_string()));
+    }
+}
