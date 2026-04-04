@@ -35,3 +35,12 @@ services:
       USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:-1}
     ports:
       - "${USDB_INDEXER_BIND_PORT:-28120}:${USDB_INDEXER_RPC_PORT:-28120}"
+
+  usdb-control-plane:
+    environment:
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}
+      USDB_INDEXER_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28120}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
+      CONTROL_PLANE_PORT: ${CONTROL_PLANE_PORT:-28140}
+    ports:
+      - "${CONTROL_PLANE_BIND_PORT:-28140}:${CONTROL_PLANE_PORT:-28140}"

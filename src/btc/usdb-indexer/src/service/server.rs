@@ -115,12 +115,12 @@ impl UsdbIndexerRpcServer {
             config.config().usdb.rpc_server_host,
             config.config().usdb.rpc_server_port
         )
-            .parse()
-            .map_err(|e| {
-                let msg = format!("Failed to parse usdb-indexer RPC server address: {}", e);
-                error!("{}", msg);
-                msg
-            })?;
+        .parse()
+        .map_err(|e| {
+            let msg = format!("Failed to parse usdb-indexer RPC server address: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
 
         let ret = Self::new(config, status, indexer, addr, shutdown_tx);
         let mut io = IoHandler::new();

@@ -12,6 +12,7 @@ pub struct OverviewResponse {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServicesSummary {
+    pub btc_node: ServiceProbe<BtcNodeServiceSummary>,
     pub balance_history: ServiceProbe<BalanceHistoryServiceSummary>,
     pub usdb_indexer: ServiceProbe<UsdbIndexerServiceSummary>,
     pub ethw: ServiceProbe<EthwServiceSummary>,
@@ -22,6 +23,10 @@ pub struct BootstrapSummary {
     pub bootstrap_manifest: ArtifactSummary,
     pub snapshot_marker: ArtifactSummary,
     pub ethw_init_marker: ArtifactSummary,
+    pub sourcedao_bootstrap_state: ArtifactSummary,
+    pub sourcedao_bootstrap_marker: ArtifactSummary,
+    pub steps: Vec<BootstrapStepSummary>,
+    pub overall_state: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,12 +90,28 @@ pub struct UsdbIndexerServiceSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BtcNodeServiceSummary {
+    pub chain: Option<String>,
+    pub blocks: Option<u64>,
+    pub headers: Option<u64>,
+    pub verification_progress: Option<f64>,
+    pub initial_block_download: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct EthwServiceSummary {
     pub client_version: Option<String>,
     pub chain_id: Option<String>,
     pub network_id: Option<String>,
     pub block_number: Option<u64>,
     pub syncing: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BootstrapStepSummary {
+    pub step: String,
+    pub state: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,4 +145,15 @@ pub struct UsdbIndexerReadiness {
     pub total: u32,
     pub message: Option<String>,
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BitcoinBlockchainInfo {
+    pub chain: String,
+    pub blocks: u64,
+    pub headers: u64,
+    #[serde(rename = "verificationprogress")]
+    pub verification_progress: f64,
+    #[serde(rename = "initialblockdownload")]
+    pub initial_block_download: bool,
 }

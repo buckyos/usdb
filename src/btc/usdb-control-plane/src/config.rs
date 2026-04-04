@@ -29,6 +29,10 @@ fn default_ethw_rpc_url() -> String {
     "http://127.0.0.1:8545".to_string()
 }
 
+fn default_btc_rpc_url() -> String {
+    "http://127.0.0.1:8332".to_string()
+}
+
 fn default_console_root() -> PathBuf {
     PathBuf::from("web/usdb-console")
 }
@@ -51,6 +55,26 @@ fn default_snapshot_marker_path() -> PathBuf {
 
 fn default_ethw_init_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-init.done.json")
+}
+
+fn default_sourcedao_state_path() -> PathBuf {
+    PathBuf::from("docker/local/dev-sim/bootstrap/sourcedao-bootstrap-state.json")
+}
+
+fn default_sourcedao_marker_path() -> PathBuf {
+    PathBuf::from("docker/local/dev-sim/bootstrap/sourcedao-bootstrap.done.json")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BitcoinAuthMode {
+    None,
+    Cookie,
+    Userpass,
+}
+
+fn default_bitcoin_auth_mode() -> BitcoinAuthMode {
+    BitcoinAuthMode::None
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -91,6 +115,32 @@ impl Default for RpcTargets {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BitcoinRpcConfig {
+    #[serde(default = "default_btc_rpc_url")]
+    pub url: String,
+    #[serde(default = "default_bitcoin_auth_mode")]
+    pub auth_mode: BitcoinAuthMode,
+    #[serde(default)]
+    pub rpc_user: Option<String>,
+    #[serde(default)]
+    pub rpc_password: Option<String>,
+    #[serde(default)]
+    pub cookie_file: Option<PathBuf>,
+}
+
+impl Default for BitcoinRpcConfig {
+    fn default() -> Self {
+        Self {
+            url: default_btc_rpc_url(),
+            auth_mode: default_bitcoin_auth_mode(),
+            rpc_user: None,
+            rpc_password: None,
+            cookie_file: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BootstrapPaths {
     #[serde(default = "default_bootstrap_manifest_path")]
     pub bootstrap_manifest: PathBuf,
@@ -98,6 +148,10 @@ pub struct BootstrapPaths {
     pub snapshot_marker: PathBuf,
     #[serde(default = "default_ethw_init_marker_path")]
     pub ethw_init_marker: PathBuf,
+    #[serde(default = "default_sourcedao_state_path")]
+    pub sourcedao_bootstrap_state: PathBuf,
+    #[serde(default = "default_sourcedao_marker_path")]
+    pub sourcedao_bootstrap_marker: PathBuf,
 }
 
 impl Default for BootstrapPaths {
@@ -106,6 +160,8 @@ impl Default for BootstrapPaths {
             bootstrap_manifest: default_bootstrap_manifest_path(),
             snapshot_marker: default_snapshot_marker_path(),
             ethw_init_marker: default_ethw_init_marker_path(),
+            sourcedao_bootstrap_state: default_sourcedao_state_path(),
+            sourcedao_bootstrap_marker: default_sourcedao_marker_path(),
         }
     }
 }
@@ -139,6 +195,8 @@ pub struct ControlPlaneConfig {
     #[serde(default)]
     pub rpc: RpcTargets,
     #[serde(default)]
+    pub bitcoin: BitcoinRpcConfig,
+    #[serde(default)]
     pub bootstrap: BootstrapPaths,
     #[serde(default)]
     pub web: WebRoots,
@@ -150,6 +208,7 @@ impl Default for ControlPlaneConfig {
             root_dir: default_root_dir(),
             server: ServerConfig::default(),
             rpc: RpcTargets::default(),
+            bitcoin: BitcoinRpcConfig::default(),
             bootstrap: BootstrapPaths::default(),
             web: WebRoots::default(),
         }
@@ -215,6 +274,10 @@ mod tests {
         assert_eq!(
             config.bootstrap.bootstrap_manifest,
             PathBuf::from("docker/local/dev-sim/bootstrap/bootstrap-manifest.json")
+        );
+        assert_eq!(
+            config.bootstrap.sourcedao_bootstrap_marker,
+            PathBuf::from("docker/local/dev-sim/bootstrap/sourcedao-bootstrap.done.json")
         );
     }
 }

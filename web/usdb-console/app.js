@@ -2,15 +2,18 @@ const els = {
     refreshBtn: document.getElementById("refresh-btn"),
     updatedAt: document.getElementById("metric-updated-at"),
     btcNetwork: document.getElementById("metric-btc-network"),
-    stableHeight: document.getElementById("metric-stable-height"),
+    btcHeight: document.getElementById("metric-btc-height"),
     ethwHeight: document.getElementById("metric-ethw-height"),
     servicesSummary: document.getElementById("services-summary"),
+    bootstrapOverallState: document.getElementById("bootstrap-overall-state"),
+    bootstrapSteps: document.getElementById("bootstrap-steps"),
     linkBalanceHistory: document.getElementById("link-balance-history"),
     linkUsdbIndexer: document.getElementById("link-usdb-indexer"),
     bootstrapManifest: makeArtifactEls("bootstrap-manifest"),
     snapshotMarker: makeArtifactEls("snapshot-marker"),
     ethwMarker: makeArtifactEls("ethw-marker"),
     services: {
+        btcNode: makeServiceEls("service-btc-node"),
         balanceHistory: makeServiceEls("service-balance-history"),
         usdbIndexer: makeServiceEls("service-usdb-indexer"),
         ethw: makeServiceEls("service-ethw"),
@@ -118,18 +121,29 @@ async function fetchOverview() {
 function renderOverview(overview) {
     els.updatedAt.textContent = fmtDate(overview.generated_at_ms);
     els.btcNetwork.textContent =
+        overview.services.btc_node.data?.chain ||
         overview.services.balance_history.data?.network ||
         overview.services.usdb_indexer.data?.network ||
         "-";
-    els.stableHeight.textContent = fmtNum(overview.services.balance_history.data?.stable_height);
+    els.btcHeight.textContent = fmtNum(overview.services.btc_node.data?.blocks);
     els.ethwHeight.textContent = fmtNum(overview.services.ethw.data?.block_number);
 
     const readyCount = [
+        overview.services.btc_node,
         overview.services.balance_history,
         overview.services.usdb_indexer,
         overview.services.ethw,
     ].filter((service) => service.reachable).length;
-    els.servicesSummary.textContent = `当前 ${readyCount}/3 个核心服务可达；首页优先展示 readiness、bootstrap 与 explorer 入口。`;
+    els.servicesSummary.textContent = `当前 ${readyCount}/4 个核心服务可达；首页优先展示 readiness、cold-start 步骤与 explorer 入口。`;
+
+    renderServiceCard(els.services.btcNode, overview.services.btc_node, (probe) => [
+        ["Chain", probe.data?.chain || "-"],
+        ["Blocks", fmtNum(probe.data?.blocks)],
+        ["Headers", fmtNum(probe.data?.headers)],
+        ["IBD", probe.data?.initial_block_download === undefined ? "-" : String(probe.data.initial_block_download)],
+        ["Verify Progress", probe.data?.verification_progress === undefined ? "-" : `${(probe.data.verification_progress * 100).toFixed(2)}%`],
+        ["Latency", probe.latency_ms ? `${probe.latency_ms} ms` : "-"],
+    ]);
 
     renderServiceCard(els.services.balanceHistory, overview.services.balance_history, (probe) => [
         ["Network", probe.data?.network || "-"],
@@ -161,9 +175,38 @@ function renderOverview(overview) {
     renderArtifact(els.bootstrapManifest, overview.bootstrap.bootstrap_manifest);
     renderArtifact(els.snapshotMarker, overview.bootstrap.snapshot_marker);
     renderArtifact(els.ethwMarker, overview.bootstrap.ethw_init_marker);
+    renderBootstrapSteps(overview.bootstrap);
 
     els.linkBalanceHistory.href = overview.explorers.balance_history;
     els.linkUsdbIndexer.href = overview.explorers.usdb_indexer;
+}
+
+function renderBootstrapSteps(bootstrap) {
+    const tone =
+        bootstrap.overall_state === "completed" ? "ok" :
+        bootstrap.overall_state === "error" ? "bad" :
+        bootstrap.overall_state === "in_progress" ? "warn" : "warn";
+    setPill(els.bootstrapOverallState, bootstrap.overall_state.replaceAll("_", " "), tone);
+    els.bootstrapSteps.innerHTML = "";
+    for (const step of bootstrap.steps || []) {
+        const card = document.createElement("article");
+        card.className = "step-card";
+        const head = document.createElement("div");
+        head.className = "service-head";
+        const title = document.createElement("h3");
+        title.textContent = step.step;
+        const pill = document.createElement("span");
+        const stepTone =
+            step.state === "completed" ? "ok" :
+            step.state === "error" ? "bad" :
+            step.state === "in_progress" ? "warn" : "warn";
+        setPill(pill, step.state.replaceAll("_", " "), stepTone);
+        head.append(title, pill);
+        const detail = document.createElement("p");
+        detail.textContent = step.detail || "-";
+        card.append(head, detail);
+        els.bootstrapSteps.append(card);
+    }
 }
 
 async function refresh() {

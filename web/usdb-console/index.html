@@ -31,8 +31,8 @@
                 <p id="metric-btc-network" class="value">-</p>
             </article>
             <article class="card metric">
-                <h2>稳定高度</h2>
-                <p id="metric-stable-height" class="value">-</p>
+                <h2>BTC 区块高度</h2>
+                <p id="metric-btc-height" class="value">-</p>
             </article>
             <article class="card metric">
                 <h2>ETHW 区块高度</h2>
@@ -46,6 +46,15 @@
                 <p id="services-summary" class="hint">-</p>
             </div>
             <div class="service-grid">
+                <article class="service-card" id="service-btc-node">
+                    <div class="service-head">
+                        <h3>btc-node</h3>
+                        <span class="pill" data-kind="state">-</span>
+                    </div>
+                    <p class="rpc-url" data-field="rpc-url">-</p>
+                    <div class="kv" data-field="details"></div>
+                    <p class="error" data-field="error"></p>
+                </article>
                 <article class="service-card" id="service-balance-history">
                     <div class="service-head">
                         <h3>balance-history</h3>
@@ -106,6 +115,14 @@
                 <div id="ethw-marker-details" class="detail-grid"></div>
                 <p id="ethw-marker-error" class="error"></p>
             </article>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <h2>Cold-Start Steps</h2>
+                <span id="bootstrap-overall-state" class="pill" data-kind="state">-</span>
+            </div>
+            <div id="bootstrap-steps" class="steps-grid"></div>
         </section>
 
         <section class="card">

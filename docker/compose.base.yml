@@ -155,11 +155,49 @@ services:
     networks:
       - usdb-net
 
+  usdb-control-plane:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.usdb-services
+    image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_control_plane.sh"]
+    environment:
+      CONTROL_PLANE_ROOT_DIR: ${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}
+      CONTROL_PLANE_HOST: ${CONTROL_PLANE_HOST:-0.0.0.0}
+      CONTROL_PLANE_PORT: ${CONTROL_PLANE_PORT:-28040}
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}
+      USDB_INDEXER_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28020}
+      ETHW_RPC_URL: ${ETHW_RPC_URL:-http://ethw-node:8545}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-cookie}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-}
+      CONTROL_PLANE_BOOTSTRAP_MANIFEST: ${CONTROL_PLANE_BOOTSTRAP_MANIFEST:-/bootstrap/bootstrap-manifest.json}
+      CONTROL_PLANE_SNAPSHOT_MARKER: ${CONTROL_PLANE_SNAPSHOT_MARKER:-/data/balance-history/bootstrap/snapshot-loader.done.json}
+      CONTROL_PLANE_ETHW_INIT_MARKER: ${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-init.done.json}
+      CONTROL_PLANE_SOURCEDAO_STATE: ${CONTROL_PLANE_SOURCEDAO_STATE:-/bootstrap/sourcedao-bootstrap-state.json}
+      CONTROL_PLANE_SOURCEDAO_MARKER: ${CONTROL_PLANE_SOURCEDAO_MARKER:-/bootstrap/sourcedao-bootstrap.done.json}
+      CONTROL_PLANE_EXTRA_ARGS: ${CONTROL_PLANE_EXTRA_ARGS:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - balance-history-data:${BH_ROOT_DIR:-/data/balance-history}:ro
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}:ro
+      - control-plane-data:${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}
+      - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}:ro
+    ports:
+      - "${CONTROL_PLANE_BIND_PORT:-28040}:${CONTROL_PLANE_PORT:-28040}"
+    networks:
+      - usdb-net
+
 volumes:
   btc-data:
   balance-history-data:
   usdb-indexer-data:
   ethw-data:
+  control-plane-data:
+  bootstrap-artifacts:
 
 networks:
   usdb-net:

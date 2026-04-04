@@ -191,6 +191,11 @@ ETHW_CANONICAL_TRUSTED_KEYS_FILE=/bootstrap/trusted-ethw-genesis-keys.json
 ETHW_HTTP_BIND_PORT=0
 ETHW_WS_BIND_PORT=0
 ETHW_P2P_BIND_PORT=0
+ETHW_RPC_URL=http://ethw-node:8545
+
+CONTROL_PLANE_ROOT_DIR=/data/usdb-control-plane
+CONTROL_PLANE_PORT=28140
+CONTROL_PLANE_BIND_PORT=0
 
 SNAPSHOT_MODE=none
 SNAPSHOT_HOST_DIR=${bootstrap_snapshot_dir}
@@ -347,19 +352,28 @@ usdb_indexer_consensus_ready() {
   [[ "$(json_field "${payload}" "result.consensus_ready")" == "true" ]]
 }
 
+control_plane_overview_ready() {
+  local payload
+  payload="$(curl -fsS "http://127.0.0.1:${control_plane_host_port}/api/system/overview")" || return 1
+  [[ "$(json_field "${payload}" "service")" == "usdb-control-plane" ]]
+}
+
 log "Using temp work dir ${work_dir}"
 compose up -d --build
 
 bh_host_port="$(wait_for_published_host_port balance-history 28110 120)"
 usdb_indexer_host_port="$(wait_for_published_host_port usdb-indexer 28120 120)"
+control_plane_host_port="$(wait_for_published_host_port usdb-control-plane 28140 120)"
 log "balance-history published on http://127.0.0.1:${bh_host_port}"
 log "usdb-indexer published on http://127.0.0.1:${usdb_indexer_host_port}"
+log "usdb-control-plane published on http://127.0.0.1:${control_plane_host_port}"
 
 wait_until "btc-node RPC" 120 wait_for_btc_rpc
 mine_regtest_blocks "${SMOKE_REGTEST_BLOCKS:-3}"
 
 wait_until "balance-history consensus readiness" 180 balance_history_consensus_ready
 wait_until "usdb-indexer consensus readiness" 180 usdb_indexer_consensus_ready
+wait_until "control-plane overview readiness" 180 control_plane_overview_ready
 
 [[ "$(service_exit_code bootstrap-init)" == "0" ]] || {
   echo "bootstrap-init did not exit cleanly" >&2
@@ -379,7 +393,9 @@ compose exec -T ethw-node test -f /data/ethw/bootstrap/ethw-init.done.json
 
 bh_readiness="$(json_rpc_call "http://127.0.0.1:${bh_host_port}" "get_readiness")"
 usdb_readiness="$(json_rpc_call "http://127.0.0.1:${usdb_indexer_host_port}" "get_readiness")"
+control_plane_overview="$(curl -fsS "http://127.0.0.1:${control_plane_host_port}/api/system/overview")"
 
 log "balance-history readiness: ${bh_readiness}"
 log "usdb-indexer readiness: ${usdb_readiness}"
+log "control-plane overview: ${control_plane_overview}"
 log "Container-level bootstrap smoke succeeded"

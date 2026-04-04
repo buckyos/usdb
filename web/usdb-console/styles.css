@@ -142,13 +142,14 @@ button {
 }
 
 .service-grid,
-.link-grid {
+.link-grid,
+.steps-grid {
     display: grid;
     gap: 16px;
 }
 
 .service-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .service-card {
@@ -241,6 +242,29 @@ button {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.steps-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.step-card {
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.52);
+}
+
+.step-card h3 {
+    margin: 0 0 10px;
+    font-size: 0.95rem;
+}
+
+.step-card p {
+    margin: 10px 0 0;
+    font-size: 0.92rem;
+    color: var(--muted);
+    line-height: 1.45;
+}
+
 .link-card {
     display: grid;
     gap: 8px;
@@ -260,7 +284,8 @@ button {
     .grid-4,
     .grid-3,
     .service-grid,
-    .link-grid {
+    .link-grid,
+    .steps-grid {
         grid-template-columns: 1fr;
     }
 }

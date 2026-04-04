@@ -28,6 +28,7 @@
 
 - `usdb/docker` 基本目录结构
 - `balance-history` / `usdb-indexer` 服务镜像构建入口
+- `usdb-control-plane` 聚合服务与统一控制台入口
 - `joiner` 模式 compose 骨架
 - `dev-sim` 模式 compose 骨架
 - `balance-history` 的可选 snapshot-loader
@@ -230,6 +231,8 @@
   - `joiner`
 - `joiner` 入网配置约定
   - bootnodes / static peers / 推荐网络参数
+- `usdb-control-plane` 的 Docker 运维说明继续细化
+  - 例如 BTC cookie 挂载、bootstrap marker 来源、`sourcedao-bootstrap` 状态接入
 
 ### 2.7.2 发布级仍缺的部分
 

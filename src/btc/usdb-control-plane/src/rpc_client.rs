@@ -1,4 +1,5 @@
-use crate::models::{BalanceHistoryReadiness, UsdbIndexerReadiness};
+use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
+use crate::models::{BalanceHistoryReadiness, BitcoinBlockchainInfo, UsdbIndexerReadiness};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -74,6 +75,14 @@ impl RpcClient {
         self.json_rpc_call(url, "eth_syncing", json!([])).await
     }
 
+    pub async fn bitcoin_blockchain_info(
+        &self,
+        config: &ControlPlaneConfig,
+    ) -> Result<BitcoinBlockchainInfo, String> {
+        self.bitcoin_json_rpc_call(config, "getblockchaininfo", json!([]))
+            .await
+    }
+
     async fn json_rpc_call<T: DeserializeOwned>(
         &self,
         url: &str,
@@ -130,6 +139,100 @@ impl RpcClient {
 
         envelope.result.ok_or_else(|| {
             let msg = format!("RPC {} returned neither result nor error", method);
+            warn!("{}", msg);
+            msg
+        })
+    }
+
+    async fn bitcoin_json_rpc_call<T: DeserializeOwned>(
+        &self,
+        config: &ControlPlaneConfig,
+        method: &str,
+        params: Value,
+    ) -> Result<T, String> {
+        let request = json!({
+            "jsonrpc": "1.0",
+            "id": "usdb-control-plane",
+            "method": method,
+            "params": params,
+        });
+
+        let mut builder = self.client.post(&config.bitcoin.url).json(&request);
+        match config.bitcoin.auth_mode {
+            BitcoinAuthMode::None => {}
+            BitcoinAuthMode::Userpass => {
+                let user =
+                    config.bitcoin.rpc_user.as_deref().ok_or_else(|| {
+                        "BTC RPC auth_mode=userpass requires rpc_user".to_string()
+                    })?;
+                let password = config.bitcoin.rpc_password.as_deref().ok_or_else(|| {
+                    "BTC RPC auth_mode=userpass requires rpc_password".to_string()
+                })?;
+                builder = builder.basic_auth(user, Some(password));
+            }
+            BitcoinAuthMode::Cookie => {
+                let cookie_file =
+                    config.bitcoin.cookie_file.as_ref().ok_or_else(|| {
+                        "BTC RPC auth_mode=cookie requires cookie_file".to_string()
+                    })?;
+                let cookie_path = config.resolve_runtime_path(cookie_file)?;
+                let cookie = std::fs::read_to_string(&cookie_path).map_err(|e| {
+                    let msg = format!(
+                        "Failed to read BTC cookie file {}: {}",
+                        cookie_path.display(),
+                        e
+                    );
+                    warn!("{}", msg);
+                    msg
+                })?;
+                let trimmed = cookie.trim();
+                let (user, password) = trimmed.split_once(':').ok_or_else(|| {
+                    format!(
+                        "Invalid BTC cookie file format at {}",
+                        cookie_path.display()
+                    )
+                })?;
+                builder = builder.basic_auth(user, Some(password));
+            }
+        }
+
+        let response = builder.send().await.map_err(|e| {
+            let msg = format!(
+                "Failed to send BTC RPC request to {} (method={}): {}",
+                config.bitcoin.url, method, e
+            );
+            warn!("{}", msg);
+            msg
+        })?;
+
+        let status = response.status();
+        let envelope: JsonRpcEnvelope<T> = response.json().await.map_err(|e| {
+            let msg = format!(
+                "Failed to decode BTC RPC response from {} (method={}, status={}): {}",
+                config.bitcoin.url, method, status, e
+            );
+            warn!("{}", msg);
+            msg
+        })?;
+
+        if let Some(error) = envelope.error {
+            let msg = if let Some(data) = error.data {
+                format!(
+                    "BTC RPC {} returned error {} ({}): {}",
+                    method, error.code, error.message, data
+                )
+            } else {
+                format!(
+                    "BTC RPC {} returned error {}: {}",
+                    method, error.code, error.message
+                )
+            };
+            warn!("{}", msg);
+            return Err(msg);
+        }
+
+        envelope.result.ok_or_else(|| {
+            let msg = format!("BTC RPC {} returned neither result nor error", method);
             warn!("{}", msg);
             msg
         })

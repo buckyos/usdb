@@ -1,7 +1,8 @@
 use crate::config::ControlPlaneConfig;
 use crate::models::{
-    ArtifactSummary, BalanceHistoryServiceSummary, BootstrapSummary, EthwServiceSummary,
-    ExplorerLinks, OverviewResponse, ServiceProbe, ServicesSummary, UsdbIndexerServiceSummary,
+    ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary, BootstrapSummary,
+    BtcNodeServiceSummary, EthwServiceSummary, ExplorerLinks, OverviewResponse, ServiceProbe,
+    ServicesSummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
@@ -127,10 +128,12 @@ async fn build_overview(state: &AppState) -> OverviewResponse {
 }
 
 async fn build_services_summary(state: &AppState) -> ServicesSummary {
+    let btc_node = probe_btc_node(state).await;
     let balance_history = probe_balance_history(state).await;
     let usdb_indexer = probe_usdb_indexer(state).await;
     let ethw = probe_ethw(state).await;
     ServicesSummary {
+        btc_node,
         balance_history,
         usdb_indexer,
         ethw,
@@ -138,19 +141,84 @@ async fn build_services_summary(state: &AppState) -> ServicesSummary {
 }
 
 fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
+    let bootstrap_manifest =
+        read_artifact_summary(&state.config, &state.config.bootstrap.bootstrap_manifest);
+    let snapshot_marker =
+        read_artifact_summary(&state.config, &state.config.bootstrap.snapshot_marker);
+    let ethw_init_marker =
+        read_artifact_summary(&state.config, &state.config.bootstrap.ethw_init_marker);
+    let sourcedao_bootstrap_state = read_artifact_summary(
+        &state.config,
+        &state.config.bootstrap.sourcedao_bootstrap_state,
+    );
+    let sourcedao_bootstrap_marker = read_artifact_summary(
+        &state.config,
+        &state.config.bootstrap.sourcedao_bootstrap_marker,
+    );
+    let steps = vec![
+        derive_step_state(
+            "snapshot-loader",
+            &snapshot_marker,
+            "balance-history snapshot 安装",
+        ),
+        derive_step_state(
+            "bootstrap-init",
+            &bootstrap_manifest,
+            "ETHW canonical genesis 准备",
+        ),
+        derive_step_state("ethw-init", &ethw_init_marker, "ETHW datadir init"),
+        derive_step_state(
+            "sourcedao-bootstrap",
+            &sourcedao_bootstrap_marker,
+            "SourceDAO 链上初始化",
+        ),
+    ];
+    let overall_state = if steps.iter().any(|step| step.state == "error") {
+        "error".to_string()
+    } else if steps.iter().all(|step| step.state == "completed") {
+        "completed".to_string()
+    } else if steps.iter().any(|step| step.state == "completed") {
+        "in_progress".to_string()
+    } else {
+        "pending".to_string()
+    };
+
     BootstrapSummary {
-        bootstrap_manifest: read_artifact_summary(
-            &state.config,
-            &state.config.bootstrap.bootstrap_manifest,
-        ),
-        snapshot_marker: read_artifact_summary(
-            &state.config,
-            &state.config.bootstrap.snapshot_marker,
-        ),
-        ethw_init_marker: read_artifact_summary(
-            &state.config,
-            &state.config.bootstrap.ethw_init_marker,
-        ),
+        bootstrap_manifest,
+        snapshot_marker,
+        ethw_init_marker,
+        sourcedao_bootstrap_state,
+        sourcedao_bootstrap_marker,
+        steps,
+        overall_state,
+    }
+}
+
+async fn probe_btc_node(state: &AppState) -> ServiceProbe<BtcNodeServiceSummary> {
+    let rpc_url = state.config.bitcoin.url.clone();
+    let started = Instant::now();
+    let info = state
+        .rpc_client
+        .bitcoin_blockchain_info(&state.config)
+        .await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let error = info.as_ref().err().cloned();
+    let reachable = info.is_ok();
+    let data = info.ok().map(|item| BtcNodeServiceSummary {
+        chain: Some(item.chain),
+        blocks: Some(item.blocks),
+        headers: Some(item.headers),
+        verification_progress: Some(item.verification_progress),
+        initial_block_download: Some(item.initial_block_download),
+    });
+
+    ServiceProbe {
+        name: "btc-node".to_string(),
+        rpc_url,
+        reachable,
+        latency_ms: Some(latency_ms),
+        error,
+        data,
     }
 }
 
@@ -356,6 +424,40 @@ fn read_artifact_summary(config: &ControlPlaneConfig, configured_path: &Path) ->
     }
 }
 
+fn derive_step_state(step: &str, artifact: &ArtifactSummary, detail: &str) -> BootstrapStepSummary {
+    let state = if artifact.exists && artifact.error.is_none() {
+        "completed"
+    } else if artifact.exists && artifact.error.is_some() {
+        "error"
+    } else {
+        "pending"
+    };
+
+    let detail = if let Some(error) = &artifact.error {
+        if artifact.exists {
+            format!("{}: {}", detail, error)
+        } else {
+            format!("{}: waiting for artifact", detail)
+        }
+    } else {
+        format!("{}: {}", detail, short_path(&artifact.path))
+    };
+
+    BootstrapStepSummary {
+        step: step.to_string(),
+        state: state.to_string(),
+        detail,
+    }
+}
+
+fn short_path(path: &str) -> String {
+    if path.len() <= 72 {
+        path.to_string()
+    } else {
+        format!("...{}", &path[path.len() - 69..])
+    }
+}
+
 fn merge_errors(errors: &[Option<String>]) -> Option<String> {
     let values: Vec<String> = errors.iter().filter_map(|item| item.clone()).collect();
     if values.is_empty() {
@@ -394,5 +496,17 @@ mod tests {
     fn merge_errors_skips_empty_entries() {
         let merged = merge_errors(&[None, Some("a".to_string()), Some("b".to_string())]);
         assert_eq!(merged, Some("a | b".to_string()));
+    }
+
+    #[test]
+    fn derive_step_state_reports_pending_for_missing_artifact() {
+        let artifact = ArtifactSummary {
+            path: "/tmp/missing.json".to_string(),
+            exists: false,
+            error: Some("artifact file does not exist".to_string()),
+            data: None,
+        };
+        let step = derive_step_state("snapshot-loader", &artifact, "load snapshot");
+        assert_eq!(step.state, "pending");
     }
 }

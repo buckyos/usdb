@@ -7,5 +7,4 @@ target
 logs
 *.log
 docker/local
-web
 doc

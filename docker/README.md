@@ -7,6 +7,7 @@ Current scope:
 - `joiner`: start one `bitcoind` + `balance-history` + `usdb-indexer` + `ethw-node`
 - `dev-sim`: single-machine simulation using `bitcoind` regtest and the same USDB services
 - optional `balance-history` snapshot restore via `snapshot-loader`
+- a built-in `usdb-control-plane` service serving the unified local console
 
 Current non-goals:
 
@@ -17,7 +18,7 @@ Current non-goals:
 ## Layout
 
 - `Dockerfile.usdb-services`
-  - builds the `balance-history` and `usdb-indexer` binaries
+  - builds the `balance-history`, `usdb-indexer`, and `usdb-control-plane` binaries
 - `compose.base.yml`
   - shared service definitions
 - `compose.joiner.yml`
@@ -161,6 +162,7 @@ This smoke currently:
 - combines `compose.base.yml + compose.dev-sim.yml + compose.bootstrap.yml`
 - uses `bitcoind` in `regtest`
 - exercises the `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` lifecycle
+- verifies `usdb-control-plane` can serve `/api/system/overview`
 - validates the signed ETHW genesis manifest path
 - uses `usdb-services:local` as a temporary fake `ETHW_IMAGE` so the bootstrap lifecycle can be exercised before a real ETHW image is wired in
 

@@ -23,3 +23,10 @@ services:
     environment:
       BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
       INSCRIPTION_SOURCE: ${INSCRIPTION_SOURCE:-bitcoind}
+
+  usdb-control-plane:
+    environment:
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}
+      USDB_INDEXER_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28020}
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      CONTROL_PLANE_PORT: ${CONTROL_PLANE_PORT:-28040}
