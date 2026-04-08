@@ -156,22 +156,10 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
         &state.config.bootstrap.sourcedao_bootstrap_marker,
     );
     let steps = vec![
-        derive_step_state(
-            "snapshot-loader",
-            &snapshot_marker,
-            "balance-history snapshot 安装",
-        ),
-        derive_step_state(
-            "bootstrap-init",
-            &bootstrap_manifest,
-            "ETHW canonical genesis 准备",
-        ),
-        derive_step_state("ethw-init", &ethw_init_marker, "ETHW datadir init"),
-        derive_step_state(
-            "sourcedao-bootstrap",
-            &sourcedao_bootstrap_marker,
-            "SourceDAO 链上初始化",
-        ),
+        derive_step_state("snapshot-loader", &snapshot_marker),
+        derive_step_state("bootstrap-init", &bootstrap_manifest),
+        derive_step_state("ethw-init", &ethw_init_marker),
+        derive_step_state("sourcedao-bootstrap", &sourcedao_bootstrap_marker),
     ];
     let overall_state = if steps.iter().any(|step| step.state == "error") {
         "error".to_string()
@@ -424,7 +412,7 @@ fn read_artifact_summary(config: &ControlPlaneConfig, configured_path: &Path) ->
     }
 }
 
-fn derive_step_state(step: &str, artifact: &ArtifactSummary, detail: &str) -> BootstrapStepSummary {
+fn derive_step_state(step: &str, artifact: &ArtifactSummary) -> BootstrapStepSummary {
     let state = if artifact.exists && artifact.error.is_none() {
         "completed"
     } else if artifact.exists && artifact.error.is_some() {
@@ -433,20 +421,11 @@ fn derive_step_state(step: &str, artifact: &ArtifactSummary, detail: &str) -> Bo
         "pending"
     };
 
-    let detail = if let Some(error) = &artifact.error {
-        if artifact.exists {
-            format!("{}: {}", detail, error)
-        } else {
-            format!("{}: waiting for artifact", detail)
-        }
-    } else {
-        format!("{}: {}", detail, short_path(&artifact.path))
-    };
-
     BootstrapStepSummary {
         step: step.to_string(),
         state: state.to_string(),
-        detail,
+        artifact_path: short_path(&artifact.path),
+        error: artifact.error.clone(),
     }
 }
 
@@ -506,7 +485,8 @@ mod tests {
             error: Some("artifact file does not exist".to_string()),
             data: None,
         };
-        let step = derive_step_state("snapshot-loader", &artifact, "load snapshot");
+        let step = derive_step_state("snapshot-loader", &artifact);
         assert_eq!(step.state, "pending");
+        assert_eq!(step.artifact_path, "/tmp/missing.json");
     }
 }

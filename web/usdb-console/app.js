@@ -1,5 +1,9 @@
+const i18n = window.USDBConsoleI18n;
+let currentLocale = i18n.resolveLocale();
+
 const els = {
     refreshBtn: document.getElementById("refresh-btn"),
+    localeSelect: document.getElementById("locale-select"),
     updatedAt: document.getElementById("metric-updated-at"),
     btcNetwork: document.getElementById("metric-btc-network"),
     btcHeight: document.getElementById("metric-btc-height"),
@@ -19,6 +23,10 @@ const els = {
         ethw: makeServiceEls("service-ethw"),
     },
 };
+
+function t(key, params) {
+    return i18n.t(currentLocale, key, params);
+}
 
 function makeServiceEls(id) {
     const root = document.getElementById(id);
@@ -40,19 +48,36 @@ function makeArtifactEls(prefix) {
     };
 }
 
+function applyStaticTranslations() {
+    document.documentElement.lang = currentLocale;
+    els.localeSelect.value = currentLocale;
+    for (const element of document.querySelectorAll("[data-i18n]")) {
+        element.textContent = t(element.dataset.i18n);
+    }
+}
+
+function setLocale(locale) {
+    currentLocale = i18n.normalizeLocale(locale);
+    window.localStorage.setItem("usdb-console.locale", currentLocale);
+    applyStaticTranslations();
+    void refresh();
+}
+
 function fmtDate(ms) {
-    if (!ms) return "-";
-    return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+    if (!ms) return t("common.none");
+    return new Date(ms).toLocaleString(currentLocale, { hour12: false });
 }
 
 function fmtNum(value) {
-    if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
-    return new Intl.NumberFormat("en-US").format(Number(value));
+    if (value === null || value === undefined || Number.isNaN(Number(value))) {
+        return t("common.none");
+    }
+    return new Intl.NumberFormat(currentLocale).format(Number(value));
 }
 
 function shortText(value, head = 14, tail = 12) {
     const text = String(value ?? "");
-    if (!text) return "-";
+    if (!text) return t("common.none");
     if (text.length <= head + tail + 3) return text;
     return `${text.slice(0, head)}...${text.slice(-tail)}`;
 }
@@ -70,39 +95,43 @@ function renderDetailGrid(container, entries) {
         const key = document.createElement("span");
         const val = document.createElement("strong");
         key.textContent = label;
-        val.textContent = value ?? "-";
+        val.textContent = value ?? t("common.none");
         row.append(key, val);
         container.append(row);
     }
 }
 
 function renderServiceCard(target, probe, detailsBuilder) {
-    target.rpcUrl.textContent = probe.rpc_url || "-";
+    target.rpcUrl.textContent = probe.rpc_url || t("common.none");
     target.error.textContent = probe.error || "";
     if (!probe.reachable) {
-        setPill(target.pill, "offline", "bad");
+        setPill(target.pill, t("serviceStates.offline"), "bad");
         renderDetailGrid(target.details, [
-            ["Latency", probe.latency_ms ? `${probe.latency_ms} ms` : "-"],
+            [t("fields.latency"), probe.latency_ms ? `${probe.latency_ms} ms` : t("common.none")],
         ]);
         return;
     }
 
     const tone = probe.data?.consensus_ready ? "ok" : probe.data?.query_ready ? "warn" : "warn";
-    const label = probe.data?.consensus_ready ? "consensus ready" : probe.data?.query_ready ? "query ready" : "reachable";
+    const label = probe.data?.consensus_ready
+        ? t("serviceStates.consensusReady")
+        : probe.data?.query_ready
+            ? t("serviceStates.queryReady")
+            : t("serviceStates.reachable");
     setPill(target.pill, label, tone);
     renderDetailGrid(target.details, detailsBuilder(probe));
 }
 
 function renderArtifact(target, summary) {
-    target.path.textContent = summary.path || "-";
+    target.path.textContent = summary.path || t("common.none");
     target.error.textContent = summary.error || "";
     if (!summary.exists) {
-        setPill(target.pill, "missing", "bad");
+        setPill(target.pill, t("artifactStates.missing"), "bad");
         target.details.innerHTML = "";
         return;
     }
 
-    setPill(target.pill, "present", "ok");
+    setPill(target.pill, t("artifactStates.present"), "ok");
     const data = summary.data || {};
     const entries = Object.entries(data)
         .slice(0, 8)
@@ -124,52 +153,71 @@ function renderOverview(overview) {
         overview.services.btc_node.data?.chain ||
         overview.services.balance_history.data?.network ||
         overview.services.usdb_indexer.data?.network ||
-        "-";
+        t("common.none");
     els.btcHeight.textContent = fmtNum(overview.services.btc_node.data?.blocks);
     els.ethwHeight.textContent = fmtNum(overview.services.ethw.data?.block_number);
 
+    const totalServices = 4;
     const readyCount = [
         overview.services.btc_node,
         overview.services.balance_history,
         overview.services.usdb_indexer,
         overview.services.ethw,
     ].filter((service) => service.reachable).length;
-    els.servicesSummary.textContent = `当前 ${readyCount}/4 个核心服务可达；首页优先展示 readiness、cold-start 步骤与 explorer 入口。`;
+    els.servicesSummary.textContent = t("services.summary", {
+        readyCount,
+        total: totalServices,
+    });
 
     renderServiceCard(els.services.btcNode, overview.services.btc_node, (probe) => [
-        ["Chain", probe.data?.chain || "-"],
-        ["Blocks", fmtNum(probe.data?.blocks)],
-        ["Headers", fmtNum(probe.data?.headers)],
-        ["IBD", probe.data?.initial_block_download === undefined ? "-" : String(probe.data.initial_block_download)],
-        ["Verify Progress", probe.data?.verification_progress === undefined ? "-" : `${(probe.data.verification_progress * 100).toFixed(2)}%`],
-        ["Latency", probe.latency_ms ? `${probe.latency_ms} ms` : "-"],
+        [t("fields.chain"), probe.data?.chain || t("common.none")],
+        [t("fields.blocks"), fmtNum(probe.data?.blocks)],
+        [t("fields.headers"), fmtNum(probe.data?.headers)],
+        [
+            t("fields.ibd"),
+            probe.data?.initial_block_download === undefined
+                ? t("common.none")
+                : String(probe.data.initial_block_download),
+        ],
+        [
+            t("fields.verifyProgress"),
+            probe.data?.verification_progress === undefined
+                ? t("common.none")
+                : `${(probe.data.verification_progress * 100).toFixed(2)}%`,
+        ],
+        [t("fields.latency"), probe.latency_ms ? `${probe.latency_ms} ms` : t("common.none")],
     ]);
 
     renderServiceCard(els.services.balanceHistory, overview.services.balance_history, (probe) => [
-        ["Network", probe.data?.network || "-"],
-        ["Stable Height", fmtNum(probe.data?.stable_height)],
-        ["Phase", probe.data?.phase || "-"],
-        ["Consensus", String(Boolean(probe.data?.consensus_ready))],
-        ["Snapshot Verify", probe.data?.snapshot_verification_state || "-"],
-        ["Blockers", probe.data?.blockers?.join(", ") || "-"],
+        [t("fields.network"), probe.data?.network || t("common.none")],
+        [t("fields.stableHeight"), fmtNum(probe.data?.stable_height)],
+        [t("fields.phase"), probe.data?.phase || t("common.none")],
+        [t("fields.consensus"), String(Boolean(probe.data?.consensus_ready))],
+        [t("fields.snapshotVerify"), probe.data?.snapshot_verification_state || t("common.none")],
+        [t("fields.blockers"), probe.data?.blockers?.join(", ") || t("common.none")],
     ]);
 
     renderServiceCard(els.services.usdbIndexer, overview.services.usdb_indexer, (probe) => [
-        ["Network", probe.data?.network || "-"],
-        ["Synced Height", fmtNum(probe.data?.synced_block_height)],
-        ["Stable Height", fmtNum(probe.data?.balance_history_stable_height)],
-        ["Consensus", String(Boolean(probe.data?.consensus_ready))],
-        ["System State", shortText(probe.data?.system_state_id || "-")],
-        ["Blockers", probe.data?.blockers?.join(", ") || "-"],
+        [t("fields.network"), probe.data?.network || t("common.none")],
+        [t("fields.syncedHeight"), fmtNum(probe.data?.synced_block_height)],
+        [t("fields.stableHeight"), fmtNum(probe.data?.balance_history_stable_height)],
+        [t("fields.consensus"), String(Boolean(probe.data?.consensus_ready))],
+        [t("fields.systemState"), shortText(probe.data?.system_state_id || t("common.none"))],
+        [t("fields.blockers"), probe.data?.blockers?.join(", ") || t("common.none")],
     ]);
 
     renderServiceCard(els.services.ethw, overview.services.ethw, (probe) => [
-        ["Client", probe.data?.client_version || "-"],
-        ["Chain ID", probe.data?.chain_id || "-"],
-        ["Network ID", probe.data?.network_id || "-"],
-        ["Block Number", fmtNum(probe.data?.block_number)],
-        ["Syncing", probe.data?.syncing === false ? "false" : JSON.stringify(probe.data?.syncing ?? "-")],
-        ["Latency", probe.latency_ms ? `${probe.latency_ms} ms` : "-"],
+        [t("fields.client"), probe.data?.client_version || t("common.none")],
+        [t("fields.chainId"), probe.data?.chain_id || t("common.none")],
+        [t("fields.networkId"), probe.data?.network_id || t("common.none")],
+        [t("fields.blockNumber"), fmtNum(probe.data?.block_number)],
+        [
+            t("fields.syncing"),
+            probe.data?.syncing === false
+                ? t("common.false")
+                : JSON.stringify(probe.data?.syncing ?? t("common.none")),
+        ],
+        [t("fields.latency"), probe.latency_ms ? `${probe.latency_ms} ms` : t("common.none")],
     ]);
 
     renderArtifact(els.bootstrapManifest, overview.bootstrap.bootstrap_manifest);
@@ -186,7 +234,11 @@ function renderBootstrapSteps(bootstrap) {
         bootstrap.overall_state === "completed" ? "ok" :
         bootstrap.overall_state === "error" ? "bad" :
         bootstrap.overall_state === "in_progress" ? "warn" : "warn";
-    setPill(els.bootstrapOverallState, bootstrap.overall_state.replaceAll("_", " "), tone);
+    setPill(
+        els.bootstrapOverallState,
+        t(`states.${bootstrap.overall_state}`),
+        tone,
+    );
     els.bootstrapSteps.innerHTML = "";
     for (const step of bootstrap.steps || []) {
         const card = document.createElement("article");
@@ -194,16 +246,26 @@ function renderBootstrapSteps(bootstrap) {
         const head = document.createElement("div");
         head.className = "service-head";
         const title = document.createElement("h3");
-        title.textContent = step.step;
+        title.textContent = t(`bootstrap.steps.${step.step}`);
         const pill = document.createElement("span");
         const stepTone =
             step.state === "completed" ? "ok" :
             step.state === "error" ? "bad" :
             step.state === "in_progress" ? "warn" : "warn";
-        setPill(pill, step.state.replaceAll("_", " "), stepTone);
+        setPill(pill, t(`states.${step.state}`), stepTone);
         head.append(title, pill);
         const detail = document.createElement("p");
-        detail.textContent = step.detail || "-";
+        const detailKey =
+            step.state === "completed"
+                ? "bootstrap.stepDetails.completed"
+                : step.state === "error"
+                    ? "bootstrap.stepDetails.error"
+                    : "bootstrap.stepDetails.pending";
+        detail.textContent = t(detailKey, {
+            label: t(`bootstrap.steps.${step.step}`),
+            path: step.artifact_path || t("common.none"),
+            error: step.error || t("common.none"),
+        });
         card.append(head, detail);
         els.bootstrapSteps.append(card);
     }
@@ -222,6 +284,16 @@ async function refresh() {
     }
 }
 
-els.refreshBtn.addEventListener("click", refresh);
-refresh();
-window.setInterval(refresh, 8000);
+els.refreshBtn.addEventListener("click", () => {
+    void refresh();
+});
+
+els.localeSelect.addEventListener("change", (event) => {
+    setLocale(event.target.value);
+});
+
+applyStaticTranslations();
+void refresh();
+window.setInterval(() => {
+    void refresh();
+}, 8000);

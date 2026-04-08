@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -13,36 +13,43 @@
             <div class="hero-copy">
                 <p class="eyebrow">USDB CONTROL CONSOLE</p>
                 <h1>System Overview</h1>
-                <p class="subtitle">统一查看 BTC / USDB / ETHW 本地服务状态、bootstrap 产物与运维入口。</p>
+                <p class="subtitle" data-i18n="hero.subtitle">View BTC, USDB, and ETHW service health, bootstrap artifacts, and operational entry points in one place.</p>
             </div>
             <div class="hero-actions">
-                <button id="refresh-btn" type="button">刷新状态</button>
-                <p class="hint">首页优先做只读总览，钱包与写操作后续接入。</p>
+                <label class="locale-picker" for="locale-select">
+                    <span data-i18n="actions.language">Language</span>
+                    <select id="locale-select">
+                        <option value="en" data-i18n="locales.en">English</option>
+                        <option value="zh-CN" data-i18n="locales.zh-CN">简体中文</option>
+                    </select>
+                </label>
+                <button id="refresh-btn" type="button" data-i18n="actions.refresh">Refresh</button>
+                <p class="hint" data-i18n="hero.hint">The first release focuses on a read-only overview. Wallet connections and write actions will come later.</p>
             </div>
         </header>
 
         <section class="grid grid-4">
             <article class="card metric">
-                <h2>更新时间</h2>
+                <h2 data-i18n="metrics.updatedAt">Updated</h2>
                 <p id="metric-updated-at" class="value">-</p>
             </article>
             <article class="card metric">
-                <h2>BTC 网络</h2>
+                <h2 data-i18n="metrics.btcNetwork">BTC Network</h2>
                 <p id="metric-btc-network" class="value">-</p>
             </article>
             <article class="card metric">
-                <h2>BTC 区块高度</h2>
+                <h2 data-i18n="metrics.btcHeight">BTC Block Height</h2>
                 <p id="metric-btc-height" class="value">-</p>
             </article>
             <article class="card metric">
-                <h2>ETHW 区块高度</h2>
+                <h2 data-i18n="metrics.ethwHeight">ETHW Block Height</h2>
                 <p id="metric-ethw-height" class="value">-</p>
             </article>
         </section>
 
         <section class="card">
             <div class="card-head">
-                <h2>服务状态</h2>
+                <h2 data-i18n="sections.services">Service Status</h2>
                 <p id="services-summary" class="hint">-</p>
             </div>
             <div class="service-grid">
@@ -88,7 +95,7 @@
         <section class="grid grid-3">
             <article class="card">
                 <div class="card-head">
-                    <h2>Bootstrap Manifest</h2>
+                    <h2 data-i18n="sections.bootstrapManifest">Bootstrap Manifest</h2>
                     <span id="bootstrap-manifest-state" class="pill" data-kind="file">-</span>
                 </div>
                 <p id="bootstrap-manifest-path" class="path">-</p>
@@ -98,7 +105,7 @@
 
             <article class="card">
                 <div class="card-head">
-                    <h2>Snapshot Marker</h2>
+                    <h2 data-i18n="sections.snapshotMarker">Snapshot Marker</h2>
                     <span id="snapshot-marker-state" class="pill" data-kind="file">-</span>
                 </div>
                 <p id="snapshot-marker-path" class="path">-</p>
@@ -108,7 +115,7 @@
 
             <article class="card">
                 <div class="card-head">
-                    <h2>ETHW Init Marker</h2>
+                    <h2 data-i18n="sections.ethwInitMarker">ETHW Init Marker</h2>
                     <span id="ethw-marker-state" class="pill" data-kind="file">-</span>
                 </div>
                 <p id="ethw-marker-path" class="path">-</p>
@@ -119,7 +126,7 @@
 
         <section class="card">
             <div class="card-head">
-                <h2>Cold-Start Steps</h2>
+                <h2 data-i18n="sections.coldStartSteps">Cold-Start Steps</h2>
                 <span id="bootstrap-overall-state" class="pill" data-kind="state">-</span>
             </div>
             <div id="bootstrap-steps" class="steps-grid"></div>
@@ -127,22 +134,23 @@
 
         <section class="card">
             <div class="card-head">
-                <h2>Explorer 入口</h2>
-                <p class="hint">现有两个页面先保留为独立 service explorer，由控制台统一跳转。</p>
+                <h2 data-i18n="sections.explorers">Explorer Entry Points</h2>
+                <p class="hint" data-i18n="explorers.hint">The existing pages remain as standalone service explorers. The console links to them from a single overview.</p>
             </div>
             <div class="link-grid">
                 <a id="link-balance-history" class="link-card" href="/explorers/balance-history/">
                     <strong>Balance History Explorer</strong>
-                    <span>查看地址余额、同步状态与 UTXO 细节</span>
+                    <span data-i18n="explorers.balanceHistoryDescription">Inspect address balances, sync progress, and UTXO details.</span>
                 </a>
                 <a id="link-usdb-indexer" class="link-card" href="/explorers/usdb-indexer/">
                     <strong>USDB Indexer Explorer</strong>
-                    <span>查看矿工证、能量、排行与协议状态</span>
+                    <span data-i18n="explorers.usdbIndexerDescription">Inspect miner passes, energy, rankings, and protocol state.</span>
                 </a>
             </div>
         </section>
     </main>
 
+    <script src="./i18n.js"></script>
     <script src="./app.js"></script>
 </body>
 </html>

@@ -111,7 +111,8 @@ pub struct EthwServiceSummary {
 pub struct BootstrapStepSummary {
     pub step: String,
     pub state: String,
-    pub detail: String,
+    pub artifact_path: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
