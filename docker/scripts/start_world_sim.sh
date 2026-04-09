@@ -1,0 +1,491 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ord_bin="${ORD_BIN:-/run/world-sim/bin/ord}"
+bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/run/world-sim/bitcoin-bin}"
+bitcoin_cli="${bitcoin_bin_dir}/bitcoin-cli"
+btc_rpc_url="${BTC_RPC_URL:-http://btc-node:28132}"
+btc_target="${btc_rpc_url#*://}"
+btc_host="${btc_target%%:*}"
+btc_port="${btc_target##*:}"
+btc_data_dir="${BTC_DATA_DIR:-/data/bitcoind}"
+btc_auth_mode="${BTC_AUTH_MODE:-cookie}"
+btc_rpc_user="${BTC_RPC_USER:-}"
+btc_rpc_password="${BTC_RPC_PASSWORD:-}"
+ord_data_dir="${ORD_DATA_DIR:-/data/ord}"
+ord_server_url="${ORD_SERVER_URL:-http://ord-server:28130}"
+balance_history_rpc_url="${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}"
+usdb_rpc_url="${USDB_RPC_URL:-http://usdb-indexer:28120}"
+world_sim_work_dir="${WORLD_SIM_WORK_DIR:-/data/world-sim}"
+world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.py}"
+cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
+sync_timeout_sec="${SYNC_TIMEOUT_SEC:-300}"
+
+miner_wallet_name="${MINER_WALLET_NAME:-usdb-world-miner}"
+wallet_prefix="${ORD_WALLET_PREFIX:-usdb-world-agent}"
+agent_count="${AGENT_COUNT:-5}"
+premine_blocks="${PREMINE_BLOCKS:-140}"
+fund_agent_amount_btc="${FUND_AGENT_AMOUNT_BTC:-4.0}"
+fund_confirm_blocks="${FUND_CONFIRM_BLOCKS:-2}"
+
+log() {
+  printf '[docker-world-sim] %s\n' "$*"
+}
+
+require_file() {
+  local path="${1:?path is required}"
+  local label="${2:?label is required}"
+  [[ -e "${path}" ]] || {
+    echo "Missing ${label}: ${path}" >&2
+    exit 1
+  }
+}
+
+require_executable() {
+  local path="${1:?path is required}"
+  local label="${2:?label is required}"
+  [[ -x "${path}" ]] || {
+    echo "Missing executable ${label}: ${path}" >&2
+    exit 1
+  }
+}
+
+json_rpc_call() {
+  local url="${1:?url is required}"
+  local method="${2:?method is required}"
+  local params="${3:-[]}"
+
+  curl -fsS \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}" \
+    "${url}"
+}
+
+json_result_u32() {
+  python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("result", 0)))'
+}
+
+rpc_consensus_ready() {
+  local url="${1:?url is required}"
+  json_rpc_call "${url}" "get_readiness" \
+    | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+r = d.get("result") or {}
+print(1 if r.get("consensus_ready") else 0)'
+}
+
+wait_rpc_ready() {
+  local service_name="${1:?service is required}"
+  local url="${2:?url is required}"
+  local method="${3:?method is required}"
+  local params="${4:-[]}"
+  local attempts="${5:-240}"
+
+  log "Waiting for ${service_name} RPC at ${url}"
+  for _ in $(seq 1 "${attempts}"); do
+    if json_rpc_call "${url}" "${method}" "${params}" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.5
+  done
+  echo "${service_name} RPC is not ready at ${url}" >&2
+  exit 1
+}
+
+wait_http_ready() {
+  local service_name="${1:?service is required}"
+  local url="${2:?url is required}"
+  local attempts="${3:-240}"
+
+  log "Waiting for ${service_name} HTTP readiness at ${url}"
+  for _ in $(seq 1 "${attempts}"); do
+    if curl -fsS "${url}" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.5
+  done
+  echo "${service_name} is not ready at ${url}" >&2
+  exit 1
+}
+
+btc_cli() {
+  local args=(
+    -regtest
+    -datadir="${btc_data_dir}"
+    -rpcconnect="${btc_host}"
+    -rpcport="${btc_port}"
+  )
+  case "${btc_auth_mode}" in
+    cookie)
+      args+=(-rpccookiefile="${cookie_file}")
+      ;;
+    userpass)
+      : "${btc_rpc_user:?BTC_RPC_USER is required when BTC_AUTH_MODE=userpass}"
+      : "${btc_rpc_password:?BTC_RPC_PASSWORD is required when BTC_AUTH_MODE=userpass}"
+      args+=(-rpcuser="${btc_rpc_user}" -rpcpassword="${btc_rpc_password}")
+      ;;
+    *)
+      echo "Unsupported BTC_AUTH_MODE=${btc_auth_mode}" >&2
+      exit 1
+      ;;
+  esac
+  "${bitcoin_cli}" "${args[@]}" "$@"
+}
+
+wait_for_bitcoin_rpc() {
+  local timeout_secs="${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+  local start_ts now
+
+  log "Waiting for authenticated bitcoind RPC at ${btc_rpc_url}"
+  start_ts="$(date +%s)"
+  while true; do
+    if btc_cli getblockcount >/dev/null 2>&1; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting for authenticated bitcoind RPC at ${btc_rpc_url}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_until_ord_server_synced_to_bitcoind() {
+  local start_ts now ord_height btc_height
+  start_ts="$(date +%s)"
+  while true; do
+    btc_height="$(btc_cli getblockcount 2>/dev/null || echo 0)"
+    ord_height="$(curl -fsS "${ord_server_url}/blockcount" 2>/dev/null | tr -d '\n\r ' || echo 0)"
+    if [[ "${ord_height}" =~ ^[0-9]+$ ]] && [[ "${btc_height}" =~ ^[0-9]+$ ]] && [[ "${ord_height}" -ge "${btc_height}" ]]; then
+      return
+    fi
+    now="$(date +%s)"
+    if (( now - start_ts > sync_timeout_sec )); then
+      echo "ord server sync timeout: ord_height=${ord_height:-unknown}, btc_height=${btc_height:-unknown}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_until_balance_history_synced() {
+  local target_height="${1:?target height is required}"
+  local start_ts now resp synced consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(json_rpc_call "${balance_history_rpc_url}" "get_block_height" || true)"
+    synced="$(echo "${resp}" | json_result_u32 2>/dev/null || true)"
+    synced="${synced:-0}"
+    consensus_ready="$(rpc_consensus_ready "${balance_history_rpc_url}" 2>/dev/null || echo 0)"
+    if [[ "${synced}" -ge "${target_height}" ]] && [[ "${consensus_ready}" == "1" ]]; then
+      return
+    fi
+    now="$(date +%s)"
+    if (( now - start_ts > sync_timeout_sec )); then
+      echo "balance-history sync timeout, target=${target_height}, last=${resp}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_until_usdb_synced() {
+  local target_height="${1:?target height is required}"
+  local start_ts now resp synced consensus_ready
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(json_rpc_call "${usdb_rpc_url}" "get_synced_block_height" || true)"
+    synced="$(echo "${resp}" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(0)
+    raise SystemExit(0)
+res = d.get("result")
+print(int(res) if res is not None else 0)
+' 2>/dev/null || true)"
+    synced="${synced:-0}"
+    consensus_ready="$(rpc_consensus_ready "${usdb_rpc_url}" 2>/dev/null || echo 0)"
+    if [[ "${synced}" -ge "${target_height}" ]] && [[ "${consensus_ready}" == "1" ]]; then
+      return
+    fi
+    now="$(date +%s)"
+    if (( now - start_ts > sync_timeout_sec )); then
+      echo "usdb-indexer sync timeout, target=${target_height}, last=${resp}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+run_ord() {
+  local args=(
+    --regtest
+    --bitcoin-rpc-url "${btc_rpc_url}"
+    --bitcoin-data-dir "${btc_data_dir}"
+    --data-dir "${ord_data_dir}"
+  )
+  case "${btc_auth_mode}" in
+    cookie)
+      args+=(--cookie-file "${cookie_file}")
+      ;;
+    userpass)
+      args+=(--bitcoin-rpc-username "${btc_rpc_user}" --bitcoin-rpc-password "${btc_rpc_password}")
+      ;;
+  esac
+  "${ord_bin}" "${args[@]}" "$@"
+}
+
+run_ord_wallet_named() {
+  local wallet_name="${1:?wallet name is required}"
+  shift
+  run_ord wallet \
+    --no-sync \
+    --server-url "${ord_server_url}" \
+    --name "${wallet_name}" \
+    "$@"
+}
+
+extract_bech32_address() {
+  local raw="${1:?raw output is required}"
+  python3 - "${raw}" <<'PY'
+import re
+import sys
+
+raw = sys.argv[1]
+m = re.search(r"(bc1|tb1|bcrt1)[ac-hj-np-z02-9]{20,}", raw)
+if m:
+    print(m.group(0))
+PY
+}
+
+ensure_wallet_loaded() {
+  local wallet_name="${1:?wallet name is required}"
+  local timeout_secs="${WALLET_READY_TIMEOUT_SECS:-60}"
+  local start_ts now
+
+  log "Ensuring BTC wallet is loaded: ${wallet_name}"
+  start_ts="$(date +%s)"
+  while true; do
+    if btc_cli -rpcwallet="${wallet_name}" getwalletinfo >/dev/null 2>&1; then
+      return
+    fi
+
+    btc_cli -named createwallet wallet_name="${wallet_name}" load_on_startup=true >/dev/null 2>&1 || true
+    btc_cli loadwallet "${wallet_name}" >/dev/null 2>&1 || true
+
+    if btc_cli -rpcwallet="${wallet_name}" getwalletinfo >/dev/null 2>&1; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting for wallet to load: ${wallet_name}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+join_by_comma() {
+  local IFS=","
+  echo "$*"
+}
+
+retry_until_success() {
+  local label="${1:?label is required}"
+  local timeout_secs="${2:?timeout is required}"
+  shift 2
+
+  local start_ts now
+  start_ts="$(date +%s)"
+  while true; do
+    if "$@" >/dev/null 2>&1; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting for ${label}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+retry_capture_output() {
+  local label="${1:?label is required}"
+  local timeout_secs="${2:?timeout is required}"
+  shift 2
+
+  local start_ts now output
+  start_ts="$(date +%s)"
+  while true; do
+    if output="$("$@" 2>&1)"; then
+      printf '%s\n' "${output}"
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting for ${label}: ${output}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+require_executable "${ord_bin}" "ord binary"
+require_executable "${bitcoin_cli}" "bitcoin-cli"
+if [[ "${btc_auth_mode}" == "cookie" ]]; then
+  require_file "${cookie_file}" "Bitcoin cookie file"
+fi
+require_file "${world_simulator}" "world simulator"
+
+mkdir -p "${world_sim_work_dir}" "${ord_data_dir}"
+
+/opt/usdb/docker/scripts/wait_for_tcp.sh "${btc_host}" "${btc_port}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+wait_for_bitcoin_rpc
+wait_http_ready "ord-server" "${ord_server_url}/blockcount"
+wait_rpc_ready "balance-history" "${balance_history_rpc_url}" "get_network_type"
+wait_rpc_ready "usdb-indexer" "${usdb_rpc_url}" "get_network_type"
+
+ensure_wallet_loaded "${miner_wallet_name}"
+
+log "Allocating mining address from wallet: ${miner_wallet_name}"
+mining_address="$(btc_cli -rpcwallet="${miner_wallet_name}" getnewaddress)"
+current_height="$(btc_cli getblockcount)"
+
+if [[ "${current_height}" -lt "${premine_blocks}" ]]; then
+  blocks_to_mine="$(( premine_blocks - current_height ))"
+  log "Premining ${blocks_to_mine} blocks to reach height ${premine_blocks}"
+  btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${blocks_to_mine}" "${mining_address}" >/dev/null
+else
+  log "Skipping premine: current_height=${current_height} already >= ${premine_blocks}"
+fi
+
+wait_until_ord_server_synced_to_bitcoind
+
+declare -a agent_wallets=()
+declare -a agent_addresses=()
+
+log "Preparing ${agent_count} world-sim agent wallets"
+for i in $(seq 1 "${agent_count}"); do
+  wallet_name="${wallet_prefix}-${i}"
+  agent_wallets+=("${wallet_name}")
+  log "Preparing ord wallet ${wallet_name}"
+  retry_until_success "ord wallet create ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" create
+  receive_output="$(retry_capture_output "ord wallet receive ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" receive)"
+  receive_address="$(extract_bech32_address "${receive_output}")"
+  if [[ -z "${receive_address}" ]]; then
+    echo "Failed to parse receive address: wallet=${wallet_name}, output=${receive_output}" >&2
+    exit 1
+  fi
+  agent_addresses+=("${receive_address}")
+
+  btc_cli -rpcwallet="${miner_wallet_name}" sendtoaddress "${receive_address}" "${fund_agent_amount_btc}" >/dev/null
+done
+
+log "Confirming agent funding with ${fund_confirm_blocks} blocks"
+btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${fund_confirm_blocks}" "${mining_address}" >/dev/null
+
+wait_until_ord_server_synced_to_bitcoind
+
+current_height="$(btc_cli getblockcount)"
+wait_until_balance_history_synced "${current_height}"
+wait_until_usdb_synced "${current_height}"
+
+agent_wallets_csv="$(join_by_comma "${agent_wallets[@]}")"
+agent_addresses_csv="$(join_by_comma "${agent_addresses[@]}")"
+
+fail_fast_arg=()
+if [[ "${SIM_FAIL_FAST:-0}" == "1" ]]; then
+  fail_fast_arg+=(--fail-fast)
+fi
+
+report_args=()
+if [[ "${SIM_REPORT_ENABLED:-1}" == "1" ]]; then
+  report_args+=(--report-file "${WORLD_SIM_REPORT_FILE:-${world_sim_work_dir}/world-sim-report.jsonl}")
+  report_args+=(--report-flush-every "${SIM_REPORT_FLUSH_EVERY:-1}")
+fi
+
+self_check_args=()
+if [[ "${SIM_AGENT_SELF_CHECK_ENABLED:-1}" != "1" ]]; then
+  self_check_args+=(--disable-agent-self-check)
+else
+  self_check_args+=(--agent-self-check-interval-blocks "${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}")
+  self_check_args+=(--agent-self-check-sample-size "${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}")
+fi
+
+global_cross_check_args=()
+if [[ "${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}" != "1" ]]; then
+  global_cross_check_args+=(--disable-global-cross-check)
+else
+  global_cross_check_args+=(
+    --global-cross-check-interval-blocks "${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}"
+    --global-cross-check-leaderboard-top-n "${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}"
+    --global-cross-check-owner-sample-size "${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
+  )
+fi
+
+validator_sample_args=()
+if [[ "${SIM_VALIDATOR_SAMPLE_ENABLED:-0}" == "1" ]]; then
+  validator_sample_args+=(
+    --enable-validator-sample
+    --validator-sample-mode "${SIM_VALIDATOR_SAMPLE_MODE:-single}"
+    --validator-sample-interval-blocks "${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS:-0}"
+    --validator-sample-size "${SIM_VALIDATOR_SAMPLE_SIZE:-1}"
+    --validator-sample-min-head-advance "${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-2}"
+  )
+  if [[ "${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}" == "1" ]]; then
+    validator_sample_args+=(--enable-validator-sample-tamper-check)
+  fi
+fi
+
+log "Launching world simulator: blocks=${SIM_BLOCKS:-300}, seed=${SIM_SEED:-42}, agents=${agent_count}"
+
+exec python3 "${world_simulator}" \
+  --btc-cli "${bitcoin_cli}" \
+  --bitcoin-dir "${btc_data_dir}" \
+  --btc-rpc-port "${btc_port}" \
+  --ord-bin "${ord_bin}" \
+  --ord-data-dir "${ord_data_dir}" \
+  --ord-server-url "${ord_server_url}" \
+  --miner-wallet "${miner_wallet_name}" \
+  --mining-address "${mining_address}" \
+  --agent-wallets "${agent_wallets_csv}" \
+  --agent-addresses "${agent_addresses_csv}" \
+  --balance-history-rpc-url "${balance_history_rpc_url}" \
+  --usdb-rpc-url "${usdb_rpc_url}" \
+  --sync-timeout-sec "${sync_timeout_sec}" \
+  --blocks "${SIM_BLOCKS:-300}" \
+  --seed "${SIM_SEED:-42}" \
+  --fee-rate "${SIM_FEE_RATE:-1}" \
+  --max-actions-per-block "${SIM_MAX_ACTIONS_PER_BLOCK:-2}" \
+  --mint-probability "${SIM_MINT_PROBABILITY:-0.20}" \
+  --invalid-mint-probability "${SIM_INVALID_MINT_PROBABILITY:-0.02}" \
+  --transfer-probability "${SIM_TRANSFER_PROBABILITY:-0.20}" \
+  --remint-probability "${SIM_REMINT_PROBABILITY:-0.10}" \
+  --send-probability "${SIM_SEND_PROBABILITY:-0.30}" \
+  --spend-probability "${SIM_SPEND_PROBABILITY:-0.15}" \
+  --sleep-ms-between-blocks "${SIM_SLEEP_MS_BETWEEN_BLOCKS:-0}" \
+  --initial-active-agents "${SIM_INITIAL_ACTIVE_AGENTS:-3}" \
+  --agent-growth-interval-blocks "${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}" \
+  --agent-growth-step "${SIM_AGENT_GROWTH_STEP:-1}" \
+  --policy-mode "${SIM_POLICY_MODE:-adaptive}" \
+  --scripted-cycle "${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}" \
+  "${self_check_args[@]}" \
+  "${global_cross_check_args[@]}" \
+  "${validator_sample_args[@]}" \
+  "${report_args[@]}" \
+  --reorg-interval-blocks "${SIM_REORG_INTERVAL_BLOCKS:-0}" \
+  --reorg-depth "${SIM_REORG_DEPTH:-3}" \
+  --reorg-max-events "${SIM_REORG_MAX_EVENTS:-1}" \
+  --temp-dir "${world_sim_work_dir}" \
+  "${fail_fast_arg[@]}"

@@ -1,0 +1,160 @@
+services:
+  btc-node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.world-sim-tools
+    image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
+    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim_bitcoind.sh"]
+    environment:
+      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
+      BTC_NODE_DATA_DIR: ${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
+      BTC_RPC_PORT: ${BTC_RPC_PORT:-28132}
+      BTC_P2P_PORT: ${BTC_P2P_PORT:-28133}
+      BTC_FALLBACK_FEE: ${BTC_FALLBACK_FEE:-0.0002}
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+    volumes:
+      - btc-data:${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
+      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
+
+  snapshot-loader:
+    environment:
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+
+  balance-history:
+    environment:
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
+
+  usdb-indexer:
+    environment:
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
+
+  usdb-control-plane:
+    environment:
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+
+  ord-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.world-sim-tools
+    image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_ord_server.sh"]
+    depends_on:
+      btc-node:
+        condition: service_started
+    environment:
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
+      ORD_BIN: /run/world-sim/bin/ord
+      ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
+      ORD_SERVER_PORT: ${ORD_SERVER_PORT:-28130}
+      WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-120}
+      ORD_SERVER_EXTRA_ARGS: ${ORD_SERVER_EXTRA_ARGS:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - ord-data:${ORD_DATA_DIR:-/data/ord}
+      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
+      - ${WORLD_SIM_ORD_BIN_HOST_PATH:?WORLD_SIM_ORD_BIN_HOST_PATH is required}:/run/world-sim/bin/ord:ro
+    ports:
+      - "${ORD_SERVER_BIND_PORT:-28130}:${ORD_SERVER_PORT:-28130}"
+    networks:
+      - usdb-net
+
+  world-sim-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.world-sim-tools
+    image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
+    depends_on:
+      ord-server:
+        condition: service_started
+      balance-history:
+        condition: service_started
+      usdb-indexer:
+        condition: service_started
+    environment:
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
+      BTC_NETWORK: ${BTC_NETWORK:-regtest}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_AUTH_MODE: userpass
+      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
+      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
+      ORD_BIN: /run/world-sim/bin/ord
+      ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
+      ORD_SERVER_URL: ${ORD_RPC_URL:-http://ord-server:28130}
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}
+      USDB_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28120}
+      WORLD_SIM_WORK_DIR: ${WORLD_SIM_WORK_DIR:-/data/world-sim}
+      WORLD_SIM_REPORT_FILE: ${WORLD_SIM_REPORT_FILE:-/data/world-sim/world-sim-report.jsonl}
+      MINER_WALLET_NAME: ${MINER_WALLET_NAME:-usdb-world-miner}
+      ORD_WALLET_PREFIX: ${ORD_WALLET_PREFIX:-usdb-world-agent}
+      AGENT_COUNT: ${AGENT_COUNT:-5}
+      PREMINE_BLOCKS: ${PREMINE_BLOCKS:-140}
+      FUND_AGENT_AMOUNT_BTC: ${FUND_AGENT_AMOUNT_BTC:-4.0}
+      FUND_CONFIRM_BLOCKS: ${FUND_CONFIRM_BLOCKS:-2}
+      SYNC_TIMEOUT_SEC: ${SYNC_TIMEOUT_SEC:-300}
+      SIM_BLOCKS: ${SIM_BLOCKS:-300}
+      SIM_SEED: ${SIM_SEED:-42}
+      SIM_FEE_RATE: ${SIM_FEE_RATE:-1}
+      SIM_MAX_ACTIONS_PER_BLOCK: ${SIM_MAX_ACTIONS_PER_BLOCK:-2}
+      SIM_MINT_PROBABILITY: ${SIM_MINT_PROBABILITY:-0.20}
+      SIM_INVALID_MINT_PROBABILITY: ${SIM_INVALID_MINT_PROBABILITY:-0.02}
+      SIM_TRANSFER_PROBABILITY: ${SIM_TRANSFER_PROBABILITY:-0.20}
+      SIM_REMINT_PROBABILITY: ${SIM_REMINT_PROBABILITY:-0.10}
+      SIM_SEND_PROBABILITY: ${SIM_SEND_PROBABILITY:-0.30}
+      SIM_SPEND_PROBABILITY: ${SIM_SPEND_PROBABILITY:-0.15}
+      SIM_SLEEP_MS_BETWEEN_BLOCKS: ${SIM_SLEEP_MS_BETWEEN_BLOCKS:-0}
+      SIM_FAIL_FAST: ${SIM_FAIL_FAST:-0}
+      SIM_INITIAL_ACTIVE_AGENTS: ${SIM_INITIAL_ACTIVE_AGENTS:-3}
+      SIM_AGENT_GROWTH_INTERVAL_BLOCKS: ${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}
+      SIM_AGENT_GROWTH_STEP: ${SIM_AGENT_GROWTH_STEP:-1}
+      SIM_POLICY_MODE: ${SIM_POLICY_MODE:-adaptive}
+      SIM_SCRIPTED_CYCLE: ${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}
+      SIM_REPORT_ENABLED: ${SIM_REPORT_ENABLED:-1}
+      SIM_REPORT_FLUSH_EVERY: ${SIM_REPORT_FLUSH_EVERY:-1}
+      SIM_AGENT_SELF_CHECK_ENABLED: ${SIM_AGENT_SELF_CHECK_ENABLED:-1}
+      SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS: ${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}
+      SIM_AGENT_SELF_CHECK_SAMPLE_SIZE: ${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}
+      SIM_GLOBAL_CROSS_CHECK_ENABLED: ${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}
+      SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS: ${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}
+      SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N: ${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}
+      SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE: ${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}
+      SIM_VALIDATOR_SAMPLE_ENABLED: ${SIM_VALIDATOR_SAMPLE_ENABLED:-0}
+      SIM_VALIDATOR_SAMPLE_MODE: ${SIM_VALIDATOR_SAMPLE_MODE:-single}
+      SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED: ${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}
+      SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS: ${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS:-0}
+      SIM_VALIDATOR_SAMPLE_SIZE: ${SIM_VALIDATOR_SAMPLE_SIZE:-1}
+      SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE: ${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-2}
+      SIM_REORG_INTERVAL_BLOCKS: ${SIM_REORG_INTERVAL_BLOCKS:-0}
+      SIM_REORG_DEPTH: ${SIM_REORG_DEPTH:-3}
+      SIM_REORG_MAX_EVENTS: ${SIM_REORG_MAX_EVENTS:-1}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - ord-data:${ORD_DATA_DIR:-/data/ord}
+      - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}
+      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
+      - ${WORLD_SIM_ORD_BIN_HOST_PATH:?WORLD_SIM_ORD_BIN_HOST_PATH is required}:/run/world-sim/bin/ord:ro
+    networks:
+      - usdb-net
+
+volumes:
+  ord-data:
+  world-sim-data:

@@ -248,6 +248,40 @@
 - development-only `dumpgenesis` 生成模式
 - 更完整的多节点 devnet 编排
 
+## 2.8 `world-sim` 作为 `dev-sim` 的可选附加层
+
+当前建议已经明确：
+
+- 不改变默认 `dev-sim`
+- 新增一个独立的 `world-sim` overlay
+- 用于让本地 regtest 持续自动出块并驱动真实协议动作
+
+这个模式的目标是：
+
+- 让 `usdb-control-plane` 和控制台不再长期停留在“服务可达但几乎没有链上活动”
+- 给后续钱包集成、矿工证 mint 演示和协议交互提供一个更接近真实运行的本地环境
+
+第一批实现的方向是：
+
+- 新增 `compose.world-sim.yml`
+- 新增 `ord-server`
+- 新增 `world-sim-runner`
+- 在 `world-sim` overlay 下覆盖 `btc-node`，使其使用 host-mounted
+  Bitcoin Core 28.x binaries
+- 直接复用现有：
+  - `regtest_world_simulator.py`
+- 并通过专门的本地入口脚本统一启动
+
+这个模式仍然是：
+
+- **可选**
+- **开发期专用**
+- **不进入默认 joiner / 默认 dev-sim 路径**
+
+详细方案见：
+
+- `doc/dev-sim-world-sim-plan.md`
+
 ## 3. 部署模式
 
 当前建议将 Docker 部署分成三类模式。

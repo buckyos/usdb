@@ -1,0 +1,25 @@
+FROM python:3.12-bookworm
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        jq \
+        procps \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/scripts/start_ord_server.sh /opt/usdb/docker/scripts/start_ord_server.sh
+COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
+COPY docker/scripts/start_world_sim.sh /opt/usdb/docker/scripts/start_world_sim.sh
+COPY docker/scripts/wait_for_tcp.sh /opt/usdb/docker/scripts/wait_for_tcp.sh
+COPY src/btc/usdb-indexer/scripts/regtest_world_simulator.py /opt/usdb/world-sim/regtest_world_simulator.py
+
+RUN chmod +x /opt/usdb/docker/scripts/start_ord_server.sh \
+    /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh \
+    /opt/usdb/docker/scripts/start_world_sim.sh \
+    /opt/usdb/docker/scripts/wait_for_tcp.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

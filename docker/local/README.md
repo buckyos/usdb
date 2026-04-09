@@ -25,6 +25,10 @@ docker/local/
     snapshots/
     keys/
     manifests/
+  world-sim/
+    env/
+      world-sim.env
+    runtime/
 ```
 
 Suggested usage:
@@ -52,6 +56,16 @@ docker/scripts/run_console_preview.sh up
 If the local `dev-sim.env` file is missing, the helper will scaffold it from
 `docker/env/dev-sim.env.example` automatically and will never overwrite an
 existing file.
+
+For the optional regtest world-sim overlay, use:
+
+- `docker/local/world-sim/env/world-sim.env`
+
+and start it with:
+
+```bash
+docker/scripts/run_world_sim.sh up
+```
 
 Do not store:
 

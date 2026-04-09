@@ -25,6 +25,8 @@ Current non-goals:
   - mainnet-style joiner overlay
 - `compose.dev-sim.yml`
   - regtest/local simulation overlay
+- `compose.world-sim.yml`
+  - optional overlay that adds ord + continuous protocol simulation on top of `dev-sim`
 - `compose.bootstrap.yml`
   - cold-start bootstrap overlay
 - `env/*.env.example`
@@ -119,6 +121,57 @@ This runs:
 Current `dev-sim` still keeps `usdb-indexer` on `inscription_source=bitcoind`.
 `ord` is a development-only dependency and will only be added to a future
 `dev-sim` profile, not to the default `joiner` stack.
+
+## Dev-Sim World-Sim Overlay
+
+If you want a local regtest stack that continuously mines BTC blocks and
+generates protocol activity, use the optional world-sim overlay:
+
+```bash
+docker/scripts/run_world_sim.sh up
+```
+
+This helper initializes:
+
+- `docker/local/world-sim/env/world-sim.env`
+
+and starts:
+
+- `btc-node`
+- `snapshot-loader`
+- `balance-history`
+- `usdb-indexer`
+- `usdb-control-plane`
+- `ord-server`
+- `world-sim-runner`
+
+By default this mode does **not** start `ethw-node`, so the console will still
+show ETHW as unreachable unless you choose:
+
+```bash
+docker/scripts/run_world_sim.sh up-full
+```
+
+The first-batch world-sim overlay is explicitly development-only and currently
+requires host-mounted binaries:
+
+- `WORLD_SIM_BITCOIN_BIN_HOST_DIR`
+  - host directory containing Bitcoin Core 28.x binaries
+  - must include both `bitcoind` and `bitcoin-cli`
+- `WORLD_SIM_ORD_BIN_HOST_PATH`
+  - host path to the local `ord` binary
+
+Both values must be configured in:
+
+- `docker/local/world-sim/env/world-sim.env`
+
+Useful helper actions:
+
+```bash
+docker/scripts/run_world_sim.sh ps
+docker/scripts/run_world_sim.sh logs
+docker/scripts/run_world_sim.sh down
+```
 
 ## Console Preview
 
@@ -239,6 +292,9 @@ docker/local/
     snapshots/
     keys/
     manifests/
+  world-sim/
+    env/world-sim.env
+    runtime/
 ```
 
 Use this directory for:
@@ -258,6 +314,10 @@ Do not use it for:
 For bootstrap flows, the recommended local files are:
 
 - `docker/local/bootstrap/manifests/ethw-genesis.json`
+
+For the optional world-sim overlay, see:
+
+- [dev-sim-world-sim-plan.md](/home/bucky/work/usdb/doc/dev-sim-world-sim-plan.md)
 - `docker/local/bootstrap/manifests/ethw-genesis.manifest.json`
 - optional `docker/local/bootstrap/manifests/ethw-genesis.manifest.sig`
 - optional `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
