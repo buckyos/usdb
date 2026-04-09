@@ -278,6 +278,11 @@
   - 启动 overlay
   - 保留状态的关闭
   - 显式 reset
+- 暴露明确的 world-state policy：
+  - `WORLD_SIM_STATE_MODE=persistent`
+  - `WORLD_SIM_STATE_MODE=reset`
+  - `WORLD_SIM_STATE_MODE=seeded-reset`
+- 在 simulation loop 前增加 ord wallet / ord server 稳定性 gate
 
 这个模式仍然是：
 

@@ -72,6 +72,8 @@ services:
         condition: service_started
     environment:
       WORLD_SIM_MODE: bootstrap
+      WORLD_SIM_STATE_MODE: ${WORLD_SIM_STATE_MODE:-persistent}
+      WORLD_SIM_IDENTITY_SEED: ${WORLD_SIM_IDENTITY_SEED:-}
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
@@ -91,6 +93,8 @@ services:
       FUND_AGENT_AMOUNT_BTC: ${FUND_AGENT_AMOUNT_BTC:-4.0}
       FUND_CONFIRM_BLOCKS: ${FUND_CONFIRM_BLOCKS:-2}
       SYNC_TIMEOUT_SEC: ${SYNC_TIMEOUT_SEC:-300}
+      WORLD_SIM_ORD_STABILITY_PROBES: ${WORLD_SIM_ORD_STABILITY_PROBES:-2}
+      WORLD_SIM_ORD_STABILITY_SLEEP_SECS: ${WORLD_SIM_ORD_STABILITY_SLEEP_SECS:-1}
     volumes:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - ord-data:${ORD_DATA_DIR:-/data/ord}
@@ -113,6 +117,8 @@ services:
         condition: service_completed_successfully
     environment:
       WORLD_SIM_MODE: loop
+      WORLD_SIM_STATE_MODE: ${WORLD_SIM_STATE_MODE:-persistent}
+      WORLD_SIM_IDENTITY_SEED: ${WORLD_SIM_IDENTITY_SEED:-}
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
@@ -133,6 +139,8 @@ services:
       FUND_AGENT_AMOUNT_BTC: ${FUND_AGENT_AMOUNT_BTC:-4.0}
       FUND_CONFIRM_BLOCKS: ${FUND_CONFIRM_BLOCKS:-2}
       SYNC_TIMEOUT_SEC: ${SYNC_TIMEOUT_SEC:-300}
+      WORLD_SIM_ORD_STABILITY_PROBES: ${WORLD_SIM_ORD_STABILITY_PROBES:-2}
+      WORLD_SIM_ORD_STABILITY_SLEEP_SECS: ${WORLD_SIM_ORD_STABILITY_SLEEP_SECS:-1}
       SIM_BLOCKS: ${SIM_BLOCKS:-300}
       SIM_SEED: ${SIM_SEED:-42}
       SIM_FEE_RATE: ${SIM_FEE_RATE:-1}

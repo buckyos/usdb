@@ -60,6 +60,40 @@ ensure_world_sim_images() {
   ensure_image_exists "$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)"
 }
 
+state_mode() {
+  env_get WORLD_SIM_STATE_MODE persistent
+}
+
+identity_seed() {
+  env_get WORLD_SIM_IDENTITY_SEED ""
+}
+
+prepare_state_mode() {
+  local mode
+  mode="$(state_mode)"
+  case "${mode}" in
+    persistent)
+      ;;
+    reset)
+      echo "WORLD_SIM_STATE_MODE=reset -> clearing Docker volumes before startup"
+      compose down -v --remove-orphans >/dev/null 2>&1 || true
+      ;;
+    seeded-reset)
+      if [[ -z "$(identity_seed)" ]]; then
+        echo "WORLD_SIM_STATE_MODE=seeded-reset requires WORLD_SIM_IDENTITY_SEED" >&2
+        exit 1
+      fi
+      echo "WORLD_SIM_STATE_MODE=seeded-reset -> clearing Docker volumes before startup"
+      echo "Current implementation records the identity seed in bootstrap metadata but does not yet deterministically derive wallet private keys."
+      compose down -v --remove-orphans >/dev/null 2>&1 || true
+      ;;
+    *)
+      echo "Unsupported WORLD_SIM_STATE_MODE=${mode}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -85,10 +119,12 @@ shift || true
 case "${action}" in
   up)
     ensure_world_sim_images
+    prepare_state_mode
     compose up --build btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "$@"
     ;;
   up-full)
     ensure_world_sim_images
+    prepare_state_mode
     compose up --build "$@"
     ;;
   build-images)

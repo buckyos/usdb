@@ -149,6 +149,9 @@ Key runtime inputs:
 - image tags for:
   - `WORLD_SIM_BITCOIN_IMAGE`
   - `WORLD_SIM_TOOLS_IMAGE`
+- world-state policy:
+  - `WORLD_SIM_STATE_MODE`
+  - `WORLD_SIM_IDENTITY_SEED`
 - simulation parameters such as:
   - `SIM_BLOCKS`
   - `SIM_LOOP_BATCH_BLOCKS`
@@ -192,6 +195,18 @@ Recommended behavior:
   - stops containers but keeps world state
 - `reset`
   - stops containers and removes volumes
+
+Current state-policy semantics:
+
+- `WORLD_SIM_STATE_MODE=persistent`
+  - keep volumes and resume the current world
+- `WORLD_SIM_STATE_MODE=reset`
+  - clear volumes before startup
+- `WORLD_SIM_STATE_MODE=seeded-reset`
+  - clear volumes before startup
+  - require `WORLD_SIM_IDENTITY_SEED`
+  - record the chosen identity seed in bootstrap metadata
+  - full deterministic wallet/address derivation is still future work
 
 ## 8. Expected Console Outcome
 

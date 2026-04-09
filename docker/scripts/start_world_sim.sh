@@ -21,6 +21,8 @@ world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.
 cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
 sync_timeout_sec="${SYNC_TIMEOUT_SEC:-300}"
 world_sim_mode="${WORLD_SIM_MODE:-all}"
+world_sim_state_mode="${WORLD_SIM_STATE_MODE:-persistent}"
+world_sim_identity_seed="${WORLD_SIM_IDENTITY_SEED:-}"
 world_sim_bootstrap_dir="${WORLD_SIM_BOOTSTRAP_DIR:-${world_sim_work_dir}/bootstrap}"
 world_sim_bootstrap_marker="${WORLD_SIM_BOOTSTRAP_MARKER:-${world_sim_bootstrap_dir}/world-sim-bootstrap.done.json}"
 world_sim_loop_state_file="${WORLD_SIM_LOOP_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-loop-state.json}"
@@ -34,6 +36,8 @@ fund_confirm_blocks="${FUND_CONFIRM_BLOCKS:-2}"
 sim_blocks="${SIM_BLOCKS:-300}"
 sim_base_seed="${SIM_SEED:-42}"
 sim_loop_batch_blocks="${SIM_LOOP_BATCH_BLOCKS:-25}"
+ord_stability_probes="${WORLD_SIM_ORD_STABILITY_PROBES:-2}"
+ord_stability_sleep_secs="${WORLD_SIM_ORD_STABILITY_SLEEP_SECS:-1}"
 
 log() {
   printf '[docker-world-sim] %s\n' "$*"
@@ -381,6 +385,18 @@ prepare_runtime_environment() {
   fi
   require_file "${world_simulator}" "world simulator"
   mkdir -p "${world_sim_work_dir}" "${ord_data_dir}" "${world_sim_bootstrap_dir}"
+  case "${world_sim_state_mode}" in
+    persistent|reset|seeded-reset)
+      ;;
+    *)
+      echo "Unsupported WORLD_SIM_STATE_MODE=${world_sim_state_mode}" >&2
+      exit 1
+      ;;
+  esac
+  if [[ "${world_sim_state_mode}" == "seeded-reset" && -z "${world_sim_identity_seed}" ]]; then
+    echo "WORLD_SIM_STATE_MODE=seeded-reset requires WORLD_SIM_IDENTITY_SEED" >&2
+    exit 1
+  fi
 }
 
 wait_core_services() {
@@ -399,11 +415,23 @@ bootstrap_marker_matches() {
     "${agent_count}" \
     "${premine_blocks}" \
     "${fund_agent_amount_btc}" \
-    "${fund_confirm_blocks}" <<'PY'
+    "${fund_confirm_blocks}" \
+    "${world_sim_state_mode}" \
+    "${world_sim_identity_seed}" <<'PY'
 import json
 import sys
 
-marker_path, miner_wallet_name, wallet_prefix, agent_count, premine_blocks, fund_agent_amount_btc, fund_confirm_blocks = sys.argv[1:]
+(
+    marker_path,
+    miner_wallet_name,
+    wallet_prefix,
+    agent_count,
+    premine_blocks,
+    fund_agent_amount_btc,
+    fund_confirm_blocks,
+    world_sim_state_mode,
+    world_sim_identity_seed,
+) = sys.argv[1:]
 with open(marker_path, "r", encoding="utf-8") as fp:
     data = json.load(fp)
 
@@ -414,6 +442,8 @@ expected = {
     "premine_blocks": int(premine_blocks),
     "fund_agent_amount_btc": str(fund_agent_amount_btc),
     "fund_confirm_blocks": int(fund_confirm_blocks),
+    "state_mode": world_sim_state_mode,
+    "identity_seed": world_sim_identity_seed,
 }
 
 for key, value in expected.items():
@@ -475,6 +505,8 @@ write_bootstrap_marker() {
     "${premine_blocks}" \
     "${fund_agent_amount_btc}" \
     "${fund_confirm_blocks}" \
+    "${world_sim_state_mode}" \
+    "${world_sim_identity_seed}" \
     "${current_height}" \
     "${agent_wallets_csv}" \
     "${agent_addresses_csv}" <<'PY'
@@ -492,6 +524,8 @@ import time
     premine_blocks,
     fund_agent_amount_btc,
     fund_confirm_blocks,
+    world_sim_state_mode,
+    world_sim_identity_seed,
     current_height,
     agent_wallets_csv,
     agent_addresses_csv,
@@ -507,6 +541,8 @@ payload = {
     "premine_blocks": int(premine_blocks),
     "fund_agent_amount_btc": str(fund_agent_amount_btc),
     "fund_confirm_blocks": int(fund_confirm_blocks),
+    "state_mode": world_sim_state_mode,
+    "identity_seed": world_sim_identity_seed,
     "bootstrap_height": int(current_height),
     "agent_wallets": [v for v in agent_wallets_csv.split(",") if v],
     "agent_addresses": [v for v in agent_addresses_csv.split(",") if v],
@@ -517,6 +553,34 @@ with open(marker_path, "w", encoding="utf-8") as fp:
     json.dump(payload, fp, indent=2, sort_keys=True)
     fp.write("\n")
 PY
+}
+
+wait_until_ord_wallet_stable() {
+  local wallet_name="${1:?wallet name is required}"
+  local probe="1"
+  local timeout_secs="${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+
+  for probe in $(seq 1 "${ord_stability_probes}"); do
+    retry_until_success "ord wallet balance ${wallet_name} (probe ${probe}/${ord_stability_probes})" "${timeout_secs}" \
+      run_ord_wallet_named "${wallet_name}" balance
+    if [[ "${probe}" -lt "${ord_stability_probes}" ]]; then
+      sleep "${ord_stability_sleep_secs}"
+    fi
+  done
+}
+
+wait_until_ord_runtime_stable() {
+  local current_height="${1:?current height is required}"
+
+  wait_until_ord_server_synced_to_bitcoind
+  wait_until_balance_history_synced "${current_height}"
+  wait_until_usdb_synced "${current_height}"
+
+  IFS=',' read -r -a stable_wallets <<< "${agent_wallets_csv:-}"
+  for wallet_name in "${stable_wallets[@]}"; do
+    [[ -n "${wallet_name}" ]] || continue
+    wait_until_ord_wallet_stable "${wallet_name}"
+  done
 }
 
 read_completed_batches() {
@@ -543,13 +607,23 @@ write_loop_state() {
     "${completed_batches}" \
     "${batch_seed}" \
     "${current_height}" \
-    "${sim_loop_batch_blocks}" <<'PY'
+    "${sim_loop_batch_blocks}" \
+    "${world_sim_state_mode}" \
+    "${world_sim_identity_seed}" <<'PY'
 import json
 import os
 import sys
 import time
 
-loop_state_path, completed_batches, batch_seed, current_height, batch_blocks = sys.argv[1:]
+(
+    loop_state_path,
+    completed_batches,
+    batch_seed,
+    current_height,
+    batch_blocks,
+    world_sim_state_mode,
+    world_sim_identity_seed,
+) = sys.argv[1:]
 payload = {
     "version": 1,
     "updated_at": int(time.time()),
@@ -557,6 +631,8 @@ payload = {
     "last_batch_seed": int(batch_seed),
     "last_block_height": int(current_height),
     "batch_blocks": int(batch_blocks),
+    "state_mode": world_sim_state_mode,
+    "identity_seed": world_sim_identity_seed,
 }
 os.makedirs(os.path.dirname(loop_state_path), exist_ok=True)
 with open(loop_state_path, "w", encoding="utf-8") as fp:
@@ -615,14 +691,11 @@ bootstrap_world_sim() {
   log "Confirming agent funding with ${fund_confirm_blocks} blocks"
   btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${fund_confirm_blocks}" "${mining_address}" >/dev/null
 
-  wait_until_ord_server_synced_to_bitcoind
-
   current_height="$(btc_cli getblockcount)"
-  wait_until_balance_history_synced "${current_height}"
-  wait_until_usdb_synced "${current_height}"
 
   agent_wallets_csv="$(join_by_comma "${agent_wallets[@]}")"
   agent_addresses_csv="$(join_by_comma "${agent_addresses[@]}")"
+  wait_until_ord_runtime_stable "${current_height}"
   write_bootstrap_marker "${current_height}" "${agent_wallets_csv}" "${agent_addresses_csv}"
   log "Wrote world-sim bootstrap marker: ${world_sim_bootstrap_marker}"
 }
@@ -739,9 +812,7 @@ run_loop_mode() {
 
   load_bootstrap_state
   current_height="$(btc_cli getblockcount)"
-  wait_until_ord_server_synced_to_bitcoind
-  wait_until_balance_history_synced "${current_height}"
-  wait_until_usdb_synced "${current_height}"
+  wait_until_ord_runtime_stable "${current_height}"
 
   if [[ "${sim_blocks}" =~ ^[1-9][0-9]*$ ]]; then
     run_simulator_batch "${sim_blocks}" "${sim_base_seed}"

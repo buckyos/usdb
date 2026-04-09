@@ -69,6 +69,12 @@ This means:
   - removes volumes
   - starts from a clean world next time
 
+The operator helper now also exposes a startup state policy:
+
+- `WORLD_SIM_STATE_MODE=persistent`
+- `WORLD_SIM_STATE_MODE=reset`
+- `WORLD_SIM_STATE_MODE=seeded-reset`
+
 The bootstrap marker and loop state are stored under `world-sim-data`, so the
 runner can distinguish between:
 
@@ -188,6 +194,21 @@ The recommended next-stage model is:
   - start from empty state and deterministically recreate wallets, addresses,
     and bootstrap allocation
 
+The current implementation has now started exposing this contract at the
+operator layer:
+
+- `persistent`
+  - preserves the current world and reuses the existing bootstrap marker
+- `reset`
+  - clears Docker volumes before startup
+- `seeded-reset`
+  - clears Docker volumes before startup
+  - requires `WORLD_SIM_IDENTITY_SEED`
+  - records the chosen identity seed in the bootstrap marker
+
+This is still an intermediate step. It does **not** yet make wallet private
+keys or receive addresses deterministic.
+
 ### 8.3 Absolute Tick Derivation
 
 Instead of only using process-local RNG state, future batches should derive
@@ -213,8 +234,25 @@ It does **not** yet implement:
 - deterministic wallet identity derivation
 - full seeded-reset replay
 - exact mid-batch crash replay
+- exact deterministic wallet/address reconstruction from `WORLD_SIM_IDENTITY_SEED`
 
-## 10. Operator Guidance
+## 10. Runtime Stability Gates
+
+To reduce the ord wallet / ord server race observed immediately after funding
+and bootstrap, the runtime now performs an explicit stability gate before the
+simulation loop starts:
+
+1. wait until `ord-server` reaches the current BTC height
+2. wait until `balance-history` and `usdb-indexer` reach the same height and
+   report `consensus_ready=true`
+3. probe each agent ord wallet with repeated `ord wallet balance` calls
+
+These probes are controlled by:
+
+- `WORLD_SIM_ORD_STABILITY_PROBES`
+- `WORLD_SIM_ORD_STABILITY_SLEEP_SECS`
+
+## 11. Operator Guidance
 
 Recommended operator meanings:
 

@@ -445,6 +445,7 @@ class RegtestWorldSimulator:
                     f"wallet={wallet_name}, args={ord_args}, attempt={attempt}/{max_attempts}, "
                     f"backoff_sec={backoff_sec:.1f}, error={output}"
                 )
+                self.wait_for_ord_wallet_recovery(wallet_name)
                 time.sleep(backoff_sec)
                 continue
 
@@ -456,6 +457,86 @@ class RegtestWorldSimulator:
         raise WorldSimError(
             "ord wallet command failed after retries: "
             f"wallet={wallet_name}, args={ord_args}"
+        )
+
+    def get_bitcoin_block_height(self) -> int:
+        return int(self.run_btc_cli(None, ["getblockcount"]).strip())
+
+    def get_ord_server_block_height(self) -> int:
+        with request.urlopen(  # noqa: S310
+            f"{self.args.ord_server_url}/blockcount",
+            timeout=self.args.rpc_timeout_sec,
+        ) as response:
+            return int(response.read().decode("utf-8").strip() or "0")
+
+    def wait_for_ord_wallet_recovery(self, wallet_name: str) -> None:
+        deadline = time.time() + max(5, self.args.sync_timeout_sec)
+        target_height = self.get_bitcoin_block_height()
+        last_error = ""
+
+        while time.time() < deadline:
+            try:
+                ord_height = self.get_ord_server_block_height()
+            except Exception as e:  # noqa: BLE001
+                last_error = f"ord_blockcount_error={e}"
+                time.sleep(0.5)
+                continue
+
+            if ord_height < target_height:
+                last_error = (
+                    f"ord_height={ord_height} behind target_height={target_height}"
+                )
+                time.sleep(0.5)
+                continue
+
+            balance_cmd = [
+                self.args.ord_bin,
+                "--regtest",
+                "--bitcoin-rpc-url",
+                f"http://{self.args.btc_rpc_host}:{self.args.btc_rpc_port}",
+            ]
+            if self.args.btc_auth_mode == "cookie":
+                if not self.args.btc_cookie_file:
+                    raise WorldSimError("btc cookie auth requires --btc-cookie-file")
+                balance_cmd.extend(["--cookie-file", self.args.btc_cookie_file])
+            else:
+                if not self.args.btc_rpc_user or not self.args.btc_rpc_password:
+                    raise WorldSimError(
+                        "btc userpass auth requires --btc-rpc-user and --btc-rpc-password"
+                    )
+                balance_cmd.extend(
+                    [
+                        "--bitcoin-rpc-username",
+                        self.args.btc_rpc_user,
+                        "--bitcoin-rpc-password",
+                        self.args.btc_rpc_password,
+                    ]
+                )
+            balance_cmd.extend(
+                [
+                    "--bitcoin-data-dir",
+                    self.args.bitcoin_dir,
+                    "--data-dir",
+                    self.args.ord_data_dir,
+                    "wallet",
+                    "--no-sync",
+                    "--server-url",
+                    self.args.ord_server_url,
+                    "--name",
+                    wallet_name,
+                    "balance",
+                ]
+            )
+            proc = subprocess.run(balance_cmd, capture_output=True, text=True)
+            if proc.returncode == 0:
+                return
+
+            last_error = f"{proc.stdout}\n{proc.stderr}".strip()
+            time.sleep(0.5)
+
+        raise WorldSimError(
+            "ord wallet transient recovery timeout: "
+            f"wallet={wallet_name}, target_height={target_height}, last_error={last_error}"
         )
 
     def rpc_call(
