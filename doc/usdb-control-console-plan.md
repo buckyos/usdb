@@ -54,6 +54,7 @@
 4. 第一阶段优先只读观测，第二阶段再接钱包与写操作
 5. 运维/管理员视角与普通用户视角明确分层，不要一开始混成一个页面
 6. 默认面向全球用户时，UI 与 API 文案以英文为主，双语能力由前端 i18n 提供
+7. `buckyos_webdesktop` 作为上游参考，但 `usdb` 应保留本地冻结过的最小 WebUI 基线资源
 
 ### 3.1 UI 文案与双语策略
 
@@ -67,6 +68,20 @@
 - 后端接口和某一种语言强耦合
 - 前端只能被动展示后端拼接好的自然语言
 - 后续增加更多语言时需要反复改 API
+
+### 3.2 Upstream UI Adaptation Boundary
+
+The console should follow the `buckyos_webdesktop` WebUI conventions, but it
+should not directly depend on the full upstream project at runtime.
+
+Instead:
+
+- upstream remains the design and implementation reference
+- `usdb` keeps a local adaptation guide in `doc/usdb-console-webui-adaptation.md`
+- `usdb` stores a small frozen baseline under `web/shared/buckyos-webui-baseline/`
+
+This keeps the control console aligned with the BuckyOS design language without
+turning the `usdb` frontend into a hard downstream build of the full desktop app.
 
 ## 4. 总体架构
 

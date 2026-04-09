@@ -1,0 +1,146 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap');
+
+:root {
+  color-scheme: light;
+  --cp-bg: oklch(0.966 0.014 286);
+  --cp-bg-strong: oklch(0.925 0.022 284);
+  --cp-surface: color-mix(in srgb, oklch(0.99 0.006 280) 88%, white);
+  --cp-surface-2: color-mix(in srgb, oklch(0.953 0.018 286) 92%, white);
+  --cp-surface-opaque: color-mix(in srgb, oklch(0.99 0.006 280) 88%, white);
+  --cp-surface-2-opaque: color-mix(in srgb, oklch(0.953 0.018 286) 92%, white);
+  --cp-surface-3: color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface));
+  --cp-text: oklch(0.29 0.03 268);
+  --cp-muted: oklch(0.54 0.024 274);
+  --cp-border: color-mix(in srgb, oklch(0.71 0.024 280) 46%, transparent);
+  --cp-border-opaque: oklch(0.71 0.024 280);
+  --cp-accent: oklch(0.63 0.152 257);
+  --cp-accent-soft: oklch(0.79 0.065 296);
+  --cp-ink-accent: oklch(0.76 0.041 301);
+  --cp-success: oklch(0.74 0.13 160);
+  --cp-warning: oklch(0.78 0.11 65);
+  --cp-danger: oklch(0.64 0.15 25);
+  --cp-shadow: oklch(0.34 0.03 265);
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 46%, transparent);
+  --cp-panel-shadow: 0 22px 60px color-mix(in srgb, var(--cp-shadow) 10%, transparent);
+  --cp-window-shadow: 0 30px 90px color-mix(in srgb, var(--cp-shadow) 18%, transparent);
+  --cp-ease-emphasis: cubic-bezier(0.19, 1, 0.22, 1);
+  --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --cp-bg: oklch(0.22 0.022 274);
+  --cp-bg-strong: oklch(0.18 0.02 272);
+  --cp-surface: color-mix(in srgb, oklch(0.275 0.028 276) 88%, transparent);
+  --cp-surface-2: color-mix(in srgb, oklch(0.31 0.03 280) 84%, transparent);
+  --cp-surface-opaque: color-mix(in srgb, oklch(0.275 0.028 276) 88%, black);
+  --cp-surface-2-opaque: color-mix(in srgb, oklch(0.31 0.03 280) 84%, black);
+  --cp-surface-3: color-mix(in srgb, var(--cp-accent-soft) 14%, var(--cp-surface));
+  --cp-text: oklch(0.95 0.012 296);
+  --cp-muted: oklch(0.76 0.02 282);
+  --cp-border: color-mix(in srgb, oklch(0.58 0.024 282) 36%, transparent);
+  --cp-border-opaque: oklch(0.58 0.024 282);
+  --cp-accent: oklch(0.78 0.12 260);
+  --cp-accent-soft: oklch(0.7 0.08 301);
+  --cp-ink-accent: oklch(0.58 0.05 300);
+  --cp-success: oklch(0.8 0.12 160);
+  --cp-warning: oklch(0.82 0.11 72);
+  --cp-danger: oklch(0.72 0.14 28);
+  --cp-shadow: oklch(0.02 0.01 264);
+  --cp-focus-ring: color-mix(in srgb, var(--cp-accent) 56%, transparent);
+  --cp-panel-shadow: 0 28px 70px color-mix(in srgb, var(--cp-shadow) 32%, transparent);
+  --cp-window-shadow: 0 36px 110px color-mix(in srgb, var(--cp-shadow) 42%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-kerning: normal;
+  font-feature-settings: 'kern' 1, 'liga' 1, 'tnum' 1;
+  color: var(--cp-text);
+  background: var(--cp-bg);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  transition:
+    border-color 180ms var(--cp-ease-smooth),
+    background-color 180ms var(--cp-ease-smooth),
+    color 180ms var(--cp-ease-smooth),
+    box-shadow 180ms var(--cp-ease-smooth),
+    transform 180ms var(--cp-ease-emphasis);
+}
+
+:where(button, [role='button'], a):focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--cp-surface) 90%, transparent),
+    0 0 0 4px var(--cp-focus-ring);
+}
+
+.shell-panel {
+  border: 1px solid var(--cp-border);
+  border-radius: 28px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--cp-surface) 92%, transparent),
+      color-mix(in srgb, var(--cp-surface-2) 92%, transparent)
+    );
+  box-shadow: var(--cp-panel-shadow);
+}
+
+.shell-subtle-panel {
+  border: 1px solid color-mix(in srgb, var(--cp-border) 84%, transparent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--cp-surface-2) 92%, transparent);
+}
+
+.shell-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--cp-border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--cp-surface) 86%, transparent);
+  color: var(--cp-muted);
+  backdrop-filter: blur(16px);
+}
+
+.shell-kicker {
+  font-family: 'Sora', 'Plus Jakarta Sans', sans-serif;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--cp-muted);
+}
+
+.shell-window {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--cp-surface) 94%, transparent),
+      color-mix(in srgb, var(--cp-surface-2) 92%, transparent)
+    );
+  box-shadow: var(--cp-window-shadow);
+}
+
