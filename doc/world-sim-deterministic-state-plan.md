@@ -166,8 +166,6 @@ This is already useful for:
 
 The following is not fully deterministic yet:
 
-- starting from empty state and regenerating the exact same wallets and
-  addresses from one seed
 - recovering mid-batch after a crash and reproducing the exact same next action
 - deriving the full BTC / ord / USDB world from one single seed
 
@@ -204,10 +202,14 @@ operator layer:
 - `seeded-reset`
   - clears Docker volumes before startup
   - requires `WORLD_SIM_IDENTITY_SEED`
-  - records the chosen identity seed in the bootstrap marker
+  - deterministically recreates miner and agent ord wallet identities from the
+    chosen seed
+  - records the chosen identity seed and identity scheme in the bootstrap
+    marker
 
-This is still an intermediate step. It does **not** yet make wallet private
-keys or receive addresses deterministic.
+This is still an intermediate step. It does **not** yet make the entire BTC /
+ord / USDB world derivable from one seed, and it does not yet support exact
+mid-batch replay after arbitrary crashes.
 
 ### 8.3 Absolute Tick Derivation
 
@@ -231,10 +233,10 @@ This batch intentionally implements only:
 
 It does **not** yet implement:
 
-- deterministic wallet identity derivation
-- full seeded-reset replay
+- full seeded-reset replay of the entire protocol state
 - exact mid-batch crash replay
-- exact deterministic wallet/address reconstruction from `WORLD_SIM_IDENTITY_SEED`
+- deterministic reconstruction of the complete BTC / ord / USDB world from one
+  seed alone
 
 ## 10. Runtime Stability Gates
 

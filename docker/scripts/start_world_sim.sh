@@ -18,6 +18,7 @@ balance_history_rpc_url="${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110
 usdb_rpc_url="${USDB_RPC_URL:-http://usdb-indexer:28120}"
 world_sim_work_dir="${WORLD_SIM_WORK_DIR:-/data/world-sim}"
 world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.py}"
+world_sim_bip39_wordlist="${WORLD_SIM_BIP39_WORDLIST:-/opt/usdb/world-sim/bip39-english.txt}"
 cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
 sync_timeout_sec="${SYNC_TIMEOUT_SEC:-300}"
 world_sim_mode="${WORLD_SIM_MODE:-all}"
@@ -38,6 +39,11 @@ sim_base_seed="${SIM_SEED:-42}"
 sim_loop_batch_blocks="${SIM_LOOP_BATCH_BLOCKS:-25}"
 ord_stability_probes="${WORLD_SIM_ORD_STABILITY_PROBES:-2}"
 ord_stability_sleep_secs="${WORLD_SIM_ORD_STABILITY_SLEEP_SECS:-1}"
+
+identity_scheme="legacy-random-v1"
+if [[ -n "${world_sim_identity_seed}" ]]; then
+  identity_scheme="ord-mnemonic-v1"
+fi
 
 log() {
   printf '[docker-world-sim] %s\n' "$*"
@@ -304,6 +310,44 @@ ensure_wallet_loaded() {
   done
 }
 
+ord_wallet_descriptor_state() {
+  local wallet_name="${1:?wallet name is required}"
+  local output
+
+  output="$(btc_cli -rpcwallet="${wallet_name}" listdescriptors true 2>/dev/null || true)"
+  python3 - "${output}" <<'PY'
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1] or "{}")
+except Exception:
+    print("invalid")
+    raise SystemExit(0)
+
+descriptors = payload.get("descriptors") or []
+tr_count = sum(1 for item in descriptors if (item.get("desc") or "").startswith("tr("))
+rawtr_count = sum(1 for item in descriptors if (item.get("desc") or "").startswith("rawtr("))
+
+if tr_count == 2 and len(descriptors) == 2 + rawtr_count:
+    print("ord")
+elif descriptors:
+    print("unexpected")
+else:
+    print("empty")
+PY
+}
+
+reset_wallet_identity_artifacts() {
+  local wallet_name="${1:?wallet name is required}"
+
+  btc_cli unloadwallet "${wallet_name}" >/dev/null 2>&1 || true
+  rm -rf \
+    "${btc_data_dir}/regtest/wallets/${wallet_name}" \
+    "${btc_data_dir}/wallets/${wallet_name}" \
+    "${ord_data_dir}/wallets/${wallet_name}.redb"
+}
+
 join_by_comma() {
   local IFS=","
   echo "$*"
@@ -352,15 +396,44 @@ retry_capture_output() {
   done
 }
 
+wallet_mnemonic_for() {
+  local wallet_name="${1:?wallet name is required}"
+  python3 - "${world_sim_bip39_wordlist}" "${world_sim_identity_seed}" "${wallet_name}" <<'PY'
+import hashlib
+import sys
+
+wordlist_path, seed, wallet = sys.argv[1:]
+with open(wordlist_path, "r", encoding="utf-8") as fp:
+    words = [line.strip() for line in fp if line.strip()]
+
+if len(words) != 2048:
+    raise SystemExit(f"expected 2048 BIP39 words, got {len(words)}")
+
+entropy = hashlib.sha256(f"usdb-world-sim:{seed}:{wallet}".encode("utf-8")).digest()[:16]
+checksum_bits = len(entropy) * 8 // 32
+checksum_byte = hashlib.sha256(entropy).digest()[0]
+bitstr = "".join(f"{b:08b}" for b in entropy) + f"{checksum_byte:08b}"[:checksum_bits]
+indices = [int(bitstr[i : i + 11], 2) for i in range(0, len(bitstr), 11)]
+print(" ".join(words[index] for index in indices))
+PY
+}
+
 ensure_ord_wallet_ready() {
   local wallet_name="${1:?wallet name is required}"
   local timeout_secs="${2:?timeout is required}"
+  local passphrase="${3:-}"
   local start_ts now output output_lower
 
   start_ts="$(date +%s)"
   while true; do
-    if output="$(run_ord_wallet_named "${wallet_name}" create 2>&1)"; then
-      return
+    if [[ -n "${passphrase}" ]]; then
+      if output="$(run_ord_wallet_named "${wallet_name}" create --passphrase "${passphrase}" 2>&1)"; then
+        return
+      fi
+    else
+      if output="$(run_ord_wallet_named "${wallet_name}" create 2>&1)"; then
+        return
+      fi
     fi
 
     output_lower="$(printf '%s' "${output}" | tr '[:upper:]' '[:lower:]')"
@@ -377,6 +450,32 @@ ensure_ord_wallet_ready() {
   done
 }
 
+restore_ord_wallet_from_mnemonic() {
+  local wallet_name="${1:?wallet name is required}"
+  local timeout_secs="${2:?timeout is required}"
+  local mnemonic="${3:?mnemonic is required}"
+  local start_ts now output output_lower
+
+  start_ts="$(date +%s)"
+  while true; do
+    if output="$(printf '%s\n' "${mnemonic}" | run_ord_wallet_named "${wallet_name}" restore --from mnemonic 2>&1)"; then
+      return
+    fi
+
+    output_lower="$(printf '%s' "${output}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${output_lower}" == *"already exists"* ]]; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting to restore ord wallet ${wallet_name}: ${output}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 prepare_runtime_environment() {
   require_executable "${ord_bin}" "ord binary"
   require_executable "${bitcoin_cli}" "bitcoin-cli"
@@ -384,6 +483,9 @@ prepare_runtime_environment() {
     require_file "${cookie_file}" "Bitcoin cookie file"
   fi
   require_file "${world_simulator}" "world simulator"
+  if [[ -n "${world_sim_identity_seed}" ]]; then
+    require_file "${world_sim_bip39_wordlist}" "BIP39 wordlist"
+  fi
   mkdir -p "${world_sim_work_dir}" "${ord_data_dir}" "${world_sim_bootstrap_dir}"
   case "${world_sim_state_mode}" in
     persistent|reset|seeded-reset)
@@ -444,6 +546,7 @@ expected = {
     "fund_confirm_blocks": int(fund_confirm_blocks),
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
+    "identity_scheme": "ord-mnemonic-v1" if world_sim_identity_seed else "legacy-random-v1",
 }
 
 for key, value in expected.items():
@@ -507,6 +610,7 @@ write_bootstrap_marker() {
     "${fund_confirm_blocks}" \
     "${world_sim_state_mode}" \
     "${world_sim_identity_seed}" \
+    "${identity_scheme}" \
     "${current_height}" \
     "${agent_wallets_csv}" \
     "${agent_addresses_csv}" <<'PY'
@@ -526,6 +630,7 @@ import time
     fund_confirm_blocks,
     world_sim_state_mode,
     world_sim_identity_seed,
+    identity_scheme,
     current_height,
     agent_wallets_csv,
     agent_addresses_csv,
@@ -543,6 +648,7 @@ payload = {
     "fund_confirm_blocks": int(fund_confirm_blocks),
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
+    "identity_scheme": identity_scheme,
     "bootstrap_height": int(current_height),
     "agent_wallets": [v for v in agent_wallets_csv.split(",") if v],
     "agent_addresses": [v for v in agent_addresses_csv.split(",") if v],
@@ -583,6 +689,46 @@ wait_until_ord_runtime_stable() {
   done
 }
 
+prepare_deterministic_wallet_identity() {
+  local wallet_name="${1:?wallet name is required}"
+  local timeout_secs="${2:?timeout is required}"
+  local mnemonic
+  local descriptor_state
+  local attempt
+  local probe
+
+  mnemonic="$(wallet_mnemonic_for "${wallet_name}")"
+
+  for attempt in $(seq 1 5); do
+    if [[ "${attempt}" -gt 1 ]]; then
+      log "Retrying deterministic wallet restore for ${wallet_name} (attempt ${attempt}/5)"
+      reset_wallet_identity_artifacts "${wallet_name}"
+      sleep 1
+    fi
+
+    restore_ord_wallet_from_mnemonic "${wallet_name}" "${timeout_secs}" "${mnemonic}"
+    ensure_wallet_loaded "${wallet_name}"
+
+    descriptor_state="invalid"
+    for probe in $(seq 1 "${timeout_secs}"); do
+      descriptor_state="$(ord_wallet_descriptor_state "${wallet_name}")"
+      if [[ "${descriptor_state}" == "ord" ]]; then
+        return
+      fi
+      sleep 1
+    done
+
+    if [[ "${descriptor_state}" == "ord" ]]; then
+      return
+    fi
+
+    log "Deterministic wallet restore produced ${descriptor_state} descriptors for ${wallet_name}; resetting and retrying"
+  done
+
+  echo "Failed to establish deterministic ord wallet identity for ${wallet_name} after repeated restore attempts" >&2
+  exit 1
+}
+
 read_completed_batches() {
   if [[ ! -f "${world_sim_loop_state_file}" ]]; then
     echo 0
@@ -609,7 +755,8 @@ write_loop_state() {
     "${current_height}" \
     "${sim_loop_batch_blocks}" \
     "${world_sim_state_mode}" \
-    "${world_sim_identity_seed}" <<'PY'
+    "${world_sim_identity_seed}" \
+    "${identity_scheme}" <<'PY'
 import json
 import os
 import sys
@@ -623,6 +770,7 @@ import time
     batch_blocks,
     world_sim_state_mode,
     world_sim_identity_seed,
+    identity_scheme,
 ) = sys.argv[1:]
 payload = {
     "version": 1,
@@ -633,6 +781,7 @@ payload = {
     "batch_blocks": int(batch_blocks),
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
+    "identity_scheme": identity_scheme,
 }
 os.makedirs(os.path.dirname(loop_state_path), exist_ok=True)
 with open(loop_state_path, "w", encoding="utf-8") as fp:
@@ -652,10 +801,23 @@ bootstrap_world_sim() {
     exit 1
   fi
 
-  ensure_wallet_loaded "${miner_wallet_name}"
+  if [[ -n "${world_sim_identity_seed}" ]]; then
+    prepare_deterministic_wallet_identity "${miner_wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+  else
+    ensure_wallet_loaded "${miner_wallet_name}"
+  fi
 
   log "Allocating mining address from wallet: ${miner_wallet_name}"
-  mining_address="$(btc_cli -rpcwallet="${miner_wallet_name}" getnewaddress)"
+  if [[ -n "${world_sim_identity_seed}" ]]; then
+    mining_receive_output="$(retry_capture_output "ord wallet receive ${miner_wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${miner_wallet_name}" receive)"
+    mining_address="$(extract_bech32_address "${mining_receive_output}")"
+    if [[ -z "${mining_address}" ]]; then
+      echo "Failed to parse mining address: wallet=${miner_wallet_name}, output=${mining_receive_output}" >&2
+      exit 1
+    fi
+  else
+    mining_address="$(btc_cli -rpcwallet="${miner_wallet_name}" getnewaddress)"
+  fi
   current_height="$(btc_cli getblockcount)"
 
   if [[ "${current_height}" -lt "${premine_blocks}" ]]; then
@@ -676,7 +838,11 @@ bootstrap_world_sim() {
     wallet_name="${wallet_prefix}-${i}"
     agent_wallets+=("${wallet_name}")
     log "Preparing ord wallet ${wallet_name}"
-    ensure_ord_wallet_ready "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+    if [[ -n "${world_sim_identity_seed}" ]]; then
+      prepare_deterministic_wallet_identity "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+    else
+      ensure_ord_wallet_ready "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+    fi
     receive_output="$(retry_capture_output "ord wallet receive ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" receive)"
     receive_address="$(extract_bech32_address "${receive_output}")"
     if [[ -z "${receive_address}" ]]; then

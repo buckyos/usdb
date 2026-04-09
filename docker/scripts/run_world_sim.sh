@@ -84,7 +84,7 @@ prepare_state_mode() {
         exit 1
       fi
       echo "WORLD_SIM_STATE_MODE=seeded-reset -> clearing Docker volumes before startup"
-      echo "Current implementation records the identity seed in bootstrap metadata but does not yet deterministically derive wallet private keys."
+      echo "Current implementation will deterministically recreate ord wallet identities from WORLD_SIM_IDENTITY_SEED."
       compose down -v --remove-orphans >/dev/null 2>&1 || true
       ;;
     *)

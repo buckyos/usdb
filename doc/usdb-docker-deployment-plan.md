@@ -282,6 +282,7 @@
   - `WORLD_SIM_STATE_MODE=persistent`
   - `WORLD_SIM_STATE_MODE=reset`
   - `WORLD_SIM_STATE_MODE=seeded-reset`
+  - `seeded-reset` 基于 `WORLD_SIM_IDENTITY_SEED` 确定性重建 miner / agent ord wallet identity
 - 在 simulation loop 前增加 ord wallet / ord server 稳定性 gate
 
 这个模式仍然是：

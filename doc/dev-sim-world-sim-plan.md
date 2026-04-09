@@ -144,11 +144,17 @@ The world-sim overlay uses a dedicated env file, separate from the default
 This keeps the default `dev-sim` path unchanged while still allowing a single
 command to start the optional overlay.
 
+The recommended default is to give `world-sim` its own Docker network name, so
+it does not share service aliases like `btc-node` or `ord-server` with other
+local stacks that may already be running.
+
 Key runtime inputs:
 
 - image tags for:
   - `WORLD_SIM_BITCOIN_IMAGE`
   - `WORLD_SIM_TOOLS_IMAGE`
+- dedicated overlay network:
+  - `USDB_DOCKER_NETWORK`
 - world-state policy:
   - `WORLD_SIM_STATE_MODE`
   - `WORLD_SIM_IDENTITY_SEED`
@@ -205,8 +211,8 @@ Current state-policy semantics:
 - `WORLD_SIM_STATE_MODE=seeded-reset`
   - clear volumes before startup
   - require `WORLD_SIM_IDENTITY_SEED`
-  - record the chosen identity seed in bootstrap metadata
-  - full deterministic wallet/address derivation is still future work
+  - deterministically recreate miner and agent ord wallet identities from that seed
+  - record the chosen identity seed and identity scheme in bootstrap metadata
 
 ## 8. Expected Console Outcome
 
@@ -231,5 +237,5 @@ After the first batch is stable, the next candidates are:
 1. expose world-sim report artifacts in the console
 2. add an `interactive sandbox` mode for manual user actions without random
    background traffic
-3. deterministic seeded-reset identity generation
+3. exact mid-batch deterministic replay and crash recovery
 4. later connect ETH / BTC wallet flows to the same local stack
