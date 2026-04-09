@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/run/world-sim/bitcoin-bin}"
+bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/opt/bitcoin/bin}"
 bitcoind="${bitcoin_bin_dir}/bitcoind"
 btc_node_data_dir="${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}"
 btc_rpc_port="${BTC_RPC_PORT:-28132}"

@@ -93,30 +93,25 @@ flowchart LR
 
 ## 5. Image and Binary Strategy
 
-For the first batch, the world-sim overlay remains explicitly development-only.
+The runtime model now uses dedicated packaged images for the optional overlay:
 
-Therefore it is acceptable to require host-provided dev binaries:
+- `usdb-bitcoin28-regtest`
+- `usdb-world-sim-tools`
 
-- `ord`
-- Bitcoin Core 28.x binaries:
-  - `bitcoind`
-  - `bitcoin-cli`
+These images are still built from the already validated local binaries:
 
-The Docker services mount these binaries from the host filesystem.
+- Bitcoin Core 28.x host binaries
+- the locally built `ord` binary
 
-In the first batch, the `world-sim` overlay also overrides `btc-node` so the
-regtest node itself runs from the mounted Bitcoin Core 28.x toolchain. This is
-required because `ord wallet` flows in the simulator depend on Bitcoin Core
-28.0.0+ semantics.
+The rationale is:
 
-Rationale:
+- runtime no longer depends on host-mounted binaries
+- local tests and future release bundles use the same image contract
+- the packaging step still stays small and reuses known-good local artifacts
 
-- this avoids creating a new release pipeline for ord in the first batch
-- the existing host-side world-sim scripts already rely on locally available
-  binaries
-- the overlay is optional and only used in local development / demo scenarios
+The detailed packaging plan is documented in:
 
-This is not the final production packaging model.
+- [world-sim-release-image-plan.md](/home/bucky/work/usdb/doc/world-sim-release-image-plan.md)
 
 ## 6. Configuration Model
 
@@ -130,10 +125,11 @@ The world-sim overlay uses a dedicated env file, separate from the default
 This keeps the default `dev-sim` path unchanged while still allowing a single
 command to start the optional overlay.
 
-Key additional inputs:
+Key runtime inputs:
 
-- host path to `ord`
-- host path to Bitcoin Core binaries
+- image tags for:
+  - `WORLD_SIM_BITCOIN_IMAGE`
+  - `WORLD_SIM_TOOLS_IMAGE`
 - simulation parameters such as:
   - `SIM_BLOCKS`
   - `SIM_SEED`
@@ -150,10 +146,13 @@ This helper should:
 
 - initialize `docker/local/world-sim/env/world-sim.env` from the example if
   missing
+- expose a dedicated `build-images` action for packaging the release-style
+  world-sim images from the local binaries
 - keep `world-sim` separate from plain `dev-sim`
 - provide a stable operator interface:
   - `up`
   - `up-full`
+  - `build-images`
   - `ps`
   - `logs`
   - `down`

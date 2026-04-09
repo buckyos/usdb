@@ -1,0 +1,19 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        procps \
+        tini \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/.build-world-sim/bitcoin/bin/ /opt/bitcoin/bin/
+COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
+
+RUN chmod +x /opt/bitcoin/bin/bitcoind \
+    /opt/bitcoin/bin/bitcoin-cli \
+    /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["bash"]

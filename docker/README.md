@@ -125,7 +125,14 @@ Current `dev-sim` still keeps `usdb-indexer` on `inscription_source=bitcoind`.
 ## Dev-Sim World-Sim Overlay
 
 If you want a local regtest stack that continuously mines BTC blocks and
-generates protocol activity, use the optional world-sim overlay:
+generates protocol activity, first build the packaged world-sim images from the
+validated local binaries:
+
+```bash
+docker/scripts/run_world_sim.sh build-images
+```
+
+Then start the optional overlay:
 
 ```bash
 docker/scripts/run_world_sim.sh up
@@ -152,22 +159,26 @@ show ETHW as unreachable unless you choose:
 docker/scripts/run_world_sim.sh up-full
 ```
 
-The first-batch world-sim overlay is explicitly development-only and currently
-requires host-mounted binaries:
+The packaged images are:
 
-- `WORLD_SIM_BITCOIN_BIN_HOST_DIR`
-  - host directory containing Bitcoin Core 28.x binaries
-  - must include both `bitcoind` and `bitcoin-cli`
-- `WORLD_SIM_ORD_BIN_HOST_PATH`
-  - host path to the local `ord` binary
+- `WORLD_SIM_BITCOIN_IMAGE`
+  - default: `usdb-bitcoin28-regtest:local`
+- `WORLD_SIM_TOOLS_IMAGE`
+  - default: `usdb-world-sim-tools:local`
 
-Both values must be configured in:
+The build helper packages local binaries from:
 
-- `docker/local/world-sim/env/world-sim.env`
+- `WORLD_SIM_RELEASE_BITCOIN_BIN_HOST_DIR`
+  - default: `/home/bucky/btc/bitcoin-28.1/bin`
+- `WORLD_SIM_RELEASE_ORD_BIN_HOST_PATH`
+  - default: `/home/bucky/ord/target/release/ord`
+
+Runtime no longer requires host-mounted binaries once the images are built.
 
 Useful helper actions:
 
 ```bash
+docker/scripts/run_world_sim.sh build-images
 docker/scripts/run_world_sim.sh ps
 docker/scripts/run_world_sim.sh logs
 docker/scripts/run_world_sim.sh down

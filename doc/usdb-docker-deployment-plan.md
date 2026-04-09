@@ -266,11 +266,15 @@
 - 新增 `compose.world-sim.yml`
 - 新增 `ord-server`
 - 新增 `world-sim-runner`
-- 在 `world-sim` overlay 下覆盖 `btc-node`，使其使用 host-mounted
-  Bitcoin Core 28.x binaries
+- 在 `world-sim` overlay 下覆盖 `btc-node`
+- 引入 world-sim 专用发布镜像：
+  - `usdb-bitcoin28-regtest`
+  - `usdb-world-sim-tools`
 - 直接复用现有：
   - `regtest_world_simulator.py`
-- 并通过专门的本地入口脚本统一启动
+- 并通过专门的本地入口脚本统一完成：
+  - 构建镜像
+  - 启动 overlay
 
 这个模式仍然是：
 
@@ -281,6 +285,7 @@
 详细方案见：
 
 - `doc/dev-sim-world-sim-plan.md`
+- `doc/world-sim-release-image-plan.md`
 
 ## 3. 部署模式
 

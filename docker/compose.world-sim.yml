@@ -1,12 +1,9 @@
 services:
   btc-node:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.world-sim-tools
-    image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
+    image: ${WORLD_SIM_BITCOIN_IMAGE:-usdb-bitcoin28-regtest:local}
     entrypoint: ["/opt/usdb/docker/scripts/start_world_sim_bitcoind.sh"]
     environment:
-      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
+      BITCOIN_BIN_DIR: /opt/bitcoin/bin
       BTC_NODE_DATA_DIR: ${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
       BTC_RPC_PORT: ${BTC_RPC_PORT:-28132}
       BTC_P2P_PORT: ${BTC_P2P_PORT:-28133}
@@ -15,7 +12,6 @@ services:
       BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
     volumes:
       - btc-data:${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
-      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
 
   snapshot-loader:
     environment:
@@ -44,9 +40,6 @@ services:
       BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
 
   ord-server:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.world-sim-tools
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
     restart: unless-stopped
     entrypoint: ["/opt/usdb/docker/scripts/start_ord_server.sh"]
@@ -59,8 +52,8 @@ services:
       BTC_AUTH_MODE: userpass
       BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
       BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
-      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
-      ORD_BIN: /run/world-sim/bin/ord
+      BITCOIN_BIN_DIR: /opt/bitcoin/bin
+      ORD_BIN: /opt/ord/bin/ord
       ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
       ORD_SERVER_PORT: ${ORD_SERVER_PORT:-28130}
       WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-120}
@@ -68,17 +61,12 @@ services:
     volumes:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - ord-data:${ORD_DATA_DIR:-/data/ord}
-      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
-      - ${WORLD_SIM_ORD_BIN_HOST_PATH:?WORLD_SIM_ORD_BIN_HOST_PATH is required}:/run/world-sim/bin/ord:ro
     ports:
       - "${ORD_SERVER_BIND_PORT:-28130}:${ORD_SERVER_PORT:-28130}"
     networks:
       - usdb-net
 
   world-sim-runner:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.world-sim-tools
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
     restart: unless-stopped
     entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
@@ -96,8 +84,8 @@ services:
       BTC_AUTH_MODE: userpass
       BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
       BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
-      BITCOIN_BIN_DIR: /run/world-sim/bitcoin-bin
-      ORD_BIN: /run/world-sim/bin/ord
+      BITCOIN_BIN_DIR: /opt/bitcoin/bin
+      ORD_BIN: /opt/ord/bin/ord
       ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
       ORD_SERVER_URL: ${ORD_RPC_URL:-http://ord-server:28130}
       BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}
@@ -150,8 +138,6 @@ services:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - ord-data:${ORD_DATA_DIR:-/data/ord}
       - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}
-      - ${WORLD_SIM_BITCOIN_BIN_HOST_DIR:?WORLD_SIM_BITCOIN_BIN_HOST_DIR is required}:/run/world-sim/bitcoin-bin:ro
-      - ${WORLD_SIM_ORD_BIN_HOST_PATH:?WORLD_SIM_ORD_BIN_HOST_PATH is required}:/run/world-sim/bin/ord:ro
     networks:
       - usdb-net
 

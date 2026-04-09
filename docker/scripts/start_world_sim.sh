@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ord_bin="${ORD_BIN:-/run/world-sim/bin/ord}"
-bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/run/world-sim/bitcoin-bin}"
+ord_bin="${ORD_BIN:-/opt/ord/bin/ord}"
+bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/opt/bitcoin/bin}"
 bitcoin_cli="${bitcoin_bin_dir}/bitcoin-cli"
 btc_rpc_url="${BTC_RPC_URL:-http://btc-node:28132}"
 btc_target="${btc_rpc_url#*://}"

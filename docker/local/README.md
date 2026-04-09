@@ -64,6 +64,7 @@ For the optional regtest world-sim overlay, use:
 and start it with:
 
 ```bash
+docker/scripts/run_world_sim.sh build-images
 docker/scripts/run_world_sim.sh up
 ```
 

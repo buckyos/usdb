@@ -14,9 +14,8 @@ if [[ ! -f "${env_file}" ]]; then
   cp "${env_example}" "${env_file}"
   cat <<EOF
 Initialized ${env_file} from ${env_example}
-Before the first run, set:
-  - WORLD_SIM_BITCOIN_BIN_HOST_DIR
-  - WORLD_SIM_ORD_BIN_HOST_PATH
+Build the packaged images before the first run:
+  docker/scripts/run_world_sim.sh build-images
 EOF
 fi
 
@@ -31,19 +30,34 @@ compose() {
     "$@"
 }
 
-assert_world_sim_binary_paths() {
-  local ord_bin_path bitcoin_bin_dir
-  ord_bin_path="$(awk -F= '/^WORLD_SIM_ORD_BIN_HOST_PATH=/{print $2}' "${env_file}" | tail -n 1)"
-  bitcoin_bin_dir="$(awk -F= '/^WORLD_SIM_BITCOIN_BIN_HOST_DIR=/{print $2}' "${env_file}" | tail -n 1)"
+env_get() {
+  local key="${1:?key is required}"
+  local fallback="${2:-}"
+  local value
+  value="$(awk -F= -v key="${key}" '$1 == key { sub(/^[^=]+=*/, "", $0); print $0 }' "${env_file}" | tail -n 1)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+  else
+    printf '%s\n' "${fallback}"
+  fi
+}
 
-  if [[ -z "${ord_bin_path}" || "${ord_bin_path}" == /absolute/path/to/ord ]]; then
-    echo "WORLD_SIM_ORD_BIN_HOST_PATH is not configured in ${env_file}" >&2
+ensure_image_exists() {
+  local image="${1:?image is required}"
+  docker image inspect "${image}" >/dev/null 2>&1 || {
+    cat <<EOF >&2
+Missing image ${image}
+
+Build the packaged world-sim release images first:
+  docker/scripts/run_world_sim.sh build-images
+EOF
     exit 1
-  fi
-  if [[ -z "${bitcoin_bin_dir}" || "${bitcoin_bin_dir}" == /absolute/path/to/bitcoin/bin ]]; then
-    echo "WORLD_SIM_BITCOIN_BIN_HOST_DIR is not configured in ${env_file}" >&2
-    exit 1
-  fi
+  }
+}
+
+ensure_world_sim_images() {
+  ensure_image_exists "$(env_get WORLD_SIM_BITCOIN_IMAGE usdb-bitcoin28-regtest:local)"
+  ensure_image_exists "$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)"
 }
 
 usage() {
@@ -51,6 +65,7 @@ usage() {
 Usage:
   docker/scripts/run_world_sim.sh up
   docker/scripts/run_world_sim.sh up-full
+  docker/scripts/run_world_sim.sh build-images
   docker/scripts/run_world_sim.sh ps
   docker/scripts/run_world_sim.sh logs
   docker/scripts/run_world_sim.sh down
@@ -66,12 +81,15 @@ shift || true
 
 case "${action}" in
   up)
-    assert_world_sim_binary_paths
+    ensure_world_sim_images
     compose up --build btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "$@"
     ;;
   up-full)
-    assert_world_sim_binary_paths
+    ensure_world_sim_images
     compose up --build "$@"
+    ;;
+  build-images)
+    "${docker_dir}/scripts/build_world_sim_release_images.sh" "$@"
     ;;
   ps)
     compose ps "$@"

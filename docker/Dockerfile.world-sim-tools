@@ -14,12 +14,16 @@ COPY docker/scripts/start_ord_server.sh /opt/usdb/docker/scripts/start_ord_serve
 COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
 COPY docker/scripts/start_world_sim.sh /opt/usdb/docker/scripts/start_world_sim.sh
 COPY docker/scripts/wait_for_tcp.sh /opt/usdb/docker/scripts/wait_for_tcp.sh
+COPY docker/.build-world-sim/bitcoin/bin/bitcoin-cli /opt/bitcoin/bin/bitcoin-cli
+COPY docker/.build-world-sim/ord/bin/ord /opt/ord/bin/ord
 COPY src/btc/usdb-indexer/scripts/regtest_world_simulator.py /opt/usdb/world-sim/regtest_world_simulator.py
 
 RUN chmod +x /opt/usdb/docker/scripts/start_ord_server.sh \
     /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh \
     /opt/usdb/docker/scripts/start_world_sim.sh \
-    /opt/usdb/docker/scripts/wait_for_tcp.sh
+    /opt/usdb/docker/scripts/wait_for_tcp.sh \
+    /opt/bitcoin/bin/bitcoin-cli \
+    /opt/ord/bin/ord
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]
