@@ -196,6 +196,11 @@ Current runtime workspace:
 `usdb-control-plane` now serves the built `dist/` output from this React/Vite
 app as the runtime control-console entry.
 
+Detailed page-level information architecture and routing conventions are
+captured in:
+
+- `doc/usdb-console-information-architecture.md`
+
 ## 5. 为什么需要 Control Plane
 
 不建议让浏览器直接访问：
