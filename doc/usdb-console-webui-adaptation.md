@@ -49,8 +49,9 @@ The target frontend stack for the next implementation phase is:
 - `react-hook-form` + `zod` when user input is introduced
 - local i18n provider based on the upstream shape
 
-The current static `index.html + app.js + styles.css` implementation is a
-working transitional prototype, not the long-term target.
+The previous static `index.html + app.js + styles.css` implementation should be
+treated as legacy reference only. The React/Vite console is now the default
+runtime entry.
 
 ### 3. English-First API, Frontend-Owned Localization
 
@@ -123,3 +124,9 @@ The next frontend migration step should:
 3. preserve the current `usdb-control-plane` API contract
 4. reimplement the current overview page using the upstream shell style
 
+Current migration workspace:
+
+- `web/usdb-console-app`
+
+This app now hosts the runtime control-console implementation and produces the
+served `dist/` assets consumed by `usdb-control-plane`.

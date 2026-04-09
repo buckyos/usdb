@@ -34,7 +34,7 @@ fn default_btc_rpc_url() -> String {
 }
 
 fn default_console_root() -> PathBuf {
-    PathBuf::from("web/usdb-console")
+    PathBuf::from("web/usdb-console-app/dist")
 }
 
 fn default_balance_history_explorer_root() -> PathBuf {
@@ -270,7 +270,10 @@ mod tests {
     #[test]
     fn default_runtime_paths_are_repo_relative() {
         let config = ControlPlaneConfig::default();
-        assert_eq!(config.web.console_root, PathBuf::from("web/usdb-console"));
+        assert_eq!(
+            config.web.console_root,
+            PathBuf::from("web/usdb-console-app/dist")
+        );
         assert_eq!(
             config.bootstrap.bootstrap_manifest,
             PathBuf::from("docker/local/dev-sim/bootstrap/bootstrap-manifest.json")

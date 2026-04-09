@@ -1,0 +1,61 @@
+@import '../../shared/buckyos-webui-baseline/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--cp-accent-soft) 18%, transparent), transparent 32%),
+    radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--cp-warning) 16%, transparent), transparent 24%),
+    linear-gradient(180deg, color-mix(in srgb, white 80%, var(--cp-bg)), var(--cp-bg));
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+.console-noise {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.2;
+  background-image:
+    linear-gradient(color-mix(in srgb, white 40%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, white 40%, transparent) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.console-shell {
+  width: min(1240px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 36px 0 56px;
+}
+
+.status-pill {
+  @apply shell-pill min-h-7 px-3 text-[11px] font-bold uppercase tracking-[0.12em];
+}
+
+.status-pill[data-tone='success'] {
+  background: color-mix(in srgb, var(--cp-success) 14%, var(--cp-surface));
+  color: var(--cp-success);
+}
+
+.status-pill[data-tone='warning'] {
+  background: color-mix(in srgb, var(--cp-warning) 14%, var(--cp-surface));
+  color: var(--cp-warning);
+}
+
+.status-pill[data-tone='danger'] {
+  background: color-mix(in srgb, var(--cp-danger) 14%, var(--cp-surface));
+  color: var(--cp-danger);
+}
+
+.console-card {
+  @apply shell-panel px-5 py-5;
+}
+
+.console-subtle-card {
+  @apply shell-subtle-panel px-4 py-4;
+}
+

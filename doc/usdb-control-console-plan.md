@@ -189,6 +189,13 @@ flowchart TB
 - 提供到各模块 explorer 的统一入口
 - 后续接钱包和管理员操作
 
+Current runtime workspace:
+
+- `web/usdb-console-app`
+
+`usdb-control-plane` now serves the built `dist/` output from this React/Vite
+app as the runtime control-console entry.
+
 ## 5. 为什么需要 Control Plane
 
 不建议让浏览器直接访问：

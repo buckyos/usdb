@@ -13,6 +13,17 @@ COPY src/btc /workspace/src/btc
 
 RUN cargo build --release -p balance-history -p usdb-indexer -p usdb-control-plane
 
+FROM node:20-bookworm AS web-builder
+
+WORKDIR /workspace/web/usdb-console-app
+
+COPY web/usdb-console-app/package.json web/usdb-console-app/package-lock.json ./
+RUN npm ci
+
+COPY web/usdb-console-app ./
+COPY web/shared /workspace/web/shared
+RUN npm run build
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -29,6 +40,7 @@ COPY --from=builder /workspace/src/btc/target/release/usdb-indexer /usr/local/bi
 COPY --from=builder /workspace/src/btc/target/release/usdb-control-plane /usr/local/bin/usdb-control-plane
 COPY docker/scripts /opt/usdb/docker/scripts
 COPY web /opt/usdb/web
+COPY --from=web-builder /workspace/web/usdb-console-app/dist /opt/usdb/web/usdb-console-app/dist
 
 ENV PATH="/opt/usdb/docker/scripts:${PATH}"
 
