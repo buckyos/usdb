@@ -3,6 +3,7 @@ import { MetricCard } from '../components/MetricCard'
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceSummaryCard } from '../components/ServiceSummaryCard'
 import { artifactTone, completedBootstrapStepCount, consensusReadyServiceCount, formatDate, formatNumber, presentArtifactCount, reachableServiceCount, serviceLabel, serviceTone, type Tone } from '../lib/console'
+import { displayNumber, displayShortText, displayText } from '../lib/format'
 import type { OverviewResponse } from '../lib/types'
 
 interface OverviewPageProps {
@@ -39,24 +40,26 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label={t('metrics.updatedAt')}
-          value={data ? formatDate(locale, data.generated_at_ms) : '-'}
+          value={data ? formatDate(locale, data.generated_at_ms) : t('common.notYetAvailable')}
         />
         <MetricCard
           label={t('metrics.btcNetwork')}
           value={
-            data?.services.btc_node.data?.chain ??
-            data?.services.balance_history.data?.network ??
-            data?.services.usdb_indexer.data?.network ??
-            '-'
+            displayText(
+              data?.services.btc_node.data?.chain ??
+                data?.services.balance_history.data?.network ??
+                data?.services.usdb_indexer.data?.network,
+              t,
+            )
           }
         />
         <MetricCard
           label={t('metrics.btcHeight')}
-          value={formatNumber(locale, data?.services.btc_node.data?.blocks)}
+          value={displayNumber(locale, data?.services.btc_node.data?.blocks, t)}
         />
         <MetricCard
           label={t('metrics.ethwHeight')}
-          value={formatNumber(locale, data?.services.ethw.data?.block_number)}
+          value={displayNumber(locale, data?.services.ethw.data?.block_number, t)}
         />
       </section>
 
@@ -79,8 +82,8 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             status={data ? serviceLabel(data.services.btc_node, t) : '-'}
             tone={data ? serviceTone(data.services.btc_node) : 'neutral'}
             summary={t('overview.btcSummary', undefined, {
-              blocks: formatNumber(locale, data?.services.btc_node.data?.blocks),
-              chain: data?.services.btc_node.data?.chain ?? '-',
+              blocks: displayNumber(locale, data?.services.btc_node.data?.blocks, t),
+              chain: displayText(data?.services.btc_node.data?.chain, t),
             })}
           />
           <ServiceSummaryCard
@@ -88,8 +91,8 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             status={data ? serviceLabel(data.services.balance_history, t) : '-'}
             tone={data ? serviceTone(data.services.balance_history) : 'neutral'}
             summary={t('overview.bhSummary', undefined, {
-              stableHeight: formatNumber(locale, data?.services.balance_history.data?.stable_height),
-              phase: data?.services.balance_history.data?.phase ?? '-',
+              stableHeight: displayNumber(locale, data?.services.balance_history.data?.stable_height, t),
+              phase: displayText(data?.services.balance_history.data?.phase, t),
             })}
           />
           <ServiceSummaryCard
@@ -97,8 +100,8 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             status={data ? serviceLabel(data.services.usdb_indexer, t) : '-'}
             tone={data ? serviceTone(data.services.usdb_indexer) : 'neutral'}
             summary={t('overview.indexerSummary', undefined, {
-              syncedHeight: formatNumber(locale, data?.services.usdb_indexer.data?.synced_block_height),
-              systemState: data?.services.usdb_indexer.data?.system_state_id ?? '-',
+              syncedHeight: displayNumber(locale, data?.services.usdb_indexer.data?.synced_block_height, t),
+              systemState: displayShortText(data?.services.usdb_indexer.data?.system_state_id, t),
             })}
           />
           <ServiceSummaryCard
@@ -106,8 +109,8 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             status={data ? serviceLabel(data.services.ethw, t) : '-'}
             tone={data ? serviceTone(data.services.ethw) : 'neutral'}
             summary={t('overview.ethwSummary', undefined, {
-              blockNumber: formatNumber(locale, data?.services.ethw.data?.block_number),
-              chainId: data?.services.ethw.data?.chain_id ?? '-',
+              blockNumber: displayNumber(locale, data?.services.ethw.data?.block_number, t),
+              chainId: displayText(data?.services.ethw.data?.chain_id, t),
             })}
           />
         </div>

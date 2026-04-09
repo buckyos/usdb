@@ -1,7 +1,7 @@
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceCard } from '../components/ServiceCard'
 import { formatNumber, serviceLabel, serviceTone } from '../lib/console'
-import { shortText } from '../lib/format'
+import { displayBoolean, displayList, displayNumber, displayShortText, displayText } from '../lib/format'
 import type {
   BalanceHistorySummary,
   EthwSummary,
@@ -33,12 +33,12 @@ function renderBalanceHistoryDetails(
 ) {
   return (
     <>
-      {renderPair(t('fields.network'), data?.network ?? '-')}
-      {renderPair(t('fields.stableHeight'), formatNumber(locale, data?.stable_height))}
-      {renderPair(t('fields.phase'), data?.phase ?? '-')}
-      {renderPair(t('fields.consensus'), String(Boolean(data?.consensus_ready)))}
-      {renderPair(t('fields.snapshotVerify'), data?.snapshot_verification_state ?? '-')}
-      {renderPair(t('fields.blockers'), data?.blockers?.join(', ') ?? '-')}
+      {renderPair(t('fields.network'), displayText(data?.network, t))}
+      {renderPair(t('fields.stableHeight'), displayNumber(locale, data?.stable_height, t))}
+      {renderPair(t('fields.phase'), displayText(data?.phase, t))}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
+      {renderPair(t('fields.snapshotVerify'), displayText(data?.snapshot_verification_state, t))}
+      {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
     </>
   )
 }
@@ -50,12 +50,15 @@ function renderUsdbIndexerDetails(
 ) {
   return (
     <>
-      {renderPair(t('fields.network'), data?.network ?? '-')}
-      {renderPair(t('fields.syncedHeight'), formatNumber(locale, data?.synced_block_height))}
-      {renderPair(t('fields.stableHeight'), formatNumber(locale, data?.balance_history_stable_height))}
-      {renderPair(t('fields.consensus'), String(Boolean(data?.consensus_ready)))}
-      {renderPair(t('fields.systemState'), shortText(data?.system_state_id ?? '-'))}
-      {renderPair(t('fields.blockers'), data?.blockers?.join(', ') ?? '-')}
+      {renderPair(t('fields.network'), displayText(data?.network, t))}
+      {renderPair(t('fields.syncedHeight'), displayNumber(locale, data?.synced_block_height, t))}
+      {renderPair(
+        t('fields.stableHeight'),
+        displayNumber(locale, data?.balance_history_stable_height, t),
+      )}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
+      {renderPair(t('fields.systemState'), displayShortText(data?.system_state_id, t))}
+      {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
     </>
   )
 }
@@ -67,15 +70,19 @@ function renderEthwDetails(
 ) {
   return (
     <>
-      {renderPair(t('fields.client'), data?.client_version ?? '-')}
-      {renderPair(t('fields.chainId'), data?.chain_id ?? '-')}
-      {renderPair(t('fields.networkId'), data?.network_id ?? '-')}
-      {renderPair(t('fields.blockNumber'), formatNumber(locale, data?.block_number))}
+      {renderPair(t('fields.client'), displayText(data?.client_version, t))}
+      {renderPair(t('fields.chainId'), displayText(data?.chain_id, t))}
+      {renderPair(t('fields.networkId'), displayText(data?.network_id, t))}
+      {renderPair(t('fields.blockNumber'), displayNumber(locale, data?.block_number, t))}
       {renderPair(
         t('fields.syncing'),
-        data?.syncing === false ? t('common.false') : JSON.stringify(data?.syncing ?? '-'),
+        data?.syncing === false
+          ? t('common.false')
+          : data?.syncing == null
+            ? t('common.notYetAvailable')
+            : JSON.stringify(data.syncing),
       )}
-      {renderPair(t('fields.consensus'), String(Boolean(data?.consensus_ready)))}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
     </>
   )
 }
@@ -100,24 +107,30 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
           rpcUrl={data?.services.btc_node.rpc_url ?? '-'}
           error={data?.services.btc_node.error}
         >
-          {renderPair(t('fields.chain'), data?.services.btc_node.data?.chain ?? '-')}
-          {renderPair(t('fields.blocks'), formatNumber(locale, data?.services.btc_node.data?.blocks))}
-          {renderPair(t('fields.headers'), formatNumber(locale, data?.services.btc_node.data?.headers))}
+          {renderPair(t('fields.chain'), displayText(data?.services.btc_node.data?.chain, t))}
+          {renderPair(
+            t('fields.blocks'),
+            displayNumber(locale, data?.services.btc_node.data?.blocks, t),
+          )}
+          {renderPair(
+            t('fields.headers'),
+            displayNumber(locale, data?.services.btc_node.data?.headers, t),
+          )}
           {renderPair(
             t('fields.ibd'),
-            data?.services.btc_node.data?.initial_block_download == null
-              ? '-'
-              : String(data.services.btc_node.data.initial_block_download),
+            displayBoolean(data?.services.btc_node.data?.initial_block_download, t),
           )}
           {renderPair(
             t('fields.verifyProgress'),
             data?.services.btc_node.data?.verification_progress == null
-              ? '-'
+              ? t('common.notYetAvailable')
               : `${(data.services.btc_node.data.verification_progress * 100).toFixed(2)}%`,
           )}
           {renderPair(
             t('fields.latency'),
-            data?.services.btc_node.latency_ms ? `${data.services.btc_node.latency_ms} ms` : '-',
+            data?.services.btc_node.latency_ms
+              ? `${data.services.btc_node.latency_ms} ms`
+              : t('common.notYetAvailable'),
           )}
         </ServiceCard>
 
