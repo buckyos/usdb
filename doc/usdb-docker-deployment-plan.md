@@ -75,6 +75,7 @@
 详细设计见：
 
 - `doc/sourcedao-bootstrap-job-plan.md`
+- `doc/usdb-btc-mint-runtime-profiles.md`
 
 统一本地控制台的总体设计见：
 
