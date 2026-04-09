@@ -39,6 +39,20 @@ Suggested usage:
 - `manifests/`
   - bootnodes manifests, ETHW genesis artifact manifests, local service manifests, or other local metadata
 
+For quick browser-only control-console preview, keep using:
+
+- `docker/local/dev-sim/env/dev-sim.env`
+
+and start the reduced service subset with:
+
+```bash
+docker/scripts/run_console_preview.sh up
+```
+
+If the local `dev-sim.env` file is missing, the helper will scaffold it from
+`docker/env/dev-sim.env.example` automatically and will never overwrite an
+existing file.
+
 Do not store:
 
 - production signing private keys

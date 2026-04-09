@@ -120,6 +120,47 @@ Current `dev-sim` still keeps `usdb-indexer` on `inscription_source=bitcoind`.
 `ord` is a development-only dependency and will only be added to a future
 `dev-sim` profile, not to the default `joiner` stack.
 
+## Console Preview
+
+If you only want to inspect the local control console in a browser, do not use
+the random-port smoke stack. Keep the normal `dev-sim` environment file and
+start just the minimum subset of services:
+
+```bash
+docker/scripts/run_console_preview.sh up
+```
+
+If `docker/local/dev-sim/env/dev-sim.env` does not exist yet, the helper will
+create it from `docker/env/dev-sim.env.example` once and then continue.
+
+The helper also defaults `DOCKER_API_VERSION` to `1.41` for environments where
+the local Docker client is newer than the available daemon API.
+
+This starts:
+
+- `btc-node`
+- `snapshot-loader`
+- `balance-history`
+- `usdb-indexer`
+- `usdb-control-plane`
+
+It intentionally does not start `ethw-node`, so the console will show the ETHW
+service as unreachable while the rest of the stack is still usable.
+
+The console is then available at:
+
+```text
+http://127.0.0.1:28140/
+```
+
+Additional helper actions:
+
+```bash
+docker/scripts/run_console_preview.sh ps
+docker/scripts/run_console_preview.sh logs
+docker/scripts/run_console_preview.sh down
+```
+
 ## Bootstrap Mode
 
 Recommended command:
