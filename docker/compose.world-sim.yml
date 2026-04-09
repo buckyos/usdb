@@ -8,36 +8,30 @@ services:
       BTC_RPC_PORT: ${BTC_RPC_PORT:-28132}
       BTC_P2P_PORT: ${BTC_P2P_PORT:-28133}
       BTC_FALLBACK_FEE: ${BTC_FALLBACK_FEE:-0.0002}
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
     volumes:
       - btc-data:${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
 
   snapshot-loader:
     environment:
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
 
   balance-history:
     environment:
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
 
   usdb-indexer:
     environment:
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
 
   usdb-control-plane:
     environment:
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
 
   ord-server:
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
@@ -49,9 +43,8 @@ services:
     environment:
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       ORD_BIN: /opt/ord/bin/ord
       ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
@@ -81,9 +74,8 @@ services:
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
-      BTC_AUTH_MODE: userpass
-      BTC_RPC_USER: ${WORLD_SIM_BTC_RPC_USER:-usdb-world-sim}
-      BTC_RPC_PASSWORD: ${WORLD_SIM_BTC_RPC_PASSWORD:-usdb-world-sim-pass}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       ORD_BIN: /opt/ord/bin/ord
       ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}

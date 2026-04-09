@@ -92,7 +92,12 @@ class ValidatorSample:
 class Args:
     btc_cli: str
     bitcoin_dir: str
+    btc_rpc_host: str
     btc_rpc_port: int
+    btc_auth_mode: str
+    btc_cookie_file: str | None
+    btc_rpc_user: str | None
+    btc_rpc_password: str | None
     ord_bin: str
     ord_data_dir: str
     ord_server_url: str
@@ -354,8 +359,24 @@ class RegtestWorldSimulator:
             self.args.btc_cli,
             "-regtest",
             f"-datadir={self.args.bitcoin_dir}",
+            f"-rpcconnect={self.args.btc_rpc_host}",
             f"-rpcport={self.args.btc_rpc_port}",
         ]
+        if self.args.btc_auth_mode == "cookie":
+            if not self.args.btc_cookie_file:
+                raise WorldSimError("btc cookie auth requires --btc-cookie-file")
+            cmd.append(f"-rpccookiefile={self.args.btc_cookie_file}")
+        elif self.args.btc_auth_mode == "userpass":
+            if not self.args.btc_rpc_user or not self.args.btc_rpc_password:
+                raise WorldSimError(
+                    "btc userpass auth requires --btc-rpc-user and --btc-rpc-password"
+                )
+            cmd.append(f"-rpcuser={self.args.btc_rpc_user}")
+            cmd.append(f"-rpcpassword={self.args.btc_rpc_password}")
+        else:
+            raise WorldSimError(
+                f"unsupported BTC auth mode: {self.args.btc_auth_mode}"
+            )
         if wallet:
             cmd.append(f"-rpcwallet={wallet}")
         cmd.extend(rpc_args)
@@ -366,20 +387,43 @@ class RegtestWorldSimulator:
             self.args.ord_bin,
             "--regtest",
             "--bitcoin-rpc-url",
-            f"http://127.0.0.1:{self.args.btc_rpc_port}",
-            "--cookie-file",
-            f"{self.args.bitcoin_dir}/regtest/.cookie",
-            "--bitcoin-data-dir",
-            self.args.bitcoin_dir,
-            "--data-dir",
-            self.args.ord_data_dir,
-            "wallet",
-            "--no-sync",
-            "--server-url",
-            self.args.ord_server_url,
-            "--name",
-            wallet_name,
+            f"http://{self.args.btc_rpc_host}:{self.args.btc_rpc_port}",
         ]
+        if self.args.btc_auth_mode == "cookie":
+            if not self.args.btc_cookie_file:
+                raise WorldSimError("btc cookie auth requires --btc-cookie-file")
+            cmd.extend(["--cookie-file", self.args.btc_cookie_file])
+        elif self.args.btc_auth_mode == "userpass":
+            if not self.args.btc_rpc_user or not self.args.btc_rpc_password:
+                raise WorldSimError(
+                    "btc userpass auth requires --btc-rpc-user and --btc-rpc-password"
+                )
+            cmd.extend(
+                [
+                    "--bitcoin-rpc-username",
+                    self.args.btc_rpc_user,
+                    "--bitcoin-rpc-password",
+                    self.args.btc_rpc_password,
+                ]
+            )
+        else:
+            raise WorldSimError(
+                f"unsupported BTC auth mode: {self.args.btc_auth_mode}"
+            )
+        cmd.extend(
+            [
+                "--bitcoin-data-dir",
+                self.args.bitcoin_dir,
+                "--data-dir",
+                self.args.ord_data_dir,
+                "wallet",
+                "--no-sync",
+                "--server-url",
+                self.args.ord_server_url,
+                "--name",
+                wallet_name,
+            ]
+        )
         cmd.extend(ord_args)
 
         max_attempts = 4
@@ -2616,7 +2660,16 @@ def parse_args() -> Args:
     )
     parser.add_argument("--btc-cli", required=True)
     parser.add_argument("--bitcoin-dir", required=True)
+    parser.add_argument("--btc-rpc-host", default="127.0.0.1")
     parser.add_argument("--btc-rpc-port", required=True, type=int)
+    parser.add_argument(
+        "--btc-auth-mode",
+        default="cookie",
+        choices=["cookie", "userpass"],
+    )
+    parser.add_argument("--btc-cookie-file")
+    parser.add_argument("--btc-rpc-user")
+    parser.add_argument("--btc-rpc-password")
     parser.add_argument("--ord-bin", required=True)
     parser.add_argument("--ord-data-dir", required=True)
     parser.add_argument("--ord-server-url", required=True)
@@ -2751,7 +2804,12 @@ def parse_args() -> Args:
     return Args(
         btc_cli=parsed.btc_cli,
         bitcoin_dir=parsed.bitcoin_dir,
+        btc_rpc_host=parsed.btc_rpc_host,
         btc_rpc_port=parsed.btc_rpc_port,
+        btc_auth_mode=parsed.btc_auth_mode,
+        btc_cookie_file=parsed.btc_cookie_file,
+        btc_rpc_user=parsed.btc_rpc_user,
+        btc_rpc_password=parsed.btc_rpc_password,
         ord_bin=parsed.ord_bin,
         ord_data_dir=parsed.ord_data_dir,
         ord_server_url=parsed.ord_server_url,

@@ -341,6 +341,31 @@ retry_capture_output() {
   done
 }
 
+ensure_ord_wallet_ready() {
+  local wallet_name="${1:?wallet name is required}"
+  local timeout_secs="${2:?timeout is required}"
+  local start_ts now output output_lower
+
+  start_ts="$(date +%s)"
+  while true; do
+    if output="$(run_ord_wallet_named "${wallet_name}" create 2>&1)"; then
+      return
+    fi
+
+    output_lower="$(printf '%s' "${output}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${output_lower}" == *"already exists"* ]]; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > timeout_secs )); then
+      echo "Timed out waiting for ord wallet ${wallet_name}: ${output}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
 require_executable "${ord_bin}" "ord binary"
 require_executable "${bitcoin_cli}" "bitcoin-cli"
 if [[ "${btc_auth_mode}" == "cookie" ]]; then
@@ -380,7 +405,7 @@ for i in $(seq 1 "${agent_count}"); do
   wallet_name="${wallet_prefix}-${i}"
   agent_wallets+=("${wallet_name}")
   log "Preparing ord wallet ${wallet_name}"
-  retry_until_success "ord wallet create ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" create
+  ensure_ord_wallet_ready "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
   receive_output="$(retry_capture_output "ord wallet receive ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" receive)"
   receive_address="$(extract_bech32_address "${receive_output}")"
   if [[ -z "${receive_address}" ]]; then
@@ -448,12 +473,25 @@ if [[ "${SIM_VALIDATOR_SAMPLE_ENABLED:-0}" == "1" ]]; then
   fi
 fi
 
+btc_auth_args=(--btc-auth-mode "${btc_auth_mode}")
+if [[ -n "${cookie_file}" ]]; then
+  btc_auth_args+=(--btc-cookie-file "${cookie_file}")
+fi
+if [[ -n "${btc_rpc_user}" ]]; then
+  btc_auth_args+=(--btc-rpc-user "${btc_rpc_user}")
+fi
+if [[ -n "${btc_rpc_password}" ]]; then
+  btc_auth_args+=(--btc-rpc-password "${btc_rpc_password}")
+fi
+
 log "Launching world simulator: blocks=${SIM_BLOCKS:-300}, seed=${SIM_SEED:-42}, agents=${agent_count}"
 
 exec python3 "${world_simulator}" \
   --btc-cli "${bitcoin_cli}" \
   --bitcoin-dir "${btc_data_dir}" \
+  --btc-rpc-host "${btc_host}" \
   --btc-rpc-port "${btc_port}" \
+  "${btc_auth_args[@]}" \
   --ord-bin "${ord_bin}" \
   --ord-data-dir "${ord_data_dir}" \
   --ord-server-url "${ord_server_url}" \
