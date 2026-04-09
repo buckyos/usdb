@@ -171,7 +171,33 @@ The following is not fully deterministic yet:
 
 That requires additional work.
 
-## 8. Next-Stage Deterministic Design
+## 8. Exact Mid-Batch Replay and Crash Recovery
+
+For world-sim, exact mid-batch replay means:
+
+- a bounded batch starts from a known BTC / ord / USDB state
+- each tick inside that batch has a stable action plan
+- if the runner dies before that batch finishes, the next run can regenerate the
+  same planned actions for the unfinished portion of the batch
+
+Today the operator can rerun a failed batch from the same batch seed, but the
+simulator still depends on process-local RNG progression. That means it does
+not yet have a stable notion of:
+
+- action slot identity inside a tick
+- action selection at a specific position
+- action-specific random choices such as prev selection, transfer target
+  selection, or send/spend amount
+
+To support exact replay later, the simulator needs two layers:
+
+1. deterministic action planning
+2. persistent recovery checkpoints
+
+The first layer makes the action sequence reproducible. The second layer makes
+it possible to resume from the middle of an unfinished batch after a crash.
+
+## 9. Next-Stage Deterministic Design
 
 The recommended next-stage model is:
 
@@ -211,18 +237,46 @@ This is still an intermediate step. It does **not** yet make the entire BTC /
 ord / USDB world derivable from one seed, and it does not yet support exact
 mid-batch replay after arbitrary crashes.
 
-### 8.3 Absolute Tick Derivation
+### 9.3 Position-Derived Action Planning
 
 Instead of only using process-local RNG state, future batches should derive
-randomness from:
+randomness from stable coordinates such as:
 
 - base seed
-- absolute tick
+- batch seed
+- tick
 - action slot
+- action phase
 
-This would make restart behavior much more reproducible.
+This gives each action position a stable deterministic identity.
 
-## 9. First-Batch Implementation Boundary
+The immediate form of this design is:
+
+- derive a dedicated RNG for each `tick / slot / phase`
+- compute a stable `action_id`
+- use that position-derived RNG for:
+  - action slot count
+  - actor selection
+  - action selection
+  - action-specific random choices
+
+Once this exists, later recovery logic can refer to a stable `action_id` rather
+than "whatever the next `random.Random()` call would have produced".
+
+### 9.4 Recovery Checkpoints
+
+After deterministic action planning is in place, the next layer is to persist a
+recovery cursor, for example:
+
+- batch seed
+- last completed tick
+- last completed action slot inside the current tick
+- action ids that have already been fully applied
+
+This is the layer that enables actual crash recovery rather than just replaying
+the whole batch from the beginning.
+
+## 10. First-Batch Implementation Boundary
 
 This batch intentionally implements only:
 
@@ -230,15 +284,21 @@ This batch intentionally implements only:
 - explicit persistent vs reset operator behavior
 - continuous mode with batch looping
 - loop state persistence
+- deterministic identity recreation for `seeded-reset`
+- stable action planning primitives:
+  - position-derived RNG
+  - stable action ids
+  - action-specific randomness derived from action position
 
 It does **not** yet implement:
 
 - full seeded-reset replay of the entire protocol state
+- persistent mid-batch checkpoints
 - exact mid-batch crash replay
 - deterministic reconstruction of the complete BTC / ord / USDB world from one
   seed alone
 
-## 10. Runtime Stability Gates
+## 11. Runtime Stability Gates
 
 To reduce the ord wallet / ord server race observed immediately after funding
 and bootstrap, the runtime now performs an explicit stability gate before the
@@ -254,7 +314,7 @@ These probes are controlled by:
 - `WORLD_SIM_ORD_STABILITY_PROBES`
 - `WORLD_SIM_ORD_STABILITY_SLEEP_SECS`
 
-## 11. Operator Guidance
+## 12. Operator Guidance
 
 Recommended operator meanings:
 

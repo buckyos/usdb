@@ -56,6 +56,7 @@ class ActionExpectation:
     target_had_active_before: bool | None = None
     prev_inscription_id: str | None = None
     expect_invalid: bool = False
+    action_id: str | None = None
 
 
 @dataclass
@@ -209,8 +210,6 @@ class RegtestWorldSimulator:
 
         self.action_seed = int(args.seed)
         self.diagnostic_seed = int(args.seed) ^ 0xA5A5A5A5
-        self.action_rng = random.Random(self.action_seed)
-        self.diag_rng = random.Random(self.diagnostic_seed)
         self.temp_dir = Path(args.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -258,6 +257,57 @@ class RegtestWorldSimulator:
         self.report_fp: Any | None = None
         self.report_event_since_flush = 0
         self._init_reporter()
+
+    @staticmethod
+    def _normalize_seed_component(component: Any) -> str:
+        if isinstance(component, bool):
+            return "true" if component else "false"
+        return str(component)
+
+    def derived_rng(self, namespace: str, *components: Any) -> random.Random:
+        material = "::".join(
+            [
+                namespace,
+                *(
+                    self._normalize_seed_component(component)
+                    for component in components
+                ),
+            ]
+        )
+        digest = hashlib.sha256(material.encode("utf-8")).digest()
+        return random.Random(int.from_bytes(digest[:16], byteorder="big"))
+
+    def action_position_rng(
+        self, tick: int, slot_index: int, phase: str, *components: Any
+    ) -> random.Random:
+        return self.derived_rng(
+            "action",
+            self.action_seed,
+            tick,
+            slot_index,
+            phase,
+            *components,
+        )
+
+    def diagnostic_position_rng(self, scope: str, *components: Any) -> random.Random:
+        return self.derived_rng("diag", self.diagnostic_seed, scope, *components)
+
+    def make_action_id(
+        self, tick: int, slot_index: int, actor_id: int, action: str
+    ) -> str:
+        digest = hashlib.sha256(
+            "::".join(
+                [
+                    "action-id",
+                    str(self.action_seed),
+                    str(tick),
+                    str(slot_index),
+                    str(actor_id),
+                    action,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"t{tick:04d}-s{slot_index:02d}-{digest}"
 
     def _init_reporter(self) -> None:
         report_file = self.args.report_file
@@ -816,7 +866,11 @@ class RegtestWorldSimulator:
         if sample_size <= 0 or sample_size >= len(candidate_ids):
             selected_ids = candidate_ids
         else:
-            selected_ids = sorted(self.diag_rng.sample(candidate_ids, sample_size))
+            selected_ids = sorted(
+                self.diagnostic_position_rng(
+                    "validator-sample-capture", tick, block_height
+                ).sample(candidate_ids, sample_size)
+            )
 
         state_ref = self.get_state_ref_at_height(block_height)
         if state_ref is None:
@@ -1193,18 +1247,18 @@ class RegtestWorldSimulator:
                 )
             time.sleep(0.8)
 
-    def random_eth_address(self) -> str:
+    def random_eth_address(self, rng: random.Random) -> str:
         return "0x" + "".join(
-            self.action_rng.choice("0123456789abcdef") for _ in range(40)
+            rng.choice("0123456789abcdef") for _ in range(40)
         )
 
-    def random_btc_amount(self, min_btc: str, max_btc: str) -> str:
+    def random_btc_amount(self, rng: random.Random, min_btc: str, max_btc: str) -> str:
         min_sat = int((Decimal(min_btc) * Decimal("100000000")).to_integral_value())
         max_sat = int((Decimal(max_btc) * Decimal("100000000")).to_integral_value())
         if max_sat <= min_sat:
             sat = min_sat
         else:
-            sat = self.action_rng.randint(min_sat, max_sat)
+            sat = rng.randint(min_sat, max_sat)
         amount = Decimal(sat) / Decimal("100000000")
         return f"{amount:.8f}"
 
@@ -1246,7 +1300,7 @@ class RegtestWorldSimulator:
     def get_active_agent_ids(self) -> list[int]:
         return [agent.agent_id for agent in self.agents[: self.active_agent_count]]
 
-    def choose_actor(self, available_agent_ids: set[int]) -> int:
+    def choose_actor(self, available_agent_ids: set[int], rng: random.Random) -> int:
         # Traders and adversaries act more often.
         weighted: list[tuple[int, float]] = []
         for agent_id in sorted(available_agent_ids):
@@ -1262,9 +1316,9 @@ class RegtestWorldSimulator:
 
         total = sum(weight for _, weight in weighted)
         if total <= 0:
-            return self.action_rng.choice(sorted(available_agent_ids))
+            return rng.choice(sorted(available_agent_ids))
 
-        x = self.action_rng.random() * total
+        x = rng.random() * total
         cursor = 0.0
         for agent_id, weight in weighted:
             cursor += weight
@@ -1373,7 +1427,11 @@ class RegtestWorldSimulator:
         return weights
 
     def choose_action_for_agent(
-        self, agent: Agent, available_agent_ids: set[int], pre_height: int
+        self,
+        agent: Agent,
+        available_agent_ids: set[int],
+        pre_height: int,
+        rng: random.Random,
     ) -> str:
         if self.args.policy_mode == "scripted":
             return self.choose_scripted_action_for_agent(
@@ -1386,7 +1444,7 @@ class RegtestWorldSimulator:
             return "noop"
 
         total = sum(w for _, w in positive)
-        x = self.action_rng.random() * total
+        x = rng.random() * total
         cursor = 0.0
         for action, weight in positive:
             cursor += weight
@@ -1431,10 +1489,11 @@ class RegtestWorldSimulator:
         pre_height: int,
         invalid_eth: bool,
         prev: list[str] | None,
+        rng: random.Random,
         count_as_mint: bool = True,
     ) -> tuple[str, ActionExpectation]:
         content_path = self.write_mint_content(
-            eth_main=self.random_eth_address(),
+            eth_main=self.random_eth_address(rng),
             prev=prev or [],
             invalid_eth=invalid_eth,
         )
@@ -1491,6 +1550,7 @@ class RegtestWorldSimulator:
         actor: Agent,
         available_agent_ids: set[int],
         pre_height: int,
+        rng: random.Random,
     ) -> tuple[str, ActionExpectation, set[int]]:
         if not actor.owned_passes:
             self.metrics["skip"] += 1
@@ -1511,8 +1571,8 @@ class RegtestWorldSimulator:
                 {actor.agent_id},
             )
 
-        inscription_id = self.action_rng.choice(sorted(actor.owned_passes))
-        target = self.action_rng.choice(target_candidates)
+        inscription_id = rng.choice(sorted(actor.owned_passes))
+        target = rng.choice(target_candidates)
         target_active_before = (
             self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
         )
@@ -1550,8 +1610,10 @@ class RegtestWorldSimulator:
             {actor.agent_id, target.agent_id},
         )
 
-    def op_send_balance(self, actor: Agent, pre_height: int) -> tuple[str, ActionExpectation]:
-        amount_btc = self.random_btc_amount("0.01000000", "0.25000000")
+    def op_send_balance(
+        self, actor: Agent, pre_height: int, rng: random.Random
+    ) -> tuple[str, ActionExpectation]:
+        amount_btc = self.random_btc_amount(rng, "0.01000000", "0.25000000")
         txid = self.run_btc_cli(
             self.args.miner_wallet,
             ["sendtoaddress", actor.receive_address, amount_btc],
@@ -1570,7 +1632,7 @@ class RegtestWorldSimulator:
         )
 
     def op_spend_balance(
-        self, actor: Agent, pre_height: int
+        self, actor: Agent, pre_height: int, rng: random.Random
     ) -> tuple[str, ActionExpectation] | None:
         pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
         if pre_balance < 200_000:
@@ -1586,7 +1648,7 @@ class RegtestWorldSimulator:
         if max_sat < min_sat:
             amount_sat = max_sat
         else:
-            amount_sat = self.action_rng.randint(min_sat, max_sat)
+            amount_sat = rng.randint(min_sat, max_sat)
 
         amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
         txid = self.run_btc_cli(
@@ -1607,7 +1669,7 @@ class RegtestWorldSimulator:
             ),
         )
 
-    def choose_prev_for_remint(self) -> str | None:
+    def choose_prev_for_remint(self, rng: random.Random) -> str | None:
         if not self.pass_owner_by_id:
             return None
         # Prefer non-invalid prev candidates to better reflect valid remint flow.
@@ -1619,7 +1681,7 @@ class RegtestWorldSimulator:
         candidates = non_invalid if non_invalid else list(self.pass_owner_by_id.keys())
         if not candidates:
             return None
-        return self.action_rng.choice(sorted(candidates))
+        return rng.choice(sorted(candidates))
 
     def execute_agent_action(
         self,
@@ -1627,6 +1689,7 @@ class RegtestWorldSimulator:
         action: str,
         available_agent_ids: set[int],
         pre_height: int,
+        rng: random.Random,
     ) -> tuple[str, ActionExpectation | None, set[int]]:
         if action == "noop":
             self.metrics["skip"] += 1
@@ -1638,6 +1701,7 @@ class RegtestWorldSimulator:
                 pre_height=pre_height,
                 invalid_eth=False,
                 prev=None,
+                rng=rng,
             )
             return detail, expectation, {actor.agent_id}
 
@@ -1647,14 +1711,15 @@ class RegtestWorldSimulator:
                 pre_height=pre_height,
                 invalid_eth=True,
                 prev=None,
+                rng=rng,
             )
             return detail, expectation, {actor.agent_id}
 
         if action == "transfer":
-            return self.op_transfer(actor, available_agent_ids, pre_height)
+            return self.op_transfer(actor, available_agent_ids, pre_height, rng)
 
         if action == "remint":
-            prev = self.choose_prev_for_remint()
+            prev = self.choose_prev_for_remint(rng)
             if prev is None:
                 self.metrics["skip"] += 1
                 return "remint:skip:no_prev", None, {actor.agent_id}
@@ -1663,17 +1728,18 @@ class RegtestWorldSimulator:
                 pre_height=pre_height,
                 invalid_eth=False,
                 prev=[prev],
+                rng=rng,
                 count_as_mint=False,
             )
             self.metrics["remint_ok"] += 1
             return f"remint:prev={prev}:{detail}", expectation, {actor.agent_id}
 
         if action == "send_balance":
-            detail, expectation = self.op_send_balance(actor, pre_height)
+            detail, expectation = self.op_send_balance(actor, pre_height, rng)
             return detail, expectation, {actor.agent_id}
 
         if action == "spend_balance":
-            result = self.op_spend_balance(actor, pre_height)
+            result = self.op_spend_balance(actor, pre_height, rng)
             if result is None:
                 return "spend_balance:skip:low_balance", None, {actor.agent_id}
             detail, expectation = result
@@ -1828,7 +1894,11 @@ class RegtestWorldSimulator:
         sample_size = self.args.agent_self_check_sample_size
         if sample_size <= 0 or sample_size >= len(ordered):
             return ordered
-        return sorted(self.diag_rng.sample(ordered, sample_size))
+        return sorted(
+            self.diagnostic_position_rng("agent-self-check", tick).sample(
+                ordered, sample_size
+            )
+        )
 
     def run_agent_self_check(self, agent: Agent, block_height: int) -> None:
         active_pass_id = agent.active_pass_id
@@ -2318,7 +2388,11 @@ class RegtestWorldSimulator:
         if owner_sample_size <= 0 or owner_sample_size >= len(owners):
             sampled_owners = owners
         else:
-            sampled_owners = sorted(self.diag_rng.sample(owners, owner_sample_size))
+            sampled_owners = sorted(
+                self.diagnostic_position_rng(
+                    "global-cross-check-owner-sample", tick, block_height
+                ).sample(owners, owner_sample_size)
+            )
 
         sampled_balance_sum = 0
         for owner in sampled_owners:
@@ -2472,9 +2546,12 @@ class RegtestWorldSimulator:
             active_agent_ids = self.get_active_agent_ids()
             available_ids: set[int] = set(active_agent_ids)
             max_slots = min(self.args.max_actions_per_block, len(available_ids))
-            action_slots = self.action_rng.randint(0, max(0, max_slots))
+            action_slots = self.action_position_rng(
+                tick, -1, "slot-count", pre_height, len(available_ids)
+            ).randint(0, max(0, max_slots))
 
             action_results: list[str] = []
+            action_trace_samples: list[dict[str, Any]] = []
             tick_action_type_counts = {
                 action: 0 for action in sorted(self.SUPPORTED_ACTIONS)
             }
@@ -2499,13 +2576,37 @@ class RegtestWorldSimulator:
             reorg_info: dict[str, Any] | None = None
             refresh_failed_agent_ids: set[int] = set()
 
-            for _ in range(action_slots):
+            for slot_index in range(action_slots):
                 if not available_ids:
                     break
 
-                actor_id = self.choose_actor(available_ids)
+                actor_id = self.choose_actor(
+                    available_ids,
+                    self.action_position_rng(
+                        tick,
+                        slot_index,
+                        "actor",
+                        pre_height,
+                        tuple(sorted(available_ids)),
+                    ),
+                )
                 actor = self.agents[actor_id]
-                action = self.choose_action_for_agent(actor, available_ids, pre_height)
+                action = self.choose_action_for_agent(
+                    actor,
+                    available_ids,
+                    pre_height,
+                    self.action_position_rng(
+                        tick,
+                        slot_index,
+                        "action",
+                        actor_id,
+                        actor.scripted_index,
+                        actor.last_action,
+                        actor.cooldown,
+                        tuple(sorted(available_ids)),
+                    ),
+                )
+                action_id = self.make_action_id(tick, slot_index, actor_id, action)
                 tick_action_type_counts[action] = (
                     tick_action_type_counts.get(action, 0) + 1
                 )
@@ -2516,10 +2617,31 @@ class RegtestWorldSimulator:
                         action=action,
                         available_agent_ids=available_ids,
                         pre_height=pre_height,
+                        rng=self.action_position_rng(
+                            tick,
+                            slot_index,
+                            "execute",
+                            actor_id,
+                            action,
+                            pre_height,
+                        ),
                     )
-                    action_results.append(detail)
+                    action_results.append(f"{action_id}:{detail}")
                     if expectation is not None and expectation.action != "noop":
+                        expectation.action_id = action_id
                         expectations.append(expectation)
+                    action_trace_samples.append(
+                        {
+                            "action_id": action_id,
+                            "slot_index": slot_index,
+                            "actor_id": actor_id,
+                            "actor_wallet": actor.wallet_name,
+                            "action": action,
+                            "result": detail,
+                            "used_agent_ids": sorted(used_ids),
+                            "status": "ok",
+                        }
+                    )
                     available_ids -= used_ids
                     actor.last_action = action
                     actor.cooldown = max(0, actor.cooldown - 1)
@@ -2527,10 +2649,22 @@ class RegtestWorldSimulator:
                     action_failed += 1
                     self.on_action_failed(action)
                     action_fail_samples.append(
-                        f"actor={actor.wallet_name},action={action},error={e}"
+                        f"action_id={action_id},actor={actor.wallet_name},action={action},error={e}"
+                    )
+                    action_trace_samples.append(
+                        {
+                            "action_id": action_id,
+                            "slot_index": slot_index,
+                            "actor_id": actor_id,
+                            "actor_wallet": actor.wallet_name,
+                            "action": action,
+                            "status": "failed",
+                            "error": str(e),
+                        }
                     )
                     self.log(
-                        f"WARN action failed: tick={tick}, actor={actor.wallet_name}, action={action}, error={e}"
+                        "WARN action failed: "
+                        f"tick={tick}, action_id={action_id}, actor={actor.wallet_name}, action={action}, error={e}"
                     )
                     available_ids.discard(actor_id)
                     actor.last_action = "failed"
@@ -2549,11 +2683,11 @@ class RegtestWorldSimulator:
                     self.metrics["verify_fail"] += 1
                     verify_failed += 1
                     verify_fail_samples.append(
-                        f"action={expectation.action},actor_id={expectation.actor_id},error={e}"
+                        f"action_id={expectation.action_id},action={expectation.action},actor_id={expectation.actor_id},error={e}"
                     )
                     self.log(
                         "WARN verification failed: "
-                        f"tick={tick}, action={expectation.action}, error={e}"
+                        f"tick={tick}, action_id={expectation.action_id}, action={expectation.action}, error={e}"
                     )
                     if self.args.fail_fast:
                         raise
@@ -2704,6 +2838,7 @@ class RegtestWorldSimulator:
                     "active_total_balance": total_balance,
                     "top_energy": top_energy,
                     "action_results": action_results,
+                    "action_trace_samples": action_trace_samples[:8],
                     "action_fail_samples": action_fail_samples[:8],
                     "verify_fail_samples": verify_fail_samples[:8],
                     "agent_self_check_fail_samples": self_check_fail_samples[:8],
