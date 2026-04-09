@@ -265,6 +265,7 @@
 
 - 新增 `compose.world-sim.yml`
 - 新增 `ord-server`
+- 新增 `world-sim-bootstrap`
 - 新增 `world-sim-runner`
 - 在 `world-sim` overlay 下覆盖 `btc-node`
 - 引入 world-sim 专用发布镜像：
@@ -275,6 +276,8 @@
 - 并通过专门的本地入口脚本统一完成：
   - 构建镜像
   - 启动 overlay
+  - 保留状态的关闭
+  - 显式 reset
 
 这个模式仍然是：
 
@@ -286,6 +289,7 @@
 
 - `doc/dev-sim-world-sim-plan.md`
 - `doc/world-sim-release-image-plan.md`
+- `doc/world-sim-deterministic-state-plan.md`
 
 ## 3. 部署模式
 

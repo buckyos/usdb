@@ -59,9 +59,9 @@ services:
     networks:
       - usdb-net
 
-  world-sim-runner:
+  world-sim-bootstrap:
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
-    restart: unless-stopped
+    restart: on-failure
     entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
     depends_on:
       ord-server:
@@ -71,6 +71,48 @@ services:
       usdb-indexer:
         condition: service_started
     environment:
+      WORLD_SIM_MODE: bootstrap
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
+      BTC_NETWORK: ${BTC_NETWORK:-regtest}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_AUTH_MODE: cookie
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
+      BITCOIN_BIN_DIR: /opt/bitcoin/bin
+      ORD_BIN: /opt/ord/bin/ord
+      ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
+      ORD_SERVER_URL: ${ORD_RPC_URL:-http://ord-server:28130}
+      BALANCE_HISTORY_RPC_URL: ${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}
+      USDB_RPC_URL: ${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28120}
+      WORLD_SIM_WORK_DIR: ${WORLD_SIM_WORK_DIR:-/data/world-sim}
+      MINER_WALLET_NAME: ${MINER_WALLET_NAME:-usdb-world-miner}
+      ORD_WALLET_PREFIX: ${ORD_WALLET_PREFIX:-usdb-world-agent}
+      AGENT_COUNT: ${AGENT_COUNT:-5}
+      PREMINE_BLOCKS: ${PREMINE_BLOCKS:-140}
+      FUND_AGENT_AMOUNT_BTC: ${FUND_AGENT_AMOUNT_BTC:-4.0}
+      FUND_CONFIRM_BLOCKS: ${FUND_CONFIRM_BLOCKS:-2}
+      SYNC_TIMEOUT_SEC: ${SYNC_TIMEOUT_SEC:-300}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - ord-data:${ORD_DATA_DIR:-/data/ord}
+      - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}
+    networks:
+      - usdb-net
+
+  world-sim-runner:
+    image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
+    restart: on-failure
+    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
+    depends_on:
+      ord-server:
+        condition: service_started
+      balance-history:
+        condition: service_started
+      usdb-indexer:
+        condition: service_started
+      world-sim-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      WORLD_SIM_MODE: loop
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
@@ -126,6 +168,7 @@ services:
       SIM_REORG_INTERVAL_BLOCKS: ${SIM_REORG_INTERVAL_BLOCKS:-0}
       SIM_REORG_DEPTH: ${SIM_REORG_DEPTH:-3}
       SIM_REORG_MAX_EVENTS: ${SIM_REORG_MAX_EVENTS:-1}
+      SIM_LOOP_BATCH_BLOCKS: ${SIM_LOOP_BATCH_BLOCKS:-25}
     volumes:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - ord-data:${ORD_DATA_DIR:-/data/ord}

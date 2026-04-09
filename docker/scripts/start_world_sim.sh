@@ -20,6 +20,10 @@ world_sim_work_dir="${WORLD_SIM_WORK_DIR:-/data/world-sim}"
 world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.py}"
 cookie_file="${BTC_COOKIE_FILE:-${btc_data_dir}/regtest/.cookie}"
 sync_timeout_sec="${SYNC_TIMEOUT_SEC:-300}"
+world_sim_mode="${WORLD_SIM_MODE:-all}"
+world_sim_bootstrap_dir="${WORLD_SIM_BOOTSTRAP_DIR:-${world_sim_work_dir}/bootstrap}"
+world_sim_bootstrap_marker="${WORLD_SIM_BOOTSTRAP_MARKER:-${world_sim_bootstrap_dir}/world-sim-bootstrap.done.json}"
+world_sim_loop_state_file="${WORLD_SIM_LOOP_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-loop-state.json}"
 
 miner_wallet_name="${MINER_WALLET_NAME:-usdb-world-miner}"
 wallet_prefix="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -27,6 +31,9 @@ agent_count="${AGENT_COUNT:-5}"
 premine_blocks="${PREMINE_BLOCKS:-140}"
 fund_agent_amount_btc="${FUND_AGENT_AMOUNT_BTC:-4.0}"
 fund_confirm_blocks="${FUND_CONFIRM_BLOCKS:-2}"
+sim_blocks="${SIM_BLOCKS:-300}"
+sim_base_seed="${SIM_SEED:-42}"
+sim_loop_batch_blocks="${SIM_LOOP_BATCH_BLOCKS:-25}"
 
 log() {
   printf '[docker-world-sim] %s\n' "$*"
@@ -366,164 +373,416 @@ ensure_ord_wallet_ready() {
   done
 }
 
-require_executable "${ord_bin}" "ord binary"
-require_executable "${bitcoin_cli}" "bitcoin-cli"
-if [[ "${btc_auth_mode}" == "cookie" ]]; then
-  require_file "${cookie_file}" "Bitcoin cookie file"
-fi
-require_file "${world_simulator}" "world simulator"
+prepare_runtime_environment() {
+  require_executable "${ord_bin}" "ord binary"
+  require_executable "${bitcoin_cli}" "bitcoin-cli"
+  if [[ "${btc_auth_mode}" == "cookie" ]]; then
+    require_file "${cookie_file}" "Bitcoin cookie file"
+  fi
+  require_file "${world_simulator}" "world simulator"
+  mkdir -p "${world_sim_work_dir}" "${ord_data_dir}" "${world_sim_bootstrap_dir}"
+}
 
-mkdir -p "${world_sim_work_dir}" "${ord_data_dir}"
+wait_core_services() {
+  /opt/usdb/docker/scripts/wait_for_tcp.sh "${btc_host}" "${btc_port}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+  wait_for_bitcoin_rpc
+  wait_http_ready "ord-server" "${ord_server_url}/blockcount"
+  wait_rpc_ready "balance-history" "${balance_history_rpc_url}" "get_network_type"
+  wait_rpc_ready "usdb-indexer" "${usdb_rpc_url}" "get_network_type"
+}
 
-/opt/usdb/docker/scripts/wait_for_tcp.sh "${btc_host}" "${btc_port}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
-wait_for_bitcoin_rpc
-wait_http_ready "ord-server" "${ord_server_url}/blockcount"
-wait_rpc_ready "balance-history" "${balance_history_rpc_url}" "get_network_type"
-wait_rpc_ready "usdb-indexer" "${usdb_rpc_url}" "get_network_type"
+bootstrap_marker_matches() {
+  [[ -f "${world_sim_bootstrap_marker}" ]] || return 1
+  python3 - "${world_sim_bootstrap_marker}" \
+    "${miner_wallet_name}" \
+    "${wallet_prefix}" \
+    "${agent_count}" \
+    "${premine_blocks}" \
+    "${fund_agent_amount_btc}" \
+    "${fund_confirm_blocks}" <<'PY'
+import json
+import sys
 
-ensure_wallet_loaded "${miner_wallet_name}"
+marker_path, miner_wallet_name, wallet_prefix, agent_count, premine_blocks, fund_agent_amount_btc, fund_confirm_blocks = sys.argv[1:]
+with open(marker_path, "r", encoding="utf-8") as fp:
+    data = json.load(fp)
 
-log "Allocating mining address from wallet: ${miner_wallet_name}"
-mining_address="$(btc_cli -rpcwallet="${miner_wallet_name}" getnewaddress)"
-current_height="$(btc_cli getblockcount)"
+expected = {
+    "miner_wallet_name": miner_wallet_name,
+    "wallet_prefix": wallet_prefix,
+    "agent_count": int(agent_count),
+    "premine_blocks": int(premine_blocks),
+    "fund_agent_amount_btc": str(fund_agent_amount_btc),
+    "fund_confirm_blocks": int(fund_confirm_blocks),
+}
 
-if [[ "${current_height}" -lt "${premine_blocks}" ]]; then
-  blocks_to_mine="$(( premine_blocks - current_height ))"
-  log "Premining ${blocks_to_mine} blocks to reach height ${premine_blocks}"
-  btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${blocks_to_mine}" "${mining_address}" >/dev/null
-else
-  log "Skipping premine: current_height=${current_height} already >= ${premine_blocks}"
-fi
+for key, value in expected.items():
+    if data.get(key) != value:
+        raise SystemExit(1)
+PY
+}
 
-wait_until_ord_server_synced_to_bitcoind
+load_bootstrap_state() {
+  [[ -f "${world_sim_bootstrap_marker}" ]] || {
+    echo "Missing world-sim bootstrap marker: ${world_sim_bootstrap_marker}" >&2
+    exit 1
+  }
 
-declare -a agent_wallets=()
-declare -a agent_addresses=()
+  mapfile -t bootstrap_state < <(
+    python3 - "${world_sim_bootstrap_marker}" <<'PY'
+import json
+import sys
 
-log "Preparing ${agent_count} world-sim agent wallets"
-for i in $(seq 1 "${agent_count}"); do
-  wallet_name="${wallet_prefix}-${i}"
-  agent_wallets+=("${wallet_name}")
-  log "Preparing ord wallet ${wallet_name}"
-  ensure_ord_wallet_ready "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
-  receive_output="$(retry_capture_output "ord wallet receive ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" receive)"
-  receive_address="$(extract_bech32_address "${receive_output}")"
-  if [[ -z "${receive_address}" ]]; then
-    echo "Failed to parse receive address: wallet=${wallet_name}, output=${receive_output}" >&2
+with open(sys.argv[1], "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+
+print(data.get("mining_address", ""))
+print(",".join(data.get("agent_wallets", [])))
+print(",".join(data.get("agent_addresses", [])))
+print(str(data.get("bootstrap_height", 0)))
+PY
+  )
+
+  mining_address="${bootstrap_state[0]:-}"
+  agent_wallets_csv="${bootstrap_state[1]:-}"
+  agent_addresses_csv="${bootstrap_state[2]:-}"
+  bootstrap_height="${bootstrap_state[3]:-0}"
+
+  [[ -n "${mining_address}" ]] || {
+    echo "Bootstrap marker missing mining_address: ${world_sim_bootstrap_marker}" >&2
+    exit 1
+  }
+  [[ -n "${agent_wallets_csv}" ]] || {
+    echo "Bootstrap marker missing agent_wallets: ${world_sim_bootstrap_marker}" >&2
+    exit 1
+  }
+  [[ -n "${agent_addresses_csv}" ]] || {
+    echo "Bootstrap marker missing agent_addresses: ${world_sim_bootstrap_marker}" >&2
+    exit 1
+  }
+}
+
+write_bootstrap_marker() {
+  local current_height="${1:?current height is required}"
+  local agent_wallets_csv="${2:?agent wallets are required}"
+  local agent_addresses_csv="${3:?agent addresses are required}"
+
+  python3 - "${world_sim_bootstrap_marker}" \
+    "${mining_address}" \
+    "${miner_wallet_name}" \
+    "${wallet_prefix}" \
+    "${agent_count}" \
+    "${premine_blocks}" \
+    "${fund_agent_amount_btc}" \
+    "${fund_confirm_blocks}" \
+    "${current_height}" \
+    "${agent_wallets_csv}" \
+    "${agent_addresses_csv}" <<'PY'
+import json
+import os
+import sys
+import time
+
+(
+    marker_path,
+    mining_address,
+    miner_wallet_name,
+    wallet_prefix,
+    agent_count,
+    premine_blocks,
+    fund_agent_amount_btc,
+    fund_confirm_blocks,
+    current_height,
+    agent_wallets_csv,
+    agent_addresses_csv,
+) = sys.argv[1:]
+
+payload = {
+    "version": 1,
+    "created_at": int(time.time()),
+    "mining_address": mining_address,
+    "miner_wallet_name": miner_wallet_name,
+    "wallet_prefix": wallet_prefix,
+    "agent_count": int(agent_count),
+    "premine_blocks": int(premine_blocks),
+    "fund_agent_amount_btc": str(fund_agent_amount_btc),
+    "fund_confirm_blocks": int(fund_confirm_blocks),
+    "bootstrap_height": int(current_height),
+    "agent_wallets": [v for v in agent_wallets_csv.split(",") if v],
+    "agent_addresses": [v for v in agent_addresses_csv.split(",") if v],
+}
+
+os.makedirs(os.path.dirname(marker_path), exist_ok=True)
+with open(marker_path, "w", encoding="utf-8") as fp:
+    json.dump(payload, fp, indent=2, sort_keys=True)
+    fp.write("\n")
+PY
+}
+
+read_completed_batches() {
+  if [[ ! -f "${world_sim_loop_state_file}" ]]; then
+    echo 0
+    return
+  fi
+  python3 - "${world_sim_loop_state_file}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+print(int(data.get("completed_batches", 0)))
+PY
+}
+
+write_loop_state() {
+  local completed_batches="${1:?completed_batches is required}"
+  local batch_seed="${2:?batch_seed is required}"
+  local current_height="${3:?current_height is required}"
+
+  python3 - "${world_sim_loop_state_file}" \
+    "${completed_batches}" \
+    "${batch_seed}" \
+    "${current_height}" \
+    "${sim_loop_batch_blocks}" <<'PY'
+import json
+import os
+import sys
+import time
+
+loop_state_path, completed_batches, batch_seed, current_height, batch_blocks = sys.argv[1:]
+payload = {
+    "version": 1,
+    "updated_at": int(time.time()),
+    "completed_batches": int(completed_batches),
+    "last_batch_seed": int(batch_seed),
+    "last_block_height": int(current_height),
+    "batch_blocks": int(batch_blocks),
+}
+os.makedirs(os.path.dirname(loop_state_path), exist_ok=True)
+with open(loop_state_path, "w", encoding="utf-8") as fp:
+    json.dump(payload, fp, indent=2, sort_keys=True)
+    fp.write("\n")
+PY
+}
+
+bootstrap_world_sim() {
+  if [[ -f "${world_sim_bootstrap_marker}" ]]; then
+    if bootstrap_marker_matches; then
+      log "World-sim bootstrap already completed: ${world_sim_bootstrap_marker}"
+      load_bootstrap_state
+      return
+    fi
+    echo "Existing world-sim bootstrap marker does not match current bootstrap config: ${world_sim_bootstrap_marker}" >&2
     exit 1
   fi
-  agent_addresses+=("${receive_address}")
 
-  btc_cli -rpcwallet="${miner_wallet_name}" sendtoaddress "${receive_address}" "${fund_agent_amount_btc}" >/dev/null
-done
+  ensure_wallet_loaded "${miner_wallet_name}"
 
-log "Confirming agent funding with ${fund_confirm_blocks} blocks"
-btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${fund_confirm_blocks}" "${mining_address}" >/dev/null
+  log "Allocating mining address from wallet: ${miner_wallet_name}"
+  mining_address="$(btc_cli -rpcwallet="${miner_wallet_name}" getnewaddress)"
+  current_height="$(btc_cli getblockcount)"
 
-wait_until_ord_server_synced_to_bitcoind
-
-current_height="$(btc_cli getblockcount)"
-wait_until_balance_history_synced "${current_height}"
-wait_until_usdb_synced "${current_height}"
-
-agent_wallets_csv="$(join_by_comma "${agent_wallets[@]}")"
-agent_addresses_csv="$(join_by_comma "${agent_addresses[@]}")"
-
-fail_fast_arg=()
-if [[ "${SIM_FAIL_FAST:-0}" == "1" ]]; then
-  fail_fast_arg+=(--fail-fast)
-fi
-
-report_args=()
-if [[ "${SIM_REPORT_ENABLED:-1}" == "1" ]]; then
-  report_args+=(--report-file "${WORLD_SIM_REPORT_FILE:-${world_sim_work_dir}/world-sim-report.jsonl}")
-  report_args+=(--report-flush-every "${SIM_REPORT_FLUSH_EVERY:-1}")
-fi
-
-self_check_args=()
-if [[ "${SIM_AGENT_SELF_CHECK_ENABLED:-1}" != "1" ]]; then
-  self_check_args+=(--disable-agent-self-check)
-else
-  self_check_args+=(--agent-self-check-interval-blocks "${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}")
-  self_check_args+=(--agent-self-check-sample-size "${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}")
-fi
-
-global_cross_check_args=()
-if [[ "${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}" != "1" ]]; then
-  global_cross_check_args+=(--disable-global-cross-check)
-else
-  global_cross_check_args+=(
-    --global-cross-check-interval-blocks "${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}"
-    --global-cross-check-leaderboard-top-n "${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}"
-    --global-cross-check-owner-sample-size "${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
-  )
-fi
-
-validator_sample_args=()
-if [[ "${SIM_VALIDATOR_SAMPLE_ENABLED:-0}" == "1" ]]; then
-  validator_sample_args+=(
-    --enable-validator-sample
-    --validator-sample-mode "${SIM_VALIDATOR_SAMPLE_MODE:-single}"
-    --validator-sample-interval-blocks "${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS:-0}"
-    --validator-sample-size "${SIM_VALIDATOR_SAMPLE_SIZE:-1}"
-    --validator-sample-min-head-advance "${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-2}"
-  )
-  if [[ "${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}" == "1" ]]; then
-    validator_sample_args+=(--enable-validator-sample-tamper-check)
+  if [[ "${current_height}" -lt "${premine_blocks}" ]]; then
+    blocks_to_mine="$(( premine_blocks - current_height ))"
+    log "Premining ${blocks_to_mine} blocks to reach height ${premine_blocks}"
+    btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${blocks_to_mine}" "${mining_address}" >/dev/null
+  else
+    log "Skipping premine: current_height=${current_height} already >= ${premine_blocks}"
   fi
-fi
 
-btc_auth_args=(--btc-auth-mode "${btc_auth_mode}")
-if [[ -n "${cookie_file}" ]]; then
-  btc_auth_args+=(--btc-cookie-file "${cookie_file}")
-fi
-if [[ -n "${btc_rpc_user}" ]]; then
-  btc_auth_args+=(--btc-rpc-user "${btc_rpc_user}")
-fi
-if [[ -n "${btc_rpc_password}" ]]; then
-  btc_auth_args+=(--btc-rpc-password "${btc_rpc_password}")
-fi
+  wait_until_ord_server_synced_to_bitcoind
 
-log "Launching world simulator: blocks=${SIM_BLOCKS:-300}, seed=${SIM_SEED:-42}, agents=${agent_count}"
+  declare -a agent_wallets=()
+  declare -a agent_addresses=()
 
-exec python3 "${world_simulator}" \
-  --btc-cli "${bitcoin_cli}" \
-  --bitcoin-dir "${btc_data_dir}" \
-  --btc-rpc-host "${btc_host}" \
-  --btc-rpc-port "${btc_port}" \
-  "${btc_auth_args[@]}" \
-  --ord-bin "${ord_bin}" \
-  --ord-data-dir "${ord_data_dir}" \
-  --ord-server-url "${ord_server_url}" \
-  --miner-wallet "${miner_wallet_name}" \
-  --mining-address "${mining_address}" \
-  --agent-wallets "${agent_wallets_csv}" \
-  --agent-addresses "${agent_addresses_csv}" \
-  --balance-history-rpc-url "${balance_history_rpc_url}" \
-  --usdb-rpc-url "${usdb_rpc_url}" \
-  --sync-timeout-sec "${sync_timeout_sec}" \
-  --blocks "${SIM_BLOCKS:-300}" \
-  --seed "${SIM_SEED:-42}" \
-  --fee-rate "${SIM_FEE_RATE:-1}" \
-  --max-actions-per-block "${SIM_MAX_ACTIONS_PER_BLOCK:-2}" \
-  --mint-probability "${SIM_MINT_PROBABILITY:-0.20}" \
-  --invalid-mint-probability "${SIM_INVALID_MINT_PROBABILITY:-0.02}" \
-  --transfer-probability "${SIM_TRANSFER_PROBABILITY:-0.20}" \
-  --remint-probability "${SIM_REMINT_PROBABILITY:-0.10}" \
-  --send-probability "${SIM_SEND_PROBABILITY:-0.30}" \
-  --spend-probability "${SIM_SPEND_PROBABILITY:-0.15}" \
-  --sleep-ms-between-blocks "${SIM_SLEEP_MS_BETWEEN_BLOCKS:-0}" \
-  --initial-active-agents "${SIM_INITIAL_ACTIVE_AGENTS:-3}" \
-  --agent-growth-interval-blocks "${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}" \
-  --agent-growth-step "${SIM_AGENT_GROWTH_STEP:-1}" \
-  --policy-mode "${SIM_POLICY_MODE:-adaptive}" \
-  --scripted-cycle "${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}" \
-  "${self_check_args[@]}" \
-  "${global_cross_check_args[@]}" \
-  "${validator_sample_args[@]}" \
-  "${report_args[@]}" \
-  --reorg-interval-blocks "${SIM_REORG_INTERVAL_BLOCKS:-0}" \
-  --reorg-depth "${SIM_REORG_DEPTH:-3}" \
-  --reorg-max-events "${SIM_REORG_MAX_EVENTS:-1}" \
-  --temp-dir "${world_sim_work_dir}" \
-  "${fail_fast_arg[@]}"
+  log "Preparing ${agent_count} world-sim agent wallets"
+  for i in $(seq 1 "${agent_count}"); do
+    wallet_name="${wallet_prefix}-${i}"
+    agent_wallets+=("${wallet_name}")
+    log "Preparing ord wallet ${wallet_name}"
+    ensure_ord_wallet_ready "${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}"
+    receive_output="$(retry_capture_output "ord wallet receive ${wallet_name}" "${ORD_WALLET_READY_TIMEOUT_SECS:-60}" run_ord_wallet_named "${wallet_name}" receive)"
+    receive_address="$(extract_bech32_address "${receive_output}")"
+    if [[ -z "${receive_address}" ]]; then
+      echo "Failed to parse receive address: wallet=${wallet_name}, output=${receive_output}" >&2
+      exit 1
+    fi
+    agent_addresses+=("${receive_address}")
+
+    btc_cli -rpcwallet="${miner_wallet_name}" sendtoaddress "${receive_address}" "${fund_agent_amount_btc}" >/dev/null
+  done
+
+  log "Confirming agent funding with ${fund_confirm_blocks} blocks"
+  btc_cli -rpcwallet="${miner_wallet_name}" generatetoaddress "${fund_confirm_blocks}" "${mining_address}" >/dev/null
+
+  wait_until_ord_server_synced_to_bitcoind
+
+  current_height="$(btc_cli getblockcount)"
+  wait_until_balance_history_synced "${current_height}"
+  wait_until_usdb_synced "${current_height}"
+
+  agent_wallets_csv="$(join_by_comma "${agent_wallets[@]}")"
+  agent_addresses_csv="$(join_by_comma "${agent_addresses[@]}")"
+  write_bootstrap_marker "${current_height}" "${agent_wallets_csv}" "${agent_addresses_csv}"
+  log "Wrote world-sim bootstrap marker: ${world_sim_bootstrap_marker}"
+}
+
+run_simulator_batch() {
+  local batch_blocks="${1:?batch_blocks is required}"
+  local batch_seed="${2:?batch_seed is required}"
+
+  fail_fast_arg=()
+  if [[ "${SIM_FAIL_FAST:-0}" == "1" ]]; then
+    fail_fast_arg+=(--fail-fast)
+  fi
+
+  report_args=()
+  if [[ "${SIM_REPORT_ENABLED:-1}" == "1" ]]; then
+    report_args+=(--report-file "${WORLD_SIM_REPORT_FILE:-${world_sim_work_dir}/world-sim-report.jsonl}")
+    report_args+=(--report-flush-every "${SIM_REPORT_FLUSH_EVERY:-1}")
+  fi
+
+  self_check_args=()
+  if [[ "${SIM_AGENT_SELF_CHECK_ENABLED:-1}" != "1" ]]; then
+    self_check_args+=(--disable-agent-self-check)
+  else
+    self_check_args+=(--agent-self-check-interval-blocks "${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}")
+    self_check_args+=(--agent-self-check-sample-size "${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}")
+  fi
+
+  global_cross_check_args=()
+  if [[ "${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}" != "1" ]]; then
+    global_cross_check_args+=(--disable-global-cross-check)
+  else
+    global_cross_check_args+=(
+      --global-cross-check-interval-blocks "${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}"
+      --global-cross-check-leaderboard-top-n "${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}"
+      --global-cross-check-owner-sample-size "${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
+    )
+  fi
+
+  validator_sample_args=()
+  if [[ "${SIM_VALIDATOR_SAMPLE_ENABLED:-0}" == "1" ]]; then
+    validator_sample_args+=(
+      --enable-validator-sample
+      --validator-sample-mode "${SIM_VALIDATOR_SAMPLE_MODE:-single}"
+      --validator-sample-interval-blocks "${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS:-0}"
+      --validator-sample-size "${SIM_VALIDATOR_SAMPLE_SIZE:-1}"
+      --validator-sample-min-head-advance "${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE:-2}"
+    )
+    if [[ "${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}" == "1" ]]; then
+      validator_sample_args+=(--enable-validator-sample-tamper-check)
+    fi
+  fi
+
+  btc_auth_args=(--btc-auth-mode "${btc_auth_mode}")
+  if [[ -n "${cookie_file}" ]]; then
+    btc_auth_args+=(--btc-cookie-file "${cookie_file}")
+  fi
+  if [[ -n "${btc_rpc_user}" ]]; then
+    btc_auth_args+=(--btc-rpc-user "${btc_rpc_user}")
+  fi
+  if [[ -n "${btc_rpc_password}" ]]; then
+    btc_auth_args+=(--btc-rpc-password "${btc_rpc_password}")
+  fi
+
+  log "Launching world simulator: blocks=${batch_blocks}, seed=${batch_seed}, agents=${agent_count}"
+
+  python3 "${world_simulator}" \
+    --btc-cli "${bitcoin_cli}" \
+    --bitcoin-dir "${btc_data_dir}" \
+    --btc-rpc-host "${btc_host}" \
+    --btc-rpc-port "${btc_port}" \
+    "${btc_auth_args[@]}" \
+    --ord-bin "${ord_bin}" \
+    --ord-data-dir "${ord_data_dir}" \
+    --ord-server-url "${ord_server_url}" \
+    --miner-wallet "${miner_wallet_name}" \
+    --mining-address "${mining_address}" \
+    --agent-wallets "${agent_wallets_csv}" \
+    --agent-addresses "${agent_addresses_csv}" \
+    --balance-history-rpc-url "${balance_history_rpc_url}" \
+    --usdb-rpc-url "${usdb_rpc_url}" \
+    --sync-timeout-sec "${sync_timeout_sec}" \
+    --blocks "${batch_blocks}" \
+    --seed "${batch_seed}" \
+    --fee-rate "${SIM_FEE_RATE:-1}" \
+    --max-actions-per-block "${SIM_MAX_ACTIONS_PER_BLOCK:-2}" \
+    --mint-probability "${SIM_MINT_PROBABILITY:-0.20}" \
+    --invalid-mint-probability "${SIM_INVALID_MINT_PROBABILITY:-0.02}" \
+    --transfer-probability "${SIM_TRANSFER_PROBABILITY:-0.20}" \
+    --remint-probability "${SIM_REMINT_PROBABILITY:-0.10}" \
+    --send-probability "${SIM_SEND_PROBABILITY:-0.30}" \
+    --spend-probability "${SIM_SPEND_PROBABILITY:-0.15}" \
+    --sleep-ms-between-blocks "${SIM_SLEEP_MS_BETWEEN_BLOCKS:-0}" \
+    --initial-active-agents "${SIM_INITIAL_ACTIVE_AGENTS:-3}" \
+    --agent-growth-interval-blocks "${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}" \
+    --agent-growth-step "${SIM_AGENT_GROWTH_STEP:-1}" \
+    --policy-mode "${SIM_POLICY_MODE:-adaptive}" \
+    --scripted-cycle "${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}" \
+    "${self_check_args[@]}" \
+    "${global_cross_check_args[@]}" \
+    "${validator_sample_args[@]}" \
+    "${report_args[@]}" \
+    --reorg-interval-blocks "${SIM_REORG_INTERVAL_BLOCKS:-0}" \
+    --reorg-depth "${SIM_REORG_DEPTH:-3}" \
+    --reorg-max-events "${SIM_REORG_MAX_EVENTS:-1}" \
+    --temp-dir "${world_sim_work_dir}" \
+    "${fail_fast_arg[@]}"
+}
+
+run_loop_mode() {
+  if ! bootstrap_marker_matches; then
+    echo "Missing or incompatible world-sim bootstrap marker: ${world_sim_bootstrap_marker}" >&2
+    exit 1
+  fi
+
+  load_bootstrap_state
+  current_height="$(btc_cli getblockcount)"
+  wait_until_ord_server_synced_to_bitcoind
+  wait_until_balance_history_synced "${current_height}"
+  wait_until_usdb_synced "${current_height}"
+
+  if [[ "${sim_blocks}" =~ ^[1-9][0-9]*$ ]]; then
+    run_simulator_batch "${sim_blocks}" "${sim_base_seed}"
+    current_height="$(btc_cli getblockcount)"
+    write_loop_state 1 "${sim_base_seed}" "${current_height}"
+    return
+  fi
+
+  if ! [[ "${sim_loop_batch_blocks}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "SIM_LOOP_BATCH_BLOCKS must be a positive integer when SIM_BLOCKS=0" >&2
+    exit 1
+  fi
+
+  completed_batches="$(read_completed_batches)"
+  while true; do
+    batch_seed="$(( sim_base_seed + completed_batches ))"
+    batch_number="$(( completed_batches + 1 ))"
+    log "Starting continuous world-sim batch ${batch_number}: blocks=${sim_loop_batch_blocks}, seed=${batch_seed}"
+    run_simulator_batch "${sim_loop_batch_blocks}" "${batch_seed}"
+    completed_batches="$(( completed_batches + 1 ))"
+    current_height="$(btc_cli getblockcount)"
+    write_loop_state "${completed_batches}" "${batch_seed}" "${current_height}"
+  done
+}
+
+prepare_runtime_environment
+wait_core_services
+
+case "${world_sim_mode}" in
+  bootstrap)
+    bootstrap_world_sim
+    ;;
+  loop)
+    run_loop_mode
+    ;;
+  all)
+    bootstrap_world_sim
+    run_loop_mode
+    ;;
+  *)
+    echo "Unsupported WORLD_SIM_MODE=${world_sim_mode}" >&2
+    exit 1
+    ;;
+esac

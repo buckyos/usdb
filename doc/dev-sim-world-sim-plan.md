@@ -48,18 +48,31 @@ The canonical protocol simulation logic already exists in:
 The Docker integration should reuse these semantics and defaults instead of
 creating a second simulation model.
 
+### 2.4 Separate bootstrap from steady-state simulation
+
+The Docker runtime should explicitly distinguish between:
+
+- one-shot bootstrap
+- steady-state simulation loop
+
+This avoids repeatedly funding agent wallets every time the simulator container
+restarts and makes persistent-state behavior easier to reason about.
+
 ## 3. First-Batch Scope
 
 The first implementation batch should add:
 
 1. an `ord-server` service for regtest wallet and inscription operations
-2. a `world-sim-runner` service that:
+2. a `world-sim-bootstrap` one-shot service that:
    - waits for `btc-node`, `ord-server`, `balance-history`, and `usdb-indexer`
    - prepares miner and agent wallets
    - performs the same premine / funding / confirmation flow as the existing
      standalone world-sim scripts
-   - invokes `regtest_world_simulator.py`
-3. a helper command for local operators
+   - writes a bootstrap marker into persistent world-sim state
+3. a `world-sim-runner` service that:
+   - requires the bootstrap marker
+   - runs the simulator without redoing wallet funding
+4. a helper command for local operators
 
 The first batch does **not** need to:
 
@@ -83,6 +96,12 @@ flowchart LR
     BTC --> BH
     BTC --> USDB
     BH --> USDB
+    ORD --> BOOT
+    BTC --> BOOT
+    BH --> BOOT
+    USDB --> BOOT
+    BOOT["world-sim-bootstrap"]
+    BOOT --> SIM["world-sim-runner"]
     ORD --> SIM
     BTC --> SIM
     BH --> SIM
@@ -132,9 +151,14 @@ Key runtime inputs:
   - `WORLD_SIM_TOOLS_IMAGE`
 - simulation parameters such as:
   - `SIM_BLOCKS`
+  - `SIM_LOOP_BATCH_BLOCKS`
   - `SIM_SEED`
   - `AGENT_COUNT`
   - `SIM_SLEEP_MS_BETWEEN_BLOCKS`
+
+The runtime and determinism boundary is documented in:
+
+- [world-sim-deterministic-state-plan.md](/home/bucky/work/usdb/doc/world-sim-deterministic-state-plan.md)
 
 ## 7. Operator Entry
 
@@ -160,10 +184,14 @@ This helper should:
 Recommended behavior:
 
 - `up`
-  - starts the BTC-side stack plus the world simulator
+  - starts the BTC-side stack plus world-sim bootstrap and simulation
   - does not require `ethw-node`
 - `up-full`
   - starts the same stack and keeps the normal `ethw-node` in the graph
+- `down`
+  - stops containers but keeps world state
+- `reset`
+  - stops containers and removes volumes
 
 ## 8. Expected Console Outcome
 
@@ -188,5 +216,5 @@ After the first batch is stable, the next candidates are:
 1. expose world-sim report artifacts in the console
 2. add an `interactive sandbox` mode for manual user actions without random
    background traffic
-3. optionally replace host-mounted binaries with a more self-contained dev image
+3. deterministic seeded-reset identity generation
 4. later connect ETH / BTC wallet flows to the same local stack

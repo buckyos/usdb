@@ -69,10 +69,13 @@ Usage:
   docker/scripts/run_world_sim.sh ps
   docker/scripts/run_world_sim.sh logs
   docker/scripts/run_world_sim.sh down
+  docker/scripts/run_world_sim.sh reset
 
 Modes:
   up       Start the BTC-side local stack plus world-sim, without ethw-node.
   up-full  Start the same stack and include ethw-node as part of full dev-sim.
+  down     Stop the stack but keep Docker volumes and world state.
+  reset    Stop the stack and remove Docker volumes to reset world state.
 EOF
 }
 
@@ -99,6 +102,9 @@ case "${action}" in
     ;;
   down)
     compose down "$@"
+    ;;
+  reset)
+    compose down -v "$@"
     ;;
   *)
     usage
