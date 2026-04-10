@@ -36,6 +36,7 @@ for cmd in docker; do
 done
 
 export DOCKER_API_VERSION="${DOCKER_API_VERSION:-1.41}"
+project_name="${USDB_CONSOLE_PREVIEW_PROJECT_NAME:-usdb-console-preview}"
 
 action="${1:-up}"
 env_file="${docker_dir}/local/dev-sim/env/dev-sim.env"
@@ -51,6 +52,7 @@ fi
 
 compose() {
   docker compose \
+    --project-name "${project_name}" \
     --env-file "${env_file}" \
     -f "${docker_dir}/compose.base.yml" \
     -f "${docker_dir}/compose.dev-sim.yml" \

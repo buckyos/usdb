@@ -20,9 +20,11 @@ EOF
 fi
 
 export DOCKER_API_VERSION="${DOCKER_API_VERSION:-1.41}"
+project_name="${USDB_WORLD_SIM_PROJECT_NAME:-usdb-world-sim}"
 
 compose() {
   docker compose \
+    --project-name "${project_name}" \
     --env-file "${env_file}" \
     -f "${docker_dir}/compose.base.yml" \
     -f "${docker_dir}/compose.dev-sim.yml" \
