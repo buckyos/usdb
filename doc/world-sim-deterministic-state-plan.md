@@ -200,6 +200,7 @@ it possible to resume from the middle of an unfinished batch after a crash.
 The current implementation now persists one more piece of recovery state:
 
 - `current_slot_plan`
+- `current_slot_receipt`
 
 That plan is written before a slot starts external execution and contains the
 stable:
@@ -212,6 +213,26 @@ stable:
 If the runner restarts while a tick is still in progress, it can now replay the
 same planned slot instead of recalculating actor / action selection at resume
 time.
+
+If a slot has already returned a successful external result before the process
+dies, the simulator now also persists a `current_slot_receipt` that includes:
+
+- the stable `action_id`
+- the action detail string
+- metric deltas
+- the serialized expectation payload
+- the minimal local ownership patch needed to restore simulator state
+
+On restart, the runner now prefers replaying that recorded receipt instead of
+calling the external ord / Bitcoin wallet action a second time.
+
+The planned slot now also persists a small `probe_state` snapshot so crash
+recovery can query the external wallet systems before deciding whether an
+action has already committed. The first version records:
+
+- the wallet name that owns the external side effect
+- a baseline txid set for Bitcoin / ord wallet transaction probes
+- a baseline inscription set for ord wallet inscription probes
 
 ## 9. Next-Stage Deterministic Design
 
@@ -305,6 +326,8 @@ That file captures either:
     current tick
   - and, when a slot has been planned but not yet checkpointed as completed,
     the `current_slot_plan` that should be replayed on restart
+  - and, when a slot already completed its external side effect, the
+    `current_slot_receipt` that should be reapplied on restart
 
 This allows the runner to resume:
 
@@ -313,10 +336,37 @@ This allows the runner to resume:
   current tick have already completed
 - from the already-planned in-flight slot when a crash happens after slot
   planning but before the post-slot checkpoint
+- from the already-recorded slot receipt when a crash happens after a
+  successful external action but before the post-slot checkpoint
 
-The remaining gap is the narrow failure window between an external side effect
-and writing the updated recovery file. That is the part that still needs more
-hardening if exact crash recovery must be guaranteed under all failure modes.
+The current implementation now hardens the previously remaining narrow window
+between:
+
+- an external side effect succeeding
+- and the local sidecar / recovery receipt being written
+
+When the runner restarts with an in-flight `current_slot_plan` but no recorded
+receipt, it now:
+
+1. checks the local sidecar result file
+2. if absent, probes the external wallet systems
+3. if a matching external result is found, rebuilds the same receipt and
+   replays it locally
+4. if the external outcome still cannot be proven, fails closed instead of
+   re-executing the action
+
+The current probes are:
+
+- `send_balance` / `spend_balance`
+  - recover from Bitcoin Core wallet transaction comments
+- `transfer`
+  - recover from actor wallet transaction deltas
+- `mint` / `invalid_mint` / `remint`
+  - recover from ord wallet inscription deltas
+
+This means the runner no longer blindly replays an in-flight external action
+when the local receipt is missing. It first proves whether that action has
+already committed in the external systems.
 
 ## 10. First-Batch Implementation Boundary
 
@@ -335,13 +385,22 @@ This batch intentionally implements only:
   - `between_ticks` snapshots
   - `tick_in_progress` snapshots
   - persisted `current_slot_plan` replay
+  - persisted `current_slot_receipt` replay
 
 It does **not** yet implement:
 
 - full seeded-reset replay of the entire protocol state
-- exact crash-proof recovery across every external side effect boundary
 - deterministic reconstruction of the complete BTC / ord / USDB world from one
   seed alone
+
+The remaining hard problem is narrower now:
+
+- if an external system commits an action
+- but neither the local sidecar nor the external probe surface that fact before
+  the recovery timeout expires
+
+the runner will fail closed and require another restart or operator
+intervention, rather than risk duplicating the side effect.
 
 ## 11. Runtime Stability Gates
 

@@ -95,6 +95,19 @@ class PlannedAction:
     actor_id: int
     action: str
     action_id: str
+    probe_state: dict[str, Any] | None = None
+
+
+@dataclass
+class ActionReceipt:
+    action_id: str
+    action: str
+    actor_id: int
+    detail: str
+    used_agent_ids: list[int]
+    expectation: dict[str, Any] | None = None
+    metric_deltas: dict[str, int] = field(default_factory=dict)
+    local_patch: dict[str, Any] | None = None
 
 
 @dataclass
@@ -511,6 +524,7 @@ class RegtestWorldSimulator:
             "actor_id": plan.actor_id,
             "action": plan.action,
             "action_id": plan.action_id,
+            "probe_state": plan.probe_state,
         }
 
     @staticmethod
@@ -520,6 +534,7 @@ class RegtestWorldSimulator:
             actor_id=int(payload.get("actor_id", 0)),
             action=str(payload.get("action", "noop")),
             action_id=str(payload.get("action_id", "")),
+            probe_state=payload.get("probe_state"),
         )
 
     def deserialize_validator_sample(
@@ -549,6 +564,35 @@ class RegtestWorldSimulator:
             validated_tick=payload.get("validated_tick"),
         )
 
+    @staticmethod
+    def serialize_action_receipt(receipt: ActionReceipt) -> dict[str, Any]:
+        return {
+            "action_id": receipt.action_id,
+            "action": receipt.action,
+            "actor_id": receipt.actor_id,
+            "detail": receipt.detail,
+            "used_agent_ids": list(receipt.used_agent_ids),
+            "expectation": receipt.expectation,
+            "metric_deltas": dict(receipt.metric_deltas),
+            "local_patch": receipt.local_patch,
+        }
+
+    @staticmethod
+    def deserialize_action_receipt(payload: dict[str, Any]) -> ActionReceipt:
+        return ActionReceipt(
+            action_id=str(payload.get("action_id", "")),
+            action=str(payload.get("action", "noop")),
+            actor_id=int(payload.get("actor_id", 0)),
+            detail=str(payload.get("detail", "")),
+            used_agent_ids=[int(agent_id) for agent_id in (payload.get("used_agent_ids") or [])],
+            expectation=payload.get("expectation"),
+            metric_deltas={
+                str(key): int(value)
+                for key, value in (payload.get("metric_deltas") or {}).items()
+            },
+            local_patch=payload.get("local_patch"),
+        )
+
     def build_recovery_snapshot(
         self,
         *,
@@ -564,6 +608,7 @@ class RegtestWorldSimulator:
         action_trace_samples: list[dict[str, Any]],
         tick_action_type_counts: dict[str, int],
         current_slot_plan: PlannedAction | None,
+        current_slot_receipt: ActionReceipt | None,
         expectations: list[ActionExpectation],
         action_failed: int,
         action_fail_samples: list[str],
@@ -586,6 +631,11 @@ class RegtestWorldSimulator:
             "current_slot_plan": (
                 self.serialize_planned_action(current_slot_plan)
                 if current_slot_plan is not None
+                else None
+            ),
+            "current_slot_receipt": (
+                self.serialize_action_receipt(current_slot_receipt)
+                if current_slot_receipt is not None
                 else None
             ),
             "expectations": [
@@ -650,6 +700,258 @@ class RegtestWorldSimulator:
         except FileNotFoundError:
             pass
 
+    def external_result_path(self, action_id: str) -> Path | None:
+        if self.recovery_state_path is None:
+            return None
+        return self.recovery_state_path.parent / f"external-{action_id}.json"
+
+    def write_external_action_result(
+        self,
+        *,
+        action_id: str,
+        action: str,
+        raw_output: str,
+    ) -> None:
+        result_path = self.external_result_path(action_id)
+        if result_path is None:
+            return
+        payload = {
+            "version": 1,
+            "action_id": action_id,
+            "action": action,
+            "raw_output": raw_output,
+            "updated_at": int(time.time()),
+        }
+        result_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def list_wallet_transactions(
+        self, wallet: str, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        payload = self.run_btc_cli(
+            wallet,
+            [
+                "listtransactions",
+                "*",
+                str(limit),
+                "0",
+                "true",
+            ],
+        )
+        parsed = json.loads(payload)
+        if not isinstance(parsed, list):
+            raise WorldSimError(
+                f"listtransactions returned non-list payload for wallet={wallet}: {parsed}"
+            )
+        return [entry for entry in parsed if isinstance(entry, dict)]
+
+    def list_wallet_txids(self, wallet: str, limit: int = 200) -> set[str]:
+        txids: set[str] = set()
+        for entry in self.list_wallet_transactions(wallet, limit):
+            txid = entry.get("txid")
+            if isinstance(txid, str) and txid:
+                txids.add(txid)
+        return txids
+
+    def find_wallet_transaction_by_comment(
+        self, wallet: str, comment: str, limit: int = 200
+    ) -> dict[str, Any] | None:
+        for entry in self.list_wallet_transactions(wallet, limit):
+            if str(entry.get("comment", "")) == comment:
+                txid = entry.get("txid")
+                if isinstance(txid, str) and txid:
+                    return entry
+        return None
+
+    def find_new_wallet_transaction(
+        self,
+        wallet: str,
+        baseline_txids: set[str],
+        limit: int = 200,
+    ) -> dict[str, Any] | None:
+        for entry in self.list_wallet_transactions(wallet, limit):
+            txid = entry.get("txid")
+            if isinstance(txid, str) and txid and txid not in baseline_txids:
+                return entry
+        return None
+
+    def list_ord_wallet_inscription_ids(self, wallet_name: str) -> set[str]:
+        payload = self.run_ord_wallet(wallet_name, ["inscriptions"])
+        parsed = json.loads(payload)
+        if not isinstance(parsed, list):
+            raise WorldSimError(
+                f"ord wallet inscriptions returned non-list payload for wallet={wallet_name}: {parsed}"
+            )
+        inscription_ids: set[str] = set()
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            inscription_id = entry.get("inscription")
+            if isinstance(inscription_id, str) and inscription_id:
+                inscription_ids.add(inscription_id)
+        return inscription_ids
+
+    def build_action_probe_state(self, actor: Agent, action: str) -> dict[str, Any] | None:
+        if action in {"mint", "invalid_mint", "remint", "transfer"}:
+            return {
+                "wallet_name": actor.wallet_name,
+                "wallet_txids": sorted(self.list_wallet_txids(actor.wallet_name)),
+                "wallet_inscriptions": sorted(
+                    self.list_ord_wallet_inscription_ids(actor.wallet_name)
+                ),
+            }
+        if action == "send_balance":
+            return {
+                "wallet_name": self.args.miner_wallet,
+                "wallet_txids": sorted(self.list_wallet_txids(self.args.miner_wallet)),
+            }
+        if action == "spend_balance":
+            return {
+                "wallet_name": actor.wallet_name,
+                "wallet_txids": sorted(self.list_wallet_txids(actor.wallet_name)),
+            }
+        return None
+
+    def probe_inflight_external_action_result(
+        self,
+        *,
+        plan: PlannedAction,
+        pre_height: int,
+        available_ids: set[int],
+        tick: int,
+        slot_index: int,
+    ) -> dict[str, Any] | None:
+        probe_state = plan.probe_state or {}
+        wallet_name = str(probe_state.get("wallet_name", "")).strip()
+
+        if plan.action in {"send_balance", "spend_balance"}:
+            if not wallet_name:
+                return None
+            entry = self.find_wallet_transaction_by_comment(
+                wallet_name,
+                f"usdb-world-sim:{plan.action_id}",
+            )
+            if entry is None:
+                return None
+            txid = entry.get("txid")
+            if not isinstance(txid, str) or not txid:
+                raise WorldSimError(
+                    "wallet transaction probe missing txid: "
+                    f"wallet={wallet_name}, action_id={plan.action_id}, entry={entry}"
+                )
+            return {
+                "source": "bitcoin-wallet-comment",
+                "raw_output": txid,
+            }
+
+        if plan.action == "transfer":
+            if not wallet_name:
+                return None
+            baseline_txids = {
+                str(txid)
+                for txid in (probe_state.get("wallet_txids") or [])
+                if isinstance(txid, str) and txid
+            }
+            entry = self.find_new_wallet_transaction(wallet_name, baseline_txids)
+            if entry is None:
+                return None
+            txid = entry.get("txid")
+            if not isinstance(txid, str) or not txid:
+                raise WorldSimError(
+                    "wallet transaction delta probe missing txid: "
+                    f"wallet={wallet_name}, action_id={plan.action_id}, entry={entry}"
+                )
+            return {
+                "source": "bitcoin-wallet-delta",
+                "raw_output": txid,
+            }
+
+        if plan.action in {"mint", "invalid_mint", "remint"}:
+            if not wallet_name:
+                return None
+            baseline_inscriptions = {
+                str(inscription_id)
+                for inscription_id in (probe_state.get("wallet_inscriptions") or [])
+                if isinstance(inscription_id, str) and inscription_id
+            }
+            current_inscriptions = self.list_ord_wallet_inscription_ids(wallet_name)
+            new_inscriptions = sorted(current_inscriptions - baseline_inscriptions)
+            if not new_inscriptions:
+                return None
+            if len(new_inscriptions) != 1:
+                raise WorldSimError(
+                    "mint-like external probe found ambiguous inscription delta: "
+                    f"wallet={wallet_name}, action_id={plan.action_id}, new_inscriptions={new_inscriptions}"
+                )
+            return {
+                "source": "ord-wallet-inscription-delta",
+                "raw_output": new_inscriptions[0],
+            }
+
+        return None
+
+    def wait_for_inflight_external_action_result(
+        self,
+        *,
+        plan: PlannedAction,
+        pre_height: int,
+        available_ids: set[int],
+        tick: int,
+        slot_index: int,
+    ) -> dict[str, Any] | None:
+        deadline = time.time() + max(5, min(self.args.sync_timeout_sec, 30))
+        last_error: str | None = None
+
+        while time.time() < deadline:
+            try:
+                payload = self.probe_inflight_external_action_result(
+                    plan=plan,
+                    pre_height=pre_height,
+                    available_ids=available_ids,
+                    tick=tick,
+                    slot_index=slot_index,
+                )
+                if payload is not None:
+                    return payload
+            except Exception as e:  # noqa: BLE001
+                last_error = str(e)
+
+            time.sleep(0.5)
+
+        if last_error is not None:
+            raise WorldSimError(
+                "failed to resolve inflight action outcome after external probes: "
+                f"action_id={plan.action_id}, last_error={last_error}"
+            )
+        return None
+
+    def load_external_action_result(self, action_id: str) -> dict[str, Any] | None:
+        result_path = self.external_result_path(action_id)
+        if result_path is None or not result_path.exists():
+            return None
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        if int(payload.get("version", 0)) != 1:
+            raise WorldSimError(
+                f"unsupported external action result version: {payload.get('version')}"
+            )
+        if str(payload.get("action_id", "")) != action_id:
+            raise WorldSimError(
+                "external action result id mismatch: "
+                f"expected={action_id}, got={payload.get('action_id')}"
+            )
+        return payload
+
+    def clear_external_action_result(self, action_id: str) -> None:
+        result_path = self.external_result_path(action_id)
+        if result_path is None:
+            return
+        try:
+            result_path.unlink()
+        except FileNotFoundError:
+            pass
+
     def load_recovery_state(self) -> dict[str, Any] | None:
         if self.recovery_state_path is None or not self.recovery_state_path.exists():
             return None
@@ -699,6 +1001,291 @@ class RegtestWorldSimulator:
             self.deserialize_validator_sample(sample)
             for sample in (payload.get("validator_samples") or [])
         ]
+
+    @staticmethod
+    def metric_delta(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+        deltas: dict[str, int] = {}
+        for key, after_value in after.items():
+            delta = int(after_value) - int(before.get(key, 0))
+            if delta != 0:
+                deltas[key] = delta
+        return deltas
+
+    def build_action_receipt(
+        self,
+        *,
+        planned_action: PlannedAction,
+        detail: str,
+        expectation: ActionExpectation | None,
+        used_ids: set[int],
+        metrics_before: dict[str, int],
+    ) -> ActionReceipt:
+        local_patch: dict[str, Any] | None = None
+        if expectation is not None:
+            if expectation.action in {"mint", "invalid_mint", "remint"}:
+                if expectation.inscription_id is None:
+                    raise WorldSimError(
+                        f"mint-like receipt missing inscription_id for action_id={planned_action.action_id}"
+                    )
+                local_patch = {
+                    "kind": "mint_like",
+                    "inscription_id": expectation.inscription_id,
+                    "owner_agent_id": expectation.actor_id,
+                    "invalid": expectation.expect_invalid,
+                }
+            elif expectation.action == "transfer":
+                if expectation.inscription_id is None or expectation.target_id is None:
+                    raise WorldSimError(
+                        f"transfer receipt missing fields for action_id={planned_action.action_id}"
+                    )
+                local_patch = {
+                    "kind": "transfer",
+                    "inscription_id": expectation.inscription_id,
+                    "from_agent_id": expectation.actor_id,
+                    "to_agent_id": expectation.target_id,
+                }
+
+        return ActionReceipt(
+            action_id=planned_action.action_id,
+            action=planned_action.action,
+            actor_id=planned_action.actor_id,
+            detail=detail,
+            used_agent_ids=sorted(used_ids),
+            expectation=(
+                self.serialize_expectation(expectation)
+                if expectation is not None and expectation.action != "noop"
+                else None
+            ),
+            metric_deltas=self.metric_delta(metrics_before, self.metrics),
+            local_patch=local_patch,
+        )
+
+    def apply_action_receipt(
+        self, plan: PlannedAction, receipt: ActionReceipt
+    ) -> tuple[str, ActionExpectation | None, set[int]]:
+        if receipt.action_id != plan.action_id:
+            raise WorldSimError(
+                "action receipt id mismatch: "
+                f"plan={plan.action_id}, receipt={receipt.action_id}"
+            )
+        if receipt.action != plan.action:
+            raise WorldSimError(
+                "action receipt action mismatch: "
+                f"plan={plan.action}, receipt={receipt.action}"
+            )
+        if receipt.actor_id != plan.actor_id:
+            raise WorldSimError(
+                "action receipt actor mismatch: "
+                f"plan={plan.actor_id}, receipt={receipt.actor_id}"
+            )
+
+        for key, delta in receipt.metric_deltas.items():
+            self.metrics[key] = int(self.metrics.get(key, 0)) + int(delta)
+
+        local_patch = receipt.local_patch
+        if isinstance(local_patch, dict):
+            patch_kind = str(local_patch.get("kind", ""))
+            if patch_kind == "mint_like":
+                inscription_id = str(local_patch.get("inscription_id", ""))
+                owner_agent_id = int(local_patch.get("owner_agent_id", -1))
+                if inscription_id and owner_agent_id >= 0:
+                    owner = self.agents[owner_agent_id]
+                    owner.owned_passes.add(inscription_id)
+                    self.pass_owner_by_id[inscription_id] = owner_agent_id
+                    if bool(local_patch.get("invalid", False)):
+                        owner.invalid_passes.add(inscription_id)
+            elif patch_kind == "transfer":
+                inscription_id = str(local_patch.get("inscription_id", ""))
+                from_agent_id = int(local_patch.get("from_agent_id", -1))
+                to_agent_id = int(local_patch.get("to_agent_id", -1))
+                if inscription_id and from_agent_id >= 0 and to_agent_id >= 0:
+                    source = self.agents[from_agent_id]
+                    target = self.agents[to_agent_id]
+                    source.owned_passes.discard(inscription_id)
+                    target.owned_passes.add(inscription_id)
+                    self.pass_owner_by_id[inscription_id] = to_agent_id
+            else:
+                raise WorldSimError(f"unsupported action receipt patch kind: {patch_kind}")
+
+        expectation = (
+            self.deserialize_expectation(receipt.expectation)
+            if isinstance(receipt.expectation, dict)
+            else None
+        )
+        return receipt.detail, expectation, set(receipt.used_agent_ids)
+
+    def rebuild_receipt_from_external_result(
+        self,
+        *,
+        plan: PlannedAction,
+        payload: dict[str, Any],
+        pre_height: int,
+        available_ids: set[int],
+        tick: int,
+        slot_index: int,
+    ) -> ActionReceipt:
+        raw_output = str(payload.get("raw_output", "")).strip()
+        if not raw_output:
+            raise WorldSimError(
+                f"external action result missing raw_output for action_id={plan.action_id}"
+            )
+
+        actor = self.agents[plan.actor_id]
+        rng = self.action_position_rng(
+            tick,
+            slot_index,
+            "execute",
+            plan.actor_id,
+            plan.action,
+            pre_height,
+        )
+
+        if plan.action in {"mint", "invalid_mint", "remint"}:
+            prev: list[str] | None = None
+            if plan.action == "remint":
+                prev_id = self.choose_prev_for_remint(rng)
+                if prev_id is None:
+                    raise WorldSimError(
+                        f"cannot rebuild remint receipt without prev for action_id={plan.action_id}"
+                    )
+                prev = [prev_id]
+            inscription_id = self.extract_inscription_id(raw_output)
+            pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+            invalid_eth = plan.action == "invalid_mint"
+            detail = (
+                f"invalid_mint:{inscription_id}:owner={actor.wallet_name}"
+                if invalid_eth
+                else (
+                    f"remint:prev={prev[0]}:remint_like_mint:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}"
+                    if prev
+                    else f"mint:{inscription_id}:owner={actor.wallet_name}"
+                )
+            )
+            expectation = ActionExpectation(
+                action=plan.action,
+                actor_id=actor.agent_id,
+                inscription_id=inscription_id,
+                prev_inscription_id=prev[0] if prev else None,
+                expect_invalid=invalid_eth,
+                actor_pre_balance=pre_balance,
+            )
+            metric_key = "invalid_mint_ok" if invalid_eth else ("remint_ok" if prev else "mint_ok")
+            return ActionReceipt(
+                action_id=plan.action_id,
+                action=plan.action,
+                actor_id=actor.agent_id,
+                detail=detail,
+                used_agent_ids=[actor.agent_id],
+                expectation=self.serialize_expectation(expectation),
+                metric_deltas={metric_key: 1},
+                local_patch={
+                    "kind": "mint_like",
+                    "inscription_id": inscription_id,
+                    "owner_agent_id": actor.agent_id,
+                    "invalid": invalid_eth,
+                },
+            )
+
+        if plan.action == "transfer":
+            if not actor.owned_passes:
+                raise WorldSimError(
+                    f"cannot rebuild transfer receipt without owned passes for action_id={plan.action_id}"
+                )
+            target_candidates = [
+                self.agents[agent_id]
+                for agent_id in sorted(available_ids)
+                if agent_id != actor.agent_id
+            ]
+            if not target_candidates:
+                raise WorldSimError(
+                    f"cannot rebuild transfer receipt without target candidates for action_id={plan.action_id}"
+                )
+            inscription_id = rng.choice(sorted(actor.owned_passes))
+            target = rng.choice(target_candidates)
+            target_active_before = (
+                self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
+            )
+            txid = self.extract_txid(raw_output)
+            detail = (
+                f"transfer:{inscription_id}:from={actor.wallet_name}:"
+                f"to={target.wallet_name}:txid={txid[:12]}"
+            )
+            expectation = ActionExpectation(
+                action="transfer",
+                actor_id=actor.agent_id,
+                inscription_id=inscription_id,
+                target_id=target.agent_id,
+                target_had_active_before=target_active_before,
+            )
+            return ActionReceipt(
+                action_id=plan.action_id,
+                action=plan.action,
+                actor_id=actor.agent_id,
+                detail=detail,
+                used_agent_ids=sorted({actor.agent_id, target.agent_id}),
+                expectation=self.serialize_expectation(expectation),
+                metric_deltas={"transfer_ok": 1},
+                local_patch={
+                    "kind": "transfer",
+                    "inscription_id": inscription_id,
+                    "from_agent_id": actor.agent_id,
+                    "to_agent_id": target.agent_id,
+                },
+            )
+
+        if plan.action == "send_balance":
+            amount_btc = self.random_btc_amount(rng, "0.01000000", "0.25000000")
+            amount_sat = self.btc_to_sat(amount_btc)
+            pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+            txid = self.extract_txid(raw_output)
+            expectation = ActionExpectation(
+                action="send_balance",
+                actor_id=actor.agent_id,
+                actor_pre_balance=pre_balance,
+                amount_sat=amount_sat,
+            )
+            return ActionReceipt(
+                action_id=plan.action_id,
+                action=plan.action,
+                actor_id=actor.agent_id,
+                detail=f"send_balance:{amount_btc}:to={actor.wallet_name}:txid={txid[:12]}",
+                used_agent_ids=[actor.agent_id],
+                expectation=self.serialize_expectation(expectation),
+                metric_deltas={"send_ok": 1},
+                local_patch=None,
+            )
+
+        if plan.action == "spend_balance":
+            pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+            max_sat = min(pre_balance // 2, 5_000_000)
+            min_sat = min(100_000, max_sat)
+            if max_sat <= 0 or min_sat <= 0:
+                raise WorldSimError(
+                    f"cannot rebuild spend receipt without positive spend amount for action_id={plan.action_id}"
+                )
+            amount_sat = max_sat if max_sat < min_sat else rng.randint(min_sat, max_sat)
+            amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
+            txid = self.extract_txid(raw_output)
+            expectation = ActionExpectation(
+                action="spend_balance",
+                actor_id=actor.agent_id,
+                actor_pre_balance=pre_balance,
+                amount_sat=amount_sat,
+            )
+            return ActionReceipt(
+                action_id=plan.action_id,
+                action=plan.action,
+                actor_id=actor.agent_id,
+                detail=f"spend_balance:{amount_btc}:from={actor.wallet_name}:txid={txid[:12]}",
+                used_agent_ids=[actor.agent_id],
+                expectation=self.serialize_expectation(expectation),
+                metric_deltas={"spend_ok": 1},
+                local_patch=None,
+            )
+
+        raise WorldSimError(
+            f"unsupported action for external receipt rebuild: {plan.action}"
+        )
 
     @staticmethod
     def log(message: str) -> None:
@@ -1818,6 +2405,7 @@ class RegtestWorldSimulator:
     def op_mint(
         self,
         actor: Agent,
+        action_id: str,
         pre_height: int,
         invalid_eth: bool,
         prev: list[str] | None,
@@ -1840,6 +2428,11 @@ class RegtestWorldSimulator:
                 "--file",
                 str(content_path),
             ],
+        )
+        self.write_external_action_result(
+            action_id=action_id,
+            action="invalid_mint" if invalid_eth else ("remint" if prev else "mint"),
+            raw_output=output,
         )
         inscription_id = self.extract_inscription_id(output)
         self.pass_owner_by_id[inscription_id] = actor.agent_id
@@ -1880,6 +2473,7 @@ class RegtestWorldSimulator:
     def op_transfer(
         self,
         actor: Agent,
+        action_id: str,
         available_agent_ids: set[int],
         pre_height: int,
         rng: random.Random,
@@ -1919,6 +2513,11 @@ class RegtestWorldSimulator:
                 inscription_id,
             ],
         )
+        self.write_external_action_result(
+            action_id=action_id,
+            action="transfer",
+            raw_output=output,
+        )
         txid = self.extract_txid(output)
 
         # Update local ownership view immediately; chain finality is validated post-block.
@@ -1943,12 +2542,23 @@ class RegtestWorldSimulator:
         )
 
     def op_send_balance(
-        self, actor: Agent, pre_height: int, rng: random.Random
+        self, actor: Agent, action_id: str, pre_height: int, rng: random.Random
     ) -> tuple[str, ActionExpectation]:
         amount_btc = self.random_btc_amount(rng, "0.01000000", "0.25000000")
         txid = self.run_btc_cli(
             self.args.miner_wallet,
-            ["sendtoaddress", actor.receive_address, amount_btc],
+            [
+                "sendtoaddress",
+                actor.receive_address,
+                amount_btc,
+                f"usdb-world-sim:{action_id}",
+                actor.wallet_name,
+            ],
+        )
+        self.write_external_action_result(
+            action_id=action_id,
+            action="send_balance",
+            raw_output=txid,
         )
         amount_sat = self.btc_to_sat(amount_btc)
         pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
@@ -1964,7 +2574,7 @@ class RegtestWorldSimulator:
         )
 
     def op_spend_balance(
-        self, actor: Agent, pre_height: int, rng: random.Random
+        self, actor: Agent, action_id: str, pre_height: int, rng: random.Random
     ) -> tuple[str, ActionExpectation] | None:
         pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
         if pre_balance < 200_000:
@@ -1985,7 +2595,18 @@ class RegtestWorldSimulator:
         amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
         txid = self.run_btc_cli(
             actor.wallet_name,
-            ["sendtoaddress", self.args.mining_address, amount_btc],
+            [
+                "sendtoaddress",
+                self.args.mining_address,
+                amount_btc,
+                f"usdb-world-sim:{action_id}",
+                self.args.miner_wallet,
+            ],
+        )
+        self.write_external_action_result(
+            action_id=action_id,
+            action="spend_balance",
+            raw_output=txid,
         )
         self.metrics["spend_ok"] += 1
         return (
@@ -2018,6 +2639,7 @@ class RegtestWorldSimulator:
     def execute_agent_action(
         self,
         actor: Agent,
+        action_id: str,
         action: str,
         available_agent_ids: set[int],
         pre_height: int,
@@ -2030,6 +2652,7 @@ class RegtestWorldSimulator:
         if action == "mint":
             detail, expectation = self.op_mint(
                 actor=actor,
+                action_id=action_id,
                 pre_height=pre_height,
                 invalid_eth=False,
                 prev=None,
@@ -2040,6 +2663,7 @@ class RegtestWorldSimulator:
         if action == "invalid_mint":
             detail, expectation = self.op_mint(
                 actor=actor,
+                action_id=action_id,
                 pre_height=pre_height,
                 invalid_eth=True,
                 prev=None,
@@ -2048,7 +2672,7 @@ class RegtestWorldSimulator:
             return detail, expectation, {actor.agent_id}
 
         if action == "transfer":
-            return self.op_transfer(actor, available_agent_ids, pre_height, rng)
+            return self.op_transfer(actor, action_id, available_agent_ids, pre_height, rng)
 
         if action == "remint":
             prev = self.choose_prev_for_remint(rng)
@@ -2057,6 +2681,7 @@ class RegtestWorldSimulator:
                 return "remint:skip:no_prev", None, {actor.agent_id}
             detail, expectation = self.op_mint(
                 actor=actor,
+                action_id=action_id,
                 pre_height=pre_height,
                 invalid_eth=False,
                 prev=[prev],
@@ -2067,11 +2692,11 @@ class RegtestWorldSimulator:
             return f"remint:prev={prev}:{detail}", expectation, {actor.agent_id}
 
         if action == "send_balance":
-            detail, expectation = self.op_send_balance(actor, pre_height, rng)
+            detail, expectation = self.op_send_balance(actor, action_id, pre_height, rng)
             return detail, expectation, {actor.agent_id}
 
         if action == "spend_balance":
-            result = self.op_spend_balance(actor, pre_height, rng)
+            result = self.op_spend_balance(actor, action_id, pre_height, rng)
             if result is None:
                 return "spend_balance:skip:low_balance", None, {actor.agent_id}
             detail, expectation = result
@@ -2949,6 +3574,12 @@ class RegtestWorldSimulator:
                     if isinstance(current_slot_plan_payload, dict)
                     else None
                 )
+                current_slot_receipt_payload = resume_tick_state.get("current_slot_receipt")
+                current_slot_receipt = (
+                    self.deserialize_action_receipt(current_slot_receipt_payload)
+                    if isinstance(current_slot_receipt_payload, dict)
+                    else None
+                )
                 start_slot_index = int(resume_tick_state.get("next_slot_index", 0))
                 batch_seed = int(resume_tick_state.get("batch_seed", self.action_seed))
                 if (
@@ -2982,6 +3613,7 @@ class RegtestWorldSimulator:
                 action_failed = 0
                 action_fail_samples = []
                 current_slot_plan = None
+                current_slot_receipt = None
                 start_slot_index = 0
                 batch_seed = self.action_seed
                 self.write_recovery_state(
@@ -2998,6 +3630,7 @@ class RegtestWorldSimulator:
                         action_trace_samples=action_trace_samples,
                         tick_action_type_counts=tick_action_type_counts,
                         current_slot_plan=current_slot_plan,
+                        current_slot_receipt=current_slot_receipt,
                         expectations=expectations,
                         action_failed=action_failed,
                         action_fail_samples=action_fail_samples,
@@ -3026,6 +3659,7 @@ class RegtestWorldSimulator:
                 if not available_ids:
                     break
 
+                replaying_recorded_receipt = False
                 if current_slot_plan is not None:
                     if current_slot_plan.slot_index != slot_index:
                         raise WorldSimError(
@@ -3041,6 +3675,12 @@ class RegtestWorldSimulator:
                         f"tick={tick}, slot_index={slot_index}, action_id={action_id}, "
                         f"actor={actor.wallet_name}, action={action}"
                     )
+                    if current_slot_receipt is not None:
+                        replaying_recorded_receipt = True
+                        self.log(
+                            "Replaying recorded world-sim slot receipt: "
+                            f"tick={tick}, slot_index={slot_index}, action_id={action_id}"
+                        )
                     self.emit_report(
                         "recovery_replay_slot",
                         {
@@ -3052,6 +3692,76 @@ class RegtestWorldSimulator:
                             "action": action,
                         },
                     )
+                    if not replaying_recorded_receipt:
+                        external_result = self.load_external_action_result(action_id)
+                        if external_result is not None:
+                            tick_action_type_counts[action] = (
+                                tick_action_type_counts.get(action, 0) + 1
+                            )
+                            current_slot_receipt = self.rebuild_receipt_from_external_result(
+                                plan=current_slot_plan,
+                                payload=external_result,
+                                pre_height=pre_height,
+                                available_ids=available_ids,
+                                tick=tick,
+                                slot_index=slot_index,
+                            )
+                            replaying_recorded_receipt = True
+                            self.log(
+                                "Recovered world-sim slot from external result: "
+                                f"tick={tick}, slot_index={slot_index}, action_id={action_id}"
+                            )
+                            self.emit_report(
+                                "recovery_external_result_replay",
+                                {
+                                    "tick": tick,
+                                    "slot_index": slot_index,
+                                    "action_id": action_id,
+                                    "actor_id": actor_id,
+                                    "action": action,
+                                },
+                            )
+                        else:
+                            external_result = self.wait_for_inflight_external_action_result(
+                                plan=current_slot_plan,
+                                pre_height=pre_height,
+                                available_ids=available_ids,
+                                tick=tick,
+                                slot_index=slot_index,
+                            )
+                            if external_result is None:
+                                raise WorldSimError(
+                                    "unable to resolve inflight action outcome after external probe window: "
+                                    f"action_id={action_id}, action={action}"
+                                )
+                            tick_action_type_counts[action] = (
+                                tick_action_type_counts.get(action, 0) + 1
+                            )
+                            current_slot_receipt = self.rebuild_receipt_from_external_result(
+                                plan=current_slot_plan,
+                                payload=external_result,
+                                pre_height=pre_height,
+                                available_ids=available_ids,
+                                tick=tick,
+                                slot_index=slot_index,
+                            )
+                            replaying_recorded_receipt = True
+                            self.log(
+                                "Recovered world-sim slot from external probe: "
+                                f"tick={tick}, slot_index={slot_index}, action_id={action_id}, "
+                                f"source={external_result.get('source')}"
+                            )
+                            self.emit_report(
+                                "recovery_external_probe_replay",
+                                {
+                                    "tick": tick,
+                                    "slot_index": slot_index,
+                                    "action_id": action_id,
+                                    "actor_id": actor_id,
+                                    "action": action,
+                                    "source": external_result.get("source"),
+                                },
+                            )
                 else:
                     actor_id = self.choose_actor(
                         available_ids,
@@ -3085,6 +3795,7 @@ class RegtestWorldSimulator:
                         actor_id=actor_id,
                         action=action,
                         action_id=action_id,
+                        probe_state=self.build_action_probe_state(actor, action),
                     )
                     self.write_recovery_state(
                         self.build_recovery_snapshot(
@@ -3100,30 +3811,74 @@ class RegtestWorldSimulator:
                             action_trace_samples=action_trace_samples,
                             tick_action_type_counts=tick_action_type_counts,
                             current_slot_plan=current_slot_plan,
+                            current_slot_receipt=current_slot_receipt,
                             expectations=expectations,
                             action_failed=action_failed,
                             action_fail_samples=action_fail_samples,
                         )
                     )
-                tick_action_type_counts[action] = (
-                    tick_action_type_counts.get(action, 0) + 1
-                )
+                if not replaying_recorded_receipt:
+                    tick_action_type_counts[action] = (
+                        tick_action_type_counts.get(action, 0) + 1
+                    )
 
                 try:
-                    detail, expectation, used_ids = self.execute_agent_action(
-                        actor=actor,
-                        action=action,
-                        available_agent_ids=available_ids,
-                        pre_height=pre_height,
-                        rng=self.action_position_rng(
-                            tick,
-                            slot_index,
-                            "execute",
-                            actor_id,
-                            action,
-                            pre_height,
-                        ),
-                    )
+                    if replaying_recorded_receipt:
+                        if current_slot_receipt is None:
+                            raise WorldSimError(
+                                f"missing current_slot_receipt for action_id={action_id}"
+                            )
+                        detail, expectation, used_ids = self.apply_action_receipt(
+                            current_slot_plan,
+                            current_slot_receipt,
+                        )
+                    else:
+                        metrics_before = dict(self.metrics)
+                        detail, expectation, used_ids = self.execute_agent_action(
+                            actor=actor,
+                            action=action,
+                            available_agent_ids=available_ids,
+                            pre_height=pre_height,
+                            rng=self.action_position_rng(
+                                tick,
+                                slot_index,
+                                "execute",
+                                actor_id,
+                                action,
+                                pre_height,
+                            ),
+                        )
+                        if current_slot_plan is None:
+                            raise WorldSimError(
+                                f"missing current_slot_plan for executed action_id={action_id}"
+                            )
+                        current_slot_receipt = self.build_action_receipt(
+                            planned_action=current_slot_plan,
+                            detail=detail,
+                            expectation=expectation,
+                            used_ids=used_ids,
+                            metrics_before=metrics_before,
+                        )
+                        self.write_recovery_state(
+                            self.build_recovery_snapshot(
+                                status="tick_in_progress",
+                                batch_seed=batch_seed,
+                                tick=tick,
+                                next_slot_index=slot_index,
+                                action_slots=action_slots,
+                                pre_height=pre_height,
+                                active_agent_count=self.active_agent_count,
+                                available_ids=available_ids,
+                                action_results=action_results,
+                                action_trace_samples=action_trace_samples,
+                                tick_action_type_counts=tick_action_type_counts,
+                                current_slot_plan=current_slot_plan,
+                                current_slot_receipt=current_slot_receipt,
+                                expectations=expectations,
+                                action_failed=action_failed,
+                                action_fail_samples=action_fail_samples,
+                            )
+                        )
                     action_results.append(f"{action_id}:{detail}")
                     if expectation is not None and expectation.action != "noop":
                         expectation.action_id = action_id
@@ -3144,6 +3899,8 @@ class RegtestWorldSimulator:
                     actor.last_action = action
                     actor.cooldown = max(0, actor.cooldown - 1)
                     current_slot_plan = None
+                    current_slot_receipt = None
+                    self.clear_external_action_result(action_id)
                     self.write_recovery_state(
                         self.build_recovery_snapshot(
                             status="tick_in_progress",
@@ -3158,6 +3915,7 @@ class RegtestWorldSimulator:
                             action_trace_samples=action_trace_samples,
                             tick_action_type_counts=tick_action_type_counts,
                             current_slot_plan=current_slot_plan,
+                            current_slot_receipt=current_slot_receipt,
                             expectations=expectations,
                             action_failed=action_failed,
                             action_fail_samples=action_fail_samples,
@@ -3188,6 +3946,8 @@ class RegtestWorldSimulator:
                     actor.last_action = "failed"
                     actor.cooldown = 1
                     current_slot_plan = None
+                    current_slot_receipt = None
+                    self.clear_external_action_result(action_id)
                     self.write_recovery_state(
                         self.build_recovery_snapshot(
                             status="tick_in_progress",
@@ -3202,6 +3962,7 @@ class RegtestWorldSimulator:
                             action_trace_samples=action_trace_samples,
                             tick_action_type_counts=tick_action_type_counts,
                             current_slot_plan=current_slot_plan,
+                            current_slot_receipt=current_slot_receipt,
                             expectations=expectations,
                             action_failed=action_failed,
                             action_fail_samples=action_fail_samples,
