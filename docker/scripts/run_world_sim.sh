@@ -36,6 +36,10 @@ env_get() {
   local key="${1:?key is required}"
   local fallback="${2:-}"
   local value
+  if [[ "${!key+x}" == "x" ]]; then
+    printf '%s\n' "${!key}"
+    return
+  fi
   value="$(awk -F= -v key="${key}" '$1 == key { sub(/^[^=]+=*/, "", $0); print $0 }' "${env_file}" | tail -n 1)"
   if [[ -n "${value}" ]]; then
     printf '%s\n' "${value}"

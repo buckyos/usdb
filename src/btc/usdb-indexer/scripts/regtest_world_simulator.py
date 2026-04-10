@@ -3836,6 +3836,7 @@ class RegtestWorldSimulator:
                         metrics_before = dict(self.metrics)
                         detail, expectation, used_ids = self.execute_agent_action(
                             actor=actor,
+                            action_id=action_id,
                             action=action,
                             available_agent_ids=available_ids,
                             pre_height=pre_height,
