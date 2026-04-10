@@ -27,6 +27,7 @@ world_sim_identity_seed="${WORLD_SIM_IDENTITY_SEED:-}"
 world_sim_bootstrap_dir="${WORLD_SIM_BOOTSTRAP_DIR:-${world_sim_work_dir}/bootstrap}"
 world_sim_bootstrap_marker="${WORLD_SIM_BOOTSTRAP_MARKER:-${world_sim_bootstrap_dir}/world-sim-bootstrap.done.json}"
 world_sim_loop_state_file="${WORLD_SIM_LOOP_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-loop-state.json}"
+world_sim_recovery_state_file="${WORLD_SIM_RECOVERY_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-recovery-state.json}"
 
 miner_wallet_name="${MINER_WALLET_NAME:-usdb-world-miner}"
 wallet_prefix="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -963,6 +964,7 @@ run_simulator_batch() {
     "${global_cross_check_args[@]}" \
     "${validator_sample_args[@]}" \
     "${report_args[@]}" \
+    --recovery-state-file "${world_sim_recovery_state_file}" \
     --reorg-interval-blocks "${SIM_REORG_INTERVAL_BLOCKS:-0}" \
     --reorg-depth "${SIM_REORG_DEPTH:-3}" \
     --reorg-max-events "${SIM_REORG_MAX_EVENTS:-1}" \

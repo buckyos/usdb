@@ -197,6 +197,22 @@ To support exact replay later, the simulator needs two layers:
 The first layer makes the action sequence reproducible. The second layer makes
 it possible to resume from the middle of an unfinished batch after a crash.
 
+The current implementation now persists one more piece of recovery state:
+
+- `current_slot_plan`
+
+That plan is written before a slot starts external execution and contains the
+stable:
+
+- `slot_index`
+- `actor_id`
+- `action`
+- `action_id`
+
+If the runner restarts while a tick is still in progress, it can now replay the
+same planned slot instead of recalculating actor / action selection at resume
+time.
+
 ## 9. Next-Stage Deterministic Design
 
 The recommended next-stage model is:
@@ -276,6 +292,32 @@ recovery cursor, for example:
 This is the layer that enables actual crash recovery rather than just replaying
 the whole batch from the beginning.
 
+The current implementation now writes a simulator-owned recovery file at:
+
+- `WORLD_SIM_RECOVERY_STATE_FILE`
+
+That file captures either:
+
+- `between_ticks`
+  - the last fully committed simulator state after one tick has completed
+- `tick_in_progress`
+  - the in-memory simulator state after each completed action slot inside the
+    current tick
+  - and, when a slot has been planned but not yet checkpointed as completed,
+    the `current_slot_plan` that should be replayed on restart
+
+This allows the runner to resume:
+
+- from the next tick when a crash happens between ticks
+- from the next unfinished slot when a crash happens after some slots in the
+  current tick have already completed
+- from the already-planned in-flight slot when a crash happens after slot
+  planning but before the post-slot checkpoint
+
+The remaining gap is the narrow failure window between an external side effect
+and writing the updated recovery file. That is the part that still needs more
+hardening if exact crash recovery must be guaranteed under all failure modes.
+
 ## 10. First-Batch Implementation Boundary
 
 This batch intentionally implements only:
@@ -289,12 +331,15 @@ This batch intentionally implements only:
   - position-derived RNG
   - stable action ids
   - action-specific randomness derived from action position
+- recovery cursor primitives:
+  - `between_ticks` snapshots
+  - `tick_in_progress` snapshots
+  - persisted `current_slot_plan` replay
 
 It does **not** yet implement:
 
 - full seeded-reset replay of the entire protocol state
-- persistent mid-batch checkpoints
-- exact mid-batch crash replay
+- exact crash-proof recovery across every external side effect boundary
 - deterministic reconstruction of the complete BTC / ord / USDB world from one
   seed alone
 

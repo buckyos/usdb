@@ -90,6 +90,14 @@ class ValidatorSample:
 
 
 @dataclass
+class PlannedAction:
+    slot_index: int
+    actor_id: int
+    action: str
+    action_id: str
+
+
+@dataclass
 class Args:
     btc_cli: str
     bitcoin_dir: str
@@ -129,6 +137,7 @@ class Args:
     scripted_cycle: list[str]
     report_file: str | None
     report_flush_every: int
+    recovery_state_file: str | None
     agent_self_check_enabled: bool
     agent_self_check_interval_blocks: int
     agent_self_check_sample_size: int
@@ -256,7 +265,10 @@ class RegtestWorldSimulator:
         self.report_path: Path | None = None
         self.report_fp: Any | None = None
         self.report_event_since_flush = 0
+        self.recovery_state_path: Path | None = None
+        self.resume_state: dict[str, Any] | None = None
         self._init_reporter()
+        self._init_recovery_state()
 
     @staticmethod
     def _normalize_seed_component(component: Any) -> str:
@@ -346,6 +358,14 @@ class RegtestWorldSimulator:
             },
         )
 
+    def _init_recovery_state(self) -> None:
+        recovery_state_file = self.args.recovery_state_file
+        if recovery_state_file is None or str(recovery_state_file).strip() == "":
+            return
+        self.recovery_state_path = Path(recovery_state_file)
+        self.recovery_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.resume_state = self.load_recovery_state()
+
     def emit_report(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.report_fp is None:
             return
@@ -367,6 +387,318 @@ class RegtestWorldSimulator:
         self.report_fp.flush()
         self.report_fp.close()
         self.report_fp = None
+
+    @staticmethod
+    def serialize_agent(agent: Agent) -> dict[str, Any]:
+        return {
+            "agent_id": agent.agent_id,
+            "wallet_name": agent.wallet_name,
+            "receive_address": agent.receive_address,
+            "owner_script_hash": agent.owner_script_hash,
+            "persona": agent.persona,
+            "owned_passes": sorted(agent.owned_passes),
+            "active_pass_id": agent.active_pass_id,
+            "invalid_passes": sorted(agent.invalid_passes),
+            "last_action": agent.last_action,
+            "cooldown": agent.cooldown,
+            "scripted_index": agent.scripted_index,
+            "oracle_last_checked_height": agent.oracle_last_checked_height,
+            "oracle_last_pass_id": agent.oracle_last_pass_id,
+            "oracle_last_state": agent.oracle_last_state,
+            "oracle_last_energy": agent.oracle_last_energy,
+            "oracle_last_owner_balance": agent.oracle_last_owner_balance,
+            "oracle_last_record_block_height": agent.oracle_last_record_block_height,
+        }
+
+    @staticmethod
+    def apply_agent_state(agent: Agent, payload: dict[str, Any]) -> None:
+        agent.owned_passes = set(payload.get("owned_passes") or [])
+        agent.active_pass_id = payload.get("active_pass_id")
+        agent.invalid_passes = set(payload.get("invalid_passes") or [])
+        agent.last_action = str(payload.get("last_action", "init"))
+        agent.cooldown = int(payload.get("cooldown", 0))
+        agent.scripted_index = int(payload.get("scripted_index", 0))
+        agent.oracle_last_checked_height = payload.get("oracle_last_checked_height")
+        agent.oracle_last_pass_id = payload.get("oracle_last_pass_id")
+        agent.oracle_last_state = payload.get("oracle_last_state")
+        agent.oracle_last_energy = payload.get("oracle_last_energy")
+        agent.oracle_last_owner_balance = payload.get("oracle_last_owner_balance")
+        agent.oracle_last_record_block_height = payload.get(
+            "oracle_last_record_block_height"
+        )
+
+    @staticmethod
+    def serialize_expectation(expectation: ActionExpectation) -> dict[str, Any]:
+        return {
+            "action": expectation.action,
+            "actor_id": expectation.actor_id,
+            "actor_pre_balance": expectation.actor_pre_balance,
+            "amount_sat": expectation.amount_sat,
+            "inscription_id": expectation.inscription_id,
+            "target_id": expectation.target_id,
+            "target_had_active_before": expectation.target_had_active_before,
+            "prev_inscription_id": expectation.prev_inscription_id,
+            "expect_invalid": expectation.expect_invalid,
+            "action_id": expectation.action_id,
+        }
+
+    @staticmethod
+    def deserialize_expectation(payload: dict[str, Any]) -> ActionExpectation:
+        return ActionExpectation(
+            action=str(payload.get("action", "noop")),
+            actor_id=int(payload.get("actor_id", 0)),
+            actor_pre_balance=payload.get("actor_pre_balance"),
+            amount_sat=payload.get("amount_sat"),
+            inscription_id=payload.get("inscription_id"),
+            target_id=payload.get("target_id"),
+            target_had_active_before=payload.get("target_had_active_before"),
+            prev_inscription_id=payload.get("prev_inscription_id"),
+            expect_invalid=bool(payload.get("expect_invalid", False)),
+            action_id=payload.get("action_id"),
+        )
+
+    @staticmethod
+    def serialize_validator_sample_candidate(
+        candidate: ValidatorSampleCandidate,
+    ) -> dict[str, Any]:
+        return {
+            "inscription_id": candidate.inscription_id,
+            "owner": candidate.owner,
+            "state": candidate.state,
+            "energy": candidate.energy,
+        }
+
+    @staticmethod
+    def deserialize_validator_sample_candidate(
+        payload: dict[str, Any],
+    ) -> ValidatorSampleCandidate:
+        return ValidatorSampleCandidate(
+            inscription_id=str(payload.get("inscription_id", "")),
+            owner=str(payload.get("owner", "")),
+            state=str(payload.get("state", "")),
+            energy=int(payload.get("energy", 0)),
+        )
+
+    def serialize_validator_sample(self, sample: ValidatorSample) -> dict[str, Any]:
+        return {
+            "sample_id": sample.sample_id,
+            "mode": sample.mode,
+            "tick": sample.tick,
+            "block_height": sample.block_height,
+            "inscription_id": sample.inscription_id,
+            "owner": sample.owner,
+            "state": sample.state,
+            "energy": sample.energy,
+            "snapshot_id": sample.snapshot_id,
+            "stable_block_hash": sample.stable_block_hash,
+            "local_state_commit": sample.local_state_commit,
+            "system_state_id": sample.system_state_id,
+            "candidates": [
+                self.serialize_validator_sample_candidate(candidate)
+                for candidate in sample.candidates
+            ],
+            "winner_inscription_id": sample.winner_inscription_id,
+            "expected_consensus_error": sample.expected_consensus_error,
+            "invalidated_by_reorg_tick": sample.invalidated_by_reorg_tick,
+            "validated": sample.validated,
+            "validated_tick": sample.validated_tick,
+        }
+
+    @staticmethod
+    def serialize_planned_action(plan: PlannedAction) -> dict[str, Any]:
+        return {
+            "slot_index": plan.slot_index,
+            "actor_id": plan.actor_id,
+            "action": plan.action,
+            "action_id": plan.action_id,
+        }
+
+    @staticmethod
+    def deserialize_planned_action(payload: dict[str, Any]) -> PlannedAction:
+        return PlannedAction(
+            slot_index=int(payload.get("slot_index", 0)),
+            actor_id=int(payload.get("actor_id", 0)),
+            action=str(payload.get("action", "noop")),
+            action_id=str(payload.get("action_id", "")),
+        )
+
+    def deserialize_validator_sample(
+        self, payload: dict[str, Any]
+    ) -> ValidatorSample:
+        return ValidatorSample(
+            sample_id=str(payload.get("sample_id", "")),
+            mode=str(payload.get("mode", "")),
+            tick=int(payload.get("tick", 0)),
+            block_height=int(payload.get("block_height", 0)),
+            inscription_id=str(payload.get("inscription_id", "")),
+            owner=str(payload.get("owner", "")),
+            state=str(payload.get("state", "")),
+            energy=int(payload.get("energy", 0)),
+            snapshot_id=str(payload.get("snapshot_id", "")),
+            stable_block_hash=str(payload.get("stable_block_hash", "")),
+            local_state_commit=str(payload.get("local_state_commit", "")),
+            system_state_id=str(payload.get("system_state_id", "")),
+            candidates=[
+                self.deserialize_validator_sample_candidate(candidate)
+                for candidate in (payload.get("candidates") or [])
+            ],
+            winner_inscription_id=payload.get("winner_inscription_id"),
+            expected_consensus_error=payload.get("expected_consensus_error"),
+            invalidated_by_reorg_tick=payload.get("invalidated_by_reorg_tick"),
+            validated=bool(payload.get("validated", False)),
+            validated_tick=payload.get("validated_tick"),
+        )
+
+    def build_recovery_snapshot(
+        self,
+        *,
+        status: str,
+        batch_seed: int,
+        tick: int,
+        next_slot_index: int,
+        action_slots: int,
+        pre_height: int,
+        active_agent_count: int,
+        available_ids: set[int],
+        action_results: list[str],
+        action_trace_samples: list[dict[str, Any]],
+        tick_action_type_counts: dict[str, int],
+        current_slot_plan: PlannedAction | None,
+        expectations: list[ActionExpectation],
+        action_failed: int,
+        action_fail_samples: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "status": status,
+            "seed": self.action_seed,
+            "batch_seed": batch_seed,
+            "batch_blocks": self.args.blocks,
+            "tick": tick,
+            "next_slot_index": next_slot_index,
+            "action_slots": action_slots,
+            "pre_height": pre_height,
+            "active_agent_count": active_agent_count,
+            "available_ids": sorted(available_ids),
+            "action_results": list(action_results),
+            "action_trace_samples": list(action_trace_samples),
+            "tick_action_type_counts": dict(tick_action_type_counts),
+            "current_slot_plan": (
+                self.serialize_planned_action(current_slot_plan)
+                if current_slot_plan is not None
+                else None
+            ),
+            "expectations": [
+                self.serialize_expectation(expectation)
+                for expectation in expectations
+            ],
+            "action_failed": action_failed,
+            "action_fail_samples": list(action_fail_samples),
+            "metrics": dict(self.metrics),
+            "reorg_events_applied": self.reorg_events_applied,
+            "pass_owner_by_id": {
+                inscription_id: int(owner_id)
+                for inscription_id, owner_id in self.pass_owner_by_id.items()
+            },
+            "agents": [self.serialize_agent(agent) for agent in self.agents],
+            "validator_samples": [
+                self.serialize_validator_sample(sample)
+                for sample in self.validator_samples
+            ],
+        }
+
+    def build_between_ticks_snapshot(
+        self, *, batch_seed: int, next_tick: int, current_height: int
+    ) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "status": "between_ticks",
+            "seed": self.action_seed,
+            "batch_seed": batch_seed,
+            "batch_blocks": self.args.blocks,
+            "next_tick": next_tick,
+            "current_height": current_height,
+            "active_agent_count": self.active_agent_count,
+            "metrics": dict(self.metrics),
+            "reorg_events_applied": self.reorg_events_applied,
+            "pass_owner_by_id": {
+                inscription_id: int(owner_id)
+                for inscription_id, owner_id in self.pass_owner_by_id.items()
+            },
+            "agents": [self.serialize_agent(agent) for agent in self.agents],
+            "validator_samples": [
+                self.serialize_validator_sample(sample)
+                for sample in self.validator_samples
+            ],
+        }
+
+    def write_recovery_state(self, payload: dict[str, Any]) -> None:
+        if self.recovery_state_path is None:
+            return
+        payload = dict(payload)
+        payload["updated_at"] = int(time.time())
+        self.recovery_state_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def clear_recovery_state(self) -> None:
+        if self.recovery_state_path is None:
+            return
+        try:
+            self.recovery_state_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def load_recovery_state(self) -> dict[str, Any] | None:
+        if self.recovery_state_path is None or not self.recovery_state_path.exists():
+            return None
+        payload = json.loads(self.recovery_state_path.read_text(encoding="utf-8"))
+        if int(payload.get("version", 0)) != 1:
+            raise WorldSimError(
+                f"unsupported recovery state version: {payload.get('version')}"
+            )
+        if int(payload.get("seed", self.action_seed)) != self.action_seed:
+            self.log(
+                "Ignoring recovery state with mismatched action seed: "
+                f"expected={self.action_seed}, got={payload.get('seed')}"
+            )
+            return None
+        if int(payload.get("batch_blocks", self.args.blocks)) != self.args.blocks:
+            self.log(
+                "Ignoring recovery state with mismatched batch block count: "
+                f"expected={self.args.blocks}, got={payload.get('batch_blocks')}"
+            )
+            return None
+        return payload
+
+    def apply_recovery_snapshot(self, payload: dict[str, Any]) -> None:
+        self.active_agent_count = int(
+            payload.get("active_agent_count", self.active_agent_count)
+        )
+        restored_metrics = {
+            key: int(value) for key, value in (payload.get("metrics") or {}).items()
+        }
+        for key in self.metrics:
+            restored_metrics.setdefault(key, 0)
+        self.metrics = restored_metrics
+        self.reorg_events_applied = int(payload.get("reorg_events_applied", 0))
+        self.pass_owner_by_id = {
+            str(inscription_id): int(owner_id)
+            for inscription_id, owner_id in (payload.get("pass_owner_by_id") or {}).items()
+        }
+        agent_payloads = payload.get("agents") or []
+        if len(agent_payloads) != len(self.agents):
+            raise WorldSimError(
+                "recovery snapshot agent count mismatch: "
+                f"expected={len(self.agents)}, got={len(agent_payloads)}"
+            )
+        for agent, agent_payload in zip(self.agents, agent_payloads, strict=True):
+            self.apply_agent_state(agent, agent_payload)
+        self.validator_samples = [
+            self.deserialize_validator_sample(sample)
+            for sample in (payload.get("validator_samples") or [])
+        ]
 
     @staticmethod
     def log(message: str) -> None:
@@ -2533,31 +2865,145 @@ class RegtestWorldSimulator:
         )
         if self.report_path is not None:
             self.log(f"Structured tick report enabled: path={self.report_path}")
+        if self.recovery_state_path is not None:
+            self.log(f"Recovery state enabled: path={self.recovery_state_path}")
 
         tick = 0
+        resume_tick_state: dict[str, Any] | None = None
+        if self.resume_state is not None:
+            resume_status = str(self.resume_state.get("status", ""))
+            self.apply_recovery_snapshot(self.resume_state)
+            if resume_status == "between_ticks":
+                tick = max(0, int(self.resume_state.get("next_tick", 1)) - 1)
+                self.log(
+                    "Resuming world-sim between ticks: "
+                    f"next_tick={tick + 1}, batch_seed={self.resume_state.get('batch_seed')}"
+                )
+                self.emit_report(
+                    "recovery_resume",
+                    {
+                        "status": "between_ticks",
+                        "next_tick": tick + 1,
+                        "batch_seed": self.resume_state.get("batch_seed"),
+                    },
+                )
+            elif resume_status == "tick_in_progress":
+                resume_tick_state = self.resume_state
+                tick = max(0, int(self.resume_state.get("tick", 1)) - 1)
+                self.log(
+                    "Resuming world-sim inside tick: "
+                    f"tick={self.resume_state.get('tick')}, "
+                    f"next_slot_index={self.resume_state.get('next_slot_index')}, "
+                    f"batch_seed={self.resume_state.get('batch_seed')}"
+                )
+                self.emit_report(
+                    "recovery_resume",
+                    {
+                        "status": "tick_in_progress",
+                        "tick": self.resume_state.get("tick"),
+                        "next_slot_index": self.resume_state.get("next_slot_index"),
+                        "batch_seed": self.resume_state.get("batch_seed"),
+                    },
+                )
+            else:
+                raise WorldSimError(
+                    f"unsupported recovery state status: {resume_status}"
+                )
+
         while True:
             if self.args.blocks > 0 and tick >= self.args.blocks:
                 break
 
-            tick += 1
-            self.maybe_grow_agents(tick)
-            pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
+            if resume_tick_state is not None:
+                tick = int(resume_tick_state.get("tick", tick + 1))
+                pre_height = int(resume_tick_state.get("pre_height", 0))
+                active_agent_ids = self.get_active_agent_ids()
+                available_ids = {
+                    int(agent_id)
+                    for agent_id in (resume_tick_state.get("available_ids") or [])
+                }
+                action_slots = int(resume_tick_state.get("action_slots", 0))
+                action_results = list(resume_tick_state.get("action_results") or [])
+                action_trace_samples = list(
+                    resume_tick_state.get("action_trace_samples") or []
+                )
+                tick_action_type_counts = {
+                    action: int(
+                        (resume_tick_state.get("tick_action_type_counts") or {}).get(
+                            action, 0
+                        )
+                    )
+                    for action in sorted(self.SUPPORTED_ACTIONS)
+                }
+                expectations = [
+                    self.deserialize_expectation(payload)
+                    for payload in (resume_tick_state.get("expectations") or [])
+                ]
+                action_failed = int(resume_tick_state.get("action_failed", 0))
+                action_fail_samples = list(
+                    resume_tick_state.get("action_fail_samples") or []
+                )
+                current_slot_plan_payload = resume_tick_state.get("current_slot_plan")
+                current_slot_plan = (
+                    self.deserialize_planned_action(current_slot_plan_payload)
+                    if isinstance(current_slot_plan_payload, dict)
+                    else None
+                )
+                start_slot_index = int(resume_tick_state.get("next_slot_index", 0))
+                batch_seed = int(resume_tick_state.get("batch_seed", self.action_seed))
+                if (
+                    current_slot_plan is not None
+                    and current_slot_plan.slot_index != start_slot_index
+                ):
+                    raise WorldSimError(
+                        "recovery snapshot slot mismatch: "
+                        f"next_slot_index={start_slot_index}, "
+                        f"current_slot_plan.slot_index={current_slot_plan.slot_index}"
+                    )
+                resume_tick_state = None
+            else:
+                tick += 1
+                self.maybe_grow_agents(tick)
+                pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
 
-            active_agent_ids = self.get_active_agent_ids()
-            available_ids: set[int] = set(active_agent_ids)
-            max_slots = min(self.args.max_actions_per_block, len(available_ids))
-            action_slots = self.action_position_rng(
-                tick, -1, "slot-count", pre_height, len(available_ids)
-            ).randint(0, max(0, max_slots))
+                active_agent_ids = self.get_active_agent_ids()
+                available_ids = set(active_agent_ids)
+                max_slots = min(self.args.max_actions_per_block, len(available_ids))
+                action_slots = self.action_position_rng(
+                    tick, -1, "slot-count", pre_height, len(available_ids)
+                ).randint(0, max(0, max_slots))
 
-            action_results: list[str] = []
-            action_trace_samples: list[dict[str, Any]] = []
-            tick_action_type_counts = {
-                action: 0 for action in sorted(self.SUPPORTED_ACTIONS)
-            }
-            expectations: list[ActionExpectation] = []
-            action_failed = 0
-            action_fail_samples: list[str] = []
+                action_results = []
+                action_trace_samples = []
+                tick_action_type_counts = {
+                    action: 0 for action in sorted(self.SUPPORTED_ACTIONS)
+                }
+                expectations = []
+                action_failed = 0
+                action_fail_samples = []
+                current_slot_plan = None
+                start_slot_index = 0
+                batch_seed = self.action_seed
+                self.write_recovery_state(
+                    self.build_recovery_snapshot(
+                        status="tick_in_progress",
+                        batch_seed=batch_seed,
+                        tick=tick,
+                        next_slot_index=start_slot_index,
+                        action_slots=action_slots,
+                        pre_height=pre_height,
+                        active_agent_count=self.active_agent_count,
+                        available_ids=available_ids,
+                        action_results=action_results,
+                        action_trace_samples=action_trace_samples,
+                        tick_action_type_counts=tick_action_type_counts,
+                        current_slot_plan=current_slot_plan,
+                        expectations=expectations,
+                        action_failed=action_failed,
+                        action_fail_samples=action_fail_samples,
+                    )
+                )
+
             verify_failed = 0
             verify_fail_samples: list[str] = []
             self_check_failed = 0
@@ -2576,37 +3022,89 @@ class RegtestWorldSimulator:
             reorg_info: dict[str, Any] | None = None
             refresh_failed_agent_ids: set[int] = set()
 
-            for slot_index in range(action_slots):
+            for slot_index in range(start_slot_index, action_slots):
                 if not available_ids:
                     break
 
-                actor_id = self.choose_actor(
-                    available_ids,
-                    self.action_position_rng(
-                        tick,
-                        slot_index,
-                        "actor",
+                if current_slot_plan is not None:
+                    if current_slot_plan.slot_index != slot_index:
+                        raise WorldSimError(
+                            "unexpected inflight slot replay mismatch: "
+                            f"expected_slot={current_slot_plan.slot_index}, got_slot={slot_index}"
+                        )
+                    actor_id = current_slot_plan.actor_id
+                    action = current_slot_plan.action
+                    action_id = current_slot_plan.action_id
+                    actor = self.agents[actor_id]
+                    self.log(
+                        "Replaying inflight world-sim slot: "
+                        f"tick={tick}, slot_index={slot_index}, action_id={action_id}, "
+                        f"actor={actor.wallet_name}, action={action}"
+                    )
+                    self.emit_report(
+                        "recovery_replay_slot",
+                        {
+                            "tick": tick,
+                            "slot_index": slot_index,
+                            "action_id": action_id,
+                            "actor_id": actor_id,
+                            "actor_wallet": actor.wallet_name,
+                            "action": action,
+                        },
+                    )
+                else:
+                    actor_id = self.choose_actor(
+                        available_ids,
+                        self.action_position_rng(
+                            tick,
+                            slot_index,
+                            "actor",
+                            pre_height,
+                            tuple(sorted(available_ids)),
+                        ),
+                    )
+                    actor = self.agents[actor_id]
+                    action = self.choose_action_for_agent(
+                        actor,
+                        available_ids,
                         pre_height,
-                        tuple(sorted(available_ids)),
-                    ),
-                )
-                actor = self.agents[actor_id]
-                action = self.choose_action_for_agent(
-                    actor,
-                    available_ids,
-                    pre_height,
-                    self.action_position_rng(
-                        tick,
-                        slot_index,
-                        "action",
-                        actor_id,
-                        actor.scripted_index,
-                        actor.last_action,
-                        actor.cooldown,
-                        tuple(sorted(available_ids)),
-                    ),
-                )
-                action_id = self.make_action_id(tick, slot_index, actor_id, action)
+                        self.action_position_rng(
+                            tick,
+                            slot_index,
+                            "action",
+                            actor_id,
+                            actor.scripted_index,
+                            actor.last_action,
+                            actor.cooldown,
+                            tuple(sorted(available_ids)),
+                        ),
+                    )
+                    action_id = self.make_action_id(tick, slot_index, actor_id, action)
+                    current_slot_plan = PlannedAction(
+                        slot_index=slot_index,
+                        actor_id=actor_id,
+                        action=action,
+                        action_id=action_id,
+                    )
+                    self.write_recovery_state(
+                        self.build_recovery_snapshot(
+                            status="tick_in_progress",
+                            batch_seed=batch_seed,
+                            tick=tick,
+                            next_slot_index=slot_index,
+                            action_slots=action_slots,
+                            pre_height=pre_height,
+                            active_agent_count=self.active_agent_count,
+                            available_ids=available_ids,
+                            action_results=action_results,
+                            action_trace_samples=action_trace_samples,
+                            tick_action_type_counts=tick_action_type_counts,
+                            current_slot_plan=current_slot_plan,
+                            expectations=expectations,
+                            action_failed=action_failed,
+                            action_fail_samples=action_fail_samples,
+                        )
+                    )
                 tick_action_type_counts[action] = (
                     tick_action_type_counts.get(action, 0) + 1
                 )
@@ -2645,6 +3143,26 @@ class RegtestWorldSimulator:
                     available_ids -= used_ids
                     actor.last_action = action
                     actor.cooldown = max(0, actor.cooldown - 1)
+                    current_slot_plan = None
+                    self.write_recovery_state(
+                        self.build_recovery_snapshot(
+                            status="tick_in_progress",
+                            batch_seed=batch_seed,
+                            tick=tick,
+                            next_slot_index=slot_index + 1,
+                            action_slots=action_slots,
+                            pre_height=pre_height,
+                            active_agent_count=self.active_agent_count,
+                            available_ids=available_ids,
+                            action_results=action_results,
+                            action_trace_samples=action_trace_samples,
+                            tick_action_type_counts=tick_action_type_counts,
+                            current_slot_plan=current_slot_plan,
+                            expectations=expectations,
+                            action_failed=action_failed,
+                            action_fail_samples=action_fail_samples,
+                        )
+                    )
                 except Exception as e:  # noqa: BLE001
                     action_failed += 1
                     self.on_action_failed(action)
@@ -2669,6 +3187,26 @@ class RegtestWorldSimulator:
                     available_ids.discard(actor_id)
                     actor.last_action = "failed"
                     actor.cooldown = 1
+                    current_slot_plan = None
+                    self.write_recovery_state(
+                        self.build_recovery_snapshot(
+                            status="tick_in_progress",
+                            batch_seed=batch_seed,
+                            tick=tick,
+                            next_slot_index=slot_index + 1,
+                            action_slots=action_slots,
+                            pre_height=pre_height,
+                            active_agent_count=self.active_agent_count,
+                            available_ids=available_ids,
+                            action_results=action_results,
+                            action_trace_samples=action_trace_samples,
+                            tick_action_type_counts=tick_action_type_counts,
+                            current_slot_plan=current_slot_plan,
+                            expectations=expectations,
+                            action_failed=action_failed,
+                            action_fail_samples=action_fail_samples,
+                        )
+                    )
                     if self.args.fail_fast:
                         raise
 
@@ -2864,9 +3402,18 @@ class RegtestWorldSimulator:
             if self.args.sleep_ms_between_blocks > 0:
                 time.sleep(self.args.sleep_ms_between_blocks / 1000.0)
 
+            self.write_recovery_state(
+                self.build_between_ticks_snapshot(
+                    batch_seed=batch_seed,
+                    next_tick=tick + 1,
+                    current_height=block_height,
+                )
+            )
+
         self.log("World simulation completed.")
         self.log(f"final_metrics={json.dumps(self.metrics, sort_keys=True)}")
         self.emit_report("session_end", {"final_metrics": self.metrics})
+        self.clear_recovery_state()
 
 
 def parse_args() -> Args:
@@ -2919,6 +3466,7 @@ def parse_args() -> Args:
     )
     parser.add_argument("--report-file")
     parser.add_argument("--report-flush-every", type=int, default=1)
+    parser.add_argument("--recovery-state-file")
     parser.add_argument(
         "--disable-agent-self-check",
         action="store_true",
@@ -3056,6 +3604,7 @@ def parse_args() -> Args:
         scripted_cycle=scripted_cycle,
         report_file=parsed.report_file,
         report_flush_every=parsed.report_flush_every,
+        recovery_state_file=parsed.recovery_state_file,
         agent_self_check_enabled=(not parsed.disable_agent_self_check),
         agent_self_check_interval_blocks=parsed.agent_self_check_interval_blocks,
         agent_self_check_sample_size=parsed.agent_self_check_sample_size,
