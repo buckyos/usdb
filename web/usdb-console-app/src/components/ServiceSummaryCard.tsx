@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
 import type { Tone } from '../lib/console'
+import { InlineHelpTooltip } from './InlineHelpTooltip'
 
 export interface ServiceSummaryItem {
   label: string
   value: string
   monospace?: boolean
+  helpText?: string
 }
 
 interface ServiceSummaryCardProps {
@@ -39,8 +41,11 @@ export function ServiceSummaryCard({
               key={`${title}-${item.label}`}
               className="flex flex-col gap-1 sm:flex-row sm:gap-2"
             >
-              <dt className="shrink-0 font-medium text-[color:var(--cp-muted)]">
-                {item.label}:
+              <dt className="shrink-0">
+                <span className="inline-flex items-center gap-2 font-medium text-[color:var(--cp-muted)]">
+                  <span>{item.label}:</span>
+                  <InlineHelpTooltip text={item.helpText} />
+                </span>
               </dt>
               <dd
                 className={`min-w-0 break-all text-[color:var(--cp-text)] ${

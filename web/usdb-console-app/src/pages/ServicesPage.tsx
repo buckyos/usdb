@@ -1,5 +1,6 @@
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceCard } from '../components/ServiceCard'
+import { InlineHelpTooltip } from '../components/InlineHelpTooltip'
 import { serviceLabel, serviceTone } from '../lib/console'
 import { displayBoolean, displayDateTimeFromUnixSeconds, displayList, displayNumber, displayPercent, displayText } from '../lib/format'
 import type {
@@ -16,11 +17,14 @@ interface ServicesPageProps {
   t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 }
 
-function renderPair(label: string, value: string) {
+type Translate = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
+
+function renderPair(label: string, value: string, helpText?: string) {
   return (
     <div className="border-t border-[color:var(--cp-border)] pt-3 sm:flex sm:gap-2">
-      <span className="shrink-0 text-sm font-medium text-[color:var(--cp-muted)]">
-        {label}:
+      <span className="shrink-0 inline-flex items-center gap-2 text-sm font-medium text-[color:var(--cp-muted)]">
+        <span>{label}:</span>
+        <InlineHelpTooltip text={helpText} />
       </span>
       <strong className="block break-all text-sm text-[color:var(--cp-text)]">
         {value}
@@ -31,28 +35,31 @@ function renderPair(label: string, value: string) {
 
 function renderBtcNodeDetails(
   locale: string,
-  t: (key: string) => string,
+  t: Translate,
   data?: BtcNodeSummary | null,
   latencyMs?: number | null,
 ) {
   return (
     <>
       {renderPair(t('fields.chain'), displayText(data?.chain, t))}
-      {renderPair(t('fields.blocks'), displayNumber(locale, data?.blocks, t))}
-      {renderPair(t('fields.headers'), displayNumber(locale, data?.headers, t))}
-      {renderPair(t('fields.bestBlockHash'), displayText(data?.best_block_hash, t))}
+      {renderPair(t('fields.blocks'), displayNumber(locale, data?.blocks, t), t('help.fields.blocks', ''))}
+      {renderPair(t('fields.headers'), displayNumber(locale, data?.headers, t), t('help.fields.headers', ''))}
+      {renderPair(t('fields.bestBlockHash'), displayText(data?.best_block_hash, t), t('help.fields.bestBlockHash', ''))}
       {renderPair(
         t('fields.blockTime'),
         displayDateTimeFromUnixSeconds(locale, data?.best_block_time, t),
+        t('help.fields.blockTime', ''),
       )}
-      {renderPair(t('fields.ibd'), displayBoolean(data?.initial_block_download, t))}
+      {renderPair(t('fields.ibd'), displayBoolean(data?.initial_block_download, t), t('help.fields.ibd', ''))}
       {renderPair(
         t('fields.verifyProgress'),
         displayPercent(data?.verification_progress, t),
+        t('help.fields.verifyProgress', ''),
       )}
       {renderPair(
         t('fields.latency'),
         latencyMs == null ? t('common.notYetAvailable') : `${latencyMs} ms`,
+        t('help.fields.latency', ''),
       )}
     </>
   )
@@ -60,59 +67,60 @@ function renderBtcNodeDetails(
 
 function renderBalanceHistoryDetails(
   locale: string,
-  t: (key: string) => string,
+  t: Translate,
   data?: BalanceHistorySummary | null,
 ) {
   return (
     <>
-      {renderPair(t('fields.network'), displayText(data?.network, t))}
-      {renderPair(t('fields.stableHeight'), displayNumber(locale, data?.stable_height, t))}
-      {renderPair(t('fields.phase'), displayText(data?.phase, t))}
-      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
-      {renderPair(t('fields.stableBlockHash'), displayText(data?.stable_block_hash, t))}
-      {renderPair(t('fields.latestBlockCommit'), displayText(data?.latest_block_commit, t))}
-      {renderPair(t('fields.snapshotVerify'), displayText(data?.snapshot_verification_state, t))}
-      {renderPair(t('fields.snapshotSigningKey'), displayText(data?.snapshot_signing_key_id, t))}
-      {renderPair(t('fields.statusMessage'), displayText(data?.message, t))}
-      {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
+      {renderPair(t('fields.network'), displayText(data?.network, t), t('help.fields.network', ''))}
+      {renderPair(t('fields.stableHeight'), displayNumber(locale, data?.stable_height, t), t('help.fields.stableHeight', ''))}
+      {renderPair(t('fields.phase'), displayText(data?.phase, t), t('help.fields.phase', ''))}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t), t('help.fields.consensus', ''))}
+      {renderPair(t('fields.stableBlockHash'), displayText(data?.stable_block_hash, t), t('help.fields.stableBlockHash', ''))}
+      {renderPair(t('fields.latestBlockCommit'), displayText(data?.latest_block_commit, t), t('help.fields.latestBlockCommit', ''))}
+      {renderPair(t('fields.snapshotVerify'), displayText(data?.snapshot_verification_state, t), t('help.fields.snapshotVerify', ''))}
+      {renderPair(t('fields.snapshotSigningKey'), displayText(data?.snapshot_signing_key_id, t), t('help.fields.snapshotSigningKey', ''))}
+      {renderPair(t('fields.statusMessage'), displayText(data?.message, t), t('help.fields.statusMessage', ''))}
+      {renderPair(t('fields.blockers'), displayList(data?.blockers, t), t('help.fields.blockers', ''))}
     </>
   )
 }
 
 function renderUsdbIndexerDetails(
   locale: string,
-  t: (key: string) => string,
+  t: Translate,
   data?: UsdbIndexerSummary | null,
 ) {
   return (
     <>
-      {renderPair(t('fields.network'), displayText(data?.network, t))}
-      {renderPair(t('fields.syncedHeight'), displayNumber(locale, data?.synced_block_height, t))}
+      {renderPair(t('fields.network'), displayText(data?.network, t), t('help.fields.network', ''))}
+      {renderPair(t('fields.syncedHeight'), displayNumber(locale, data?.synced_block_height, t), t('help.fields.syncedHeight', ''))}
       {renderPair(
         t('fields.stableHeight'),
         displayNumber(locale, data?.balance_history_stable_height, t),
+        t('help.fields.stableHeight', ''),
       )}
-      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
-      {renderPair(t('fields.upstreamSnapshot'), displayText(data?.upstream_snapshot_id, t))}
-      {renderPair(t('fields.localStateCommit'), displayText(data?.local_state_commit, t))}
-      {renderPair(t('fields.systemState'), displayText(data?.system_state_id, t))}
-      {renderPair(t('fields.statusMessage'), displayText(data?.message, t))}
-      {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t), t('help.fields.consensus', ''))}
+      {renderPair(t('fields.upstreamSnapshot'), displayText(data?.upstream_snapshot_id, t), t('help.fields.upstreamSnapshot', ''))}
+      {renderPair(t('fields.localStateCommit'), displayText(data?.local_state_commit, t), t('help.fields.localStateCommit', ''))}
+      {renderPair(t('fields.systemState'), displayText(data?.system_state_id, t), t('help.fields.systemState', ''))}
+      {renderPair(t('fields.statusMessage'), displayText(data?.message, t), t('help.fields.statusMessage', ''))}
+      {renderPair(t('fields.blockers'), displayList(data?.blockers, t), t('help.fields.blockers', ''))}
     </>
   )
 }
 
 function renderEthwDetails(
   locale: string,
-  t: (key: string) => string,
+  t: Translate,
   data?: EthwSummary | null,
 ) {
   return (
     <>
-      {renderPair(t('fields.client'), displayText(data?.client_version, t))}
-      {renderPair(t('fields.chainId'), displayText(data?.chain_id, t))}
-      {renderPair(t('fields.networkId'), displayText(data?.network_id, t))}
-      {renderPair(t('fields.blockNumber'), displayNumber(locale, data?.block_number, t))}
+      {renderPair(t('fields.client'), displayText(data?.client_version, t), t('help.fields.client', ''))}
+      {renderPair(t('fields.chainId'), displayText(data?.chain_id, t), t('help.fields.chainId', ''))}
+      {renderPair(t('fields.networkId'), displayText(data?.network_id, t), t('help.fields.networkId', ''))}
+      {renderPair(t('fields.blockNumber'), displayNumber(locale, data?.block_number, t), t('help.fields.blockNumber', ''))}
       {renderPair(
         t('fields.syncing'),
         data?.syncing === false
@@ -120,8 +128,9 @@ function renderEthwDetails(
           : data?.syncing == null
             ? t('common.notYetAvailable')
             : JSON.stringify(data.syncing),
+        t('help.fields.syncing', ''),
       )}
-      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
+      {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t), t('help.fields.consensus', ''))}
     </>
   )
 }

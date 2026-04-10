@@ -41,6 +41,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
         <MetricCard
           label={t('metrics.updatedAt')}
           value={data ? formatDate(locale, data.generated_at_ms) : t('common.notYetAvailable')}
+          helpText={t('help.metrics.updatedAt', '')}
         />
         <MetricCard
           label={t('metrics.btcNetwork')}
@@ -52,14 +53,17 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               t,
             )
           }
+          helpText={t('help.metrics.btcNetwork', '')}
         />
         <MetricCard
           label={t('metrics.btcHeight')}
           value={displayNumber(locale, data?.services.btc_node.data?.blocks, t)}
+          helpText={t('help.metrics.btcHeight', '')}
         />
         <MetricCard
           label={t('metrics.ethwHeight')}
           value={displayNumber(locale, data?.services.ethw.data?.block_number, t)}
+          helpText={t('help.metrics.ethwHeight', '')}
         />
       </section>
 
@@ -85,15 +89,18 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               {
                 label: t('fields.chain'),
                 value: displayText(data?.services.btc_node.data?.chain, t),
+                helpText: t('help.fields.chain', ''),
               },
               {
                 label: t('fields.blocks'),
                 value: displayNumber(locale, data?.services.btc_node.data?.blocks, t),
+                helpText: t('help.fields.blocks', ''),
               },
               {
                 label: t('fields.bestBlockHash'),
                 value: displayText(data?.services.btc_node.data?.best_block_hash, t),
                 monospace: true,
+                helpText: t('help.fields.bestBlockHash', ''),
               },
               {
                 label: t('fields.blockTime'),
@@ -102,10 +109,12 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                   data?.services.btc_node.data?.best_block_time,
                   t,
                 ),
+                helpText: t('help.fields.blockTime', ''),
               },
               {
                 label: t('fields.verifyProgress'),
                 value: displayPercent(data?.services.btc_node.data?.verification_progress, t),
+                helpText: t('help.fields.verifyProgress', ''),
               },
             ]}
           />
@@ -117,20 +126,24 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               {
                 label: t('fields.stableHeight'),
                 value: displayNumber(locale, data?.services.balance_history.data?.stable_height, t),
+                helpText: t('help.fields.stableHeight', ''),
               },
               {
                 label: t('fields.phase'),
                 value: displayText(data?.services.balance_history.data?.phase, t),
+                helpText: t('help.fields.phase', ''),
               },
               {
                 label: t('fields.stableBlockHash'),
                 value: displayText(data?.services.balance_history.data?.stable_block_hash, t),
                 monospace: true,
+                helpText: t('help.fields.stableBlockHash', ''),
               },
               {
                 label: t('fields.latestBlockCommit'),
                 value: displayText(data?.services.balance_history.data?.latest_block_commit, t),
                 monospace: true,
+                helpText: t('help.fields.latestBlockCommit', ''),
               },
               {
                 label: t('fields.snapshotVerify'),
@@ -138,6 +151,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                   data?.services.balance_history.data?.snapshot_verification_state,
                   t,
                 ),
+                helpText: t('help.fields.snapshotVerify', ''),
               },
             ]}
           />
@@ -149,6 +163,7 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               {
                 label: t('fields.syncedHeight'),
                 value: displayNumber(locale, data?.services.usdb_indexer.data?.synced_block_height, t),
+                helpText: t('help.fields.syncedHeight', ''),
               },
               {
                 label: t('fields.stableHeight'),
@@ -157,21 +172,25 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                   data?.services.usdb_indexer.data?.balance_history_stable_height,
                   t,
                 ),
+                helpText: t('help.fields.stableHeight', ''),
               },
               {
                 label: t('fields.upstreamSnapshot'),
                 value: displayText(data?.services.usdb_indexer.data?.upstream_snapshot_id, t),
                 monospace: true,
+                helpText: t('help.fields.upstreamSnapshot', ''),
               },
               {
                 label: t('fields.localStateCommit'),
                 value: displayText(data?.services.usdb_indexer.data?.local_state_commit, t),
                 monospace: true,
+                helpText: t('help.fields.localStateCommit', ''),
               },
               {
                 label: t('fields.systemState'),
                 value: displayText(data?.services.usdb_indexer.data?.system_state_id, t),
                 monospace: true,
+                helpText: t('help.fields.systemState', ''),
               },
             ]}
           />
@@ -183,18 +202,22 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               {
                 label: t('fields.chainId'),
                 value: displayText(data?.services.ethw.data?.chain_id, t),
+                helpText: t('help.fields.chainId', ''),
               },
               {
                 label: t('fields.networkId'),
                 value: displayText(data?.services.ethw.data?.network_id, t),
+                helpText: t('help.fields.networkId', ''),
               },
               {
                 label: t('fields.blockNumber'),
                 value: displayNumber(locale, data?.services.ethw.data?.block_number, t),
+                helpText: t('help.fields.blockNumber', ''),
               },
               {
                 label: t('fields.client'),
                 value: displayText(data?.services.ethw.data?.client_version, t),
+                helpText: t('help.fields.client', ''),
               },
             ]}
           />
