@@ -1,5 +1,7 @@
 use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
-use crate::models::{BalanceHistoryReadiness, BitcoinBlockchainInfo, UsdbIndexerReadiness};
+use crate::models::{
+    BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, UsdbIndexerReadiness,
+};
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -80,6 +82,15 @@ impl RpcClient {
         config: &ControlPlaneConfig,
     ) -> Result<BitcoinBlockchainInfo, String> {
         self.bitcoin_json_rpc_call(config, "getblockchaininfo", json!([]))
+            .await
+    }
+
+    pub async fn bitcoin_block_header(
+        &self,
+        config: &ControlPlaneConfig,
+        block_hash: &str,
+    ) -> Result<BitcoinBlockHeader, String> {
+        self.bitcoin_json_rpc_call(config, "getblockheader", json!([block_hash]))
             .await
     }
 

@@ -1,9 +1,10 @@
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceCard } from '../components/ServiceCard'
-import { formatNumber, serviceLabel, serviceTone } from '../lib/console'
-import { displayBoolean, displayList, displayNumber, displayShortText, displayText } from '../lib/format'
+import { serviceLabel, serviceTone } from '../lib/console'
+import { displayBoolean, displayDateTimeFromUnixSeconds, displayList, displayNumber, displayPercent, displayText } from '../lib/format'
 import type {
   BalanceHistorySummary,
+  BtcNodeSummary,
   EthwSummary,
   OverviewResponse,
   UsdbIndexerSummary,
@@ -17,12 +18,43 @@ interface ServicesPageProps {
 
 function renderPair(label: string, value: string) {
   return (
-    <div className="border-t border-[color:var(--cp-border)] pt-3">
-      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--cp-muted)]">
-        {label}
+    <div className="border-t border-[color:var(--cp-border)] pt-3 sm:flex sm:gap-2">
+      <span className="shrink-0 text-sm font-medium text-[color:var(--cp-muted)]">
+        {label}:
       </span>
-      <strong className="block break-all text-sm text-[color:var(--cp-text)]">{value}</strong>
+      <strong className="block break-all text-sm text-[color:var(--cp-text)]">
+        {value}
+      </strong>
     </div>
+  )
+}
+
+function renderBtcNodeDetails(
+  locale: string,
+  t: (key: string) => string,
+  data?: BtcNodeSummary | null,
+  latencyMs?: number | null,
+) {
+  return (
+    <>
+      {renderPair(t('fields.chain'), displayText(data?.chain, t))}
+      {renderPair(t('fields.blocks'), displayNumber(locale, data?.blocks, t))}
+      {renderPair(t('fields.headers'), displayNumber(locale, data?.headers, t))}
+      {renderPair(t('fields.bestBlockHash'), displayText(data?.best_block_hash, t))}
+      {renderPair(
+        t('fields.blockTime'),
+        displayDateTimeFromUnixSeconds(locale, data?.best_block_time, t),
+      )}
+      {renderPair(t('fields.ibd'), displayBoolean(data?.initial_block_download, t))}
+      {renderPair(
+        t('fields.verifyProgress'),
+        displayPercent(data?.verification_progress, t),
+      )}
+      {renderPair(
+        t('fields.latency'),
+        latencyMs == null ? t('common.notYetAvailable') : `${latencyMs} ms`,
+      )}
+    </>
   )
 }
 
@@ -37,7 +69,11 @@ function renderBalanceHistoryDetails(
       {renderPair(t('fields.stableHeight'), displayNumber(locale, data?.stable_height, t))}
       {renderPair(t('fields.phase'), displayText(data?.phase, t))}
       {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
+      {renderPair(t('fields.stableBlockHash'), displayText(data?.stable_block_hash, t))}
+      {renderPair(t('fields.latestBlockCommit'), displayText(data?.latest_block_commit, t))}
       {renderPair(t('fields.snapshotVerify'), displayText(data?.snapshot_verification_state, t))}
+      {renderPair(t('fields.snapshotSigningKey'), displayText(data?.snapshot_signing_key_id, t))}
+      {renderPair(t('fields.statusMessage'), displayText(data?.message, t))}
       {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
     </>
   )
@@ -57,7 +93,10 @@ function renderUsdbIndexerDetails(
         displayNumber(locale, data?.balance_history_stable_height, t),
       )}
       {renderPair(t('fields.consensus'), displayBoolean(data?.consensus_ready, t))}
-      {renderPair(t('fields.systemState'), displayShortText(data?.system_state_id, t))}
+      {renderPair(t('fields.upstreamSnapshot'), displayText(data?.upstream_snapshot_id, t))}
+      {renderPair(t('fields.localStateCommit'), displayText(data?.local_state_commit, t))}
+      {renderPair(t('fields.systemState'), displayText(data?.system_state_id, t))}
+      {renderPair(t('fields.statusMessage'), displayText(data?.message, t))}
       {renderPair(t('fields.blockers'), displayList(data?.blockers, t))}
     </>
   )
@@ -107,30 +146,11 @@ export function ServicesPage({ data, locale, t }: ServicesPageProps) {
           rpcUrl={data?.services.btc_node.rpc_url ?? '-'}
           error={data?.services.btc_node.error}
         >
-          {renderPair(t('fields.chain'), displayText(data?.services.btc_node.data?.chain, t))}
-          {renderPair(
-            t('fields.blocks'),
-            displayNumber(locale, data?.services.btc_node.data?.blocks, t),
-          )}
-          {renderPair(
-            t('fields.headers'),
-            displayNumber(locale, data?.services.btc_node.data?.headers, t),
-          )}
-          {renderPair(
-            t('fields.ibd'),
-            displayBoolean(data?.services.btc_node.data?.initial_block_download, t),
-          )}
-          {renderPair(
-            t('fields.verifyProgress'),
-            data?.services.btc_node.data?.verification_progress == null
-              ? t('common.notYetAvailable')
-              : `${(data.services.btc_node.data.verification_progress * 100).toFixed(2)}%`,
-          )}
-          {renderPair(
-            t('fields.latency'),
-            data?.services.btc_node.latency_ms
-              ? `${data.services.btc_node.latency_ms} ms`
-              : t('common.notYetAvailable'),
+          {renderBtcNodeDetails(
+            locale,
+            t,
+            data?.services.btc_node.data,
+            data?.services.btc_node.latency_ms,
           )}
         </ServiceCard>
 

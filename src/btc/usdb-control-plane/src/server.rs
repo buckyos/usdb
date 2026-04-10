@@ -189,6 +189,15 @@ async fn probe_btc_node(state: &AppState) -> ServiceProbe<BtcNodeServiceSummary>
         .rpc_client
         .bitcoin_blockchain_info(&state.config)
         .await;
+    let header = if let Ok(info) = &info {
+        state
+            .rpc_client
+            .bitcoin_block_header(&state.config, &info.best_block_hash)
+            .await
+            .ok()
+    } else {
+        None
+    };
     let latency_ms = started.elapsed().as_millis() as u64;
     let error = info.as_ref().err().cloned();
     let reachable = info.is_ok();
@@ -196,6 +205,8 @@ async fn probe_btc_node(state: &AppState) -> ServiceProbe<BtcNodeServiceSummary>
         chain: Some(item.chain),
         blocks: Some(item.blocks),
         headers: Some(item.headers),
+        best_block_hash: Some(item.best_block_hash),
+        best_block_time: header.map(|entry| entry.time),
         verification_progress: Some(item.verification_progress),
         initial_block_download: Some(item.initial_block_download),
     });

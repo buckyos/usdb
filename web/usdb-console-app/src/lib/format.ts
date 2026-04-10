@@ -65,3 +65,27 @@ export function displayShortText(
   }
   return shortText(value, options?.head, options?.tail)
 }
+
+export function displayDateTimeFromUnixSeconds(
+  locale: string,
+  value: number | null | undefined,
+  t: Translate,
+  emptyKey = 'common.notYetAvailable',
+) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return t(emptyKey)
+  }
+  return new Date(Number(value) * 1000).toLocaleString(locale, { hour12: false })
+}
+
+export function displayPercent(
+  value: number | null | undefined,
+  t: Translate,
+  digits = 2,
+  emptyKey = 'common.notYetAvailable',
+) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return t(emptyKey)
+  }
+  return `${(Number(value) * 100).toFixed(digits)}%`
+}

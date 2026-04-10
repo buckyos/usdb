@@ -94,6 +94,8 @@ pub struct BtcNodeServiceSummary {
     pub chain: Option<String>,
     pub blocks: Option<u64>,
     pub headers: Option<u64>,
+    pub best_block_hash: Option<String>,
+    pub best_block_time: Option<u64>,
     pub verification_progress: Option<f64>,
     pub initial_block_download: Option<bool>,
 }
@@ -153,8 +155,15 @@ pub struct BitcoinBlockchainInfo {
     pub chain: String,
     pub blocks: u64,
     pub headers: u64,
+    #[serde(rename = "bestblockhash")]
+    pub best_block_hash: String,
     #[serde(rename = "verificationprogress")]
     pub verification_progress: f64,
     #[serde(rename = "initialblockdownload")]
     pub initial_block_download: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BitcoinBlockHeader {
+    pub time: u64,
 }

@@ -25,6 +25,8 @@ export interface BtcNodeSummary {
   chain?: string | null
   blocks?: number | null
   headers?: number | null
+  best_block_hash?: string | null
+  best_block_time?: number | null
   verification_progress?: number | null
   initial_block_download?: boolean | null
 }
@@ -35,8 +37,14 @@ export interface BalanceHistorySummary {
   query_ready?: boolean | null
   consensus_ready?: boolean | null
   phase?: string | null
+  message?: string | null
+  current?: number | null
+  total?: number | null
   stable_height?: number | null
+  stable_block_hash?: string | null
+  latest_block_commit?: string | null
   snapshot_verification_state?: string | null
+  snapshot_signing_key_id?: string | null
   blockers?: string[]
 }
 
@@ -45,8 +53,13 @@ export interface UsdbIndexerSummary {
   rpc_alive?: boolean | null
   query_ready?: boolean | null
   consensus_ready?: boolean | null
+  message?: string | null
+  current?: number | null
+  total?: number | null
   synced_block_height?: number | null
   balance_history_stable_height?: number | null
+  upstream_snapshot_id?: string | null
+  local_state_commit?: string | null
   system_state_id?: string | null
   blockers?: string[]
 }
@@ -91,4 +104,3 @@ export interface OverviewResponse {
   bootstrap: BootstrapSummary
   explorers: ExplorerLinks
 }
-

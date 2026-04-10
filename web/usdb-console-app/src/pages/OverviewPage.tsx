@@ -2,8 +2,8 @@ import { BootstrapSteps } from '../components/BootstrapSteps'
 import { MetricCard } from '../components/MetricCard'
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceSummaryCard } from '../components/ServiceSummaryCard'
-import { artifactTone, completedBootstrapStepCount, consensusReadyServiceCount, formatDate, formatNumber, presentArtifactCount, reachableServiceCount, serviceLabel, serviceTone, type Tone } from '../lib/console'
-import { displayNumber, displayShortText, displayText } from '../lib/format'
+import { completedBootstrapStepCount, consensusReadyServiceCount, formatDate, presentArtifactCount, reachableServiceCount, serviceLabel, serviceTone, type Tone } from '../lib/console'
+import { displayDateTimeFromUnixSeconds, displayNumber, displayPercent, displayText } from '../lib/format'
 import type { OverviewResponse } from '../lib/types'
 
 interface OverviewPageProps {
@@ -81,37 +81,122 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             title="btc-node"
             status={data ? serviceLabel(data.services.btc_node, t) : '-'}
             tone={data ? serviceTone(data.services.btc_node) : 'neutral'}
-            summary={t('overview.btcSummary', undefined, {
-              blocks: displayNumber(locale, data?.services.btc_node.data?.blocks, t),
-              chain: displayText(data?.services.btc_node.data?.chain, t),
-            })}
+            items={[
+              {
+                label: t('fields.chain'),
+                value: displayText(data?.services.btc_node.data?.chain, t),
+              },
+              {
+                label: t('fields.blocks'),
+                value: displayNumber(locale, data?.services.btc_node.data?.blocks, t),
+              },
+              {
+                label: t('fields.bestBlockHash'),
+                value: displayText(data?.services.btc_node.data?.best_block_hash, t),
+                monospace: true,
+              },
+              {
+                label: t('fields.blockTime'),
+                value: displayDateTimeFromUnixSeconds(
+                  locale,
+                  data?.services.btc_node.data?.best_block_time,
+                  t,
+                ),
+              },
+              {
+                label: t('fields.verifyProgress'),
+                value: displayPercent(data?.services.btc_node.data?.verification_progress, t),
+              },
+            ]}
           />
           <ServiceSummaryCard
             title="balance-history"
             status={data ? serviceLabel(data.services.balance_history, t) : '-'}
             tone={data ? serviceTone(data.services.balance_history) : 'neutral'}
-            summary={t('overview.bhSummary', undefined, {
-              stableHeight: displayNumber(locale, data?.services.balance_history.data?.stable_height, t),
-              phase: displayText(data?.services.balance_history.data?.phase, t),
-            })}
+            items={[
+              {
+                label: t('fields.stableHeight'),
+                value: displayNumber(locale, data?.services.balance_history.data?.stable_height, t),
+              },
+              {
+                label: t('fields.phase'),
+                value: displayText(data?.services.balance_history.data?.phase, t),
+              },
+              {
+                label: t('fields.stableBlockHash'),
+                value: displayText(data?.services.balance_history.data?.stable_block_hash, t),
+                monospace: true,
+              },
+              {
+                label: t('fields.latestBlockCommit'),
+                value: displayText(data?.services.balance_history.data?.latest_block_commit, t),
+                monospace: true,
+              },
+              {
+                label: t('fields.snapshotVerify'),
+                value: displayText(
+                  data?.services.balance_history.data?.snapshot_verification_state,
+                  t,
+                ),
+              },
+            ]}
           />
           <ServiceSummaryCard
             title="usdb-indexer"
             status={data ? serviceLabel(data.services.usdb_indexer, t) : '-'}
             tone={data ? serviceTone(data.services.usdb_indexer) : 'neutral'}
-            summary={t('overview.indexerSummary', undefined, {
-              syncedHeight: displayNumber(locale, data?.services.usdb_indexer.data?.synced_block_height, t),
-              systemState: displayShortText(data?.services.usdb_indexer.data?.system_state_id, t),
-            })}
+            items={[
+              {
+                label: t('fields.syncedHeight'),
+                value: displayNumber(locale, data?.services.usdb_indexer.data?.synced_block_height, t),
+              },
+              {
+                label: t('fields.stableHeight'),
+                value: displayNumber(
+                  locale,
+                  data?.services.usdb_indexer.data?.balance_history_stable_height,
+                  t,
+                ),
+              },
+              {
+                label: t('fields.upstreamSnapshot'),
+                value: displayText(data?.services.usdb_indexer.data?.upstream_snapshot_id, t),
+                monospace: true,
+              },
+              {
+                label: t('fields.localStateCommit'),
+                value: displayText(data?.services.usdb_indexer.data?.local_state_commit, t),
+                monospace: true,
+              },
+              {
+                label: t('fields.systemState'),
+                value: displayText(data?.services.usdb_indexer.data?.system_state_id, t),
+                monospace: true,
+              },
+            ]}
           />
           <ServiceSummaryCard
             title="ETHW / Geth"
             status={data ? serviceLabel(data.services.ethw, t) : '-'}
             tone={data ? serviceTone(data.services.ethw) : 'neutral'}
-            summary={t('overview.ethwSummary', undefined, {
-              blockNumber: displayNumber(locale, data?.services.ethw.data?.block_number, t),
-              chainId: displayText(data?.services.ethw.data?.chain_id, t),
-            })}
+            items={[
+              {
+                label: t('fields.chainId'),
+                value: displayText(data?.services.ethw.data?.chain_id, t),
+              },
+              {
+                label: t('fields.networkId'),
+                value: displayText(data?.services.ethw.data?.network_id, t),
+              },
+              {
+                label: t('fields.blockNumber'),
+                value: displayNumber(locale, data?.services.ethw.data?.block_number, t),
+              },
+              {
+                label: t('fields.client'),
+                value: displayText(data?.services.ethw.data?.client_version, t),
+              },
+            ]}
           />
         </div>
       </section>
