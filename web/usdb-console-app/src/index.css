@@ -81,6 +81,21 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cp-accent) 22%, transparent);
 }
 
+.console-service-selector {
+  @apply block min-w-0 overflow-hidden rounded-[22px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-4 no-underline transition;
+}
+
+.console-service-selector:hover {
+  background: color-mix(in srgb, var(--cp-accent-soft) 35%, white);
+  border-color: color-mix(in srgb, var(--cp-accent) 24%, var(--cp-border));
+}
+
+.console-service-selector.active {
+  background: color-mix(in srgb, var(--cp-accent) 10%, white);
+  border-color: color-mix(in srgb, var(--cp-accent) 28%, var(--cp-border));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cp-accent) 22%, transparent);
+}
+
 .status-pill {
   @apply shell-pill min-h-7 px-3 text-[11px] font-bold uppercase tracking-[0.12em];
 }
@@ -106,6 +121,61 @@ body {
 
 .console-subtle-card {
   @apply shell-subtle-panel px-4 py-4;
+}
+
+.console-input,
+.console-select,
+.console-textarea {
+  @apply w-full rounded-2xl border border-[color:var(--cp-border)] bg-white px-4 py-3 text-sm text-[color:var(--cp-text)] shadow-sm outline-none transition;
+}
+
+.console-input:focus,
+.console-select:focus,
+.console-textarea:focus {
+  border-color: color-mix(in srgb, var(--cp-accent) 60%, var(--cp-border));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--cp-accent-soft) 35%, transparent);
+}
+
+.console-textarea {
+  @apply min-h-[140px] resize-y;
+}
+
+.console-action-button {
+  @apply inline-flex items-center justify-center rounded-full bg-[color:var(--cp-text)] px-5 py-2.5 text-sm font-semibold text-white transition;
+}
+
+.console-action-button:disabled {
+  opacity: 0.72;
+}
+
+.console-secondary-button {
+  @apply inline-flex items-center justify-center rounded-full border border-[color:var(--cp-border)] bg-white px-4 py-2 text-sm font-semibold text-[color:var(--cp-text)] transition;
+}
+
+.console-secondary-button:disabled {
+  opacity: 0.64;
+}
+
+.console-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.console-table th {
+  text-align: left;
+  color: var(--cp-muted);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--cp-border);
+}
+
+.console-table td {
+  padding: 12px 0;
+  vertical-align: top;
+  border-bottom: 1px solid color-mix(in srgb, var(--cp-border) 70%, transparent);
+  color: var(--cp-text);
 }
 
 .console-help-tooltip {
