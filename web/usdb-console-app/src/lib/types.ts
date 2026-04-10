@@ -104,3 +104,136 @@ export interface OverviewResponse {
   bootstrap: BootstrapSummary
   explorers: ExplorerLinks
 }
+
+export interface BalanceHistorySyncStatus {
+  phase: string
+  current: number
+  total: number
+  message?: string | null
+}
+
+export interface AddressBalanceRow {
+  block_height: number
+  balance: number
+  delta: number
+}
+
+export interface UsdbRpcInfo {
+  service: string
+  api_version: string
+  network: string
+  features: string[]
+}
+
+export interface UsdbIndexerSyncStatus {
+  genesis_block_height: number
+  synced_block_height?: number | null
+  balance_history_stable_height?: number | null
+  current: number
+  total: number
+  message?: string | null
+}
+
+export interface PassStatsAtHeight {
+  resolved_height: number
+  total_count: number
+  active_count: number
+  dormant_count: number
+  consumed_count: number
+  burned_count: number
+  invalid_count: number
+}
+
+export interface RpcActiveBalanceSnapshot {
+  block_height: number
+  total_balance: number
+  active_address_count: number
+}
+
+export interface PassBlockCommitInfo {
+  block_height: number
+  balance_history_block_height: number
+  balance_history_block_commit: string
+  mutation_root: string
+  block_commit: string
+  commit_protocol_version: string
+  commit_hash_algo: string
+}
+
+export interface PassSnapshot {
+  inscription_id: string
+  inscription_number: number
+  mint_txid: string
+  mint_block_height: number
+  mint_owner: string
+  eth_main: string
+  eth_collab?: string | null
+  prev: string[]
+  invalid_code?: string | null
+  invalid_reason?: string | null
+  owner: string
+  state: string
+  satpoint: string
+  last_event_id: number
+  last_event_type: string
+  resolved_height: number
+}
+
+export interface PassHistoryEvent {
+  event_id: number
+  inscription_id: string
+  block_height: number
+  event_type: string
+  state: string
+  owner: string
+  satpoint: string
+}
+
+export interface PassHistoryPage {
+  resolved_height: number
+  total: number
+  items: PassHistoryEvent[]
+}
+
+export interface PassEnergySnapshot {
+  inscription_id: string
+  query_block_height: number
+  record_block_height: number
+  state: string
+  active_block_height: number
+  owner_address: string
+  owner_balance: number
+  owner_delta: number
+  energy: number
+}
+
+export interface PassEnergyRangeItem {
+  inscription_id: string
+  record_block_height: number
+  state: string
+  active_block_height: number
+  owner_address: string
+  owner_balance: number
+  owner_delta: number
+  energy: number
+}
+
+export interface PassEnergyRangePage {
+  resolved_height: number
+  total: number
+  items: PassEnergyRangeItem[]
+}
+
+export interface PassEnergyLeaderboardItem {
+  inscription_id: string
+  owner: string
+  record_block_height: number
+  state: string
+  energy: number
+}
+
+export interface PassEnergyLeaderboardPage {
+  resolved_height: number
+  total: number
+  items: PassEnergyLeaderboardItem[]
+}

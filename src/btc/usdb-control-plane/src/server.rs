@@ -1,15 +1,15 @@
 use crate::config::ControlPlaneConfig;
 use crate::models::{
-    ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary, BootstrapSummary,
-    BtcNodeServiceSummary, EthwServiceSummary, ExplorerLinks, OverviewResponse, ServiceProbe,
-    ServicesSummary, UsdbIndexerServiceSummary,
+    ApiError, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
+    BootstrapSummary, BtcNodeServiceSummary, EthwServiceSummary, ExplorerLinks, OverviewResponse,
+    ServiceProbe, ServiceRpcRequest, ServicesSummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, get_service};
+use axum::routing::{get, get_service, post};
 use axum::{Router, serve};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -24,6 +24,33 @@ pub struct AppState {
     pub config: Arc<ControlPlaneConfig>,
     pub rpc_client: RpcClient,
 }
+
+const BALANCE_HISTORY_PROXY_METHODS: &[&str] = &[
+    "get_network_type",
+    "get_block_height",
+    "get_sync_status",
+    "get_readiness",
+    "get_address_balance",
+    "get_addresses_balances",
+    "get_address_balance_delta",
+    "get_addresses_balances_delta",
+];
+
+const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
+    "get_rpc_info",
+    "get_sync_status",
+    "get_readiness",
+    "get_pass_block_commit",
+    "get_pass_snapshot",
+    "get_active_passes_at_height",
+    "get_pass_stats_at_height",
+    "get_pass_history",
+    "get_pass_energy",
+    "get_pass_energy_range",
+    "get_pass_energy_leaderboard",
+    "get_active_balance_snapshot",
+    "get_latest_active_balance_snapshot",
+];
 
 pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
     let console_root = config.resolve_runtime_path(&config.web.console_root)?;
@@ -55,6 +82,14 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         .route("/api/system/overview", get(get_overview))
         .route("/api/system/services", get(get_services))
         .route("/api/system/bootstrap", get(get_bootstrap))
+        .route(
+            "/api/services/balance-history/rpc",
+            post(post_balance_history_rpc),
+        )
+        .route(
+            "/api/services/usdb-indexer/rpc",
+            post(post_usdb_indexer_rpc),
+        )
         .nest_service(
             "/explorers/balance-history",
             get_service(ServeDir::new(bh_explorer_root).append_index_html_on_directories(true)),
@@ -113,6 +148,34 @@ async fn get_bootstrap(
     Ok(Json(build_bootstrap_summary(&state)))
 }
 
+async fn post_balance_history_rpc(
+    State(state): State<AppState>,
+    Json(request): Json<ServiceRpcRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    proxy_service_rpc(
+        &state,
+        &state.config.rpc.balance_history_url,
+        "balance-history",
+        request,
+        BALANCE_HISTORY_PROXY_METHODS,
+    )
+    .await
+}
+
+async fn post_usdb_indexer_rpc(
+    State(state): State<AppState>,
+    Json(request): Json<ServiceRpcRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    proxy_service_rpc(
+        &state,
+        &state.config.rpc.usdb_indexer_url,
+        "usdb-indexer",
+        request,
+        USDB_INDEXER_PROXY_METHODS,
+    )
+    .await
+}
+
 async fn build_overview(state: &AppState) -> OverviewResponse {
     OverviewResponse {
         service: USDB_CONTROL_PLANE_SERVICE_NAME.to_string(),
@@ -120,11 +183,61 @@ async fn build_overview(state: &AppState) -> OverviewResponse {
         services: build_services_summary(state).await,
         bootstrap: build_bootstrap_summary(state),
         explorers: ExplorerLinks {
-            control_console: "/".to_string(),
-            balance_history: "/explorers/balance-history/".to_string(),
-            usdb_indexer: "/explorers/usdb-indexer/".to_string(),
+            control_console: "/#/overview".to_string(),
+            balance_history: "/#/services/balance-history".to_string(),
+            usdb_indexer: "/#/services/usdb-indexer".to_string(),
         },
     }
+}
+
+async fn proxy_service_rpc(
+    state: &AppState,
+    rpc_url: &str,
+    service_name: &str,
+    request: ServiceRpcRequest,
+    allowed_methods: &[&str],
+) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    if !request.params.is_array() {
+        let msg = format!(
+            "Rejected {} proxy call for method {}: params must be a JSON array",
+            service_name, request.method
+        );
+        warn!("{}", msg);
+        return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg })));
+    }
+
+    if !allowed_methods.contains(&request.method.as_str()) {
+        let msg = format!(
+            "Rejected {} proxy call for disallowed method {}",
+            service_name, request.method
+        );
+        warn!("{}", msg);
+        return Err((StatusCode::FORBIDDEN, Json(ApiError { error: msg })));
+    }
+
+    let result = match service_name {
+        "balance-history" => {
+            state
+                .rpc_client
+                .balance_history_proxy(rpc_url, &request.method, request.params)
+                .await
+        }
+        "usdb-indexer" => {
+            state
+                .rpc_client
+                .usdb_indexer_proxy(rpc_url, &request.method, request.params)
+                .await
+        }
+        _ => Err(format!("Unsupported proxy service {}", service_name)),
+    };
+
+    result.map(Json).map_err(|error| {
+        warn!(
+            "Proxy request failed: service={}, method={}, error={}",
+            service_name, request.method, error
+        );
+        (StatusCode::BAD_GATEWAY, Json(ApiError { error }))
+    })
 }
 
 async fn build_services_summary(state: &AppState) -> ServicesSummary {

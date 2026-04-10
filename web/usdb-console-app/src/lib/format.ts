@@ -89,3 +89,42 @@ export function displayPercent(
   }
   return `${(Number(value) * 100).toFixed(digits)}%`
 }
+
+export function displayBalanceSmart(
+  locale: string,
+  valueSat: number | null | undefined,
+  t: Translate,
+  emptyKey = 'common.notYetAvailable',
+) {
+  if (valueSat === null || valueSat === undefined || Number.isNaN(Number(valueSat))) {
+    return t(emptyKey)
+  }
+
+  const sat = Number(valueSat)
+  const abs = Math.abs(sat)
+  if (abs >= 100_000_000) {
+    return `${(sat / 100_000_000).toFixed(8).replace(/\.?0+$/, '')} BTC`
+  }
+
+  return `${new Intl.NumberFormat(locale).format(sat)} sat`
+}
+
+export function displayBalanceDeltaSmart(
+  locale: string,
+  valueSat: number | null | undefined,
+  t: Translate,
+  emptyKey = 'common.notYetAvailable',
+) {
+  if (valueSat === null || valueSat === undefined || Number.isNaN(Number(valueSat))) {
+    return t(emptyKey)
+  }
+
+  const sat = Number(valueSat)
+  const sign = sat >= 0 ? '+' : '-'
+  const abs = Math.abs(sat)
+  if (abs >= 100_000_000) {
+    return `${sign}${(abs / 100_000_000).toFixed(8).replace(/\.?0+$/, '')} BTC`
+  }
+
+  return `${sign}${new Intl.NumberFormat(locale).format(abs)} sat`
+}

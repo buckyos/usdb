@@ -2,6 +2,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ApiError {
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceRpcRequest {
+    pub method: String,
+    pub params: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OverviewResponse {
     pub service: String,
     pub generated_at_ms: u64,

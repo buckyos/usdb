@@ -34,7 +34,11 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="/overview" element={<OverviewPage data={data} locale={locale} t={t} />} />
-        <Route path="/services" element={<ServicesPage data={data} locale={locale} t={t} />} />
+        <Route path="/services" element={<Navigate to="/services/btc-node" replace />} />
+        <Route
+          path="/services/:serviceId"
+          element={<ServicesPage data={data} locale={locale} t={t} />}
+        />
         <Route path="/bootstrap" element={<BootstrapPage data={data} t={t} />} />
         <Route
           path="/protocol"

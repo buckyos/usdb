@@ -56,6 +56,24 @@ impl RpcClient {
         self.json_rpc_call(url, "get_readiness", json!([])).await
     }
 
+    pub async fn balance_history_proxy(
+        &self,
+        url: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.json_rpc_call(url, method, params).await
+    }
+
+    pub async fn usdb_indexer_proxy(
+        &self,
+        url: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        self.json_rpc_call(url, method, params).await
+    }
+
     pub async fn ethw_client_version(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "web3_clientVersion", json!([]))
             .await
