@@ -16,6 +16,7 @@ interface BalanceHistoryExplorerPageProps {
 }
 
 type QueryMode = 'latest' | 'height' | 'range'
+type QueryTarget = 'single' | 'batch'
 
 function buildSelector(
   mode: QueryMode,
@@ -94,24 +95,22 @@ export function BalanceHistoryExplorerPage({
   const summary = data?.services.balance_history.data as BalanceHistorySummary | undefined
   const [syncStatus, setSyncStatus] = useState<BalanceHistorySyncStatus | null>(null)
   const [syncError, setSyncError] = useState<string | null>(null)
+  const [queryTarget, setQueryTarget] = useState<QueryTarget>('single')
 
   const [singleScriptHash, setSingleScriptHash] = useState('')
-  const [singleMode, setSingleMode] = useState<QueryMode>('latest')
-  const [singleHeight, setSingleHeight] = useState('')
-  const [singleRangeStart, setSingleRangeStart] = useState('')
-  const [singleRangeEnd, setSingleRangeEnd] = useState('')
   const [singleRows, setSingleRows] = useState<AddressBalanceRow[]>([])
   const [singleError, setSingleError] = useState<string | null>(null)
   const [singleLoading, setSingleLoading] = useState(false)
 
   const [batchScriptHashes, setBatchScriptHashes] = useState('')
-  const [batchMode, setBatchMode] = useState<QueryMode>('latest')
-  const [batchHeight, setBatchHeight] = useState('')
-  const [batchRangeStart, setBatchRangeStart] = useState('')
-  const [batchRangeEnd, setBatchRangeEnd] = useState('')
   const [batchRows, setBatchRows] = useState<AddressBalanceRow[][]>([])
   const [batchError, setBatchError] = useState<string | null>(null)
   const [batchLoading, setBatchLoading] = useState(false)
+
+  const [queryMode, setQueryMode] = useState<QueryMode>('latest')
+  const [queryHeight, setQueryHeight] = useState('')
+  const [queryRangeStart, setQueryRangeStart] = useState('')
+  const [queryRangeEnd, setQueryRangeEnd] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -155,7 +154,7 @@ export function BalanceHistoryExplorerPage({
         throw new Error('A script hash is required.')
       }
 
-      const selector = buildSelector(singleMode, singleHeight, singleRangeStart, singleRangeEnd)
+      const selector = buildSelector(queryMode, queryHeight, queryRangeStart, queryRangeEnd)
       const rows = await fetchBalanceHistorySingleBalance({
         script_hash: singleScriptHash.trim(),
         ...selector,
@@ -183,7 +182,7 @@ export function BalanceHistoryExplorerPage({
         throw new Error('At least one script hash is required.')
       }
 
-      const selector = buildSelector(batchMode, batchHeight, batchRangeStart, batchRangeEnd)
+      const selector = buildSelector(queryMode, queryHeight, queryRangeStart, queryRangeEnd)
       const rows = await fetchBalanceHistoryBatchBalances({
         script_hashes: scriptHashes,
         ...selector,
@@ -215,295 +214,290 @@ export function BalanceHistoryExplorerPage({
         </section>
       ) : null}
 
-      <section className="grid gap-4 lg:grid-cols-2">
-        <article className="console-card">
+      <article className="console-card">
+        <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+          {t('services.balanceHistory.runtimeTitle')}
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+          {t('services.balanceHistory.runtimeBody')}
+        </p>
+        <div className="mt-4">
+          <FieldValueList
+            items={[
+              {
+                label: t('fields.network'),
+                value: displayText(summary?.network, t),
+                helpText: t('help.fields.network'),
+              },
+              {
+                label: t('fields.stableHeight'),
+                value: displayNumber(locale, summary?.stable_height ?? null, t),
+                helpText: t('help.fields.stableHeight'),
+              },
+              {
+                label: t('fields.phase'),
+                value: displayText(syncStatus?.phase ?? summary?.phase, t),
+                helpText: t('help.fields.phase'),
+              },
+              {
+                label: t('fields.statusMessage'),
+                value: displayText(syncStatus?.message ?? summary?.message, t),
+                helpText: t('help.fields.statusMessage'),
+              },
+            ]}
+          />
+        </div>
+        {syncError ? (
+          <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{syncError}</p>
+        ) : null}
+      </article>
+
+      <article className="console-card">
+        <div className="mb-5">
           <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-            {t('services.balanceHistory.runtimeTitle')}
+            {t('services.balanceHistory.queryWorkspaceTitle')}
           </h3>
           <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {t('services.balanceHistory.runtimeBody')}
+            {t('services.balanceHistory.queryWorkspaceBody')}
           </p>
-          <div className="mt-4">
-            <FieldValueList
-              items={[
-                {
-                  label: t('fields.network'),
-                  value: displayText(summary?.network, t),
-                  helpText: t('help.fields.network'),
-                },
-                {
-                  label: t('fields.stableHeight'),
-                  value: displayNumber(locale, summary?.stable_height ?? null, t),
-                  helpText: t('help.fields.stableHeight'),
-                },
-                {
-                  label: t('fields.phase'),
-                  value: displayText(syncStatus?.phase ?? summary?.phase, t),
-                  helpText: t('help.fields.phase'),
-                },
-                {
-                  label: t('fields.statusMessage'),
-                  value: displayText(syncStatus?.message ?? summary?.message, t),
-                  helpText: t('help.fields.statusMessage'),
-                },
-              ]}
-            />
-          </div>
-          {syncError ? (
-            <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{syncError}</p>
-          ) : null}
-        </article>
+        </div>
 
-        <article className="console-card">
-          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-            {t('services.balanceHistory.queryModesTitle')}
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {t('services.balanceHistory.queryModesBody')}
-          </p>
-          <ul className="mt-4 grid gap-3 text-sm text-[color:var(--cp-muted)]">
-            <li>{t('services.balanceHistory.queryModeLatest')}</li>
-            <li>{t('services.balanceHistory.queryModeHeight')}</li>
-            <li>{t('services.balanceHistory.queryModeRange')}</li>
-          </ul>
-        </article>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-2">
-        <article className="console-card">
-          <div className="mb-4">
-            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('services.balanceHistory.singleTitle')}
-            </h3>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('services.balanceHistory.singleBody')}
-            </p>
-          </div>
-
-          <form className="grid gap-4" onSubmit={handleSingleQuery}>
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.balanceHistory.scriptHash')}</span>
-              <input
-                className="console-input"
-                value={singleScriptHash}
-                onChange={(event) => setSingleScriptHash(event.target.value)}
-                placeholder={t('services.balanceHistory.scriptHashPlaceholder')}
-              />
-            </label>
-
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.balanceHistory.queryMode')}</span>
-              <select
-                className="console-select"
-                value={singleMode}
-                onChange={(event) => setSingleMode(event.target.value as QueryMode)}
-              >
-                <option value="latest">{t('services.balanceHistory.mode.latest')}</option>
-                <option value="height">{t('services.balanceHistory.mode.height')}</option>
-                <option value="range">{t('services.balanceHistory.mode.range')}</option>
-              </select>
-            </label>
-
-            {singleMode === 'height' ? (
-              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                <span>{t('services.balanceHistory.height')}</span>
-                <input
-                  className="console-input"
-                  inputMode="numeric"
-                  value={singleHeight}
-                  onChange={(event) => setSingleHeight(event.target.value)}
-                />
-              </label>
-            ) : null}
-
-            {singleMode === 'range' ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                  <span>{t('services.balanceHistory.rangeStart')}</span>
-                  <input
-                    className="console-input"
-                    inputMode="numeric"
-                    value={singleRangeStart}
-                    onChange={(event) => setSingleRangeStart(event.target.value)}
-                  />
-                </label>
-                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                  <span>{t('services.balanceHistory.rangeEnd')}</span>
-                  <input
-                    className="console-input"
-                    inputMode="numeric"
-                    value={singleRangeEnd}
-                    onChange={(event) => setSingleRangeEnd(event.target.value)}
-                  />
-                </label>
+        <div className="grid gap-5 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+          <section className="grid gap-4">
+            <div className="console-subtle-card">
+              <p className="text-sm font-semibold text-[color:var(--cp-text)]">
+                {t('services.balanceHistory.queryTarget')}
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  className={
+                    queryTarget === 'single'
+                      ? 'console-action-button w-full'
+                      : 'console-secondary-button w-full'
+                  }
+                  onClick={() => setQueryTarget('single')}
+                >
+                  {t('services.balanceHistory.queryTargetSingle')}
+                </button>
+                <button
+                  type="button"
+                  className={
+                    queryTarget === 'batch'
+                      ? 'console-action-button w-full'
+                      : 'console-secondary-button w-full'
+                  }
+                  onClick={() => setQueryTarget('batch')}
+                >
+                  {t('services.balanceHistory.queryTargetBatch')}
+                </button>
               </div>
-            ) : null}
-
-            <div className="flex items-center gap-3">
-              <button type="submit" className="console-action-button" disabled={singleLoading}>
-                {singleLoading ? t('actions.reloading') : t('services.balanceHistory.runQuery')}
-              </button>
-              {singleError ? (
-                <span className="text-sm text-[color:var(--cp-danger)]">{singleError}</span>
-              ) : null}
             </div>
-          </form>
 
-          <div className="mt-5 grid gap-3">
-            {singleSummary ? (
+            <form
+              className="grid gap-4"
+              onSubmit={queryTarget === 'single' ? handleSingleQuery : handleBatchQuery}
+            >
+              {queryTarget === 'single' ? (
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.balanceHistory.scriptHash')}</span>
+                  <input
+                    className="console-input"
+                    value={singleScriptHash}
+                    onChange={(event) => setSingleScriptHash(event.target.value)}
+                    placeholder={t('services.balanceHistory.scriptHashPlaceholder')}
+                  />
+                </label>
+              ) : (
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.balanceHistory.scriptHashes')}</span>
+                  <textarea
+                    className="console-textarea"
+                    value={batchScriptHashes}
+                    onChange={(event) => setBatchScriptHashes(event.target.value)}
+                    placeholder={t('services.balanceHistory.scriptHashesPlaceholder')}
+                    rows={6}
+                  />
+                </label>
+              )}
+
+              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                <span>{t('services.balanceHistory.queryMode')}</span>
+                <select
+                  className="console-select"
+                  value={queryMode}
+                  onChange={(event) => setQueryMode(event.target.value as QueryMode)}
+                >
+                  <option value="latest">{t('services.balanceHistory.mode.latest')}</option>
+                  <option value="height">{t('services.balanceHistory.mode.height')}</option>
+                  <option value="range">{t('services.balanceHistory.mode.range')}</option>
+                </select>
+              </label>
+
+              {queryMode === 'height' ? (
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.balanceHistory.height')}</span>
+                  <input
+                    className="console-input"
+                    inputMode="numeric"
+                    value={queryHeight}
+                    onChange={(event) => setQueryHeight(event.target.value)}
+                  />
+                </label>
+              ) : null}
+
+              {queryMode === 'range' ? (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                    <span>{t('services.balanceHistory.rangeStart')}</span>
+                    <input
+                      className="console-input"
+                      inputMode="numeric"
+                      value={queryRangeStart}
+                      onChange={(event) => setQueryRangeStart(event.target.value)}
+                    />
+                  </label>
+                  <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                    <span>{t('services.balanceHistory.rangeEnd')}</span>
+                    <input
+                      className="console-input"
+                      inputMode="numeric"
+                      value={queryRangeEnd}
+                      onChange={(event) => setQueryRangeEnd(event.target.value)}
+                    />
+                  </label>
+                </div>
+              ) : null}
+
               <div className="console-subtle-card">
-                <p className="text-sm leading-6 text-[color:var(--cp-muted)]">
-                  {t('services.balanceHistory.singleSummary', undefined, {
-                    count: singleSummary.recordCount,
-                    latestHeight: singleSummary.latestHeight,
-                    latestBalance: singleSummary.latestBalance,
-                    netDelta: singleSummary.netDelta,
-                  })}
+                <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                  {t('services.balanceHistory.queryModesTitle')}
+                </h4>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('services.balanceHistory.queryModesBody')}
                 </p>
+                <ul className="mt-3 grid gap-3 text-sm text-[color:var(--cp-muted)]">
+                  <li>{t('services.balanceHistory.queryModeLatest')}</li>
+                  <li>{t('services.balanceHistory.queryModeHeight')}</li>
+                  <li>{t('services.balanceHistory.queryModeRange')}</li>
+                </ul>
               </div>
-            ) : null}
 
-            <div className="overflow-x-auto">
-              <table className="console-table">
-                <thead>
-                  <tr>
-                    <th>{t('fields.blocks')}</th>
-                    <th>{t('services.balanceHistory.delta')}</th>
-                    <th>{t('services.balanceHistory.balance')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {singleRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={3}>{t('services.balanceHistory.noRows')}</td>
-                    </tr>
-                  ) : (
-                    singleRows.map((row) => (
-                      <tr key={`${row.block_height}:${row.delta}:${row.balance}`}>
-                        <td>{displayNumber(locale, row.block_height, t)}</td>
-                        <td>{displayNumber(locale, row.delta, t)}</td>
-                        <td>{displayNumber(locale, row.balance, t)}</td>
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="submit"
+                  className="console-action-button"
+                  disabled={queryTarget === 'single' ? singleLoading : batchLoading}
+                >
+                  {queryTarget === 'single'
+                    ? singleLoading
+                      ? t('actions.reloading')
+                      : t('services.balanceHistory.runQuery')
+                    : batchLoading
+                      ? t('actions.reloading')
+                      : t('services.balanceHistory.runBatchQuery')}
+                </button>
+                {queryTarget === 'single' && singleError ? (
+                  <span className="text-sm text-[color:var(--cp-danger)]">{singleError}</span>
+                ) : null}
+                {queryTarget === 'batch' && batchError ? (
+                  <span className="text-sm text-[color:var(--cp-danger)]">{batchError}</span>
+                ) : null}
+              </div>
+            </form>
+          </section>
+
+          <section className="grid min-w-0 gap-4">
+            <div>
+              <h4 className="text-base font-semibold text-[color:var(--cp-text)]">
+                {queryTarget === 'single'
+                  ? t('services.balanceHistory.singleTitle')
+                  : t('services.balanceHistory.batchTitle')}
+              </h4>
+              <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                {queryTarget === 'single'
+                  ? t('services.balanceHistory.singleBody')
+                  : t('services.balanceHistory.batchBody')}
+              </p>
+            </div>
+
+            {queryTarget === 'single' ? (
+              <div className="grid gap-3">
+                {singleSummary ? (
+                  <div className="console-subtle-card">
+                    <p className="text-sm leading-6 text-[color:var(--cp-muted)]">
+                      {t('services.balanceHistory.singleSummary', undefined, {
+                        count: singleSummary.recordCount,
+                        latestHeight: singleSummary.latestHeight,
+                        latestBalance: singleSummary.latestBalance,
+                        netDelta: singleSummary.netDelta,
+                      })}
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="overflow-x-auto">
+                  <table className="console-table">
+                    <thead>
+                      <tr>
+                        <th>{t('fields.blocks')}</th>
+                        <th>{t('services.balanceHistory.delta')}</th>
+                        <th>{t('services.balanceHistory.balance')}</th>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </article>
-
-        <article className="console-card">
-          <div className="mb-4">
-            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('services.balanceHistory.batchTitle')}
-            </h3>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('services.balanceHistory.batchBody')}
-            </p>
-          </div>
-
-          <form className="grid gap-4" onSubmit={handleBatchQuery}>
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.balanceHistory.scriptHashes')}</span>
-              <textarea
-                className="console-textarea"
-                value={batchScriptHashes}
-                onChange={(event) => setBatchScriptHashes(event.target.value)}
-                placeholder={t('services.balanceHistory.scriptHashesPlaceholder')}
-                rows={5}
-              />
-            </label>
-
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.balanceHistory.queryMode')}</span>
-              <select
-                className="console-select"
-                value={batchMode}
-                onChange={(event) => setBatchMode(event.target.value as QueryMode)}
-              >
-                <option value="latest">{t('services.balanceHistory.mode.latest')}</option>
-                <option value="height">{t('services.balanceHistory.mode.height')}</option>
-                <option value="range">{t('services.balanceHistory.mode.range')}</option>
-              </select>
-            </label>
-
-            {batchMode === 'height' ? (
-              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                <span>{t('services.balanceHistory.height')}</span>
-                <input
-                  className="console-input"
-                  inputMode="numeric"
-                  value={batchHeight}
-                  onChange={(event) => setBatchHeight(event.target.value)}
-                />
-              </label>
-            ) : null}
-
-            {batchMode === 'range' ? (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                  <span>{t('services.balanceHistory.rangeStart')}</span>
-                  <input
-                    className="console-input"
-                    inputMode="numeric"
-                    value={batchRangeStart}
-                    onChange={(event) => setBatchRangeStart(event.target.value)}
-                  />
-                </label>
-                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                  <span>{t('services.balanceHistory.rangeEnd')}</span>
-                  <input
-                    className="console-input"
-                    inputMode="numeric"
-                    value={batchRangeEnd}
-                    onChange={(event) => setBatchRangeEnd(event.target.value)}
-                  />
-                </label>
+                    </thead>
+                    <tbody>
+                      {singleRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={3}>{t('services.balanceHistory.noRows')}</td>
+                        </tr>
+                      ) : (
+                        singleRows.map((row) => (
+                          <tr key={`${row.block_height}:${row.delta}:${row.balance}`}>
+                            <td>{displayNumber(locale, row.block_height, t)}</td>
+                            <td>{displayNumber(locale, row.delta, t)}</td>
+                            <td>{displayNumber(locale, row.balance, t)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            ) : null}
-
-            <div className="flex items-center gap-3">
-              <button type="submit" className="console-action-button" disabled={batchLoading}>
-                {batchLoading ? t('actions.reloading') : t('services.balanceHistory.runBatchQuery')}
-              </button>
-              {batchError ? (
-                <span className="text-sm text-[color:var(--cp-danger)]">{batchError}</span>
-              ) : null}
-            </div>
-          </form>
-
-          <div className="mt-5 overflow-x-auto">
-            <table className="console-table">
-              <thead>
-                <tr>
-                  <th>{t('services.balanceHistory.scriptHash')}</th>
-                  <th>{t('services.balanceHistory.records')}</th>
-                  <th>{t('services.balanceHistory.latestHeight')}</th>
-                  <th>{t('services.balanceHistory.latestBalance')}</th>
-                  <th>{t('services.balanceHistory.netDelta')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {batchItems.length === 0 ? (
-                  <tr>
-                    <td colSpan={5}>{t('services.balanceHistory.noRows')}</td>
-                  </tr>
-                ) : (
-                  batchItems.map((item) => (
-                    <tr key={item.scriptHash}>
-                      <td className="break-all">{item.scriptHash}</td>
-                      <td>{displayNumber(locale, item.recordCount, t)}</td>
-                      <td>{displayNumber(locale, item.latestHeight, t)}</td>
-                      <td>{displayNumber(locale, item.latestBalance, t)}</td>
-                      <td>{displayNumber(locale, item.netDelta, t)}</td>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="console-table">
+                  <thead>
+                    <tr>
+                      <th>{t('services.balanceHistory.scriptHash')}</th>
+                      <th>{t('services.balanceHistory.records')}</th>
+                      <th>{t('services.balanceHistory.latestHeight')}</th>
+                      <th>{t('services.balanceHistory.latestBalance')}</th>
+                      <th>{t('services.balanceHistory.netDelta')}</th>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </section>
+                  </thead>
+                  <tbody>
+                    {batchItems.length === 0 ? (
+                      <tr>
+                        <td colSpan={5}>{t('services.balanceHistory.noRows')}</td>
+                      </tr>
+                    ) : (
+                      batchItems.map((item) => (
+                        <tr key={item.scriptHash}>
+                          <td className="break-all">{item.scriptHash}</td>
+                          <td>{displayNumber(locale, item.recordCount, t)}</td>
+                          <td>{displayNumber(locale, item.latestHeight, t)}</td>
+                          <td>{displayNumber(locale, item.latestBalance, t)}</td>
+                          <td>{displayNumber(locale, item.netDelta, t)}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      </article>
     </div>
   )
 }

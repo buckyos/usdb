@@ -41,6 +41,7 @@ interface UsdbIndexerExplorerPageProps {
 }
 
 type EnergyScope = 'active' | 'active_dormant' | 'all'
+type QueryTarget = 'pass' | 'energy'
 
 export function UsdbIndexerExplorerPage({
   data,
@@ -56,6 +57,7 @@ export function UsdbIndexerExplorerPage({
   const [activeBalanceSnapshot, setActiveBalanceSnapshot] =
     useState<RpcActiveBalanceSnapshot | null>(null)
   const [homeError, setHomeError] = useState<string | null>(null)
+  const [queryTarget, setQueryTarget] = useState<QueryTarget>('pass')
 
   const [passInscriptionId, setPassInscriptionId] = useState('')
   const [passAtHeight, setPassAtHeight] = useState('')
@@ -244,7 +246,10 @@ export function UsdbIndexerExplorerPage({
 
       const parsedHeight =
         energyBlockHeight.trim() === '' ? null : Number.parseInt(energyBlockHeight.trim(), 10)
-      if (energyBlockHeight.trim() !== '' && (!Number.isInteger(parsedHeight) || parsedHeight! < 0)) {
+      if (
+        energyBlockHeight.trim() !== '' &&
+        (!Number.isInteger(parsedHeight) || parsedHeight! < 0)
+      ) {
         throw new Error('Height must be a non-negative integer.')
       }
 
@@ -283,390 +288,508 @@ export function UsdbIndexerExplorerPage({
         </section>
       ) : null}
 
-      <section className="grid gap-4 xl:grid-cols-2">
-        <article className="console-card">
-          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-            {t('services.usdbIndexer.runtimeTitle')}
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {t('services.usdbIndexer.runtimeBody')}
-          </p>
-          <div className="mt-4">
-            <FieldValueList
-              items={[
-                {
-                  label: t('fields.network'),
-                  value: displayText(rpcInfo?.network ?? summary?.network, t),
-                  helpText: t('help.fields.network'),
-                },
-                {
-                  label: t('fields.syncedHeight'),
-                  value: displayNumber(
-                    locale,
-                    syncStatus?.synced_block_height ?? summary?.synced_block_height ?? null,
-                    t,
-                  ),
-                  helpText: t('help.fields.syncedHeight'),
-                },
-                {
-                  label: t('fields.stableHeight'),
-                  value: displayNumber(
-                    locale,
-                    syncStatus?.balance_history_stable_height ??
-                      summary?.balance_history_stable_height ??
-                      null,
-                    t,
-                  ),
-                  helpText: t('help.fields.stableHeight'),
-                },
-                {
-                  label: t('fields.statusMessage'),
-                  value: displayText(syncStatus?.message ?? summary?.message, t),
-                  helpText: t('help.fields.statusMessage'),
-                },
-              ]}
-            />
-          </div>
-          {homeError ? (
-            <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{homeError}</p>
-          ) : null}
-        </article>
+      <article className="console-card">
+        <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+          {t('services.usdbIndexer.runtimeTitle')}
+        </h3>
+        <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+          {t('services.usdbIndexer.runtimeBody')}
+        </p>
 
-        <article className="console-card">
-          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-            {t('services.usdbIndexer.passStatsTitle')}
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {t('services.usdbIndexer.passStatsBody')}
-          </p>
-          <div className="mt-4">
-            <FieldValueList
-              items={[
-                {
-                  label: t('services.usdbIndexer.activePasses'),
-                  value: displayNumber(locale, passStats?.active_count ?? null, t),
-                },
-                {
-                  label: t('services.usdbIndexer.totalPasses'),
-                  value: displayNumber(locale, passStats?.total_count ?? null, t),
-                },
-                {
-                  label: t('services.usdbIndexer.invalidPasses'),
-                  value: displayNumber(locale, passStats?.invalid_count ?? null, t),
-                },
-                {
-                  label: t('services.usdbIndexer.activeBalance'),
-                  value: displayBalanceSmart(locale, activeBalanceSnapshot?.total_balance ?? null, t),
-                },
-              ]}
-            />
-          </div>
-        </article>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-2">
-        <article className="console-card">
-          <div className="mb-4">
-            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('services.usdbIndexer.passTitle')}
-            </h3>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('services.usdbIndexer.passBody')}
-            </p>
-          </div>
-
-          <form className="grid gap-4" onSubmit={handlePassQuery}>
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.usdbIndexer.inscriptionId')}</span>
-              <input
-                className="console-input"
-                value={passInscriptionId}
-                onChange={(event) => setPassInscriptionId(event.target.value)}
-                placeholder={t('services.usdbIndexer.inscriptionPlaceholder')}
-              />
-            </label>
-
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>{t('services.usdbIndexer.atHeight')}</span>
-              <input
-                className="console-input"
-                inputMode="numeric"
-                value={passAtHeight}
-                onChange={(event) => setPassAtHeight(event.target.value)}
-                placeholder={t('services.usdbIndexer.atHeightPlaceholder')}
-              />
-            </label>
-
-            <div className="flex items-center gap-3">
-              <button type="submit" className="console-action-button" disabled={passLoading}>
-                {passLoading ? t('actions.reloading') : t('services.usdbIndexer.runPassQuery')}
-              </button>
-              {passError ? (
-                <span className="text-sm text-[color:var(--cp-danger)]">{passError}</span>
-              ) : null}
-            </div>
-          </form>
-
-          {passSnapshot ? (
-            <div className="mt-5 grid gap-4">
-              <div className="console-subtle-card">
+        <div className="mt-5 grid gap-4">
+          <div className="grid gap-4 xl:grid-cols-2">
+            <div className="console-subtle-card">
+              <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                {t('services.usdbIndexer.runtimeTitle')}
+              </h4>
+              <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                {t('services.usdbIndexer.runtimeSectionBody')}
+              </p>
+              <div className="mt-4">
                 <FieldValueList
                   items={[
                     {
-                      label: t('services.usdbIndexer.state'),
-                      value: displayText(passSnapshot.state, t),
+                      label: t('fields.network'),
+                      value: displayText(rpcInfo?.network ?? summary?.network, t),
+                      helpText: t('help.fields.network'),
                     },
                     {
-                      label: t('services.usdbIndexer.owner'),
-                      value: displayText(passSnapshot.owner, t),
+                      label: t('fields.syncedHeight'),
+                      value: displayNumber(
+                        locale,
+                        syncStatus?.synced_block_height ?? summary?.synced_block_height ?? null,
+                        t,
+                      ),
+                      helpText: t('help.fields.syncedHeight'),
                     },
                     {
-                      label: t('services.usdbIndexer.resolvedHeight'),
-                      value: displayNumber(locale, passSnapshot.resolved_height, t),
+                      label: t('fields.stableHeight'),
+                      value: displayNumber(
+                        locale,
+                        syncStatus?.balance_history_stable_height ??
+                          summary?.balance_history_stable_height ??
+                          null,
+                        t,
+                      ),
+                      helpText: t('help.fields.stableHeight'),
                     },
                     {
-                      label: t('services.usdbIndexer.ethMain'),
-                      value: displayText(passSnapshot.eth_main, t),
+                      label: t('fields.statusMessage'),
+                      value: displayText(syncStatus?.message ?? summary?.message, t),
+                      helpText: t('help.fields.statusMessage'),
                     },
                   ]}
                 />
               </div>
+            </div>
 
-              {passCommit ? (
-                <div className="console-subtle-card">
-                  <FieldValueList
-                    items={[
-                      {
-                        label: t('services.usdbIndexer.commitHeight'),
-                        value: displayNumber(locale, passCommit.block_height, t),
-                      },
-                      {
-                        label: t('services.usdbIndexer.mutationRoot'),
-                        value: displayText(passCommit.mutation_root, t),
-                      },
-                      {
-                        label: t('fields.latestBlockCommit'),
-                        value: displayText(passCommit.block_commit, t),
-                      },
-                    ]}
-                  />
-                </div>
-              ) : null}
-
-              <div className="overflow-x-auto">
-                <table className="console-table">
-                  <thead>
-                    <tr>
-                      <th>{t('services.usdbIndexer.eventHeight')}</th>
-                      <th>{t('services.usdbIndexer.eventType')}</th>
-                      <th>{t('services.usdbIndexer.state')}</th>
-                      <th>{t('services.usdbIndexer.owner')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {!passHistory || passHistory.items.length === 0 ? (
-                      <tr>
-                        <td colSpan={4}>{t('services.usdbIndexer.noHistory')}</td>
-                      </tr>
-                    ) : (
-                      passHistory.items.map((event) => (
-                        <tr key={`${event.event_id}:${event.block_height}`}>
-                          <td>{displayNumber(locale, event.block_height, t)}</td>
-                          <td>{event.event_type}</td>
-                          <td>{event.state}</td>
-                          <td className="break-all">{event.owner}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  className="console-secondary-button"
-                  disabled={passHistoryPage === 0}
-                  onClick={() => setPassHistoryPage((current) => Math.max(0, current - 1))}
-                >
-                  {t('actions.previousPage')}
-                </button>
-                <span className="text-sm text-[color:var(--cp-muted)]">
-                  {t('services.usdbIndexer.pageIndicator', undefined, {
-                    current: passHistoryPage + 1,
-                    total: passTotalPages,
-                  })}
-                </span>
-                <button
-                  type="button"
-                  className="console-secondary-button"
-                  disabled={passHistoryPage + 1 >= passTotalPages}
-                  onClick={() => setPassHistoryPage((current) => current + 1)}
-                >
-                  {t('actions.nextPage')}
-                </button>
+            <div className="console-subtle-card">
+              <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                {t('services.usdbIndexer.passStatsTitle')}
+              </h4>
+              <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                {t('services.usdbIndexer.passStatsBody')}
+              </p>
+              <div className="mt-4">
+                <FieldValueList
+                  items={[
+                    {
+                      label: t('services.usdbIndexer.activePasses'),
+                      value: displayNumber(locale, passStats?.active_count ?? null, t),
+                    },
+                    {
+                      label: t('services.usdbIndexer.totalPasses'),
+                      value: displayNumber(locale, passStats?.total_count ?? null, t),
+                    },
+                    {
+                      label: t('services.usdbIndexer.invalidPasses'),
+                      value: displayNumber(locale, passStats?.invalid_count ?? null, t),
+                    },
+                    {
+                      label: t('services.usdbIndexer.activeAddresses'),
+                      value: displayNumber(
+                        locale,
+                        activeBalanceSnapshot?.active_address_count ?? null,
+                        t,
+                      ),
+                    },
+                    {
+                      label: t('services.usdbIndexer.activeBalance'),
+                      value: displayBalanceSmart(
+                        locale,
+                        activeBalanceSnapshot?.total_balance ?? null,
+                        t,
+                      ),
+                    },
+                  ]}
+                />
               </div>
             </div>
-          ) : null}
-        </article>
-
-        <article className="console-card">
-          <div className="mb-4">
-            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('services.usdbIndexer.energyTitle')}
-            </h3>
-            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('services.usdbIndexer.energyBody')}
-            </p>
           </div>
 
-          <div className="grid gap-4">
-            <div className="console-subtle-card">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
-                    {t('services.usdbIndexer.leaderboardTitle')}
-                  </h4>
-                  <p className="mt-1 text-sm text-[color:var(--cp-muted)]">
-                    {t('services.usdbIndexer.leaderboardBody')}
-                  </p>
-                </div>
-
-                <select
-                  className="console-select"
-                  value={leaderboardScope}
-                  onChange={(event) => {
-                    setLeaderboardScope(event.target.value as EnergyScope)
-                    setLeaderboardPage(0)
-                  }}
-                >
-                  <option value="active">{t('services.usdbIndexer.scope.active')}</option>
-                  <option value="active_dormant">{t('services.usdbIndexer.scope.activeDormant')}</option>
-                  <option value="all">{t('services.usdbIndexer.scope.all')}</option>
-                </select>
-              </div>
-
-              {leaderboardError ? (
-                <p className="mt-3 text-sm text-[color:var(--cp-danger)]">{leaderboardError}</p>
-              ) : null}
-
-              <div className="mt-4 overflow-x-auto">
-                <table className="console-table">
-                  <thead>
-                    <tr>
-                      <th>{t('services.usdbIndexer.rank')}</th>
-                      <th>{t('services.usdbIndexer.energy')}</th>
-                      <th>{t('services.usdbIndexer.inscriptionId')}</th>
-                      <th>{t('services.usdbIndexer.state')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {!leaderboard || leaderboard.items.length === 0 ? (
-                      <tr>
-                        <td colSpan={4}>{t('services.usdbIndexer.noRows')}</td>
-                      </tr>
-                    ) : (
-                      leaderboard.items.map((item, index) => (
-                        <tr
-                          key={`${item.inscription_id}:${item.record_block_height}`}
-                          className="cursor-pointer"
-                          onClick={() => {
-                            setEnergyInscriptionId(item.inscription_id)
-                          }}
-                        >
-                          <td>{displayNumber(locale, leaderboardPage * 25 + index + 1, t)}</td>
-                          <td>{displayNumber(locale, item.energy, t)}</td>
-                          <td className="break-all">{item.inscription_id}</td>
-                          <td>{item.state}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  className="console-secondary-button"
-                  disabled={leaderboardPage === 0}
-                  onClick={() => setLeaderboardPage((current) => Math.max(0, current - 1))}
-                >
-                  {t('actions.previousPage')}
-                </button>
-                <span className="text-sm text-[color:var(--cp-muted)]">
-                  {t('services.usdbIndexer.pageIndicator', undefined, {
-                    current: leaderboardPage + 1,
-                    total: leaderboardTotalPages,
-                  })}
-                </span>
-                <button
-                  type="button"
-                  className="console-secondary-button"
-                  disabled={leaderboardPage + 1 >= leaderboardTotalPages}
-                  onClick={() => setLeaderboardPage((current) => current + 1)}
-                >
-                  {t('actions.nextPage')}
-                </button>
-              </div>
+          <div className="console-subtle-card">
+            <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+              {t('services.usdbIndexer.consistencyTitle')}
+            </h4>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+              {t('services.usdbIndexer.consistencyBody')}
+            </p>
+            <div className="mt-4">
+              <FieldValueList
+                items={[
+                  {
+                    label: t('fields.upstreamSnapshot'),
+                    value: displayText(summary?.upstream_snapshot_id, t),
+                    helpText: t('help.fields.upstreamSnapshot'),
+                  },
+                  {
+                    label: t('fields.localStateCommit'),
+                    value: displayText(summary?.local_state_commit, t),
+                    helpText: t('help.fields.localStateCommit'),
+                  },
+                  {
+                    label: t('fields.systemState'),
+                    value: displayText(summary?.system_state_id, t),
+                    helpText: t('help.fields.systemState'),
+                  },
+                ]}
+              />
             </div>
+          </div>
+        </div>
 
+        {homeError ? (
+          <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{homeError}</p>
+        ) : null}
+      </article>
+
+      <article className="console-card">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+              {t('services.usdbIndexer.leaderboardTitle')}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+              {t('services.usdbIndexer.leaderboardBody')}
+            </p>
+          </div>
+          <select
+            className="console-select min-w-[180px]"
+            value={leaderboardScope}
+            onChange={(event) => {
+              setLeaderboardScope(event.target.value as EnergyScope)
+              setLeaderboardPage(0)
+            }}
+          >
+            <option value="active">{t('services.usdbIndexer.scope.active')}</option>
+            <option value="active_dormant">{t('services.usdbIndexer.scope.activeDormant')}</option>
+            <option value="all">{t('services.usdbIndexer.scope.all')}</option>
+          </select>
+        </div>
+
+        {leaderboardError ? (
+          <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{leaderboardError}</p>
+        ) : null}
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="console-table">
+            <thead>
+              <tr>
+                <th>{t('services.usdbIndexer.rank')}</th>
+                <th>{t('services.usdbIndexer.energy')}</th>
+                <th>{t('services.usdbIndexer.inscriptionId')}</th>
+                <th>{t('services.usdbIndexer.state')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!leaderboard || leaderboard.items.length === 0 ? (
+                <tr>
+                  <td colSpan={4}>{t('services.usdbIndexer.noRows')}</td>
+                </tr>
+              ) : (
+                leaderboard.items.map((item, index) => (
+                  <tr
+                    key={`${item.inscription_id}:${item.record_block_height}`}
+                    className="cursor-pointer"
+                    onClick={() => {
+                      setEnergyInscriptionId(item.inscription_id)
+                      setQueryTarget('energy')
+                    }}
+                  >
+                    <td>{displayNumber(locale, leaderboardPage * 25 + index + 1, t)}</td>
+                    <td>{displayNumber(locale, item.energy, t)}</td>
+                    <td className="break-all">{item.inscription_id}</td>
+                    <td>{item.state}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            className="console-secondary-button"
+            disabled={leaderboardPage === 0}
+            onClick={() => setLeaderboardPage((current) => Math.max(0, current - 1))}
+          >
+            {t('actions.previousPage')}
+          </button>
+          <span className="text-sm text-[color:var(--cp-muted)]">
+            {t('services.usdbIndexer.pageIndicator', undefined, {
+              current: leaderboardPage + 1,
+              total: leaderboardTotalPages,
+            })}
+          </span>
+          <button
+            type="button"
+            className="console-secondary-button"
+            disabled={leaderboardPage + 1 >= leaderboardTotalPages}
+            onClick={() => setLeaderboardPage((current) => current + 1)}
+          >
+            {t('actions.nextPage')}
+          </button>
+        </div>
+      </article>
+
+      <article className="console-card">
+        <div className="mb-5">
+          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+            {t('services.usdbIndexer.queryWorkspaceTitle')}
+          </h3>
+          <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+            {t('services.usdbIndexer.queryWorkspaceBody')}
+          </p>
+        </div>
+
+        <div className="grid gap-4">
+          <div className="console-subtle-card">
+            <p className="text-sm font-semibold text-[color:var(--cp-text)]">
+              {t('services.usdbIndexer.queryTarget')}
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                className={
+                  queryTarget === 'pass'
+                    ? 'console-action-button w-full'
+                    : 'console-secondary-button w-full'
+                }
+                onClick={() => setQueryTarget('pass')}
+              >
+                {t('services.usdbIndexer.queryTargetPass')}
+              </button>
+              <button
+                type="button"
+                className={
+                  queryTarget === 'energy'
+                    ? 'console-action-button w-full'
+                    : 'console-secondary-button w-full'
+                }
+                onClick={() => setQueryTarget('energy')}
+              >
+                {t('services.usdbIndexer.queryTargetEnergy')}
+              </button>
+            </div>
+          </div>
+
+          {queryTarget === 'pass' ? (
+            <form className="grid gap-4" onSubmit={handlePassQuery}>
+              <div className="console-subtle-card">
+                <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                  {t('services.usdbIndexer.passTitle')}
+                </h4>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('services.usdbIndexer.passBody')}
+                </p>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.usdbIndexer.inscriptionId')}</span>
+                  <input
+                    className="console-input"
+                    value={passInscriptionId}
+                    onChange={(event) => setPassInscriptionId(event.target.value)}
+                    placeholder={t('services.usdbIndexer.inscriptionPlaceholder')}
+                  />
+                </label>
+
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.usdbIndexer.atHeight')}</span>
+                  <input
+                    className="console-input"
+                    inputMode="numeric"
+                    value={passAtHeight}
+                    onChange={(event) => setPassAtHeight(event.target.value)}
+                    placeholder={t('services.usdbIndexer.atHeightPlaceholder')}
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button type="submit" className="console-action-button" disabled={passLoading}>
+                  {passLoading ? t('actions.reloading') : t('services.usdbIndexer.runPassQuery')}
+                </button>
+                {passError ? (
+                  <span className="text-sm text-[color:var(--cp-danger)]">{passError}</span>
+                ) : null}
+              </div>
+            </form>
+          ) : (
             <form className="grid gap-4" onSubmit={handleEnergyQuery}>
-              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                <span>{t('services.usdbIndexer.inscriptionId')}</span>
-                <input
-                  className="console-input"
-                  value={energyInscriptionId}
-                  onChange={(event) => setEnergyInscriptionId(event.target.value)}
-                  placeholder={t('services.usdbIndexer.inscriptionPlaceholder')}
-                />
-              </label>
+              <div className="console-subtle-card">
+                <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                  {t('services.usdbIndexer.energyTitle')}
+                </h4>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('services.usdbIndexer.energyBody')}
+                </p>
+              </div>
 
-              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                <span>{t('services.usdbIndexer.energyHeight')}</span>
-                <input
-                  className="console-input"
-                  inputMode="numeric"
-                  value={energyBlockHeight}
-                  onChange={(event) => setEnergyBlockHeight(event.target.value)}
-                  placeholder={t('services.usdbIndexer.atHeightPlaceholder')}
-                />
-              </label>
+              <div className="grid gap-4 xl:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.usdbIndexer.inscriptionId')}</span>
+                  <input
+                    className="console-input"
+                    value={energyInscriptionId}
+                    onChange={(event) => setEnergyInscriptionId(event.target.value)}
+                    placeholder={t('services.usdbIndexer.inscriptionPlaceholder')}
+                  />
+                </label>
 
-              <div className="flex items-center gap-3">
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('services.usdbIndexer.energyHeight')}</span>
+                  <input
+                    className="console-input"
+                    inputMode="numeric"
+                    value={energyBlockHeight}
+                    onChange={(event) => setEnergyBlockHeight(event.target.value)}
+                    placeholder={t('services.usdbIndexer.atHeightPlaceholder')}
+                  />
+                </label>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
                 <button type="submit" className="console-action-button" disabled={energyLoading}>
-                  {energyLoading ? t('actions.reloading') : t('services.usdbIndexer.runEnergyQuery')}
+                  {energyLoading
+                    ? t('actions.reloading')
+                    : t('services.usdbIndexer.runEnergyQuery')}
                 </button>
                 {energyError ? (
                   <span className="text-sm text-[color:var(--cp-danger)]">{energyError}</span>
                 ) : null}
               </div>
             </form>
+          )}
 
-            {energySnapshot ? (
+          <section className="grid min-w-0 gap-4">
+            <div>
+              <h4 className="text-base font-semibold text-[color:var(--cp-text)]">
+                {queryTarget === 'pass'
+                  ? t('services.usdbIndexer.passTitle')
+                  : t('services.usdbIndexer.energyTitle')}
+              </h4>
+              <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                {queryTarget === 'pass'
+                  ? t('services.usdbIndexer.passBody')
+                  : t('services.usdbIndexer.energyBody')}
+              </p>
+            </div>
+
+            {queryTarget === 'pass' ? (
               <div className="grid gap-4">
-                <div className="console-subtle-card">
-                  <FieldValueList
-                    items={[
-                      {
-                        label: t('services.usdbIndexer.energy'),
-                        value: displayNumber(locale, energySnapshot.energy, t),
-                      },
-                      {
-                        label: t('services.usdbIndexer.recordHeight'),
-                        value: displayNumber(locale, energySnapshot.record_block_height, t),
-                      },
-                      {
-                        label: t('services.usdbIndexer.owner'),
-                        value: displayText(energySnapshot.owner_address, t),
-                      },
-                      {
-                        label: t('services.usdbIndexer.ownerBalance'),
-                        value: displayBalanceSmart(locale, energySnapshot.owner_balance, t),
-                      },
-                    ]}
-                  />
+                {passSnapshot ? (
+                  <div className="console-subtle-card">
+                    <FieldValueList
+                      items={[
+                        {
+                          label: t('services.usdbIndexer.state'),
+                          value: displayText(passSnapshot.state, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.owner'),
+                          value: displayText(passSnapshot.owner, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.resolvedHeight'),
+                          value: displayNumber(locale, passSnapshot.resolved_height, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.ethMain'),
+                          value: displayText(passSnapshot.eth_main, t),
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
+
+                {passCommit ? (
+                  <div className="console-subtle-card">
+                    <FieldValueList
+                      items={[
+                        {
+                          label: t('services.usdbIndexer.commitHeight'),
+                          value: displayNumber(locale, passCommit.block_height, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.mutationRoot'),
+                          value: displayText(passCommit.mutation_root, t),
+                        },
+                        {
+                          label: t('fields.latestBlockCommit'),
+                          value: displayText(passCommit.block_commit, t),
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
+
+                <div className="overflow-x-auto">
+                  <table className="console-table">
+                    <thead>
+                      <tr>
+                        <th>{t('services.usdbIndexer.eventHeight')}</th>
+                        <th>{t('services.usdbIndexer.eventType')}</th>
+                        <th>{t('services.usdbIndexer.state')}</th>
+                        <th>{t('services.usdbIndexer.owner')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!passHistory || passHistory.items.length === 0 ? (
+                        <tr>
+                          <td colSpan={4}>{t('services.usdbIndexer.noHistory')}</td>
+                        </tr>
+                      ) : (
+                        passHistory.items.map((event) => (
+                          <tr key={`${event.event_id}:${event.block_height}`}>
+                            <td>{displayNumber(locale, event.block_height, t)}</td>
+                            <td>{event.event_type}</td>
+                            <td>{event.state}</td>
+                            <td className="break-all">{event.owner}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <button
+                    type="button"
+                    className="console-secondary-button"
+                    disabled={passHistoryPage === 0}
+                    onClick={() => setPassHistoryPage((current) => Math.max(0, current - 1))}
+                  >
+                    {t('actions.previousPage')}
+                  </button>
+                  <span className="text-sm text-[color:var(--cp-muted)]">
+                    {t('services.usdbIndexer.pageIndicator', undefined, {
+                      current: passHistoryPage + 1,
+                      total: passTotalPages,
+                    })}
+                  </span>
+                  <button
+                    type="button"
+                    className="console-secondary-button"
+                    disabled={passHistoryPage + 1 >= passTotalPages}
+                    onClick={() => setPassHistoryPage((current) => current + 1)}
+                  >
+                    {t('actions.nextPage')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {energySnapshot ? (
+                  <div className="console-subtle-card">
+                    <FieldValueList
+                      items={[
+                        {
+                          label: t('services.usdbIndexer.energy'),
+                          value: displayNumber(locale, energySnapshot.energy, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.recordHeight'),
+                          value: displayNumber(locale, energySnapshot.record_block_height, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.owner'),
+                          value: displayText(energySnapshot.owner_address, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.ownerBalance'),
+                          value: displayBalanceSmart(locale, energySnapshot.owner_balance, t),
+                        },
+                        {
+                          label: t('services.usdbIndexer.ownerDelta'),
+                          value: displayBalanceDeltaSmart(locale, energySnapshot.owner_delta, t),
+                        },
+                      ]}
+                    />
+                  </div>
+                ) : null}
 
                 <div className="overflow-x-auto">
                   <table className="console-table">
@@ -724,10 +847,10 @@ export function UsdbIndexerExplorerPage({
                   </button>
                 </div>
               </div>
-            ) : null}
-          </div>
-        </article>
-      </section>
+            )}
+          </section>
+        </div>
+      </article>
     </div>
   )
 }
