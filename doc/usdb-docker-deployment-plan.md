@@ -581,11 +581,16 @@ usdb/docker/
 8. 下一阶段：补开发期 `dumpgenesis` 生成模式接入 Docker
 9. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
 10. 下一阶段：补 DAO / Dividend 初始化 hook
+11. 下一阶段：补 single-node ETHW full-sim 与 deterministic miner identity
 
 原因：
 
 - `joiner` / `dev-sim` 更容易先验证
 - `bootstrap` 涉及的初始化链路更复杂，适合后置
+
+其中 ETHW full-sim 的最小接入设计单独记录在：
+
+- [full-sim-with-ethw-plan.md](/home/bucky/work/usdb/doc/full-sim-with-ethw-plan.md)
 
 ## 10. 当前结论总结
 

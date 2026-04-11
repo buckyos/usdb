@@ -184,6 +184,22 @@ services:
     networks:
       - usdb-net
 
+  ethw-node:
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_ethw_full_sim.sh"]
+    command: []
+    environment:
+      ETHW_COMMAND: ${ETHW_COMMAND:-}
+      ETHW_DATA_DIR: ${ETHW_DATA_DIR:-/data/ethw}
+      ETHW_IDENTITY_MODE: ${ETHW_IDENTITY_MODE:-deterministic-seed}
+      ETHW_IDENTITY_SEED: ${ETHW_IDENTITY_SEED:-}
+      WORLD_SIM_IDENTITY_SEED: ${WORLD_SIM_IDENTITY_SEED:-}
+      ETHW_MINER_ADDRESS: ${ETHW_MINER_ADDRESS:-}
+      ETHW_MINER_PRIVATE_KEY_HEX: ${ETHW_MINER_PRIVATE_KEY_HEX:-}
+      ETHW_AUTO_APPEND_MINER_ETHERBASE: ${ETHW_AUTO_APPEND_MINER_ETHERBASE:-1}
+    volumes:
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}
+      - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
+
 volumes:
   ord-data:
   world-sim-data:

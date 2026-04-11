@@ -239,3 +239,19 @@ After the first batch is stable, the next candidates are:
    background traffic
 3. exact mid-batch deterministic replay and crash recovery
 4. later connect ETH / BTC wallet flows to the same local stack
+
+## 10. ETHW Full-Sim Follow-Up
+
+`up-full` already keeps `ethw-node` in the graph, but the first world-sim
+integration did not yet bind ETHW mining identity to the deterministic sim
+seed.
+
+That follow-up is tracked separately in:
+
+- [full-sim-with-ethw-plan.md](/home/bucky/work/usdb/doc/full-sim-with-ethw-plan.md)
+
+The first ETHW batch focuses on:
+
+- single-node ETHW mining
+- deterministic ETH miner identity derived from the world-sim seed
+- runtime wiring only, without changing the canonical bootstrap path
