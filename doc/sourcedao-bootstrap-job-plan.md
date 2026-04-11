@@ -58,6 +58,18 @@
 
 正式环境下，合约编译产物应在镜像构建阶段固定，或以固定 artifact 的形式提供给该 job；不建议在启动时现场编译。
 
+当前已经开始落地一个较小的 stage-one 开发路径，见：
+
+- `doc/sourcedao-bootstrap-dev-artifacts-plan.md`
+
+这个阶段只覆盖：
+
+- `Dao.initialize()`
+- `Dividend.initialize(...)`
+- `Dao.setTokenDividendAddress(...)`
+
+并复用 `SourceDAO/scripts/usdb_bootstrap_smoke.ts` 做链上验证。其余模块部署仍留在后续阶段。
+
 ## 3. 与当前冷启动链路的关系
 
 当前推荐顺序是：

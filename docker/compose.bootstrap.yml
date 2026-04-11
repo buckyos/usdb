@@ -79,5 +79,32 @@ services:
       - ethw-data:${ETHW_DATA_DIR:-/data/ethw}
       - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
 
+  sourcedao-bootstrap:
+    image: ${SOURCE_DAO_BOOTSTRAP_IMAGE:-node:22-bookworm}
+    restart: "no"
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_sourcedao_bootstrap.sh"]
+    depends_on:
+      ethw-node:
+        condition: service_started
+    environment:
+      BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
+      ETHW_RPC_URL: ${ETHW_RPC_URL:-http://ethw-node:8545}
+      SOURCE_DAO_BOOTSTRAP_MODE: ${SOURCE_DAO_BOOTSTRAP_MODE:-disabled}
+      SOURCE_DAO_BOOTSTRAP_SCOPE: ${SOURCE_DAO_BOOTSTRAP_SCOPE:-dao-dividend-only}
+      SOURCE_DAO_BOOTSTRAP_PREPARE: ${SOURCE_DAO_BOOTSTRAP_PREPARE:-validate}
+      SOURCE_DAO_BOOTSTRAP_CONFIG_FILE: ${SOURCE_DAO_BOOTSTRAP_CONFIG_FILE:-/bootstrap/sourcedao-bootstrap-config.json}
+      SOURCE_DAO_BOOTSTRAP_STATE_FILE: ${SOURCE_DAO_BOOTSTRAP_STATE_FILE:-/bootstrap/sourcedao-bootstrap-state.json}
+      SOURCE_DAO_BOOTSTRAP_MARKER_FILE: ${SOURCE_DAO_BOOTSTRAP_MARKER_FILE:-/bootstrap/sourcedao-bootstrap.done.json}
+      SOURCE_DAO_BOOTSTRAP_LOG_FILE: ${SOURCE_DAO_BOOTSTRAP_LOG_FILE:-/bootstrap/sourcedao-bootstrap.log}
+      SOURCE_DAO_REPO_DIR: ${SOURCE_DAO_REPO_DIR:-/workspace/SourceDAO}
+      SOURCE_DAO_ARTIFACTS_DIR: ${SOURCE_DAO_ARTIFACTS_DIR:-/workspace/SourceDAO/artifacts-usdb}
+      SOURCE_DAO_RPC_WAIT_SECONDS: ${SOURCE_DAO_RPC_WAIT_SECONDS:-300}
+    volumes:
+      - bootstrap-artifacts:${BOOTSTRAP_DIR:-/bootstrap}
+      - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
+      - ${SOURCE_DAO_REPO_HOST_DIR:-../../SourceDAO}:${SOURCE_DAO_REPO_DIR:-/workspace/SourceDAO}
+    networks:
+      - usdb-net
+
 volumes:
   bootstrap-artifacts:

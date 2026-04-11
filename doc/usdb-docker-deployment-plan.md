@@ -75,7 +75,20 @@
 详细设计见：
 
 - `doc/sourcedao-bootstrap-job-plan.md`
+- `doc/sourcedao-bootstrap-dev-artifacts-plan.md`
 - `doc/usdb-btc-mint-runtime-profiles.md`
+
+当前已经补到第一阶段开发骨架：
+
+- `compose.bootstrap.yml` 中新增 `sourcedao-bootstrap`
+- 默认 `SOURCE_DAO_BOOTSTRAP_MODE=disabled`
+- 开启 `dev-workspace` 后会复用本地 `SourceDAO` repo 的 `artifacts-usdb`
+- 通过 `SourceDAO/scripts/usdb_bootstrap_smoke.ts` 完成 `Dao` / `Dividend` 初始化与验链
+
+因此当前状态是：
+
+- `sourcedao-bootstrap` 已有可运行的开发期 one-shot
+- 完整 SourceDAO 其余模块部署仍待后续阶段补齐
 
 统一本地控制台的总体设计见：
 

@@ -247,12 +247,22 @@ Current bootstrap scope:
 - record a `bootstrap-manifest.json` for downstream inspection
 - run a dedicated `ethw-init` one-shot `geth init` flow before `ethw-node`
 - reuse the existing `snapshot-loader` flow for `balance-history`
+- optionally run a development-only `sourcedao-bootstrap` one-shot after `ethw-node`
 
 Current bootstrap non-goals:
 
 - it does not generate ETHW genesis by itself
-- it does not yet run DAO / Dividend initialization transactions
 - it does not yet implement a full canonical release flow
+
+Current `sourcedao-bootstrap` scope is intentionally narrow:
+
+- disabled by default
+- only supports `SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace`
+- reuses the local `SourceDAO` workspace
+- runs `SourceDAO/scripts/usdb_bootstrap_smoke.ts`
+- only initializes and verifies:
+  - `Dao`
+  - `Dividend`
 
 ## Container Smoke
 
@@ -334,6 +344,30 @@ For the optional world-sim overlay, see:
 - optional `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
 - optional `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
 - optional `docker/local/bootstrap/keys/trusted_ethw_genesis_keys.json`
+
+For the current development-only `sourcedao-bootstrap` flow, prepare local
+inputs like this:
+
+```bash
+cd /home/bucky/work/SourceDAO
+npm ci
+npm run build:usdb
+
+cp tools/config/usdb-local.json \
+  /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
+```
+
+Then set in `docker/local/bootstrap/env/bootstrap.env`:
+
+```env
+SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace
+SOURCE_DAO_BOOTSTRAP_PREPARE=validate
+SOURCE_DAO_REPO_HOST_DIR=../../SourceDAO
+```
+
+The bootstrap job rewrites a runtime copy of the SourceDAO config inside
+`/bootstrap` so the copied config can safely point at container-local
+`artifacts-usdb`.
 
 Brief distinction:
 

@@ -42,6 +42,7 @@ Suggested usage:
   - trusted ETHW genesis manifest public-key sets
 - `manifests/`
   - bootnodes manifests, ETHW genesis artifact manifests, local service manifests, or other local metadata
+  - development-only `sourcedao-bootstrap-config.json`
 
 For quick browser-only control-console preview, keep using:
 
@@ -67,6 +68,16 @@ and start it with:
 docker/scripts/run_world_sim.sh build-images
 docker/scripts/run_world_sim.sh up
 ```
+
+For the bootstrap overlay, use:
+
+- `docker/local/bootstrap/env/bootstrap.env`
+- `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
+
+The current stage-one `sourcedao-bootstrap` flow also expects a local
+`SourceDAO` workspace outside this directory. By default the bootstrap env uses:
+
+- `SOURCE_DAO_REPO_HOST_DIR=../../SourceDAO`
 
 Do not store:
 
