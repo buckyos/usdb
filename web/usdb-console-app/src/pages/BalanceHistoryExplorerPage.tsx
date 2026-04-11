@@ -151,7 +151,7 @@ export function BalanceHistoryExplorerPage({
 
     try {
       if (!singleScriptHash.trim()) {
-        throw new Error('A script hash is required.')
+        throw new Error('An address or script hash is required.')
       }
 
       const selector = buildSelector(queryMode, queryHeight, queryRangeStart, queryRangeEnd)
@@ -179,7 +179,7 @@ export function BalanceHistoryExplorerPage({
         .map((item) => item.trim())
         .filter(Boolean)
       if (scriptHashes.length === 0) {
-        throw new Error('At least one script hash is required.')
+        throw new Error('At least one address or script hash is required.')
       }
 
       const selector = buildSelector(queryMode, queryHeight, queryRangeStart, queryRangeEnd)

@@ -11,13 +11,14 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, get_service, post};
 use axum::{Router, serve};
+use bitcoincore_rpc::bitcoin::Network;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::services::ServeDir;
-use usdb_util::USDB_CONTROL_PLANE_SERVICE_NAME;
+use usdb_util::{USDB_CONTROL_PLANE_SERVICE_NAME, parse_script_hash_any};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -152,6 +153,7 @@ async fn post_balance_history_rpc(
     State(state): State<AppState>,
     Json(request): Json<ServiceRpcRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let request = normalize_balance_history_request(&state, request).await?;
     proxy_service_rpc(
         &state,
         &state.config.rpc.balance_history_url,
@@ -238,6 +240,131 @@ async fn proxy_service_rpc(
         );
         (StatusCode::BAD_GATEWAY, Json(ApiError { error }))
     })
+}
+
+async fn normalize_balance_history_request(
+    state: &AppState,
+    request: ServiceRpcRequest,
+) -> Result<ServiceRpcRequest, (StatusCode, Json<ApiError>)> {
+    if !matches!(
+        request.method.as_str(),
+        "get_address_balance"
+            | "get_addresses_balances"
+            | "get_address_balance_delta"
+            | "get_addresses_balances_delta"
+    ) {
+        return Ok(request);
+    }
+
+    let network_name = state
+        .rpc_client
+        .balance_history_network(&state.config.rpc.balance_history_url)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ApiError {
+                    error: format!("Failed to resolve balance-history network: {}", error),
+                }),
+            )
+        })?;
+    let network = parse_balance_history_network(&network_name).map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: format!(
+                    "Unsupported balance-history network {}: {}",
+                    network_name, error
+                ),
+            }),
+        )
+    })?;
+
+    let params = normalize_balance_history_params(&request.method, request.params, network)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ApiError { error: e })))?;
+
+    Ok(ServiceRpcRequest {
+        method: request.method,
+        params,
+    })
+}
+
+fn parse_balance_history_network(network: &str) -> Result<Network, String> {
+    match network.to_ascii_lowercase().as_str() {
+        "bitcoin" | "mainnet" => Ok(Network::Bitcoin),
+        "testnet" | "testnet3" => Ok(Network::Testnet),
+        "testnet4" => Ok(Network::Testnet4),
+        "regtest" => Ok(Network::Regtest),
+        "signet" => Ok(Network::Signet),
+        other => Err(format!("unknown network {}", other)),
+    }
+}
+
+fn normalize_balance_history_params(
+    method: &str,
+    params: Value,
+    network: Network,
+) -> Result<Value, String> {
+    let Some(items) = params.as_array() else {
+        return Err("Balance-history params must be a JSON array".to_string());
+    };
+    if items.is_empty() {
+        return Err(format!("{} requires one params object", method));
+    }
+
+    let mut normalized = items.clone();
+    let first = normalized
+        .get_mut(0)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("{} requires the first param to be an object", method))?;
+
+    match method {
+        "get_address_balance" | "get_address_balance_delta" => {
+            let candidate = first
+                .get("script_hash")
+                .and_then(Value::as_str)
+                .or_else(|| first.get("address").and_then(Value::as_str))
+                .ok_or_else(|| {
+                    "Provide either script_hash or address for balance-history single queries"
+                        .to_string()
+                })?
+                .to_string();
+            let normalized_hash = parse_script_hash_any(candidate.as_str(), &network)
+                .map_err(|e| format!("Failed to resolve {}: {}", candidate, e))?
+                .to_string();
+            first.insert("script_hash".to_string(), Value::String(normalized_hash));
+            first.remove("address");
+        }
+        "get_addresses_balances" | "get_addresses_balances_delta" => {
+            let candidates = first
+                .get("script_hashes")
+                .and_then(Value::as_array)
+                .or_else(|| first.get("addresses").and_then(Value::as_array))
+                .ok_or_else(|| {
+                    "Provide either script_hashes or addresses for balance-history batch queries"
+                        .to_string()
+                })?;
+
+            let mut normalized_hashes = Vec::with_capacity(candidates.len());
+            for value in candidates {
+                let candidate = value
+                    .as_str()
+                    .ok_or_else(|| {
+                        "Every balance-history batch query target must be a string".to_string()
+                    })?
+                    .to_string();
+                let normalized_hash = parse_script_hash_any(candidate.as_str(), &network)
+                    .map_err(|e| format!("Failed to resolve {}: {}", candidate, e))?
+                    .to_string();
+                normalized_hashes.push(Value::String(normalized_hash));
+            }
+            first.insert("script_hashes".to_string(), Value::Array(normalized_hashes));
+            first.remove("addresses");
+        }
+        _ => {}
+    }
+
+    Ok(Value::Array(normalized))
 }
 
 async fn build_services_summary(state: &AppState) -> ServicesSummary {
@@ -594,6 +721,8 @@ fn current_unix_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use usdb_util::address_string_to_script_hash;
 
     #[test]
     fn merge_errors_skips_empty_entries() {
@@ -612,5 +741,53 @@ mod tests {
         let step = derive_step_state("snapshot-loader", &artifact);
         assert_eq!(step.state, "pending");
         assert_eq!(step.artifact_path, "/tmp/missing.json");
+    }
+
+    #[test]
+    fn normalize_balance_history_single_query_accepts_address() {
+        let address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let expected = address_string_to_script_hash(address, &Network::Bitcoin)
+            .unwrap()
+            .to_string();
+
+        let normalized = normalize_balance_history_params(
+            "get_address_balance",
+            json!([{
+                "address": address,
+                "block_height": null,
+                "block_range": null
+            }]),
+            Network::Bitcoin,
+        )
+        .unwrap();
+
+        assert_eq!(normalized[0]["script_hash"], expected);
+        assert!(normalized[0].get("address").is_none());
+    }
+
+    #[test]
+    fn normalize_balance_history_batch_query_accepts_mixed_inputs() {
+        let address = "bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h";
+        let existing_address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let normalized_address = address_string_to_script_hash(address, &Network::Bitcoin)
+            .unwrap()
+            .to_string();
+        let existing_hash = address_string_to_script_hash(existing_address, &Network::Bitcoin)
+            .unwrap()
+            .to_string();
+
+        let normalized = normalize_balance_history_params(
+            "get_addresses_balances",
+            json!([{
+                "script_hashes": [address, existing_hash],
+                "block_height": null,
+                "block_range": null
+            }]),
+            Network::Bitcoin,
+        )
+        .unwrap();
+
+        assert_eq!(normalized[0]["script_hashes"][0], normalized_address);
+        assert_eq!(normalized[0]["script_hashes"][1], existing_hash);
     }
 }
