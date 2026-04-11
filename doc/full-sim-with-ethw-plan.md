@@ -59,6 +59,19 @@ This first batch does **not** yet:
 - add multi-node ETHW simulation
 - replace the dedicated bootstrap overlay
 
+For full-sim runtime stability, the recommended BTC RPC mode is also:
+
+- `BTC_AUTH_MODE=userpass`
+
+rather than cookie auth. `up-full` inherits the same BTC-side `world-sim`
+bootstrap and wallet flows, so keeping explicit RPC credentials is the safer
+default for:
+
+- fresh bootstrap
+- wallet-scoped `bitcoin-cli` calls
+- `ord-server`
+- deterministic recovery and replay
+
 ## 5. Single-Node Mining Model
 
 The current ETHW path is based on the Ethash route, not a multi-validator PoA
@@ -106,22 +119,49 @@ The full-sim ETHW wrapper should:
 
 This keeps the runtime explicit while avoiding silent identity drift.
 
-## 8. Future Phases
+## 8. Second Batch: Protocol Identity Alignment
+
+The second batch connects the deterministic ETHW miner identity to the BTC
+world-sim mint flow.
+
+The key rule is:
+
+- when `run_world_sim.sh up-full` is used, the simulator should treat one
+  configured world-sim agent as the protocol miner whose `eth_main` must match
+  the ETHW miner address
+
+The runtime contract is:
+
+1. `up-full` enables `ETHW_SIM_PROTOCOL_ALIGNMENT=1` by default
+2. `start_ethw_full_sim.sh` writes the resolved ETHW miner identity to:
+   - `${ETHW_DATA_DIR}/bootstrap/ethw-sim-identity.json`
+3. `world-sim-bootstrap` and `world-sim-runner` mount the ETHW data volume
+   read-only
+4. `start_world_sim.sh` resolves `ETHW_MINER_ADDRESS` from:
+   - explicit `ETHW_MINER_ADDRESS`, or
+   - the ETHW identity marker
+5. the simulator assigns that address to one stable agent:
+   - `ETHW_MINER_AGENT_ID`
+6. that agent's `mint` / `remint` actions use the aligned `eth_main`
+
+This keeps the first ETHW full-sim milestone small:
+
+- ETHW still remains a single-node local miner
+- BTC world-sim remains the only source of protocol traffic
+- but miner-pass `eth_main` stops drifting away from the ETHW mining identity
+
+## 9. Future Phases
 
 After the first batch is stable, the next ETHW-aware phases are:
 
-1. **Protocol alignment**
-   - BTC world-sim mint writes `eth_main` that matches the ETHW miner address
-
-2. **Bootstrap sequencing**
+1. **Bootstrap sequencing**
    - integrate `sourcedao-bootstrap` into the full-sim path
 
-3. **ETHW-side simulation**
+2. **ETHW-side simulation**
    - deterministic ETH accounts
    - funded user/demo accounts
    - contract calls and state progression
 
-4. **Multi-node realism**
+3. **Multi-node realism**
    - optional follower/full nodes
    - optional miner/bootnode split
-

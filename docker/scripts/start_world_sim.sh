@@ -28,6 +28,15 @@ world_sim_bootstrap_dir="${WORLD_SIM_BOOTSTRAP_DIR:-${world_sim_work_dir}/bootst
 world_sim_bootstrap_marker="${WORLD_SIM_BOOTSTRAP_MARKER:-${world_sim_bootstrap_dir}/world-sim-bootstrap.done.json}"
 world_sim_loop_state_file="${WORLD_SIM_LOOP_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-loop-state.json}"
 world_sim_recovery_state_file="${WORLD_SIM_RECOVERY_STATE_FILE:-${world_sim_bootstrap_dir}/world-sim-recovery-state.json}"
+ethw_sim_protocol_alignment="${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}"
+ethw_data_dir="${ETHW_DATA_DIR:-/data/ethw}"
+ethw_identity_marker="${ETHW_IDENTITY_MARKER:-${ethw_data_dir}/bootstrap/ethw-sim-identity.json}"
+ethw_identity_marker_wait_secs="${ETHW_IDENTITY_MARKER_WAIT_SECS:-60}"
+ethw_identity_mode="${ETHW_IDENTITY_MODE:-none}"
+ethw_identity_seed="${ETHW_IDENTITY_SEED:-${world_sim_identity_seed}}"
+ethw_miner_address_override="${ETHW_MINER_ADDRESS:-}"
+ethw_miner_agent_id="${ETHW_MINER_AGENT_ID:-0}"
+resolved_ethw_miner_address=""
 
 miner_wallet_name="${MINER_WALLET_NAME:-usdb-world-miner}"
 wallet_prefix="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -81,6 +90,26 @@ json_rpc_call() {
 
 json_result_u32() {
   python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("result", 0)))'
+}
+
+json_read_field() {
+  local file="${1:?file is required}"
+  local field="${2:?field is required}"
+  python3 - "${file}" "${field}" <<'PY'
+import json
+import sys
+
+path, field = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+value = data.get(field)
+if value is None:
+    print("")
+elif isinstance(value, bool):
+    print("true" if value else "false")
+else:
+    print(str(value))
+PY
 }
 
 rpc_consensus_ready() {
@@ -500,6 +529,18 @@ prepare_runtime_environment() {
     echo "WORLD_SIM_STATE_MODE=seeded-reset requires WORLD_SIM_IDENTITY_SEED" >&2
     exit 1
   fi
+  case "${ethw_sim_protocol_alignment}" in
+    0|1)
+      ;;
+    *)
+      echo "ETHW_SIM_PROTOCOL_ALIGNMENT must be 0 or 1" >&2
+      exit 1
+      ;;
+  esac
+  if ! [[ "${ethw_miner_agent_id}" =~ ^[0-9]+$ ]]; then
+    echo "ETHW_MINER_AGENT_ID must be a non-negative integer" >&2
+    exit 1
+  fi
 }
 
 wait_core_services() {
@@ -552,6 +593,31 @@ expected = {
 
 for key, value in expected.items():
     if data.get(key) != value:
+        raise SystemExit(1)
+PY
+  python3 - "${world_sim_bootstrap_marker}" \
+    "${ethw_sim_protocol_alignment}" \
+    "${resolved_ethw_miner_address}" \
+    "${ethw_miner_agent_id}" <<'PY'
+import json
+import sys
+
+marker_path, ethw_sim_protocol_alignment, resolved_ethw_miner_address, ethw_miner_agent_id = sys.argv[1:]
+with open(marker_path, "r", encoding="utf-8") as fp:
+    data = json.load(fp)
+
+expected = {
+    "ethw_protocol_alignment": ethw_sim_protocol_alignment == "1",
+    "ethw_miner_address": resolved_ethw_miner_address,
+    "ethw_miner_agent_id": int(ethw_miner_agent_id),
+}
+
+for key, value in expected.items():
+    actual = data.get(
+        key,
+        False if key == "ethw_protocol_alignment" else (0 if key == "ethw_miner_agent_id" else ""),
+    )
+    if actual != value:
         raise SystemExit(1)
 PY
 }
@@ -612,6 +678,9 @@ write_bootstrap_marker() {
     "${world_sim_state_mode}" \
     "${world_sim_identity_seed}" \
     "${identity_scheme}" \
+    "${ethw_sim_protocol_alignment}" \
+    "${resolved_ethw_miner_address}" \
+    "${ethw_miner_agent_id}" \
     "${current_height}" \
     "${agent_wallets_csv}" \
     "${agent_addresses_csv}" <<'PY'
@@ -632,6 +701,9 @@ import time
     world_sim_state_mode,
     world_sim_identity_seed,
     identity_scheme,
+    ethw_sim_protocol_alignment,
+    resolved_ethw_miner_address,
+    ethw_miner_agent_id,
     current_height,
     agent_wallets_csv,
     agent_addresses_csv,
@@ -650,6 +722,9 @@ payload = {
     "state_mode": world_sim_state_mode,
     "identity_seed": world_sim_identity_seed,
     "identity_scheme": identity_scheme,
+    "ethw_protocol_alignment": ethw_sim_protocol_alignment == "1",
+    "ethw_miner_address": resolved_ethw_miner_address,
+    "ethw_miner_agent_id": int(ethw_miner_agent_id),
     "bootstrap_height": int(current_height),
     "agent_wallets": [v for v in agent_wallets_csv.split(",") if v],
     "agent_addresses": [v for v in agent_addresses_csv.split(",") if v],
@@ -673,6 +748,49 @@ wait_until_ord_wallet_stable() {
     if [[ "${probe}" -lt "${ord_stability_probes}" ]]; then
       sleep "${ord_stability_sleep_secs}"
     fi
+  done
+}
+
+validate_eth_address() {
+  local address="${1:?address is required}"
+  [[ "${address}" =~ ^0x[0-9a-fA-F]{40}$ ]] || {
+    echo "Invalid ETH address format: ${address}" >&2
+    exit 1
+  }
+}
+
+resolve_ethw_protocol_alignment() {
+  local address="" deadline now
+
+  resolved_ethw_miner_address=""
+  if [[ "${ethw_sim_protocol_alignment}" != "1" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${ethw_miner_address_override}" ]]; then
+    validate_eth_address "${ethw_miner_address_override}"
+    resolved_ethw_miner_address="${ethw_miner_address_override}"
+    log "Using ETHW miner alignment address from environment: ${resolved_ethw_miner_address}"
+    return 0
+  fi
+
+  deadline="$(( $(date +%s) + ethw_identity_marker_wait_secs ))"
+  while true; do
+    if [[ -f "${ethw_identity_marker}" ]]; then
+      address="$(json_read_field "${ethw_identity_marker}" "ethw_miner_address")"
+      if [[ -n "${address}" ]]; then
+        validate_eth_address "${address}"
+        resolved_ethw_miner_address="${address}"
+        log "Using ETHW miner alignment address from marker ${ethw_identity_marker}: ${resolved_ethw_miner_address}"
+        return 0
+      fi
+    fi
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      echo "ETHW protocol alignment is enabled, but ETHW identity marker is unavailable or incomplete: ${ethw_identity_marker}" >&2
+      exit 1
+    fi
+    sleep 1
   done
 }
 
@@ -792,6 +910,7 @@ PY
 }
 
 bootstrap_world_sim() {
+  resolve_ethw_protocol_alignment
   if [[ -f "${world_sim_bootstrap_marker}" ]]; then
     if bootstrap_marker_matches; then
       log "World-sim bootstrap already completed: ${world_sim_bootstrap_marker}"
@@ -941,6 +1060,9 @@ run_simulator_batch() {
     --mining-address "${mining_address}" \
     --agent-wallets "${agent_wallets_csv}" \
     --agent-addresses "${agent_addresses_csv}" \
+    --identity-seed "${world_sim_identity_seed}" \
+    --ethw-miner-address "${resolved_ethw_miner_address}" \
+    --ethw-miner-agent-id "${ethw_miner_agent_id}" \
     --balance-history-rpc-url "${balance_history_rpc_url}" \
     --usdb-rpc-url "${usdb_rpc_url}" \
     --sync-timeout-sec "${sync_timeout_sec}" \
@@ -973,6 +1095,7 @@ run_simulator_batch() {
 }
 
 run_loop_mode() {
+  resolve_ethw_protocol_alignment
   if ! bootstrap_marker_matches; then
     echo "Missing or incompatible world-sim bootstrap marker: ${world_sim_bootstrap_marker}" >&2
     exit 1

@@ -285,6 +285,10 @@
   - `WORLD_SIM_STATE_MODE=seeded-reset`
   - `seeded-reset` 基于 `WORLD_SIM_IDENTITY_SEED` 确定性重建 miner / agent ord wallet identity
 - 在 simulation loop 前增加 ord wallet / ord server 稳定性 gate
+- `world-sim` / `up-full` 默认改用：
+  - `BTC_AUTH_MODE=userpass`
+  - 而不是 cookie auth
+  - 以降低 fresh bootstrap 和 `-rpcwallet` 路径上的认证脆弱性
 
 这个模式仍然是：
 
@@ -581,7 +585,8 @@ usdb/docker/
 8. 下一阶段：补开发期 `dumpgenesis` 生成模式接入 Docker
 9. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
 10. 下一阶段：补 DAO / Dividend 初始化 hook
-11. 下一阶段：补 single-node ETHW full-sim 与 deterministic miner identity
+11. 已完成：补 single-node ETHW full-sim 与 deterministic miner identity
+12. 已完成：补 ETHW miner identity 与 world-sim miner-pass `eth_main` 对齐
 
 原因：
 

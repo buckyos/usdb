@@ -165,6 +165,26 @@ Key runtime inputs:
   - `AGENT_COUNT`
   - `SIM_SLEEP_MS_BETWEEN_BLOCKS`
 
+For the optional `world-sim` overlay, the recommended default BTC RPC mode is:
+
+- `BTC_AUTH_MODE=userpass`
+
+with explicit:
+
+- `BTC_RPC_USER`
+- `BTC_RPC_PASSWORD`
+
+The base Docker stack can keep cookie auth as its general default, but
+`world-sim` and `up-full` should prefer `userpass` because they exercise a more
+fragile path:
+
+- `ord-server`
+- repeated `bitcoin-cli -rpcwallet=...` calls
+- fresh wallet bootstrap and recovery flows
+
+This avoids restart-time cookie rotation and wallet-scoped auth edge cases from
+becoming the main source of local simulation instability.
+
 The runtime and determinism boundary is documented in:
 
 - [world-sim-deterministic-state-plan.md](/home/bucky/work/usdb/doc/world-sim-deterministic-state-plan.md)
@@ -255,3 +275,10 @@ The first ETHW batch focuses on:
 - single-node ETHW mining
 - deterministic ETH miner identity derived from the world-sim seed
 - runtime wiring only, without changing the canonical bootstrap path
+
+The second ETHW batch extends this by aligning protocol identity:
+
+- `run_world_sim.sh up-full` enables ETHW protocol alignment by default
+- one stable world-sim agent is assigned to the ETHW miner address
+- that agent writes miner-pass `eth_main` using the same ETH address as the
+  ETHW node mining identity

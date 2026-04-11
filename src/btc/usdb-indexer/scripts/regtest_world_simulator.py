@@ -28,6 +28,7 @@ class Agent:
     agent_id: int
     wallet_name: str
     receive_address: str
+    eth_main_address: str
     owner_script_hash: str
     persona: str
     owned_passes: set[str] = field(default_factory=set)
@@ -127,6 +128,9 @@ class Args:
     mining_address: str
     agent_wallets: list[str]
     agent_addresses: list[str]
+    identity_seed: str | None
+    ethw_miner_address: str | None
+    ethw_miner_agent_id: int
     balance_history_rpc_url: str
     usdb_rpc_url: str
     sync_timeout_sec: int
@@ -238,6 +242,13 @@ class RegtestWorldSimulator:
         self.agents: list[Agent] = []
         self._init_agents()
         self.total_agents = len(self.agents)
+        if self.args.ethw_miner_address and not (
+            0 <= self.args.ethw_miner_agent_id < self.total_agents
+        ):
+            raise WorldSimError(
+                "ethw_miner_agent_id is out of range for configured agents: "
+                f"{self.args.ethw_miner_agent_id} not in [0, {self.total_agents - 1}]"
+            )
         self.active_agent_count = min(
             self.total_agents, max(1, self.args.initial_active_agents)
         )
@@ -348,6 +359,9 @@ class RegtestWorldSimulator:
                 "action_seed": self.action_seed,
                 "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
+                "identity_seed": self.args.identity_seed,
+                "ethw_miner_address": self.args.ethw_miner_address,
+                "ethw_miner_agent_id": self.args.ethw_miner_agent_id,
                 "total_agents": self.total_agents,
                 "initial_active_agents": self.active_agent_count,
                 "policy_mode": self.args.policy_mode,
@@ -407,6 +421,7 @@ class RegtestWorldSimulator:
             "agent_id": agent.agent_id,
             "wallet_name": agent.wallet_name,
             "receive_address": agent.receive_address,
+            "eth_main_address": agent.eth_main_address,
             "owner_script_hash": agent.owner_script_hash,
             "persona": agent.persona,
             "owned_passes": sorted(agent.owned_passes),
@@ -425,6 +440,9 @@ class RegtestWorldSimulator:
 
     @staticmethod
     def apply_agent_state(agent: Agent, payload: dict[str, Any]) -> None:
+        agent.eth_main_address = str(
+            payload.get("eth_main_address", agent.eth_main_address)
+        )
         agent.owned_passes = set(payload.get("owned_passes") or [])
         agent.active_pass_id = payload.get("active_pass_id")
         agent.invalid_passes = set(payload.get("invalid_passes") or [])
@@ -1300,15 +1318,43 @@ class RegtestWorldSimulator:
             return "farmer"
         return "holder"
 
+    def default_identity_seed(self) -> str:
+        if self.args.identity_seed:
+            return self.args.identity_seed
+        return f"sim-seed:{self.args.seed}"
+
+    def derived_eth_address(self, namespace: str, *components: Any) -> str:
+        digest = hashlib.sha256(
+            "::".join(
+                [
+                    "usdb-world-sim-eth-main-v1",
+                    namespace,
+                    self.default_identity_seed(),
+                    *(
+                        self._normalize_seed_component(component)
+                        for component in components
+                    ),
+                ]
+            ).encode("utf-8")
+        ).hexdigest()
+        return "0x" + digest[:40]
+
     def _init_agents(self) -> None:
         for idx, (wallet, address) in enumerate(
             zip(self.args.agent_wallets, self.args.agent_addresses)
         ):
             script_hash = self.address_to_script_hash(address)
+            eth_main_address = self.derived_eth_address("agent", idx, wallet, address)
+            if (
+                self.args.ethw_miner_address
+                and idx == self.args.ethw_miner_agent_id
+            ):
+                eth_main_address = self.args.ethw_miner_address
             agent = Agent(
                 agent_id=idx,
                 wallet_name=wallet,
                 receive_address=address,
+                eth_main_address=eth_main_address,
                 owner_script_hash=script_hash,
                 persona=self._persona_for_agent(idx),
             )
@@ -2166,11 +2212,6 @@ class RegtestWorldSimulator:
                 )
             time.sleep(0.8)
 
-    def random_eth_address(self, rng: random.Random) -> str:
-        return "0x" + "".join(
-            rng.choice("0123456789abcdef") for _ in range(40)
-        )
-
     def random_btc_amount(self, rng: random.Random, min_btc: str, max_btc: str) -> str:
         min_sat = int((Decimal(min_btc) * Decimal("100000000")).to_integral_value())
         max_sat = int((Decimal(max_btc) * Decimal("100000000")).to_integral_value())
@@ -2413,7 +2454,7 @@ class RegtestWorldSimulator:
         count_as_mint: bool = True,
     ) -> tuple[str, ActionExpectation]:
         content_path = self.write_mint_content(
-            eth_main=self.random_eth_address(rng),
+            eth_main=actor.eth_main_address,
             prev=prev or [],
             invalid_eth=invalid_eth,
         )
@@ -4202,6 +4243,9 @@ def parse_args() -> Args:
     parser.add_argument("--mining-address", required=True)
     parser.add_argument("--agent-wallets", required=True)
     parser.add_argument("--agent-addresses", required=True)
+    parser.add_argument("--identity-seed")
+    parser.add_argument("--ethw-miner-address")
+    parser.add_argument("--ethw-miner-agent-id", type=int, default=0)
     parser.add_argument("--balance-history-rpc-url", required=True)
     parser.add_argument("--usdb-rpc-url", required=True)
     parser.add_argument("--sync-timeout-sec", type=int, default=300)
@@ -4343,6 +4387,9 @@ def parse_args() -> Args:
         mining_address=parsed.mining_address,
         agent_wallets=agent_wallets,
         agent_addresses=agent_addresses,
+        identity_seed=parsed.identity_seed,
+        ethw_miner_address=parsed.ethw_miner_address,
+        ethw_miner_agent_id=parsed.ethw_miner_agent_id,
         balance_history_rpc_url=parsed.balance_history_rpc_url,
         usdb_rpc_url=parsed.usdb_rpc_url,
         sync_timeout_sec=parsed.sync_timeout_sec,

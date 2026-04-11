@@ -8,29 +8,39 @@ services:
       BTC_RPC_PORT: ${BTC_RPC_PORT:-28132}
       BTC_P2P_PORT: ${BTC_P2P_PORT:-28133}
       BTC_FALLBACK_FEE: ${BTC_FALLBACK_FEE:-0.0002}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
     volumes:
       - btc-data:${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
 
   snapshot-loader:
     environment:
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
 
   balance-history:
     environment:
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
 
   usdb-indexer:
     environment:
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       ORD_RPC_URL: ${ORD_RPC_URL:-http://ord-server:28130}
 
   usdb-control-plane:
     environment:
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
 
   ord-server:
@@ -43,7 +53,9 @@ services:
     environment:
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       ORD_BIN: /opt/ord/bin/ord
@@ -74,10 +86,20 @@ services:
       WORLD_SIM_MODE: bootstrap
       WORLD_SIM_STATE_MODE: ${WORLD_SIM_STATE_MODE:-persistent}
       WORLD_SIM_IDENTITY_SEED: ${WORLD_SIM_IDENTITY_SEED:-}
+      ETHW_SIM_PROTOCOL_ALIGNMENT: ${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}
+      ETHW_DATA_DIR: ${ETHW_DATA_DIR:-/data/ethw}
+      ETHW_IDENTITY_MARKER: ${ETHW_IDENTITY_MARKER:-/data/ethw/bootstrap/ethw-sim-identity.json}
+      ETHW_IDENTITY_MARKER_WAIT_SECS: ${ETHW_IDENTITY_MARKER_WAIT_SECS:-60}
+      ETHW_IDENTITY_MODE: ${ETHW_IDENTITY_MODE:-none}
+      ETHW_IDENTITY_SEED: ${ETHW_IDENTITY_SEED:-}
+      ETHW_MINER_ADDRESS: ${ETHW_MINER_ADDRESS:-}
+      ETHW_MINER_AGENT_ID: ${ETHW_MINER_AGENT_ID:-0}
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       ORD_BIN: /opt/ord/bin/ord
@@ -96,9 +118,10 @@ services:
       WORLD_SIM_ORD_STABILITY_PROBES: ${WORLD_SIM_ORD_STABILITY_PROBES:-2}
       WORLD_SIM_ORD_STABILITY_SLEEP_SECS: ${WORLD_SIM_ORD_STABILITY_SLEEP_SECS:-1}
     volumes:
-      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}
       - ord-data:${ORD_DATA_DIR:-/data/ord}
       - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}:ro
     networks:
       - usdb-net
 
@@ -119,10 +142,20 @@ services:
       WORLD_SIM_MODE: loop
       WORLD_SIM_STATE_MODE: ${WORLD_SIM_STATE_MODE:-persistent}
       WORLD_SIM_IDENTITY_SEED: ${WORLD_SIM_IDENTITY_SEED:-}
+      ETHW_SIM_PROTOCOL_ALIGNMENT: ${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}
+      ETHW_DATA_DIR: ${ETHW_DATA_DIR:-/data/ethw}
+      ETHW_IDENTITY_MARKER: ${ETHW_IDENTITY_MARKER:-/data/ethw/bootstrap/ethw-sim-identity.json}
+      ETHW_IDENTITY_MARKER_WAIT_SECS: ${ETHW_IDENTITY_MARKER_WAIT_SECS:-60}
+      ETHW_IDENTITY_MODE: ${ETHW_IDENTITY_MODE:-none}
+      ETHW_IDENTITY_SEED: ${ETHW_IDENTITY_SEED:-}
+      ETHW_MINER_ADDRESS: ${ETHW_MINER_ADDRESS:-}
+      ETHW_MINER_AGENT_ID: ${ETHW_MINER_AGENT_ID:-0}
       BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:28132}
       BTC_NETWORK: ${BTC_NETWORK:-regtest}
       BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
-      BTC_AUTH_MODE: cookie
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       ORD_BIN: /opt/ord/bin/ord
@@ -181,6 +214,7 @@ services:
       - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
       - ord-data:${ORD_DATA_DIR:-/data/ord}
       - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}
+      - ethw-data:${ETHW_DATA_DIR:-/data/ethw}:ro
     networks:
       - usdb-net
 

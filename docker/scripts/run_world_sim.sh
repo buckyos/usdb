@@ -126,11 +126,13 @@ case "${action}" in
   up)
     ensure_world_sim_images
     prepare_state_mode
+    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}"
     compose up --build btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "$@"
     ;;
   up-full)
     ensure_world_sim_images
     prepare_state_mode
+    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
     compose up --build "$@"
     ;;
   build-images)
