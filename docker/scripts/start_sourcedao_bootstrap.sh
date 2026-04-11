@@ -157,6 +157,32 @@ fs.writeFileSync(runtimeConfig, `${JSON.stringify(data, null, 2)}\n`);
 NODE
 }
 
+run_bootstrap_worker() {
+  case "${scope}" in
+    dao-dividend-only)
+      (
+        cd "${repo_dir}" && \
+        "${tsx_bin}" scripts/usdb_bootstrap_smoke.ts \
+          --config "${runtime_config_file}" \
+          --rpc-url "${rpc_url}"
+      )
+      ;;
+    full)
+      (
+        cd "${repo_dir}" && \
+        "${tsx_bin}" scripts/usdb_bootstrap_full.ts \
+          --config "${runtime_config_file}" \
+          --rpc-url "${rpc_url}" \
+          --state-file "${state_file}" \
+          --repo-dir "${repo_dir}"
+      )
+      ;;
+    *)
+      fail_with_state "Unsupported SOURCE_DAO_BOOTSTRAP_SCOPE=${scope}"
+      ;;
+  esac
+}
+
 validate_workspace() {
   [[ -d "${repo_dir}" ]] || fail_with_state "SourceDAO repo directory does not exist: ${repo_dir}"
   [[ -f "${config_file}" ]] || fail_with_state "Missing SourceDAO bootstrap config: ${config_file}"
@@ -201,28 +227,25 @@ chain_id="$(read_config_value "chainId")"
 write_runtime_config
 
 : >"${log_file}"
-echo "Running SourceDAO bootstrap smoke from ${repo_dir}" | tee -a "${log_file}"
+echo "Running SourceDAO bootstrap (${scope}) from ${repo_dir}" | tee -a "${log_file}"
 echo "Using config ${config_file}" | tee -a "${log_file}"
 echo "Using runtime config ${runtime_config_file}" | tee -a "${log_file}"
 echo "Using artifacts ${artifacts_dir}" | tee -a "${log_file}"
 
-if ! (
-  cd "${repo_dir}" && \
-  "${tsx_bin}" scripts/usdb_bootstrap_smoke.ts \
-    --config "${runtime_config_file}" \
-    --rpc-url "${rpc_url}"
-) 2>&1 | tee -a "${log_file}"; then
-  fail_with_state "SourceDAO bootstrap smoke failed. See ${log_file}"
+if ! run_bootstrap_worker 2>&1 | tee -a "${log_file}"; then
+  fail_with_state "SourceDAO bootstrap failed. See ${log_file}"
 fi
 
 completed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-write_state \
-  "completed" \
-  "SourceDAO bootstrap smoke completed successfully" \
-  "${chain_id}" \
-  "${dao_address}" \
-  "${dividend_address}" \
-  "${completed_at}"
+if [[ "${scope}" == "dao-dividend-only" ]]; then
+  write_state \
+    "completed" \
+    "SourceDAO bootstrap smoke completed successfully" \
+    "${chain_id}" \
+    "${dao_address}" \
+    "${dividend_address}" \
+    "${completed_at}"
+fi
 write_marker "${chain_id}" "${dao_address}" "${dividend_address}" "${completed_at}"
 
 echo "SourceDAO bootstrap completed successfully."

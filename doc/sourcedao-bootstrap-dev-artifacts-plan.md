@@ -59,7 +59,7 @@ cd /home/bucky/work/SourceDAO
 npm ci
 npm run build:usdb
 
-cp tools/config/usdb-local.json \
+cp tools/config/usdb-bootstrap-full.example.json \
   /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
 ```
 
@@ -69,12 +69,15 @@ Notes:
   `--rpc-url "${ETHW_RPC_URL}"`
 - the Docker job also rewrites a runtime copy of the config under `/bootstrap`
   so `artifactsDir` resolves correctly inside the container
-- the config file remains the source of:
-  - `chainId`
-  - `daoAddress`
-  - `dividendAddress`
-  - `bootstrapAdminPrivateKey`
-  - `cycleMinLength`
+- the recommended long-term source is now:
+  - `SourceDAO/tools/config/usdb-bootstrap-full.example.json`
+- full bootstrap should prefer explicit config sections over script fallbacks:
+  - `committee`
+  - `devToken`
+  - `normalToken`
+  - `project`
+  - `tokenLockup`
+  - `acquired`
 
 ## 4. Docker Mode
 
@@ -94,6 +97,21 @@ The default mode remains:
 
 So the bootstrap overlay does not require the local `SourceDAO` workspace unless
 the operator explicitly enables it.
+
+Current scopes:
+
+- `SOURCE_DAO_BOOTSTRAP_SCOPE=dao-dividend-only`
+  - stage-one
+  - only initializes the genesis-predeployed `Dao` / `Dividend`
+- `SOURCE_DAO_BOOTSTRAP_SCOPE=full`
+  - development-only stage-two
+  - also deploys and wires:
+    - `Committee`
+    - `DevToken`
+    - `NormalToken`
+    - `Project`
+    - `TokenLockup`
+    - `Acquired`
 
 ## 5. Prepare Modes
 
@@ -137,15 +155,15 @@ Stage-one state should at least report:
 
 ## 7. Relationship To Later Phases
 
-This stage is intentionally limited to the already-available
-`usdb_bootstrap_smoke.ts` flow.
+This development path now has two execution layers:
 
-Later phases will extend the job to:
+- `usdb_bootstrap_smoke.ts`
+  - `dao-dividend-only`
+- `usdb_bootstrap_full.ts`
+  - `full`
 
-- deploy the remaining SourceDAO modules
-- initialize them
-- wire them into `Dao`
-- replace workspace-mounted inputs with a release-grade artifact bundle
+Later phases should still replace workspace-mounted inputs with a release-grade
+artifact bundle.
 
 That later work should build on the same:
 

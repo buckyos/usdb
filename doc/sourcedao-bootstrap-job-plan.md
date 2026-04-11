@@ -70,6 +70,21 @@
 
 并复用 `SourceDAO/scripts/usdb_bootstrap_smoke.ts` 做链上验证。其余模块部署仍留在后续阶段。
 
+开发期现在已经继续扩到一个 `full` scope：
+
+- `SourceDAO/scripts/usdb_bootstrap_full.ts`
+
+它会在 `Dao` / `Dividend` 初始化后继续部署并注册：
+
+- `Committee`
+- `DevToken`
+- `NormalToken`
+- `Project`
+- `TokenLockup`
+- `Acquired`
+
+这仍然是开发期路径，正式发布仍建议消费固定 artifact bundle，而不是依赖工作区源码。
+
 ## 3. 与当前冷启动链路的关系
 
 当前推荐顺序是：

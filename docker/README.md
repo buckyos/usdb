@@ -259,10 +259,18 @@ Current `sourcedao-bootstrap` scope is intentionally narrow:
 - disabled by default
 - only supports `SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace`
 - reuses the local `SourceDAO` workspace
-- runs `SourceDAO/scripts/usdb_bootstrap_smoke.ts`
-- only initializes and verifies:
-  - `Dao`
-  - `Dividend`
+- supports:
+  - `SOURCE_DAO_BOOTSTRAP_SCOPE=dao-dividend-only`
+  - `SOURCE_DAO_BOOTSTRAP_SCOPE=full`
+- `dao-dividend-only` runs `SourceDAO/scripts/usdb_bootstrap_smoke.ts`
+- `full` runs `SourceDAO/scripts/usdb_bootstrap_full.ts`
+- `full` additionally deploys and wires:
+  - `Committee`
+  - `DevToken`
+  - `NormalToken`
+  - `Project`
+  - `TokenLockup`
+  - `Acquired`
 
 ## Container Smoke
 
@@ -357,12 +365,20 @@ cp tools/config/usdb-local.json \
   /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
 ```
 
+Prefer the explicit full-bootstrap template for long-lived setups:
+
+```bash
+cp /home/bucky/work/SourceDAO/tools/config/usdb-bootstrap-full.example.json \
+  /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
+```
+
 Then set in `docker/local/bootstrap/env/bootstrap.env`:
 
 ```env
 SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace
-SOURCE_DAO_BOOTSTRAP_PREPARE=validate
 SOURCE_DAO_REPO_HOST_DIR=../../SourceDAO
+SOURCE_DAO_BOOTSTRAP_SCOPE=full
+SOURCE_DAO_BOOTSTRAP_PREPARE=validate
 ```
 
 The bootstrap job rewrites a runtime copy of the SourceDAO config inside

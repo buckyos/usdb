@@ -88,7 +88,9 @@
 因此当前状态是：
 
 - `sourcedao-bootstrap` 已有可运行的开发期 one-shot
-- 完整 SourceDAO 其余模块部署仍待后续阶段补齐
+- `dao-dividend-only` scope 只做 `Dao` / `Dividend`
+- `full` scope 现在也可在开发期继续部署并注册其余主模块
+- 正式发布所需的固定 artifact bundle 仍待后续补齐
 
 统一本地控制台的总体设计见：
 
