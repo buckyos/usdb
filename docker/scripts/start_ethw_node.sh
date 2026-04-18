@@ -24,6 +24,12 @@ if [[ -z "${trusted_keys_file}" && -f "${bootstrap_dir}/trusted-ethw-genesis-key
   trusted_keys_file="${bootstrap_dir}/trusted-ethw-genesis-keys.json"
 fi
 
+if [[ "${trust_mode}" == "none" ]]; then
+  [[ -n "${genesis_manifest_file}" && -f "${genesis_manifest_file}" ]] || genesis_manifest_file=""
+  [[ -n "${genesis_signature_file}" && -f "${genesis_signature_file}" ]] || genesis_signature_file=""
+  [[ -n "${trusted_keys_file}" && -f "${trusted_keys_file}" ]] || trusted_keys_file=""
+fi
+
 validate_ethw_genesis_artifact "${trust_mode}" "${genesis_file}" "${genesis_manifest_file}" "${genesis_signature_file}" "${trusted_keys_file}"
 genesis_sha256="$(sha256_file "${genesis_file}")"
 

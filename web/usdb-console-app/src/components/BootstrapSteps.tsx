@@ -31,6 +31,8 @@ export function BootstrapSteps({
           const tone =
             step.state === 'completed'
               ? 'success'
+              : step.state === 'skipped'
+                ? 'neutral'
               : step.state === 'error'
                 ? 'danger'
                 : 'warning'
@@ -38,6 +40,8 @@ export function BootstrapSteps({
           const detailKey =
             step.state === 'completed'
               ? 'bootstrap.completed'
+              : step.state === 'skipped'
+                ? 'bootstrap.skipped'
               : step.state === 'error'
                 ? 'bootstrap.error'
                 : 'bootstrap.pending'
@@ -66,4 +70,3 @@ export function BootstrapSteps({
     </section>
   )
 }
-

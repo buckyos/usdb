@@ -68,5 +68,5 @@ export function presentArtifactCount(bootstrap: BootstrapSummary) {
 }
 
 export function completedBootstrapStepCount(bootstrap: BootstrapSummary) {
-  return bootstrap.steps.filter((step) => step.state === 'completed').length
+  return bootstrap.steps.filter((step) => step.state === 'completed' || step.state === 'skipped').length
 }

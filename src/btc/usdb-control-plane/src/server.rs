@@ -396,16 +396,22 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
         &state.config.bootstrap.sourcedao_bootstrap_marker,
     );
     let steps = vec![
-        derive_step_state("snapshot-loader", &snapshot_marker),
+        derive_snapshot_loader_step(&bootstrap_manifest, &snapshot_marker),
         derive_step_state("bootstrap-init", &bootstrap_manifest),
         derive_step_state("ethw-init", &ethw_init_marker),
         derive_step_state("sourcedao-bootstrap", &sourcedao_bootstrap_marker),
     ];
     let overall_state = if steps.iter().any(|step| step.state == "error") {
         "error".to_string()
-    } else if steps.iter().all(|step| step.state == "completed") {
+    } else if steps
+        .iter()
+        .all(|step| matches!(step.state.as_str(), "completed" | "skipped"))
+    {
         "completed".to_string()
-    } else if steps.iter().any(|step| step.state == "completed") {
+    } else if steps
+        .iter()
+        .any(|step| matches!(step.state.as_str(), "completed" | "skipped"))
+    {
         "in_progress".to_string()
     } else {
         "pending".to_string()
@@ -680,6 +686,28 @@ fn derive_step_state(step: &str, artifact: &ArtifactSummary) -> BootstrapStepSum
     }
 }
 
+fn derive_snapshot_loader_step(
+    bootstrap_manifest: &ArtifactSummary,
+    snapshot_marker: &ArtifactSummary,
+) -> BootstrapStepSummary {
+    let snapshot_mode = bootstrap_manifest
+        .data
+        .as_ref()
+        .and_then(|value| value.get("balance_history_snapshot_mode"))
+        .and_then(Value::as_str);
+
+    if snapshot_mode == Some("none") {
+        return BootstrapStepSummary {
+            step: "snapshot-loader".to_string(),
+            state: "skipped".to_string(),
+            artifact_path: short_path(&snapshot_marker.path),
+            error: None,
+        };
+    }
+
+    derive_step_state("snapshot-loader", snapshot_marker)
+}
+
 fn short_path(path: &str) -> String {
     if path.len() <= 72 {
         path.to_string()
@@ -741,6 +769,30 @@ mod tests {
         let step = derive_step_state("snapshot-loader", &artifact);
         assert_eq!(step.state, "pending");
         assert_eq!(step.artifact_path, "/tmp/missing.json");
+    }
+
+    #[test]
+    fn derive_snapshot_loader_step_reports_skipped_when_snapshot_mode_is_none() {
+        let bootstrap_manifest = ArtifactSummary {
+            path: "/tmp/bootstrap-manifest.json".to_string(),
+            exists: true,
+            error: None,
+            data: Some(json!({
+                "balance_history_snapshot_mode": "none"
+            })),
+        };
+        let snapshot_marker = ArtifactSummary {
+            path: "/tmp/snapshot-loader.done.json".to_string(),
+            exists: false,
+            error: Some("artifact file does not exist".to_string()),
+            data: None,
+        };
+
+        let step = derive_snapshot_loader_step(&bootstrap_manifest, &snapshot_marker);
+        assert_eq!(step.step, "snapshot-loader");
+        assert_eq!(step.state, "skipped");
+        assert_eq!(step.artifact_path, "/tmp/snapshot-loader.done.json");
+        assert!(step.error.is_none());
     }
 
     #[test]
