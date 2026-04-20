@@ -1,26 +1,70 @@
+import { InlineHelpTooltip } from './InlineHelpTooltip'
 import type { ArtifactSummary } from '../lib/types'
 
 type Tone = 'neutral' | 'success' | 'warning' | 'danger'
 
 interface ArtifactCardProps {
   title: string
+  helpText?: string
   summary: ArtifactSummary
   status: string
   tone: Tone
+  canOpenArtifact?: (path: string) => boolean
+  onOpenArtifact?: (path: string) => void
 }
 
-export function ArtifactCard({ title, summary, status, tone }: ArtifactCardProps) {
+export function ArtifactCard({
+  title,
+  helpText,
+  summary,
+  status,
+  tone,
+  canOpenArtifact,
+  onOpenArtifact,
+}: ArtifactCardProps) {
   const entries = Object.entries(summary.data ?? {}).slice(0, 8)
+  const canOpenSelf = Boolean(summary.exists && summary.data && onOpenArtifact)
+
+  function renderValue(value: unknown) {
+    if (typeof value === 'string' && value.endsWith('.json') && canOpenArtifact?.(value) && onOpenArtifact) {
+      return (
+        <button
+          className="console-link-button"
+          onClick={() => onOpenArtifact(value)}
+          type="button"
+        >
+          {value}
+        </button>
+      )
+    }
+
+    return typeof value === 'object' ? JSON.stringify(value) : String(value)
+  }
 
   return (
     <article className="console-card">
       <div className="mb-4 flex items-start justify-between gap-3">
-        <h3 className="text-base font-semibold text-[color:var(--cp-text)]">{title}</h3>
+        <h3 className="inline-flex items-center gap-2 text-base font-semibold text-[color:var(--cp-text)]">
+          <span>{title}</span>
+          <InlineHelpTooltip text={helpText} />
+        </h3>
         <span className="status-pill" data-tone={tone}>
           {status}
         </span>
       </div>
-      <p className="text-sm text-[color:var(--cp-muted)] break-all">{summary.path}</p>
+      <p className="text-sm text-[color:var(--cp-muted)] break-all">
+        {canOpenSelf ? (
+          <button
+            className="console-link-button"
+            onClick={() => onOpenArtifact?.(summary.path)}
+            type="button"
+          >
+            {summary.path}
+          </button>
+        ) : (
+          summary.path
+        )}
+      </p>
       <div className="mt-4 grid gap-3">
         {entries.map(([key, value]) => (
           <div
@@ -31,7 +75,7 @@ export function ArtifactCard({ title, summary, status, tone }: ArtifactCardProps
               {key}
             </span>
             <strong className="block break-all text-sm text-[color:var(--cp-text)]">
-              {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+              {renderValue(value)}
             </strong>
           </div>
         ))}
@@ -42,4 +86,3 @@ export function ArtifactCard({ title, summary, status, tone }: ArtifactCardProps
     </article>
   )
 }
-

@@ -1,8 +1,12 @@
+import { useState } from 'react'
 import { ArtifactCard } from '../components/ArtifactCard'
 import { BootstrapSteps } from '../components/BootstrapSteps'
 import { FieldValueList } from '../components/FieldValueList'
+import { InlineHelpTooltip } from '../components/InlineHelpTooltip'
+import { JsonArtifactViewer } from '../components/JsonArtifactViewer'
 import { artifactTone, type Tone } from '../lib/console'
 import type {
+  ArtifactSummary,
   OverviewResponse,
   SourceDaoBootstrapModule,
   SourceDaoBootstrapState,
@@ -97,35 +101,67 @@ function moduleFieldItems(
     {
       label: t('fields.moduleState'),
       value: stateLabel,
+      helpText: t('help.fields.moduleState'),
     },
     {
       label: t('fields.address'),
       value: presentValue(module?.address),
+      helpText: t('help.fields.address'),
     },
     {
       label: t('fields.source'),
       value: presentValue(module?.source),
+      helpText: t('help.fields.source'),
     },
     {
       label: t('fields.implementationAddress'),
       value: presentValue(module?.implementation_address),
+      helpText: t('help.fields.implementationAddress'),
     },
     {
       label: t('fields.proxyTxHash'),
       value: presentValue(module?.proxy_tx_hash),
+      helpText: t('help.fields.proxyTxHash'),
     },
     {
       label: t('fields.implementationTxHash'),
       value: presentValue(module?.implementation_tx_hash),
+      helpText: t('help.fields.implementationTxHash'),
     },
     {
       label: t('fields.wiringTxHash'),
       value: presentValue(module?.wiring_tx_hash),
+      helpText: t('help.fields.wiringTxHash'),
     },
   ]
 }
 
+function artifactFallback(): ArtifactSummary {
+  return {
+    path: '-',
+    exists: false,
+    error: null,
+    data: null,
+  }
+}
+
+function renderHeaderWithHelp(
+  label: string,
+  helpText?: string,
+) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{label}</span>
+      <InlineHelpTooltip text={helpText} />
+    </span>
+  )
+}
+
 export function BootstrapPage({ data, t }: BootstrapPageProps) {
+  const [selectedArtifact, setSelectedArtifact] = useState<{
+    title: string
+    summary: ArtifactSummary
+  } | null>(null)
   const sourcedaoState = parseSourceDaoState(data?.bootstrap.sourcedao_bootstrap_state.data)
   const sourcedaoStatus = sourcedaoState?.status ?? null
   const sourcedaoOperations = sourcedaoState?.operations ?? []
@@ -135,6 +171,41 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
   const sourcedaoCurrentStep = sourcedaoState?.current_step ?? null
   const sourcedaoLastError = sourcedaoState?.last_error ?? null
   const sourcedaoRuntimeMessage = sourcedaoState?.message ?? null
+  const bootstrapArtifacts = [
+    {
+      title: t('artifacts.bootstrapManifest'),
+      helpText: t('help.artifacts.bootstrapManifest'),
+      summary: data?.bootstrap.bootstrap_manifest ?? artifactFallback(),
+    },
+    {
+      title: t('artifacts.snapshotMarker'),
+      helpText: t('help.artifacts.snapshotMarker'),
+      summary: data?.bootstrap.snapshot_marker ?? artifactFallback(),
+    },
+    {
+      title: t('artifacts.ethwInitMarker'),
+      helpText: t('help.artifacts.ethwInitMarker'),
+      summary: data?.bootstrap.ethw_init_marker ?? artifactFallback(),
+    },
+    {
+      title: t('artifacts.ethwGenesis'),
+      helpText: t('help.artifacts.ethwGenesis'),
+      summary: data?.bootstrap.ethw_genesis ?? artifactFallback(),
+    },
+    {
+      title: t('artifacts.sourcedaoState'),
+      helpText: t('help.artifacts.sourcedaoState'),
+      summary: data?.bootstrap.sourcedao_bootstrap_state ?? artifactFallback(),
+    },
+    {
+      title: t('artifacts.sourcedaoMarker'),
+      helpText: t('help.artifacts.sourcedaoMarker'),
+      summary: data?.bootstrap.sourcedao_bootstrap_marker ?? artifactFallback(),
+    },
+  ]
+  const bootstrapArtifactsByPath = new Map(
+    bootstrapArtifacts.map((artifact) => [artifact.summary.path, artifact] as const),
+  )
   const sourcedaoModuleNames = Array.from(
     new Set([
       ...SOURCE_DAO_MODULE_ORDER,
@@ -166,82 +237,27 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
         </p>
       </section>
 
-      <section className="mt-1 grid gap-4 xl:grid-cols-4">
-        <ArtifactCard
-          title={t('artifacts.bootstrapManifest')}
-          summary={
-            data?.bootstrap.bootstrap_manifest ?? {
-              path: '-',
-              exists: false,
-              error: null,
-              data: null,
-            }
-          }
-          status={
-            data?.bootstrap.bootstrap_manifest.exists ? t('artifact.present') : t('artifact.missing')
-          }
-          tone={artifactTone(Boolean(data?.bootstrap.bootstrap_manifest.exists))}
-        />
-        <ArtifactCard
-          title={t('artifacts.snapshotMarker')}
-          summary={
-            data?.bootstrap.snapshot_marker ?? {
-              path: '-',
-              exists: false,
-              error: null,
-              data: null,
-            }
-          }
-          status={data?.bootstrap.snapshot_marker.exists ? t('artifact.present') : t('artifact.missing')}
-          tone={artifactTone(Boolean(data?.bootstrap.snapshot_marker.exists))}
-        />
-        <ArtifactCard
-          title={t('artifacts.ethwInitMarker')}
-          summary={
-            data?.bootstrap.ethw_init_marker ?? {
-              path: '-',
-              exists: false,
-              error: null,
-              data: null,
-            }
-          }
-          status={data?.bootstrap.ethw_init_marker.exists ? t('artifact.present') : t('artifact.missing')}
-          tone={artifactTone(Boolean(data?.bootstrap.ethw_init_marker.exists))}
-        />
-        <ArtifactCard
-          title={t('artifacts.sourcedaoState')}
-          summary={
-            data?.bootstrap.sourcedao_bootstrap_state ?? {
-              path: '-',
-              exists: false,
-              error: null,
-              data: null,
-            }
-          }
-          status={
-            data?.bootstrap.sourcedao_bootstrap_state.exists
-              ? t('artifact.present')
-              : t('artifact.missing')
-          }
-          tone={artifactTone(Boolean(data?.bootstrap.sourcedao_bootstrap_state.exists))}
-        />
-        <ArtifactCard
-          title={t('artifacts.sourcedaoMarker')}
-          summary={
-            data?.bootstrap.sourcedao_bootstrap_marker ?? {
-              path: '-',
-              exists: false,
-              error: null,
-              data: null,
-            }
-          }
-          status={
-            data?.bootstrap.sourcedao_bootstrap_marker.exists
-              ? t('artifact.present')
-              : t('artifact.missing')
-          }
-          tone={artifactTone(Boolean(data?.bootstrap.sourcedao_bootstrap_marker.exists))}
-        />
+      <section className="mt-1 grid gap-4 xl:grid-cols-3">
+        {bootstrapArtifacts.map((artifact) => (
+          <ArtifactCard
+            key={artifact.summary.path}
+            title={artifact.title}
+            helpText={artifact.helpText}
+            summary={artifact.summary}
+            status={artifact.summary.exists ? t('artifact.present') : t('artifact.missing')}
+            tone={artifactTone(Boolean(artifact.summary.exists))}
+            canOpenArtifact={(path) => bootstrapArtifactsByPath.has(path)}
+            onOpenArtifact={(path) => {
+              const linkedArtifact = bootstrapArtifactsByPath.get(path)
+              if (linkedArtifact) {
+                setSelectedArtifact({
+                  title: linkedArtifact.title,
+                  summary: linkedArtifact.summary,
+                })
+              }
+            }}
+          />
+        ))}
       </section>
 
       <BootstrapSteps
@@ -286,50 +302,62 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                       {
                         label: t('fields.status'),
                         value: translateStateValue(sourcedaoState.status, t),
+                        helpText: t('help.fields.status'),
                       },
                       {
                         label: t('fields.currentStep'),
                         value: presentValue(sourcedaoCurrentStep),
+                        helpText: t('help.fields.currentStep'),
                       },
                       {
                         label: t('fields.scope'),
                         value: presentValue(sourcedaoState.scope),
+                        helpText: t('help.fields.scope'),
                       },
                       {
                         label: t('fields.runtimeMessage'),
                         value: presentValue(sourcedaoRuntimeMessage),
+                        helpText: t('help.fields.runtimeMessage'),
                       },
                       {
                         label: t('fields.chainId'),
                         value: presentValue(sourcedaoState.chain_id),
+                        helpText: t('help.fields.chainId'),
                       },
                       {
                         label: t('fields.generatedAt'),
                         value: formatTimestamp(sourcedaoState.generated_at),
+                        helpText: t('help.fields.generatedAt'),
                       },
                       {
                         label: t('fields.completedAt'),
                         value: formatTimestamp(sourcedaoState.completed_at),
+                        helpText: t('help.fields.completedAt'),
                       },
                       {
                         label: t('fields.bootstrapAdmin'),
                         value: presentValue(sourcedaoState.bootstrap_admin),
+                        helpText: t('help.fields.bootstrapAdmin'),
                       },
                       {
                         label: t('fields.daoAddress'),
                         value: presentValue(sourcedaoState.dao_address),
+                        helpText: t('help.fields.daoAddress'),
                       },
                       {
                         label: t('fields.dividendAddress'),
                         value: presentValue(sourcedaoState.dividend_address),
+                        helpText: t('help.fields.dividendAddress'),
                       },
                       {
                         label: t('fields.configPath'),
                         value: presentValue(sourcedaoState.config_path),
+                        helpText: t('help.fields.configPath'),
                       },
                       {
                         label: t('fields.artifactsDir'),
                         value: presentValue(sourcedaoState.artifacts_dir),
+                        helpText: t('help.fields.artifactsDir'),
                       },
                     ]}
                   />
@@ -348,6 +376,7 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                     items={sourcedaoFinalWiring.map(([key, value]) => ({
                       label: humanizeKey(key),
                       value: presentValue(value),
+                      helpText: t('help.fields.finalWiringAddress'),
                     }))}
                   />
                 </div>
@@ -394,10 +423,10 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                 <table className="console-table">
                   <thead>
                     <tr>
-                      <th>{t('fields.operation')}</th>
-                      <th>{t('fields.status')}</th>
-                      <th>{t('fields.txHash')}</th>
-                      <th>{t('fields.details')}</th>
+                      <th>{renderHeaderWithHelp(t('fields.operation'), t('help.fields.operation'))}</th>
+                      <th>{renderHeaderWithHelp(t('fields.status'), t('help.fields.status'))}</th>
+                      <th>{renderHeaderWithHelp(t('fields.txHash'), t('help.fields.txHash'))}</th>
+                      <th>{renderHeaderWithHelp(t('fields.details'), t('help.fields.details'))}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -475,6 +504,15 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
           </div>
         )}
       </section>
+      {selectedArtifact?.summary.data ? (
+        <JsonArtifactViewer
+          title={selectedArtifact.title}
+          path={selectedArtifact.summary.path}
+          data={selectedArtifact.summary.data}
+          closeLabel={t('actions.closeViewer')}
+          onClose={() => setSelectedArtifact(null)}
+        />
+      ) : null}
     </div>
   )
 }

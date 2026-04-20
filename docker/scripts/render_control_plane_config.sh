@@ -61,6 +61,7 @@ cat >>"${output_path}" <<EOF
 bootstrap_manifest = "${CONTROL_PLANE_BOOTSTRAP_MANIFEST:-/bootstrap/bootstrap-manifest.json}"
 snapshot_marker = "${CONTROL_PLANE_SNAPSHOT_MARKER:-/data/balance-history/bootstrap/snapshot-loader.done.json}"
 ethw_init_marker = "${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-init.done.json}"
+ethw_genesis = "${CONTROL_PLANE_ETHW_GENESIS:-/bootstrap/ethw-genesis.json}"
 sourcedao_bootstrap_state = "${CONTROL_PLANE_SOURCEDAO_STATE:-/bootstrap/sourcedao-bootstrap-state.json}"
 sourcedao_bootstrap_marker = "${CONTROL_PLANE_SOURCEDAO_MARKER:-/bootstrap/sourcedao-bootstrap.done.json}"
 

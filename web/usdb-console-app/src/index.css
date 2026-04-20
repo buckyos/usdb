@@ -156,6 +156,23 @@ body {
   opacity: 0.64;
 }
 
+.console-link-button {
+  color: var(--cp-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.console-link-button:hover,
+.console-link-button:focus-visible {
+  color: color-mix(in srgb, var(--cp-accent) 76%, var(--cp-text));
+  outline: none;
+}
+
 .console-table {
   width: 100%;
   border-collapse: collapse;
@@ -215,4 +232,47 @@ body {
 .console-help-tooltip__trigger:hover + .console-help-tooltip__content,
 .console-help-tooltip__trigger:focus-visible + .console-help-tooltip__content {
   opacity: 1;
+}
+
+.console-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--cp-text) 18%, transparent);
+  backdrop-filter: blur(4px);
+}
+
+.console-modal {
+  width: min(1040px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  border: 1px solid var(--cp-border);
+  border-radius: 28px;
+  background: color-mix(in srgb, var(--cp-surface) 96%, white);
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.18);
+  padding: 20px;
+}
+
+.console-modal__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+}
+
+.console-modal__code {
+  margin-top: 16px;
+  max-height: calc(100dvh - 180px);
+  overflow: auto;
+  border: 1px solid var(--cp-border);
+  border-radius: 20px;
+  background: color-mix(in srgb, white 86%, var(--cp-surface));
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--cp-text);
 }

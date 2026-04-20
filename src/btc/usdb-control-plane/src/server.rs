@@ -411,6 +411,7 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
         read_artifact_summary(&state.config, &state.config.bootstrap.snapshot_marker);
     let ethw_init_marker =
         read_artifact_summary(&state.config, &state.config.bootstrap.ethw_init_marker);
+    let ethw_genesis = read_artifact_summary(&state.config, &state.config.bootstrap.ethw_genesis);
     let sourcedao_bootstrap_state = read_artifact_summary(
         &state.config,
         &state.config.bootstrap.sourcedao_bootstrap_state,
@@ -445,6 +446,7 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
         bootstrap_manifest,
         snapshot_marker,
         ethw_init_marker,
+        ethw_genesis,
         sourcedao_bootstrap_state,
         sourcedao_bootstrap_marker,
         steps,

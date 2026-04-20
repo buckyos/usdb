@@ -102,6 +102,7 @@ export interface BootstrapSummary {
   bootstrap_manifest: ArtifactSummary
   snapshot_marker: ArtifactSummary
   ethw_init_marker: ArtifactSummary
+  ethw_genesis: ArtifactSummary
   sourcedao_bootstrap_state: ArtifactSummary
   sourcedao_bootstrap_marker: ArtifactSummary
   steps: BootstrapStepSummary[]

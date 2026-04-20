@@ -42,6 +42,7 @@ pub struct BootstrapSummary {
     pub bootstrap_manifest: ArtifactSummary,
     pub snapshot_marker: ArtifactSummary,
     pub ethw_init_marker: ArtifactSummary,
+    pub ethw_genesis: ArtifactSummary,
     pub sourcedao_bootstrap_state: ArtifactSummary,
     pub sourcedao_bootstrap_marker: ArtifactSummary,
     pub steps: Vec<BootstrapStepSummary>,
