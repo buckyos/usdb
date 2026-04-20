@@ -3,8 +3,8 @@ import useSWR from 'swr'
 import { ConsoleShell } from './components/ConsoleShell'
 import { fetchOverview } from './lib/api'
 import { BootstrapPage } from './pages/BootstrapPage'
+import { MePage } from './pages/MePage'
 import { OverviewPage } from './pages/OverviewPage'
-import { PlaceholderPage } from './pages/PlaceholderPage'
 import { ProtocolPage } from './pages/ProtocolPage'
 import { ServicesPage } from './pages/ServicesPage'
 import { useI18n } from './i18n/provider'
@@ -42,16 +42,8 @@ export function App() {
         />
         <Route path="/bootstrap" element={<BootstrapPage data={data} t={t} />} />
         <Route path="/protocol" element={<ProtocolPage data={data} locale={locale} t={t} />} />
-        <Route
-          path="/me"
-          element={
-            <PlaceholderPage
-              title={t('pages.me.title')}
-              subtitle={t('pages.me.subtitle')}
-              body={t('pages.me.body')}
-            />
-          }
-        />
+        <Route path="/me" element={<Navigate to="/me/eth" replace />} />
+        <Route path="/me/:identityKind" element={<MePage data={data} t={t} />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>
     </ConsoleShell>
