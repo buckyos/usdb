@@ -639,6 +639,15 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
         .ok()
         .and_then(|value| value.as_ref())
         .and_then(|value| decode_hex_quantity(&value.timestamp).ok());
+    let syncing_value = syncing.ok();
+    let query_ready = Some(reachable && block_number_value.is_some());
+    let consensus_ready = match (query_ready, syncing_value.as_ref()) {
+        (Some(false), _) => Some(false),
+        (Some(true), Some(Value::Bool(false))) => Some(true),
+        (Some(true), Some(_)) => Some(false),
+        (Some(true), None) => None,
+        _ => None,
+    };
 
     let data = if reachable {
         Some(EthwServiceSummary {
@@ -648,7 +657,9 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
             block_number: block_number_value,
             latest_block_hash,
             latest_block_time,
-            syncing: syncing.ok(),
+            syncing: syncing_value,
+            query_ready,
+            consensus_ready,
         })
     } else {
         None

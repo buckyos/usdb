@@ -22,6 +22,23 @@ interface OverviewPageProps {
   t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 }
 
+function normalizeNumericIdentifier(value?: string | null) {
+  if (!value) return null
+  const raw = value.trim()
+  if (!raw) return null
+  try {
+    return raw.startsWith('0x') || raw.startsWith('0X') ? BigInt(raw).toString(10) : BigInt(raw).toString(10)
+  } catch {
+    return raw
+  }
+}
+
+function shouldShowEthwNetworkId(chainId?: string | null, networkId?: string | null) {
+  if (!networkId) return false
+  if (!chainId) return true
+  return normalizeNumericIdentifier(chainId) !== normalizeNumericIdentifier(networkId)
+}
+
 function overallBootstrapTone(state?: string): Tone {
   if (state === 'completed') return 'success'
   if (state === 'error') return 'danger'
@@ -214,11 +231,18 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                 value: displayText(data?.services.ethw.data?.chain_id, t),
                 helpText: t('help.fields.chainId', ''),
               },
-              {
-                label: t('fields.networkId'),
-                value: displayText(data?.services.ethw.data?.network_id, t),
-                helpText: t('help.fields.networkId', ''),
-              },
+              ...(shouldShowEthwNetworkId(
+                data?.services.ethw.data?.chain_id,
+                data?.services.ethw.data?.network_id,
+              )
+                ? [
+                    {
+                      label: t('fields.networkId'),
+                      value: displayText(data?.services.ethw.data?.network_id, t),
+                      helpText: t('help.fields.networkId', ''),
+                    },
+                  ]
+                : []),
               {
                 label: t('fields.blockNumber'),
                 value: displayNumber(locale, data?.services.ethw.data?.block_number, t),

@@ -34,6 +34,23 @@ type ServiceId = 'btc-node' | 'balance-history' | 'usdb-indexer' | 'ethw' | 'ord
 
 const SERVICE_IDS: ServiceId[] = ['btc-node', 'balance-history', 'usdb-indexer', 'ethw', 'ord']
 
+function normalizeNumericIdentifier(value?: string | null) {
+  if (!value) return null
+  const raw = value.trim()
+  if (!raw) return null
+  try {
+    return raw.startsWith('0x') || raw.startsWith('0X') ? BigInt(raw).toString(10) : BigInt(raw).toString(10)
+  } catch {
+    return raw
+  }
+}
+
+function shouldShowEthwNetworkId(chainId?: string | null, networkId?: string | null) {
+  if (!networkId) return false
+  if (!chainId) return true
+  return normalizeNumericIdentifier(chainId) !== normalizeNumericIdentifier(networkId)
+}
+
 function renderPair(label: string, value: string, helpText?: string) {
   return (
     <div className="border-t border-[color:var(--cp-border)] pt-3 sm:flex sm:gap-2">
@@ -237,11 +254,15 @@ function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | nu
           value: displayText(data?.chain_id, t),
           helpText: t('help.fields.chainId'),
         },
-        {
-          label: t('fields.networkId'),
-          value: displayText(data?.network_id, t),
-          helpText: t('help.fields.networkId'),
-        },
+        ...(shouldShowEthwNetworkId(data?.chain_id, data?.network_id)
+          ? [
+              {
+                label: t('fields.networkId'),
+                value: displayText(data?.network_id, t),
+                helpText: t('help.fields.networkId'),
+              },
+            ]
+          : []),
         {
           label: t('fields.blockNumber'),
           value: displayNumber(locale, data?.block_number, t),

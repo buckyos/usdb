@@ -128,6 +128,8 @@ pub struct EthwServiceSummary {
     pub latest_block_hash: Option<String>,
     pub latest_block_time: Option<u64>,
     pub syncing: Option<Value>,
+    pub query_ready: Option<bool>,
+    pub consensus_ready: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
