@@ -156,6 +156,7 @@
 
 `sourcedao-bootstrap` 应消费一份独立配置，例如：
 
+- `ethw-bootstrap-config.json`
 - `sourcedao-bootstrap-config.json`
 
 建议至少包含：

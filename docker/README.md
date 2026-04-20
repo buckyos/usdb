@@ -577,8 +577,9 @@ docker/scripts/run_sourcedao_bootstrap.sh up
 该 helper 会自动：
 
 1. 初始化 `docker/local/bootstrap/env/bootstrap.env`
-2. 初始化 `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
-3. 生成 `docker/local/bootstrap/manifests/ethw-genesis.json`
+2. 初始化 `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
+3. 初始化 `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
+4. 生成 `docker/local/bootstrap/manifests/ethw-genesis.json`
 4. 启动：
    - `compose.base.yml`
    - `compose.dev-sim.yml`
@@ -631,6 +632,7 @@ docker compose \
 
 - 等待 ETHW RPC ready
 - 消费 `/bootstrap/sourcedao-bootstrap-config.json`
+- 链级 genesis 输入来自 `/bootstrap/ethw-bootstrap-config.json`
 - 调用 `SourceDAO` 仓库里的部署脚本
 - 产出：
   - `sourcedao-bootstrap-state.json`

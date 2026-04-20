@@ -32,7 +32,7 @@ It combines:
 
 If docker/local/dev-full-sim/env/dev-full-sim.env does not exist, this helper
 initializes it from docker/env/dev-full-sim.env.example once. It will also
-scaffold SourceDAO bootstrap config and ETHW genesis inputs under:
+scaffold ETHW chain bootstrap config, SourceDAO bootstrap config, and ETHW genesis inputs under:
 
   docker/local/dev-full-sim/bootstrap/manifests/
 

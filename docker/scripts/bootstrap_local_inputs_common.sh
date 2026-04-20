@@ -82,21 +82,21 @@ go_ethereum_repo_dir() {
   host_path_from_docker_dir "${GO_ETHEREUM_REPO_HOST_DIR:-../../go-ethereum}"
 }
 
-ensure_source_dao_config() {
+ensure_ethw_chain_config() {
   local manifests_dir
-  local source_dao_repo
+  local go_ethereum_repo
   local config_file
   local source_template
 
   manifests_dir="$(bootstrap_manifests_dir)"
-  source_dao_repo="$(source_dao_repo_dir)"
-  config_file="${manifests_dir}/sourcedao-bootstrap-config.json"
-  source_template="${source_dao_repo}/tools/config/usdb-bootstrap-full.example.json"
+  go_ethereum_repo="$(go_ethereum_repo_dir)"
+  config_file="${manifests_dir}/ethw-bootstrap-config.json"
+  source_template="${go_ethereum_repo}/tools/config/usdb-chain-bootstrap.example.json"
 
   mkdir -p "${manifests_dir}"
 
   [[ -f "${source_template}" ]] || {
-    echo "Missing SourceDAO bootstrap template: ${source_template}" >&2
+    echo "Missing ETHW chain bootstrap template: ${source_template}" >&2
     exit 1
   }
 
@@ -105,13 +105,13 @@ ensure_source_dao_config() {
     echo "Initialized ${config_file} from ${source_template}"
   fi
 
-  SOURCE_DAO_SOURCE_TEMPLATE="${source_template}" \
-  SOURCE_DAO_TARGET_CONFIG="${config_file}" \
+  ETHW_CHAIN_SOURCE_TEMPLATE="${source_template}" \
+  ETHW_CHAIN_TARGET_CONFIG="${config_file}" \
   node <<'NODE'
 const fs = require("node:fs");
 
-const sourceTemplate = process.env.SOURCE_DAO_SOURCE_TEMPLATE;
-const targetConfig = process.env.SOURCE_DAO_TARGET_CONFIG;
+const sourceTemplate = process.env.ETHW_CHAIN_SOURCE_TEMPLATE;
+const targetConfig = process.env.ETHW_CHAIN_TARGET_CONFIG;
 const source = JSON.parse(fs.readFileSync(sourceTemplate, "utf8"));
 const target = JSON.parse(fs.readFileSync(targetConfig, "utf8"));
 
@@ -125,7 +125,114 @@ for (const field of ["genesisDifficulty", "minimumDifficulty"]) {
 
 if (updated) {
   fs.writeFileSync(targetConfig, `${JSON.stringify(target, null, 2)}\n`);
-  console.log(`Backfilled difficulty defaults in ${targetConfig}`);
+  console.log(`Backfilled ETHW difficulty defaults in ${targetConfig}`);
+}
+NODE
+}
+
+ensure_source_dao_config() {
+  local manifests_dir
+  local source_dao_repo
+  local config_file
+  local source_template
+
+  manifests_dir="$(bootstrap_manifests_dir)"
+  source_dao_repo="$(source_dao_repo_dir)"
+  config_file="${manifests_dir}/sourcedao-bootstrap-config.json"
+  source_template="${source_dao_repo}/tools/config/sourcedao-bootstrap-full.example.json"
+
+  mkdir -p "${manifests_dir}"
+
+  [[ -f "${source_template}" ]] || {
+    echo "Missing SourceDAO bootstrap template: ${source_template}" >&2
+    exit 1
+  }
+
+  if [[ ! -f "${config_file}" ]]; then
+    cp "${source_template}" "${config_file}"
+    echo "Initialized ${config_file} from ${source_template}"
+  fi
+  
+  SOURCE_DAO_TARGET_CONFIG="${config_file}" \
+  node <<'NODE'
+const fs = require("node:fs");
+
+const targetConfig = process.env.SOURCE_DAO_TARGET_CONFIG;
+const target = JSON.parse(fs.readFileSync(targetConfig, "utf8"));
+const chainOnlyFields = [
+  "genesisDifficulty",
+  "minimumDifficulty",
+  "dividendFeeSplitBlock",
+  "bootstrapAdminBalanceWei",
+  "daoArtifact",
+  "dividendArtifact",
+];
+
+let updated = false;
+for (const field of chainOnlyFields) {
+  if (Object.prototype.hasOwnProperty.call(target, field)) {
+    delete target[field];
+    updated = true;
+  }
+}
+
+if (updated) {
+  fs.writeFileSync(targetConfig, `${JSON.stringify(target, null, 2)}\n`);
+  console.log(`Removed chain-level fields from ${targetConfig}`);
+}
+NODE
+}
+
+validate_bootstrap_config_alignment() {
+  local manifests_dir
+  local ethw_chain_config
+  local source_dao_config
+
+  manifests_dir="$(bootstrap_manifests_dir)"
+  ethw_chain_config="${manifests_dir}/ethw-bootstrap-config.json"
+  source_dao_config="${manifests_dir}/sourcedao-bootstrap-config.json"
+
+  [[ -f "${ethw_chain_config}" ]] || {
+    echo "Missing ETHW chain bootstrap config: ${ethw_chain_config}" >&2
+    exit 1
+  }
+  [[ -f "${source_dao_config}" ]] || {
+    echo "Missing SourceDAO bootstrap config: ${source_dao_config}" >&2
+    exit 1
+  }
+
+  ETHW_CHAIN_CONFIG="${ethw_chain_config}" \
+  SOURCE_DAO_CONFIG="${source_dao_config}" \
+  node <<'NODE'
+const fs = require("node:fs");
+
+const ethwPath = process.env.ETHW_CHAIN_CONFIG;
+const sourceDaoPath = process.env.SOURCE_DAO_CONFIG;
+const ethw = JSON.parse(fs.readFileSync(ethwPath, "utf8"));
+const sourceDao = JSON.parse(fs.readFileSync(sourceDaoPath, "utf8"));
+
+const sharedFields = [
+  "chainId",
+  "daoAddress",
+  "dividendAddress",
+  "bootstrapAdminPrivateKey",
+];
+
+const mismatches = [];
+for (const field of sharedFields) {
+  const a = ethw[field];
+  const b = sourceDao[field];
+  if (a !== b) {
+    mismatches.push(`${field}: ethw=${JSON.stringify(a)} sourcedao=${JSON.stringify(b)}`);
+  }
+}
+
+if (mismatches.length > 0) {
+  console.error(`Bootstrap config mismatch between ${ethwPath} and ${sourceDaoPath}`);
+  for (const mismatch of mismatches) {
+    console.error(`  - ${mismatch}`);
+  }
+  process.exit(1);
 }
 NODE
 }
@@ -198,7 +305,7 @@ EOF
 ensure_ethw_genesis() {
   local manifests_dir
   local genesis_file
-  local config_file
+  local chain_config_file
   local runtime_config_file
   local artifacts_dir
   local ethw_image
@@ -206,26 +313,26 @@ ensure_ethw_genesis() {
 
   manifests_dir="$(bootstrap_manifests_dir)"
   genesis_file="${manifests_dir}/ethw-genesis.json"
-  config_file="${manifests_dir}/sourcedao-bootstrap-config.json"
-  runtime_config_file="${manifests_dir}/sourcedao-bootstrap.runtime.json"
+  chain_config_file="${manifests_dir}/ethw-bootstrap-config.json"
+  runtime_config_file="${manifests_dir}/ethw-bootstrap.runtime.json"
   artifacts_dir="$(source_dao_artifacts_dir)"
   ethw_image="$(env_get ETHW_IMAGE usdb-ethw:local)"
 
   ensure_ethw_image_exists
   ensure_source_dao_artifacts
-  [[ -f "${config_file}" ]] || {
-    echo "Missing SourceDAO bootstrap config: ${config_file}" >&2
+  [[ -f "${chain_config_file}" ]] || {
+    echo "Missing ETHW chain bootstrap config: ${chain_config_file}" >&2
     exit 1
   }
 
-  write_genesis_runtime_config "${config_file}" "${runtime_config_file}"
+  write_genesis_runtime_config "${chain_config_file}" "${runtime_config_file}"
 
   if [[ -f "${genesis_file}" ]]; then
     if python3 -m json.tool "${genesis_file}" >/dev/null 2>&1; then
-      if SOURCE_DAO_BOOTSTRAP_CONFIG="${config_file}" ETHW_GENESIS_FILE="${genesis_file}" node <<'NODE'
+      if ETHW_CHAIN_BOOTSTRAP_CONFIG="${chain_config_file}" ETHW_GENESIS_FILE="${genesis_file}" node <<'NODE'
 const fs = require("node:fs");
 
-const configPath = process.env.SOURCE_DAO_BOOTSTRAP_CONFIG;
+const configPath = process.env.ETHW_CHAIN_BOOTSTRAP_CONFIG;
 const genesisPath = process.env.ETHW_GENESIS_FILE;
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const genesis = JSON.parse(fs.readFileSync(genesisPath, "utf8"));
@@ -268,17 +375,17 @@ NODE
   fi
 
   tmp_genesis_file="$(mktemp "${manifests_dir}/ethw-genesis.json.tmp.XXXXXX")"
-  echo "Generating ${genesis_file} from ${config_file}"
+  echo "Generating ${genesis_file} from ${chain_config_file}"
   if ! docker run --rm \
     -v "${manifests_dir}:/workspace/bootstrap:ro" \
     -v "${artifacts_dir}:$(genesis_runtime_artifacts_dir):ro" \
     "${ethw_image}" \
     dumpgenesis \
     --usdb \
-    --usdb.bootstrap.config /workspace/bootstrap/sourcedao-bootstrap.runtime.json \
+    --usdb.bootstrap.config /workspace/bootstrap/ethw-bootstrap.runtime.json \
     > "${tmp_genesis_file}"; then
     rm -f "${tmp_genesis_file}"
-    echo "Failed to generate ETHW genesis from ${config_file}" >&2
+    echo "Failed to generate ETHW genesis from ${chain_config_file}" >&2
     exit 1
   fi
 
@@ -293,7 +400,9 @@ NODE
 
 prepare_local_inputs() {
   init_env_file
+  ensure_ethw_chain_config
   ensure_source_dao_config
+  validate_bootstrap_config_alignment
   ensure_ethw_genesis
 }
 

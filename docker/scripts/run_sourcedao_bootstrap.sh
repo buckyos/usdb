@@ -18,9 +18,10 @@ This helper wraps the full local SourceDAO bootstrap path on top of:
 
 It will:
   1. scaffold docker/local/bootstrap/env/bootstrap.env if missing
-  2. scaffold docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json if missing
-  3. generate docker/local/bootstrap/manifests/ethw-genesis.json if missing
-  4. start the local BTC + ETHW + SourceDAO bootstrap stack
+  2. scaffold docker/local/bootstrap/manifests/ethw-bootstrap-config.json if missing
+  3. scaffold docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json if missing
+  4. generate docker/local/bootstrap/manifests/ethw-genesis.json if needed
+  5. start the local BTC + ETHW + SourceDAO bootstrap stack
 
 By default, this helper also overrides the bootstrap flow to:
   SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace

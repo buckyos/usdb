@@ -50,6 +50,7 @@ Stage-one `sourcedao-bootstrap` consumes:
 - `SourceDAO` `node_modules`
 - `SourceDAO` `artifacts-usdb`
 - copied bootstrap config under:
+  - `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
   - `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
 
 Recommended preparation:
@@ -59,7 +60,7 @@ cd /home/bucky/work/SourceDAO
 npm ci
 npm run build:usdb
 
-cp tools/config/usdb-bootstrap-full.example.json \
+cp tools/config/sourcedao-bootstrap-full.example.json \
   /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
 ```
 
@@ -70,7 +71,7 @@ Notes:
 - the Docker job also rewrites a runtime copy of the config under `/bootstrap`
   so `artifactsDir` resolves correctly inside the container
 - the recommended long-term source is now:
-  - `SourceDAO/tools/config/usdb-bootstrap-full.example.json`
+  - `SourceDAO/tools/config/sourcedao-bootstrap-full.example.json`
 - full bootstrap should prefer explicit config sections over script fallbacks:
   - `committee`
   - `devToken`

@@ -65,6 +65,7 @@ docker/local/
   - bootnodes manifest
   - ETHW genesis artifact
   - 本地 service manifest
+  - 开发期 `ethw-bootstrap-config.json`
   - 开发期 `sourcedao-bootstrap-config.json`
 
 ## 四种本地启动入口
@@ -180,6 +181,7 @@ docker/scripts/run_world_sim.sh up-full
 使用：
 
 - `docker/local/bootstrap/env/bootstrap.env`
+- `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
 - `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
 
 启动命令：
