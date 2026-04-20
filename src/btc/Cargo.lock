@@ -5169,6 +5169,7 @@ name = "usdb-control-plane"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bitcoincore-rpc",
  "clap",
  "log",
  "reqwest 0.13.1",
