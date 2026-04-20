@@ -15,6 +15,7 @@
         "rusqlite",
         "bucky",
         "regtest",
+        "sourcedao",
     ],
     "rust-analyzer.linkedProjects": [
         "./src/btc/Cargo.toml"
