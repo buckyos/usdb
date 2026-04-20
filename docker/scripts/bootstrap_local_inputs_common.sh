@@ -53,6 +53,31 @@ source_dao_repo_dir() {
   host_path_from_docker_dir "$(env_get SOURCE_DAO_REPO_HOST_DIR ../../SourceDAO)"
 }
 
+source_dao_artifacts_dir() {
+  local artifacts_dir
+  local source_dao_repo
+
+  artifacts_dir="$(env_get SOURCE_DAO_ARTIFACTS_DIR /workspace/SourceDAO/artifacts-usdb)"
+  source_dao_repo="$(source_dao_repo_dir)"
+
+  case "${artifacts_dir}" in
+    /workspace/SourceDAO/*)
+      printf '%s\n' "${source_dao_repo}/${artifacts_dir#/workspace/SourceDAO/}"
+      ;;
+    ./*|../*|*)
+      if [[ "${artifacts_dir}" = /* ]]; then
+        printf '%s\n' "${artifacts_dir}"
+      else
+        printf '%s\n' "${source_dao_repo}/${artifacts_dir#./}"
+      fi
+      ;;
+  esac
+}
+
+genesis_runtime_artifacts_dir() {
+  printf '%s\n' "/workspace/source-dao-artifacts"
+}
+
 go_ethereum_repo_dir() {
   host_path_from_docker_dir "${GO_ETHEREUM_REPO_HOST_DIR:-../../go-ethereum}"
 }
@@ -81,6 +106,58 @@ ensure_source_dao_config() {
   fi
 }
 
+ensure_source_dao_artifacts() {
+  local source_dao_repo
+  local artifacts_dir
+
+  source_dao_repo="$(source_dao_repo_dir)"
+  artifacts_dir="$(source_dao_artifacts_dir)"
+
+  [[ -d "${source_dao_repo}" ]] || {
+    echo "Missing SourceDAO repo: ${source_dao_repo}" >&2
+    exit 1
+  }
+
+  if [[ -d "${artifacts_dir}" ]]; then
+    return
+  fi
+
+  if [[ ! -d "${source_dao_repo}/node_modules" ]]; then
+    echo "Installing SourceDAO node_modules with npm ci"
+    (cd "${source_dao_repo}" && npm ci)
+  fi
+
+  echo "Building SourceDAO USDB artifacts"
+  (
+    cd "${source_dao_repo}" && \
+    SOURCE_DAO_ARTIFACTS_DIR="${artifacts_dir}" \
+    SOURCE_DAO_CACHE_DIR="${source_dao_repo}/cache-usdb" \
+    npm run build:usdb
+  )
+}
+
+write_genesis_runtime_config() {
+  local source_config="${1:?source config is required}"
+  local runtime_config="${2:?runtime config is required}"
+  local runtime_artifacts_dir
+
+  runtime_artifacts_dir="$(genesis_runtime_artifacts_dir)"
+
+  SOURCE_DAO_SOURCE_CONFIG="${source_config}" \
+  SOURCE_DAO_RUNTIME_CONFIG="${runtime_config}" \
+  SOURCE_DAO_RUNTIME_ARTIFACTS="${runtime_artifacts_dir}" \
+  node <<'NODE'
+const fs = require("node:fs");
+const sourceConfig = process.env.SOURCE_DAO_SOURCE_CONFIG;
+const runtimeConfig = process.env.SOURCE_DAO_RUNTIME_CONFIG;
+const artifactsDir = process.env.SOURCE_DAO_RUNTIME_ARTIFACTS;
+
+const data = JSON.parse(fs.readFileSync(sourceConfig, "utf8"));
+data.artifactsDir = artifactsDir;
+fs.writeFileSync(runtimeConfig, `${JSON.stringify(data, null, 2)}\n`);
+NODE
+}
+
 ensure_ethw_image_exists() {
   local image
   image="$(env_get ETHW_IMAGE usdb-ethw:local)"
@@ -98,31 +175,57 @@ ensure_ethw_genesis() {
   local manifests_dir
   local genesis_file
   local config_file
+  local runtime_config_file
+  local artifacts_dir
   local ethw_image
+  local tmp_genesis_file
 
   manifests_dir="$(bootstrap_manifests_dir)"
   genesis_file="${manifests_dir}/ethw-genesis.json"
   config_file="${manifests_dir}/sourcedao-bootstrap-config.json"
+  runtime_config_file="${manifests_dir}/sourcedao-bootstrap.runtime.json"
+  artifacts_dir="$(source_dao_artifacts_dir)"
   ethw_image="$(env_get ETHW_IMAGE usdb-ethw:local)"
 
-  if [[ -f "${genesis_file}" ]]; then
-    return
-  fi
-
   ensure_ethw_image_exists
+  ensure_source_dao_artifacts
   [[ -f "${config_file}" ]] || {
     echo "Missing SourceDAO bootstrap config: ${config_file}" >&2
     exit 1
   }
 
+  write_genesis_runtime_config "${config_file}" "${runtime_config_file}"
+
+  if [[ -f "${genesis_file}" ]]; then
+    if python3 -m json.tool "${genesis_file}" >/dev/null 2>&1; then
+      return
+    fi
+    echo "Existing ${genesis_file} is invalid JSON; regenerating"
+    rm -f "${genesis_file}"
+  fi
+
+  tmp_genesis_file="$(mktemp "${manifests_dir}/ethw-genesis.json.tmp.XXXXXX")"
   echo "Generating ${genesis_file} from ${config_file}"
-  docker run --rm \
+  if ! docker run --rm \
     -v "${manifests_dir}:/workspace/bootstrap:ro" \
+    -v "${artifacts_dir}:$(genesis_runtime_artifacts_dir):ro" \
     "${ethw_image}" \
     dumpgenesis \
     --usdb \
-    --usdb.bootstrap.config /workspace/bootstrap/sourcedao-bootstrap-config.json \
-    > "${genesis_file}"
+    --usdb.bootstrap.config /workspace/bootstrap/sourcedao-bootstrap.runtime.json \
+    > "${tmp_genesis_file}"; then
+    rm -f "${tmp_genesis_file}"
+    echo "Failed to generate ETHW genesis from ${config_file}" >&2
+    exit 1
+  fi
+
+  if ! python3 -m json.tool "${tmp_genesis_file}" >/dev/null 2>&1; then
+    echo "Generated ETHW genesis is not valid JSON: ${tmp_genesis_file}" >&2
+    rm -f "${tmp_genesis_file}"
+    exit 1
+  fi
+
+  mv "${tmp_genesis_file}" "${genesis_file}"
 }
 
 prepare_local_inputs() {

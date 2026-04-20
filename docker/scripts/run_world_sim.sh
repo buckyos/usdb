@@ -76,6 +76,19 @@ identity_seed() {
   env_get WORLD_SIM_IDENTITY_SEED ""
 }
 
+ethw_identity_mode() {
+  env_get ETHW_IDENTITY_MODE deterministic-seed
+}
+
+ensure_ethw_identity_defaults() {
+  if [[ "$(ethw_identity_mode)" != "deterministic-seed" ]]; then
+    return
+  fi
+
+  export WORLD_SIM_IDENTITY_SEED="${WORLD_SIM_IDENTITY_SEED:-$(env_get WORLD_SIM_IDENTITY_SEED alpha-seed-1)}"
+  export ETHW_IDENTITY_SEED="${ETHW_IDENTITY_SEED:-$(env_get ETHW_IDENTITY_SEED "${WORLD_SIM_IDENTITY_SEED}")}"
+}
+
 prepare_state_mode() {
   local mode
   mode="$(state_mode)"
@@ -133,6 +146,7 @@ case "${action}" in
     ;;
   up-full)
     ensure_world_sim_images
+    ensure_ethw_identity_defaults
     prepare_state_mode
     export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
     compose up --build "$@"

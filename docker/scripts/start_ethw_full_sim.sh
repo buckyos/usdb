@@ -21,6 +21,33 @@ log() {
   printf '[ethw-full-sim] %s\n' "$*" >&2
 }
 
+sanitize_legacy_etherbase_placeholder() {
+  ETHW_COMMAND_INPUT="${ethw_command}" python3 <<'PY'
+import os
+import shlex
+
+command = os.environ["ETHW_COMMAND_INPUT"]
+tokens = shlex.split(command)
+sanitized = []
+i = 0
+while i < len(tokens):
+    token = tokens[i]
+    next_token = tokens[i + 1] if i + 1 < len(tokens) else ""
+
+    if token in ("--miner.etherbase", "--etherbase") and "ETHW_MINER_ADDRESS" in next_token:
+        i += 2
+        continue
+    if (token.startswith("--miner.etherbase=") or token.startswith("--etherbase=")) and "ETHW_MINER_ADDRESS" in token:
+        i += 1
+        continue
+
+    sanitized.append(token)
+    i += 1
+
+print(shlex.join(sanitized))
+PY
+}
+
 json_read_field() {
   local file="${1:?file is required}"
   local field="${2:?field is required}"
@@ -170,7 +197,7 @@ resolve_ethw_miner_address() {
     deterministic-seed)
       if [[ -z "${identity_seed}" ]]; then
         echo "ETHW_IDENTITY_MODE=deterministic-seed requires ETHW_IDENTITY_SEED or WORLD_SIM_IDENTITY_SEED" >&2
-        exit 1
+        return 2
       fi
       for counter in $(seq 0 7); do
         candidate_key="$(derive_private_key_hex_from_seed "${identity_seed}" "miner" "${counter}")"
@@ -182,12 +209,12 @@ resolve_ethw_miner_address() {
         fi
       done
       echo "Failed to derive and import a deterministic ETHW miner identity from ETHW_IDENTITY_SEED" >&2
-      exit 1
+      return 2
       ;;
     explicit-key)
       if [[ -z "${explicit_private_key_hex}" ]]; then
         echo "ETHW_IDENTITY_MODE=explicit-key requires ETHW_MINER_PRIVATE_KEY_HEX" >&2
-        exit 1
+        return 2
       fi
       address="$(import_private_key_and_resolve_address "${explicit_private_key_hex}")"
       write_identity_marker "${address}" "${requested_fingerprint}" "explicit-key-v1"
@@ -197,7 +224,7 @@ resolve_ethw_miner_address() {
     explicit-address)
       if [[ -z "${explicit_address}" ]]; then
         echo "ETHW_IDENTITY_MODE=explicit-address requires ETHW_MINER_ADDRESS" >&2
-        exit 1
+        return 2
       fi
       write_identity_marker "${explicit_address}" "${requested_fingerprint}" "address-only-v1"
       printf '%s\n' "${explicit_address}"
@@ -205,19 +232,30 @@ resolve_ethw_miner_address() {
       ;;
     *)
       echo "Unsupported ETHW_IDENTITY_MODE=${identity_mode}" >&2
-      exit 1
+      return 2
       ;;
   esac
 }
 
-if miner_address="$(resolve_ethw_miner_address)"; then
+if [[ "${ethw_command}" == *"ETHW_MINER_ADDRESS"* ]]; then
+  ethw_command="$(sanitize_legacy_etherbase_placeholder)"
+fi
+
+set +e
+miner_address="$(resolve_ethw_miner_address)"
+resolve_status=$?
+set -e
+
+if [[ "${resolve_status}" -eq 0 ]]; then
   export ETHW_MINER_ADDRESS="${miner_address}"
   if [[ "${auto_append_etherbase}" == "1" && "${ethw_command}" != *"--miner.etherbase"* && "${ethw_command}" != *"--etherbase"* ]]; then
     ethw_command="${ethw_command} --miner.etherbase ${ETHW_MINER_ADDRESS}"
   fi
   log "Using ETHW miner address ${ETHW_MINER_ADDRESS}"
-else
+elif [[ "${resolve_status}" -eq 1 ]]; then
   log "No ETHW miner identity override requested; starting with provided ETHW_COMMAND"
+else
+  exit "${resolve_status}"
 fi
 
 exec bash -lc "${ethw_command}"
