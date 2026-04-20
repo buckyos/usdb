@@ -2,10 +2,11 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import useSWR from 'swr'
 import { ConsoleShell } from './components/ConsoleShell'
 import { fetchOverview } from './lib/api'
-import { OverviewPage } from './pages/OverviewPage'
-import { ServicesPage } from './pages/ServicesPage'
 import { BootstrapPage } from './pages/BootstrapPage'
+import { OverviewPage } from './pages/OverviewPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
+import { ProtocolPage } from './pages/ProtocolPage'
+import { ServicesPage } from './pages/ServicesPage'
 import { useI18n } from './i18n/provider'
 
 export function App() {
@@ -40,16 +41,7 @@ export function App() {
           element={<ServicesPage data={data} locale={locale} t={t} />}
         />
         <Route path="/bootstrap" element={<BootstrapPage data={data} t={t} />} />
-        <Route
-          path="/protocol"
-          element={
-            <PlaceholderPage
-              title={t('pages.protocol.title')}
-              subtitle={t('pages.protocol.subtitle')}
-              body={t('pages.protocol.body')}
-            />
-          }
-        />
+        <Route path="/protocol" element={<ProtocolPage data={data} locale={locale} t={t} />} />
         <Route
           path="/me"
           element={
