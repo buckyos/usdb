@@ -266,7 +266,20 @@
 - `ETHW_COMMAND`
 - `BTC_NETWORK=regtest`
 
-### 4.3 `env/world-sim.env.example`
+### 4.3 `env/dev-full.env.example`
+
+用于本地 `dev-full` 开发档位。
+
+重点变量：
+
+- `USDB_SERVICES_IMAGE`
+- `ORD_IMAGE`
+- `ETHW_IMAGE`
+- `BTC_NETWORK=regtest`
+- `BTC_RPC_URL`
+- `SNAPSHOT_MODE`
+
+### 4.4 `env/world-sim.env.example`
 
 用于 world-sim。
 
@@ -286,7 +299,7 @@
 - `ETHW_IDENTITY_MODE`
 - `ETHW_IDENTITY_SEED`
 
-### 4.4 `env/bootstrap.env.example`
+### 4.5 `env/bootstrap.env.example`
 
 用于 cold-start / SourceDAO bootstrap。
 
@@ -357,6 +370,8 @@
 
 - [run_console_preview.sh](/home/bucky/work/usdb/docker/scripts/run_console_preview.sh)
   - 最小控制台预览栈
+- [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_runtime.sh)
+  - 带 `ord` 的 `dev-full` 档位 helper
 - [run_container_smoke.sh](/home/bucky/work/usdb/docker/scripts/run_container_smoke.sh)
   - 容器级 smoke
 
@@ -386,6 +401,9 @@ docker/local/
   dev-sim/
     env/
       dev-sim.env
+  dev-full/
+    env/
+      dev-full.env
   joiner/
     env/
       joiner.env
@@ -435,23 +453,22 @@ docker compose \
   up --build
 ```
 
-### 7.3 带 ord 的完整 BTC runtime
+### 7.3 `dev-full`：带 ord 的本地完整开发档位
 
 ```bash
 cd /home/bucky/work/usdb
-docker compose \
-  --env-file docker/local/dev-sim/env/dev-sim.env \
-  -f docker/compose.base.yml \
-  -f docker/compose.dev-sim.yml \
-  -f docker/compose.ord.yml \
-  up --build
+docker/scripts/run_dev_full_runtime.sh build-images
+docker/scripts/run_dev_full_runtime.sh up
 ```
 
-这个路径可以看作当前 `full` 档位的基础形态：
+这个路径可以看作当前 `dev-full` 的基础形态：
 
 - 带 `ord-server`
 - 不带自动模拟
+- 仍然属于本地 regtest / 开发档位
 - 适合后续接控制台内 BTC mint 能力
+- 使用：
+  - `docker/local/dev-full/env/dev-full.env`
 
 ### 7.4 BTC world-sim
 
@@ -478,7 +495,7 @@ docker/scripts/run_world_sim.sh up-full
 
 推荐：
 
-- 正式化镜像构建：`release`
+- 标准构建路径：`git-tag`
 - 内部开发调试：`local`
 
 ### 7.5 完整本地 ETHW + SourceDAO bootstrap
@@ -630,10 +647,12 @@ docker compose \
 1. 本文件
 2. [compose.base.yml](/home/bucky/work/usdb/docker/compose.base.yml)
 3. [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
-4. [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
-5. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
-6. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
-7. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
+4. [compose.ord.yml](/home/bucky/work/usdb/docker/compose.ord.yml)
+5. [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
+6. [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_runtime.sh)
+7. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
+8. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
+9. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
 
 再往下看设计文档：
 
