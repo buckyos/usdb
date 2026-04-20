@@ -2,7 +2,17 @@ import { BootstrapSteps } from '../components/BootstrapSteps'
 import { MetricCard } from '../components/MetricCard'
 import { QuickLinkCard } from '../components/QuickLinkCard'
 import { ServiceSummaryCard } from '../components/ServiceSummaryCard'
-import { completedBootstrapStepCount, consensusReadyServiceCount, formatDate, presentArtifactCount, reachableServiceCount, serviceLabel, serviceTone, type Tone } from '../lib/console'
+import {
+  completedBootstrapStepCount,
+  consensusReadyServiceCount,
+  consoleModeLabel,
+  formatDate,
+  presentArtifactCount,
+  reachableServiceCount,
+  serviceLabel,
+  serviceTone,
+  type Tone,
+} from '../lib/console'
 import { displayDateTimeFromUnixSeconds, displayNumber, displayPercent, displayText } from '../lib/format'
 import type { OverviewResponse } from '../lib/types'
 
@@ -221,7 +231,53 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
               },
             ]}
           />
+          <ServiceSummaryCard
+            title="ord"
+            status={data ? serviceLabel(data.services.ord, t) : '-'}
+            tone={data ? serviceTone(data.services.ord) : 'neutral'}
+            items={[
+              {
+                label: t('fields.httpStatus'),
+                value: displayNumber(locale, data?.services.ord.data?.http_status, t),
+                helpText: t('help.fields.httpStatus', ''),
+              },
+              {
+                label: t('fields.backendReady'),
+                value: displayText(
+                  data?.services.ord.data?.backend_ready == null
+                    ? null
+                    : data.services.ord.data.backend_ready
+                      ? t('common.true')
+                      : t('common.false'),
+                  t,
+                ),
+                helpText: t('help.fields.backendReady', ''),
+              },
+              {
+                label: t('fields.rpcUrl'),
+                value: displayText(data?.services.ord.rpc_url, t),
+                helpText: t('help.fields.rpcUrl', ''),
+              },
+            ]}
+          />
         </div>
+      </section>
+
+      <section className="grid gap-4 md:grid-cols-2">
+        <MetricCard
+          label={t('metrics.btcConsoleMode')}
+          value={consoleModeLabel(data?.capabilities.btc_console_mode, t)}
+          helpText={t('help.metrics.btcConsoleMode', '')}
+        />
+        <MetricCard
+          label={t('metrics.ordBackend')}
+          value={
+            data?.capabilities.ord_available
+              ? t('capabilities.ord.available')
+              : t('capabilities.ord.unavailable')
+          }
+          helpText={t('help.metrics.ordBackend', '')}
+        />
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">

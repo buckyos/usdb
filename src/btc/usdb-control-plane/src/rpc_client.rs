@@ -95,6 +95,16 @@ impl RpcClient {
         self.json_rpc_call(url, "eth_syncing", json!([])).await
     }
 
+    pub async fn http_probe(&self, url: &str) -> Result<u16, String> {
+        let response = self.client.get(url).send().await.map_err(|e| {
+            let msg = format!("Failed to probe HTTP endpoint {}: {}", url, e);
+            warn!("{}", msg);
+            msg
+        })?;
+
+        Ok(response.status().as_u16())
+    }
+
     pub async fn bitcoin_blockchain_info(
         &self,
         config: &ControlPlaneConfig,

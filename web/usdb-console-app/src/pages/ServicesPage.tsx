@@ -15,6 +15,7 @@ import type {
   BalanceHistorySummary,
   BtcNodeSummary,
   EthwSummary,
+  OrdSummary,
   OverviewResponse,
   ServiceProbe,
   UsdbIndexerSummary,
@@ -29,9 +30,9 @@ interface ServicesPageProps {
 }
 
 type Translate = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
-type ServiceId = 'btc-node' | 'balance-history' | 'usdb-indexer' | 'ethw'
+type ServiceId = 'btc-node' | 'balance-history' | 'usdb-indexer' | 'ethw' | 'ord'
 
-const SERVICE_IDS: ServiceId[] = ['btc-node', 'balance-history', 'usdb-indexer', 'ethw']
+const SERVICE_IDS: ServiceId[] = ['btc-node', 'balance-history', 'usdb-indexer', 'ethw', 'ord']
 
 function renderPair(label: string, value: string, helpText?: string) {
   return (
@@ -266,6 +267,30 @@ function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | nu
   )
 }
 
+function renderOrdDetails(t: Translate, data?: OrdSummary | null, rpcUrl?: string | null) {
+  return (
+    <FieldValueList
+      items={[
+        {
+          label: t('fields.rpcUrl'),
+          value: displayText(rpcUrl, t),
+          helpText: t('help.fields.rpcUrl'),
+        },
+        {
+          label: t('fields.httpStatus'),
+          value: displayText(data?.http_status, t),
+          helpText: t('help.fields.httpStatus'),
+        },
+        {
+          label: t('fields.backendReady'),
+          value: displayBoolean(data?.backend_ready, t),
+          helpText: t('help.fields.backendReady'),
+        },
+      ]}
+    />
+  )
+}
+
 function getSelectedService(raw: string | undefined): ServiceId {
   if (raw && SERVICE_IDS.includes(raw as ServiceId)) {
     return raw as ServiceId
@@ -305,6 +330,10 @@ function getServiceSummaryLine(
         block: displayNumber(locale, data.services.ethw.data?.block_number ?? null, t),
         chainId: displayText(data.services.ethw.data?.chain_id, t),
       })
+    case 'ord':
+      return data.capabilities.ord_available
+        ? t('services.workspace.ordSummaryEnabled')
+        : t('services.workspace.ordSummaryReadOnly')
   }
 }
 
@@ -333,6 +362,12 @@ function getServiceMeta(serviceId: ServiceId, t: Translate) {
         title: 'ETHW / Geth',
         headline: t('services.workspace.ethwTitle'),
         body: t('services.workspace.ethwBody'),
+      }
+    case 'ord':
+      return {
+        title: 'ord',
+        headline: t('services.workspace.ordTitle'),
+        body: t('services.workspace.ordBody'),
       }
   }
 }
@@ -391,6 +426,35 @@ function renderServiceContent(
           ) : null}
         </article>
       )
+    case 'ord':
+      return (
+        <article className="console-card">
+          <div className="mb-4">
+            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+              {t('services.workspace.ordRuntimeTitle')}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+              {t('services.workspace.ordRuntimeBody')}
+            </p>
+          </div>
+          {renderOrdDetails(t, data?.services.ord.data, data?.services.ord.rpc_url)}
+          <div className="mt-5 rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-4">
+            <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+              {t('services.workspace.ordCapabilityTitle')}
+            </h4>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+              {data?.capabilities.ord_available
+                ? t('services.workspace.ordCapabilityEnabled')
+                : t('services.workspace.ordCapabilityReadOnly')}
+            </p>
+          </div>
+          {data?.services.ord.error ? (
+            <p className="mt-4 text-sm text-[color:var(--cp-danger)] break-all">
+              {data.services.ord.error}
+            </p>
+          ) : null}
+        </article>
+      )
   }
 }
 
@@ -409,6 +473,8 @@ function getProbe(
       return data.services.usdb_indexer
     case 'ethw':
       return data.services.ethw
+    case 'ord':
+      return data.services.ord
   }
 }
 

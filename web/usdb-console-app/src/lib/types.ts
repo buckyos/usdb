@@ -74,11 +74,22 @@ export interface EthwSummary {
   consensus_ready?: boolean | null
 }
 
+export interface OrdSummary {
+  http_status?: number | null
+  backend_ready?: boolean | null
+}
+
 export interface ServicesSummary {
   btc_node: ServiceProbe<BtcNodeSummary>
   balance_history: ServiceProbe<BalanceHistorySummary>
   usdb_indexer: ServiceProbe<UsdbIndexerSummary>
   ethw: ServiceProbe<EthwSummary>
+  ord: ServiceProbe<OrdSummary>
+}
+
+export interface CapabilitiesSummary {
+  ord_available: boolean
+  btc_console_mode: string
 }
 
 export interface BootstrapSummary {
@@ -137,6 +148,7 @@ export interface OverviewResponse {
   service: string
   generated_at_ms: number
   services: ServicesSummary
+  capabilities: CapabilitiesSummary
   bootstrap: BootstrapSummary
   explorers: ExplorerLinks
 }

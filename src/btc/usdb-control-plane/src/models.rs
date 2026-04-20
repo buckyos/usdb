@@ -17,6 +17,7 @@ pub struct OverviewResponse {
     pub service: String,
     pub generated_at_ms: u64,
     pub services: ServicesSummary,
+    pub capabilities: CapabilitiesSummary,
     pub bootstrap: BootstrapSummary,
     pub explorers: ExplorerLinks,
 }
@@ -27,6 +28,13 @@ pub struct ServicesSummary {
     pub balance_history: ServiceProbe<BalanceHistoryServiceSummary>,
     pub usdb_indexer: ServiceProbe<UsdbIndexerServiceSummary>,
     pub ethw: ServiceProbe<EthwServiceSummary>,
+    pub ord: ServiceProbe<OrdServiceSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilitiesSummary {
+    pub ord_available: bool,
+    pub btc_console_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,6 +126,12 @@ pub struct EthwServiceSummary {
     pub network_id: Option<String>,
     pub block_number: Option<u64>,
     pub syncing: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OrdServiceSummary {
+    pub http_status: Option<u16>,
+    pub backend_ready: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]

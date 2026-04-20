@@ -1,8 +1,9 @@
 use crate::config::ControlPlaneConfig;
 use crate::models::{
     ApiError, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
-    BootstrapSummary, BtcNodeServiceSummary, EthwServiceSummary, ExplorerLinks, OverviewResponse,
-    ServiceProbe, ServiceRpcRequest, ServicesSummary, UsdbIndexerServiceSummary,
+    BootstrapSummary, BtcNodeServiceSummary, CapabilitiesSummary, EthwServiceSummary,
+    ExplorerLinks, OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest,
+    ServicesSummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
@@ -179,10 +180,12 @@ async fn post_usdb_indexer_rpc(
 }
 
 async fn build_overview(state: &AppState) -> OverviewResponse {
+    let services = build_services_summary(state).await;
     OverviewResponse {
         service: USDB_CONTROL_PLANE_SERVICE_NAME.to_string(),
         generated_at_ms: current_unix_ms(),
-        services: build_services_summary(state).await,
+        capabilities: build_capabilities_summary(&services),
+        services,
         bootstrap: build_bootstrap_summary(state),
         explorers: ExplorerLinks {
             control_console: "/#/overview".to_string(),
@@ -372,11 +375,32 @@ async fn build_services_summary(state: &AppState) -> ServicesSummary {
     let balance_history = probe_balance_history(state).await;
     let usdb_indexer = probe_usdb_indexer(state).await;
     let ethw = probe_ethw(state).await;
+    let ord = probe_ord(state).await;
     ServicesSummary {
         btc_node,
         balance_history,
         usdb_indexer,
         ethw,
+        ord,
+    }
+}
+
+fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary {
+    let ord_available = services.ord.reachable
+        && services
+            .ord
+            .data
+            .as_ref()
+            .and_then(|item| item.backend_ready)
+            .unwrap_or(false);
+
+    CapabilitiesSummary {
+        ord_available,
+        btc_console_mode: if ord_available {
+            "inscription_enabled".to_string()
+        } else {
+            "read_only".to_string()
+        },
     }
 }
 
@@ -627,6 +651,28 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
             block_number_error,
             syncing_error,
         ]),
+        data,
+    }
+}
+
+async fn probe_ord(state: &AppState) -> ServiceProbe<OrdServiceSummary> {
+    let rpc_url = state.config.rpc.ord_url.clone();
+    let started = Instant::now();
+    let probe = state.rpc_client.http_probe(&rpc_url).await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let error = probe.as_ref().err().cloned();
+    let reachable = probe.is_ok();
+    let data = probe.ok().map(|status| OrdServiceSummary {
+        http_status: Some(status),
+        backend_ready: Some((200..500).contains(&status)),
+    });
+
+    ServiceProbe {
+        name: "ord".to_string(),
+        rpc_url,
+        reachable,
+        latency_ms: Some(latency_ms),
+        error,
         data,
     }
 }

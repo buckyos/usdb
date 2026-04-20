@@ -50,6 +50,7 @@ port = ${CONTROL_PLANE_PORT:-28040}
 balance_history_url = "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}"
 usdb_indexer_url = "${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28020}"
 ethw_url = "${ETHW_RPC_URL:-http://ethw-node:8545}"
+ord_url = "${ORD_RPC_URL:-http://ord-server:${ORD_SERVER_PORT:-28030}}"
 EOF
 
 printf "%b\n" "${bitcoin_auth_block}" >>"${output_path}"

@@ -70,3 +70,8 @@ export function presentArtifactCount(bootstrap: BootstrapSummary) {
 export function completedBootstrapStepCount(bootstrap: BootstrapSummary) {
   return bootstrap.steps.filter((step) => step.state === 'completed' || step.state === 'skipped').length
 }
+
+export function consoleModeLabel(mode: string | undefined, t: (key: string) => string) {
+  if (mode === 'inscription_enabled') return t('capabilities.consoleMode.inscriptionEnabled')
+  return t('capabilities.consoleMode.readOnly')
+}

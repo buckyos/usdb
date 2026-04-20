@@ -29,6 +29,10 @@ fn default_ethw_rpc_url() -> String {
     "http://127.0.0.1:8545".to_string()
 }
 
+fn default_ord_rpc_url() -> String {
+    "http://127.0.0.1:28030".to_string()
+}
+
 fn default_btc_rpc_url() -> String {
     "http://127.0.0.1:8332".to_string()
 }
@@ -102,6 +106,8 @@ pub struct RpcTargets {
     pub usdb_indexer_url: String,
     #[serde(default = "default_ethw_rpc_url")]
     pub ethw_url: String,
+    #[serde(default = "default_ord_rpc_url")]
+    pub ord_url: String,
 }
 
 impl Default for RpcTargets {
@@ -110,6 +116,7 @@ impl Default for RpcTargets {
             balance_history_url: default_balance_history_rpc_url(),
             usdb_indexer_url: default_usdb_indexer_rpc_url(),
             ethw_url: default_ethw_rpc_url(),
+            ord_url: default_ord_rpc_url(),
         }
     }
 }
