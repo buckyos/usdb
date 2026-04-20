@@ -38,6 +38,13 @@ docker/local/
       dev-full.env
     snapshots/
     keys/
+  dev-full-sim/
+    env/
+      dev-full-sim.env
+    bootstrap/
+      manifests/
+      keys/
+      snapshots/
   world-sim/
     env/
       world-sim.env
@@ -191,6 +198,57 @@ docker/scripts/run_sourcedao_bootstrap.sh up
 `SourceDAO` repo。默认 bootstrap env 使用：
 
 - `SOURCE_DAO_REPO_HOST_DIR=../../SourceDAO`
+
+### 5. `dev-full-sim` 完整本地协议模拟
+
+使用：
+
+- `docker/local/dev-full-sim/env/dev-full-sim.env`
+- `docker/local/dev-full-sim/bootstrap/manifests/`
+
+启动命令：
+
+```bash
+docker/scripts/run_dev_full_sim.sh build-images
+docker/scripts/run_dev_full_sim.sh up
+```
+
+这个入口的定位是：
+
+- 本地 **完整开发期协议模拟**
+- 在 `dev-full` 基础上继续叠加：
+  - `world-sim`
+  - `ETHW`
+  - `SourceDAO bootstrap`
+
+它对应的是：
+
+- `compose.base.yml`
+- `compose.dev-sim.yml`
+- `compose.ord.yml`
+- `compose.bootstrap.yml`
+- `compose.world-sim.yml`
+
+会启动：
+
+- `btc-node`
+- `snapshot-loader`
+- `balance-history`
+- `usdb-indexer`
+- `usdb-control-plane`
+- `ord-server`
+- `ethw-node`
+- `bootstrap-init`
+- `ethw-init`
+- `sourcedao-bootstrap`
+- `world-sim-bootstrap`
+- `world-sim-runner`
+
+适用场景：
+
+- 本地完整联调
+- 观察 BTC + ETHW + SourceDAO 的组合状态
+- 控制台上验证完整协议模拟和冷启动结果
 
 ## 不建议存放的内容
 

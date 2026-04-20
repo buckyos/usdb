@@ -7,7 +7,9 @@
 
 - `joiner`：基础加入节点运行形态
 - `dev-sim`：本地单机开发栈
+- `dev-full`：在 `dev-sim` 基础上增加 `ord` 的完整开发栈
 - `world-sim`：在 `dev-sim` 之上叠加 BTC 自动产块与协议动作模拟
+- `dev-full-sim`：在 `dev-full` 基础上增加 ETHW + SourceDAO bootstrap + BTC world-sim
 - `bootstrap`：ETHW 冷启动与 SourceDAO bootstrap
 - `usdb-control-plane`：统一控制台服务
 - `balance-history` 快照恢复
@@ -299,7 +301,24 @@
 - `ETHW_IDENTITY_MODE`
 - `ETHW_IDENTITY_SEED`
 
-### 4.5 `env/bootstrap.env.example`
+### 4.5 `env/dev-full-sim.env.example`
+
+用于完整本地 `dev-full-sim`。
+
+重点变量：
+
+- `WORLD_SIM_BITCOIN_IMAGE`
+- `WORLD_SIM_TOOLS_IMAGE`
+- `ORD_IMAGE`
+- `ETHW_IMAGE`
+- `ETHW_BOOTSTRAP_TRUST_MODE`
+- `SOURCE_DAO_BOOTSTRAP_MODE`
+- `SOURCE_DAO_BOOTSTRAP_SCOPE`
+- `BOOTSTRAP_HOST_DIR`
+- `WORLD_SIM_STATE_MODE`
+- `WORLD_SIM_IDENTITY_SEED`
+
+### 4.6 `env/bootstrap.env.example`
 
 用于 cold-start / SourceDAO bootstrap。
 
@@ -372,6 +391,8 @@
   - 最小控制台预览栈
 - [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_runtime.sh)
   - 带 `ord` 的 `dev-full` 档位 helper
+- [run_dev_full_sim.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_sim.sh)
+  - 完整 `dev-full-sim` helper
 - [run_container_smoke.sh](/home/bucky/work/usdb/docker/scripts/run_container_smoke.sh)
   - 容器级 smoke
 
@@ -404,6 +425,13 @@ docker/local/
   dev-full/
     env/
       dev-full.env
+  dev-full-sim/
+    env/
+      dev-full-sim.env
+    bootstrap/
+      manifests/
+      keys/
+      snapshots/
   joiner/
     env/
       joiner.env
@@ -498,7 +526,45 @@ docker/scripts/run_world_sim.sh up-full
 - 标准构建路径：`git-tag`
 - 内部开发调试：`local`
 
-### 7.5 完整本地 ETHW + SourceDAO bootstrap
+### 7.5 `dev-full-sim`：完整本地协议模拟
+
+```bash
+cd /home/bucky/work/usdb
+docker/scripts/run_dev_full_sim.sh build-images
+docker/scripts/run_dev_full_sim.sh up
+```
+
+这个入口会组合：
+
+- `compose.base.yml`
+- `compose.dev-sim.yml`
+- `compose.ord.yml`
+- `compose.bootstrap.yml`
+- `compose.world-sim.yml`
+
+也就是同时启动：
+
+- `ord-server`
+- `ethw-node`
+- `sourcedao-bootstrap`
+- `world-sim`
+
+它和 `run_world_sim.sh up-full` 的区别是：
+
+- `up-full`
+  - 只是把 `ethw-node` 带进 world-sim 栈
+- `run_dev_full_sim.sh up`
+  - 还会同时接入 `bootstrap` 和 `sourcedao-bootstrap`
+
+查看状态：
+
+```bash
+docker/scripts/run_dev_full_sim.sh ps
+docker/scripts/run_dev_full_sim.sh logs
+docker/scripts/run_dev_full_sim.sh state
+```
+
+### 7.6 完整本地 ETHW + SourceDAO bootstrap
 
 推荐直接使用：
 
@@ -526,7 +592,7 @@ docker/scripts/run_sourcedao_bootstrap.sh logs
 docker/scripts/run_sourcedao_bootstrap.sh state
 ```
 
-### 7.5 手工 compose 启动 bootstrap
+### 7.7 手工 compose 启动 bootstrap
 
 如果你不想用 helper，也可以手工执行：
 
