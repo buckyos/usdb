@@ -43,7 +43,7 @@ export function App() {
         <Route path="/bootstrap" element={<BootstrapPage data={data} t={t} />} />
         <Route path="/protocol" element={<ProtocolPage data={data} locale={locale} t={t} />} />
         <Route path="/me" element={<Navigate to="/me/eth" replace />} />
-        <Route path="/me/:identityKind" element={<MePage data={data} t={t} />} />
+        <Route path="/me/:identityKind" element={<MePage data={data} locale={locale} t={t} />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Routes>
     </ConsoleShell>

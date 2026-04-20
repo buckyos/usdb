@@ -45,6 +45,7 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_pass_block_commit",
     "get_pass_snapshot",
     "get_active_passes_at_height",
+    "get_owner_active_pass_at_height",
     "get_pass_stats_at_height",
     "get_pass_history",
     "get_pass_energy",
@@ -169,6 +170,7 @@ async fn post_usdb_indexer_rpc(
     State(state): State<AppState>,
     Json(request): Json<ServiceRpcRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<ApiError>)> {
+    let request = normalize_usdb_indexer_request(&state, request).await?;
     proxy_service_rpc(
         &state,
         &state.config.rpc.usdb_indexer_url,
@@ -292,10 +294,51 @@ async fn normalize_balance_history_request(
     })
 }
 
+async fn normalize_usdb_indexer_request(
+    state: &AppState,
+    request: ServiceRpcRequest,
+) -> Result<ServiceRpcRequest, (StatusCode, Json<ApiError>)> {
+    if request.method.as_str() != "get_owner_active_pass_at_height" {
+        return Ok(request);
+    }
+
+    let blockchain_info = state
+        .rpc_client
+        .bitcoin_blockchain_info(&state.config)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ApiError {
+                    error: format!("Failed to resolve btc-node network: {}", error),
+                }),
+            )
+        })?;
+    let network = parse_balance_history_network(&blockchain_info.chain).map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: format!(
+                    "Unsupported btc-node network {}: {}",
+                    blockchain_info.chain, error
+                ),
+            }),
+        )
+    })?;
+
+    let params = normalize_usdb_indexer_params(&request.method, request.params, network)
+        .map_err(|e| (StatusCode::BAD_REQUEST, Json(ApiError { error: e })))?;
+
+    Ok(ServiceRpcRequest {
+        method: request.method,
+        params,
+    })
+}
+
 fn parse_balance_history_network(network: &str) -> Result<Network, String> {
     match network.to_ascii_lowercase().as_str() {
-        "bitcoin" | "mainnet" => Ok(Network::Bitcoin),
-        "testnet" | "testnet3" => Ok(Network::Testnet),
+        "bitcoin" | "main" | "mainnet" => Ok(Network::Bitcoin),
+        "test" | "testnet" | "testnet3" => Ok(Network::Testnet),
         "testnet4" => Ok(Network::Testnet4),
         "regtest" => Ok(Network::Regtest),
         "signet" => Ok(Network::Signet),
@@ -365,6 +408,43 @@ fn normalize_balance_history_params(
             first.remove("addresses");
         }
         _ => {}
+    }
+
+    Ok(Value::Array(normalized))
+}
+
+fn normalize_usdb_indexer_params(
+    method: &str,
+    params: Value,
+    network: Network,
+) -> Result<Value, String> {
+    let Some(items) = params.as_array() else {
+        return Err("usdb-indexer params must be a JSON array".to_string());
+    };
+    if items.is_empty() {
+        return Err(format!("{} requires one params object", method));
+    }
+
+    let mut normalized = items.clone();
+    let first = normalized
+        .get_mut(0)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| format!("{} requires the first param to be an object", method))?;
+
+    if method == "get_owner_active_pass_at_height" {
+        let candidate = first
+            .get("owner")
+            .and_then(Value::as_str)
+            .or_else(|| first.get("address").and_then(Value::as_str))
+            .ok_or_else(|| {
+                "Provide either owner or address for owner-active-pass queries".to_string()
+            })?
+            .to_string();
+        let normalized_owner = parse_script_hash_any(candidate.as_str(), &network)
+            .map_err(|e| format!("Failed to resolve {}: {}", candidate, e))?
+            .to_string();
+        first.insert("owner".to_string(), Value::String(normalized_owner));
+        first.remove("address");
     }
 
     Ok(Value::Array(normalized))
@@ -949,5 +1029,26 @@ mod tests {
 
         assert_eq!(normalized[0]["script_hashes"][0], normalized_address);
         assert_eq!(normalized[0]["script_hashes"][1], existing_hash);
+    }
+
+    #[test]
+    fn normalize_usdb_indexer_owner_query_accepts_address() {
+        let address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let expected = address_string_to_script_hash(address, &Network::Bitcoin)
+            .unwrap()
+            .to_string();
+
+        let normalized = normalize_usdb_indexer_params(
+            "get_owner_active_pass_at_height",
+            json!([{
+                "address": address,
+                "at_height": null
+            }]),
+            Network::Bitcoin,
+        )
+        .unwrap();
+
+        assert_eq!(normalized[0]["owner"], expected);
+        assert!(normalized[0].get("address").is_none());
     }
 }

@@ -103,6 +103,18 @@ export function fetchUsdbPassSnapshot(
   ])
 }
 
+export function fetchUsdbOwnerActivePass(
+  ownerOrAddress: string,
+  atHeight: number | null,
+): Promise<PassSnapshot | null> {
+  return callUsdbIndexerRpc('get_owner_active_pass_at_height', [
+    {
+      address: ownerOrAddress,
+      at_height: atHeight,
+    },
+  ])
+}
+
 export function fetchUsdbPassBlockCommit(
   blockHeight: number | null,
 ): Promise<PassBlockCommitInfo | null> {
