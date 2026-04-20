@@ -104,6 +104,30 @@ ensure_source_dao_config() {
     cp "${source_template}" "${config_file}"
     echo "Initialized ${config_file} from ${source_template}"
   fi
+
+  SOURCE_DAO_SOURCE_TEMPLATE="${source_template}" \
+  SOURCE_DAO_TARGET_CONFIG="${config_file}" \
+  node <<'NODE'
+const fs = require("node:fs");
+
+const sourceTemplate = process.env.SOURCE_DAO_SOURCE_TEMPLATE;
+const targetConfig = process.env.SOURCE_DAO_TARGET_CONFIG;
+const source = JSON.parse(fs.readFileSync(sourceTemplate, "utf8"));
+const target = JSON.parse(fs.readFileSync(targetConfig, "utf8"));
+
+let updated = false;
+for (const field of ["genesisDifficulty", "minimumDifficulty"]) {
+  if ((target[field] === undefined || target[field] === "") && source[field] !== undefined && source[field] !== "") {
+    target[field] = source[field];
+    updated = true;
+  }
+}
+
+if (updated) {
+  fs.writeFileSync(targetConfig, `${JSON.stringify(target, null, 2)}\n`);
+  console.log(`Backfilled difficulty defaults in ${targetConfig}`);
+}
+NODE
 }
 
 ensure_source_dao_artifacts() {
@@ -198,10 +222,49 @@ ensure_ethw_genesis() {
 
   if [[ -f "${genesis_file}" ]]; then
     if python3 -m json.tool "${genesis_file}" >/dev/null 2>&1; then
-      return
+      if SOURCE_DAO_BOOTSTRAP_CONFIG="${config_file}" ETHW_GENESIS_FILE="${genesis_file}" node <<'NODE'
+const fs = require("node:fs");
+
+const configPath = process.env.SOURCE_DAO_BOOTSTRAP_CONFIG;
+const genesisPath = process.env.ETHW_GENESIS_FILE;
+const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+const genesis = JSON.parse(fs.readFileSync(genesisPath, "utf8"));
+
+const parseBigInt = (value) => {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (typeof value === "number") {
+    return BigInt(value);
+  }
+  if (typeof value === "string") {
+    return BigInt(value);
+  }
+  throw new Error(`unsupported difficulty value: ${value}`);
+};
+
+const expectedGenesisDifficulty = parseBigInt(config.genesisDifficulty);
+const expectedMinimumDifficulty = parseBigInt(config.minimumDifficulty);
+const actualGenesisDifficulty = parseBigInt(genesis.difficulty);
+const actualMinimumDifficulty = parseBigInt(genesis.config?.ethPoWMinimumDifficulty);
+
+if (expectedGenesisDifficulty !== null && actualGenesisDifficulty !== expectedGenesisDifficulty) {
+  process.exit(1);
+}
+if (expectedMinimumDifficulty !== null && actualMinimumDifficulty !== expectedMinimumDifficulty) {
+  process.exit(1);
+}
+NODE
+      then
+        return
+      fi
+
+      echo "Existing ${genesis_file} does not match current difficulty config; regenerating"
+      rm -f "${genesis_file}"
+    else
+      echo "Existing ${genesis_file} is invalid JSON; regenerating"
+      rm -f "${genesis_file}"
     fi
-    echo "Existing ${genesis_file} is invalid JSON; regenerating"
-    rm -f "${genesis_file}"
   fi
 
   tmp_genesis_file="$(mktemp "${manifests_dir}/ethw-genesis.json.tmp.XXXXXX")"
