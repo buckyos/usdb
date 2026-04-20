@@ -74,6 +74,12 @@ For the bootstrap overlay, use:
 - `docker/local/bootstrap/env/bootstrap.env`
 - `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
 
+The easiest way to run the full local ETHW + SourceDAO bootstrap stack is:
+
+```bash
+docker/scripts/run_sourcedao_bootstrap.sh up
+```
+
 The current stage-one `sourcedao-bootstrap` flow also expects a local
 `SourceDAO` workspace outside this directory. By default the bootstrap env uses:
 

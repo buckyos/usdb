@@ -91,6 +91,42 @@ export interface BootstrapSummary {
   overall_state: string
 }
 
+export interface SourceDaoBootstrapOperation {
+  name: string
+  status: string
+  tx_hash?: string | null
+}
+
+export interface SourceDaoBootstrapModule {
+  address?: string | null
+  source?: string | null
+  implementation_address?: string | null
+  proxy_tx_hash?: string | null
+  implementation_tx_hash?: string | null
+  wiring_tx_hash?: string | null
+}
+
+export interface SourceDaoBootstrapState {
+  state_version?: string | null
+  generated_at?: string | null
+  completed_at?: string | null
+  status?: string | null
+  scope?: string | null
+  message?: string | null
+  rpc_url?: string | null
+  repo_dir?: string | null
+  config_path?: string | null
+  artifacts_dir?: string | null
+  chain_id?: number | null
+  dao_address?: string | null
+  dividend_address?: string | null
+  bootstrap_admin?: string | null
+  warnings?: string[]
+  operations?: SourceDaoBootstrapOperation[]
+  final_wiring?: Record<string, string>
+  modules?: Record<string, SourceDaoBootstrapModule>
+}
+
 export interface ExplorerLinks {
   control_console: string
   balance_history: string

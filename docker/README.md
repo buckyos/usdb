@@ -1,109 +1,407 @@
-# USDB Docker
+# USDB Docker 部署说明
 
-This directory contains the first Docker deployment scaffold for USDB.
+这个目录承载了 `usdb` 当前的 Docker 化部署骨架。  
+建议把本文件作为理解整套本地/开发/冷启动机制的总入口。
 
-Current scope:
+当前这套 Docker 体系已经覆盖：
 
-- `joiner`: start one `bitcoind` + `balance-history` + `usdb-indexer` + `ethw-node`
-- `dev-sim`: single-machine simulation using `bitcoind` regtest and the same USDB services
-- optional `balance-history` snapshot restore via `snapshot-loader`
-- a built-in `usdb-control-plane` service serving the unified local console
+- `joiner`：基础加入节点运行形态
+- `dev-sim`：本地单机开发栈
+- `world-sim`：在 `dev-sim` 之上叠加 BTC 自动产块与协议动作模拟
+- `bootstrap`：ETHW 冷启动与 SourceDAO bootstrap
+- `usdb-control-plane`：统一控制台服务
+- `balance-history` 快照恢复
 
-Current non-goals:
+当前仍然属于开发期部署体系，重点是：
 
-- no built-in `ord` container yet outside development simulation
-- no `usdb-indexer` snapshot support yet
-- no extra snapshot management for `bitcoind` or `ethw`
+- 本地 bring-up
+- 本地模拟
+- 冷启动编排
+- 控制台观测
 
-## Layout
+而不是正式发布包的最终形态。
+
+## 1. 目录结构
+
+当前 `docker/` 目录中最重要的内容如下：
 
 - `Dockerfile.usdb-services`
-  - builds the `balance-history`, `usdb-indexer`, and `usdb-control-plane` binaries
+  - 构建 `balance-history`、`usdb-indexer`、`usdb-control-plane`
+- `Dockerfile.world-sim-bitcoin`
+  - world-sim 使用的 Bitcoin Core 28.x 运行镜像
+- `Dockerfile.world-sim-tools`
+  - world-sim 使用的 `ord + bitcoin-cli + simulator` 工具镜像
 - `compose.base.yml`
-  - shared service definitions
+  - 所有主要服务的基础定义
 - `compose.joiner.yml`
-  - mainnet-style joiner overlay
+  - joiner 模式 overlay
 - `compose.dev-sim.yml`
-  - regtest/local simulation overlay
+  - 本地 regtest / dev-sim overlay
 - `compose.world-sim.yml`
-  - optional overlay that adds ord + continuous protocol simulation on top of `dev-sim`
+  - 在 `dev-sim` 上叠加 `ord + world-sim` 的 overlay
 - `compose.bootstrap.yml`
-  - cold-start bootstrap overlay
+  - 冷启动 bootstrap overlay
 - `env/*.env.example`
-  - example environment files
-- `local/`
-  - gitignored local runtime config, snapshot, and manifest files
+  - 各运行模式的环境变量模板
 - `scripts/`
-  - config renderers and startup helpers
+  - 各类启动器、渲染器、helper 脚本
+- `local/`
+  - 本地运行文件目录，默认不进 git
 
-## Prerequisites
+## 2. 整体分层
 
-The current scaffold only builds the USDB service image from this repository.
+可以把这套 Docker 体系理解成四层。
 
-You still need to provide:
+### 2.1 基础运行层
 
-- an `ethw/geth` image for `ethw-node`
-- optionally a `bitcoind` image override if you do not want the default
+由 [compose.base.yml](/home/bucky/work/usdb/docker/compose.base.yml) 提供：
 
-The current bootstrap helpers assume:
+- `btc-node`
+- `snapshot-loader`
+- `balance-history`
+- `usdb-indexer`
+- `ethw-node`
+- `usdb-control-plane`
 
-- the ETHW image includes `bash`
-- the ETHW image includes `sha256sum`
-- if `ETHW_BOOTSTRAP_TRUST_MODE=signed`, the ETHW image also includes `openssl`
+这是所有模式的公共底座。
 
-Recommended environment variable setup:
+### 2.2 模式层
 
-```bash
-mkdir -p docker/local/joiner/env
-cp docker/env/joiner.env.example docker/local/joiner/env/joiner.env
-```
+不同 overlay 在基础层之上追加不同语义：
 
-Path note:
+- [compose.joiner.yml](/home/bucky/work/usdb/docker/compose.joiner.yml)
+  - 面向 joiner / 普通节点接入
+- [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
+  - 面向本地 regtest 开发
+- [compose.world-sim.yml](/home/bucky/work/usdb/docker/compose.world-sim.yml)
+  - 面向 BTC 自动模拟
+- [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
+  - 面向 ETHW cold-start 与 SourceDAO bootstrap
 
-- the example bind-mounted host paths inside `env/*.env.example` are written relative to the `docker/` compose directory
-- for example, `SNAPSHOT_HOST_DIR=./local/joiner/snapshots` resolves to `usdb/docker/local/joiner/snapshots`
+### 2.3 编排辅助层
 
-Then edit:
+由 `docker/scripts/*.sh` 提供：
+
+- 渲染配置
+- one-shot init
+- world-sim 启动
+- 控制台预览
+- SourceDAO bootstrap helper
+
+### 2.4 本地输入层
+
+由 `docker/local/` 提供：
+
+- 本地 env
+- 本地 genesis / manifest / snapshot
+- 本地 bootstrap config
+- 本地 keys
+
+## 3. 各 compose 文件作用
+
+### 3.1 `compose.base.yml`
+
+作用：定义整套服务的**基础形态**。
+
+主要服务：
+
+- `btc-node`
+  - 默认使用 `ruimarinho/bitcoin-core:latest`
+- `snapshot-loader`
+  - `balance-history` 快照安装 one-shot
+- `balance-history`
+  - BTC 余额历史索引服务
+- `usdb-indexer`
+  - 矿工证与协议索引服务
+- `ethw-node`
+  - ETHW / geth 节点
+- `usdb-control-plane`
+  - 本地统一控制台 API + Web 托管
+
+特点：
+
+- 只描述基础依赖关系
+- 不带明确的开发/模拟/冷启动语义
+- 端口、数据路径、RPC 地址都通过 env 控制
+
+### 3.2 `compose.joiner.yml`
+
+作用：定义 joiner 模式的 overlay。
+
+主要特点：
+
+- 默认面向加入网络场景
+- 保持 `INSCRIPTION_SOURCE=bitcoind`
+- 不引入 `ord`
+- 只是在基础服务上覆写网络和端口语义
+
+适用场景：
+
+- 本地模拟“加入节点”
+- 不需要 world-sim
+- 不需要 SourceDAO cold-start
+
+### 3.3 `compose.dev-sim.yml`
+
+作用：定义本地 `regtest` 开发栈。
+
+主要特点：
+
+- `btc-node` 开启 `-regtest=1`
+- 各服务默认端口切到开发期端口：
+  - `btc-node` RPC `28132`
+  - `balance-history` RPC `28110`
+  - `usdb-indexer` RPC `28120`
+  - `control-plane` `28140`
+- `USDB_GENESIS_BLOCK_HEIGHT` 默认是 `1`
+
+适用场景：
+
+- 本地开发
+- 控制台页面联调
+- 不带 world-sim 的基础 regtest
+
+### 3.4 `compose.world-sim.yml`
+
+作用：在 `dev-sim` 上叠加 BTC 自动模拟能力。
+
+新增服务：
+
+- `ord-server`
+- `world-sim-bootstrap`
+- `world-sim-runner`
+
+主要特点：
+
+- 默认切到 `BTC_AUTH_MODE=userpass`
+- 使用 world-sim 专用镜像：
+  - `WORLD_SIM_BITCOIN_IMAGE`
+  - `WORLD_SIM_TOOLS_IMAGE`
+- 支持：
+  - deterministic identity
+  - seeded reset
+  - bootstrap-once + loop-runner
+  - ord 索引 + inscription 模拟
+
+适用场景：
+
+- 本地持续模拟 BTC 协议行为
+- 控制台里观察协议数据变化
+- 后续接钱包前的自动演示环境
+
+### 3.5 `compose.bootstrap.yml`
+
+作用：定义冷启动 bootstrap overlay。
+
+新增服务：
+
+- `bootstrap-init`
+- `ethw-init`
+- `sourcedao-bootstrap`
+
+主要流程：
+
+1. `snapshot-loader`
+2. `bootstrap-init`
+3. `ethw-init`
+4. `ethw-node`
+5. `sourcedao-bootstrap`
+
+当前语义：
+
+- 复制/校验 ETHW genesis artifact
+- 运行 `geth init`
+- 启动 ETHW 节点
+- 运行 SourceDAO one-shot bootstrap
+
+适用场景：
+
+- 本地 ETHW cold-start
+- 本地完整 SourceDAO 部署验证
+
+## 4. 关键 env 文件
+
+### 4.1 `env/joiner.env.example`
+
+用于 joiner 模式。
+
+重点变量：
 
 - `ETHW_IMAGE`
 - `ETHW_COMMAND`
-- snapshot-related variables if you want `balance-history` snapshot restore
+- `BTC_RPC_URL`
+- `SNAPSHOT_MODE`
 
-For cold start, use:
+### 4.2 `env/dev-sim.env.example`
 
-```bash
-mkdir -p docker/local/bootstrap/env
-cp docker/env/bootstrap.env.example docker/local/bootstrap/env/bootstrap.env
+用于本地 dev-sim。
+
+重点变量：
+
+- `USDB_SERVICES_IMAGE`
+- `ETHW_IMAGE`
+- `ETHW_COMMAND`
+- `BTC_NETWORK=regtest`
+
+### 4.3 `env/world-sim.env.example`
+
+用于 world-sim。
+
+重点变量：
+
+- `WORLD_SIM_BITCOIN_IMAGE`
+- `WORLD_SIM_TOOLS_IMAGE`
+- `BTC_AUTH_MODE=userpass`
+- `BTC_RPC_USER`
+- `BTC_RPC_PASSWORD`
+- `WORLD_SIM_STATE_MODE`
+- `WORLD_SIM_IDENTITY_SEED`
+- `ETHW_SIM_PROTOCOL_ALIGNMENT`
+- `ETHW_IDENTITY_MODE`
+- `ETHW_IDENTITY_SEED`
+
+### 4.4 `env/bootstrap.env.example`
+
+用于 cold-start / SourceDAO bootstrap。
+
+重点变量：
+
+- `ETHW_IMAGE`
+- `ETHW_COMMAND`
+- `ETHW_INIT_COMMAND`
+- `ETHW_BOOTSTRAP_TRUST_MODE`
+- `ETHW_BOOTSTRAP_GENESIS_INPUT_FILE`
+- `SOURCE_DAO_CONFIG_INPUT_FILE`
+- `SOURCE_DAO_BOOTSTRAP_MODE`
+- `SOURCE_DAO_BOOTSTRAP_SCOPE`
+- `SOURCE_DAO_BOOTSTRAP_PREPARE`
+- `SOURCE_DAO_REPO_HOST_DIR`
+
+## 5. 关键脚本说明
+
+### 5.1 配置渲染脚本
+
+- [render_balance_history_config.sh](/home/bucky/work/usdb/docker/scripts/render_balance_history_config.sh)
+  - 生成 `balance-history` 的 `config.toml`
+- [render_usdb_indexer_config.sh](/home/bucky/work/usdb/docker/scripts/render_usdb_indexer_config.sh)
+  - 生成 `usdb-indexer` 的 `config.json`
+- [render_control_plane_config.sh](/home/bucky/work/usdb/docker/scripts/render_control_plane_config.sh)
+  - 生成 `usdb-control-plane` 配置
+
+### 5.2 基础服务启动脚本
+
+- [start_balance_history.sh](/home/bucky/work/usdb/docker/scripts/start_balance_history.sh)
+  - 启动 `balance-history`，并做 snapshot marker gate
+- [start_usdb_indexer.sh](/home/bucky/work/usdb/docker/scripts/start_usdb_indexer.sh)
+  - 启动 `usdb-indexer`
+- [start_control_plane.sh](/home/bucky/work/usdb/docker/scripts/start_control_plane.sh)
+  - 启动控制台服务
+- [start_ethw_node.sh](/home/bucky/work/usdb/docker/scripts/start_ethw_node.sh)
+  - 在 ETHW 已初始化前提下启动节点，并校验 init marker
+
+### 5.3 snapshot / bootstrap 辅助脚本
+
+- [snapshot_loader.sh](/home/bucky/work/usdb/docker/scripts/snapshot_loader.sh)
+  - 安装 `balance-history` snapshot
+- [snapshot_marker.sh](/home/bucky/work/usdb/docker/scripts/snapshot_marker.sh)
+  - snapshot marker 相关逻辑
+- [bootstrap_init.sh](/home/bucky/work/usdb/docker/scripts/bootstrap_init.sh)
+  - 冷启动输入准备器
+- [ethw_init.sh](/home/bucky/work/usdb/docker/scripts/ethw_init.sh)
+  - 执行 `geth init`
+- [ethw_bootstrap_artifact.sh](/home/bucky/work/usdb/docker/scripts/ethw_bootstrap_artifact.sh)
+  - ETHW genesis artifact 校验
+- [ethw_init_marker.sh](/home/bucky/work/usdb/docker/scripts/ethw_init_marker.sh)
+  - ETHW init marker 读写
+
+### 5.4 world-sim 脚本
+
+- [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
+  - world-sim 顶层 helper
+- [start_world_sim.sh](/home/bucky/work/usdb/docker/scripts/start_world_sim.sh)
+  - world-sim bootstrap / runner 主入口
+- [start_world_sim_bitcoind.sh](/home/bucky/work/usdb/docker/scripts/start_world_sim_bitcoind.sh)
+  - world-sim 模式下的 bitcoind 启动器
+- [start_ord_server.sh](/home/bucky/work/usdb/docker/scripts/start_ord_server.sh)
+  - ord server 启动器
+- [build_world_sim_release_images.sh](/home/bucky/work/usdb/docker/scripts/build_world_sim_release_images.sh)
+  - 打包 world-sim 发布镜像
+
+### 5.5 控制台和测试 helper
+
+- [run_console_preview.sh](/home/bucky/work/usdb/docker/scripts/run_console_preview.sh)
+  - 最小控制台预览栈
+- [run_container_smoke.sh](/home/bucky/work/usdb/docker/scripts/run_container_smoke.sh)
+  - 容器级 smoke
+
+### 5.6 SourceDAO bootstrap 脚本
+
+- [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
+  - 实际执行 SourceDAO one-shot bootstrap
+- [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
+  - 完整本地 ETHW + SourceDAO bootstrap helper
+
+## 6. 本地目录约定
+
+本地运行文件统一放在：
+
+- [docker/local](/home/bucky/work/usdb/docker/local)
+
+推荐结构：
+
+```text
+docker/local/
+  bootstrap/
+    env/
+      bootstrap.env
+    manifests/
+    keys/
+    snapshots/
+  dev-sim/
+    env/
+      dev-sim.env
+  joiner/
+    env/
+      joiner.env
+  world-sim/
+    env/
+      world-sim.env
+    runtime/
 ```
 
-## Joiner Mode
+说明：
 
-Recommended command:
+- `env/`
+  - 本地真实 `.env`
+- `manifests/`
+  - genesis、bootstrap config、manifest
+- `keys/`
+  - trusted public keys
+- `snapshots/`
+  - snapshot 文件
+
+详细说明见：
+- [docker/local/README.md](/home/bucky/work/usdb/docker/local/README.md)
+
+## 7. 常用启动路径
+
+### 7.1 仅看控制台页面
 
 ```bash
-docker compose \
-  --env-file docker/local/joiner/env/joiner.env \
-  -f docker/compose.base.yml \
-  -f docker/compose.joiner.yml \
-  up --build
+cd /home/bucky/work/usdb
+docker/scripts/run_console_preview.sh up
 ```
 
-Notes:
+访问：
 
-- `btc-node` is included by default, but `balance-history` and `usdb-indexer` only depend on the configured `BTC_RPC_URL`.
-- `BTC_NODE_DATA_DIR` is the path used inside the `btc-node` container.
-- `BTC_DATA_DIR` is the path where the same shared volume is mounted inside USDB service containers.
-- If you want to use an external BTC RPC, update:
-  - `BTC_RPC_URL`
-  - `BTC_DATA_DIR`
-  - optional BTC auth variables
-- then start only the services you need instead of the local `btc-node`
+```text
+http://127.0.0.1:28140/
+```
 
-## Dev-Sim Mode
-
-Recommended command:
+### 7.2 基础 dev-sim
 
 ```bash
+cd /home/bucky/work/usdb
 docker compose \
   --env-file docker/local/dev-sim/env/dev-sim.env \
   -f docker/compose.base.yml \
@@ -111,396 +409,153 @@ docker compose \
   up --build
 ```
 
-This runs:
-
-- `bitcoind` in `regtest`
-- `balance-history`
-- `usdb-indexer`
-- `ethw-node`
-
-Current `dev-sim` still keeps `usdb-indexer` on `inscription_source=bitcoind`.
-`ord` is a development-only dependency and will only be added to a future
-`dev-sim` profile, not to the default `joiner` stack.
-
-## Dev-Sim World-Sim Overlay
-
-If you want a local regtest stack that continuously mines BTC blocks and
-generates protocol activity, first build the packaged world-sim images from the
-validated local binaries:
+### 7.3 BTC world-sim
 
 ```bash
+cd /home/bucky/work/usdb
 docker/scripts/run_world_sim.sh build-images
-```
-
-Then start the optional overlay:
-
-```bash
 docker/scripts/run_world_sim.sh up
 ```
 
-This helper initializes:
-
-- `docker/local/world-sim/env/world-sim.env`
-
-and starts:
-
-- `btc-node`
-- `snapshot-loader`
-- `balance-history`
-- `usdb-indexer`
-- `usdb-control-plane`
-- `ord-server`
-- `world-sim-runner`
-
-By default this mode does **not** start `ethw-node`, so the console will still
-show ETHW as unreachable unless you choose:
+如果要把 ETHW 节点也带上：
 
 ```bash
 docker/scripts/run_world_sim.sh up-full
 ```
 
-The packaged images are:
+### 7.4 完整本地 ETHW + SourceDAO bootstrap
 
-- `WORLD_SIM_BITCOIN_IMAGE`
-  - default: `usdb-bitcoin28-regtest:local`
-- `WORLD_SIM_TOOLS_IMAGE`
-  - default: `usdb-world-sim-tools:local`
-
-The build helper packages local binaries from:
-
-- `WORLD_SIM_RELEASE_BITCOIN_BIN_HOST_DIR`
-  - default: `/home/bucky/btc/bitcoin-28.1/bin`
-- `WORLD_SIM_RELEASE_ORD_BIN_HOST_PATH`
-  - default: `/home/bucky/ord/target/release/ord`
-
-Runtime no longer requires host-mounted binaries once the images are built.
-
-Useful helper actions:
+推荐直接使用：
 
 ```bash
-docker/scripts/run_world_sim.sh build-images
-docker/scripts/run_world_sim.sh ps
-docker/scripts/run_world_sim.sh logs
-docker/scripts/run_world_sim.sh down
+cd /home/bucky/work/usdb
+docker/scripts/run_sourcedao_bootstrap.sh build-images
+docker/scripts/run_sourcedao_bootstrap.sh up
 ```
 
-## Console Preview
+该 helper 会自动：
 
-If you only want to inspect the local control console in a browser, do not use
-the random-port smoke stack. Keep the normal `dev-sim` environment file and
-start just the minimum subset of services:
+1. 初始化 `docker/local/bootstrap/env/bootstrap.env`
+2. 初始化 `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
+3. 生成 `docker/local/bootstrap/manifests/ethw-genesis.json`
+4. 启动：
+   - `compose.base.yml`
+   - `compose.dev-sim.yml`
+   - `compose.bootstrap.yml`
+
+查看状态：
 
 ```bash
-docker/scripts/run_console_preview.sh up
+docker/scripts/run_sourcedao_bootstrap.sh ps
+docker/scripts/run_sourcedao_bootstrap.sh logs
+docker/scripts/run_sourcedao_bootstrap.sh state
 ```
 
-If `docker/local/dev-sim/env/dev-sim.env` does not exist yet, the helper will
-create it from `docker/env/dev-sim.env.example` once and then continue.
+### 7.5 手工 compose 启动 bootstrap
 
-The helper also defaults `DOCKER_API_VERSION` to `1.41` for environments where
-the local Docker client is newer than the available daemon API.
-
-This starts:
-
-- `btc-node`
-- `snapshot-loader`
-- `balance-history`
-- `usdb-indexer`
-- `usdb-control-plane`
-
-It intentionally does not start `ethw-node`, so the console will show the ETHW
-service as unreachable while the rest of the stack is still usable.
-
-The console is then available at:
-
-```text
-http://127.0.0.1:28140/
-```
-
-Additional helper actions:
+如果你不想用 helper，也可以手工执行：
 
 ```bash
-docker/scripts/run_console_preview.sh ps
-docker/scripts/run_console_preview.sh logs
-docker/scripts/run_console_preview.sh down
-```
+cd /home/bucky/work/usdb
 
-## Bootstrap Mode
-
-Recommended command:
-
-```bash
 docker compose \
   --env-file docker/local/bootstrap/env/bootstrap.env \
   -f docker/compose.base.yml \
+  -f docker/compose.dev-sim.yml \
   -f docker/compose.bootstrap.yml \
-  up --build
+  up -d --build
 ```
 
-Current bootstrap scope:
+## 8. 关键部署机制
 
-- prepare a shared `/bootstrap` volume
-- require or copy a canonical ETHW genesis artifact
-- validate an ETHW genesis manifest against the copied genesis file
-- optionally validate a detached ETHW genesis manifest signature against trusted keys
-- optionally copy ETHW / SourceDAO bootstrap config files
-- record a `bootstrap-manifest.json` for downstream inspection
-- run a dedicated `ethw-init` one-shot `geth init` flow before `ethw-node`
-- reuse the existing `snapshot-loader` flow for `balance-history`
-- optionally run a development-only `sourcedao-bootstrap` one-shot after `ethw-node`
+### 8.1 `snapshot-loader -> balance-history`
 
-Current bootstrap non-goals:
+- `snapshot-loader` 是 one-shot
+- 成功后写 marker
+- `balance-history` 启动前校验 marker
 
-- it does not generate ETHW genesis by itself
-- it does not yet implement a full canonical release flow
+### 8.2 `bootstrap-init -> ethw-init -> ethw-node`
 
-Current `sourcedao-bootstrap` scope is intentionally narrow:
+- `bootstrap-init`
+  - 准备 `/bootstrap` volume
+  - 拷贝 ETHW genesis 与 SourceDAO config
+- `ethw-init`
+  - 对 datadir 执行 `geth init`
+- `ethw-node`
+  - 启动前校验 ETHW init marker
 
-- disabled by default
-- only supports `SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace`
-- reuses the local `SourceDAO` workspace
-- supports:
-  - `SOURCE_DAO_BOOTSTRAP_SCOPE=dao-dividend-only`
-  - `SOURCE_DAO_BOOTSTRAP_SCOPE=full`
-- `dao-dividend-only` runs `SourceDAO/scripts/usdb_bootstrap_smoke.ts`
-- `full` runs `SourceDAO/scripts/usdb_bootstrap_full.ts`
-- `full` additionally deploys and wires:
-  - `Committee`
-  - `DevToken`
-  - `NormalToken`
-  - `Project`
-  - `TokenLockup`
-  - `Acquired`
+### 8.3 `sourcedao-bootstrap`
 
-## Container Smoke
+当前 `sourcedao-bootstrap` 是一个 one-shot job：
 
-Recommended command:
+- 等待 ETHW RPC ready
+- 消费 `/bootstrap/sourcedao-bootstrap-config.json`
+- 调用 `SourceDAO` 仓库里的部署脚本
+- 产出：
+  - `sourcedao-bootstrap-state.json`
+  - `sourcedao-bootstrap.done.json`
+  - `sourcedao-bootstrap.log`
 
-```bash
-docker/scripts/run_container_smoke.sh
-```
+当前支持的 scope：
 
-This smoke currently:
+- `dao-dividend-only`
+- `full`
 
-- combines `compose.base.yml + compose.dev-sim.yml + compose.bootstrap.yml`
-- uses `bitcoind` in `regtest`
-- exercises the `bootstrap-init -> ethw-init -> ethw-node -> balance-history -> usdb-indexer` lifecycle
-- verifies `usdb-control-plane` can serve `/api/system/overview`
-- validates the signed ETHW genesis manifest path
-- uses `usdb-services:local` as a temporary fake `ETHW_IMAGE` so the bootstrap lifecycle can be exercised before a real ETHW image is wired in
+`full` 模式会继续部署并 wiring：
 
-By default the script cleans up containers, volumes, and temporary input files.
-Set `KEEP_RUNNING=1` if you want to inspect the stack after the smoke run.
+- `Committee`
+- `DevToken`
+- `NormalToken`
+- `Project`
+- `TokenLockup`
+- `Acquired`
 
-## Local Runtime Files
+## 9. 当前前提与限制
 
-Do not treat Docker runtime config as a full committed rootfs.
+### 9.1 ETHW 镜像要求
 
-The recommended split is:
+当前 `ETHW_IMAGE` 至少需要：
 
-- repository-tracked templates under `docker/`
-- gitignored local runtime files under `docker/local/`
-- persistent chain data in Docker volumes
+- `bash`
+- `sha256sum`
+- `python3`
+- 如果启用 signed manifest，还要有 `openssl`
 
-Recommended local layout:
+### 9.2 SourceDAO 现状
 
-```text
-docker/local/
-  bootstrap/
-    env/bootstrap.env
-    snapshots/
-    keys/
-    manifests/
-  joiner/
-    env/joiner.env
-    snapshots/
-    keys/
-    manifests/
-  dev-sim/
-    env/dev-sim.env
-    snapshots/
-    keys/
-    manifests/
-  world-sim/
-    env/world-sim.env
-    runtime/
-```
+当前 Docker bootstrap 仍是**开发期工作区模式**：
 
-Use this directory for:
+- `SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace`
+- 依赖本地 `SourceDAO` 工作区
+- 依赖 `artifacts-usdb`
 
-- real `.env` files
-- snapshot DB / manifest / signature files
-- trusted snapshot key sets
-- local bootnodes or service manifests
-- local bootstrap genesis artifact files and bootstrap config files
+还不是最终发布级 artifact bundle 形态。
 
-Do not use it for:
+### 9.3 world-sim 与正式 runtime 的边界
 
-- production signing private keys
-- published release artifacts
-- long-lived chain state databases
+`world-sim` 依赖：
 
-For bootstrap flows, the recommended local files are:
+- `ord`
+- world-sim tools image
+- deterministic seed / runtime state
 
-- `docker/local/bootstrap/manifests/ethw-genesis.json`
+它是开发和演示环境，不是最终正式网络运行模式。
 
-For the optional world-sim overlay, see:
+## 10. 推荐阅读顺序
 
+如果你要快速理解整套机制，推荐按这个顺序看：
+
+1. 本文件
+2. [compose.base.yml](/home/bucky/work/usdb/docker/compose.base.yml)
+3. [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
+4. [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
+5. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
+6. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
+7. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
+
+再往下看设计文档：
+
+- [usdb-docker-deployment-plan.md](/home/bucky/work/usdb/doc/usdb-docker-deployment-plan.md)
 - [dev-sim-world-sim-plan.md](/home/bucky/work/usdb/doc/dev-sim-world-sim-plan.md)
-- `docker/local/bootstrap/manifests/ethw-genesis.manifest.json`
-- optional `docker/local/bootstrap/manifests/ethw-genesis.manifest.sig`
-- optional `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
-- optional `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
-- optional `docker/local/bootstrap/keys/trusted_ethw_genesis_keys.json`
-
-For the current development-only `sourcedao-bootstrap` flow, prepare local
-inputs like this:
-
-```bash
-cd /home/bucky/work/SourceDAO
-npm ci
-npm run build:usdb
-
-cp tools/config/usdb-local.json \
-  /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
-```
-
-Prefer the explicit full-bootstrap template for long-lived setups:
-
-```bash
-cp /home/bucky/work/SourceDAO/tools/config/usdb-bootstrap-full.example.json \
-  /home/bucky/work/usdb/docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json
-```
-
-Then set in `docker/local/bootstrap/env/bootstrap.env`:
-
-```env
-SOURCE_DAO_BOOTSTRAP_MODE=dev-workspace
-SOURCE_DAO_REPO_HOST_DIR=../../SourceDAO
-SOURCE_DAO_BOOTSTRAP_SCOPE=full
-SOURCE_DAO_BOOTSTRAP_PREPARE=validate
-```
-
-The bootstrap job rewrites a runtime copy of the SourceDAO config inside
-`/bootstrap` so the copied config can safely point at container-local
-`artifacts-usdb`.
-
-Brief distinction:
-
-- `ethw-genesis.json`
-  - the actual genesis content consumed by `geth init`
-- `ethw-genesis.manifest.json`
-  - a sidecar description of that genesis artifact
-  - used to validate `file_sha256`
-  - later can also carry `genesis_hash`, `chain_id`, `network_id`, and release metadata
-- `ethw-genesis.manifest.sig`
-  - detached Ed25519 signature over the exact manifest file bytes
-- `trusted_ethw_genesis_keys.json`
-  - trusted public-key set used when `ETHW_BOOTSTRAP_TRUST_MODE=signed`
-
-## Snapshot Restore
-
-The optional `snapshot-loader` container only handles `balance-history`.
-
-Supported modes:
-
-- `SNAPSHOT_MODE=none`
-- `SNAPSHOT_MODE=balance-history`
-
-When enabled, `snapshot-loader`:
-
-1. renders `balance-history/config.toml`
-2. runs `balance-history install-snapshot`
-3. writes a success marker under the shared `balance-history` root
-4. exits successfully before `balance-history` starts
-
-`balance-history` then performs its own local gate:
-
-- if `SNAPSHOT_MODE=balance-history`, it requires the snapshot-loader marker
-- if the marker is missing or does not match the configured snapshot inputs, startup fails fast
-- if `SNAPSHOT_MODE=none`, no marker is required and the service starts from zero-sync state
-
-This split is intentional:
-
-- Compose controls startup ordering
-- the marker gate controls startup validity inside the shared volume
-
-Important:
-
-- Signed snapshot installs require:
-  - `BH_SNAPSHOT_TRUST_MODE=signed`
-  - `BH_SNAPSHOT_TRUSTED_KEYS_FILE`
-- The snapshot file itself is not baked into the image.
-- Mount snapshots from the host or another volume.
-- The recommended local host path is under `docker/local/<mode>/snapshots/`.
-
-## BTC Auth
-
-Generated configs support:
-
-- cookie auth (default)
-- user/pass auth
-- no auth
-
-The recommended default is cookie auth with the `bitcoind` data directory mounted
-read-only into the USDB service containers.
-
-When `BTC_NETWORK=regtest`, the cookie file normally lives under the network
-subdirectory, for example:
-
-- `BTC_COOKIE_FILE=/data/bitcoind/regtest/.cookie`
-
-## ETHW Bootstrap Artifact
-
-The current bootstrap flow is artifact-first.
-
-Recommended production-style flow:
-
-1. generate a canonical ETHW genesis JSON outside the Docker stack
-2. publish it together with a sidecar manifest
-3. let `bootstrap-init` validate and stage the artifact under `/bootstrap`
-4. let `ethw-init` initialize the local `ethw-data` volume from that staged artifact
-
-Current trust modes:
-
-- `ETHW_BOOTSTRAP_TRUST_MODE=none`
-  - genesis manifest is optional
-- `ETHW_BOOTSTRAP_TRUST_MODE=manifest`
-  - requires `ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE`
-  - validates `file_sha256` against the copied genesis file
-- `ETHW_BOOTSTRAP_TRUST_MODE=signed`
-  - requires `ETHW_BOOTSTRAP_GENESIS_MANIFEST_INPUT_FILE`
-  - requires `ETHW_BOOTSTRAP_GENESIS_SIG_INPUT_FILE`
-  - requires `ETHW_BOOTSTRAP_TRUSTED_KEYS_INPUT_FILE`
-  - validates `file_sha256`
-  - requires `manifest.signature_scheme=ed25519`
-  - requires `manifest.signing_key_id`
-  - verifies the detached signature against the trusted key set
-
-`ethw-init` writes its own marker into the shared ETHW data volume.
-`ethw-node` requires a matching marker before it will start.
-
-The trusted key file format intentionally matches the `balance-history` snapshot
-trusted-key JSON shape:
-
-```json
-{
-  "keys": [
-    {
-      "key_id": "ethw-genesis-signer-1",
-      "public_key_base64": "<base64 of raw 32-byte ed25519 public key>"
-    }
-  ]
-}
-```
-
-## Next Stage
-
-Planned follow-ups:
-
-- `sourcedao-bootstrap` one-shot job after cold start
-- standardized ETHW node startup templates and joiner peer config
-- development-only genesis generation flow from `go-ethereum dumpgenesis`
-- optional `ord` container/profile
-- `usdb-indexer` snapshot restore
-- published image tags and release-oriented manifests
+- [sourcedao-bootstrap-job-plan.md](/home/bucky/work/usdb/doc/sourcedao-bootstrap-job-plan.md)
+- [full-sim-with-ethw-plan.md](/home/bucky/work/usdb/doc/full-sim-with-ethw-plan.md)
