@@ -88,6 +88,21 @@ fail_with_state() {
   exit 1
 }
 
+state_has_error_status() {
+  [[ -s "${state_file}" ]] || return 1
+  SOURCE_DAO_STATE_FILE="${state_file}" \
+  node <<'NODE'
+const fs = require("node:fs");
+const stateFile = process.env.SOURCE_DAO_STATE_FILE;
+try {
+  const data = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  process.exit(data?.status === "error" ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
 wait_for_ethw_rpc() {
   local deadline=$((SECONDS + wait_seconds))
   while (( SECONDS < deadline )); do
@@ -233,6 +248,10 @@ echo "Using runtime config ${runtime_config_file}" | tee -a "${log_file}"
 echo "Using artifacts ${artifacts_dir}" | tee -a "${log_file}"
 
 if ! run_bootstrap_worker 2>&1 | tee -a "${log_file}"; then
+  if state_has_error_status; then
+    echo "SourceDAO bootstrap failed. See ${log_file}" >&2
+    exit 1
+  fi
   fail_with_state "SourceDAO bootstrap failed. See ${log_file}"
 fi
 

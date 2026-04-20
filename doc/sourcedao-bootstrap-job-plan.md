@@ -291,6 +291,24 @@ job 完成后建议写一份结果文件，例如：
 - 避免每次都完整重跑
 - 方便运维快速判断已完成
 
+对于 `full` scope，state 文件还应在运行过程中持续更新，而不是只在最后一次性输出。
+
+建议至少补充：
+
+- `status`
+  - `running`
+  - `completed`
+  - `error`
+- `current_step`
+- 已完成或已跳过的 `operations`
+- 当前已识别的模块地址
+
+这样当 `TokenLockup` / `Project` / `Acquired` 这类后半段步骤中途失败时：
+
+- 可以直接从 state 文件看出停在哪一步
+- 下一次 resume 能结合链上状态继续收敛
+- 外层 wrapper 不应再把更详细的错误状态覆盖成泛化的 `error`
+
 ### 8.3 部分失败处理
 
 如果 job 在“合约已部署但尚未注册到 `Dao`”的中间状态失败，本地 marker 不能解决全部问题。

@@ -145,6 +145,7 @@ Stage-one state should at least report:
 - `mode`
 - `scope`
 - `status`
+- `current_step`
 - `rpc_url`
 - `repo_dir`
 - `artifacts_dir`
@@ -153,6 +154,13 @@ Stage-one state should at least report:
 - `dividend_address`
 - `chain_id`
 - `completed_at`
+
+For `full` scope, the state file should also be updated incrementally while the
+job is running so operators can see:
+
+- which module is currently being deployed or wired
+- which modules are already known on-chain
+- whether a failure happened before or after a module deployment transaction
 
 ## 7. Relationship To Later Phases
 
