@@ -603,11 +603,12 @@ async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerService
 async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
     let rpc_url = state.config.rpc.ethw_url.clone();
     let started = Instant::now();
-    let (client_version, chain_id, network_id, block_number, syncing) = tokio::join!(
+    let (client_version, chain_id, network_id, block_number, latest_block, syncing) = tokio::join!(
         state.rpc_client.ethw_client_version(&rpc_url),
         state.rpc_client.ethw_chain_id(&rpc_url),
         state.rpc_client.ethw_network_id(&rpc_url),
         state.rpc_client.ethw_block_number(&rpc_url),
+        state.rpc_client.ethw_latest_block(&rpc_url),
         state.rpc_client.ethw_syncing(&rpc_url)
     );
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -615,17 +616,29 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
     let chain_id_error = chain_id.as_ref().err().cloned();
     let network_id_error = network_id.as_ref().err().cloned();
     let block_number_error = block_number.as_ref().err().cloned();
+    let latest_block_error = latest_block.as_ref().err().cloned();
     let syncing_error = syncing.as_ref().err().cloned();
     let reachable = client_version.is_ok()
         || chain_id.is_ok()
         || network_id.is_ok()
         || block_number.is_ok()
+        || latest_block.is_ok()
         || syncing.is_ok();
 
     let block_number_value = block_number
         .as_ref()
         .ok()
         .and_then(|value| decode_hex_quantity(value).ok());
+    let latest_block_hash = latest_block
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .and_then(|value| value.hash.clone());
+    let latest_block_time = latest_block
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .and_then(|value| decode_hex_quantity(&value.timestamp).ok());
 
     let data = if reachable {
         Some(EthwServiceSummary {
@@ -633,6 +646,8 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
             chain_id: chain_id.ok(),
             network_id: network_id.ok(),
             block_number: block_number_value,
+            latest_block_hash,
+            latest_block_time,
             syncing: syncing.ok(),
         })
     } else {
@@ -649,6 +664,7 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
             chain_id_error,
             network_id_error,
             block_number_error,
+            latest_block_error,
             syncing_error,
         ]),
         data,
@@ -657,15 +673,48 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
 
 async fn probe_ord(state: &AppState) -> ServiceProbe<OrdServiceSummary> {
     let rpc_url = state.config.rpc.ord_url.clone();
+    let blockcount_url = format!("{}/blockcount", rpc_url.trim_end_matches('/'));
     let started = Instant::now();
-    let probe = state.rpc_client.http_probe(&rpc_url).await;
+    let (probe, ord_height, btc_tip_height) = tokio::join!(
+        state.rpc_client.http_probe(&rpc_url),
+        state.rpc_client.http_text(&blockcount_url),
+        state.rpc_client.bitcoin_blockchain_info(&state.config)
+    );
     let latency_ms = started.elapsed().as_millis() as u64;
-    let error = probe.as_ref().err().cloned();
-    let reachable = probe.is_ok();
-    let data = probe.ok().map(|status| OrdServiceSummary {
-        http_status: Some(status),
-        backend_ready: Some((200..500).contains(&status)),
-    });
+    let error = merge_errors(&[
+        probe.as_ref().err().cloned(),
+        ord_height.as_ref().err().cloned(),
+        btc_tip_height.as_ref().err().cloned(),
+    ]);
+    let reachable = probe.is_ok() || ord_height.is_ok();
+    let http_status = probe.ok();
+    let ord_height_value = ord_height
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok());
+    let btc_tip_height_value = btc_tip_height.ok().map(|info| info.blocks);
+    let sync_gap = match (ord_height_value, btc_tip_height_value) {
+        (Some(ord_height), Some(btc_tip_height)) => Some(btc_tip_height.saturating_sub(ord_height)),
+        _ => None,
+    };
+    let backend_ready = http_status.map(|status| (200..500).contains(&status));
+    let query_ready = match (backend_ready, sync_gap) {
+        (Some(true), Some(0)) => Some(true),
+        (Some(true), Some(_)) => Some(false),
+        (Some(false), _) => Some(false),
+        _ => None,
+    };
+    let data = if reachable {
+        Some(OrdServiceSummary {
+            http_status,
+            backend_ready,
+            query_ready,
+            synced_block_height: ord_height_value,
+            btc_tip_height: btc_tip_height_value,
+            sync_gap,
+        })
+    } else {
+        None
+    };
 
     ServiceProbe {
         name: "ord".to_string(),

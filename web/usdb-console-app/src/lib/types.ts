@@ -69,6 +69,8 @@ export interface EthwSummary {
   chain_id?: string | null
   network_id?: string | null
   block_number?: number | null
+  latest_block_hash?: string | null
+  latest_block_time?: number | null
   syncing?: boolean | Record<string, unknown> | null
   query_ready?: boolean | null
   consensus_ready?: boolean | null
@@ -77,6 +79,10 @@ export interface EthwSummary {
 export interface OrdSummary {
   http_status?: number | null
   backend_ready?: boolean | null
+  query_ready?: boolean | null
+  synced_block_height?: number | null
+  btc_tip_height?: number | null
+  sync_gap?: number | null
 }
 
 export interface ServicesSummary {
@@ -106,6 +112,7 @@ export interface SourceDaoBootstrapOperation {
   name: string
   status: string
   tx_hash?: string | null
+  details?: string | null
 }
 
 export interface SourceDaoBootstrapModule {
@@ -124,6 +131,8 @@ export interface SourceDaoBootstrapState {
   status?: string | null
   scope?: string | null
   message?: string | null
+  current_step?: string | null
+  last_error?: string | null
   rpc_url?: string | null
   repo_dir?: string | null
   config_path?: string | null
@@ -134,8 +143,8 @@ export interface SourceDaoBootstrapState {
   bootstrap_admin?: string | null
   warnings?: string[]
   operations?: SourceDaoBootstrapOperation[]
-  final_wiring?: Record<string, string>
-  modules?: Record<string, SourceDaoBootstrapModule>
+  final_wiring?: Record<string, string | null>
+  modules?: Record<string, SourceDaoBootstrapModule | null>
 }
 
 export interface ExplorerLinks {

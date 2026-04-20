@@ -13,6 +13,15 @@ interface BootstrapPageProps {
   t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 }
 
+const SOURCE_DAO_MODULE_ORDER = [
+  'committee',
+  'dev_token',
+  'normal_token',
+  'token_lockup',
+  'project',
+  'acquired',
+] as const
+
 function overallBootstrapTone(state?: string): Tone {
   if (state === 'completed') return 'success'
   if (state === 'error') return 'danger'
@@ -23,6 +32,7 @@ function overallBootstrapTone(state?: string): Tone {
 function sourcedaoTone(state?: string | null): Tone {
   if (state === 'completed') return 'success'
   if (state === 'error') return 'danger'
+  if (state === 'running') return 'warning'
   return 'warning'
 }
 
@@ -31,11 +41,39 @@ function presentValue(value: unknown) {
   return String(value)
 }
 
+function translateStateValue(
+  value: string | null | undefined,
+  t: BootstrapPageProps['t'],
+  fallback = '-',
+) {
+  if (!value) return fallback
+  return t(`states.${value}`, value)
+}
+
 function formatTimestamp(value?: string | null) {
   if (!value) return '-'
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return value
   return parsed.toLocaleString(undefined, { hour12: false })
+}
+
+function normalizeStatusToken(value?: string | null) {
+  return (value ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase()
+}
+
+function moduleStateLabel(
+  moduleName: string,
+  module: SourceDaoBootstrapModule | null,
+  finalWiringValue: string | null | undefined,
+  currentStep: string | null | undefined,
+  t: BootstrapPageProps['t'],
+) {
+  if (module) return t('states.completed')
+  if (normalizeStatusToken(currentStep) === normalizeStatusToken(moduleName)) {
+    return t('states.running')
+  }
+  if (finalWiringValue) return t('states.completed')
+  return t('states.pending')
 }
 
 function humanizeKey(key: string) {
@@ -51,33 +89,38 @@ function parseSourceDaoState(data?: Record<string, unknown> | null): SourceDaoBo
 }
 
 function moduleFieldItems(
-  module: SourceDaoBootstrapModule,
+  module: SourceDaoBootstrapModule | null,
+  stateLabel: string,
   t: BootstrapPageProps['t'],
 ) {
   return [
     {
+      label: t('fields.moduleState'),
+      value: stateLabel,
+    },
+    {
       label: t('fields.address'),
-      value: presentValue(module.address),
+      value: presentValue(module?.address),
     },
     {
       label: t('fields.source'),
-      value: presentValue(module.source),
+      value: presentValue(module?.source),
     },
     {
       label: t('fields.implementationAddress'),
-      value: presentValue(module.implementation_address),
+      value: presentValue(module?.implementation_address),
     },
     {
       label: t('fields.proxyTxHash'),
-      value: presentValue(module.proxy_tx_hash),
+      value: presentValue(module?.proxy_tx_hash),
     },
     {
       label: t('fields.implementationTxHash'),
-      value: presentValue(module.implementation_tx_hash),
+      value: presentValue(module?.implementation_tx_hash),
     },
     {
       label: t('fields.wiringTxHash'),
-      value: presentValue(module.wiring_tx_hash),
+      value: presentValue(module?.wiring_tx_hash),
     },
   ]
 }
@@ -86,9 +129,31 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
   const sourcedaoState = parseSourceDaoState(data?.bootstrap.sourcedao_bootstrap_state.data)
   const sourcedaoStatus = sourcedaoState?.status ?? null
   const sourcedaoOperations = sourcedaoState?.operations ?? []
-  const sourcedaoModules = Object.entries(sourcedaoState?.modules ?? {})
+  const sourcedaoModulesByKey = sourcedaoState?.modules ?? {}
   const sourcedaoFinalWiring = Object.entries(sourcedaoState?.final_wiring ?? {})
   const sourcedaoWarnings = sourcedaoState?.warnings ?? []
+  const sourcedaoCurrentStep = sourcedaoState?.current_step ?? null
+  const sourcedaoLastError = sourcedaoState?.last_error ?? null
+  const sourcedaoRuntimeMessage = sourcedaoState?.message ?? null
+  const sourcedaoModuleNames = Array.from(
+    new Set([
+      ...SOURCE_DAO_MODULE_ORDER,
+      ...Object.keys(sourcedaoModulesByKey),
+      ...Object.keys(sourcedaoState?.final_wiring ?? {}),
+    ]),
+  )
+  const sourcedaoModuleStatusByKey = Object.fromEntries(
+    sourcedaoModuleNames.map((moduleName) => [
+      moduleName,
+      moduleStateLabel(
+        moduleName,
+        sourcedaoModulesByKey[moduleName] ?? null,
+        sourcedaoState?.final_wiring?.[moduleName] ?? null,
+        sourcedaoCurrentStep,
+        t,
+      ),
+    ]),
+  )
 
   return (
     <div className="grid gap-5">
@@ -142,6 +207,23 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
           }
           status={data?.bootstrap.ethw_init_marker.exists ? t('artifact.present') : t('artifact.missing')}
           tone={artifactTone(Boolean(data?.bootstrap.ethw_init_marker.exists))}
+        />
+        <ArtifactCard
+          title={t('artifacts.sourcedaoState')}
+          summary={
+            data?.bootstrap.sourcedao_bootstrap_state ?? {
+              path: '-',
+              exists: false,
+              error: null,
+              data: null,
+            }
+          }
+          status={
+            data?.bootstrap.sourcedao_bootstrap_state.exists
+              ? t('artifact.present')
+              : t('artifact.missing')
+          }
+          tone={artifactTone(Boolean(data?.bootstrap.sourcedao_bootstrap_state.exists))}
         />
         <ArtifactCard
           title={t('artifacts.sourcedaoMarker')}
@@ -203,15 +285,27 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                     items={[
                       {
                         label: t('fields.status'),
-                        value: presentValue(sourcedaoState.status),
+                        value: translateStateValue(sourcedaoState.status, t),
+                      },
+                      {
+                        label: t('fields.currentStep'),
+                        value: presentValue(sourcedaoCurrentStep),
                       },
                       {
                         label: t('fields.scope'),
                         value: presentValue(sourcedaoState.scope),
                       },
                       {
+                        label: t('fields.runtimeMessage'),
+                        value: presentValue(sourcedaoRuntimeMessage),
+                      },
+                      {
                         label: t('fields.chainId'),
                         value: presentValue(sourcedaoState.chain_id),
+                      },
+                      {
+                        label: t('fields.generatedAt'),
+                        value: formatTimestamp(sourcedaoState.generated_at),
                       },
                       {
                         label: t('fields.completedAt'),
@@ -260,6 +354,20 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
               </article>
             </div>
 
+            {sourcedaoLastError ? (
+              <article className="console-subtle-card">
+                <h3 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                  {t('pages.bootstrap.lastErrorTitle')}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('pages.bootstrap.lastErrorBody')}
+                </p>
+                <pre className="mt-4 overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-[color:var(--cp-danger-border)] bg-[color:var(--cp-danger-surface)]/65 px-4 py-3 text-xs leading-6 text-[color:var(--cp-danger)]">
+                  {sourcedaoLastError}
+                </pre>
+              </article>
+            ) : null}
+
             {sourcedaoWarnings.length > 0 ? (
               <article className="console-subtle-card">
                 <h3 className="text-sm font-semibold text-[color:var(--cp-text)]">
@@ -289,12 +397,13 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                       <th>{t('fields.operation')}</th>
                       <th>{t('fields.status')}</th>
                       <th>{t('fields.txHash')}</th>
+                      <th>{t('fields.details')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sourcedaoOperations.length === 0 ? (
                       <tr>
-                        <td className="py-3 text-sm text-[color:var(--cp-muted)]" colSpan={3}>
+                        <td className="py-3 text-sm text-[color:var(--cp-muted)]" colSpan={4}>
                           {t('pages.bootstrap.noOperations')}
                         </td>
                       </tr>
@@ -302,8 +411,9 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
                       sourcedaoOperations.map((operation) => (
                         <tr key={`${operation.name}:${operation.tx_hash ?? 'none'}`}>
                           <td className="break-all">{operation.name}</td>
-                          <td>{presentValue(operation.status)}</td>
+                          <td>{translateStateValue(operation.status, t, presentValue(operation.status))}</td>
                           <td className="break-all">{presentValue(operation.tx_hash)}</td>
+                          <td className="break-all">{presentValue(operation.details)}</td>
                         </tr>
                       ))
                     )}
@@ -319,22 +429,46 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
               <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
                 {t('pages.bootstrap.modulesBody')}
               </p>
-              {sourcedaoModules.length === 0 ? (
+              {sourcedaoModuleNames.length === 0 ? (
                 <p className="mt-4 text-sm text-[color:var(--cp-muted)]">
                   {t('pages.bootstrap.noModules')}
                 </p>
               ) : (
                 <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                  {sourcedaoModules.map(([moduleName, module]) => (
+                  {sourcedaoModuleNames.map((moduleName) => {
+                    const module = sourcedaoModulesByKey[moduleName] ?? null
+                    return (
                     <section key={moduleName} className="console-card">
-                      <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
-                        {humanizeKey(moduleName)}
-                      </h4>
+                      <div className="flex items-start justify-between gap-3">
+                        <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                          {humanizeKey(moduleName)}
+                        </h4>
+                        <span
+                          className="status-pill"
+                          data-tone={sourcedaoTone(
+                            module
+                              ? 'completed'
+                              : normalizeStatusToken(sourcedaoCurrentStep) ===
+                                  normalizeStatusToken(moduleName)
+                                ? 'running'
+                                : 'pending',
+                          )}
+                        >
+                          {sourcedaoModuleStatusByKey[moduleName]}
+                        </span>
+                      </div>
                       <div className="mt-3">
-                        <FieldValueList items={moduleFieldItems(module, t)} />
+                        <FieldValueList
+                          items={moduleFieldItems(
+                            module,
+                            sourcedaoModuleStatusByKey[moduleName],
+                            t,
+                          )}
+                        />
                       </div>
                     </section>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </article>

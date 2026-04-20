@@ -225,6 +225,21 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                 helpText: t('help.fields.blockNumber', ''),
               },
               {
+                label: t('fields.latestBlockHash'),
+                value: displayText(data?.services.ethw.data?.latest_block_hash, t),
+                monospace: true,
+                helpText: t('help.fields.latestBlockHash', ''),
+              },
+              {
+                label: t('fields.latestBlockTime'),
+                value: displayDateTimeFromUnixSeconds(
+                  locale,
+                  data?.services.ethw.data?.latest_block_time,
+                  t,
+                ),
+                helpText: t('help.fields.latestBlockTime', ''),
+              },
+              {
                 label: t('fields.client'),
                 value: displayText(data?.services.ethw.data?.client_version, t),
                 helpText: t('help.fields.client', ''),
@@ -252,6 +267,21 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                   t,
                 ),
                 helpText: t('help.fields.backendReady', ''),
+              },
+              {
+                label: t('fields.indexedHeight'),
+                value: displayNumber(locale, data?.services.ord.data?.synced_block_height, t),
+                helpText: t('help.fields.indexedHeight', ''),
+              },
+              {
+                label: t('fields.btcTipHeight'),
+                value: displayNumber(locale, data?.services.ord.data?.btc_tip_height, t),
+                helpText: t('help.fields.btcTipHeight', ''),
+              },
+              {
+                label: t('fields.syncGap'),
+                value: displayNumber(locale, data?.services.ord.data?.sync_gap, t),
+                helpText: t('help.fields.syncGap', ''),
               },
               {
                 label: t('fields.rpcUrl'),

@@ -125,6 +125,8 @@ pub struct EthwServiceSummary {
     pub chain_id: Option<String>,
     pub network_id: Option<String>,
     pub block_number: Option<u64>,
+    pub latest_block_hash: Option<String>,
+    pub latest_block_time: Option<u64>,
     pub syncing: Option<Value>,
 }
 
@@ -132,6 +134,10 @@ pub struct EthwServiceSummary {
 pub struct OrdServiceSummary {
     pub http_status: Option<u16>,
     pub backend_ready: Option<bool>,
+    pub query_ready: Option<bool>,
+    pub synced_block_height: Option<u64>,
+    pub btc_tip_height: Option<u64>,
+    pub sync_gap: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,4 +197,10 @@ pub struct BitcoinBlockchainInfo {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BitcoinBlockHeader {
     pub time: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EthBlockHeader {
+    pub hash: Option<String>,
+    pub timestamp: String,
 }

@@ -248,6 +248,16 @@ function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | nu
           helpText: t('help.fields.blockNumber'),
         },
         {
+          label: t('fields.latestBlockHash'),
+          value: displayText(data?.latest_block_hash, t),
+          helpText: t('help.fields.latestBlockHash'),
+        },
+        {
+          label: t('fields.latestBlockTime'),
+          value: displayDateTimeFromUnixSeconds(locale, data?.latest_block_time, t),
+          helpText: t('help.fields.latestBlockTime'),
+        },
+        {
           label: t('fields.syncing'),
           value:
             data?.syncing === false
@@ -267,7 +277,12 @@ function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | nu
   )
 }
 
-function renderOrdDetails(t: Translate, data?: OrdSummary | null, rpcUrl?: string | null) {
+function renderOrdDetails(
+  locale: string,
+  t: Translate,
+  data?: OrdSummary | null,
+  rpcUrl?: string | null,
+) {
   return (
     <FieldValueList
       items={[
@@ -285,6 +300,21 @@ function renderOrdDetails(t: Translate, data?: OrdSummary | null, rpcUrl?: strin
           label: t('fields.backendReady'),
           value: displayBoolean(data?.backend_ready, t),
           helpText: t('help.fields.backendReady'),
+        },
+        {
+          label: t('fields.indexedHeight'),
+          value: displayNumber(locale, data?.synced_block_height, t),
+          helpText: t('help.fields.indexedHeight'),
+        },
+        {
+          label: t('fields.btcTipHeight'),
+          value: displayNumber(locale, data?.btc_tip_height, t),
+          helpText: t('help.fields.btcTipHeight'),
+        },
+        {
+          label: t('fields.syncGap'),
+          value: displayNumber(locale, data?.sync_gap, t),
+          helpText: t('help.fields.syncGap'),
         },
       ]}
     />
@@ -331,6 +361,16 @@ function getServiceSummaryLine(
         chainId: displayText(data.services.ethw.data?.chain_id, t),
       })
     case 'ord':
+      if (
+        data.services.ord.data?.synced_block_height != null &&
+        data.services.ord.data?.btc_tip_height != null
+      ) {
+        return t('services.workspace.ordSummarySync', undefined, {
+          height: displayNumber(locale, data.services.ord.data.synced_block_height, t),
+          btcHeight: displayNumber(locale, data.services.ord.data.btc_tip_height, t),
+          gap: displayNumber(locale, data.services.ord.data.sync_gap ?? null, t),
+        })
+      }
       return data.capabilities.ord_available
         ? t('services.workspace.ordSummaryEnabled')
         : t('services.workspace.ordSummaryReadOnly')
@@ -437,7 +477,7 @@ function renderServiceContent(
               {t('services.workspace.ordRuntimeBody')}
             </p>
           </div>
-          {renderOrdDetails(t, data?.services.ord.data, data?.services.ord.rpc_url)}
+          {renderOrdDetails(locale, t, data?.services.ord.data, data?.services.ord.rpc_url)}
           <div className="mt-5 rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-4">
             <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
               {t('services.workspace.ordCapabilityTitle')}

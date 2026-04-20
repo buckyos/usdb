@@ -1,6 +1,7 @@
 use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
 use crate::models::{
-    BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, UsdbIndexerReadiness,
+    BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, EthBlockHeader,
+    UsdbIndexerReadiness,
 };
 use reqwest::Client;
 use serde::de::DeserializeOwned;
@@ -95,6 +96,11 @@ impl RpcClient {
         self.json_rpc_call(url, "eth_syncing", json!([])).await
     }
 
+    pub async fn ethw_latest_block(&self, url: &str) -> Result<Option<EthBlockHeader>, String> {
+        self.json_rpc_call(url, "eth_getBlockByNumber", json!(["latest", false]))
+            .await
+    }
+
     pub async fn http_probe(&self, url: &str) -> Result<u16, String> {
         let response = self.client.get(url).send().await.map_err(|e| {
             let msg = format!("Failed to probe HTTP endpoint {}: {}", url, e);
@@ -103,6 +109,29 @@ impl RpcClient {
         })?;
 
         Ok(response.status().as_u16())
+    }
+
+    pub async fn http_text(&self, url: &str) -> Result<String, String> {
+        let response = self.client.get(url).send().await.map_err(|e| {
+            let msg = format!("Failed to fetch HTTP endpoint {}: {}", url, e);
+            warn!("{}", msg);
+            msg
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            let msg = format!(
+                "HTTP endpoint {} returned non-success status {}",
+                url, status
+            );
+            warn!("{}", msg);
+            return Err(msg);
+        }
+
+        response.text().await.map_err(|e| {
+            let msg = format!("Failed to read HTTP response body from {}: {}", url, e);
+            warn!("{}", msg);
+            msg
+        })
     }
 
     pub async fn bitcoin_blockchain_info(
