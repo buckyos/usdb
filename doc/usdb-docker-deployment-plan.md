@@ -36,7 +36,6 @@
 
 当前明确还没有落地的是：
 
-- `ord` 容器及其 compose profile
 - `usdb-indexer` 快照恢复
 - 发布级镜像与签名分发流程
 - 全自动 ETHW genesis 生成与正式网 bootstrap 发布流程
@@ -259,7 +258,7 @@
 
 ### 2.7.3 后续优化项
 
-- `ord` 的 `dev-sim` profile
+- `ord/full` 档位下控制台内 BTC mint coordinator API
 - `usdb-indexer` snapshot restore
 - development-only `dumpgenesis` 生成模式
 - 更完整的多节点 devnet 编排
@@ -280,7 +279,7 @@
 第一批实现的方向是：
 
 - 新增 `compose.world-sim.yml`
-- 新增 `ord-server`
+- 复用独立的 `compose.ord.yml`
 - 新增 `world-sim-bootstrap`
 - 新增 `world-sim-runner`
 - 在 `world-sim` overlay 下覆盖 `btc-node`
@@ -389,7 +388,6 @@
 建议范围：
 
 - `bitcoind regtest`
-- `ord`
 - `balance-history`
 - `usdb-indexer`
 - `ethw/geth`
@@ -409,7 +407,19 @@
 
 - `inscription_source = "bitcoind"`
 
-`ord` 仍只应视为开发期依赖，后续也只进入 `dev-sim` profile，不进入默认 `joiner`。
+在当前分层里：
+
+- `slim`
+  - `compose.base.yml + compose.dev-sim.yml`
+  - 不带 `ord`
+- `full`
+  - `slim + compose.ord.yml`
+  - 带 `ord-server`
+- `world-sim`
+  - `full + compose.world-sim.yml`
+  - 在 `ord` 能力之上继续叠加自动模拟
+
+因此 `ord` 不再只属于 `world-sim`，而是已经提升为可复用的独立 overlay。
 
 ## 4. 镜像与编排策略
 

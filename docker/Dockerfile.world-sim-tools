@@ -1,3 +1,35 @@
+FROM rust:1.89.0-bookworm AS ord-builder
+
+ARG ORD_BUILD_MODE=staged-binary
+ARG ORD_VERSION=0.23.3
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+COPY docker/.build-world-sim/ord/bin/ord /tmp/staged-ord/ord
+
+RUN mkdir -p /opt/ord/bin \
+    && case "${ORD_BUILD_MODE}" in \
+      staged-binary) \
+        install -m 0755 /tmp/staged-ord/ord /opt/ord/bin/ord \
+        ;; \
+      git-tag) \
+        git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/ord.git /tmp/ord-src \
+        && cd /tmp/ord-src \
+        && cargo build --bin ord --release \
+        && install -m 0755 /tmp/ord-src/target/release/ord /opt/ord/bin/ord \
+        ;; \
+      *) \
+        echo "Unsupported ORD_BUILD_MODE: ${ORD_BUILD_MODE}" >&2 \
+        && exit 1 \
+        ;; \
+    esac
+
 FROM python:3.12-bookworm
 
 RUN apt-get update \
@@ -15,7 +47,7 @@ COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_w
 COPY docker/scripts/start_world_sim.sh /opt/usdb/docker/scripts/start_world_sim.sh
 COPY docker/scripts/wait_for_tcp.sh /opt/usdb/docker/scripts/wait_for_tcp.sh
 COPY docker/.build-world-sim/bitcoin/bin/bitcoin-cli /opt/bitcoin/bin/bitcoin-cli
-COPY docker/.build-world-sim/ord/bin/ord /opt/ord/bin/ord
+COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY src/btc/usdb-indexer/scripts/regtest_world_simulator.py /opt/usdb/world-sim/regtest_world_simulator.py
 COPY docker/world-sim/bip39-english.txt /opt/usdb/world-sim/bip39-english.txt
 

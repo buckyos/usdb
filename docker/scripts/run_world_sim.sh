@@ -28,6 +28,7 @@ compose() {
     --env-file "${env_file}" \
     -f "${docker_dir}/compose.base.yml" \
     -f "${docker_dir}/compose.dev-sim.yml" \
+    -f "${docker_dir}/compose.ord.yml" \
     -f "${docker_dir}/compose.world-sim.yml" \
     "$@"
 }
@@ -64,6 +65,7 @@ EOF
 ensure_world_sim_images() {
   ensure_image_exists "$(env_get WORLD_SIM_BITCOIN_IMAGE usdb-bitcoin28-regtest:local)"
   ensure_image_exists "$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)"
+  ensure_image_exists "$(env_get ORD_IMAGE usdb-world-sim-tools:local)"
 }
 
 state_mode() {

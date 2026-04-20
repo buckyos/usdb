@@ -37,8 +37,10 @@
   - joiner 模式 overlay
 - `compose.dev-sim.yml`
   - 本地 regtest / dev-sim overlay
+- `compose.ord.yml`
+  - `ord-server` 独立 overlay，可作为 `full` 档位基础
 - `compose.world-sim.yml`
-  - 在 `dev-sim` 上叠加 `ord + world-sim` 的 overlay
+  - 在 `full` 基础上叠加 `world-sim` 的 overlay
 - `compose.bootstrap.yml`
   - 冷启动 bootstrap overlay
 - `env/*.env.example`
@@ -73,6 +75,8 @@
   - 面向 joiner / 普通节点接入
 - [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
   - 面向本地 regtest 开发
+- [compose.ord.yml](/home/bucky/work/usdb/docker/compose.ord.yml)
+  - 面向带 `ord` 的完整 BTC runtime
 - [compose.world-sim.yml](/home/bucky/work/usdb/docker/compose.world-sim.yml)
   - 面向 BTC 自动模拟
 - [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
@@ -161,13 +165,32 @@
 - 控制台页面联调
 - 不带 world-sim 的基础 regtest
 
-### 3.4 `compose.world-sim.yml`
+### 3.4 `compose.ord.yml`
 
-作用：在 `dev-sim` 上叠加 BTC 自动模拟能力。
+作用：为基础栈追加独立的 `ord-server`。
 
 新增服务：
 
 - `ord-server`
+
+主要特点：
+
+- 不改变 `balance-history` / `usdb-indexer` / `control-plane` 的主体逻辑
+- 只是给系统补上 inscription / ord 索引能力
+- 作为后续 `full` 档位的基础 overlay
+
+适用场景：
+
+- `dev-sim + ord`
+- 后续正式 `full` 档位
+- 未来控制台内 BTC mint 的后端能力基础
+
+### 3.5 `compose.world-sim.yml`
+
+作用：在 `dev-sim + ord` 基础上叠加 BTC 自动模拟能力。
+
+新增服务：
+
 - `world-sim-bootstrap`
 - `world-sim-runner`
 
@@ -189,7 +212,7 @@
 - 控制台里观察协议数据变化
 - 后续接钱包前的自动演示环境
 
-### 3.5 `compose.bootstrap.yml`
+### 3.6 `compose.bootstrap.yml`
 
 作用：定义冷启动 bootstrap overlay。
 
@@ -251,6 +274,9 @@
 
 - `WORLD_SIM_BITCOIN_IMAGE`
 - `WORLD_SIM_TOOLS_IMAGE`
+- `ORD_IMAGE`
+- `WORLD_SIM_RELEASE_ORD_SOURCE`
+- `WORLD_SIM_RELEASE_ORD_VERSION`
 - `BTC_AUTH_MODE=userpass`
 - `BTC_RPC_USER`
 - `BTC_RPC_PASSWORD`
@@ -409,7 +435,25 @@ docker compose \
   up --build
 ```
 
-### 7.3 BTC world-sim
+### 7.3 带 ord 的完整 BTC runtime
+
+```bash
+cd /home/bucky/work/usdb
+docker compose \
+  --env-file docker/local/dev-sim/env/dev-sim.env \
+  -f docker/compose.base.yml \
+  -f docker/compose.dev-sim.yml \
+  -f docker/compose.ord.yml \
+  up --build
+```
+
+这个路径可以看作当前 `full` 档位的基础形态：
+
+- 带 `ord-server`
+- 不带自动模拟
+- 适合后续接控制台内 BTC mint 能力
+
+### 7.4 BTC world-sim
 
 ```bash
 cd /home/bucky/work/usdb
@@ -423,7 +467,21 @@ docker/scripts/run_world_sim.sh up
 docker/scripts/run_world_sim.sh up-full
 ```
 
-### 7.4 完整本地 ETHW + SourceDAO bootstrap
+`build-images` 当前对 `ord` 提供两条打包路径：
+
+- `WORLD_SIM_RELEASE_ORD_SOURCE=git-tag`
+  - 默认值
+  - 按固定 `WORLD_SIM_RELEASE_ORD_VERSION` 从官方 git tag 在 Docker 内构建 `ord`
+- `WORLD_SIM_RELEASE_ORD_SOURCE=local`
+  - 使用本地已编译好的 `ord` 二进制
+  - 适合内部调试或验证未发布修复
+
+推荐：
+
+- 正式化镜像构建：`release`
+- 内部开发调试：`local`
+
+### 7.5 完整本地 ETHW + SourceDAO bootstrap
 
 推荐直接使用：
 
@@ -540,6 +598,30 @@ docker compose \
 - deterministic seed / runtime state
 
 它是开发和演示环境，不是最终正式网络运行模式。
+
+当前 `ord` 镜像打包策略也按这个边界区分：
+
+- world-sim / 内部开发
+  - 允许使用本地编译的 `ord`
+- 正式化镜像构建
+  - 推荐固定 `ORD_VERSION`，使用官方 git tag 构建
+
+不推荐在发布级 Docker 构建中直接使用“安装最新版本”的 `install.sh` 路径，
+也不建议直接依赖官方最新预编译 binary，因为两者都会带来版本漂移或运行时兼容性问题。
+
+正式 runtime 推荐分成两个档位：
+
+- `slim`
+  - 不带 `compose.ord.yml`
+  - 仅提供查看、索引和控制台查询能力
+- `full`
+  - 在 `slim` 基础上叠加 `compose.ord.yml`
+  - 为控制台内 BTC mint 保留后端能力基础
+
+当前真正带 `ord` 的实现路径已经不止 `world-sim`：
+
+- `compose.ord.yml`
+- `compose.world-sim.yml`（通过复用 `compose.ord.yml`）
 
 ## 10. 推荐阅读顺序
 

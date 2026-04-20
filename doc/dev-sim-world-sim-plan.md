@@ -32,10 +32,17 @@ This stack should still be usable without background protocol traffic.
 
 The simulation layer should be introduced through:
 
+- `docker/compose.ord.yml`
 - `docker/compose.world-sim.yml`
 
-This overlay adds extra services, but does not alter the meaning of the base
-`dev-sim` stack.
+The split is:
+
+- `compose.ord.yml`
+  - provides the reusable `ord-server`
+- `compose.world-sim.yml`
+  - provides `world-sim-bootstrap` and `world-sim-runner`
+
+Together they extend `dev-sim` without altering the meaning of the base stack.
 
 ### 2.3 Reuse the existing simulation logic
 
@@ -62,7 +69,8 @@ restarts and makes persistent-state behavior easier to reason about.
 
 The first implementation batch should add:
 
-1. an `ord-server` service for regtest wallet and inscription operations
+1. a reusable `compose.ord.yml` overlay that provides `ord-server` for regtest
+   wallet and inscription operations
 2. a `world-sim-bootstrap` one-shot service that:
    - waits for `btc-node`, `ord-server`, `balance-history`, and `usdb-indexer`
    - prepares miner and agent wallets
@@ -117,10 +125,11 @@ The runtime model now uses dedicated packaged images for the optional overlay:
 - `usdb-bitcoin28-regtest`
 - `usdb-world-sim-tools`
 
-These images are still built from the already validated local binaries:
+These images are currently built from:
 
 - Bitcoin Core 28.x host binaries
-- the locally built `ord` binary
+- a fixed `ord` git tag built inside Docker by default
+- optionally, a locally built `ord` binary as an internal override
 
 The rationale is:
 
@@ -153,6 +162,7 @@ Key runtime inputs:
 - image tags for:
   - `WORLD_SIM_BITCOIN_IMAGE`
   - `WORLD_SIM_TOOLS_IMAGE`
+  - `ORD_IMAGE`
 - dedicated overlay network:
   - `USDB_DOCKER_NETWORK`
 - world-state policy:

@@ -1,0 +1,31 @@
+services:
+  ord-server:
+    image: ${ORD_IMAGE:-usdb-world-sim-tools:local}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/docker/scripts/start_ord_server.sh"]
+    depends_on:
+      btc-node:
+        condition: service_started
+    environment:
+      BTC_RPC_URL: ${BTC_RPC_URL:-http://btc-node:8332}
+      BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+      BTC_AUTH_MODE: ${BTC_AUTH_MODE:-cookie}
+      BTC_RPC_USER: ${BTC_RPC_USER:-}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+      BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/.cookie}
+      BITCOIN_BIN_DIR: /opt/bitcoin/bin
+      ORD_BIN: /opt/ord/bin/ord
+      ORD_DATA_DIR: ${ORD_DATA_DIR:-/data/ord}
+      ORD_SERVER_PORT: ${ORD_SERVER_PORT:-28030}
+      WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-120}
+      ORD_SERVER_EXTRA_ARGS: ${ORD_SERVER_EXTRA_ARGS:-}
+    volumes:
+      - btc-data:${BTC_DATA_DIR:-/data/bitcoind}:ro
+      - ord-data:${ORD_DATA_DIR:-/data/ord}
+    ports:
+      - "${ORD_SERVER_BIND_PORT:-28030}:${ORD_SERVER_PORT:-28030}"
+    networks:
+      - usdb-net
+
+volumes:
+  ord-data:

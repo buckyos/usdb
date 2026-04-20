@@ -22,6 +22,12 @@
 
 ### 2.1 `full` 档位：带 `ord`
 
+当前推荐的部署落点是：
+
+- `compose.base.yml`
+- 可选 `compose.dev-sim.yml` / `compose.joiner.yml`
+- `compose.ord.yml`
+
 此档位包含：
 
 - `bitcoind`
@@ -41,6 +47,12 @@
   - 面向最终用户的完整节点分发
 
 ### 2.2 `slim` 档位：不带 `ord`
+
+当前推荐的部署落点是：
+
+- `compose.base.yml`
+- 可选 `compose.dev-sim.yml` / `compose.joiner.yml`
+- 不叠加 `compose.ord.yml`
 
 此档位包含：
 
@@ -215,10 +227,12 @@
 推荐在后续发布中明确两套 profile：
 
 1. `usdb-full`
+   - 带 `compose.ord.yml`
    - 带 `ord`
    - 带官方网页 mint 能力
 
 2. `usdb-slim`
+   - 不带 `compose.ord.yml`
    - 不带 `ord`
    - 更轻量
    - 不提供网页内直接 mint
