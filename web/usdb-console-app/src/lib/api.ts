@@ -1,12 +1,15 @@
 import type {
   AddressBalanceRow,
   BalanceHistorySyncStatus,
+  BtcWorldSimDevSignerResponse,
+  BtcWorldSimIdentitiesResponse,
   OverviewResponse,
   PassBlockCommitInfo,
   PassEnergyLeaderboardPage,
   PassEnergyRangePage,
   PassEnergySnapshot,
   PassHistoryPage,
+  BtcMintPrepareResponse,
   PassSnapshot,
   PassStatsAtHeight,
   RpcActiveBalanceSnapshot,
@@ -192,4 +195,54 @@ export function fetchUsdbPassEnergyLeaderboard(
       page_size: pageSize,
     },
   ])
+}
+
+export async function prepareBtcMintDraft(request: {
+  owner_address: string
+  eth_main: string
+  eth_collab?: string | null
+  prev: string[]
+}): Promise<BtcMintPrepareResponse> {
+  const response = await fetch('/api/btc/mint/prepare', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
+    throw new Error(errorPayload?.error ?? `Failed BTC mint prepare: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<BtcMintPrepareResponse>
+}
+
+export async function fetchBtcWorldSimIdentities(): Promise<BtcWorldSimIdentitiesResponse> {
+  const response = await fetch('/api/btc/world-sim/identities', {
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to load BTC world-sim identities: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<BtcWorldSimIdentitiesResponse>
+}
+
+export async function fetchBtcWorldSimDevSigner(
+  walletName: string,
+): Promise<BtcWorldSimDevSignerResponse> {
+  const search = new URLSearchParams({ wallet_name: walletName })
+  const response = await fetch(`/api/btc/world-sim/dev-signer?${search.toString()}`, {
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to load BTC world-sim dev signer: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<BtcWorldSimDevSignerResponse>
 }

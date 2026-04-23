@@ -12,6 +12,59 @@ pub struct ServiceRpcRequest {
     pub params: Value,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BtcMintPrepareRequest {
+    pub owner_address: String,
+    pub eth_main: String,
+    #[serde(default)]
+    pub eth_collab: Option<String>,
+    #[serde(default)]
+    pub prev: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcMintPrepareRuntimeSummary {
+    pub btc_network: String,
+    pub btc_runtime_profile: String,
+    pub btc_console_mode: String,
+    pub ord_available: bool,
+    pub ord_query_ready: bool,
+    pub balance_history_ready: bool,
+    pub usdb_indexer_ready: bool,
+    pub ord_synced_block_height: Option<u64>,
+    pub btc_tip_height: Option<u64>,
+    pub ord_sync_gap: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BtcMintPrepareActivePassSummary {
+    pub inscription_id: String,
+    pub state: String,
+    pub owner: String,
+    pub eth_main: String,
+    pub eth_collab: Option<String>,
+    pub prev: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcMintPrepareResponse {
+    pub eligible: bool,
+    pub prepare_mode: String,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub runtime: BtcMintPrepareRuntimeSummary,
+    pub owner_address: String,
+    pub owner_script_hash: String,
+    pub eth_main: String,
+    pub eth_collab: Option<String>,
+    pub prev: Vec<String>,
+    pub suggested_prev: Vec<String>,
+    pub active_pass: Option<BtcMintPrepareActivePassSummary>,
+    pub inscription_payload: Value,
+    pub inscription_payload_json: String,
+    pub prepare_request: Value,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OverviewResponse {
     pub service: String,
@@ -35,6 +88,36 @@ pub struct ServicesSummary {
 pub struct CapabilitiesSummary {
     pub ord_available: bool,
     pub btc_console_mode: String,
+    pub btc_runtime_profile: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcWorldSimIdentity {
+    pub agent_id: usize,
+    pub wallet_name: String,
+    pub owner_address: String,
+    pub is_ethw_aligned: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcWorldSimIdentitiesResponse {
+    pub btc_network: Option<String>,
+    pub btc_runtime_profile: String,
+    pub available: bool,
+    pub marker_path: String,
+    pub identities: Vec<BtcWorldSimIdentity>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcWorldSimDevSignerResponse {
+    pub btc_network: Option<String>,
+    pub btc_runtime_profile: String,
+    pub available: bool,
+    pub wallet_name: String,
+    pub owner_address: Option<String>,
+    pub wif: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

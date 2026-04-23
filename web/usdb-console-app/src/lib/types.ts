@@ -96,6 +96,7 @@ export interface ServicesSummary {
 export interface CapabilitiesSummary {
   ord_available: boolean
   btc_console_mode: string
+  btc_runtime_profile: string
 }
 
 export interface BootstrapSummary {
@@ -294,4 +295,70 @@ export interface PassEnergyLeaderboardPage {
   resolved_height: number
   total: number
   items: PassEnergyLeaderboardItem[]
+}
+
+export interface BtcMintPrepareRuntimeSummary {
+  btc_network: string
+  btc_runtime_profile: string
+  btc_console_mode: string
+  ord_available: boolean
+  ord_query_ready: boolean
+  balance_history_ready: boolean
+  usdb_indexer_ready: boolean
+  ord_synced_block_height?: number | null
+  btc_tip_height?: number | null
+  ord_sync_gap?: number | null
+}
+
+export interface BtcMintPrepareActivePassSummary {
+  inscription_id: string
+  state: string
+  owner: string
+  eth_main: string
+  eth_collab?: string | null
+  prev: string[]
+}
+
+export interface BtcMintPrepareResponse {
+  eligible: boolean
+  prepare_mode: string
+  blockers: string[]
+  warnings: string[]
+  runtime: BtcMintPrepareRuntimeSummary
+  owner_address: string
+  owner_script_hash: string
+  eth_main: string
+  eth_collab?: string | null
+  prev: string[]
+  suggested_prev: string[]
+  active_pass?: BtcMintPrepareActivePassSummary | null
+  inscription_payload: Record<string, unknown>
+  inscription_payload_json: string
+  prepare_request: Record<string, unknown>
+}
+
+export interface BtcWorldSimIdentity {
+  agent_id: number
+  wallet_name: string
+  owner_address: string
+  is_ethw_aligned: boolean
+}
+
+export interface BtcWorldSimIdentitiesResponse {
+  btc_network?: string | null
+  btc_runtime_profile: string
+  available: boolean
+  marker_path: string
+  identities: BtcWorldSimIdentity[]
+  error?: string | null
+}
+
+export interface BtcWorldSimDevSignerResponse {
+  btc_network?: string | null
+  btc_runtime_profile: string
+  available: boolean
+  wallet_name: string
+  owner_address?: string | null
+  wif?: string | null
+  error?: string | null
 }

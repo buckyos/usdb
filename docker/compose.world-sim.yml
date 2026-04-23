@@ -42,6 +42,9 @@ services:
       BTC_RPC_USER: ${BTC_RPC_USER:-}
       BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
+      CONTROL_PLANE_WORLD_SIM_MARKER: ${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/bootstrap/world-sim-bootstrap.done.json}
+    volumes:
+      - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}:ro
 
   world-sim-bootstrap:
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}

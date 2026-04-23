@@ -1,25 +1,43 @@
 use crate::config::ControlPlaneConfig;
 use crate::models::{
     ApiError, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
-    BootstrapSummary, BtcNodeServiceSummary, CapabilitiesSummary, EthwServiceSummary,
-    ExplorerLinks, OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest,
-    ServicesSummary, UsdbIndexerServiceSummary,
+    BootstrapSummary, BtcMintPrepareActivePassSummary, BtcMintPrepareRequest,
+    BtcMintPrepareResponse, BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary,
+    BtcWorldSimDevSignerResponse, BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity,
+    CapabilitiesSummary, EthwServiceSummary, ExplorerLinks, OrdServiceSummary, OverviewResponse,
+    ServiceProbe, ServiceRpcRequest, ServicesSummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, get_service, post};
 use axum::{Router, serve};
 use bitcoincore_rpc::bitcoin::Network;
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::services::ServeDir;
-use usdb_util::{USDB_CONTROL_PLANE_SERVICE_NAME, parse_script_hash_any};
+use usdb_util::{
+    USDB_CONTROL_PLANE_SERVICE_NAME, address_string_to_script_hash, parse_script_hash_any,
+};
+
+#[derive(Debug, Deserialize)]
+struct WorldSimBootstrapMarker {
+    agent_wallets: Vec<String>,
+    agent_addresses: Vec<String>,
+    #[serde(default)]
+    ethw_miner_agent_id: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorldSimDevSignerQuery {
+    wallet_name: String,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -86,6 +104,15 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
         .route("/api/system/services", get(get_services))
         .route("/api/system/bootstrap", get(get_bootstrap))
         .route(
+            "/api/btc/world-sim/identities",
+            get(get_btc_world_sim_identities),
+        )
+        .route(
+            "/api/btc/world-sim/dev-signer",
+            get(get_btc_world_sim_dev_signer),
+        )
+        .route("/api/btc/mint/prepare", post(post_prepare_btc_mint))
+        .route(
             "/api/services/balance-history/rpc",
             post(post_balance_history_rpc),
         )
@@ -149,6 +176,396 @@ async fn get_bootstrap(
     State(state): State<AppState>,
 ) -> Result<Json<BootstrapSummary>, StatusCode> {
     Ok(Json(build_bootstrap_summary(&state)))
+}
+
+async fn get_btc_world_sim_identities(
+    State(state): State<AppState>,
+) -> Result<Json<BtcWorldSimIdentitiesResponse>, StatusCode> {
+    let services = build_services_summary(&state).await;
+    let btc_network = resolve_runtime_btc_network_name(&services);
+    let runtime_profile = classify_btc_runtime_profile(btc_network.as_deref()).to_string();
+    let marker = read_artifact_summary(
+        &state.config,
+        &state.config.bootstrap.world_sim_bootstrap_marker,
+    );
+
+    if runtime_profile != "development" {
+        return Ok(Json(BtcWorldSimIdentitiesResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            identities: Vec::new(),
+            error: None,
+        }));
+    }
+
+    if !marker.exists {
+        return Ok(Json(BtcWorldSimIdentitiesResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            identities: Vec::new(),
+            error: marker.error,
+        }));
+    }
+
+    let Some(marker_data) = marker.data else {
+        return Ok(Json(BtcWorldSimIdentitiesResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            identities: Vec::new(),
+            error: marker.error.or_else(|| {
+                Some("World-sim bootstrap marker did not expose JSON data".to_string())
+            }),
+        }));
+    };
+
+    match decode_world_sim_identities(marker_data) {
+        Ok(identities) => Ok(Json(BtcWorldSimIdentitiesResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: true,
+            marker_path: marker.path,
+            identities,
+            error: None,
+        })),
+        Err(error) => Ok(Json(BtcWorldSimIdentitiesResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            identities: Vec::new(),
+            error: Some(error),
+        })),
+    }
+}
+
+async fn get_btc_world_sim_dev_signer(
+    State(state): State<AppState>,
+    Query(query): Query<WorldSimDevSignerQuery>,
+) -> Result<Json<BtcWorldSimDevSignerResponse>, StatusCode> {
+    let services = build_services_summary(&state).await;
+    let btc_network = resolve_runtime_btc_network_name(&services);
+    let runtime_profile = classify_btc_runtime_profile(btc_network.as_deref()).to_string();
+    let wallet_name = query.wallet_name.trim().to_string();
+
+    if wallet_name.is_empty() {
+        return Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name,
+            owner_address: None,
+            wif: None,
+            error: Some("wallet_name is required".to_string()),
+        }));
+    }
+
+    if runtime_profile != "development" {
+        return Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name,
+            owner_address: None,
+            wif: None,
+            error: None,
+        }));
+    }
+
+    let marker = read_artifact_summary(
+        &state.config,
+        &state.config.bootstrap.world_sim_bootstrap_marker,
+    );
+    if !marker.exists {
+        return Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name,
+            owner_address: None,
+            wif: None,
+            error: marker.error,
+        }));
+    }
+
+    let Some(marker_data) = marker.data else {
+        return Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name,
+            owner_address: None,
+            wif: None,
+            error: marker.error.or_else(|| {
+                Some("World-sim bootstrap marker did not expose JSON data".to_string())
+            }),
+        }));
+    };
+
+    let identities = match decode_world_sim_identities(marker_data) {
+        Ok(identities) => identities,
+        Err(error) => {
+            return Ok(Json(BtcWorldSimDevSignerResponse {
+                btc_network,
+                btc_runtime_profile: runtime_profile,
+                available: false,
+                wallet_name,
+                owner_address: None,
+                wif: None,
+                error: Some(error),
+            }));
+        }
+    };
+
+    let Some(identity) = identities
+        .into_iter()
+        .find(|identity| identity.wallet_name == wallet_name)
+    else {
+        return Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name,
+            owner_address: None,
+            wif: None,
+            error: Some(
+                "Selected world-sim wallet_name is not present in the bootstrap marker".to_string(),
+            ),
+        }));
+    };
+
+    match state
+        .rpc_client
+        .bitcoin_wallet_resolve_private_key(
+            &state.config,
+            &identity.wallet_name,
+            &identity.owner_address,
+        )
+        .await
+    {
+        Ok(wif) => Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: true,
+            wallet_name: identity.wallet_name,
+            owner_address: Some(identity.owner_address),
+            wif: Some(wif),
+            error: None,
+        })),
+        Err(error) => Ok(Json(BtcWorldSimDevSignerResponse {
+            btc_network,
+            btc_runtime_profile: runtime_profile,
+            available: false,
+            wallet_name: identity.wallet_name.clone(),
+            owner_address: Some(identity.owner_address),
+            wif: None,
+            error: Some(format!(
+                "Failed to resolve dev signer material for world-sim wallet {}: {}",
+                identity.wallet_name, error
+            )),
+        })),
+    }
+}
+
+async fn post_prepare_btc_mint(
+    State(state): State<AppState>,
+    Json(request): Json<BtcMintPrepareRequest>,
+) -> Result<Json<BtcMintPrepareResponse>, (StatusCode, Json<ApiError>)> {
+    let services = build_services_summary(&state).await;
+    let capabilities = build_capabilities_summary(&services);
+    let btc_network_name = resolve_runtime_btc_network_name(&services).ok_or_else(|| {
+        let error =
+            "Failed to resolve the active BTC runtime network from btc-node or balance-history"
+                .to_string();
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: error.clone(),
+            }),
+        )
+    })?;
+    let btc_network = parse_balance_history_network(&btc_network_name).map_err(|error| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError {
+                error: format!(
+                    "Unsupported BTC runtime network {}: {}",
+                    btc_network_name, error
+                ),
+            }),
+        )
+    })?;
+    let owner_address = normalize_required_text("owner_address", &request.owner_address)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
+    let owner_script_hash = address_string_to_script_hash(&owner_address, &btc_network)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?
+        .to_string();
+    let eth_main = normalize_evm_address("eth_main", &request.eth_main)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
+    let eth_collab = normalize_optional_evm_address("eth_collab", request.eth_collab.as_deref())
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
+    let prev = normalize_prev_list(&request.prev)
+        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
+
+    let ord_query_ready = services
+        .ord
+        .data
+        .as_ref()
+        .and_then(|item| item.query_ready)
+        .unwrap_or(false);
+    let balance_history_ready = services
+        .balance_history
+        .data
+        .as_ref()
+        .and_then(|item| item.query_ready)
+        .unwrap_or(false);
+    let usdb_indexer_ready = services
+        .usdb_indexer
+        .data
+        .as_ref()
+        .and_then(|item| item.query_ready)
+        .unwrap_or(false);
+
+    let active_pass = if usdb_indexer_ready {
+        fetch_owner_active_pass_summary(&state, &owner_script_hash)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ApiError {
+                        error: format!(
+                            "Failed to resolve the current active pass for {}: {}",
+                            owner_address, error
+                        ),
+                    }),
+                )
+            })?
+    } else {
+        None
+    };
+
+    let mut blockers = Vec::new();
+    if capabilities.btc_console_mode != "inscription_enabled" {
+        blockers.push(
+            "The current BTC runtime is still in read-only mode. Start an inscription-enabled runtime before preparing mint flow."
+                .to_string(),
+        );
+    }
+    if !capabilities.ord_available {
+        blockers.push("ORD backend is not available in the current stack.".to_string());
+    } else if !ord_query_ready {
+        blockers.push("ORD backend is online but not fully synced to the BTC tip yet.".to_string());
+    }
+    if !balance_history_ready {
+        blockers.push(
+            "balance-history is not query-ready yet. Wait until address balance queries are ready."
+                .to_string(),
+        );
+    }
+    if !usdb_indexer_ready {
+        blockers.push(
+            "usdb-indexer is not query-ready yet. Wait until miner-pass state queries are ready."
+                .to_string(),
+        );
+    }
+
+    let mut warnings = Vec::new();
+    let suggested_prev = active_pass
+        .as_ref()
+        .map(|item| vec![item.inscription_id.clone()])
+        .unwrap_or_default();
+    if let Some(active_pass) = active_pass.as_ref() {
+        if prev.is_empty() {
+            warnings.push(format!(
+                "Owner {} already has an active pass {}. A remint usually references the current active pass via prev.",
+                owner_address, active_pass.inscription_id
+            ));
+        } else if !prev.contains(&active_pass.inscription_id) {
+            warnings.push(format!(
+                "Owner {} already has an active pass {}. Current prev does not reference it.",
+                owner_address, active_pass.inscription_id
+            ));
+        }
+    }
+
+    let mut inscription_map = serde_json::Map::new();
+    inscription_map.insert("p".to_string(), Value::String("usdb".to_string()));
+    inscription_map.insert("op".to_string(), Value::String("mint".to_string()));
+    inscription_map.insert("eth_main".to_string(), Value::String(eth_main.clone()));
+    if let Some(value) = eth_collab.as_ref() {
+        inscription_map.insert("eth_collab".to_string(), Value::String(value.clone()));
+    }
+    if !prev.is_empty() {
+        inscription_map.insert(
+            "prev".to_string(),
+            Value::Array(prev.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    let inscription_payload = Value::Object(inscription_map);
+    let inscription_payload_json =
+        serde_json::to_string_pretty(&inscription_payload).map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    error: format!("Failed to render inscription payload: {}", error),
+                }),
+            )
+        })?;
+    let prepare_request = json!({
+        "prepare_mode": "draft_only",
+        "protocol": "usdb-btc-mint-draft-v1",
+        "wallet_signing": "psbt",
+        "runtime_btc_network": btc_network_name.clone(),
+        "owner_address": owner_address.clone(),
+        "owner_script_hash": owner_script_hash.clone(),
+        "inscription": {
+            "content_type": "application/json",
+            "payload": inscription_payload.clone(),
+        },
+        "psbt": Value::Null,
+    });
+
+    Ok(Json(BtcMintPrepareResponse {
+        eligible: blockers.is_empty(),
+        prepare_mode: "draft_only".to_string(),
+        blockers,
+        warnings,
+        runtime: BtcMintPrepareRuntimeSummary {
+            btc_network: btc_network_name,
+            btc_runtime_profile: capabilities.btc_runtime_profile.clone(),
+            btc_console_mode: capabilities.btc_console_mode,
+            ord_available: capabilities.ord_available,
+            ord_query_ready,
+            balance_history_ready,
+            usdb_indexer_ready,
+            ord_synced_block_height: services
+                .ord
+                .data
+                .as_ref()
+                .and_then(|item| item.synced_block_height),
+            btc_tip_height: services
+                .ord
+                .data
+                .as_ref()
+                .and_then(|item| item.btc_tip_height),
+            ord_sync_gap: services.ord.data.as_ref().and_then(|item| item.sync_gap),
+        },
+        owner_address,
+        owner_script_hash,
+        eth_main,
+        eth_collab,
+        prev,
+        suggested_prev,
+        active_pass,
+        inscription_payload,
+        inscription_payload_json,
+        prepare_request,
+    }))
 }
 
 async fn post_balance_history_rpc(
@@ -346,6 +763,103 @@ fn parse_balance_history_network(network: &str) -> Result<Network, String> {
     }
 }
 
+fn resolve_runtime_btc_network_name(services: &ServicesSummary) -> Option<String> {
+    services
+        .btc_node
+        .data
+        .as_ref()
+        .and_then(|item| item.chain.as_ref())
+        .or_else(|| {
+            services
+                .balance_history
+                .data
+                .as_ref()
+                .and_then(|item| item.network.as_ref())
+        })
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn classify_btc_runtime_profile(network: Option<&str>) -> &'static str {
+    match network.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if value == "regtest" => "development",
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "bitcoin"
+                    | "main"
+                    | "mainnet"
+                    | "test"
+                    | "testnet"
+                    | "testnet3"
+                    | "testnet4"
+                    | "signet"
+            ) =>
+        {
+            "public"
+        }
+        _ => "unknown",
+    }
+}
+
+fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIdentity>, String> {
+    let marker: WorldSimBootstrapMarker = serde_json::from_value(marker_data)
+        .map_err(|error| format!("Failed to decode world-sim bootstrap marker: {}", error))?;
+    let ethw_miner_agent_id = marker.ethw_miner_agent_id;
+
+    if marker.agent_wallets.len() != marker.agent_addresses.len() {
+        return Err(format!(
+            "World-sim bootstrap marker contains mismatched identities: {} wallet names vs {} addresses",
+            marker.agent_wallets.len(),
+            marker.agent_addresses.len()
+        ));
+    }
+    if marker.agent_wallets.is_empty() {
+        return Err("World-sim bootstrap marker does not contain any agent identities".to_string());
+    }
+    if let Some(agent_id) = ethw_miner_agent_id
+        && agent_id >= marker.agent_wallets.len()
+    {
+        return Err(format!(
+            "World-sim bootstrap marker has out-of-range ethw_miner_agent_id {} for {} identities",
+            agent_id,
+            marker.agent_wallets.len()
+        ));
+    }
+
+    marker
+        .agent_wallets
+        .into_iter()
+        .zip(marker.agent_addresses)
+        .enumerate()
+        .map(|(agent_id, (wallet_name, owner_address))| {
+            let wallet_name = wallet_name.trim();
+            if wallet_name.is_empty() {
+                return Err(format!(
+                    "World-sim bootstrap marker contains an empty wallet_name at agent {}",
+                    agent_id
+                ));
+            }
+
+            let owner_address = owner_address.trim();
+            if owner_address.is_empty() {
+                return Err(format!(
+                    "World-sim bootstrap marker contains an empty owner_address at agent {}",
+                    agent_id
+                ));
+            }
+
+            Ok(BtcWorldSimIdentity {
+                agent_id,
+                wallet_name: wallet_name.to_string(),
+                owner_address: owner_address.to_string(),
+                is_ethw_aligned: ethw_miner_agent_id == Some(agent_id),
+            })
+        })
+        .collect()
+}
+
 fn normalize_balance_history_params(
     method: &str,
     params: Value,
@@ -450,6 +964,95 @@ fn normalize_usdb_indexer_params(
     Ok(Value::Array(normalized))
 }
 
+fn normalize_required_text(field: &str, value: &str) -> Result<String, String> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Err(format!("{} is required", field));
+    }
+    Ok(normalized.to_string())
+}
+
+fn normalize_evm_address(field: &str, value: &str) -> Result<String, String> {
+    let normalized = normalize_required_text(field, value)?;
+    if !is_valid_evm_address(&normalized) {
+        return Err(format!(
+            "{} must be a valid EVM address with 0x prefix and 40 hexadecimal characters",
+            field
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_optional_evm_address(
+    field: &str,
+    value: Option<&str>,
+) -> Result<Option<String>, String> {
+    match value {
+        Some(item) if !item.trim().is_empty() => normalize_evm_address(field, item).map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn normalize_prev_list(values: &[String]) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(values.len());
+    for item in values {
+        let candidate = item.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if !is_valid_inscription_id(candidate) {
+            return Err(format!(
+                "prev entry {} must follow the inscription id format <txid>i<index>",
+                candidate
+            ));
+        }
+        if !normalized.iter().any(|existing| existing == candidate) {
+            normalized.push(candidate.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+fn is_valid_evm_address(value: &str) -> bool {
+    value.len() == 42
+        && value.starts_with("0x")
+        && value[2..].chars().all(|char| char.is_ascii_hexdigit())
+}
+
+fn is_valid_inscription_id(value: &str) -> bool {
+    let Some((txid, index)) = value.split_once('i') else {
+        return false;
+    };
+    txid.len() == 64
+        && txid.chars().all(|char| char.is_ascii_hexdigit())
+        && !index.is_empty()
+        && index.chars().all(|char| char.is_ascii_digit())
+}
+
+async fn fetch_owner_active_pass_summary(
+    state: &AppState,
+    owner_script_hash: &str,
+) -> Result<Option<BtcMintPrepareActivePassSummary>, String> {
+    let response = state
+        .rpc_client
+        .usdb_indexer_proxy(
+            &state.config.rpc.usdb_indexer_url,
+            "get_owner_active_pass_at_height",
+            json!([{
+                "owner": owner_script_hash,
+                "at_height": Value::Null,
+            }]),
+        )
+        .await?;
+
+    serde_json::from_value(response).map_err(|error| {
+        format!(
+            "Failed to decode active pass summary for owner {}: {}",
+            owner_script_hash, error
+        )
+    })
+}
+
 async fn build_services_summary(state: &AppState) -> ServicesSummary {
     let btc_node = probe_btc_node(state).await;
     let balance_history = probe_balance_history(state).await;
@@ -473,9 +1076,13 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
             .as_ref()
             .and_then(|item| item.backend_ready)
             .unwrap_or(false);
+    let btc_runtime_profile =
+        classify_btc_runtime_profile(resolve_runtime_btc_network_name(services).as_deref())
+            .to_string();
 
     CapabilitiesSummary {
         ord_available,
+        btc_runtime_profile,
         btc_console_mode: if ord_available {
             "inscription_enabled".to_string()
         } else {
@@ -1050,5 +1657,60 @@ mod tests {
 
         assert_eq!(normalized[0]["owner"], expected);
         assert!(normalized[0].get("address").is_none());
+    }
+
+    #[test]
+    fn normalize_evm_address_accepts_lowercase_hex() {
+        let value = "0x1111111111111111111111111111111111111111";
+        assert_eq!(normalize_evm_address("eth_main", value).unwrap(), value);
+    }
+
+    #[test]
+    fn normalize_prev_list_deduplicates_and_rejects_invalid_ids() {
+        let valid = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
+        let duplicate = valid.to_string();
+        let normalized =
+            normalize_prev_list(&[valid.to_string(), duplicate, " ".to_string()]).unwrap();
+        assert_eq!(normalized, vec![valid.to_string()]);
+        assert!(normalize_prev_list(&["bad-prev".to_string()]).is_err());
+    }
+
+    #[test]
+    fn classify_btc_runtime_profile_matches_expected_networks() {
+        assert_eq!(classify_btc_runtime_profile(Some("regtest")), "development");
+        assert_eq!(classify_btc_runtime_profile(Some("bitcoin")), "public");
+        assert_eq!(classify_btc_runtime_profile(Some("testnet4")), "public");
+        assert_eq!(classify_btc_runtime_profile(Some("signet")), "public");
+        assert_eq!(classify_btc_runtime_profile(Some("unknown-net")), "unknown");
+        assert_eq!(classify_btc_runtime_profile(None), "unknown");
+    }
+
+    #[test]
+    fn decode_world_sim_identities_builds_typed_rows() {
+        let identities = decode_world_sim_identities(json!({
+            "agent_wallets": ["usdb-world-agent-1", "usdb-world-agent-2"],
+            "agent_addresses": ["bcrt1qa", "bcrt1qb"],
+            "ethw_miner_agent_id": 1
+        }))
+        .unwrap();
+
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].agent_id, 0);
+        assert_eq!(identities[0].wallet_name, "usdb-world-agent-1");
+        assert_eq!(identities[0].owner_address, "bcrt1qa");
+        assert!(!identities[0].is_ethw_aligned);
+        assert_eq!(identities[1].agent_id, 1);
+        assert!(identities[1].is_ethw_aligned);
+    }
+
+    #[test]
+    fn decode_world_sim_identities_rejects_mismatched_lengths() {
+        let error = decode_world_sim_identities(json!({
+            "agent_wallets": ["usdb-world-agent-1"],
+            "agent_addresses": []
+        }))
+        .unwrap_err();
+
+        assert!(error.contains("mismatched identities"));
     }
 }

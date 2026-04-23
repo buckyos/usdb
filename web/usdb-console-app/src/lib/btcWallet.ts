@@ -31,6 +31,7 @@ export interface BtcWalletSnapshot {
 
 export type BtcWalletMode = 'browser' | 'dev-regtest'
 export type BtcPsbtTextFormat = 'base64' | 'hex'
+export type DevRegtestAddressType = 'wpkh' | 'tr'
 
 export interface BtcWalletMessageSignatureResult {
   mode: BtcWalletMode
@@ -85,6 +86,7 @@ interface DevRegtestWalletRecord {
   wif: string
   address: string
   publicKey: string
+  addressType?: DevRegtestAddressType
   importedAt: string
 }
 
@@ -231,7 +233,15 @@ function writeDevRegtestWalletRecord(record: DevRegtestWalletRecord) {
   storage.setItem(DEV_REGTEST_STORAGE_KEY, JSON.stringify(record))
 }
 
-function parseRegtestWalletFromWif(wif: string) {
+function deriveRegtestAddress(privateKey: Uint8Array, addressType: DevRegtestAddressType) {
+  const derivedAddress = getAddress(addressType, privateKey, REGTEST_NETWORK)
+  if (!derivedAddress) {
+    throw new Error(`Failed to derive a regtest ${addressType} address from the provided WIF.`)
+  }
+  return derivedAddress
+}
+
+function parseRegtestWalletFromWif(wif: string, address?: string | null) {
   const normalizedWif = wif.trim()
   if (!normalizedWif) {
     throw new Error('A regtest WIF private key is required.')
@@ -239,10 +249,18 @@ function parseRegtestWalletFromWif(wif: string) {
 
   const privateKey = WIF(REGTEST_NETWORK).decode(normalizedWif)
   const publicKey = pubECDSA(privateKey, true)
-  const derivedAddress = getAddress('wpkh', privateKey, REGTEST_NETWORK)
+  const requestedAddress = address?.trim() ?? ''
+  let addressType: DevRegtestAddressType = 'wpkh'
+  let derivedAddress = deriveRegtestAddress(privateKey, 'wpkh')
 
-  if (!derivedAddress) {
-    throw new Error('Failed to derive a regtest address from the provided WIF.')
+  if (requestedAddress && requestedAddress !== derivedAddress) {
+    const taprootAddress = deriveRegtestAddress(privateKey, 'tr')
+    if (requestedAddress === taprootAddress) {
+      addressType = 'tr'
+      derivedAddress = taprootAddress
+    } else {
+      throw new Error('The provided BTC address does not match the imported regtest private key.')
+    }
   }
 
   return {
@@ -250,6 +268,7 @@ function parseRegtestWalletFromWif(wif: string) {
     privateKey,
     publicKey,
     derivedAddress,
+    addressType,
   }
 }
 
@@ -364,19 +383,23 @@ export async function importDevRegtestWallet(params: {
   wif: string
   address?: string | null
 }): Promise<BtcWalletSnapshot> {
-  const { normalizedWif, publicKey, derivedAddress } = parseRegtestWalletFromWif(params.wif)
+  const { normalizedWif, publicKey, derivedAddress, addressType } = parseRegtestWalletFromWif(
+    params.wif,
+    params.address,
+  )
   const address = params.address?.trim() || derivedAddress
 
   writeDevRegtestWalletRecord({
     wif: normalizedWif,
     address,
     publicKey: bytesToHex(publicKey),
+    addressType,
     importedAt: new Date().toISOString(),
   })
 
   return {
     mode: 'dev-regtest',
-    source: 'Dev Regtest Wallet',
+    source: 'Dev Signer',
     address,
     addresses: [address],
     publicKey: bytesToHex(publicKey),
@@ -392,7 +415,7 @@ export async function readDevRegtestWalletSnapshot(): Promise<BtcWalletSnapshot 
 
   return {
     mode: 'dev-regtest',
-    source: 'Dev Regtest Wallet',
+    source: 'Dev Signer',
     address: record.address,
     addresses: [record.address],
     publicKey: record.publicKey,
@@ -502,7 +525,7 @@ export function getBtcWalletAdapter(mode: BtcWalletMode): BtcWalletAdapter | nul
 
   return {
     mode: 'dev-regtest',
-    source: 'Dev Regtest Wallet',
+    source: 'Dev Signer',
     capabilities: {
       canConnect: true,
       canReadSnapshot: true,
@@ -518,7 +541,7 @@ export function getBtcWalletAdapter(mode: BtcWalletMode): BtcWalletAdapter | nul
     readSnapshot: readDevRegtestWalletSnapshot,
     signMessage: async (message) => ({
       mode: 'dev-regtest',
-      source: 'Dev Regtest Wallet',
+      source: 'Dev Signer',
       signature: await signDevRegtestWalletMessage(message),
       signatureType: 'ecdsa-sha256-dev',
     }),
@@ -526,7 +549,7 @@ export function getBtcWalletAdapter(mode: BtcWalletMode): BtcWalletAdapter | nul
       const result = await signDevRegtestWalletPsbt(psbt, options)
       return {
         mode: 'dev-regtest',
-        source: 'Dev Regtest Wallet',
+        source: 'Dev Signer',
         inputFormat: result.inputFormat,
         outputPsbt: result.outputPsbt,
         finalized: result.finalized,

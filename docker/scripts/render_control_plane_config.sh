@@ -64,6 +64,7 @@ ethw_init_marker = "${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-
 ethw_genesis = "${CONTROL_PLANE_ETHW_GENESIS:-/bootstrap/ethw-genesis.json}"
 sourcedao_bootstrap_state = "${CONTROL_PLANE_SOURCEDAO_STATE:-/bootstrap/sourcedao-bootstrap-state.json}"
 sourcedao_bootstrap_marker = "${CONTROL_PLANE_SOURCEDAO_MARKER:-/bootstrap/sourcedao-bootstrap.done.json}"
+world_sim_bootstrap_marker = "${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/bootstrap/world-sim-bootstrap.done.json}"
 
 [web]
 console_root = "${CONTROL_PLANE_CONSOLE_ROOT:-/opt/usdb/web/usdb-console-app/dist}"

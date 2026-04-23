@@ -73,6 +73,10 @@ fn default_sourcedao_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/bootstrap/sourcedao-bootstrap.done.json")
 }
 
+fn default_world_sim_marker_path() -> PathBuf {
+    PathBuf::from("docker/local/world-sim/runtime/bootstrap/world-sim-bootstrap.done.json")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BitcoinAuthMode {
@@ -165,6 +169,8 @@ pub struct BootstrapPaths {
     pub sourcedao_bootstrap_state: PathBuf,
     #[serde(default = "default_sourcedao_marker_path")]
     pub sourcedao_bootstrap_marker: PathBuf,
+    #[serde(default = "default_world_sim_marker_path")]
+    pub world_sim_bootstrap_marker: PathBuf,
 }
 
 impl Default for BootstrapPaths {
@@ -176,6 +182,7 @@ impl Default for BootstrapPaths {
             ethw_genesis: default_ethw_genesis_path(),
             sourcedao_bootstrap_state: default_sourcedao_state_path(),
             sourcedao_bootstrap_marker: default_sourcedao_marker_path(),
+            world_sim_bootstrap_marker: default_world_sim_marker_path(),
         }
     }
 }
@@ -299,6 +306,10 @@ mod tests {
         assert_eq!(
             config.bootstrap.ethw_genesis,
             PathBuf::from("docker/local/dev-sim/bootstrap/manifests/ethw-genesis.json")
+        );
+        assert_eq!(
+            config.bootstrap.world_sim_bootstrap_marker,
+            PathBuf::from("docker/local/world-sim/runtime/bootstrap/world-sim-bootstrap.done.json")
         );
     }
 }

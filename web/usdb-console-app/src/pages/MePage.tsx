@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router-dom'
 import { FieldValueList } from '../components/FieldValueList'
+import { InlineHelpTooltip } from '../components/InlineHelpTooltip'
 import {
   fetchBalanceHistorySingleBalance,
+  fetchBtcWorldSimDevSigner,
+  fetchBtcWorldSimIdentities,
+  prepareBtcMintDraft,
   fetchUsdbOwnerActivePass,
   fetchUsdbPassEnergy,
   fetchUsdbPassSnapshot,
@@ -13,7 +17,14 @@ import {
   displayNumber,
   displayText,
 } from '../lib/format'
-import type { AddressBalanceRow, OverviewResponse, PassEnergySnapshot, PassSnapshot } from '../lib/types'
+import type {
+  AddressBalanceRow,
+  BtcMintPrepareResponse,
+  BtcWorldSimIdentitiesResponse,
+  OverviewResponse,
+  PassEnergySnapshot,
+  PassSnapshot,
+} from '../lib/types'
 import {
   clearDevRegtestWallet,
   connectBtcWalletByMode,
@@ -35,6 +46,7 @@ interface MePageProps {
 }
 
 type IdentityKind = 'eth' | 'btc'
+type BtcIdentitySource = 'browser_wallet' | 'world_sim_agent' | 'manual_address'
 
 interface WalletPassRecognition {
   walletInscriptionId: string
@@ -117,15 +129,65 @@ function inferBtcAddressNetwork(address?: string | null): BtcRuntimeNetwork | nu
   return null
 }
 
+function parseMintPrevInput(value: string) {
+  return value
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+}
+
+function runtimeProfileLabel(
+  profile: string,
+  t: MePageProps['t'],
+) {
+  if (profile === 'development') return t('me.values.runtimeDevelopment')
+  if (profile === 'public') return t('me.values.runtimePublic')
+  return t('me.values.runtimeUnknown')
+}
+
+function identitySourceLabel(
+  source: BtcIdentitySource,
+  t: MePageProps['t'],
+) {
+  if (source === 'browser_wallet') return t('me.values.identitySourceBrowserWallet')
+  if (source === 'world_sim_agent') return t('me.values.identitySourceWorldSimAgent')
+  return t('me.values.identitySourceManualAddress')
+}
+
+function signerSourceLabel(
+  mode: BtcWalletMode,
+  t: MePageProps['t'],
+) {
+  if (mode === 'dev-regtest') return t('me.values.signerSourceDevSigner')
+  return t('me.values.signerSourceBrowserWallet')
+}
+
 export function MePage({ data, locale, t }: MePageProps) {
   const { identityKind } = useParams()
   const activeIdentity = normalizeIdentityKind(identityKind)
   const [ethAddress, setEthAddress] = useState('')
   const [btcAddress, setBtcAddress] = useState('')
   const [btcWallet, setBtcWallet] = useState<BtcWalletSnapshot | null>(null)
+  const [btcBrowserWalletSnapshot, setBtcBrowserWalletSnapshot] = useState<BtcWalletSnapshot | null>(null)
   const [btcWalletMode, setBtcWalletMode] = useState<BtcWalletMode>('browser')
+  const [btcIdentitySource, setBtcIdentitySource] = useState<BtcIdentitySource>('manual_address')
   const [btcWalletLoading, setBtcWalletLoading] = useState(false)
   const [btcWalletError, setBtcWalletError] = useState<string | null>(null)
+  const [btcWorldSim, setBtcWorldSim] = useState<BtcWorldSimIdentitiesResponse | null>(null)
+  const [btcWorldSimLoading, setBtcWorldSimLoading] = useState(false)
+  const [btcWorldSimError, setBtcWorldSimError] = useState<string | null>(null)
+  const [btcSelectedWorldSimWalletName, setBtcSelectedWorldSimWalletName] = useState('')
+  const [btcAutoDevSignerLoading, setBtcAutoDevSignerLoading] = useState(false)
+  const [btcAutoDevSignerError, setBtcAutoDevSignerError] = useState<string | null>(null)
+  const [btcBrowserWalletMessage, setBtcBrowserWalletMessage] = useState('')
+  const [btcBrowserWalletSignature, setBtcBrowserWalletSignature] = useState<string | null>(null)
+  const [btcBrowserWalletSigning, setBtcBrowserWalletSigning] = useState(false)
+  const [btcBrowserWalletSignatureError, setBtcBrowserWalletSignatureError] = useState<string | null>(null)
+  const [btcBrowserWalletPsbt, setBtcBrowserWalletPsbt] = useState('')
+  const [btcBrowserWalletPsbtSigning, setBtcBrowserWalletPsbtSigning] = useState(false)
+  const [btcBrowserWalletPsbtError, setBtcBrowserWalletPsbtError] = useState<string | null>(null)
+  const [btcBrowserWalletPsbtResult, setBtcBrowserWalletPsbtResult] =
+    useState<BtcWalletPsbtSignatureResult | null>(null)
   const [btcDevWalletWif, setBtcDevWalletWif] = useState('')
   const [btcDevWalletAddress, setBtcDevWalletAddress] = useState('')
   const [btcDevWalletMessage, setBtcDevWalletMessage] = useState('')
@@ -147,6 +209,13 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [btcRecognizedPasses, setBtcRecognizedPasses] = useState<WalletPassRecognition[]>([])
   const [btcRecognizedPassesLoading, setBtcRecognizedPassesLoading] = useState(false)
   const [btcRecognizedPassesError, setBtcRecognizedPassesError] = useState<string | null>(null)
+  const [btcMintEthMain, setBtcMintEthMain] = useState('')
+  const [btcMintEthCollab, setBtcMintEthCollab] = useState('')
+  const [btcMintPrev, setBtcMintPrev] = useState('')
+  const [btcMintPrepareLoading, setBtcMintPrepareLoading] = useState(false)
+  const [btcMintPrepareError, setBtcMintPrepareError] = useState<string | null>(null)
+  const [btcMintPrepareResult, setBtcMintPrepareResult] =
+    useState<BtcMintPrepareResponse | null>(null)
 
   if (!activeIdentity) {
     return <Navigate to="/me/eth" replace />
@@ -157,30 +226,73 @@ export function MePage({ data, locale, t }: MePageProps) {
   const sourcedaoReady = Boolean(data?.bootstrap.sourcedao_bootstrap_marker.exists)
   const ordAvailable = Boolean(data?.capabilities.ord_available)
   const btcConsoleMode = data?.capabilities.btc_console_mode ?? 'read_only'
+  const btcRuntimeProfile = data?.capabilities.btc_runtime_profile ?? 'unknown'
   const balanceHistoryReady = Boolean(data?.services.balance_history.data?.query_ready)
   const usdbIndexerReady = Boolean(data?.services.usdb_indexer.data?.query_ready)
   const hasInjectedBtcWallet = Boolean(detectBtcWalletProvider())
   const btcWalletAdapterCapabilities = getBtcWalletAdapterCapabilities(btcWalletMode)
   const btcWalletConnected = Boolean(btcWallet?.address)
+  const btcBrowserWalletConnected = Boolean(btcBrowserWalletSnapshot?.address)
   const btcRuntimeNetwork = normalizeBtcRuntimeNetwork(data?.services.btc_node.data?.chain)
-  const btcWalletReportedNetwork = normalizeInjectedWalletNetwork(btcWallet?.network)
+  const btcSignerReportedNetwork = normalizeInjectedWalletNetwork(btcWallet?.network)
+  const btcSignerDerivedNetwork = inferBtcAddressNetwork(btcWallet?.address)
+  const btcEffectiveSignerNetwork = btcSignerDerivedNetwork ?? btcSignerReportedNetwork
+  const btcBrowserWalletReportedNetwork = normalizeInjectedWalletNetwork(
+    btcBrowserWalletSnapshot?.network,
+  )
+  const btcBrowserWalletDerivedNetwork = inferBtcAddressNetwork(btcBrowserWalletSnapshot?.address)
+  const btcEffectiveBrowserWalletNetwork =
+    btcBrowserWalletDerivedNetwork ?? btcBrowserWalletReportedNetwork
+  const btcSelectedWorldSimIdentity =
+    btcWorldSim?.identities.find((item) => item.wallet_name === btcSelectedWorldSimWalletName) ?? null
+  const btcLookupAddress =
+    (btcIdentitySource === 'browser_wallet'
+      ? btcBrowserWalletSnapshot?.address
+      : btcIdentitySource === 'world_sim_agent'
+        ? btcSelectedWorldSimIdentity?.owner_address
+        : btcAddress.trim()) || null
+  const btcLookupAddressDerivedNetwork = inferBtcAddressNetwork(btcLookupAddress)
+  const btcLookupNetworkMismatch =
+    btcRuntimeNetwork != null &&
+    btcLookupAddressDerivedNetwork != null &&
+    btcRuntimeNetwork !== btcLookupAddressDerivedNetwork
+  const btcLookupNetworkMismatchMessage = btcLookupNetworkMismatch
+    ? t('me.btc.networkMismatch', undefined, {
+        walletNetwork: btcLookupAddressDerivedNetwork,
+        runtimeNetwork: btcRuntimeNetwork,
+      })
+    : null
+  const btcBrowserWalletNetworkMismatch =
+    btcRuntimeNetwork != null &&
+    btcEffectiveBrowserWalletNetwork != null &&
+    btcRuntimeNetwork !== btcEffectiveBrowserWalletNetwork
+  const btcBrowserWalletNetworkMismatchMessage = btcBrowserWalletNetworkMismatch
+    ? t('me.btc.networkMismatch', undefined, {
+        walletNetwork: btcEffectiveBrowserWalletNetwork,
+        runtimeNetwork: btcRuntimeNetwork,
+      })
+    : null
+  const btcRuntimeAllowsWrite = btcRuntimeProfile !== 'unknown'
+  const btcMintIdentityReady =
+    btcRuntimeProfile !== 'public' ||
+    (btcIdentitySource === 'browser_wallet' && btcBrowserWalletConnected)
+  const btcMintCapabilityReady =
+    btcRuntimeAllowsWrite &&
+    btcMintIdentityReady &&
+    !btcLookupNetworkMismatch &&
+    ordAvailable &&
+    balanceHistoryReady &&
+    usdbIndexerReady
+  const btcDevSignerAutoManaged =
+    btcRuntimeProfile === 'development' &&
+    btcWalletMode === 'dev-regtest' &&
+    btcIdentitySource === 'world_sim_agent' &&
+    Boolean(btcSelectedWorldSimIdentity)
 
   const activeAddressValue =
     activeIdentity === 'eth'
       ? ethAddress.trim()
-      : btcWallet?.address ?? btcAddress.trim()
-  const btcAddressDerivedNetwork = inferBtcAddressNetwork(btcWallet?.address ?? btcAddress)
-  const btcEffectiveWalletNetwork = btcAddressDerivedNetwork ?? btcWalletReportedNetwork
-  const btcWalletNetworkMismatch =
-    btcRuntimeNetwork != null &&
-    btcEffectiveWalletNetwork != null &&
-    btcRuntimeNetwork !== btcEffectiveWalletNetwork
-  const btcWalletNetworkMismatchMessage = btcWalletNetworkMismatch
-    ? t('me.btc.networkMismatch', undefined, {
-        walletNetwork: btcEffectiveWalletNetwork,
-        runtimeNetwork: btcRuntimeNetwork,
-      })
-    : null
+      : btcLookupAddress ?? ''
 
   const activeAddressStatus =
     activeIdentity === 'eth'
@@ -191,10 +303,11 @@ export function MePage({ data, locale, t }: MePageProps) {
           : t('me.identity.checkFormat')
       : activeAddressValue === ''
         ? t('me.identity.notSet')
-        : btcWalletNetworkMismatch
+        : btcLookupNetworkMismatch
           ? t('me.identity.networkMismatch')
-        : t('me.identity.checkFormat')
-  const btcLookupAddress = btcWallet?.address ?? null
+          : btcLookupAddressDerivedNetwork
+            ? t('me.identity.validFormat')
+            : t('me.identity.checkFormat')
   const btcLatestBalanceRow = useMemo(
     () =>
       btcAddressBalanceRows.length > 0
@@ -202,12 +315,53 @@ export function MePage({ data, locale, t }: MePageProps) {
         : null,
     [btcAddressBalanceRows],
   )
-  const btcWalletModeLabel =
-    btcWalletMode === 'dev-regtest'
-      ? t('me.values.devRegtestWallet')
-      : btcWallet?.address
-        ? t('me.values.browserWalletConnected')
-        : t('me.values.manualAddressFirst')
+  const btcMintPrepareEnabled =
+    Boolean(btcLookupAddress) &&
+    btcMintCapabilityReady &&
+    btcMintEthMain.trim() !== '' &&
+    !btcMintPrepareLoading
+  const btcMintDraftRequestJson = btcMintPrepareResult
+    ? JSON.stringify(btcMintPrepareResult.prepare_request, null, 2)
+    : ''
+  const btcMintSummaryItems = [
+    {
+      label: t('me.fields.prepareMode'),
+      value: displayText(btcMintPrepareResult?.prepare_mode, t),
+      helpText: t('me.help.prepareMode'),
+      tone: btcMintPrepareResult == null ? null : btcMintPrepareResult.eligible ? 'success' : 'warning',
+    },
+    {
+      label: t('me.fields.ownerScriptHash'),
+      value: displayText(btcMintPrepareResult?.owner_script_hash, t),
+      helpText: t('me.help.ownerScriptHash'),
+      tone: null,
+    },
+    {
+      label: t('me.fields.activeMinerPass'),
+      value: displayText(btcMintPrepareResult?.active_pass?.inscription_id, t),
+      helpText: t('me.help.activeMinerPass'),
+      tone: null,
+    },
+    {
+      label: t('me.fields.suggestedPrev'),
+      value:
+        btcMintPrepareResult == null
+          ? t('common.notYetAvailable')
+          : btcMintPrepareResult.suggested_prev.length > 0
+            ? btcMintPrepareResult.suggested_prev.join(', ')
+            : t('me.values.noneSuggested'),
+      helpText: t('me.help.suggestedPrev'),
+      tone: null,
+    },
+    {
+      label: t('me.fields.ordSyncGap'),
+      value: displayNumber(locale, btcMintPrepareResult?.runtime.ord_sync_gap ?? null, t),
+      helpText: t('me.help.ordSyncGap'),
+      tone: null,
+    },
+  ] as const
+  const btcSignerSourceValue = signerSourceLabel(btcWalletMode, t)
+  const btcIdentitySourceValue = identitySourceLabel(btcIdentitySource, t)
   const btcWalletCapabilityItems = [
     {
       label: t('me.fields.connectCapability'),
@@ -269,14 +423,19 @@ export function MePage({ data, locale, t }: MePageProps) {
             helpText: t('me.help.ordBackend'),
           },
           {
+            label: t('me.fields.runtimeProfile'),
+            value: runtimeProfileLabel(btcRuntimeProfile, t),
+            helpText: t('me.help.runtimeProfile'),
+          },
+          {
+            label: t('me.fields.signerSource'),
+            value: btcSignerSourceValue,
+            helpText: t('me.help.signerSource'),
+          },
+          {
             label: t('me.fields.balanceHistory'),
             value: balanceHistoryReady ? t('service.queryReady') : t('common.notYetAvailable'),
             helpText: t('me.help.balanceHistory'),
-          },
-          {
-            label: t('me.fields.walletMode'),
-            value: btcWalletMode === 'dev-regtest' ? t('me.values.devRegtestWallet') : t('me.values.browserWallet'),
-            helpText: t('me.help.walletMode'),
           },
           {
             label: t('me.fields.usdbIndexer'),
@@ -323,14 +482,14 @@ export function MePage({ data, locale, t }: MePageProps) {
           {
             label: t('me.fields.mintCapability'),
             value:
-              !btcWalletNetworkMismatch && ordAvailable && balanceHistoryReady && usdbIndexerReady
+              btcMintCapabilityReady
                 ? t('me.values.mintReady')
                 : t('me.values.readOnly'),
             helpText: t('me.help.mintCapability'),
           },
           {
             label: t('me.fields.protocolData'),
-            value: btcWalletNetworkMismatch
+            value: btcLookupNetworkMismatch
               ? t('me.values.networkMismatch')
               : usdbIndexerReady
                 ? t('service.queryReady')
@@ -344,7 +503,10 @@ export function MePage({ data, locale, t }: MePageProps) {
           },
           {
             label: t('me.fields.detectedWalletNetwork'),
-            value: displayText(btcEffectiveWalletNetwork ?? btcWallet?.network, t),
+            value: displayText(
+              btcLookupAddressDerivedNetwork ?? btcEffectiveBrowserWalletNetwork ?? btcEffectiveSignerNetwork,
+              t,
+            ),
             helpText: t('me.help.detectedWalletNetwork'),
           },
         ]
@@ -377,7 +539,7 @@ export function MePage({ data, locale, t }: MePageProps) {
           {
             label: t('me.fields.primaryAction'),
             value:
-              !btcWalletNetworkMismatch && ordAvailable && balanceHistoryReady && usdbIndexerReady
+              btcMintCapabilityReady
                 ? t('me.values.btcMintAndPass')
                 : t('me.values.btcReadOnlyData'),
             helpText: t('me.help.primaryAction'),
@@ -385,15 +547,20 @@ export function MePage({ data, locale, t }: MePageProps) {
           {
             label: t('me.fields.runtimeGate'),
             value:
-              !btcWalletNetworkMismatch && ordAvailable && balanceHistoryReady && usdbIndexerReady
+              btcMintCapabilityReady
                 ? t('me.values.mintReady')
                 : t('me.values.readOnly'),
             helpText: t('me.help.runtimeGate'),
           },
           {
-            label: t('me.fields.identityMode'),
-            value: btcWalletModeLabel,
-            helpText: t('me.help.identityMode'),
+            label: t('me.fields.identitySource'),
+            value: btcIdentitySourceValue,
+            helpText: t('me.help.identitySource'),
+          },
+          {
+            label: t('me.fields.signerSource'),
+            value: btcSignerSourceValue,
+            helpText: t('me.help.signerSource'),
           },
           {
             label: t('me.fields.currentAddress'),
@@ -404,14 +571,32 @@ export function MePage({ data, locale, t }: MePageProps) {
 
   useEffect(() => {
     if (activeIdentity !== 'btc') return
+    if (btcRuntimeProfile === 'public') {
+      setBtcWalletMode('browser')
+      setBtcIdentitySource((current) =>
+        current === 'world_sim_agent'
+          ? btcBrowserWalletConnected
+            ? 'browser_wallet'
+            : 'manual_address'
+          : current,
+      )
+      return
+    }
+    if (btcRuntimeProfile === 'development') {
+      setBtcWalletMode('dev-regtest')
+    }
+  }, [activeIdentity, btcBrowserWalletConnected, btcRuntimeProfile])
+
+  useEffect(() => {
+    if (activeIdentity !== 'btc') return
     let cancelled = false
 
     void readBtcWalletSnapshotByMode(btcWalletMode)
       .then((snapshot) => {
         if (cancelled) return
         setBtcWallet(snapshot)
-        if (snapshot?.address) {
-          setBtcAddress(snapshot.address)
+        if (btcWalletMode === 'browser') {
+          setBtcBrowserWalletSnapshot(snapshot)
         }
         setBtcWalletError(null)
       })
@@ -426,21 +611,154 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, btcWalletMode])
 
   useEffect(() => {
+    if (activeIdentity !== 'btc') return
+    if (btcRuntimeProfile !== 'development') {
+      setBtcWorldSim(null)
+      setBtcWorldSimError(null)
+      setBtcSelectedWorldSimWalletName('')
+      return
+    }
+
+    let cancelled = false
+    setBtcWorldSimLoading(true)
+    setBtcWorldSimError(null)
+
+    void fetchBtcWorldSimIdentities()
+      .then((response) => {
+        if (cancelled) return
+        setBtcWorldSim(response)
+        setBtcWorldSimError(response.error ?? null)
+        setBtcSelectedWorldSimWalletName((current) => {
+          if (response.identities.some((item) => item.wallet_name === current)) {
+            return current
+          }
+          return response.identities.length === 1 ? response.identities[0].wallet_name : ''
+        })
+      })
+      .catch((error: Error) => {
+        if (cancelled) return
+        setBtcWorldSim(null)
+        setBtcWorldSimError(error.message)
+        setBtcSelectedWorldSimWalletName('')
+      })
+      .finally(() => {
+        if (cancelled) return
+        setBtcWorldSimLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeIdentity, btcRuntimeProfile])
+
+  useEffect(() => {
+    if (activeIdentity !== 'btc' || btcRuntimeProfile !== 'development') return
+    if (!btcWorldSim?.available || btcWorldSim.identities.length !== 1) return
+
+    const identity = btcWorldSim.identities[0]
+    setBtcSelectedWorldSimWalletName((current) => current || identity.wallet_name)
+    setBtcIdentitySource((current) => {
+      if (current !== 'manual_address') return current
+      return btcAddress.trim() ? current : 'world_sim_agent'
+    })
+  }, [activeIdentity, btcAddress, btcRuntimeProfile, btcWorldSim])
+
+  useEffect(() => {
+    if (activeIdentity !== 'btc' || btcRuntimeProfile !== 'development') {
+      setBtcAutoDevSignerError(null)
+      setBtcAutoDevSignerLoading(false)
+      return
+    }
+    if (btcIdentitySource !== 'world_sim_agent' || !btcSelectedWorldSimIdentity) {
+      setBtcAutoDevSignerError(null)
+      setBtcAutoDevSignerLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setBtcAutoDevSignerLoading(true)
+    setBtcAutoDevSignerError(null)
+    clearDevRegtestWallet()
+    setBtcWallet(null)
     setBtcWalletError(null)
+
+    void fetchBtcWorldSimDevSigner(btcSelectedWorldSimIdentity.wallet_name)
+      .then(async (response) => {
+        if (cancelled) return
+        if (!response.available || !response.wif || !response.owner_address) {
+          throw new Error(
+            response.error ??
+              'The selected world-sim identity did not expose dev signer material.',
+          )
+        }
+
+        const snapshot = await importDevRegtestWallet({
+          wif: response.wif,
+          address: response.owner_address,
+        })
+        if (cancelled) return
+        setBtcWalletMode('dev-regtest')
+        setBtcWallet(snapshot)
+        setBtcDevWalletAddress(response.owner_address)
+        setBtcDevWalletWif('')
+        setBtcWalletError(null)
+      })
+      .catch((error: Error) => {
+        if (cancelled) return
+        setBtcAutoDevSignerError(error.message)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setBtcAutoDevSignerLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    activeIdentity,
+    btcIdentitySource,
+    btcRuntimeProfile,
+    btcSelectedWorldSimIdentity,
+  ])
+
+  useEffect(() => {
+    if (activeIdentity !== 'btc' || btcRuntimeProfile !== 'public') return
+    if (!btcBrowserWalletConnected || btcAddress.trim()) return
+    setBtcIdentitySource((current) =>
+      current === 'manual_address' || current === 'world_sim_agent'
+        ? 'browser_wallet'
+        : current,
+    )
+  }, [activeIdentity, btcAddress, btcBrowserWalletConnected, btcRuntimeProfile])
+
+  useEffect(() => {
+    setBtcWalletError(null)
+    setBtcBrowserWalletSignature(null)
+    setBtcBrowserWalletSignatureError(null)
+    setBtcBrowserWalletPsbtResult(null)
+    setBtcBrowserWalletPsbtError(null)
     setBtcDevWalletSignature(null)
     setBtcDevWalletSignatureError(null)
     setBtcDevWalletPsbtResult(null)
     setBtcDevWalletPsbtError(null)
+    setBtcMintPrepareError(null)
+    setBtcMintPrepareResult(null)
   }, [btcWalletMode])
 
   useEffect(() => {
+    setBtcMintPrepareError(null)
+    setBtcMintPrepareResult(null)
+  }, [btcLookupAddress, btcLookupNetworkMismatchMessage, btcMintEthMain, btcMintEthCollab, btcMintPrev])
+
+  useEffect(() => {
     if (activeIdentity !== 'btc') return
-    if (btcWalletNetworkMismatchMessage) {
+    if (btcLookupNetworkMismatchMessage) {
       setBtcAddressBalanceRows([])
-      setBtcAddressBalanceError(btcWalletNetworkMismatchMessage)
+      setBtcAddressBalanceError(btcLookupNetworkMismatchMessage)
       setBtcActivePass(null)
       setBtcActivePassEnergy(null)
-      setBtcProtocolError(btcWalletNetworkMismatchMessage)
+      setBtcProtocolError(btcLookupNetworkMismatchMessage)
       return
     }
     if (!btcLookupAddress || !balanceHistoryReady || !usdbIndexerReady) {
@@ -507,18 +825,18 @@ export function MePage({ data, locale, t }: MePageProps) {
     activeIdentity,
     balanceHistoryReady,
     btcLookupAddress,
-    btcWalletNetworkMismatchMessage,
+    btcLookupNetworkMismatchMessage,
     usdbIndexerReady,
   ])
 
   useEffect(() => {
     if (activeIdentity !== 'btc') return
-    if (btcWalletNetworkMismatchMessage) {
+    if (btcBrowserWalletNetworkMismatchMessage) {
       setBtcRecognizedPasses([])
-      setBtcRecognizedPassesError(btcWalletNetworkMismatchMessage)
+      setBtcRecognizedPassesError(btcBrowserWalletNetworkMismatchMessage)
       return
     }
-    if (!btcWallet?.inscriptions.length || !usdbIndexerReady) {
+    if (!btcBrowserWalletSnapshot?.inscriptions.length || !usdbIndexerReady) {
       setBtcRecognizedPasses([])
       setBtcRecognizedPassesError(null)
       return
@@ -529,7 +847,7 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcRecognizedPassesError(null)
 
     void Promise.all(
-      btcWallet.inscriptions.map(async (walletInscription) => {
+      btcBrowserWalletSnapshot.inscriptions.map(async (walletInscription) => {
         const pass = await fetchUsdbPassSnapshot(walletInscription.inscriptionId, null)
         if (!pass) return null
         return {
@@ -557,7 +875,12 @@ export function MePage({ data, locale, t }: MePageProps) {
     return () => {
       cancelled = true
     }
-  }, [activeIdentity, btcWallet?.inscriptions, btcWalletNetworkMismatchMessage, usdbIndexerReady])
+  }, [
+    activeIdentity,
+    btcBrowserWalletNetworkMismatchMessage,
+    btcBrowserWalletSnapshot?.inscriptions,
+    usdbIndexerReady,
+  ])
 
   async function handleConnectBtcWallet() {
     setBtcWalletLoading(true)
@@ -566,8 +889,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     try {
       const snapshot = await connectBtcWalletByMode('browser')
       setBtcWallet(snapshot)
-      if (snapshot.address) {
-        setBtcAddress(snapshot.address)
+      setBtcBrowserWalletSnapshot(snapshot)
+      if (snapshot.address && btcRuntimeProfile === 'public') {
+        setBtcIdentitySource('browser_wallet')
       }
     } catch (error) {
       setBtcWalletError(error instanceof Error ? error.message : String(error))
@@ -586,7 +910,9 @@ export function MePage({ data, locale, t }: MePageProps) {
         address: btcDevWalletAddress,
       })
       setBtcWallet(snapshot)
-      setBtcAddress(snapshot.address ?? '')
+      if (btcIdentitySource === 'manual_address' && !btcAddress.trim()) {
+        setBtcAddress(snapshot.address ?? '')
+      }
       setBtcDevWalletSignature(null)
       setBtcDevWalletSignatureError(null)
       setBtcDevWalletPsbtResult(null)
@@ -601,7 +927,6 @@ export function MePage({ data, locale, t }: MePageProps) {
   function handleClearDevBtcWallet() {
     clearDevRegtestWallet()
     setBtcWallet(null)
-    setBtcAddress('')
     setBtcWalletError(null)
     setBtcAddressBalanceRows([])
     setBtcAddressBalanceError(null)
@@ -632,6 +957,21 @@ export function MePage({ data, locale, t }: MePageProps) {
     }
   }
 
+  async function handleSignBrowserWalletMessage() {
+    setBtcBrowserWalletSigning(true)
+    setBtcBrowserWalletSignature(null)
+    setBtcBrowserWalletSignatureError(null)
+
+    try {
+      const result = await signBtcWalletMessage('browser', btcBrowserWalletMessage)
+      setBtcBrowserWalletSignature(result.signature)
+    } catch (error) {
+      setBtcBrowserWalletSignatureError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBtcBrowserWalletSigning(false)
+    }
+  }
+
   async function handleSignDevWalletPsbt(finalize: boolean) {
     setBtcDevWalletPsbtSigning(true)
     setBtcDevWalletPsbtResult(null)
@@ -644,6 +984,47 @@ export function MePage({ data, locale, t }: MePageProps) {
       setBtcDevWalletPsbtError(error instanceof Error ? error.message : String(error))
     } finally {
       setBtcDevWalletPsbtSigning(false)
+    }
+  }
+
+  async function handleSignBrowserWalletPsbt() {
+    setBtcBrowserWalletPsbtSigning(true)
+    setBtcBrowserWalletPsbtResult(null)
+    setBtcBrowserWalletPsbtError(null)
+
+    try {
+      const result = await signBtcWalletPsbt('browser', btcBrowserWalletPsbt)
+      setBtcBrowserWalletPsbtResult(result)
+    } catch (error) {
+      setBtcBrowserWalletPsbtError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBtcBrowserWalletPsbtSigning(false)
+    }
+  }
+
+  async function handlePrepareBtcMintDraft() {
+    if (!btcLookupAddress) {
+      setBtcMintPrepareError(t('me.btc.mintOwnerRequired'))
+      setBtcMintPrepareResult(null)
+      return
+    }
+
+    setBtcMintPrepareLoading(true)
+    setBtcMintPrepareError(null)
+    setBtcMintPrepareResult(null)
+
+    try {
+      const result = await prepareBtcMintDraft({
+        owner_address: btcLookupAddress,
+        eth_main: btcMintEthMain,
+        eth_collab: btcMintEthCollab.trim() || null,
+        prev: parseMintPrevInput(btcMintPrev),
+      })
+      setBtcMintPrepareResult(result)
+    } catch (error) {
+      setBtcMintPrepareError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBtcMintPrepareLoading(false)
     }
   }
 
@@ -731,17 +1112,19 @@ export function MePage({ data, locale, t }: MePageProps) {
                   >
                     {t('me.btc.browserWalletTab')}
                   </button>
-                  <button
-                    type="button"
-                    className={
-                      btcWalletMode === 'dev-regtest'
-                        ? 'console-action-button'
-                        : 'console-secondary-button'
-                    }
-                    onClick={() => setBtcWalletMode('dev-regtest')}
-                  >
-                    {t('me.btc.devWalletTab')}
-                  </button>
+                  {btcRuntimeProfile !== 'public' ? (
+                    <button
+                      type="button"
+                      className={
+                        btcWalletMode === 'dev-regtest'
+                          ? 'console-action-button'
+                          : 'console-secondary-button'
+                      }
+                      onClick={() => setBtcWalletMode('dev-regtest')}
+                    >
+                      {t('me.btc.devWalletTab')}
+                    </button>
+                  ) : null}
                 </div>
                 {btcWalletMode === 'browser' ? (
                   <button
@@ -778,9 +1161,9 @@ export function MePage({ data, locale, t }: MePageProps) {
           {activeIdentity === 'btc' && btcWalletError ? (
             <p className="mt-2 text-sm text-[color:var(--cp-danger)]">{btcWalletError}</p>
           ) : null}
-          {activeIdentity === 'btc' && btcWalletNetworkMismatchMessage ? (
+          {activeIdentity === 'btc' && btcLookupNetworkMismatchMessage ? (
             <p className="mt-2 text-sm text-[color:var(--cp-danger)]">
-              {btcWalletNetworkMismatchMessage}
+              {btcLookupNetworkMismatchMessage}
             </p>
           ) : null}
         </article>
@@ -807,27 +1190,129 @@ export function MePage({ data, locale, t }: MePageProps) {
             {activeIdentity === 'eth' ? t('me.identity.ethBody') : t('me.identity.btcBody')}
           </p>
           <div className="mt-4 grid gap-4">
-            <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-              <span>
-                {activeIdentity === 'eth'
-                  ? t('me.identity.ethInputLabel')
-                  : t('me.identity.btcInputLabel')}
-              </span>
-              <input
-                className="console-input"
-                value={activeIdentity === 'eth' ? ethAddress : btcAddress}
-                onChange={(event) =>
-                  activeIdentity === 'eth'
-                    ? setEthAddress(event.target.value)
-                    : setBtcAddress(event.target.value)
-                }
-                placeholder={
-                  activeIdentity === 'eth'
-                    ? t('me.identity.ethPlaceholder')
-                    : t('me.identity.btcPlaceholder')
-                }
-              />
-            </label>
+            {activeIdentity === 'eth' ? (
+              <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                <span>{t('me.identity.ethInputLabel')}</span>
+                <input
+                  className="console-input"
+                  value={ethAddress}
+                  onChange={(event) => setEthAddress(event.target.value)}
+                  placeholder={t('me.identity.ethPlaceholder')}
+                />
+              </label>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className={
+                      btcIdentitySource === 'browser_wallet'
+                        ? 'console-action-button'
+                        : 'console-secondary-button'
+                    }
+                    onClick={() => setBtcIdentitySource('browser_wallet')}
+                  >
+                    {t('me.values.identitySourceBrowserWallet')}
+                  </button>
+                  {btcRuntimeProfile === 'development' ? (
+                    <button
+                      type="button"
+                      className={
+                        btcIdentitySource === 'world_sim_agent'
+                          ? 'console-action-button'
+                          : 'console-secondary-button'
+                      }
+                      onClick={() => setBtcIdentitySource('world_sim_agent')}
+                    >
+                      {t('me.values.identitySourceWorldSimAgent')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className={
+                      btcIdentitySource === 'manual_address'
+                        ? 'console-action-button'
+                        : 'console-secondary-button'
+                    }
+                    onClick={() => setBtcIdentitySource('manual_address')}
+                  >
+                    {t('me.values.identitySourceManualAddress')}
+                  </button>
+                </div>
+
+                {btcIdentitySource === 'manual_address' ? (
+                  <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                    <span>{t('me.identity.btcInputLabel')}</span>
+                    <input
+                      className="console-input"
+                      value={btcAddress}
+                      onChange={(event) => setBtcAddress(event.target.value)}
+                      placeholder={t('me.identity.btcPlaceholder')}
+                    />
+                  </label>
+                ) : null}
+
+                {btcIdentitySource === 'browser_wallet' && !btcBrowserWalletConnected ? (
+                  <p className="text-sm text-[color:var(--cp-muted)]">
+                    {t('me.btc.browserIdentityUnavailable')}
+                  </p>
+                ) : null}
+
+                {btcIdentitySource === 'world_sim_agent' ? (
+                  <div className="grid gap-3">
+                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                      <span>{t('me.btc.worldSimSelectorLabel')}</span>
+                      <select
+                        className="console-input"
+                        value={btcSelectedWorldSimWalletName}
+                        onChange={(event) => setBtcSelectedWorldSimWalletName(event.target.value)}
+                        disabled={btcWorldSimLoading || !btcWorldSim?.identities.length}
+                      >
+                        <option value="">{t('me.values.selectWorldSimAgent')}</option>
+                        {(btcWorldSim?.identities ?? []).map((identity) => (
+                          <option key={identity.wallet_name} value={identity.wallet_name}>
+                            {`Agent ${identity.agent_id} | ${identity.wallet_name} | ${identity.owner_address}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <FieldValueList
+                      items={[
+                        {
+                          label: t('me.fields.worldSimIdentity'),
+                          value: displayText(btcSelectedWorldSimIdentity?.wallet_name, t),
+                          helpText: t('me.help.worldSimIdentity'),
+                        },
+                        {
+                          label: t('me.fields.currentAddress'),
+                          value: displayText(btcSelectedWorldSimIdentity?.owner_address, t),
+                          helpText: t('me.help.currentBtcAddress'),
+                        },
+                      ]}
+                    />
+                    {btcWorldSimLoading ? (
+                      <p className="text-sm text-[color:var(--cp-muted)]">{t('actions.reloading')}</p>
+                    ) : null}
+                    {btcAutoDevSignerLoading ? (
+                      <p className="text-sm text-[color:var(--cp-muted)]">
+                        {t('me.btc.devSignerAutoSyncing')}
+                      </p>
+                    ) : null}
+                    {btcWorldSimError ? (
+                      <p className="text-sm text-[color:var(--cp-danger)]">{btcWorldSimError}</p>
+                    ) : null}
+                    {btcAutoDevSignerError ? (
+                      <p className="text-sm text-[color:var(--cp-danger)]">{btcAutoDevSignerError}</p>
+                    ) : null}
+                    {!btcWorldSimLoading && !btcWorldSimError && !btcWorldSim?.identities.length ? (
+                      <p className="text-sm text-[color:var(--cp-muted)]">
+                        {t('me.btc.worldSimUnavailable')}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
+            )}
             <FieldValueList items={identityItems} />
           </div>
         </article>
@@ -849,44 +1334,60 @@ export function MePage({ data, locale, t }: MePageProps) {
                     <p className="rounded-2xl border border-[color:var(--cp-warning)]/25 bg-[color:var(--cp-warning)]/8 px-4 py-3 text-sm leading-6 text-[color:var(--cp-warning)]">
                       {t('me.btc.devWalletWarning')}
                     </p>
-                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.devWalletWifLabel')}</span>
-                      <input
-                        className="console-input"
-                        type="password"
-                        autoComplete="off"
-                        value={btcDevWalletWif}
-                        onChange={(event) => setBtcDevWalletWif(event.target.value)}
-                        placeholder={t('me.btc.devWalletWifPlaceholder')}
-                      />
-                    </label>
-                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.devWalletAddressLabel')}</span>
-                      <input
-                        className="console-input"
-                        value={btcDevWalletAddress}
-                        onChange={(event) => setBtcDevWalletAddress(event.target.value)}
-                        placeholder={t('me.btc.devWalletAddressPlaceholder')}
-                      />
-                    </label>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        className="console-action-button"
-                        disabled={btcWalletLoading}
-                        onClick={() => void handleImportDevBtcWallet()}
-                      >
-                        {btcWalletLoading ? t('actions.reloading') : t('me.btc.importDevWallet')}
-                      </button>
-                      <button
-                        type="button"
-                        className="console-secondary-button"
-                        disabled={!btcWalletConnected}
-                        onClick={handleClearDevBtcWallet}
-                      >
-                        {t('me.btc.clearDevWallet')}
-                      </button>
-                    </div>
+                    {btcDevSignerAutoManaged && !btcAutoDevSignerError ? (
+                      <p className="rounded-2xl border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-sm leading-6 text-[color:var(--cp-muted)]">
+                        {t('me.btc.devWalletWorldSimManaged')}
+                      </p>
+                    ) : (
+                      <>
+                        <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                          <span>{t('me.btc.devWalletWifLabel')}</span>
+                          <input
+                            className="console-input"
+                            type="password"
+                            autoComplete="off"
+                            value={btcDevWalletWif}
+                            onChange={(event) => setBtcDevWalletWif(event.target.value)}
+                            placeholder={t('me.btc.devWalletWifPlaceholder')}
+                          />
+                        </label>
+                        <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                          <span>{t('me.btc.devWalletAddressLabel')}</span>
+                          <input
+                            className="console-input"
+                            value={btcDevWalletAddress}
+                            onChange={(event) => setBtcDevWalletAddress(event.target.value)}
+                            placeholder={t('me.btc.devWalletAddressPlaceholder')}
+                          />
+                        </label>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <button
+                            type="button"
+                            className="console-action-button"
+                            disabled={btcWalletLoading}
+                            onClick={() => void handleImportDevBtcWallet()}
+                          >
+                            {btcWalletLoading ? t('actions.reloading') : t('me.btc.importDevWallet')}
+                          </button>
+                          <button
+                            type="button"
+                            className="console-secondary-button"
+                            disabled={!btcWalletConnected}
+                            onClick={handleClearDevBtcWallet}
+                          >
+                            {t('me.btc.clearDevWallet')}
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {btcAutoDevSignerLoading ? (
+                      <p className="text-sm text-[color:var(--cp-muted)]">
+                        {t('me.btc.devSignerAutoSyncing')}
+                      </p>
+                    ) : null}
+                    {btcAutoDevSignerError ? (
+                      <p className="text-sm text-[color:var(--cp-danger)]">{btcAutoDevSignerError}</p>
+                    ) : null}
                     <FieldValueList
                       items={[
                         {
@@ -906,7 +1407,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         },
                         {
                           label: t('me.fields.walletNetwork'),
-                          value: displayText(btcWallet?.network ?? btcEffectiveWalletNetwork, t),
+                          value: displayText(btcWallet?.network ?? btcEffectiveSignerNetwork, t),
                           helpText: t('me.help.walletNetwork'),
                         },
                         {
@@ -944,7 +1445,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         },
                         {
                           label: t('me.fields.walletNetwork'),
-                          value: displayText(btcWallet?.network ?? btcEffectiveWalletNetwork, t),
+                          value: displayText(btcWallet?.network ?? btcEffectiveSignerNetwork, t),
                           helpText: t('me.help.walletNetwork'),
                         },
                         {
@@ -983,8 +1484,8 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {
                       label: t('me.fields.walletBalance'),
                       value:
-                        btcWallet?.balance != null
-                          ? displayBalanceSmart(locale, btcWallet.balance.total, t)
+                        btcBrowserWalletSnapshot?.balance != null
+                          ? displayBalanceSmart(locale, btcBrowserWalletSnapshot.balance.total, t)
                           : t('common.notYetAvailable'),
                       helpText: t('me.help.walletBalance'),
                     },
@@ -1033,8 +1534,8 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {
                       label: t('me.fields.walletInscriptions'),
                       value:
-                        btcWallet != null
-                          ? String(btcWallet.inscriptions.length)
+                        btcBrowserWalletSnapshot != null
+                          ? String(btcBrowserWalletSnapshot.inscriptions.length)
                           : t('common.notYetAvailable'),
                       helpText: t('me.help.walletInscriptions'),
                     },
@@ -1066,6 +1567,170 @@ export function MePage({ data, locale, t }: MePageProps) {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+                  {t('me.btc.mintDraftTitle')}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('me.btc.mintDraftBody')}
+                </p>
+              </div>
+              {btcMintPrepareResult ? (
+                <span
+                  className="status-pill"
+                  data-tone={btcMintPrepareResult.eligible ? 'success' : 'warning'}
+                >
+                  {btcMintPrepareResult.eligible
+                    ? t('me.values.mintDraftReady')
+                    : t('me.values.mintDraftBlocked')}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-4 grid gap-4 xl:grid-cols-2">
+              <div className="grid gap-4">
+                <FieldValueList
+                  items={[
+                    {
+                      label: t('me.fields.currentAddress'),
+                      value: displayText(btcLookupAddress, t),
+                      helpText: t('me.help.currentBtcAddress'),
+                    },
+                    {
+                      label: t('me.fields.runtimeNetwork'),
+                      value: displayText(btcRuntimeNetwork, t),
+                      helpText: t('me.help.runtimeNetwork'),
+                    },
+                    {
+                      label: t('me.fields.mintCapability'),
+                      value:
+                        btcMintCapabilityReady
+                          ? t('me.values.mintReady')
+                          : t('me.values.readOnly'),
+                      helpText: t('me.help.mintCapability'),
+                    },
+                  ]}
+                />
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('me.btc.mintEthMainLabel')}</span>
+                  <input
+                    className="console-input"
+                    value={btcMintEthMain}
+                    onChange={(event) => setBtcMintEthMain(event.target.value)}
+                    placeholder={t('me.btc.mintEthMainPlaceholder')}
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('me.btc.mintEthCollabLabel')}</span>
+                  <input
+                    className="console-input"
+                    value={btcMintEthCollab}
+                    onChange={(event) => setBtcMintEthCollab(event.target.value)}
+                    placeholder={t('me.btc.mintEthCollabPlaceholder')}
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('me.btc.mintPrevLabel')}</span>
+                  <textarea
+                    className="console-textarea"
+                    value={btcMintPrev}
+                    onChange={(event) => setBtcMintPrev(event.target.value)}
+                    placeholder={t('me.btc.mintPrevPlaceholder')}
+                  />
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    className="console-action-button"
+                    disabled={!btcMintPrepareEnabled}
+                    onClick={() => void handlePrepareBtcMintDraft()}
+                  >
+                    {btcMintPrepareLoading ? t('actions.reloading') : t('me.btc.prepareMintDraft')}
+                  </button>
+                </div>
+                {btcRuntimeProfile === 'public' && btcIdentitySource !== 'browser_wallet' ? (
+                  <p className="text-sm text-[color:var(--cp-warning)]">
+                    {t('me.btc.publicMintBrowserWalletOnly')}
+                  </p>
+                ) : null}
+                {btcLookupNetworkMismatchMessage ? (
+                  <p className="text-sm text-[color:var(--cp-danger)]">
+                    {btcLookupNetworkMismatchMessage}
+                  </p>
+                ) : null}
+                {btcMintPrepareError ? (
+                  <p className="text-sm text-[color:var(--cp-danger)]">{btcMintPrepareError}</p>
+                ) : null}
+              </div>
+
+              <div className="grid gap-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {btcMintSummaryItems.map((item) => (
+                    <div
+                      key={`${item.label}:${item.value}`}
+                      className="rounded-[20px] border border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-4"
+                    >
+                      <div className="inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[color:var(--cp-muted)]">
+                        <span>{item.label}</span>
+                        <InlineHelpTooltip text={item.helpText} />
+                      </div>
+                      {item.tone ? (
+                        <span className="mt-3 inline-flex status-pill" data-tone={item.tone}>
+                          {item.value}
+                        </span>
+                      ) : (
+                        <p className="mt-3 min-h-12 break-all text-sm font-semibold leading-6 text-[color:var(--cp-text)]">
+                          {item.value}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {btcMintPrepareResult?.blockers.length ? (
+                  <div className="rounded-2xl border border-[color:var(--cp-danger)]/20 bg-[color:var(--cp-danger)]/6 px-4 py-3">
+                    <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                      {t('me.btc.mintBlockersTitle')}
+                    </h4>
+                    <ul className="mt-2 grid gap-2 text-sm leading-6 text-[color:var(--cp-danger)]">
+                      {btcMintPrepareResult.blockers.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {btcMintPrepareResult?.warnings.length ? (
+                  <div className="rounded-2xl border border-[color:var(--cp-warning)]/25 bg-[color:var(--cp-warning)]/8 px-4 py-3">
+                    <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                      {t('me.btc.mintWarningsTitle')}
+                    </h4>
+                    <ul className="mt-2 grid gap-2 text-sm leading-6 text-[color:var(--cp-warning)]">
+                      {btcMintPrepareResult.warnings.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            {btcMintPrepareResult ? (
+              <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('me.btc.mintPayloadLabel')}</span>
+                  <textarea
+                    className="console-textarea"
+                    value={btcMintPrepareResult.inscription_payload_json}
+                    readOnly
+                  />
+                </label>
+                <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                  <span>{t('me.btc.mintRequestLabel')}</span>
+                  <textarea className="console-textarea" value={btcMintDraftRequestJson} readOnly />
+                </label>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="console-card">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
                   {t('me.btc.passListTitle')}
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
@@ -1081,7 +1746,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             {btcRecognizedPassesError ? (
               <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{btcRecognizedPassesError}</p>
             ) : null}
-            {btcWallet == null ? (
+            {btcBrowserWalletSnapshot == null ? (
               <p className="mt-4 text-sm text-[color:var(--cp-muted)]">
                 {t('me.btc.passListUnavailable')}
               </p>
@@ -1119,7 +1784,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             )}
           </section>
 
-          {btcWalletMode === 'dev-regtest' ? (
+          {btcRuntimeProfile === 'development' && btcWalletMode === 'dev-regtest' ? (
             <section className="grid gap-4 xl:grid-cols-2">
               <article className="console-card">
                 <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
@@ -1263,6 +1928,143 @@ export function MePage({ data, locale, t }: MePageProps) {
                         </label>
                       ) : null}
                     </>
+                  ) : null}
+                </div>
+              </article>
+            </section>
+          ) : btcRuntimeProfile === 'development' && btcWalletMode === 'browser' ? (
+            <section className="grid gap-4 xl:grid-cols-2">
+              <article className="console-card">
+                <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+                  {t('me.btc.browserSignatureTitle')}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('me.btc.browserSignatureBody')}
+                </p>
+                <div className="mt-4 grid gap-4">
+                  <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                    <span>{t('me.btc.signatureInputLabel')}</span>
+                    <textarea
+                      className="console-textarea"
+                      value={btcBrowserWalletMessage}
+                      onChange={(event) => setBtcBrowserWalletMessage(event.target.value)}
+                      placeholder={t('me.btc.signaturePlaceholder')}
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      className="console-action-button"
+                      disabled={
+                        !btcWalletConnected ||
+                        !btcWalletAdapterCapabilities?.canSignMessage ||
+                        btcBrowserWalletSigning ||
+                        btcBrowserWalletMessage.trim() === ''
+                      }
+                      onClick={() => void handleSignBrowserWalletMessage()}
+                    >
+                      {btcBrowserWalletSigning ? t('actions.reloading') : t('me.btc.signWithBrowserWallet')}
+                    </button>
+                  </div>
+                  <FieldValueList
+                    items={[
+                      {
+                        label: t('me.fields.signatureMode'),
+                        value: btcWalletAdapterCapabilities?.canSignMessage
+                          ? t('me.values.browserMessageSignature')
+                          : t('common.notYetAvailable'),
+                        helpText: t('me.help.signatureMode'),
+                      },
+                      {
+                        label: t('me.fields.runtimeNetwork'),
+                        value: displayText(btcRuntimeNetwork, t),
+                        helpText: t('me.help.runtimeNetwork'),
+                      },
+                    ]}
+                  />
+                  {!btcWalletAdapterCapabilities?.canSignMessage ? (
+                    <p className="text-sm text-[color:var(--cp-warning)]">
+                      {t('me.btc.browserWalletMessageUnavailable')}
+                    </p>
+                  ) : null}
+                  {btcBrowserWalletSignatureError ? (
+                    <p className="text-sm text-[color:var(--cp-danger)]">{btcBrowserWalletSignatureError}</p>
+                  ) : null}
+                  {btcBrowserWalletSignature ? (
+                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                      <span>{t('me.btc.signatureOutputLabel')}</span>
+                      <textarea className="console-textarea" value={btcBrowserWalletSignature} readOnly />
+                    </label>
+                  ) : null}
+                </div>
+              </article>
+
+              <article className="console-card">
+                <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+                  {t('me.btc.browserPsbtTitle')}
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                  {t('me.btc.browserPsbtBody')}
+                </p>
+                <div className="mt-4 grid gap-4">
+                  <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                    <span>{t('me.btc.psbtInputLabel')}</span>
+                    <textarea
+                      className="console-textarea"
+                      value={btcBrowserWalletPsbt}
+                      onChange={(event) => setBtcBrowserWalletPsbt(event.target.value)}
+                      placeholder={t('me.btc.psbtPlaceholder')}
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      className="console-action-button"
+                      disabled={
+                        !btcWalletConnected ||
+                        !btcWalletAdapterCapabilities?.canSignPsbt ||
+                        btcBrowserWalletPsbtSigning ||
+                        btcBrowserWalletPsbt.trim() === ''
+                      }
+                      onClick={() => void handleSignBrowserWalletPsbt()}
+                    >
+                      {btcBrowserWalletPsbtSigning ? t('actions.reloading') : t('me.btc.signPsbt')}
+                    </button>
+                  </div>
+                  <FieldValueList
+                    items={[
+                      {
+                        label: t('me.fields.signatureMode'),
+                        value: btcWalletAdapterCapabilities?.canSignPsbt
+                          ? t('me.values.browserPsbtSignature')
+                          : t('common.notYetAvailable'),
+                        helpText: t('me.help.signatureMode'),
+                      },
+                      {
+                        label: t('me.fields.psbtInputFormat'),
+                        value: displayText(btcBrowserWalletPsbtResult?.inputFormat ?? null, t),
+                        helpText: t('me.help.psbtInputFormat'),
+                      },
+                      {
+                        label: t('me.fields.runtimeNetwork'),
+                        value: displayText(btcRuntimeNetwork, t),
+                        helpText: t('me.help.runtimeNetwork'),
+                      },
+                    ]}
+                  />
+                  {!btcWalletAdapterCapabilities?.canSignPsbt ? (
+                    <p className="text-sm text-[color:var(--cp-warning)]">
+                      {t('me.btc.browserWalletPsbtUnavailable')}
+                    </p>
+                  ) : null}
+                  {btcBrowserWalletPsbtError ? (
+                    <p className="text-sm text-[color:var(--cp-danger)]">{btcBrowserWalletPsbtError}</p>
+                  ) : null}
+                  {btcBrowserWalletPsbtResult ? (
+                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                      <span>{t('me.btc.psbtOutputLabel')}</span>
+                      <textarea className="console-textarea" value={btcBrowserWalletPsbtResult.outputPsbt} readOnly />
+                    </label>
                   ) : null}
                 </div>
               </article>
