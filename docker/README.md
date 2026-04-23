@@ -724,6 +724,8 @@ docker compose \
 
 再往下看设计文档：
 
+- [usdb-btc-ord-roles-and-mint-flow.md](/home/bucky/work/usdb/doc/usdb-btc-ord-roles-and-mint-flow.md)
+- [usdb-btc-mint-runtime-profiles.md](/home/bucky/work/usdb/doc/usdb-btc-mint-runtime-profiles.md)
 - [usdb-docker-deployment-plan.md](/home/bucky/work/usdb/doc/usdb-docker-deployment-plan.md)
 - [dev-sim-world-sim-plan.md](/home/bucky/work/usdb/doc/dev-sim-world-sim-plan.md)
 - [sourcedao-bootstrap-job-plan.md](/home/bucky/work/usdb/doc/sourcedao-bootstrap-job-plan.md)

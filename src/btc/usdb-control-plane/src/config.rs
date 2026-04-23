@@ -77,6 +77,18 @@ fn default_world_sim_marker_path() -> PathBuf {
     PathBuf::from("docker/local/world-sim/runtime/bootstrap/world-sim-bootstrap.done.json")
 }
 
+fn default_ord_bin_path() -> PathBuf {
+    PathBuf::from("/opt/ord/bin/ord")
+}
+
+fn default_ord_data_dir() -> PathBuf {
+    PathBuf::from("/data/ord")
+}
+
+fn default_ord_fee_rate() -> f64 {
+    1.0
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BitcoinAuthMode {
@@ -208,6 +220,26 @@ impl Default for WebRoots {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DevelopmentMintConfig {
+    #[serde(default = "default_ord_bin_path")]
+    pub ord_bin: PathBuf,
+    #[serde(default = "default_ord_data_dir")]
+    pub ord_data_dir: PathBuf,
+    #[serde(default = "default_ord_fee_rate")]
+    pub ord_fee_rate: f64,
+}
+
+impl Default for DevelopmentMintConfig {
+    fn default() -> Self {
+        Self {
+            ord_bin: default_ord_bin_path(),
+            ord_data_dir: default_ord_data_dir(),
+            ord_fee_rate: default_ord_fee_rate(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlPlaneConfig {
     #[serde(default = "default_root_dir")]
     pub root_dir: PathBuf,
@@ -221,6 +253,8 @@ pub struct ControlPlaneConfig {
     pub bootstrap: BootstrapPaths,
     #[serde(default)]
     pub web: WebRoots,
+    #[serde(default)]
+    pub development_mint: DevelopmentMintConfig,
 }
 
 impl Default for ControlPlaneConfig {
@@ -232,6 +266,7 @@ impl Default for ControlPlaneConfig {
             bitcoin: BitcoinRpcConfig::default(),
             bootstrap: BootstrapPaths::default(),
             web: WebRoots::default(),
+            development_mint: DevelopmentMintConfig::default(),
         }
     }
 }

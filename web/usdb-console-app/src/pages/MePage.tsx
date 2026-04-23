@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router-dom'
 import { FieldValueList } from '../components/FieldValueList'
 import {
+  executeBtcMint,
   fetchBalanceHistorySingleBalance,
   fetchBtcWorldSimDevSigner,
   fetchBtcWorldSimIdentities,
@@ -18,6 +19,7 @@ import {
 } from '../lib/format'
 import type {
   AddressBalanceRow,
+  BtcMintExecuteResponse,
   BtcMintPrepareResponse,
   BtcWorldSimIdentitiesResponse,
   OverviewResponse,
@@ -222,6 +224,12 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [btcMintSigningError, setBtcMintSigningError] = useState<string | null>(null)
   const [btcMintSigningResult, setBtcMintSigningResult] =
     useState<BtcWalletMessageSignatureResult | null>(null)
+  const [btcMintExecutionLoading, setBtcMintExecutionLoading] = useState(false)
+  const [btcMintExecutionError, setBtcMintExecutionError] = useState<string | null>(null)
+  const [btcMintExecutionResult, setBtcMintExecutionResult] =
+    useState<BtcMintExecuteResponse | null>(null)
+  const [btcMintExecutionPass, setBtcMintExecutionPass] = useState<PassSnapshot | null>(null)
+  const [btcMintExecutionPolling, setBtcMintExecutionPolling] = useState(false)
   const [btcMintTechnicalOpen, setBtcMintTechnicalOpen] = useState(false)
   const [btcDevToolsOpen, setBtcDevToolsOpen] = useState(false)
 
@@ -448,6 +456,10 @@ export function MePage({ data, locale, t }: MePageProps) {
         },
       ]
     : []
+  const btcMintExecuteAvailable =
+    btcRuntimeProfile === 'development' &&
+    btcIdentitySource === 'world_sim_agent' &&
+    Boolean(btcSelectedWorldSimIdentity?.wallet_name)
   const btcMintFlowSteps: Array<{ id: BtcMintFlowStep; label: string }> = [
     { id: 'edit', label: t('me.btc.mintStepEdit') },
     { id: 'review', label: t('me.btc.mintStepReview') },
@@ -457,6 +469,29 @@ export function MePage({ data, locale, t }: MePageProps) {
     { id: 'success', label: t('me.btc.mintStepSuccess') },
   ]
   const btcMintStepIndex = btcMintFlowSteps.findIndex((step) => step.id === btcMintStep)
+  const btcMintSuccessItems = [
+    ...btcMintReviewItems,
+    {
+      label: t('me.fields.signatureMode'),
+      value: displayText(btcMintSigningResult?.signatureType, t),
+      helpText: t('me.help.signatureMode'),
+    },
+    {
+      label: t('fields.inscriptionId'),
+      value: displayText(btcMintExecutionResult?.inscription_id, t),
+      helpText: t('me.help.activeMinerPass'),
+    },
+    {
+      label: t('fields.txHash'),
+      value: displayText(btcMintExecutionResult?.txid, t),
+      helpText: t('help.fields.txHash'),
+    },
+    {
+      label: t('me.fields.passState'),
+      value: displayText(btcMintExecutionPass?.state, t),
+      helpText: t('me.help.passState'),
+    },
+  ]
   const btcSignerSummaryItems = [
     {
       label: t('me.fields.walletProvider'),
@@ -853,6 +888,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintPrepareResult(null)
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
   }, [btcWalletMode])
 
   useEffect(() => {
@@ -861,6 +899,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintStep('edit')
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
   }, [btcLookupAddress, btcLookupNetworkMismatchMessage, btcMintEthMain, btcMintEthCollab, btcMintPrev])
 
@@ -870,6 +911,57 @@ export function MePage({ data, locale, t }: MePageProps) {
     if (!btcMintDraftMessage.trim()) return
     setBtcDevWalletMessage((current) => (current.trim() === btcMintDraftMessage.trim() ? current : btcMintDraftMessage))
   }, [btcMintDraftMessage, btcMintStep, btcRuntimeProfile])
+
+  useEffect(() => {
+    if (btcMintStep !== 'waiting') return
+    if (!btcMintExecutionResult?.inscription_id) return
+
+    let cancelled = false
+    let timer: number | null = null
+
+    const poll = async () => {
+      setBtcMintExecutionPolling(true)
+      try {
+        const [passSnapshot, activePass] = await Promise.all([
+          fetchUsdbPassSnapshot(btcMintExecutionResult.inscription_id, null),
+          fetchUsdbOwnerActivePass(btcMintExecutionResult.owner_address, null),
+        ])
+        if (cancelled) return
+        const resolvedPass =
+          passSnapshot ??
+          (activePass?.inscription_id === btcMintExecutionResult.inscription_id ? activePass : null)
+        if (resolvedPass) {
+          setBtcMintExecutionPass(resolvedPass)
+          setBtcMintExecutionError(null)
+          setBtcMintStep('success')
+          setBtcMintExecutionPolling(false)
+          return
+        }
+        timer = window.setTimeout(() => {
+          void poll()
+        }, 3000)
+      } catch (error) {
+        if (cancelled) return
+        setBtcMintExecutionError(error instanceof Error ? error.message : String(error))
+        timer = window.setTimeout(() => {
+          void poll()
+        }, 3000)
+      } finally {
+        if (!cancelled) {
+          setBtcMintExecutionPolling(false)
+        }
+      }
+    }
+
+    void poll()
+
+    return () => {
+      cancelled = true
+      if (timer != null) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [btcMintExecutionResult, btcMintStep])
 
   useEffect(() => {
     if (activeIdentity !== 'btc') return
@@ -1140,6 +1232,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintPrepareResult(null)
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
 
     try {
       const result = await prepareBtcMintDraft({
@@ -1166,6 +1261,11 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintPrepareResult(null)
     setBtcMintStep('edit')
     setBtcMintTechnicalOpen(false)
+    setBtcMintSigningError(null)
+    setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
   }
 
   function handleResetBtcMintFlow(clearInputs: boolean) {
@@ -1174,6 +1274,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintStep('edit')
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
     if (!clearInputs) return
     setBtcMintEthMain('')
@@ -1186,6 +1289,9 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintStep('signing')
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
   }
 
@@ -1203,10 +1309,17 @@ export function MePage({ data, locale, t }: MePageProps) {
       setBtcMintSigningError(t('me.btc.mintSigningMissingDraft'))
       return
     }
+    if (!btcSelectedWorldSimIdentity?.wallet_name) {
+      setBtcMintSigningError(t('me.btc.mintExecutionRequiresWorldSim'))
+      return
+    }
 
     setBtcMintSigningLoading(true)
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
     setBtcDevWalletMessage(btcMintDraftMessage)
     setBtcDevWalletSignature(null)
     setBtcDevWalletSignatureError(null)
@@ -1215,12 +1328,23 @@ export function MePage({ data, locale, t }: MePageProps) {
       const result = await signBtcWalletMessage('dev-regtest', btcMintDraftMessage)
       setBtcMintSigningResult(result)
       setBtcDevWalletSignature(result.signature)
-      setBtcMintStep('success')
+      setBtcMintStep('submitting')
+      const executionResult = await executeBtcMint({
+        wallet_name: btcSelectedWorldSimIdentity.wallet_name,
+        owner_address: btcMintPrepareResult?.owner_address ?? btcLookupAddress ?? '',
+        eth_main: btcMintEthMain.trim(),
+        eth_collab: btcMintEthCollab.trim() || null,
+        prev: btcMintParsedPrev,
+      })
+      setBtcMintExecutionResult(executionResult)
+      setBtcMintStep('waiting')
       setBtcDevToolsOpen(true)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setBtcMintSigningError(message)
+      setBtcMintExecutionError(message)
       setBtcDevWalletSignatureError(message)
+      setBtcMintStep('signing')
     } finally {
       setBtcMintSigningLoading(false)
     }
@@ -1906,6 +2030,11 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {btcMintSigningError ? (
                       <p className="text-sm text-[color:var(--cp-danger)]">{btcMintSigningError}</p>
                     ) : null}
+                    {!btcMintExecuteAvailable && btcRuntimeProfile === 'development' ? (
+                      <p className="text-sm text-[color:var(--cp-warning)]">
+                        {t('me.btc.mintExecutionRequiresWorldSim')}
+                      </p>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-3">
                       {btcRuntimeProfile === 'development' ? (
                         <button
@@ -1914,7 +2043,8 @@ export function MePage({ data, locale, t }: MePageProps) {
                           disabled={
                             !btcWalletConnected ||
                             btcMintSigningLoading ||
-                            btcMintDraftMessage.trim() === ''
+                            btcMintDraftMessage.trim() === '' ||
+                            !btcMintExecuteAvailable
                           }
                           onClick={() => void handleSignMintDraftWithDevSigner()}
                         >
@@ -1950,6 +2080,79 @@ export function MePage({ data, locale, t }: MePageProps) {
                   </div>
                 ) : null}
 
+                {btcMintStep === 'submitting' ? (
+                  <div className="grid gap-4">
+                    <div>
+                      <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                        {t('me.btc.mintSubmittingTitle')}
+                      </h4>
+                      <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                        {t('me.btc.mintSubmittingBody')}
+                      </p>
+                    </div>
+                    <FieldValueList items={btcMintReviewItems} />
+                    {btcMintSigningResult?.signature ? (
+                      <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                        <span>{t('me.btc.signatureOutputLabel')}</span>
+                        <textarea className="console-textarea" value={btcMintSigningResult.signature} readOnly />
+                      </label>
+                    ) : null}
+                    <p className="text-sm text-[color:var(--cp-muted)]">{t('actions.reloading')}</p>
+                  </div>
+                ) : null}
+
+                {btcMintStep === 'waiting' ? (
+                  <div className="grid gap-4">
+                    <div>
+                      <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
+                        {t('me.btc.mintWaitingTitle')}
+                      </h4>
+                      <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+                        {t('me.btc.mintWaitingBody')}
+                      </p>
+                    </div>
+                    <FieldValueList
+                      items={[
+                        ...btcMintReviewItems,
+                        {
+                          label: t('fields.inscriptionId'),
+                          value: displayText(btcMintExecutionResult?.inscription_id, t),
+                          helpText: t('me.help.activeMinerPass'),
+                        },
+                        {
+                          label: t('fields.txHash'),
+                          value: displayText(btcMintExecutionResult?.txid, t),
+                          helpText: t('help.fields.txHash'),
+                        },
+                      ]}
+                    />
+                    {btcMintExecutionError ? (
+                      <p className="text-sm text-[color:var(--cp-danger)]">{btcMintExecutionError}</p>
+                    ) : null}
+                    <p className="text-sm text-[color:var(--cp-muted)]">
+                      {btcMintExecutionPolling ? t('me.btc.mintWaitingPolling') : t('me.btc.mintWaitingRetry')}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {btcRuntimeProfile === 'development' ? (
+                        <button
+                          type="button"
+                          className="console-secondary-button"
+                          onClick={handleOpenBtcDevTools}
+                        >
+                          {t('me.btc.openDevTools')}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="console-secondary-button"
+                        onClick={() => handleResetBtcMintFlow(true)}
+                      >
+                        {t('me.btc.mintResetFlow')}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
                 {btcMintStep === 'success' ? (
                   <div className="grid gap-4">
                     <div>
@@ -1962,20 +2165,17 @@ export function MePage({ data, locale, t }: MePageProps) {
                           : t('me.btc.mintSuccessPublicBody')}
                       </p>
                     </div>
-                    <FieldValueList
-                      items={[
-                        ...btcMintReviewItems,
-                        {
-                          label: t('me.fields.signatureMode'),
-                          value: displayText(btcMintSigningResult?.signatureType, t),
-                          helpText: t('me.help.signatureMode'),
-                        },
-                      ]}
-                    />
+                    <FieldValueList items={btcMintSuccessItems} />
                     {btcMintSigningResult?.signature ? (
                       <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
                         <span>{t('me.btc.signatureOutputLabel')}</span>
                         <textarea className="console-textarea" value={btcMintSigningResult.signature} readOnly />
+                      </label>
+                    ) : null}
+                    {btcMintExecutionResult?.ord_output ? (
+                      <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                        <span>{t('me.btc.mintOrdOutputLabel')}</span>
+                        <textarea className="console-textarea" value={btcMintExecutionResult.ord_output} readOnly />
                       </label>
                     ) : null}
                     <div className="rounded-2xl border border-[color:var(--cp-warning)]/25 bg-[color:var(--cp-warning)]/8 px-4 py-4">

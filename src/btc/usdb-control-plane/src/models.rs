@@ -22,6 +22,17 @@ pub struct BtcMintPrepareRequest {
     pub prev: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct BtcMintExecuteRequest {
+    pub wallet_name: String,
+    pub owner_address: String,
+    pub eth_main: String,
+    #[serde(default)]
+    pub eth_collab: Option<String>,
+    #[serde(default)]
+    pub prev: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BtcMintPrepareRuntimeSummary {
     pub btc_network: String,
@@ -63,6 +74,18 @@ pub struct BtcMintPrepareResponse {
     pub inscription_payload: Value,
     pub inscription_payload_json: String,
     pub prepare_request: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BtcMintExecuteResponse {
+    pub btc_network: String,
+    pub btc_runtime_profile: String,
+    pub wallet_name: String,
+    pub owner_address: String,
+    pub inscription_payload_json: String,
+    pub inscription_id: String,
+    pub txid: Option<String>,
+    pub ord_output: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -13,6 +13,23 @@ COPY src/btc /workspace/src/btc
 
 RUN cargo build --release -p balance-history -p usdb-indexer -p usdb-control-plane
 
+FROM rust:1.89.0-bookworm AS ord-builder
+
+ARG ORD_VERSION=0.23.3
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        pkg-config \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+RUN git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/ord.git /tmp/ord-src \
+    && cd /tmp/ord-src \
+    && cargo build --bin ord --release \
+    && install -m 0755 /tmp/ord-src/target/release/ord /opt/ord/bin/ord
+
 FROM node:20-bookworm AS web-builder
 
 WORKDIR /workspace/web/usdb-console-app
@@ -38,6 +55,7 @@ RUN apt-get update \
 COPY --from=builder /workspace/src/btc/target/release/balance-history /usr/local/bin/balance-history
 COPY --from=builder /workspace/src/btc/target/release/usdb-indexer /usr/local/bin/usdb-indexer
 COPY --from=builder /workspace/src/btc/target/release/usdb-control-plane /usr/local/bin/usdb-control-plane
+COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY docker/scripts /opt/usdb/docker/scripts
 COPY web /opt/usdb/web
 COPY --from=web-builder /workspace/web/usdb-console-app/dist /opt/usdb/web/usdb-console-app/dist

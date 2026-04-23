@@ -199,6 +199,9 @@ The design themes running through the repository are:
 - overall design and risks
   - [USDB Dual-Chain Consensus Integration Risks and Upgrade Checklist](./doc/usdb-%E5%8F%8C%E9%93%BE%E5%85%B1%E8%AF%86%E6%8E%A5%E5%85%A5%E9%97%AE%E9%A2%98%E9%A3%8E%E9%99%A9%E4%B8%8E%E6%94%B9%E9%80%A0%E6%B8%85%E5%8D%95.md)
   - [BTC Consensus RPC Error Contract Design](./doc/btc-consensus-rpc-error-contract-design.md)
+- BTC mint and ord runtime
+  - [USDB BTC Mint Runtime Profiles](./doc/usdb-btc-mint-runtime-profiles.md)
+  - [USDB BTC ord Roles and Mint Flow Memo](./doc/usdb-btc-ord-roles-and-mint-flow.md)
 - subsystem indexes
   - [USDB-Indexer Docs](./doc/usdb-indexer/README.md)
   - [Balance-History Docs](./doc/balance-history/README.md)

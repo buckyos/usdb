@@ -70,4 +70,9 @@ world_sim_bootstrap_marker = "${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/
 console_root = "${CONTROL_PLANE_CONSOLE_ROOT:-/opt/usdb/web/usdb-console-app/dist}"
 balance_history_explorer_root = "${CONTROL_PLANE_BH_EXPLORER_ROOT:-/opt/usdb/web/balance-history-browser}"
 usdb_indexer_explorer_root = "${CONTROL_PLANE_INDEXER_EXPLORER_ROOT:-/opt/usdb/web/usdb-indexer-browser}"
+
+[development_mint]
+ord_bin = "${CONTROL_PLANE_ORD_BIN:-/opt/ord/bin/ord}"
+ord_data_dir = "${CONTROL_PLANE_ORD_DATA_DIR:-/data/ord}"
+ord_fee_rate = ${CONTROL_PLANE_ORD_FEE_RATE:-1.0}
 EOF

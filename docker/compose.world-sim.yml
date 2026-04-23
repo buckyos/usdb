@@ -43,7 +43,11 @@ services:
       BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
       BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-/data/bitcoind/regtest/.cookie}
       CONTROL_PLANE_WORLD_SIM_MARKER: ${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/bootstrap/world-sim-bootstrap.done.json}
+      CONTROL_PLANE_ORD_BIN: ${CONTROL_PLANE_ORD_BIN:-/opt/ord/bin/ord}
+      CONTROL_PLANE_ORD_DATA_DIR: ${CONTROL_PLANE_ORD_DATA_DIR:-/data/ord}
+      CONTROL_PLANE_ORD_FEE_RATE: ${CONTROL_PLANE_ORD_FEE_RATE:-1.0}
     volumes:
+      - ord-data:${ORD_DATA_DIR:-/data/ord}
       - world-sim-data:${WORLD_SIM_WORK_DIR:-/data/world-sim}:ro
 
   world-sim-bootstrap:

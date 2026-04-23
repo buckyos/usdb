@@ -1,6 +1,7 @@
 import type {
   AddressBalanceRow,
   BalanceHistorySyncStatus,
+  BtcMintExecuteResponse,
   BtcWorldSimDevSignerResponse,
   BtcWorldSimIdentitiesResponse,
   OverviewResponse,
@@ -218,6 +219,30 @@ export async function prepareBtcMintDraft(request: {
   }
 
   return response.json() as Promise<BtcMintPrepareResponse>
+}
+
+export async function executeBtcMint(request: {
+  wallet_name: string
+  owner_address: string
+  eth_main: string
+  eth_collab?: string | null
+  prev: string[]
+}): Promise<BtcMintExecuteResponse> {
+  const response = await fetch('/api/btc/mint/execute', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  })
+
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
+    throw new Error(errorPayload?.error ?? `Failed BTC mint execute: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<BtcMintExecuteResponse>
 }
 
 export async function fetchBtcWorldSimIdentities(): Promise<BtcWorldSimIdentitiesResponse> {

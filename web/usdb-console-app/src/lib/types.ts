@@ -337,6 +337,17 @@ export interface BtcMintPrepareResponse {
   prepare_request: Record<string, unknown>
 }
 
+export interface BtcMintExecuteResponse {
+  btc_network: string
+  btc_runtime_profile: string
+  wallet_name: string
+  owner_address: string
+  inscription_payload_json: string
+  inscription_id: string
+  txid?: string | null
+  ord_output: string
+}
+
 export interface BtcWorldSimIdentity {
   agent_id: number
   wallet_name: string
