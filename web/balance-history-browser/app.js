@@ -82,6 +82,16 @@ function rpcErrorMessage(err) {
     return JSON.stringify(err);
 }
 
+function decodeRpcPayload(payload) {
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "error") && payload.error) {
+        throw new Error(rpcErrorMessage(payload.error));
+    }
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "result")) {
+        return payload.result;
+    }
+    return payload;
+}
+
 async function rpcCall(method, params = []) {
     const payload = {
         jsonrpc: "2.0",
@@ -104,11 +114,7 @@ async function rpcCall(method, params = []) {
     }
 
     const data = await resp.json();
-    if (data.error) {
-        throw new Error(rpcErrorMessage(data.error));
-    }
-
-    return data.result;
+    return decodeRpcPayload(data);
 }
 
 async function refreshStatus() {

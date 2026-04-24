@@ -186,6 +186,16 @@ function rpcErrorMessage(err) {
     return JSON.stringify(err);
 }
 
+function decodeRpcPayload(payload) {
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "error") && payload.error) {
+        throw new Error(rpcErrorMessage(payload.error));
+    }
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "result")) {
+        return payload.result;
+    }
+    return payload;
+}
+
 function isLikelyBitcoindRpcUrl(rawUrl) {
     try {
         const parsed = new URL(rawUrl);
@@ -296,10 +306,7 @@ async function rpcCall(method, params = []) {
     }
 
     const payload = await resp.json();
-    if (payload.error) {
-        throw new Error(rpcErrorMessage(payload.error));
-    }
-    return payload.result;
+    return decodeRpcPayload(payload);
 }
 
 function setActiveTab(tabName) {
