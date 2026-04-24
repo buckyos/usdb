@@ -53,6 +53,21 @@ struct PreparedBtcMintContext {
     runtime_profile: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct OrdMintJsonOutput {
+    #[serde(default)]
+    inscriptions: Vec<OrdMintJsonInscription>,
+    #[serde(default)]
+    reveal: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrdMintJsonInscription {
+    id: String,
+}
+
 const BALANCE_HISTORY_PROXY_METHODS: &[&str] = &[
     "get_network_type",
     "get_block_height",
@@ -1300,17 +1315,63 @@ async fn execute_world_sim_ord_mint(
 }
 
 fn extract_inscription_id(raw: &str) -> Option<String> {
+    if let Some(parsed) = extract_ord_mint_json_output(raw)
+        && let Some(inscription_id) = parsed
+            .inscriptions
+            .into_iter()
+            .map(|item| item.id)
+            .find(|candidate| is_valid_inscription_id(candidate))
+    {
+        return Some(inscription_id);
+    }
     extract_whitespace_separated(raw)
         .find(|candidate| is_valid_inscription_id(candidate))
         .map(|candidate| candidate.to_string())
 }
 
 fn extract_hex64(raw: &str) -> Option<String> {
+    if let Some(parsed) = extract_ord_mint_json_output(raw) {
+        if let Some(reveal_txid) = parsed.reveal.filter(|candidate| is_hex64(candidate)) {
+            return Some(reveal_txid);
+        }
+        if let Some(inscription_id) = parsed
+            .inscriptions
+            .first()
+            .map(|item| item.id.as_str())
+            .filter(|candidate| is_valid_inscription_id(candidate))
+            && let Some((txid, _)) = inscription_id.split_once('i')
+            && is_hex64(txid)
+        {
+            return Some(txid.to_string());
+        }
+        if let Some(commit_txid) = parsed.commit.filter(|candidate| is_hex64(candidate)) {
+            return Some(commit_txid);
+        }
+    }
     extract_whitespace_separated(raw)
-        .find(|candidate| {
-            candidate.len() == 64 && candidate.chars().all(|char| char.is_ascii_hexdigit())
-        })
+        .find(|candidate| is_hex64(candidate))
         .map(|candidate| candidate.to_string())
+}
+
+fn extract_ord_mint_json_output(raw: &str) -> Option<OrdMintJsonOutput> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(parsed) = serde_json::from_str::<OrdMintJsonOutput>(trimmed) {
+        return Some(parsed);
+    }
+
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str::<OrdMintJsonOutput>(&trimmed[start..=end]).ok()
+}
+
+fn is_hex64(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|char| char.is_ascii_hexdigit())
 }
 
 fn extract_whitespace_separated(raw: &str) -> impl Iterator<Item = &str> {
@@ -2007,5 +2068,56 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("mismatched identities"));
+    }
+
+    #[test]
+    fn extract_ord_mint_fields_from_json_output() {
+        let raw = r#"{
+  "commit": "700264cda3cf04bba0eceedb528c1ec338300ff5bc2fe41cbfa9bfcd79d2cd7c",
+  "inscriptions": [
+    {
+      "destination": "bcrt1ptest",
+      "id": "7f1a230913d0627a7a3bd11579e75d7e6ee79336ecbaa94c47b3058dd1ea95bfi0",
+      "location": "7f1a230913d0627a7a3bd11579e75d7e6ee79336ecbaa94c47b3058dd1ea95bf:0:0"
+    }
+  ],
+  "parents": [],
+  "reveal": "7f1a230913d0627a7a3bd11579e75d7e6ee79336ecbaa94c47b3058dd1ea95bf",
+  "reveal_broadcast": false,
+  "total_fees": 336
+}"#;
+
+        assert_eq!(
+            extract_inscription_id(raw),
+            Some("7f1a230913d0627a7a3bd11579e75d7e6ee79336ecbaa94c47b3058dd1ea95bfi0".to_string())
+        );
+        assert_eq!(
+            extract_hex64(raw),
+            Some("7f1a230913d0627a7a3bd11579e75d7e6ee79336ecbaa94c47b3058dd1ea95bf".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_ord_mint_fields_from_mixed_output_prefers_json_fields() {
+        let raw = r#"ord warning: using cached recovery key
+{
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inscriptions": [
+    {
+      "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi0"
+    }
+  ],
+  "reveal": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+background note"#;
+
+        assert_eq!(
+            extract_inscription_id(raw),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbi0".to_string())
+        );
+        assert_eq!(
+            extract_hex64(raw),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string())
+        );
     }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, NavLink, useParams } from 'react-router-dom'
 import { FieldValueList } from '../components/FieldValueList'
 import {
@@ -58,6 +58,125 @@ interface WalletPassRecognition {
 }
 
 type BtcRuntimeNetwork = 'mainnet' | 'testnet' | 'testnet4' | 'regtest' | 'signet'
+
+const BTC_ME_SESSION_STORAGE_KEY = 'usdb.console.me.btc.v1'
+
+interface PersistedBtcSessionState {
+  walletMode?: BtcWalletMode
+  identitySource?: BtcIdentitySource
+  manualAddress?: string
+  selectedWorldSimWalletName?: string
+  selectedWorldSimOwnerAddress?: string
+  mintEthMain?: string
+  mintEthCollab?: string
+  mintPrev?: string
+  mintStep?: BtcMintFlowStep
+  mintPrepareResult?: BtcMintPrepareResponse | null
+  mintSigningError?: string | null
+  mintSigningResult?: BtcWalletMessageSignatureResult | null
+  mintExecutionError?: string | null
+  mintExecutionResult?: BtcMintExecuteResponse | null
+  mintExecutionPass?: PassSnapshot | null
+  mintTechnicalOpen?: boolean
+  devToolsOpen?: boolean
+}
+
+function readSessionStorageValue(key: string) {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.sessionStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeSessionStorageValue(key: string, value: string | null) {
+  if (typeof window === 'undefined') return
+  try {
+    if (value == null) {
+      window.sessionStorage.removeItem(key)
+      return
+    }
+    window.sessionStorage.setItem(key, value)
+  } catch {
+    // Ignore storage write failures in locked-down browser contexts.
+  }
+}
+
+function loadPersistedBtcSessionState(): PersistedBtcSessionState {
+  const raw = readSessionStorageValue(BTC_ME_SESSION_STORAGE_KEY)
+  if (!raw) return {}
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedBtcSessionState>
+    const walletMode =
+      parsed.walletMode === 'browser' || parsed.walletMode === 'dev-regtest'
+        ? parsed.walletMode
+        : undefined
+    const identitySource =
+      parsed.identitySource === 'browser_wallet' ||
+      parsed.identitySource === 'world_sim_agent' ||
+      parsed.identitySource === 'manual_address'
+        ? parsed.identitySource
+        : undefined
+    const mintStep =
+      parsed.mintStep === 'edit' ||
+      parsed.mintStep === 'review' ||
+      parsed.mintStep === 'signing' ||
+      parsed.mintStep === 'submitting' ||
+      parsed.mintStep === 'waiting' ||
+      parsed.mintStep === 'success'
+        ? parsed.mintStep
+        : undefined
+    const restored: PersistedBtcSessionState = {
+      walletMode,
+      identitySource,
+      manualAddress: typeof parsed.manualAddress === 'string' ? parsed.manualAddress : undefined,
+      selectedWorldSimWalletName:
+        typeof parsed.selectedWorldSimWalletName === 'string'
+          ? parsed.selectedWorldSimWalletName
+          : undefined,
+      selectedWorldSimOwnerAddress:
+        typeof parsed.selectedWorldSimOwnerAddress === 'string'
+          ? parsed.selectedWorldSimOwnerAddress
+          : undefined,
+      mintEthMain: typeof parsed.mintEthMain === 'string' ? parsed.mintEthMain : undefined,
+      mintEthCollab: typeof parsed.mintEthCollab === 'string' ? parsed.mintEthCollab : undefined,
+      mintPrev: typeof parsed.mintPrev === 'string' ? parsed.mintPrev : undefined,
+      mintStep,
+      mintPrepareResult: parsed.mintPrepareResult ?? null,
+      mintSigningError:
+        typeof parsed.mintSigningError === 'string' ? parsed.mintSigningError : null,
+      mintSigningResult: parsed.mintSigningResult ?? null,
+      mintExecutionError:
+        typeof parsed.mintExecutionError === 'string' ? parsed.mintExecutionError : null,
+      mintExecutionResult: parsed.mintExecutionResult ?? null,
+      mintExecutionPass: parsed.mintExecutionPass ?? null,
+      mintTechnicalOpen: parsed.mintTechnicalOpen === true,
+      devToolsOpen: parsed.devToolsOpen === true,
+    }
+    if (
+      (restored.mintStep === 'review' ||
+        restored.mintStep === 'signing' ||
+        restored.mintStep === 'submitting' ||
+        restored.mintStep === 'waiting' ||
+        restored.mintStep === 'success') &&
+      restored.mintPrepareResult == null
+    ) {
+      restored.mintStep = 'edit'
+    }
+    if (
+      (restored.mintStep === 'waiting' || restored.mintStep === 'success') &&
+      restored.mintExecutionResult == null
+    ) {
+      restored.mintStep = restored.mintPrepareResult ? 'review' : 'edit'
+    }
+    return restored
+  } catch {
+    writeSessionStorageValue(BTC_ME_SESSION_STORAGE_KEY, null)
+    return {}
+  }
+}
 
 function normalizeIdentityKind(value?: string): IdentityKind | null {
   if (value === 'eth' || value === 'btc') return value
@@ -168,18 +287,26 @@ function signerSourceLabel(
 export function MePage({ data, locale, t }: MePageProps) {
   const { identityKind } = useParams()
   const activeIdentity = normalizeIdentityKind(identityKind)
+  const [btcSessionBoot] = useState<PersistedBtcSessionState>(() => loadPersistedBtcSessionState())
   const [ethAddress, setEthAddress] = useState('')
-  const [btcAddress, setBtcAddress] = useState('')
+  const [btcAddress, setBtcAddress] = useState(btcSessionBoot.manualAddress ?? '')
   const [btcWallet, setBtcWallet] = useState<BtcWalletSnapshot | null>(null)
   const [btcBrowserWalletSnapshot, setBtcBrowserWalletSnapshot] = useState<BtcWalletSnapshot | null>(null)
-  const [btcWalletMode, setBtcWalletMode] = useState<BtcWalletMode>('browser')
-  const [btcIdentitySource, setBtcIdentitySource] = useState<BtcIdentitySource>('manual_address')
+  const [btcWalletMode, setBtcWalletMode] = useState<BtcWalletMode>(btcSessionBoot.walletMode ?? 'browser')
+  const [btcIdentitySource, setBtcIdentitySource] = useState<BtcIdentitySource>(
+    btcSessionBoot.identitySource ?? 'manual_address',
+  )
   const [btcWalletLoading, setBtcWalletLoading] = useState(false)
   const [btcWalletError, setBtcWalletError] = useState<string | null>(null)
   const [btcWorldSim, setBtcWorldSim] = useState<BtcWorldSimIdentitiesResponse | null>(null)
   const [btcWorldSimLoading, setBtcWorldSimLoading] = useState(false)
   const [btcWorldSimError, setBtcWorldSimError] = useState<string | null>(null)
-  const [btcSelectedWorldSimWalletName, setBtcSelectedWorldSimWalletName] = useState('')
+  const [btcSelectedWorldSimWalletName, setBtcSelectedWorldSimWalletName] = useState(
+    btcSessionBoot.selectedWorldSimWalletName ?? '',
+  )
+  const [btcSelectedWorldSimOwnerAddressHint, setBtcSelectedWorldSimOwnerAddressHint] = useState(
+    btcSessionBoot.selectedWorldSimOwnerAddress ?? '',
+  )
   const [btcAutoDevSignerLoading, setBtcAutoDevSignerLoading] = useState(false)
   const [btcAutoDevSignerError, setBtcAutoDevSignerError] = useState<string | null>(null)
   const [btcBrowserWalletMessage, setBtcBrowserWalletMessage] = useState('')
@@ -212,26 +339,36 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [btcRecognizedPasses, setBtcRecognizedPasses] = useState<WalletPassRecognition[]>([])
   const [btcRecognizedPassesLoading, setBtcRecognizedPassesLoading] = useState(false)
   const [btcRecognizedPassesError, setBtcRecognizedPassesError] = useState<string | null>(null)
-  const [btcMintEthMain, setBtcMintEthMain] = useState('')
-  const [btcMintEthCollab, setBtcMintEthCollab] = useState('')
-  const [btcMintPrev, setBtcMintPrev] = useState('')
+  const [btcMintEthMain, setBtcMintEthMain] = useState(btcSessionBoot.mintEthMain ?? '')
+  const [btcMintEthCollab, setBtcMintEthCollab] = useState(btcSessionBoot.mintEthCollab ?? '')
+  const [btcMintPrev, setBtcMintPrev] = useState(btcSessionBoot.mintPrev ?? '')
   const [btcMintPrepareLoading, setBtcMintPrepareLoading] = useState(false)
   const [btcMintPrepareError, setBtcMintPrepareError] = useState<string | null>(null)
   const [btcMintPrepareResult, setBtcMintPrepareResult] =
-    useState<BtcMintPrepareResponse | null>(null)
-  const [btcMintStep, setBtcMintStep] = useState<BtcMintFlowStep>('edit')
+    useState<BtcMintPrepareResponse | null>(btcSessionBoot.mintPrepareResult ?? null)
+  const [btcMintStep, setBtcMintStep] = useState<BtcMintFlowStep>(btcSessionBoot.mintStep ?? 'edit')
   const [btcMintSigningLoading, setBtcMintSigningLoading] = useState(false)
-  const [btcMintSigningError, setBtcMintSigningError] = useState<string | null>(null)
+  const [btcMintSigningError, setBtcMintSigningError] = useState<string | null>(
+    btcSessionBoot.mintSigningError ?? null,
+  )
   const [btcMintSigningResult, setBtcMintSigningResult] =
-    useState<BtcWalletMessageSignatureResult | null>(null)
+    useState<BtcWalletMessageSignatureResult | null>(btcSessionBoot.mintSigningResult ?? null)
   const [btcMintExecutionLoading, setBtcMintExecutionLoading] = useState(false)
-  const [btcMintExecutionError, setBtcMintExecutionError] = useState<string | null>(null)
+  const [btcMintExecutionError, setBtcMintExecutionError] = useState<string | null>(
+    btcSessionBoot.mintExecutionError ?? null,
+  )
   const [btcMintExecutionResult, setBtcMintExecutionResult] =
-    useState<BtcMintExecuteResponse | null>(null)
-  const [btcMintExecutionPass, setBtcMintExecutionPass] = useState<PassSnapshot | null>(null)
+    useState<BtcMintExecuteResponse | null>(btcSessionBoot.mintExecutionResult ?? null)
+  const [btcMintExecutionPass, setBtcMintExecutionPass] = useState<PassSnapshot | null>(
+    btcSessionBoot.mintExecutionPass ?? null,
+  )
   const [btcMintExecutionPolling, setBtcMintExecutionPolling] = useState(false)
-  const [btcMintTechnicalOpen, setBtcMintTechnicalOpen] = useState(false)
-  const [btcDevToolsOpen, setBtcDevToolsOpen] = useState(false)
+  const [btcMintTechnicalOpen, setBtcMintTechnicalOpen] = useState(
+    btcSessionBoot.mintTechnicalOpen ?? false,
+  )
+  const [btcDevToolsOpen, setBtcDevToolsOpen] = useState(btcSessionBoot.devToolsOpen ?? false)
+  const btcWalletModeResetReady = useRef(false)
+  const btcMintInputResetReady = useRef(false)
 
   if (!activeIdentity) {
     return <Navigate to="/me/eth" replace />
@@ -265,7 +402,7 @@ export function MePage({ data, locale, t }: MePageProps) {
     (btcIdentitySource === 'browser_wallet'
       ? btcBrowserWalletSnapshot?.address
       : btcIdentitySource === 'world_sim_agent'
-        ? btcSelectedWorldSimIdentity?.owner_address
+        ? btcSelectedWorldSimIdentity?.owner_address ?? btcSelectedWorldSimOwnerAddressHint.trim()
         : btcAddress.trim()) || null
   const btcLookupAddressDerivedNetwork = inferBtcAddressNetwork(btcLookupAddress)
   const btcLookupNetworkMismatch =
@@ -342,6 +479,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintPrepareEnabled =
     btcMintPrepareClientBlockers.length === 0 && !btcMintPrepareLoading
   const btcMintParsedPrev = useMemo(() => parseMintPrevInput(btcMintPrev), [btcMintPrev])
+  const btcMintPreparedPrev = btcMintPrepareResult?.prev ?? btcMintParsedPrev
   const btcMintDraftRequestJson = btcMintPrepareResult
     ? JSON.stringify(btcMintPrepareResult.prepare_request, null, 2)
     : ''
@@ -354,8 +492,10 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintSuggestedPrev = btcMintPrepareResult?.suggested_prev ?? []
   const btcMintSuggestedPrevNeedsApply =
     btcMintSuggestedPrev.length > 0 &&
-    (btcMintSuggestedPrev.length !== btcMintParsedPrev.length ||
-      btcMintSuggestedPrev.some((item, index) => item !== btcMintParsedPrev[index]))
+    (btcMintSuggestedPrev.length !== btcMintPreparedPrev.length ||
+      btcMintSuggestedPrev.some((item, index) => item !== btcMintPreparedPrev[index]))
+  const btcMintSuggestedPrevCanAutoApply =
+    btcMintSuggestedPrevNeedsApply && btcMintPreparedPrev.length === 0
   const btcMintIntentLabel =
     btcDisplayActivePass != null || btcPreparedActivePass != null
       ? t('me.values.mintIntentRemint')
@@ -435,6 +575,14 @@ export function MePage({ data, locale, t }: MePageProps) {
           label: t('me.fields.activeMinerPass'),
           value: displayText(btcMintPrepareResult.active_pass?.inscription_id, t),
           helpText: t('me.help.activeMinerPass'),
+        },
+        {
+          label: t('me.fields.currentPrev'),
+          value:
+            btcMintPrepareResult.prev.length > 0
+              ? btcMintPrepareResult.prev.join(', ')
+              : t('me.values.noneApplied'),
+          helpText: t('me.help.currentPrev'),
         },
         {
           label: t('me.fields.suggestedPrev'),
@@ -712,6 +860,60 @@ export function MePage({ data, locale, t }: MePageProps) {
         ]
 
   useEffect(() => {
+    if (!btcSelectedWorldSimIdentity?.owner_address) return
+    setBtcSelectedWorldSimOwnerAddressHint((current) =>
+      current === btcSelectedWorldSimIdentity.owner_address
+        ? current
+        : btcSelectedWorldSimIdentity.owner_address,
+    )
+  }, [btcSelectedWorldSimIdentity])
+
+  useEffect(() => {
+    writeSessionStorageValue(
+      BTC_ME_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        walletMode: btcWalletMode,
+        identitySource: btcIdentitySource,
+        manualAddress: btcAddress,
+        selectedWorldSimWalletName: btcSelectedWorldSimWalletName,
+        selectedWorldSimOwnerAddress:
+          btcSelectedWorldSimIdentity?.owner_address ?? btcSelectedWorldSimOwnerAddressHint,
+        mintEthMain: btcMintEthMain,
+        mintEthCollab: btcMintEthCollab,
+        mintPrev: btcMintPrev,
+        mintStep: btcMintStep,
+        mintPrepareResult: btcMintPrepareResult,
+        mintSigningError: btcMintSigningError,
+        mintSigningResult: btcMintSigningResult,
+        mintExecutionError: btcMintExecutionError,
+        mintExecutionResult: btcMintExecutionResult,
+        mintExecutionPass: btcMintExecutionPass,
+        mintTechnicalOpen: btcMintTechnicalOpen,
+        devToolsOpen: btcDevToolsOpen,
+      } satisfies PersistedBtcSessionState),
+    )
+  }, [
+    btcAddress,
+    btcDevToolsOpen,
+    btcIdentitySource,
+    btcMintEthCollab,
+    btcMintEthMain,
+    btcMintExecutionError,
+    btcMintExecutionPass,
+    btcMintExecutionResult,
+    btcMintPrepareResult,
+    btcMintPrev,
+    btcMintSigningError,
+    btcMintSigningResult,
+    btcMintStep,
+    btcMintTechnicalOpen,
+    btcSelectedWorldSimIdentity,
+    btcSelectedWorldSimOwnerAddressHint,
+    btcSelectedWorldSimWalletName,
+    btcWalletMode,
+  ])
+
+  useEffect(() => {
     if (activeIdentity !== 'btc') return
     if (btcRuntimeProfile === 'public') {
       setBtcWalletMode('browser')
@@ -875,6 +1077,10 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, btcAddress, btcBrowserWalletConnected, btcRuntimeProfile])
 
   useEffect(() => {
+    if (!btcWalletModeResetReady.current) {
+      btcWalletModeResetReady.current = true
+      return
+    }
     setBtcWalletError(null)
     setBtcBrowserWalletSignature(null)
     setBtcBrowserWalletSignatureError(null)
@@ -894,6 +1100,10 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [btcWalletMode])
 
   useEffect(() => {
+    if (!btcMintInputResetReady.current) {
+      btcMintInputResetReady.current = true
+      return
+    }
     setBtcMintPrepareError(null)
     setBtcMintPrepareResult(null)
     setBtcMintStep('edit')
@@ -929,7 +1139,10 @@ export function MePage({ data, locale, t }: MePageProps) {
         if (cancelled) return
         const resolvedPass =
           passSnapshot ??
-          (activePass?.inscription_id === btcMintExecutionResult.inscription_id ? activePass : null)
+          (activePass?.inscription_id === btcMintExecutionResult.inscription_id ? activePass : null) ??
+          (btcMintExecutionResult.txid != null && activePass?.mint_txid === btcMintExecutionResult.txid
+            ? activePass
+            : null)
         if (resolvedPass) {
           setBtcMintExecutionPass(resolvedPass)
           setBtcMintExecutionError(null)
@@ -1227,9 +1440,32 @@ export function MePage({ data, locale, t }: MePageProps) {
       return
     }
 
-    setBtcMintPrepareLoading(true)
     setBtcMintPrepareError(null)
     setBtcMintPrepareResult(null)
+    setBtcMintSigningError(null)
+    setBtcMintSigningResult(null)
+    setBtcMintExecutionError(null)
+    setBtcMintExecutionResult(null)
+    setBtcMintExecutionPass(null)
+
+    try {
+      await refreshBtcMintDraft(parseMintPrevInput(btcMintPrev))
+      setBtcMintStep('review')
+    } catch (error) {
+      setBtcMintPrepareError(error instanceof Error ? error.message : String(error))
+      setBtcMintStep('edit')
+    }
+  }
+
+  async function refreshBtcMintDraft(prev: string[]) {
+    if (!btcLookupAddress) {
+      const message = t('me.btc.mintOwnerRequired')
+      setBtcMintPrepareError(message)
+      throw new Error(message)
+    }
+
+    setBtcMintPrepareLoading(true)
+    setBtcMintPrepareError(null)
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
     setBtcMintExecutionError(null)
@@ -1241,31 +1477,30 @@ export function MePage({ data, locale, t }: MePageProps) {
         owner_address: btcLookupAddress,
         eth_main: btcMintEthMain,
         eth_collab: btcMintEthCollab.trim() || null,
-        prev: parseMintPrevInput(btcMintPrev),
+        prev,
       })
       setBtcMintPrepareResult(result)
-      setBtcMintStep('review')
       setBtcMintTechnicalOpen(false)
+      return result
     } catch (error) {
-      setBtcMintPrepareError(error instanceof Error ? error.message : String(error))
-      setBtcMintStep('edit')
+      const message = error instanceof Error ? error.message : String(error)
+      setBtcMintPrepareError(message)
+      throw error
     } finally {
       setBtcMintPrepareLoading(false)
     }
   }
 
-  function handleApplySuggestedPrev() {
+  async function handleApplySuggestedPrev() {
     if (btcMintSuggestedPrev.length === 0) return
-    setBtcMintPrev(btcMintSuggestedPrev.join('\n'))
-    setBtcMintPrepareError(null)
-    setBtcMintPrepareResult(null)
-    setBtcMintStep('edit')
-    setBtcMintTechnicalOpen(false)
-    setBtcMintSigningError(null)
-    setBtcMintSigningResult(null)
-    setBtcMintExecutionError(null)
-    setBtcMintExecutionResult(null)
-    setBtcMintExecutionPass(null)
+    const nextPrevText = btcMintSuggestedPrev.join('\n')
+    setBtcMintPrev(nextPrevText)
+    try {
+      await refreshBtcMintDraft(btcMintSuggestedPrev)
+      setBtcMintStep('review')
+    } catch {
+      setBtcMintStep('review')
+    }
   }
 
   function handleResetBtcMintFlow(clearInputs: boolean) {
@@ -1284,8 +1519,25 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintPrev('')
   }
 
-  function handleAdvanceBtcMintSigning() {
+  async function handleAdvanceBtcMintSigning() {
     if (!btcMintPrepareResult?.eligible) return
+    if (btcMintPrepareLoading) return
+
+    if (btcMintSuggestedPrevCanAutoApply) {
+      const nextPrevText = btcMintSuggestedPrev.join('\n')
+      setBtcMintPrev(nextPrevText)
+      try {
+        const refreshed = await refreshBtcMintDraft(btcMintSuggestedPrev)
+        if (!refreshed.eligible) {
+          setBtcMintStep('review')
+          return
+        }
+      } catch {
+        setBtcMintStep('review')
+        return
+      }
+    }
+
     setBtcMintStep('signing')
     setBtcMintSigningError(null)
     setBtcMintSigningResult(null)
@@ -1332,9 +1584,9 @@ export function MePage({ data, locale, t }: MePageProps) {
       const executionResult = await executeBtcMint({
         wallet_name: btcSelectedWorldSimIdentity.wallet_name,
         owner_address: btcMintPrepareResult?.owner_address ?? btcLookupAddress ?? '',
-        eth_main: btcMintEthMain.trim(),
-        eth_collab: btcMintEthCollab.trim() || null,
-        prev: btcMintParsedPrev,
+        eth_main: btcMintPrepareResult?.eth_main ?? btcMintEthMain.trim(),
+        eth_collab: (btcMintPrepareResult?.eth_collab ?? btcMintEthCollab.trim()) || null,
+        prev: btcMintPrepareResult?.prev ?? btcMintParsedPrev,
       })
       setBtcMintExecutionResult(executionResult)
       setBtcMintStep('waiting')
@@ -1930,18 +2182,26 @@ export function MePage({ data, locale, t }: MePageProps) {
                     {btcMintSuggestedPrevNeedsApply ? (
                       <div className="rounded-2xl border border-[color:var(--cp-warning)]/25 bg-[color:var(--cp-warning)]/8 px-4 py-4">
                         <p className="text-sm leading-6 text-[color:var(--cp-text)]">
-                          {t('me.btc.mintSuggestedPrevBody')}
+                          {btcMintSuggestedPrevCanAutoApply
+                            ? t('me.btc.mintSuggestedPrevAutoBody')
+                            : t('me.btc.mintSuggestedPrevMismatchBody')}
                         </p>
                         <div className="mt-3 flex flex-wrap items-center gap-3">
                           <button
                             type="button"
                             className="console-secondary-button"
-                            onClick={handleApplySuggestedPrev}
+                            disabled={btcMintPrepareLoading}
+                            onClick={() => void handleApplySuggestedPrev()}
                           >
-                            {t('me.btc.mintUseSuggestedPrev')}
+                            {btcMintPrepareLoading
+                              ? t('actions.reloading')
+                              : t('me.btc.mintUseSuggestedPrev')}
                           </button>
                         </div>
                       </div>
+                    ) : null}
+                    {btcMintPrepareError ? (
+                      <p className="text-sm text-[color:var(--cp-danger)]">{btcMintPrepareError}</p>
                     ) : null}
                     {btcMintPrepareResult?.blockers.length ? (
                       <div className="rounded-2xl border border-[color:var(--cp-danger)]/20 bg-[color:var(--cp-danger)]/6 px-4 py-3">
@@ -1985,10 +2245,10 @@ export function MePage({ data, locale, t }: MePageProps) {
                       <button
                         type="button"
                         className="console-action-button"
-                        disabled={!btcMintPrepareResult?.eligible}
-                        onClick={handleAdvanceBtcMintSigning}
+                        disabled={!btcMintPrepareResult?.eligible || btcMintPrepareLoading}
+                        onClick={() => void handleAdvanceBtcMintSigning()}
                       >
-                        {t('me.btc.mintConfirmAndSign')}
+                        {btcMintPrepareLoading ? t('actions.reloading') : t('me.btc.mintConfirmAndSign')}
                       </button>
                     </div>
                   </div>
