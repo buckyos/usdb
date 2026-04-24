@@ -387,3 +387,14 @@ export interface EthwDevIdentityResponse {
   identity_fingerprint?: string | null
   error?: string | null
 }
+
+export interface EthwAddressStatusResponse {
+  ethw_chain_id?: string | null
+  ethw_network_id?: string | null
+  ethw_runtime_profile: string
+  address: string
+  balance_wei?: string | null
+  latest_block_number?: string | null
+  available: boolean
+  error?: string | null
+}

@@ -5,8 +5,9 @@ use crate::models::{
     BtcMintPrepareActivePassSummary, BtcMintPrepareRequest, BtcMintPrepareResponse,
     BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
     BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary,
-    EthwDevIdentityResponse, EthwServiceSummary, ExplorerLinks, OrdServiceSummary,
-    OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary, UsdbIndexerServiceSummary,
+    EthwAddressStatusResponse, EthwDevIdentityResponse, EthwServiceSummary, ExplorerLinks,
+    OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary,
+    UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
@@ -40,6 +41,11 @@ struct WorldSimBootstrapMarker {
 #[derive(Debug, Deserialize)]
 struct WorldSimDevSignerQuery {
     wallet_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EthwAddressStatusQuery {
+    address: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +152,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
             get(get_btc_world_sim_dev_signer),
         )
         .route("/api/ethw/dev-sim/identity", get(get_ethw_dev_identity))
+        .route("/api/ethw/address-status", get(get_ethw_address_status))
         .route("/api/btc/mint/prepare", post(post_prepare_btc_mint))
         .route("/api/btc/mint/execute", post(post_execute_btc_mint))
         .route(
@@ -503,6 +510,58 @@ async fn get_ethw_dev_identity(
             )),
         })),
     }
+}
+
+async fn get_ethw_address_status(
+    State(state): State<AppState>,
+    Query(query): Query<EthwAddressStatusQuery>,
+) -> impl IntoResponse {
+    let address = match normalize_evm_address("address", &query.address) {
+        Ok(address) => address,
+        Err(error) => {
+            return (StatusCode::BAD_REQUEST, Json(ApiError { error })).into_response();
+        }
+    };
+    let services = build_services_summary(&state).await;
+    let ethw_chain_id = services
+        .ethw
+        .data
+        .as_ref()
+        .and_then(|summary| summary.chain_id.clone());
+    let ethw_network_id = services
+        .ethw
+        .data
+        .as_ref()
+        .and_then(|summary| summary.network_id.clone());
+    let runtime_profile =
+        classify_ethw_runtime_profile(ethw_chain_id.as_deref(), ethw_network_id.as_deref())
+            .to_string();
+    let latest_block_number = services
+        .ethw
+        .data
+        .as_ref()
+        .and_then(|summary| summary.block_number.map(|value| value.to_string()));
+
+    let balance_result = state
+        .rpc_client
+        .ethw_balance(&state.config.rpc.ethw_url, &address)
+        .await;
+    let (available, balance_wei, error) = match balance_result {
+        Ok(balance_wei) => (true, Some(balance_wei), None),
+        Err(error) => (false, None, Some(error)),
+    };
+
+    Json(EthwAddressStatusResponse {
+        ethw_chain_id,
+        ethw_network_id,
+        ethw_runtime_profile: runtime_profile,
+        address,
+        balance_wei,
+        latest_block_number,
+        available,
+        error,
+    })
+    .into_response()
 }
 
 async fn post_prepare_btc_mint(

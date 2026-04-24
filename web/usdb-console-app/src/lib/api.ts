@@ -4,6 +4,7 @@ import type {
   BtcMintExecuteResponse,
   BtcWorldSimDevSignerResponse,
   BtcWorldSimIdentitiesResponse,
+  EthwAddressStatusResponse,
   OverviewResponse,
   PassBlockCommitInfo,
   PassEnergyLeaderboardPage,
@@ -283,4 +284,20 @@ export async function fetchEthwDevIdentity(): Promise<EthwDevIdentityResponse> {
   }
 
   return response.json() as Promise<EthwDevIdentityResponse>
+}
+
+export async function fetchEthwAddressStatus(
+  address: string,
+): Promise<EthwAddressStatusResponse> {
+  const search = new URLSearchParams({ address })
+  const response = await fetch(`/api/ethw/address-status?${search.toString()}`, {
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
+    throw new Error(errorPayload?.error ?? `Failed to load ETHW address status: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<EthwAddressStatusResponse>
 }

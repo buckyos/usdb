@@ -150,6 +150,15 @@ impl RpcClient {
         self.json_rpc_call(url, "eth_blockNumber", json!([])).await
     }
 
+    /// Returns the ETHW balance for one address via `eth_getBalance`.
+    ///
+    /// The raw hex quantity is returned unchanged so callers do not lose precision
+    /// converting large EVM balances through fixed-width integer types.
+    pub async fn ethw_balance(&self, url: &str, address: &str) -> Result<String, String> {
+        self.json_rpc_call(url, "eth_getBalance", json!([address, "latest"]))
+            .await
+    }
+
     /// Returns the raw ETHW syncing payload from `eth_syncing`.
     ///
     /// Callers can distinguish `false` from an in-progress sync object without losing

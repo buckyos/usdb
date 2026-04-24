@@ -4,6 +4,7 @@ import { FieldValueList } from '../components/FieldValueList'
 import {
   executeBtcMint,
   fetchBalanceHistorySingleBalance,
+  fetchEthwAddressStatus,
   fetchBtcWorldSimDevSigner,
   fetchBtcWorldSimIdentities,
   fetchEthwDevIdentity,
@@ -23,6 +24,7 @@ import type {
   BtcMintExecuteResponse,
   BtcMintPrepareResponse,
   BtcWorldSimIdentitiesResponse,
+  EthwAddressStatusResponse,
   EthwDevIdentityResponse,
   OverviewResponse,
   PassEnergySnapshot,
@@ -368,6 +370,9 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [ethDevIdentity, setEthDevIdentity] = useState<EthwDevIdentityResponse | null>(null)
   const [ethDevIdentityLoading, setEthDevIdentityLoading] = useState(false)
   const [ethDevIdentityError, setEthDevIdentityError] = useState<string | null>(null)
+  const [ethAddressStatus, setEthAddressStatus] = useState<EthwAddressStatusResponse | null>(null)
+  const [ethAddressStatusLoading, setEthAddressStatusLoading] = useState(false)
+  const [ethAddressStatusError, setEthAddressStatusError] = useState<string | null>(null)
   const [btcAddress, setBtcAddress] = useState(btcSessionBoot.manualAddress ?? '')
   const [btcWallet, setBtcWallet] = useState<BtcWalletSnapshot | null>(null)
   const [btcBrowserWalletSnapshot, setBtcBrowserWalletSnapshot] = useState<BtcWalletSnapshot | null>(null)
@@ -482,7 +487,9 @@ export function MePage({ data, locale, t }: MePageProps) {
   const ordAvailable = Boolean(data?.capabilities.ord_available)
   const btcConsoleMode = data?.capabilities.btc_console_mode ?? 'read_only'
   const btcRuntimeProfile = data?.capabilities.btc_runtime_profile ?? 'unknown'
+  const balanceHistoryReachable = Boolean(data?.services.balance_history.reachable)
   const balanceHistoryReady = Boolean(data?.services.balance_history.data?.query_ready)
+  const usdbIndexerReachable = Boolean(data?.services.usdb_indexer.reachable)
   const usdbIndexerReady = Boolean(data?.services.usdb_indexer.data?.query_ready)
   const hasInjectedBtcWallet = Boolean(detectBtcWalletProvider())
   const btcWalletAdapterCapabilities = getBtcWalletAdapterCapabilities(btcWalletMode)
@@ -676,6 +683,93 @@ export function MePage({ data, locale, t }: MePageProps) {
           },
         ]
       : []
+  const btcIdentityStatusItems = [
+    ...btcBrowserWalletProtocolItems,
+    {
+      label: t('me.fields.balanceHistoryBalance'),
+      value: btcAddressBalanceLoading
+        ? t('actions.reloading')
+        : displayBalanceSmart(locale, btcLatestBalanceRow?.balance, t),
+      helpText: t('me.help.balanceHistoryBalance'),
+    },
+    {
+      label: t('me.fields.balanceHistoryHeight'),
+      value: btcAddressBalanceLoading
+        ? t('actions.reloading')
+        : displayNumber(locale, btcLatestBalanceRow?.block_height, t),
+      helpText: t('me.help.balanceHistoryHeight'),
+    },
+    {
+      label: t('me.fields.balanceHistoryDelta'),
+      value: btcAddressBalanceLoading
+        ? t('actions.reloading')
+        : displayBalanceDeltaSmart(locale, btcLatestBalanceRow?.delta, t),
+      helpText: t('me.help.balanceHistoryDelta'),
+    },
+    {
+      label: t('me.fields.activeMinerPass'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : btcDisplayActivePass?.inscription_id ?? t('me.values.noActivePass'),
+      helpText: t('me.help.activeMinerPass'),
+    },
+    {
+      label: t('me.fields.passState'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : btcDisplayActivePass?.state ?? t('common.notYetAvailable'),
+      helpText: t('me.help.passState'),
+    },
+    {
+      label: t('me.fields.passOwner'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayText(btcDisplayActivePass?.owner, t),
+      helpText: t('me.help.passOwner'),
+    },
+    {
+      label: t('me.fields.passEthMain'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayText(btcDisplayActivePass?.eth_main, t),
+      helpText: t('me.help.passEthMain'),
+    },
+    {
+      label: t('me.fields.passEthCollab'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayText(btcDisplayActivePass?.eth_collab, t),
+      helpText: t('me.help.passEthCollab'),
+    },
+    {
+      label: t('me.fields.passEnergy'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayNumber(locale, btcActivePassEnergy?.energy ?? null, t),
+      helpText: t('me.help.passEnergy'),
+    },
+    {
+      label: t('me.fields.passEnergyHeight'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayNumber(locale, btcActivePassEnergy?.record_block_height, t),
+      helpText: t('me.help.passEnergyHeight'),
+    },
+    {
+      label: t('me.fields.passOwnerBalance'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayBalanceSmart(locale, btcActivePassEnergy?.owner_balance, t),
+      helpText: t('me.help.passOwnerBalance'),
+    },
+    {
+      label: t('me.fields.passOwnerDelta'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayBalanceDeltaSmart(locale, btcActivePassEnergy?.owner_delta, t),
+      helpText: t('me.help.passOwnerDelta'),
+    },
+  ]
   const ethIdentitySourceValue = ethIdentitySourceLabel(ethIdentitySource, t)
   const btcSignerSourceValue = btcSignerSourceLabel(btcIdentitySource, t)
   const btcIdentitySourceValue = identitySourceLabel(btcIdentitySource, t)
@@ -726,6 +820,57 @@ export function MePage({ data, locale, t }: MePageProps) {
       label: t('me.fields.markerPath'),
       value: displayText(ethDevIdentity?.marker_path, t),
       helpText: t('me.help.ethDevIdentityMarker'),
+    },
+  ]
+  const ethIdentityStatusItems = [
+    {
+      label: t('me.fields.currentAddress'),
+      value: displayText(ethLookupAddress, t),
+      helpText: t('me.help.currentEthAddress'),
+    },
+    {
+      label: t('me.fields.addressStatus'),
+      value: activeAddressStatus,
+      helpText: t('me.help.addressStatus'),
+    },
+    {
+      label: t('me.fields.ethwBalance'),
+      value: ethAddressStatusLoading
+        ? t('actions.reloading')
+        : formatWeiAsEth(
+            ethAddressStatus?.balance_wei ??
+              (ethIdentitySource === 'browser_wallet' ? ethWallet?.balanceWei : null),
+            t,
+          ),
+      helpText: t('me.help.ethwAddressBalance'),
+    },
+    {
+      label: t('me.fields.runtimeChainId'),
+      value: displayText(ethAddressStatus?.ethw_chain_id ?? ethwRuntimeChainId, t),
+      helpText: t('help.fields.chainId'),
+    },
+    {
+      label: t('me.fields.latestBlock'),
+      value: displayText(
+        ethAddressStatus?.latest_block_number ?? data?.services.ethw.data?.block_number,
+        t,
+      ),
+      helpText: t('help.fields.blockNumber'),
+    },
+    {
+      label: t('me.fields.linkedMinerPass'),
+      value: t('common.notYetAvailable'),
+      helpText: t('me.help.ethLinkedMinerPass'),
+    },
+    {
+      label: t('me.fields.passEnergy'),
+      value: t('common.notYetAvailable'),
+      helpText: t('me.help.ethLinkedPassEnergy'),
+    },
+    {
+      label: t('me.fields.miningDifficulty'),
+      value: t('common.notYetAvailable'),
+      helpText: t('me.help.ethMiningDifficulty'),
     },
   ]
   const btcWalletCapabilityItems = [
@@ -1185,6 +1330,40 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity, ethAddress, ethDevIdentityAvailable, ethwRuntimeProfile])
 
   useEffect(() => {
+    if (activeIdentity !== 'eth') return
+    if (!ethLookupAddress || !validateEthAddress(ethLookupAddress) || !ethwReachable) {
+      setEthAddressStatus(null)
+      setEthAddressStatusError(null)
+      setEthAddressStatusLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setEthAddressStatusLoading(true)
+    setEthAddressStatusError(null)
+
+    void fetchEthwAddressStatus(ethLookupAddress)
+      .then((response) => {
+        if (cancelled) return
+        setEthAddressStatus(response)
+        setEthAddressStatusError(response.error ?? null)
+      })
+      .catch((error: Error) => {
+        if (cancelled) return
+        setEthAddressStatus(null)
+        setEthAddressStatusError(error.message)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setEthAddressStatusLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeIdentity, ethLookupAddress, ethwReachable])
+
+  useEffect(() => {
     if (!btcSelectedWorldSimIdentity?.owner_address) return
     setBtcSelectedWorldSimOwnerAddressHint((current) =>
       current === btcSelectedWorldSimIdentity.owner_address
@@ -1514,7 +1693,7 @@ export function MePage({ data, locale, t }: MePageProps) {
       setBtcProtocolError(btcLookupNetworkMismatchMessage)
       return
     }
-    if (!btcLookupAddress || !balanceHistoryReady || !usdbIndexerReady) {
+    if (!btcLookupAddress) {
       setBtcAddressBalanceRows([])
       setBtcAddressBalanceError(null)
       setBtcActivePass(null)
@@ -1524,62 +1703,82 @@ export function MePage({ data, locale, t }: MePageProps) {
     }
 
     let cancelled = false
-    setBtcAddressBalanceLoading(true)
-    setBtcProtocolLoading(true)
-    setBtcAddressBalanceError(null)
-    setBtcProtocolError(null)
 
-    void Promise.all([
-      fetchBalanceHistorySingleBalance({
+    if (balanceHistoryReachable) {
+      setBtcAddressBalanceLoading(true)
+      setBtcAddressBalanceError(null)
+      void fetchBalanceHistorySingleBalance({
         address: btcLookupAddress,
         block_height: null,
         block_range: null,
-      }),
-      fetchUsdbOwnerActivePass(btcLookupAddress, null),
-    ])
-      .then(async ([rows, activePass]) => {
-        if (cancelled) return
-        setBtcAddressBalanceRows(rows)
-        setBtcActivePass(activePass)
-        if (!activePass) {
-          setBtcActivePassEnergy(null)
-          return
-        }
+      })
+        .then((rows) => {
+          if (cancelled) return
+          setBtcAddressBalanceRows(rows)
+        })
+        .catch((error) => {
+          if (cancelled) return
+          setBtcAddressBalanceRows([])
+          setBtcAddressBalanceError(error instanceof Error ? error.message : String(error))
+        })
+        .finally(() => {
+          if (cancelled) return
+          setBtcAddressBalanceLoading(false)
+        })
+    } else {
+      setBtcAddressBalanceRows([])
+      setBtcAddressBalanceError(null)
+      setBtcAddressBalanceLoading(false)
+    }
 
-        try {
-          const energy = await fetchUsdbPassEnergy(activePass.inscription_id, null, 'at_or_before')
+    if (usdbIndexerReachable) {
+      setBtcProtocolLoading(true)
+      setBtcProtocolError(null)
+      void fetchUsdbOwnerActivePass(btcLookupAddress, null)
+        .then(async (activePass) => {
           if (cancelled) return
-          setBtcActivePassEnergy(energy)
-        } catch (error) {
+          setBtcActivePass(activePass)
+          if (!activePass) {
+            setBtcActivePassEnergy(null)
+            return
+          }
+
+          try {
+            const energy = await fetchUsdbPassEnergy(activePass.inscription_id, null, 'at_or_before')
+            if (cancelled) return
+            setBtcActivePassEnergy(energy)
+          } catch (error) {
+            if (cancelled) return
+            setBtcActivePassEnergy(null)
+            setBtcProtocolError(error instanceof Error ? error.message : String(error))
+          }
+        })
+        .catch((error) => {
           if (cancelled) return
+          setBtcActivePass(null)
           setBtcActivePassEnergy(null)
           setBtcProtocolError(error instanceof Error ? error.message : String(error))
-        }
-      })
-      .catch((error) => {
-        if (cancelled) return
-        const message = error instanceof Error ? error.message : String(error)
-        setBtcAddressBalanceRows([])
-        setBtcActivePass(null)
-        setBtcActivePassEnergy(null)
-        setBtcAddressBalanceError(message)
-        setBtcProtocolError(message)
-      })
-      .finally(() => {
-        if (cancelled) return
-        setBtcAddressBalanceLoading(false)
-        setBtcProtocolLoading(false)
-      })
+        })
+        .finally(() => {
+          if (cancelled) return
+          setBtcProtocolLoading(false)
+        })
+    } else {
+      setBtcActivePass(null)
+      setBtcActivePassEnergy(null)
+      setBtcProtocolError(null)
+      setBtcProtocolLoading(false)
+    }
 
     return () => {
       cancelled = true
     }
   }, [
     activeIdentity,
-    balanceHistoryReady,
+    balanceHistoryReachable,
     btcLookupAddress,
     btcLookupNetworkMismatchMessage,
-    usdbIndexerReady,
+    usdbIndexerReachable,
   ])
 
   useEffect(() => {
@@ -2423,6 +2622,26 @@ export function MePage({ data, locale, t }: MePageProps) {
         <section className="grid gap-4 xl:grid-cols-2">
           <article className="console-card">
             <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+              {t('me.identityStatus.title')}
+            </h3>
+            <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
+              {t('me.identityStatus.ethBody')}
+            </p>
+            <div className="mt-4">
+              <FieldValueList items={ethIdentityStatusItems} />
+            </div>
+            {!ethLookupAddress ? (
+              <p className="mt-4 text-sm text-[color:var(--cp-muted)]">
+                {t('me.identityStatus.ethUnavailable')}
+              </p>
+            ) : null}
+            {ethAddressStatusError ? (
+              <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{ethAddressStatusError}</p>
+            ) : null}
+          </article>
+
+          <article className="console-card">
+            <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
               {t('me.eth.walletTitle')}
             </h3>
             <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
@@ -2515,63 +2734,17 @@ export function MePage({ data, locale, t }: MePageProps) {
 
             <article className="console-card">
               <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-                {t('me.btc.protocolTitle')}
+                {t('me.identityStatus.title')}
               </h3>
               <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-                {t('me.btc.protocolBody')}
+                {t('me.identityStatus.btcBody')}
               </p>
               <div className="mt-4">
-                <FieldValueList
-                  items={[
-                    ...btcBrowserWalletProtocolItems,
-                    {
-                      label: t('me.fields.balanceHistoryBalance'),
-                      value: btcAddressBalanceLoading
-                        ? t('actions.reloading')
-                        : displayBalanceSmart(locale, btcLatestBalanceRow?.balance, t),
-                      helpText: t('me.help.balanceHistoryBalance'),
-                    },
-                    {
-                      label: t('me.fields.balanceHistoryHeight'),
-                      value: btcAddressBalanceLoading
-                        ? t('actions.reloading')
-                        : displayNumber(locale, btcLatestBalanceRow?.block_height, t),
-                      helpText: t('me.help.balanceHistoryHeight'),
-                    },
-                    {
-                      label: t('me.fields.balanceHistoryDelta'),
-                      value: btcAddressBalanceLoading
-                        ? t('actions.reloading')
-                        : displayBalanceDeltaSmart(locale, btcLatestBalanceRow?.delta, t),
-                      helpText: t('me.help.balanceHistoryDelta'),
-                    },
-                    {
-                      label: t('me.fields.activeMinerPass'),
-                      value: btcProtocolLoading
-                        ? t('actions.reloading')
-                        : btcDisplayActivePass?.inscription_id ?? t('me.values.noActivePass'),
-                      helpText: t('me.help.activeMinerPass'),
-                    },
-                    {
-                      label: t('me.fields.passState'),
-                      value: btcProtocolLoading
-                        ? t('actions.reloading')
-                        : btcDisplayActivePass?.state ?? t('common.notYetAvailable'),
-                      helpText: t('me.help.passState'),
-                    },
-                    {
-                      label: t('me.fields.passEnergy'),
-                      value: btcProtocolLoading
-                        ? t('actions.reloading')
-                        : displayNumber(locale, btcActivePassEnergy?.energy ?? null, t),
-                      helpText: t('me.help.passEnergy'),
-                    },
-                  ]}
-                />
+                <FieldValueList items={btcIdentityStatusItems} />
               </div>
               {!btcLookupAddress ? (
                 <p className="mt-4 text-sm text-[color:var(--cp-muted)]">
-                  {t('me.btc.protocolUnavailable')}
+                  {t('me.identityStatus.btcUnavailable')}
                 </p>
               ) : null}
               {btcAddressBalanceError ? (

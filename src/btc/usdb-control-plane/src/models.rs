@@ -158,6 +158,22 @@ pub struct EthwDevIdentityResponse {
     pub error: Option<String>,
 }
 
+/// User-facing ETHW identity status for one selected EVM address.
+///
+/// This endpoint-backed shape keeps the console identity page consistent across
+/// browser-wallet, development-signer, and manual-address modes.
+#[derive(Debug, Clone, Serialize)]
+pub struct EthwAddressStatusResponse {
+    pub ethw_chain_id: Option<String>,
+    pub ethw_network_id: Option<String>,
+    pub ethw_runtime_profile: String,
+    pub address: String,
+    pub balance_wei: Option<String>,
+    pub latest_block_number: Option<String>,
+    pub available: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BootstrapSummary {
     pub bootstrap_manifest: ArtifactSummary,
