@@ -43,4 +43,6 @@ if [[ -z "${ETHW_COMMAND:-}" ]]; then
   exit 1
 fi
 
-exec bash -lc "${ETHW_COMMAND}"
+# Make geth become PID 1 inside the container so Docker stop signals reach it
+# directly instead of being absorbed by an intermediate shell.
+exec bash -lc "exec ${ETHW_COMMAND}"

@@ -258,4 +258,6 @@ else
   exit "${resolve_status}"
 fi
 
-exec bash -lc "${ethw_command}"
+# Make geth become PID 1 inside the container so Docker stop signals reach it
+# directly instead of being absorbed by an intermediate shell.
+exec bash -lc "exec ${ethw_command}"

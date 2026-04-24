@@ -21,6 +21,15 @@ fi
 
 export DOCKER_API_VERSION="${DOCKER_API_VERSION:-1.41}"
 project_name="${USDB_WORLD_SIM_PROJECT_NAME:-usdb-world-sim}"
+startup_timeout_secs="${WORLD_SIM_STARTUP_TIMEOUT_SECS:-180}"
+
+log() {
+  printf '[run-world-sim] %s\n' "$*"
+}
+
+warn() {
+  printf '[run-world-sim] %s\n' "$*" >&2
+}
 
 compose() {
   docker compose \
@@ -76,6 +85,18 @@ identity_seed() {
   env_get WORLD_SIM_IDENTITY_SEED ""
 }
 
+host_ord_url() {
+  printf 'http://127.0.0.1:%s\n' "$(env_get ORD_SERVER_BIND_PORT 28130)"
+}
+
+host_balance_history_url() {
+  printf 'http://127.0.0.1:%s\n' "$(env_get BH_BIND_PORT 28110)"
+}
+
+host_usdb_indexer_url() {
+  printf 'http://127.0.0.1:%s\n' "$(env_get USDB_INDEXER_BIND_PORT 28120)"
+}
+
 ethw_identity_mode() {
   env_get ETHW_IDENTITY_MODE deterministic-seed
 }
@@ -121,6 +142,7 @@ Usage:
   docker/scripts/run_world_sim.sh up
   docker/scripts/run_world_sim.sh up-full
   docker/scripts/run_world_sim.sh build-images
+  docker/scripts/run_world_sim.sh doctor
   docker/scripts/run_world_sim.sh ps
   docker/scripts/run_world_sim.sh logs
   docker/scripts/run_world_sim.sh down
@@ -128,10 +150,229 @@ Usage:
 
 Modes:
   up       Start the BTC-side local stack plus world-sim, without ethw-node.
+           The helper starts in detached mode by default, then waits for core
+           readiness and surfaces common persistent-state failures explicitly.
   up-full  Start the same stack and include ethw-node as part of full dev-sim.
   down     Stop the stack but keep Docker volumes and world state.
   reset    Stop the stack and remove Docker volumes to reset world state.
+  doctor   Print current startup/readiness diagnostics for the running stack.
+
+Options for up / up-full:
+  --foreground  Follow compose logs after startup diagnostics succeed.
+  -d, --detach  Explicitly keep detached mode (the default for this helper).
 EOF
+}
+
+json_rpc_call() {
+  local url="${1:?url is required}"
+  local method="${2:?method is required}"
+  local params="${3:-[]}"
+
+  curl -fsS \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}" \
+    "${url}"
+}
+
+readiness_snapshot() {
+  local payload="${1:?payload is required}"
+  python3 - "${payload}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(1)
+
+result = data.get("result") or {}
+print(result.get("service") or "")
+print("1" if result.get("rpc_alive") else "0")
+print("1" if result.get("query_ready") else "0")
+print("1" if result.get("consensus_ready") else "0")
+print(",".join(result.get("blockers") or []))
+print(result.get("phase") or "")
+print(str(result.get("stable_height") if result.get("stable_height") is not None else ""))
+print(str(result.get("synced_block_height") if result.get("synced_block_height") is not None else ""))
+print(result.get("message") or "")
+PY
+}
+
+runner_is_running() {
+  docker ps --format '{{.Names}}' | grep -qx "${project_name}-world-sim-runner-1"
+}
+
+sanitize_up_args() {
+  foreground_logs=0
+  up_args=()
+
+  while (($#)); do
+    case "$1" in
+      --foreground)
+        foreground_logs=1
+        ;;
+      --build)
+        ;;
+      -d|--detach)
+        ;;
+      --attach|--attach=*|--attach-dependencies|--abort-on-container-exit|--abort-on-container-failure|--menu)
+        echo "Unsupported docker compose attach-style option for this helper: $1" >&2
+        echo "Use 'docker/scripts/run_world_sim.sh logs' or '--foreground' instead." >&2
+        exit 1
+        ;;
+      *)
+        up_args+=("$1")
+        ;;
+    esac
+    shift
+  done
+}
+
+print_world_sim_doctor() {
+  local ord_height=""
+  local bh_payload=""
+  local usdb_payload=""
+  local bh_state=()
+  local usdb_state=()
+
+  log "Compose status:"
+  compose ps || true
+  echo
+
+  ord_height="$(curl -fsS "$(host_ord_url)/blockcount" 2>/dev/null || true)"
+  if [[ -n "${ord_height}" ]]; then
+    log "ord-server blockcount: ${ord_height}"
+  else
+    warn "ord-server is not reachable at $(host_ord_url)"
+  fi
+
+  bh_payload="$(json_rpc_call "$(host_balance_history_url)" "get_readiness" 2>/dev/null || true)"
+  if [[ -n "${bh_payload}" ]]; then
+    mapfile -t bh_state < <(readiness_snapshot "${bh_payload}")
+    log "balance-history readiness: query=${bh_state[2]:-0} consensus=${bh_state[3]:-0} blockers=${bh_state[4]:-(none)} stable_height=${bh_state[6]:-}"
+    if [[ -n "${bh_state[8]:-}" ]]; then
+      warn "balance-history message: ${bh_state[8]}"
+    fi
+  else
+    warn "balance-history readiness RPC is not reachable at $(host_balance_history_url)"
+  fi
+
+  usdb_payload="$(json_rpc_call "$(host_usdb_indexer_url)" "get_readiness" 2>/dev/null || true)"
+  if [[ -n "${usdb_payload}" ]]; then
+    mapfile -t usdb_state < <(readiness_snapshot "${usdb_payload}")
+    log "usdb-indexer readiness: query=${usdb_state[2]:-0} consensus=${usdb_state[3]:-0} blockers=${usdb_state[4]:-(none)} synced_height=${usdb_state[7]:-}"
+    if [[ -n "${usdb_state[8]:-}" ]]; then
+      warn "usdb-indexer message: ${usdb_state[8]}"
+    fi
+  else
+    warn "usdb-indexer readiness RPC is not reachable at $(host_usdb_indexer_url)"
+  fi
+
+  if runner_is_running; then
+    log "world-sim-runner: running"
+  else
+    warn "world-sim-runner is not running"
+  fi
+}
+
+print_common_state_recovery_hint() {
+  local mode
+  mode="$(state_mode)"
+  warn "Detected a persistent world-sim state recovery failure."
+  if [[ "${mode}" == "persistent" ]]; then
+    warn "Current WORLD_SIM_STATE_MODE=persistent; the local volumes appear inconsistent with the BTC / ord state."
+    warn "Most direct recovery:"
+    warn "  docker/scripts/run_world_sim.sh reset"
+    warn "  docker/scripts/run_world_sim.sh up"
+    warn "If you want deterministic identities after reset, set WORLD_SIM_STATE_MODE=seeded-reset and WORLD_SIM_IDENTITY_SEED in ${env_file}."
+  else
+    warn "Current WORLD_SIM_STATE_MODE=${mode}; consider docker/scripts/run_world_sim.sh reset before starting again."
+  fi
+}
+
+wait_for_world_sim_readiness() {
+  local deadline now ord_height bh_payload usdb_payload
+  local bh_state=()
+  local usdb_state=()
+  local bh_blockers="" bh_message="" usdb_blockers=""
+
+  deadline="$(( $(date +%s) + startup_timeout_secs ))"
+  while true; do
+    ord_height="$(curl -fsS "$(host_ord_url)/blockcount" 2>/dev/null || true)"
+
+    bh_payload="$(json_rpc_call "$(host_balance_history_url)" "get_readiness" 2>/dev/null || true)"
+    if [[ -n "${bh_payload}" ]]; then
+      mapfile -t bh_state < <(readiness_snapshot "${bh_payload}")
+      bh_blockers="${bh_state[4]:-}"
+      bh_message="${bh_state[8]:-}"
+    else
+      bh_state=()
+      bh_blockers=""
+      bh_message=""
+    fi
+
+    usdb_payload="$(json_rpc_call "$(host_usdb_indexer_url)" "get_readiness" 2>/dev/null || true)"
+    if [[ -n "${usdb_payload}" ]]; then
+      mapfile -t usdb_state < <(readiness_snapshot "${usdb_payload}")
+      usdb_blockers="${usdb_state[4]:-}"
+    else
+      usdb_state=()
+      usdb_blockers=""
+    fi
+
+    if [[ "${ord_height}" =~ ^[0-9]+$ ]] \
+      && [[ "${bh_state[3]:-0}" == "1" ]] \
+      && [[ "${usdb_state[3]:-0}" == "1" ]] \
+      && runner_is_running; then
+      log "world-sim stack is ready: ord=${ord_height}, balance-history=${bh_state[6]:-unknown}, usdb-indexer=${usdb_state[7]:-unknown}"
+      return
+    fi
+
+    if [[ "${bh_message}" == *"Missing block undo bundle"* ]] || [[ "${bh_blockers}" == *"RollbackInProgress"* ]]; then
+      print_world_sim_doctor
+      print_common_state_recovery_hint
+      echo
+      compose logs --tail 30 balance-history world-sim-runner || true
+      return 1
+    fi
+
+    now="$(date +%s)"
+    if (( now >= deadline )); then
+      warn "Timed out waiting for world-sim readiness after ${startup_timeout_secs}s."
+      print_world_sim_doctor
+      if [[ "${bh_blockers}" == *"RollbackInProgress"* ]] || [[ "${usdb_blockers}" == *"UpstreamConsensusNotReady"* ]]; then
+        print_common_state_recovery_hint
+      fi
+      echo
+      compose logs --tail 30 balance-history world-sim-runner || true
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+start_stack() {
+  local include_ethw="${1:?include_ethw flag is required}"
+  shift
+
+  sanitize_up_args "$@"
+
+  if [[ "${include_ethw}" == "1" ]]; then
+    ensure_ethw_identity_defaults
+    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
+    compose up --build --detach "${up_args[@]}"
+  else
+    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}"
+    compose up --build --detach btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "${up_args[@]}"
+  fi
+
+  wait_for_world_sim_readiness
+
+  if [[ "${foreground_logs}" == "1" ]]; then
+    compose logs -f
+  else
+    log "Use 'docker/scripts/run_world_sim.sh logs' to follow the stack logs."
+  fi
 }
 
 action="${1:-up}"
@@ -141,18 +382,18 @@ case "${action}" in
   up)
     ensure_world_sim_images
     prepare_state_mode
-    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}"
-    compose up --build btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "$@"
+    start_stack 0 "$@"
     ;;
   up-full)
     ensure_world_sim_images
-    ensure_ethw_identity_defaults
     prepare_state_mode
-    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
-    compose up --build "$@"
+    start_stack 1 "$@"
     ;;
   build-images)
     "${docker_dir}/scripts/build_world_sim_release_images.sh" "$@"
+    ;;
+  doctor)
+    print_world_sim_doctor
     ;;
   ps)
     compose ps "$@"

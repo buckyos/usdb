@@ -28,6 +28,7 @@ WORKDIR /tmp
 RUN git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/ord.git /tmp/ord-src \
     && cd /tmp/ord-src \
     && cargo build --bin ord --release \
+    && mkdir -p /opt/ord/bin \
     && install -m 0755 /tmp/ord-src/target/release/ord /opt/ord/bin/ord
 
 FROM node:20-bookworm AS web-builder
