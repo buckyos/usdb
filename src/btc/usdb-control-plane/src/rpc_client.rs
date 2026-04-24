@@ -246,6 +246,8 @@ impl RpcClient {
         wallet_name: &str,
         address: &str,
     ) -> Result<String, String> {
+        self.bitcoin_wallet_ensure_loaded(config, wallet_name)
+            .await?;
         let wallet_url = self.bitcoin_wallet_url(config, wallet_name)?;
         let address_info: BitcoinWalletAddressInfo = self
             .bitcoin_json_rpc_call_at_url(
@@ -285,6 +287,30 @@ impl RpcClient {
             })?;
 
         derive_private_wif_from_descriptor(&active_descriptor.desc, hdkeypath)
+    }
+
+    /// Ensures a local development BTC wallet is loaded before wallet-scoped RPC.
+    ///
+    /// World-sim wallets can exist on disk after a persistent restart while not yet
+    /// being loaded by Bitcoin Core. The dev-signer path is allowed to load those
+    /// deterministic regtest wallets on demand; public-runtime signing must still
+    /// go through a browser wallet instead of this control-plane helper.
+    async fn bitcoin_wallet_ensure_loaded(
+        &self,
+        config: &ControlPlaneConfig,
+        wallet_name: &str,
+    ) -> Result<(), String> {
+        let load_result: Result<Value, String> = self
+            .bitcoin_json_rpc_call(config, "loadwallet", json!([wallet_name]))
+            .await;
+        match load_result {
+            Ok(_) => Ok(()),
+            Err(error) if error.to_ascii_lowercase().contains("already loaded") => Ok(()),
+            Err(error) => Err(format!(
+                "Failed to load BTC wallet {}: {}",
+                wallet_name, error
+            )),
+        }
     }
 
     async fn json_rpc_call<T: DeserializeOwned>(

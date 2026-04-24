@@ -799,14 +799,19 @@ wait_until_ord_runtime_stable() {
   local current_height="${1:?current height is required}"
 
   ensure_wallet_loaded "${miner_wallet_name}"
-  wait_until_ord_server_synced_to_bitcoind
-  wait_until_balance_history_synced "${current_height}"
-  wait_until_usdb_synced "${current_height}"
 
   IFS=',' read -r -a stable_wallets <<< "${agent_wallets_csv:-}"
   for wallet_name in "${stable_wallets[@]}"; do
     [[ -n "${wallet_name}" ]] || continue
     ensure_wallet_loaded "${wallet_name}"
+  done
+
+  wait_until_ord_server_synced_to_bitcoind
+  wait_until_balance_history_synced "${current_height}"
+  wait_until_usdb_synced "${current_height}"
+
+  for wallet_name in "${stable_wallets[@]}"; do
+    [[ -n "${wallet_name}" ]] || continue
     wait_until_ord_wallet_stable "${wallet_name}"
   done
 }
