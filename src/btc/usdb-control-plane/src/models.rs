@@ -96,6 +96,7 @@ pub struct OverviewResponse {
     pub capabilities: CapabilitiesSummary,
     pub bootstrap: BootstrapSummary,
     pub explorers: ExplorerLinks,
+    pub apps: Vec<AppEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +192,22 @@ pub struct ExplorerLinks {
     pub control_console: String,
     pub balance_history: String,
     pub usdb_indexer: String,
+    pub sourcedao_web: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AppEntry {
+    pub id: String,
+    pub kind: String,
+    pub url: String,
+    pub target: String,
+    pub runtime_profile: String,
+    pub network: Option<String>,
+    pub service_id: Option<String>,
+    pub available: bool,
+    pub status: String,
+    pub status_message: Option<String>,
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

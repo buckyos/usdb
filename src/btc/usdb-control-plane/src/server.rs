@@ -1,6 +1,6 @@
 use crate::config::ControlPlaneConfig;
 use crate::models::{
-    ApiError, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
+    ApiError, AppEntry, ArtifactSummary, BalanceHistoryServiceSummary, BootstrapStepSummary,
     BootstrapSummary, BtcMintExecuteRequest, BtcMintExecuteResponse,
     BtcMintPrepareActivePassSummary, BtcMintPrepareRequest, BtcMintPrepareResponse,
     BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
@@ -903,18 +903,202 @@ async fn post_usdb_indexer_rpc(
 
 async fn build_overview(state: &AppState) -> OverviewResponse {
     let services = build_services_summary(state).await;
+    let capabilities = build_capabilities_summary(&services);
+    let bootstrap = build_bootstrap_summary(state);
+    let explorers = build_explorer_links(state);
+    let apps = build_app_entries(&services, &capabilities, &bootstrap, &explorers);
+
     OverviewResponse {
         service: USDB_CONTROL_PLANE_SERVICE_NAME.to_string(),
         generated_at_ms: current_unix_ms(),
-        capabilities: build_capabilities_summary(&services),
+        capabilities,
         services,
-        bootstrap: build_bootstrap_summary(state),
-        explorers: ExplorerLinks {
-            control_console: "/#/overview".to_string(),
-            balance_history: "/#/services/balance-history".to_string(),
-            usdb_indexer: "/#/services/usdb-indexer".to_string(),
-        },
+        bootstrap,
+        explorers,
+        apps,
     }
+}
+
+fn build_explorer_links(state: &AppState) -> ExplorerLinks {
+    ExplorerLinks {
+        control_console: "/#/overview".to_string(),
+        balance_history: "/explorers/balance-history/".to_string(),
+        usdb_indexer: "/explorers/usdb-indexer/".to_string(),
+        sourcedao_web: state.config.web.sourcedao_web_url.clone(),
+    }
+}
+
+fn app_status_from_service<T>(
+    service: &ServiceProbe<T>,
+    data: Option<&impl AppReadiness>,
+) -> (bool, String, Option<String>) {
+    if !service.reachable {
+        return (
+            false,
+            "offline".to_string(),
+            service
+                .error
+                .clone()
+                .or_else(|| Some("Service is not reachable".to_string())),
+        );
+    }
+
+    if data
+        .and_then(AppReadiness::consensus_ready)
+        .unwrap_or(false)
+    {
+        return (
+            true,
+            "ready".to_string(),
+            data.and_then(AppReadiness::message),
+        );
+    }
+
+    if data.and_then(AppReadiness::query_ready).unwrap_or(false) {
+        return (
+            true,
+            "degraded".to_string(),
+            data.and_then(AppReadiness::message),
+        );
+    }
+
+    (
+        true,
+        "starting".to_string(),
+        data.and_then(AppReadiness::message),
+    )
+}
+
+trait AppReadiness {
+    fn query_ready(&self) -> Option<bool>;
+    fn consensus_ready(&self) -> Option<bool>;
+    fn message(&self) -> Option<String>;
+}
+
+impl AppReadiness for BalanceHistoryServiceSummary {
+    fn query_ready(&self) -> Option<bool> {
+        self.query_ready
+    }
+
+    fn consensus_ready(&self) -> Option<bool> {
+        self.consensus_ready
+    }
+
+    fn message(&self) -> Option<String> {
+        self.message.clone()
+    }
+}
+
+impl AppReadiness for UsdbIndexerServiceSummary {
+    fn query_ready(&self) -> Option<bool> {
+        self.query_ready
+    }
+
+    fn consensus_ready(&self) -> Option<bool> {
+        self.consensus_ready
+    }
+
+    fn message(&self) -> Option<String> {
+        self.message.clone()
+    }
+}
+
+fn build_app_entries(
+    services: &ServicesSummary,
+    capabilities: &CapabilitiesSummary,
+    bootstrap: &BootstrapSummary,
+    explorers: &ExplorerLinks,
+) -> Vec<AppEntry> {
+    let balance_history_data = services.balance_history.data.as_ref();
+    let (balance_history_available, balance_history_status, balance_history_message) =
+        app_status_from_service(&services.balance_history, balance_history_data);
+
+    let usdb_indexer_data = services.usdb_indexer.data.as_ref();
+    let (usdb_indexer_available, usdb_indexer_status, usdb_indexer_message) =
+        app_status_from_service(&services.usdb_indexer, usdb_indexer_data);
+
+    let sourcedao_available =
+        services.ethw.reachable && bootstrap.sourcedao_bootstrap_marker.exists;
+    let sourcedao_status = if sourcedao_available {
+        "configured"
+    } else if services.ethw.reachable {
+        "pending"
+    } else {
+        "offline"
+    };
+    let sourcedao_message = if sourcedao_available {
+        Some("SourceDAO bootstrap marker is present for this runtime".to_string())
+    } else if let Some(error) = services.ethw.error.clone() {
+        Some(error)
+    } else {
+        Some("SourceDAO bootstrap marker is not available yet".to_string())
+    };
+
+    vec![
+        AppEntry {
+            id: "balance_history_browser".to_string(),
+            kind: "embedded_explorer".to_string(),
+            url: explorers.balance_history.clone(),
+            target: "same_origin".to_string(),
+            runtime_profile: capabilities.btc_runtime_profile.clone(),
+            network: balance_history_data
+                .and_then(|item| item.network.clone())
+                .or_else(|| {
+                    services
+                        .btc_node
+                        .data
+                        .as_ref()
+                        .and_then(|item| item.chain.clone())
+                }),
+            service_id: Some("balance-history".to_string()),
+            available: balance_history_available,
+            status: balance_history_status,
+            status_message: balance_history_message,
+            depends_on: vec!["balance-history".to_string(), "btc-node".to_string()],
+        },
+        AppEntry {
+            id: "usdb_indexer_browser".to_string(),
+            kind: "embedded_explorer".to_string(),
+            url: explorers.usdb_indexer.clone(),
+            target: "same_origin".to_string(),
+            runtime_profile: capabilities.btc_runtime_profile.clone(),
+            network: usdb_indexer_data
+                .and_then(|item| item.network.clone())
+                .or_else(|| {
+                    services
+                        .btc_node
+                        .data
+                        .as_ref()
+                        .and_then(|item| item.chain.clone())
+                }),
+            service_id: Some("usdb-indexer".to_string()),
+            available: usdb_indexer_available,
+            status: usdb_indexer_status,
+            status_message: usdb_indexer_message,
+            depends_on: vec![
+                "usdb-indexer".to_string(),
+                "balance-history".to_string(),
+                "btc-node".to_string(),
+            ],
+        },
+        AppEntry {
+            id: "sourcedao_web".to_string(),
+            kind: "external_web".to_string(),
+            url: explorers.sourcedao_web.clone(),
+            target: "external".to_string(),
+            runtime_profile: capabilities.ethw_runtime_profile.clone(),
+            network: services
+                .ethw
+                .data
+                .as_ref()
+                .and_then(|item| item.chain_id.clone()),
+            service_id: Some("ethw".to_string()),
+            available: sourcedao_available,
+            status: sourcedao_status.to_string(),
+            status_message: sourcedao_message,
+            depends_on: vec!["ethw".to_string(), "sourcedao-bootstrap".to_string()],
+        },
+    ]
 }
 
 async fn proxy_service_rpc(

@@ -49,6 +49,10 @@ fn default_usdb_indexer_explorer_root() -> PathBuf {
     PathBuf::from("web/usdb-indexer-browser")
 }
 
+fn default_sourcedao_web_url() -> String {
+    "http://127.0.0.1:3050".to_string()
+}
+
 fn default_bootstrap_manifest_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/bootstrap/bootstrap-manifest.json")
 }
@@ -214,6 +218,8 @@ pub struct WebRoots {
     pub balance_history_explorer_root: PathBuf,
     #[serde(default = "default_usdb_indexer_explorer_root")]
     pub usdb_indexer_explorer_root: PathBuf,
+    #[serde(default = "default_sourcedao_web_url")]
+    pub sourcedao_web_url: String,
 }
 
 impl Default for WebRoots {
@@ -222,6 +228,7 @@ impl Default for WebRoots {
             console_root: default_console_root(),
             balance_history_explorer_root: default_balance_history_explorer_root(),
             usdb_indexer_explorer_root: default_usdb_indexer_explorer_root(),
+            sourcedao_web_url: default_sourcedao_web_url(),
         }
     }
 }

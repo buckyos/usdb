@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import useSWR from 'swr'
 import { ConsoleShell } from './components/ConsoleShell'
 import { fetchOverview } from './lib/api'
+import { AppsPage } from './pages/AppsPage'
 import { BootstrapPage } from './pages/BootstrapPage'
 import { MePage } from './pages/MePage'
 import { OverviewPage } from './pages/OverviewPage'
@@ -35,6 +36,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Navigate to="/overview" replace />} />
         <Route path="/overview" element={<OverviewPage data={data} locale={locale} t={t} />} />
+        <Route path="/apps" element={<AppsPage data={data} t={t} />} />
         <Route path="/services" element={<Navigate to="/services/btc-node" replace />} />
         <Route
           path="/services/:serviceId"

@@ -26,6 +26,10 @@ Default local URLs:
 - React dev server: `http://127.0.0.1:5174/`
 - proxied control-plane target: `http://127.0.0.1:28140/`
 
+The console also exposes an `Apps` page at `/#/apps`. It reads app entries from
+`/api/system/overview` and links to the runtime-specific Balance History
+Explorer, USDB Indexer Browser, and SourceDAO Web target.
+
 ## Production / Docker Runtime
 
 `usdb-control-plane` serves the built assets from:
@@ -40,4 +44,11 @@ To use a different control-plane endpoint:
 
 ```bash
 USDB_CONTROL_PLANE_TARGET=http://127.0.0.1:28140 npm run dev
+```
+
+To point the SourceDAO Web app card at another browser-facing target, set this
+before starting `usdb-control-plane`:
+
+```bash
+CONTROL_PLANE_SOURCEDAO_WEB_URL=http://127.0.0.1:3050
 ```

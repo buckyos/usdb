@@ -14,6 +14,7 @@ interface ConsoleShellProps {
 
 const navItems = [
   { to: '/overview', labelKey: 'nav.overview' },
+  { to: '/apps', labelKey: 'nav.apps' },
   { to: '/services', labelKey: 'nav.services' },
   { to: '/bootstrap', labelKey: 'nav.bootstrap' },
   { to: '/protocol', labelKey: 'nav.protocol' },
@@ -72,7 +73,7 @@ export function ConsoleShell({
           </div>
         </header>
 
-        <nav className="console-nav mb-6 grid grid-cols-2 md:grid-cols-5" aria-label={t('nav.primary')}>
+        <nav className="console-nav mb-6 grid grid-cols-2 md:grid-cols-6" aria-label={t('nav.primary')}>
           {navItems.map((item) => (
             <NavLink
               key={item.to}

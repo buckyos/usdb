@@ -154,6 +154,21 @@ export interface ExplorerLinks {
   control_console: string
   balance_history: string
   usdb_indexer: string
+  sourcedao_web: string
+}
+
+export interface AppEntry {
+  id: string
+  kind: string
+  url: string
+  target: string
+  runtime_profile: string
+  network?: string | null
+  service_id?: string | null
+  available: boolean
+  status: string
+  status_message?: string | null
+  depends_on: string[]
 }
 
 export interface OverviewResponse {
@@ -163,6 +178,7 @@ export interface OverviewResponse {
   capabilities: CapabilitiesSummary
   bootstrap: BootstrapSummary
   explorers: ExplorerLinks
+  apps: AppEntry[]
 }
 
 export interface BalanceHistorySyncStatus {

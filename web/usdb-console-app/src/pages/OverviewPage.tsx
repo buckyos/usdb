@@ -383,7 +383,12 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
           </p>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <QuickLinkCard
+            to="/apps"
+            title={t('quick.apps')}
+            body={t('quick.appsBody')}
+          />
           <QuickLinkCard
             to="/services"
             title={t('quick.services')}
