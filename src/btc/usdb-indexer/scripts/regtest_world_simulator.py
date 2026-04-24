@@ -897,6 +897,18 @@ class RegtestWorldSimulator:
             current_inscriptions = self.list_ord_wallet_inscription_ids(wallet_name)
             new_inscriptions = sorted(current_inscriptions - baseline_inscriptions)
             if not new_inscriptions:
+                baseline_txids = {
+                    str(txid)
+                    for txid in (probe_state.get("wallet_txids") or [])
+                    if isinstance(txid, str) and txid
+                }
+                current_txids = self.list_wallet_txids(wallet_name)
+                new_txids = sorted(current_txids - baseline_txids)
+                if new_txids:
+                    raise WorldSimError(
+                        "mint-like external probe found wallet tx delta without inscription delta: "
+                        f"wallet={wallet_name}, action_id={plan.action_id}, new_txids={new_txids}"
+                    )
                 return None
             if len(new_inscriptions) != 1:
                 raise WorldSimError(
@@ -3771,10 +3783,72 @@ class RegtestWorldSimulator:
                                 slot_index=slot_index,
                             )
                             if external_result is None:
-                                raise WorldSimError(
-                                    "unable to resolve inflight action outcome after external probe window: "
-                                    f"action_id={action_id}, action={action}"
+                                # The previous process died after persisting the inflight slot
+                                # but before recording any external result or observable chain
+                                # delta. Treat that slot as failed so recovery can make progress
+                                # instead of crash-looping forever on the same stale action.
+                                action_failed += 1
+                                self.on_action_failed(action)
+                                failure = (
+                                    "action_id="
+                                    f"{action_id},actor={actor.wallet_name},action={action},"
+                                    "error=unresolved_inflight_slot_after_probe_window"
                                 )
+                                action_fail_samples.append(failure)
+                                action_trace_samples.append(
+                                    {
+                                        "action_id": action_id,
+                                        "slot_index": slot_index,
+                                        "actor_id": actor_id,
+                                        "actor_wallet": actor.wallet_name,
+                                        "action": action,
+                                        "status": "failed",
+                                        "error": "unresolved_inflight_slot_after_probe_window",
+                                    }
+                                )
+                                self.log(
+                                    "WARN abandoning unresolved inflight world-sim slot after probe window: "
+                                    f"tick={tick}, action_id={action_id}, actor={actor.wallet_name}, "
+                                    f"action={action}"
+                                )
+                                self.emit_report(
+                                    "recovery_unresolved_slot_abandoned",
+                                    {
+                                        "tick": tick,
+                                        "slot_index": slot_index,
+                                        "action_id": action_id,
+                                        "actor_id": actor_id,
+                                        "actor_wallet": actor.wallet_name,
+                                        "action": action,
+                                    },
+                                )
+                                available_ids.discard(actor_id)
+                                actor.last_action = "failed"
+                                actor.cooldown = 1
+                                current_slot_plan = None
+                                current_slot_receipt = None
+                                self.clear_external_action_result(action_id)
+                                self.write_recovery_state(
+                                    self.build_recovery_snapshot(
+                                        status="tick_in_progress",
+                                        batch_seed=batch_seed,
+                                        tick=tick,
+                                        next_slot_index=slot_index + 1,
+                                        action_slots=action_slots,
+                                        pre_height=pre_height,
+                                        active_agent_count=self.active_agent_count,
+                                        available_ids=available_ids,
+                                        action_results=action_results,
+                                        action_trace_samples=action_trace_samples,
+                                        tick_action_type_counts=tick_action_type_counts,
+                                        current_slot_plan=current_slot_plan,
+                                        current_slot_receipt=current_slot_receipt,
+                                        expectations=expectations,
+                                        action_failed=action_failed,
+                                        action_fail_samples=action_fail_samples,
+                                    )
+                                )
+                                continue
                             tick_action_type_counts[action] = (
                                 tick_action_type_counts.get(action, 0) + 1
                             )
