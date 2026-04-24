@@ -113,8 +113,26 @@ EOF
   }
 }
 
+ensure_image_executable() {
+  local image="${1:?image is required}"
+  local path="${2:?path is required}"
+  ensure_image_exists "${image}"
+  docker run --rm --entrypoint /usr/bin/test "${image}" -x "${path}" >/dev/null 2>&1 || {
+    cat <<EOF >&2
+Image ${image} is stale or incompatible: missing executable ${path}
+
+Rebuild the packaged ord/runtime helper image:
+  ${tool_cmd} build-images
+EOF
+    exit 1
+  }
+}
+
 ensure_full_runtime_images() {
-  ensure_image_exists "$(env_get ORD_IMAGE usdb-world-sim-tools:local)"
+  local ord_image
+  ord_image="$(env_get ORD_IMAGE usdb-world-sim-tools:local)"
+  ensure_image_executable "${ord_image}" "/opt/usdb/docker/scripts/entrypoints/start_ord_server.sh"
+  ensure_image_executable "${ord_image}" "/opt/ord/bin/ord"
 }
 
 case "${action}" in

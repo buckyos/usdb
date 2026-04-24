@@ -100,10 +100,32 @@ EOF
   }
 }
 
+ensure_image_executable() {
+  local image="${1:?image is required}"
+  local path="${2:?path is required}"
+  ensure_image_exists "${image}"
+  docker run --rm --entrypoint /usr/bin/test "${image}" -x "${path}" >/dev/null 2>&1 || {
+    cat <<EOF >&2
+Image ${image} is stale or incompatible: missing executable ${path}
+
+Rebuild the packaged dependency images:
+  ${tool_cmd} build-images
+EOF
+    exit 1
+  }
+}
+
 ensure_dev_full_sim_images() {
-  ensure_image_exists "$(env_get WORLD_SIM_BITCOIN_IMAGE usdb-bitcoin28-regtest:local)"
-  ensure_image_exists "$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)"
-  ensure_image_exists "$(env_get ORD_IMAGE usdb-world-sim-tools:local)"
+  local bitcoin_image tools_image ord_image
+  bitcoin_image="$(env_get WORLD_SIM_BITCOIN_IMAGE usdb-bitcoin28-regtest:local)"
+  tools_image="$(env_get WORLD_SIM_TOOLS_IMAGE usdb-world-sim-tools:local)"
+  ord_image="$(env_get ORD_IMAGE usdb-world-sim-tools:local)"
+
+  ensure_image_executable "${bitcoin_image}" "/opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh"
+  ensure_image_executable "${tools_image}" "/opt/usdb/docker/scripts/entrypoints/start_world_sim.sh"
+  ensure_image_executable "${tools_image}" "/opt/ord/bin/ord"
+  ensure_image_executable "${ord_image}" "/opt/usdb/docker/scripts/entrypoints/start_ord_server.sh"
+  ensure_image_executable "${ord_image}" "/opt/ord/bin/ord"
   ensure_image_exists "$(env_get ETHW_IMAGE usdb-ethw:local)"
 }
 

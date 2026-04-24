@@ -79,3 +79,6 @@ echo "Validating packaged binaries" >&2
 docker run --rm "${bitcoin_image}" /opt/bitcoin/bin/bitcoind --version | head -n 1
 docker run --rm "${bitcoin_image}" /opt/bitcoin/bin/bitcoin-cli --version | head -n 1
 docker run --rm "${tools_image}" /opt/ord/bin/ord --version
+docker run --rm --entrypoint /usr/bin/test "${bitcoin_image}" -x /opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh
+docker run --rm --entrypoint /usr/bin/test "${tools_image}" -x /opt/usdb/docker/scripts/entrypoints/start_ord_server.sh
+docker run --rm --entrypoint /usr/bin/test "${tools_image}" -x /opt/usdb/docker/scripts/entrypoints/start_world_sim.sh
