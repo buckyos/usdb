@@ -29,6 +29,19 @@ python3 -m http.server 8088
 http://127.0.0.1:8088/web/usdb-indexer-browser/
 ```
 
+如果页面由 `usdb-control-plane` 托管在 `/explorers/usdb-indexer/` 下，
+默认会自动走同源代理：
+
+```text
+/api/services/usdb-indexer/rpc
+```
+
+也可以显式通过 URL 指定：
+
+```text
+http://127.0.0.1:28140/explorers/usdb-indexer/?rpc_url=/api/services/usdb-indexer/rpc
+```
+
 ## 已使用的 RPC 方法
 
 - `get_rpc_info`

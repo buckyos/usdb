@@ -1,5 +1,35 @@
+const CONTROL_PLANE_RPC_URL = "/api/services/balance-history/rpc";
+const DEFAULT_RPC_URL = "http://127.0.0.1:28010";
+
+function isHostedByControlPlane() {
+    return window.location.pathname.includes("/explorers/balance-history");
+}
+
+function defaultRpcUrl() {
+    return isHostedByControlPlane() ? CONTROL_PLANE_RPC_URL : DEFAULT_RPC_URL;
+}
+
+function readRpcUrlFromLocation() {
+    const params = new URLSearchParams(window.location.search);
+    return (params.get("rpc_url") || params.get("rpc") || defaultRpcUrl()).trim();
+}
+
+function syncRpcUrlToLocation() {
+    const params = new URLSearchParams(window.location.search);
+    const rpcUrl = (state.rpcUrl || elements.rpcUrl?.value || "").trim();
+    if (rpcUrl && rpcUrl !== defaultRpcUrl()) {
+        params.set("rpc_url", rpcUrl);
+    } else {
+        params.delete("rpc_url");
+    }
+
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(null, "", nextUrl);
+}
+
 const state = {
-    rpcUrl: "http://127.0.0.1:28010",
+    rpcUrl: readRpcUrlFromLocation(),
     lastRows: [],
 };
 
@@ -310,12 +340,14 @@ function connectRpc(event) {
     const input = elements.rpcUrl.value.trim();
     if (!input) return;
     state.rpcUrl = input;
+    syncRpcUrlToLocation();
     elements.rpcHint.textContent = `已切换 RPC: ${state.rpcUrl}`;
     elements.rpcHint.classList.remove("negative");
     refreshStatus();
 }
 
 function bootstrap() {
+    elements.rpcUrl.value = state.rpcUrl;
     elements.rpcConfig.addEventListener("submit", connectRpc);
     elements.refreshStatus.addEventListener("click", refreshStatus);
     elements.singleQuery.addEventListener("submit", runSingleQuery);

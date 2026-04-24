@@ -30,6 +30,12 @@ The console also exposes an `Apps` page at `/#/apps`. It reads app entries from
 `/api/system/overview` and links to the runtime-specific Balance History
 Explorer, USDB Indexer Browser, and SourceDAO Web target.
 
+When the two static explorers are opened through the control plane, their app
+links use the same-origin RPC proxies:
+
+- `/api/services/balance-history/rpc`
+- `/api/services/usdb-indexer/rpc`
+
 ## Production / Docker Runtime
 
 `usdb-control-plane` serves the built assets from:
@@ -51,4 +57,11 @@ before starting `usdb-control-plane`:
 
 ```bash
 CONTROL_PLANE_SOURCEDAO_WEB_URL=http://127.0.0.1:3050
+```
+
+For local full-sim, SourceDAO Web can be started from the USDB repo after
+SourceDAO bootstrap completes:
+
+```bash
+docker/scripts/tools/run_local_sourcedao_web.sh up
 ```

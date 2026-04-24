@@ -922,8 +922,11 @@ async fn build_overview(state: &AppState) -> OverviewResponse {
 fn build_explorer_links(state: &AppState) -> ExplorerLinks {
     ExplorerLinks {
         control_console: "/#/overview".to_string(),
-        balance_history: "/explorers/balance-history/".to_string(),
-        usdb_indexer: "/explorers/usdb-indexer/".to_string(),
+        balance_history:
+            "/explorers/balance-history/?rpc_url=%2Fapi%2Fservices%2Fbalance-history%2Frpc"
+                .to_string(),
+        usdb_indexer: "/explorers/usdb-indexer/?rpc_url=%2Fapi%2Fservices%2Fusdb-indexer%2Frpc"
+            .to_string(),
         sourcedao_web: state.config.web.sourcedao_web_url.clone(),
     }
 }
@@ -1027,7 +1030,10 @@ fn build_app_entries(
         "offline"
     };
     let sourcedao_message = if sourcedao_available {
-        Some("SourceDAO bootstrap marker is present for this runtime".to_string())
+        Some(
+            "SourceDAO bootstrap is configured. Start the standalone web app with docker/scripts/tools/run_local_sourcedao_web.sh up before opening this URL."
+                .to_string(),
+        )
     } else if let Some(error) = services.ethw.error.clone() {
         Some(error)
     } else {

@@ -33,6 +33,11 @@ This table is the fastest way to decide which tool to start from.
 | [run_local_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_bootstrap.sh) | ETHW cold-start + SourceDAO bootstrap validation | `docker/local/bootstrap/env/bootstrap.env` | `base + dev-sim + bootstrap` | detached by default | bootstrap artifacts are preserved locally; Docker volumes persist until `reset` |
 | [run_local_full_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_full_sim.sh) | Complete local development simulation stack | `docker/local/dev-full-sim/env/dev-full-sim.env` | `base + dev-sim + ord + bootstrap + world-sim` | foreground | controlled by `WORLD_SIM_STATE_MODE`; `reset` also clears volumes |
 
+SourceDAO Web is intentionally not part of this runtime profile matrix yet. It
+is a standalone frontend that can be pointed at any runtime. For local full-sim,
+use [run_local_sourcedao_web.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_sourcedao_web.sh)
+after `run_local_full_sim.sh` has completed SourceDAO bootstrap.
+
 ## Service Coverage Matrix
 
 Use this matrix when the main question is “which stack actually contains the
@@ -105,6 +110,7 @@ above.
 | Tool | Category | What it changes | Typical use | Notes |
 | --- | --- | --- | --- | --- |
 | [build_world_sim_images.sh](/home/bucky/work/usdb/docker/scripts/tools/build_world_sim_images.sh) | image packaging | builds `WORLD_SIM_BITCOIN_IMAGE` and `WORLD_SIM_TOOLS_IMAGE` | first-time world-sim image setup or when host `bitcoind` / `ord` changes | supports `WORLD_SIM_RELEASE_ORD_SOURCE=local` and `git-tag` |
+| [run_local_sourcedao_web.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_sourcedao_web.sh) | frontend launcher | exports SourceDAO web env from control-plane overview and runs `buckydaowww/src` | opening the SourceDAO Web app card from the console against local full-sim | does not start SourceDAOBackend; override `SOURCEDAO_BACKEND_URL` if needed |
 | [smoke_bootstrap_stack.sh](/home/bucky/work/usdb/docker/scripts/tools/smoke_bootstrap_stack.sh) | smoke validation | creates a temporary bootstrap project and local manifests | validating cold-start wiring, manifests, and bootstrap one-shots | can keep the stack running with `KEEP_RUNNING=1` |
 
 ## Recommended Documentation Contract For Future Tools

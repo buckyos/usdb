@@ -43,6 +43,12 @@ const RPC_DEFAULT_ENDPOINTS = {
     testnet4: "http://127.0.0.1:28420",
 };
 
+const CONTROL_PLANE_RPC_URL = "/api/services/usdb-indexer/rpc";
+
+function isHostedByControlPlane() {
+    return window.location.pathname.includes("/explorers/usdb-indexer");
+}
+
 const els = {
     rpcForm: document.getElementById("rpc-form"),
     rpcNetwork: document.getElementById("rpc-network"),
@@ -213,7 +219,10 @@ function getDefaultRpcEndpoint(network) {
 function readRpcConfigFromUrl() {
     const params = new URLSearchParams(window.location.search);
     const network = normalizeNetworkName(params.get("network"));
-    const rpcUrl = params.get("rpc_url") || "";
+    const rpcUrl =
+        params.get("rpc_url") ||
+        params.get("rpc") ||
+        (isHostedByControlPlane() ? CONTROL_PLANE_RPC_URL : "");
     return { network, rpcUrl };
 }
 
@@ -221,7 +230,9 @@ function syncRpcConfigToUrl() {
     const params = new URLSearchParams(window.location.search);
     const network = normalizeNetworkName(els.rpcNetwork?.value);
     const rpcUrl = (state.rpcUrl || els.rpcUrl?.value || "").trim();
-    const defaultRpcUrl = getDefaultRpcEndpoint(network);
+    const defaultRpcUrl = isHostedByControlPlane()
+        ? CONTROL_PLANE_RPC_URL
+        : getDefaultRpcEndpoint(network);
 
     if (network) {
         params.set("network", network);
