@@ -4,9 +4,9 @@ use crate::models::{
     BootstrapSummary, BtcMintExecuteRequest, BtcMintExecuteResponse,
     BtcMintPrepareActivePassSummary, BtcMintPrepareRequest, BtcMintPrepareResponse,
     BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
-    BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary, EthwServiceSummary,
-    ExplorerLinks, OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest,
-    ServicesSummary, UsdbIndexerServiceSummary,
+    BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary,
+    EthwDevIdentityResponse, EthwServiceSummary, ExplorerLinks, OrdServiceSummary,
+    OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
@@ -40,6 +40,17 @@ struct WorldSimBootstrapMarker {
 #[derive(Debug, Deserialize)]
 struct WorldSimDevSignerQuery {
     wallet_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EthwDevIdentityMarker {
+    ethw_miner_address: String,
+    #[serde(default)]
+    identity_mode: Option<String>,
+    #[serde(default)]
+    identity_scheme: Option<String>,
+    #[serde(default)]
+    identity_fingerprint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -134,6 +145,7 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
             "/api/btc/world-sim/dev-signer",
             get(get_btc_world_sim_dev_signer),
         )
+        .route("/api/ethw/dev-sim/identity", get(get_ethw_dev_identity))
         .route("/api/btc/mint/prepare", post(post_prepare_btc_mint))
         .route("/api/btc/mint/execute", post(post_execute_btc_mint))
         .route(
@@ -391,6 +403,103 @@ async fn get_btc_world_sim_dev_signer(
             error: Some(format!(
                 "Failed to resolve dev signer material for world-sim wallet {}: {}",
                 identity.wallet_name, error
+            )),
+        })),
+    }
+}
+
+async fn get_ethw_dev_identity(
+    State(state): State<AppState>,
+) -> Result<Json<EthwDevIdentityResponse>, StatusCode> {
+    let services = build_services_summary(&state).await;
+    let ethw_chain_id = services
+        .ethw
+        .data
+        .as_ref()
+        .and_then(|summary| summary.chain_id.clone());
+    let ethw_network_id = services
+        .ethw
+        .data
+        .as_ref()
+        .and_then(|summary| summary.network_id.clone());
+    let runtime_profile =
+        classify_ethw_runtime_profile(ethw_chain_id.as_deref(), ethw_network_id.as_deref())
+            .to_string();
+    let marker = read_artifact_summary(&state.config, &state.config.bootstrap.ethw_identity_marker);
+
+    if runtime_profile != "development" {
+        return Ok(Json(EthwDevIdentityResponse {
+            ethw_chain_id,
+            ethw_network_id,
+            ethw_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            address: None,
+            identity_mode: None,
+            identity_scheme: None,
+            identity_fingerprint: None,
+            error: None,
+        }));
+    }
+
+    if !marker.exists {
+        return Ok(Json(EthwDevIdentityResponse {
+            ethw_chain_id,
+            ethw_network_id,
+            ethw_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            address: None,
+            identity_mode: None,
+            identity_scheme: None,
+            identity_fingerprint: None,
+            error: marker.error,
+        }));
+    }
+
+    let Some(marker_data) = marker.data else {
+        return Ok(Json(EthwDevIdentityResponse {
+            ethw_chain_id,
+            ethw_network_id,
+            ethw_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            address: None,
+            identity_mode: None,
+            identity_scheme: None,
+            identity_fingerprint: None,
+            error: marker
+                .error
+                .or_else(|| Some("ETHW dev identity marker did not expose JSON data".to_string())),
+        }));
+    };
+
+    match serde_json::from_value::<EthwDevIdentityMarker>(marker_data) {
+        Ok(identity) => Ok(Json(EthwDevIdentityResponse {
+            ethw_chain_id,
+            ethw_network_id,
+            ethw_runtime_profile: runtime_profile,
+            available: true,
+            marker_path: marker.path,
+            address: Some(identity.ethw_miner_address),
+            identity_mode: identity.identity_mode,
+            identity_scheme: identity.identity_scheme,
+            identity_fingerprint: identity.identity_fingerprint,
+            error: None,
+        })),
+        Err(error) => Ok(Json(EthwDevIdentityResponse {
+            ethw_chain_id,
+            ethw_network_id,
+            ethw_runtime_profile: runtime_profile,
+            available: false,
+            marker_path: marker.path,
+            address: None,
+            identity_mode: None,
+            identity_scheme: None,
+            identity_fingerprint: None,
+            error: Some(format!(
+                "Failed to decode ETHW dev identity marker: {}",
+                error
             )),
         })),
     }
@@ -938,6 +1047,33 @@ fn classify_btc_runtime_profile(network: Option<&str>) -> &'static str {
     }
 }
 
+fn classify_ethw_runtime_profile(chain_id: Option<&str>, network_id: Option<&str>) -> &'static str {
+    let normalized_chain_id = chain_id.map(|value| value.trim().to_ascii_lowercase());
+    let normalized_network_id = network_id.map(|value| value.trim().to_ascii_lowercase());
+    let is_local_full_sim = normalized_chain_id
+        .as_deref()
+        .is_some_and(|value| value == "0x13525e3" || value == "20260323")
+        || normalized_network_id
+            .as_deref()
+            .is_some_and(|value| value == "0x13525e3" || value == "20260323");
+
+    if is_local_full_sim {
+        return "development";
+    }
+
+    if normalized_chain_id
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+        || normalized_network_id
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    {
+        return "public";
+    }
+
+    "unknown"
+}
+
 fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIdentity>, String> {
     let marker: WorldSimBootstrapMarker = serde_json::from_value(marker_data)
         .map_err(|error| format!("Failed to decode world-sim bootstrap marker: {}", error))?;
@@ -1435,10 +1571,24 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
     let btc_runtime_profile =
         classify_btc_runtime_profile(resolve_runtime_btc_network_name(services).as_deref())
             .to_string();
+    let ethw_runtime_profile = classify_ethw_runtime_profile(
+        services
+            .ethw
+            .data
+            .as_ref()
+            .and_then(|summary| summary.chain_id.as_deref()),
+        services
+            .ethw
+            .data
+            .as_ref()
+            .and_then(|summary| summary.network_id.as_deref()),
+    )
+    .to_string();
 
     CapabilitiesSummary {
         ord_available,
         btc_runtime_profile,
+        ethw_runtime_profile,
         btc_console_mode: if ord_available {
             "inscription_enabled".to_string()
         } else {
@@ -2039,6 +2189,21 @@ mod tests {
         assert_eq!(classify_btc_runtime_profile(Some("signet")), "public");
         assert_eq!(classify_btc_runtime_profile(Some("unknown-net")), "unknown");
         assert_eq!(classify_btc_runtime_profile(None), "unknown");
+    }
+
+    #[test]
+    fn classify_ethw_runtime_profile_matches_local_full_sim_chain() {
+        assert_eq!(
+            classify_ethw_runtime_profile(Some("0x13525e3"), Some("20260323")),
+            "development"
+        );
+        assert_eq!(
+            classify_ethw_runtime_profile(Some("20260323"), None),
+            "development"
+        );
+        assert_eq!(classify_ethw_runtime_profile(Some("0x1"), None), "public");
+        assert_eq!(classify_ethw_runtime_profile(None, Some("10001")), "public");
+        assert_eq!(classify_ethw_runtime_profile(None, None), "unknown");
     }
 
     #[test]

@@ -97,6 +97,7 @@ export interface CapabilitiesSummary {
   ord_available: boolean
   btc_console_mode: string
   btc_runtime_profile: string
+  ethw_runtime_profile: string
 }
 
 export interface BootstrapSummary {
@@ -371,5 +372,18 @@ export interface BtcWorldSimDevSignerResponse {
   wallet_name: string
   owner_address?: string | null
   wif?: string | null
+  error?: string | null
+}
+
+export interface EthwDevIdentityResponse {
+  ethw_chain_id?: string | null
+  ethw_network_id?: string | null
+  ethw_runtime_profile: string
+  available: boolean
+  marker_path: string
+  address?: string | null
+  identity_mode?: string | null
+  identity_scheme?: string | null
+  identity_fingerprint?: string | null
   error?: string | null
 }

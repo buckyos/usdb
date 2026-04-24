@@ -12,6 +12,7 @@ import type {
   PassHistoryPage,
   BtcMintPrepareResponse,
   PassSnapshot,
+  EthwDevIdentityResponse,
   PassStatsAtHeight,
   RpcActiveBalanceSnapshot,
   UsdbIndexerSyncStatus,
@@ -270,4 +271,16 @@ export async function fetchBtcWorldSimDevSigner(
   }
 
   return response.json() as Promise<BtcWorldSimDevSignerResponse>
+}
+
+export async function fetchEthwDevIdentity(): Promise<EthwDevIdentityResponse> {
+  const response = await fetch('/api/ethw/dev-sim/identity', {
+    cache: 'no-store',
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to load ETHW dev identity: HTTP ${response.status}`)
+  }
+
+  return response.json() as Promise<EthwDevIdentityResponse>
 }

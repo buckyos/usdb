@@ -61,6 +61,10 @@ fn default_ethw_init_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-init.done.json")
 }
 
+fn default_ethw_identity_marker_path() -> PathBuf {
+    PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-sim-identity.json")
+}
+
 fn default_ethw_genesis_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/bootstrap/manifests/ethw-genesis.json")
 }
@@ -175,6 +179,8 @@ pub struct BootstrapPaths {
     pub snapshot_marker: PathBuf,
     #[serde(default = "default_ethw_init_marker_path")]
     pub ethw_init_marker: PathBuf,
+    #[serde(default = "default_ethw_identity_marker_path")]
+    pub ethw_identity_marker: PathBuf,
     #[serde(default = "default_ethw_genesis_path")]
     pub ethw_genesis: PathBuf,
     #[serde(default = "default_sourcedao_state_path")]
@@ -191,6 +197,7 @@ impl Default for BootstrapPaths {
             bootstrap_manifest: default_bootstrap_manifest_path(),
             snapshot_marker: default_snapshot_marker_path(),
             ethw_init_marker: default_ethw_init_marker_path(),
+            ethw_identity_marker: default_ethw_identity_marker_path(),
             ethw_genesis: default_ethw_genesis_path(),
             sourcedao_bootstrap_state: default_sourcedao_state_path(),
             sourcedao_bootstrap_marker: default_sourcedao_marker_path(),
@@ -341,6 +348,10 @@ mod tests {
         assert_eq!(
             config.bootstrap.ethw_genesis,
             PathBuf::from("docker/local/dev-sim/bootstrap/manifests/ethw-genesis.json")
+        );
+        assert_eq!(
+            config.bootstrap.ethw_identity_marker,
+            PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-sim-identity.json")
         );
         assert_eq!(
             config.bootstrap.world_sim_bootstrap_marker,

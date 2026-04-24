@@ -178,6 +178,7 @@ services:
       CONTROL_PLANE_BOOTSTRAP_MANIFEST: ${CONTROL_PLANE_BOOTSTRAP_MANIFEST:-/bootstrap/bootstrap-manifest.json}
       CONTROL_PLANE_SNAPSHOT_MARKER: ${CONTROL_PLANE_SNAPSHOT_MARKER:-/data/balance-history/bootstrap/snapshot-loader.done.json}
       CONTROL_PLANE_ETHW_INIT_MARKER: ${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-init.done.json}
+      CONTROL_PLANE_ETHW_IDENTITY_MARKER: ${CONTROL_PLANE_ETHW_IDENTITY_MARKER:-/data/ethw/bootstrap/ethw-sim-identity.json}
       CONTROL_PLANE_SOURCEDAO_STATE: ${CONTROL_PLANE_SOURCEDAO_STATE:-/bootstrap/sourcedao-bootstrap-state.json}
       CONTROL_PLANE_SOURCEDAO_MARKER: ${CONTROL_PLANE_SOURCEDAO_MARKER:-/bootstrap/sourcedao-bootstrap.done.json}
       CONTROL_PLANE_EXTRA_ARGS: ${CONTROL_PLANE_EXTRA_ARGS:-}

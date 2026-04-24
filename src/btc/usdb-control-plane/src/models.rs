@@ -112,6 +112,7 @@ pub struct CapabilitiesSummary {
     pub ord_available: bool,
     pub btc_console_mode: String,
     pub btc_runtime_profile: String,
+    pub ethw_runtime_profile: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -140,6 +141,20 @@ pub struct BtcWorldSimDevSignerResponse {
     pub wallet_name: String,
     pub owner_address: Option<String>,
     pub wif: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EthwDevIdentityResponse {
+    pub ethw_chain_id: Option<String>,
+    pub ethw_network_id: Option<String>,
+    pub ethw_runtime_profile: String,
+    pub available: bool,
+    pub marker_path: String,
+    pub address: Option<String>,
+    pub identity_mode: Option<String>,
+    pub identity_scheme: Option<String>,
+    pub identity_fingerprint: Option<String>,
     pub error: Option<String>,
 }
 
