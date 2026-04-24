@@ -9,7 +9,7 @@ The immediate goal is not to add a full ETHW-side simulator. The first goal is
 smaller and more useful:
 
 - keep BTC-side `world-sim` unchanged as the main source of protocol activity
-- allow `run_world_sim.sh up-full` to start a real `ethw-node`
+- allow `run_local_world_sim_ethw.sh up` to start a real `ethw-node`
 - give that ETHW node a deterministic miner identity
 - make the ETHW miner address align with the future miner-pass `eth_main`
   binding model
@@ -31,7 +31,7 @@ should eventually converge to the same ETH address.
 
 ## 3. Current Constraint
 
-Today `run_world_sim.sh up-full` only keeps the normal `ethw-node` in the
+Today `run_local_world_sim_ethw.sh up` only keeps the normal `ethw-node` in the
 graph. It does not yet bind ETHW mining identity to the world-sim seed or to
 the BTC miner-pass model.
 
@@ -45,7 +45,7 @@ This means:
 
 The first batch intentionally stays small:
 
-1. introduce a deterministic ETHW miner identity for `up-full`
+1. introduce a deterministic ETHW miner identity for `run_local_world_sim_ethw.sh up`
 2. derive that identity from `WORLD_SIM_IDENTITY_SEED` unless explicitly
    overridden
 3. persist a small local identity marker under the ETHW data directory
@@ -63,7 +63,7 @@ For full-sim runtime stability, the recommended BTC RPC mode is also:
 
 - `BTC_AUTH_MODE=userpass`
 
-rather than cookie auth. `up-full` inherits the same BTC-side `world-sim`
+rather than cookie auth. `run_local_world_sim_ethw.sh up` inherits the same BTC-side `world-sim`
 bootstrap and wallet flows, so keeping explicit RPC credentials is the safer
 default for:
 
@@ -126,13 +126,13 @@ world-sim mint flow.
 
 The key rule is:
 
-- when `run_world_sim.sh up-full` is used, the simulator should treat one
+- when `run_local_world_sim_ethw.sh up` is used, the simulator should treat one
   configured world-sim agent as the protocol miner whose `eth_main` must match
   the ETHW miner address
 
 The runtime contract is:
 
-1. `up-full` enables `ETHW_SIM_PROTOCOL_ALIGNMENT=1` by default
+1. `run_local_world_sim_ethw.sh up` enables `ETHW_SIM_PROTOCOL_ALIGNMENT=1` by default
 2. `start_ethw_full_sim.sh` writes the resolved ETHW miner identity to:
    - `${ETHW_DATA_DIR}/bootstrap/ethw-sim-identity.json`
 3. `world-sim-bootstrap` and `world-sim-runner` mount the ETHW data volume

@@ -3,11 +3,12 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker_dir="$(cd "${script_dir}/../.." && pwd)"
+tool_cmd="docker/scripts/tools/run_local_console.sh"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  docker/scripts/run_console_preview.sh [up|down|logs|ps]
+  ${tool_cmd} [up|down|logs|ps]
 
 This helper keeps the standard dev-sim environment file but only starts the
 minimum service subset needed for the local control console:

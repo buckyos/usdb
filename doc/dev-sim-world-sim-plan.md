@@ -185,7 +185,7 @@ with explicit:
 - `BTC_RPC_PASSWORD`
 
 The base Docker stack can keep cookie auth as its general default, but
-`world-sim` and `up-full` should prefer `userpass` because they exercise a more
+`world-sim` and `run_local_world_sim_ethw.sh up` should prefer `userpass` because they exercise a more
 fragile path:
 
 - `ord-server`
@@ -203,7 +203,7 @@ The runtime and determinism boundary is documented in:
 
 The recommended local entry is a helper script:
 
-- `docker/scripts/run_world_sim.sh`
+- `docker/scripts/tools/run_local_world_sim.sh`
 
 This helper should:
 
@@ -214,7 +214,7 @@ This helper should:
 - keep `world-sim` separate from plain `dev-sim`
 - provide a stable operator interface:
   - `up`
-  - `up-full`
+  - `run_local_world_sim_ethw.sh up`
   - `build-images`
   - `ps`
   - `logs`
@@ -225,7 +225,7 @@ Recommended behavior:
 - `up`
   - starts the BTC-side stack plus world-sim bootstrap and simulation
   - does not require `ethw-node`
-- `up-full`
+- `run_local_world_sim_ethw.sh up`
   - starts the same stack and keeps the normal `ethw-node` in the graph
 - `down`
   - stops containers but keeps world state
@@ -272,7 +272,7 @@ After the first batch is stable, the next candidates are:
 
 ## 10. ETHW Full-Sim Follow-Up
 
-`up-full` already keeps `ethw-node` in the graph, but the first world-sim
+`run_local_world_sim_ethw.sh up` already keeps `ethw-node` in the graph, but the first world-sim
 integration did not yet bind ETHW mining identity to the deterministic sim
 seed.
 
@@ -288,7 +288,7 @@ The first ETHW batch focuses on:
 
 The second ETHW batch extends this by aligning protocol identity:
 
-- `run_world_sim.sh up-full` enables ETHW protocol alignment by default
+- `run_local_world_sim_ethw.sh up` enables ETHW protocol alignment by default
 - one stable world-sim agent is assigned to the ETHW miner address
 - that agent writes miner-pass `eth_main` using the same ETH address as the
   ETHW node mining identity

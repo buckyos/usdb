@@ -3,6 +3,10 @@
 This directory contains the repo-facing helpers that developers are expected to
 run directly.
 
+These tool names now follow the canonical local/profile naming scheme defined
+in
+[TOOL_NAMING_PLAN.md](/home/bucky/work/usdb/docker/scripts/TOOL_NAMING_PLAN.md).
+
 ## Tool Families
 
 The tools in this directory are easiest to understand when split into two
@@ -22,12 +26,12 @@ This table is the fastest way to decide which tool to start from.
 
 | Tool | Primary use | Default env file | Compose overlays | Startup style | State model |
 | --- | --- | --- | --- | --- | --- |
-| [run_console_preview.sh](/home/bucky/work/usdb/docker/scripts/tools/run_console_preview.sh) | Fastest console/control-plane preview | `docker/local/dev-sim/env/dev-sim.env` | `base + dev-sim` | foreground | keep volumes until `down -v` or manual cleanup |
-| [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_dev_full_runtime.sh) | Full local BTC + ord + ETHW runtime without simulation | `docker/local/dev-full/env/dev-full.env` | `base + dev-sim + ord` | foreground | keep volumes until `down -v` or manual cleanup |
-| [run_world_sim.sh up](/home/bucky/work/usdb/docker/scripts/tools/run_world_sim.sh) | BTC-side simulation with deterministic identities, without ETHW node | `docker/local/world-sim/env/world-sim.env` | `base + dev-sim + ord + world-sim` | detached by default, then readiness checks | controlled by `WORLD_SIM_STATE_MODE` |
-| [run_world_sim.sh up-full](/home/bucky/work/usdb/docker/scripts/tools/run_world_sim.sh) | Same as `up`, plus local ETHW alignment | `docker/local/world-sim/env/world-sim.env` | `base + dev-sim + ord + world-sim` | detached by default, then readiness checks | controlled by `WORLD_SIM_STATE_MODE` |
-| [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_sourcedao_bootstrap.sh) | ETHW cold-start + SourceDAO bootstrap validation | `docker/local/bootstrap/env/bootstrap.env` | `base + dev-sim + bootstrap` | detached by default | bootstrap artifacts are preserved locally; Docker volumes persist until `reset` |
-| [run_dev_full_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_dev_full_sim.sh) | Complete local development simulation stack | `docker/local/dev-full-sim/env/dev-full-sim.env` | `base + dev-sim + ord + bootstrap + world-sim` | foreground | controlled by `WORLD_SIM_STATE_MODE`; `reset` also clears volumes |
+| [run_local_console.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_console.sh) | Fastest console/control-plane preview | `docker/local/dev-sim/env/dev-sim.env` | `base + dev-sim` | foreground | keep volumes until `down -v` or manual cleanup |
+| [run_local_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_runtime.sh) | Full local BTC + ord + ETHW runtime without simulation | `docker/local/dev-full/env/dev-full.env` | `base + dev-sim + ord` | foreground | keep volumes until `down -v` or manual cleanup |
+| [run_local_world_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_world_sim.sh) | BTC-side simulation with deterministic identities, without ETHW node | `docker/local/world-sim/env/world-sim.env` | `base + dev-sim + ord + world-sim` | detached by default, then readiness checks | controlled by `WORLD_SIM_STATE_MODE` |
+| [run_local_world_sim_ethw.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_world_sim_ethw.sh) | Same as `run_local_world_sim.sh`, plus local ETHW alignment | `docker/local/world-sim/env/world-sim.env` | `base + dev-sim + ord + world-sim` | detached by default, then readiness checks | controlled by `WORLD_SIM_STATE_MODE` |
+| [run_local_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_bootstrap.sh) | ETHW cold-start + SourceDAO bootstrap validation | `docker/local/bootstrap/env/bootstrap.env` | `base + dev-sim + bootstrap` | detached by default | bootstrap artifacts are preserved locally; Docker volumes persist until `reset` |
+| [run_local_full_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_full_sim.sh) | Complete local development simulation stack | `docker/local/dev-full-sim/env/dev-full-sim.env` | `base + dev-sim + ord + bootstrap + world-sim` | foreground | controlled by `WORLD_SIM_STATE_MODE`; `reset` also clears volumes |
 
 ## Service Coverage Matrix
 
@@ -36,12 +40,12 @@ service I need”.
 
 | Tool | `btc-node` | `snapshot-loader` | `balance-history` | `usdb-indexer` | `usdb-control-plane` | `ord-server` | `ethw-node` | `world-sim-bootstrap` + `world-sim-runner` | `sourcedao-bootstrap` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `run_console_preview.sh` | yes | yes | yes | yes | yes | no | no | no | no |
-| `run_dev_full_runtime.sh` | yes | yes | yes | yes | yes | yes | yes | no | no |
-| `run_world_sim.sh up` | yes | yes | yes | yes | yes | yes | no | yes | no |
-| `run_world_sim.sh up-full` | yes | yes | yes | yes | yes | yes | yes | yes | no |
-| `run_sourcedao_bootstrap.sh` | yes | yes | yes | yes | yes | no | yes | no | yes |
-| `run_dev_full_sim.sh` | yes | yes | yes | yes | yes | yes | yes | yes | yes |
+| `run_local_console.sh` | yes | yes | yes | yes | yes | no | no | no | no |
+| `run_local_runtime.sh` | yes | yes | yes | yes | yes | yes | yes | no | no |
+| `run_local_world_sim.sh` | yes | yes | yes | yes | yes | yes | no | yes | no |
+| `run_local_world_sim_ethw.sh` | yes | yes | yes | yes | yes | yes | yes | yes | no |
+| `run_local_bootstrap.sh` | yes | yes | yes | yes | yes | no | yes | no | yes |
+| `run_local_full_sim.sh` | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 
 ## BTC / ETHW Runtime Matrix
 
@@ -49,12 +53,12 @@ This table compares the runtime semantics instead of only listing services.
 
 | Tool | BTC network today | BTC auth today | ord role today | ETHW role today | SourceDAO role today | Identity model |
 | --- | --- | --- | --- | --- | --- | --- |
-| `run_console_preview.sh` | `regtest` | `cookie` | none | not started | none | manual or browser-driven console testing only |
-| `run_dev_full_runtime.sh` | `regtest` | `cookie` | long-running `ord-server` | local dev `geth` node, no bootstrap flow | none | no deterministic world-sim identity layer |
-| `run_world_sim.sh up` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | not started | none | deterministic BTC ord wallets from `WORLD_SIM_IDENTITY_SEED` |
-| `run_world_sim.sh up-full` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | local dev `geth` node, protocol-aligned with world-sim | none | deterministic BTC ord wallets; optional ETHW deterministic alignment |
-| `run_sourcedao_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local ETHW chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and ETHW init inputs, not world-sim identities |
-| `run_dev_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local ETHW chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and ETHW identity alignment |
+| `run_local_console.sh` | `regtest` | `cookie` | none | not started | none | manual or browser-driven console testing only |
+| `run_local_runtime.sh` | `regtest` | `cookie` | long-running `ord-server` | local dev `geth` node, no bootstrap flow | none | no deterministic world-sim identity layer |
+| `run_local_world_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | not started | none | deterministic BTC ord wallets from `WORLD_SIM_IDENTITY_SEED` |
+| `run_local_world_sim_ethw.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | local dev `geth` node, protocol-aligned with world-sim | none | deterministic BTC ord wallets; optional ETHW deterministic alignment |
+| `run_local_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local ETHW chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and ETHW init inputs, not world-sim identities |
+| `run_local_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local ETHW chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and ETHW identity alignment |
 
 Current status:
 
@@ -71,7 +75,7 @@ behave differently.
 
 ### Core BTC / ord / control-plane variables
 
-| Variable or group | `run_console_preview.sh` | `run_dev_full_runtime.sh` | `run_world_sim.sh` | `run_sourcedao_bootstrap.sh` | `run_dev_full_sim.sh` |
+| Variable or group | `run_local_console.sh` | `run_local_runtime.sh` | `run_local_world_sim.sh` | `run_local_bootstrap.sh` | `run_local_full_sim.sh` |
 | --- | --- | --- | --- | --- | --- |
 | env file | `local/dev-sim/env/dev-sim.env` | `local/dev-full/env/dev-full.env` | `local/world-sim/env/world-sim.env` | `local/bootstrap/env/bootstrap.env` | `local/dev-full-sim/env/dev-full-sim.env` |
 | `BTC_NETWORK` | `regtest` | `regtest` | `regtest` | `regtest` in local helper defaults | `regtest` |
@@ -83,11 +87,11 @@ behave differently.
 
 ### ETHW / world-sim / bootstrap variables
 
-| Variable or group | `run_console_preview.sh` | `run_dev_full_runtime.sh` | `run_world_sim.sh` | `run_sourcedao_bootstrap.sh` | `run_dev_full_sim.sh` |
+| Variable or group | `run_local_console.sh` | `run_local_runtime.sh` | `run_local_world_sim.sh` | `run_local_bootstrap.sh` | `run_local_full_sim.sh` |
 | --- | --- | --- | --- | --- | --- |
-| `ETHW_COMMAND` | present in env, but service not started | local dev `geth` launch command | only used by `up-full` | bootstrap-target ETHW command | bootstrap-target ETHW command |
+| `ETHW_COMMAND` | present in env, but service not started | local dev `geth` launch command | only used by `run_local_world_sim_ethw.sh` | bootstrap-target ETHW command | bootstrap-target ETHW command |
 | `ETHW_IDENTITY_MODE` | n/a | n/a | `deterministic-seed` | n/a | `deterministic-seed` |
-| `ETHW_SIM_PROTOCOL_ALIGNMENT` | n/a | n/a | auto-set by helper: `up=0`, `up-full=1` | n/a | forced to `1` |
+| `ETHW_SIM_PROTOCOL_ALIGNMENT` | n/a | n/a | auto-set by helper: `run_local_world_sim.sh=0`, `run_local_world_sim_ethw.sh=1` | n/a | forced to `1` |
 | `WORLD_SIM_STATE_MODE` | n/a | n/a | `persistent` / `reset` / `seeded-reset` | n/a | `persistent` / `reset` / `seeded-reset` |
 | `WORLD_SIM_IDENTITY_SEED` | n/a | n/a | optional but required for deterministic seeded reset | n/a | expected for deterministic world-sim and ETHW alignment |
 | `SOURCE_DAO_BOOTSTRAP_MODE` / `SCOPE` / `PREPARE` | n/a | n/a | n/a | defaults to `dev-workspace / full / auto` | defaults to `dev-workspace / full / auto` |
@@ -100,8 +104,8 @@ above.
 
 | Tool | Category | What it changes | Typical use | Notes |
 | --- | --- | --- | --- | --- |
-| [build_world_sim_release_images.sh](/home/bucky/work/usdb/docker/scripts/tools/build_world_sim_release_images.sh) | image packaging | builds `WORLD_SIM_BITCOIN_IMAGE` and `WORLD_SIM_TOOLS_IMAGE` | first-time world-sim image setup or when host `bitcoind` / `ord` changes | supports `WORLD_SIM_RELEASE_ORD_SOURCE=local` and `git-tag` |
-| [run_container_smoke.sh](/home/bucky/work/usdb/docker/scripts/tools/run_container_smoke.sh) | smoke validation | creates a temporary bootstrap project and local manifests | validating cold-start wiring, manifests, and bootstrap one-shots | can keep the stack running with `KEEP_RUNNING=1` |
+| [build_world_sim_images.sh](/home/bucky/work/usdb/docker/scripts/tools/build_world_sim_images.sh) | image packaging | builds `WORLD_SIM_BITCOIN_IMAGE` and `WORLD_SIM_TOOLS_IMAGE` | first-time world-sim image setup or when host `bitcoind` / `ord` changes | supports `WORLD_SIM_RELEASE_ORD_SOURCE=local` and `git-tag` |
+| [smoke_bootstrap_stack.sh](/home/bucky/work/usdb/docker/scripts/tools/smoke_bootstrap_stack.sh) | smoke validation | creates a temporary bootstrap project and local manifests | validating cold-start wiring, manifests, and bootstrap one-shots | can keep the stack running with `KEEP_RUNNING=1` |
 
 ## Recommended Documentation Contract For Future Tools
 
@@ -121,7 +125,6 @@ documenting the new entry with the same fields.
 | `bootstrap role` | clarifies whether SourceDAO or genesis init is involved | `none`, `SourceDAO full bootstrap`, `ETHW genesis only` |
 | `critical env variables` | gives readers the shortest path to the real knobs | `BTC_NETWORK`, `BTC_AUTH_MODE`, `WORLD_SIM_STATE_MODE` |
 
-## Compatibility Wrappers
+## Tool Paths
 
-Thin wrappers remain at `docker/scripts/*.sh` for the tool scripts above so
-existing commands and docs continue to work.
+These repo-facing helpers now live directly under `docker/scripts/tools/`.

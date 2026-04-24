@@ -20,7 +20,7 @@ services and Docker images.
 - [start_control_plane.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_control_plane.sh)
   - renders control-plane config and starts `usdb-control-plane`
 - [start_ethw_full_sim.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_ethw_full_sim.sh)
-  - derives or restores the ETHW miner identity used by `run_dev_full_sim.sh`
+  - derives or restores the ETHW miner identity used by `run_local_full_sim.sh`
   - note: the final `geth` command is `exec`'d so Docker stop signals reach it directly
 - [start_ethw_node.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_ethw_node.sh)
   - validates ETHW init state and launches the runtime ETHW node
@@ -33,7 +33,7 @@ services and Docker images.
   - renders config, waits for dependencies, then starts `usdb-indexer`
 - [start_world_sim.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_world_sim.sh)
   - handles world-sim bootstrap and loop execution inside the tools image
-  - note: this script is internal; prefer `tools/run_world_sim.sh` for operator flows
+  - note: this script is internal; prefer `tools/run_local_world_sim.sh` for operator flows
 - [start_world_sim_bitcoind.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh)
   - starts the regtest `bitcoind` used by world-sim images
 

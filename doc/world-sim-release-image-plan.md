@@ -62,7 +62,7 @@ This keeps the runtime contract stable while improving reproducibility for
 Recommended local command:
 
 ```bash
-docker/scripts/run_world_sim.sh build-images
+docker/scripts/tools/run_local_world_sim.sh build-images
 ```
 
 This helper packages host binaries into release-style images:
@@ -138,5 +138,5 @@ Once the release-image layout is stable, the next improvements are:
 2. tag and publish:
    - `usdb-bitcoin28-regtest`
    - `usdb-world-sim-tools`
-3. make `run_world_sim.sh` default to published tags instead of `:local`
+3. make `run_local_world_sim.sh` default to published tags instead of `:local`
 4. keep host-derived image builds as a local override for internal debugging

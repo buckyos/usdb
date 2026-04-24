@@ -86,7 +86,7 @@
 
 ### 2.3 编排辅助层
 
-由 `docker/scripts/*.sh` 提供：
+由 `docker/scripts/tools/*.sh` 提供：
 
 - 渲染配置
 - one-shot init
@@ -340,7 +340,7 @@
 `docker/scripts/` 现在按职责拆成了三类目录：
 
 - [docker/scripts/README.md](/home/bucky/work/usdb/docker/scripts/README.md)
-  - 总索引和兼容性说明
+  - 总索引和命名/入口说明
 - [docker/scripts/tools/README.md](/home/bucky/work/usdb/docker/scripts/tools/README.md)
   - 用户直接运行的 helper / tool 脚本
 - [docker/scripts/entrypoints/README.md](/home/bucky/work/usdb/docker/scripts/entrypoints/README.md)
@@ -348,11 +348,11 @@
 - [docker/scripts/helpers/README.md](/home/bucky/work/usdb/docker/scripts/helpers/README.md)
   - 被其他脚本 source 或调用的 helper 和配置渲染脚本
 
-兼容性说明：
+入口说明：
 
-- 常用的 `docker/scripts/run_*.sh` 与 `docker/scripts/build_world_sim_release_images.sh`
-  仍然保留旧路径 wrapper，方便继续直接使用。
-- 新的内部引用统一使用分类目录中的 canonical 路径。
+- repo-facing helper 统一放在 `docker/scripts/tools/`
+- 不再保留单独的顶层旧 wrapper 层
+- 新的内部引用统一使用分类目录中的 canonical 路径
 
 ## 6. 本地目录约定
 
@@ -412,7 +412,7 @@ docker/local/
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_console_preview.sh up
+docker/scripts/tools/run_local_console.sh up
 ```
 
 访问：
@@ -436,8 +436,8 @@ docker compose \
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_dev_full_runtime.sh build-images
-docker/scripts/run_dev_full_runtime.sh up
+docker/scripts/tools/run_local_runtime.sh build-images
+docker/scripts/tools/run_local_runtime.sh up
 ```
 
 这个路径可以看作当前 `dev-full` 的基础形态：
@@ -453,14 +453,14 @@ docker/scripts/run_dev_full_runtime.sh up
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_world_sim.sh build-images
-docker/scripts/run_world_sim.sh up
+docker/scripts/tools/run_local_world_sim.sh build-images
+docker/scripts/tools/run_local_world_sim.sh up
 ```
 
 如果要把 ETHW 节点也带上：
 
 ```bash
-docker/scripts/run_world_sim.sh up-full
+docker/scripts/tools/run_local_world_sim_ethw.sh up
 ```
 
 `build-images` 当前对 `ord` 提供两条打包路径：
@@ -481,8 +481,8 @@ docker/scripts/run_world_sim.sh up-full
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_dev_full_sim.sh build-images
-docker/scripts/run_dev_full_sim.sh up
+docker/scripts/tools/run_local_full_sim.sh build-images
+docker/scripts/tools/run_local_full_sim.sh up
 ```
 
 这个入口会组合：
@@ -500,19 +500,19 @@ docker/scripts/run_dev_full_sim.sh up
 - `sourcedao-bootstrap`
 - `world-sim`
 
-它和 `run_world_sim.sh up-full` 的区别是：
+它和 `run_local_world_sim_ethw.sh up` 的区别是：
 
-- `up-full`
+- `run_local_world_sim_ethw.sh up`
   - 只是把 `ethw-node` 带进 world-sim 栈
-- `run_dev_full_sim.sh up`
+- `run_local_full_sim.sh up`
   - 还会同时接入 `bootstrap` 和 `sourcedao-bootstrap`
 
 查看状态：
 
 ```bash
-docker/scripts/run_dev_full_sim.sh ps
-docker/scripts/run_dev_full_sim.sh logs
-docker/scripts/run_dev_full_sim.sh state
+docker/scripts/tools/run_local_full_sim.sh ps
+docker/scripts/tools/run_local_full_sim.sh logs
+docker/scripts/tools/run_local_full_sim.sh state
 ```
 
 ### 7.6 完整本地 ETHW + SourceDAO bootstrap
@@ -521,8 +521,8 @@ docker/scripts/run_dev_full_sim.sh state
 
 ```bash
 cd /home/bucky/work/usdb
-docker/scripts/run_sourcedao_bootstrap.sh build-images
-docker/scripts/run_sourcedao_bootstrap.sh up
+docker/scripts/tools/run_local_bootstrap.sh build-images
+docker/scripts/tools/run_local_bootstrap.sh up
 ```
 
 该 helper 会自动：
@@ -539,9 +539,9 @@ docker/scripts/run_sourcedao_bootstrap.sh up
 查看状态：
 
 ```bash
-docker/scripts/run_sourcedao_bootstrap.sh ps
-docker/scripts/run_sourcedao_bootstrap.sh logs
-docker/scripts/run_sourcedao_bootstrap.sh state
+docker/scripts/tools/run_local_bootstrap.sh ps
+docker/scripts/tools/run_local_bootstrap.sh logs
+docker/scripts/tools/run_local_bootstrap.sh state
 ```
 
 ### 7.7 手工 compose 启动 bootstrap
@@ -668,9 +668,9 @@ docker compose \
 3. [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
 4. [compose.ord.yml](/home/bucky/work/usdb/docker/compose.ord.yml)
 5. [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
-6. [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_dev_full_runtime.sh)
-7. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_world_sim.sh)
-8. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_sourcedao_bootstrap.sh)
+6. [run_local_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_runtime.sh)
+7. [run_local_world_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_world_sim.sh)
+8. [run_local_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_bootstrap.sh)
 9. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_sourcedao_bootstrap.sh)
 
 再往下看设计文档：

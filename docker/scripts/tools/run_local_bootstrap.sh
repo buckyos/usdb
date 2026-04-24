@@ -3,12 +3,13 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker_dir="$(cd "${script_dir}/../.." && pwd)"
+tool_cmd="docker/scripts/tools/run_local_bootstrap.sh"
 source "${script_dir}/../helpers/bootstrap_local_inputs_common.sh"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  docker/scripts/run_sourcedao_bootstrap.sh [prepare|build-images|up|down|reset|ps|logs|state]
+  ${tool_cmd} [prepare|build-images|up|down|reset|ps|logs|state]
 
 This helper wraps the full local SourceDAO bootstrap path on top of:
 
@@ -107,9 +108,9 @@ case "${action}" in
     echo
     echo "Stack started with project ${project_name}"
     echo "Suggested next commands:"
-    echo "  docker/scripts/run_sourcedao_bootstrap.sh ps"
-    echo "  docker/scripts/run_sourcedao_bootstrap.sh logs"
-    echo "  docker/scripts/run_sourcedao_bootstrap.sh state"
+    echo "  ${tool_cmd} ps"
+    echo "  ${tool_cmd} logs"
+    echo "  ${tool_cmd} state"
     echo
     echo "Control console:"
     echo "  http://127.0.0.1:$(env_get CONTROL_PLANE_BIND_PORT 28040)/"

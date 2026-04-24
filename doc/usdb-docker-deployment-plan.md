@@ -299,7 +299,7 @@
   - `WORLD_SIM_STATE_MODE=seeded-reset`
   - `seeded-reset` 基于 `WORLD_SIM_IDENTITY_SEED` 确定性重建 miner / agent ord wallet identity
 - 在 simulation loop 前增加 ord wallet / ord server 稳定性 gate
-- `world-sim` / `up-full` 默认改用：
+- `world-sim` / `run_local_world_sim_ethw.sh up` 默认改用：
   - `BTC_AUTH_MODE=userpass`
   - 而不是 cookie auth
   - 以降低 fresh bootstrap 和 `-rpcwallet` 路径上的认证脆弱性

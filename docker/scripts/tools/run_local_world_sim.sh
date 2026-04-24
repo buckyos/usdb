@@ -3,6 +3,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker_dir="$(cd "${script_dir}/../.." && pwd)"
+tool_cmd="docker/scripts/tools/run_local_world_sim.sh"
+ethw_tool_cmd="docker/scripts/tools/run_local_world_sim_ethw.sh"
+build_images_cmd="docker/scripts/tools/build_world_sim_images.sh"
 
 env_dir="${docker_dir}/local/world-sim/env"
 env_file="${env_dir}/world-sim.env"
@@ -15,7 +18,7 @@ if [[ ! -f "${env_file}" ]]; then
   cat <<EOF
 Initialized ${env_file} from ${env_example}
 Build the packaged images before the first run:
-  docker/scripts/run_world_sim.sh build-images
+  ${tool_cmd} build-images
 EOF
 fi
 
@@ -65,7 +68,7 @@ ensure_image_exists() {
 Missing image ${image}
 
 Build the packaged world-sim release images first:
-  docker/scripts/run_world_sim.sh build-images
+  ${tool_cmd} build-images
 EOF
     exit 1
   }
@@ -137,27 +140,28 @@ prepare_state_mode() {
 }
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  docker/scripts/run_world_sim.sh up
-  docker/scripts/run_world_sim.sh up-full
-  docker/scripts/run_world_sim.sh build-images
-  docker/scripts/run_world_sim.sh doctor
-  docker/scripts/run_world_sim.sh ps
-  docker/scripts/run_world_sim.sh logs
-  docker/scripts/run_world_sim.sh down
-  docker/scripts/run_world_sim.sh reset
+  ${tool_cmd} up
+  ${tool_cmd} build-images
+  ${tool_cmd} doctor
+  ${tool_cmd} ps
+  ${tool_cmd} logs
+  ${tool_cmd} down
+  ${tool_cmd} reset
+
+ETHW-aligned variant:
+  ${ethw_tool_cmd} up
 
 Modes:
   up       Start the BTC-side local stack plus world-sim, without ethw-node.
            The helper starts in detached mode by default, then waits for core
            readiness and surfaces common persistent-state failures explicitly.
-  up-full  Start the same stack and include ethw-node as part of full dev-sim.
   down     Stop the stack but keep Docker volumes and world state.
   reset    Stop the stack and remove Docker volumes to reset world state.
   doctor   Print current startup/readiness diagnostics for the running stack.
 
-Options for up / up-full:
+Options for up:
   --foreground  Follow compose logs after startup diagnostics succeed.
   -d, --detach  Explicitly keep detached mode (the default for this helper).
 EOF
@@ -217,7 +221,7 @@ sanitize_up_args() {
         ;;
       --attach|--attach=*|--attach-dependencies|--abort-on-container-exit|--abort-on-container-failure|--menu)
         echo "Unsupported docker compose attach-style option for this helper: $1" >&2
-        echo "Use 'docker/scripts/run_world_sim.sh logs' or '--foreground' instead." >&2
+        echo "Use '${tool_cmd} logs' or '--foreground' instead." >&2
         exit 1
         ;;
       *)
@@ -282,11 +286,11 @@ print_common_state_recovery_hint() {
   if [[ "${mode}" == "persistent" ]]; then
     warn "Current WORLD_SIM_STATE_MODE=persistent; the local volumes appear inconsistent with the BTC / ord state."
     warn "Most direct recovery:"
-    warn "  docker/scripts/run_world_sim.sh reset"
-    warn "  docker/scripts/run_world_sim.sh up"
+    warn "  ${tool_cmd} reset"
+    warn "  ${tool_cmd} up"
     warn "If you want deterministic identities after reset, set WORLD_SIM_STATE_MODE=seeded-reset and WORLD_SIM_IDENTITY_SEED in ${env_file}."
   else
-    warn "Current WORLD_SIM_STATE_MODE=${mode}; consider docker/scripts/run_world_sim.sh reset before starting again."
+    warn "Current WORLD_SIM_STATE_MODE=${mode}; consider ${tool_cmd} reset before starting again."
   fi
 }
 
@@ -371,7 +375,11 @@ start_stack() {
   if [[ "${foreground_logs}" == "1" ]]; then
     compose logs -f
   else
-    log "Use 'docker/scripts/run_world_sim.sh logs' to follow the stack logs."
+    if [[ "${include_ethw}" == "1" ]]; then
+      log "Use '${ethw_tool_cmd} logs' to follow the stack logs."
+    else
+      log "Use '${tool_cmd} logs' to follow the stack logs."
+    fi
   fi
 }
 
@@ -379,18 +387,21 @@ action="${1:-up}"
 shift || true
 
 case "${action}" in
+  -h|--help|help)
+    usage
+    ;;
   up)
     ensure_world_sim_images
     prepare_state_mode
     start_stack 0 "$@"
     ;;
-  up-full)
+  up-ethw)
     ensure_world_sim_images
     prepare_state_mode
     start_stack 1 "$@"
     ;;
   build-images)
-    "${docker_dir}/scripts/build_world_sim_release_images.sh" "$@"
+    "${docker_dir}/scripts/tools/build_world_sim_images.sh" "$@"
     ;;
   doctor)
     print_world_sim_doctor

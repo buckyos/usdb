@@ -79,7 +79,7 @@ docker/local/
 启动命令：
 
 ```bash
-docker/scripts/run_console_preview.sh up
+docker/scripts/tools/run_local_console.sh up
 ```
 
 它只会启动最小服务子集：
@@ -109,8 +109,8 @@ docker/scripts/run_console_preview.sh up
 启动命令：
 
 ```bash
-docker/scripts/run_dev_full_runtime.sh build-images
-docker/scripts/run_dev_full_runtime.sh up
+docker/scripts/tools/run_local_runtime.sh build-images
+docker/scripts/tools/run_local_runtime.sh up
 ```
 
 这个入口的准确定位是：
@@ -154,14 +154,14 @@ docker/scripts/run_dev_full_runtime.sh up
 启动命令：
 
 ```bash
-docker/scripts/run_world_sim.sh build-images
-docker/scripts/run_world_sim.sh up
+docker/scripts/tools/run_local_world_sim.sh build-images
+docker/scripts/tools/run_local_world_sim.sh up
 ```
 
 如果要把 `ethw-node` 一起带上：
 
 ```bash
-docker/scripts/run_world_sim.sh up-full
+docker/scripts/tools/run_local_world_sim_ethw.sh up
 ```
 
 这个入口的定位是：
@@ -187,7 +187,7 @@ docker/scripts/run_world_sim.sh up-full
 启动命令：
 
 ```bash
-docker/scripts/run_sourcedao_bootstrap.sh up
+docker/scripts/tools/run_local_bootstrap.sh up
 ```
 
 这个入口的定位是：
@@ -211,8 +211,8 @@ docker/scripts/run_sourcedao_bootstrap.sh up
 启动命令：
 
 ```bash
-docker/scripts/run_dev_full_sim.sh build-images
-docker/scripts/run_dev_full_sim.sh up
+docker/scripts/tools/run_local_full_sim.sh build-images
+docker/scripts/tools/run_local_full_sim.sh up
 ```
 
 这个入口的定位是：

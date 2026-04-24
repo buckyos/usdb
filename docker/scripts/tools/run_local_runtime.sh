@@ -3,11 +3,13 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker_dir="$(cd "${script_dir}/../.." && pwd)"
+tool_cmd="docker/scripts/tools/run_local_runtime.sh"
+build_images_cmd="docker/scripts/tools/build_world_sim_images.sh"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  docker/scripts/run_dev_full_runtime.sh [up|build-images|down|logs|ps]
+  ${tool_cmd} [up|build-images|down|logs|ps]
 
 This helper starts the current "dev-full" BTC runtime profile:
 
@@ -105,7 +107,7 @@ ensure_image_exists() {
 Missing image ${image}
 
 Build the packaged ord/runtime helper images first:
-  docker/scripts/run_dev_full_runtime.sh build-images
+  ${tool_cmd} build-images
 EOF
     exit 1
   }
@@ -121,7 +123,7 @@ case "${action}" in
     compose up --build "$@"
     ;;
   build-images)
-    "${docker_dir}/scripts/build_world_sim_release_images.sh" "$@"
+    "${docker_dir}/scripts/tools/build_world_sim_images.sh" "$@"
     ;;
   ps)
     compose ps "$@"

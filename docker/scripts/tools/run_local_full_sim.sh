@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker_dir="$(cd "${script_dir}/../.." && pwd)"
+tool_cmd="docker/scripts/tools/run_local_full_sim.sh"
+build_images_cmd="docker/scripts/tools/build_world_sim_images.sh"
 
 env_file="${docker_dir}/local/dev-full-sim/env/dev-full-sim.env"
 example_env_file="${docker_dir}/env/dev-full-sim.env.example"
@@ -10,9 +12,9 @@ example_env_file="${docker_dir}/env/dev-full-sim.env.example"
 source "${script_dir}/../helpers/bootstrap_local_inputs_common.sh"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage:
-  docker/scripts/run_dev_full_sim.sh [prepare|build-images|up|down|reset|ps|logs|state]
+  ${tool_cmd} [prepare|build-images|up|down|reset|ps|logs|state]
 
 This helper starts the current development "full-sim" profile on top of:
 
@@ -92,7 +94,7 @@ ensure_image_exists() {
 Missing image ${image}
 
 Build the packaged dependency images first:
-  docker/scripts/run_dev_full_sim.sh build-images
+  ${tool_cmd} build-images
 EOF
     exit 1
   }
@@ -158,7 +160,7 @@ build_images() {
   ORD_IMAGE="$(env_get ORD_IMAGE usdb-world-sim-tools:local)" \
   WORLD_SIM_RELEASE_ORD_SOURCE="$(env_get WORLD_SIM_RELEASE_ORD_SOURCE git-tag)" \
   WORLD_SIM_RELEASE_ORD_VERSION="$(env_get WORLD_SIM_RELEASE_ORD_VERSION 0.23.3)" \
-  "${docker_dir}/scripts/build_world_sim_release_images.sh"
+  "${docker_dir}/scripts/tools/build_world_sim_images.sh"
 
   build_ethw_image
 }

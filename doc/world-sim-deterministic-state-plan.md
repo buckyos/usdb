@@ -60,12 +60,12 @@ World-sim state is currently persisted by Docker volumes, mainly:
 
 This means:
 
-- `docker/scripts/run_world_sim.sh down`
+- `docker/scripts/tools/run_local_world_sim.sh down`
   - stops containers
   - keeps world state
-- `docker/scripts/run_world_sim.sh up`
+- `docker/scripts/tools/run_local_world_sim.sh up`
   - resumes from the same underlying BTC / ord / USDB state
-- `docker/scripts/run_world_sim.sh reset`
+- `docker/scripts/tools/run_local_world_sim.sh reset`
   - removes volumes
   - starts from a clean world next time
 
