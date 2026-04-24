@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${script_dir}/snapshot_marker.sh"
+source "${script_dir}/../helpers/snapshot_marker.sh"
 
 snapshot_mode="${SNAPSHOT_MODE:-none}"
 root_dir="${BH_ROOT_DIR:-/data/balance-history}"
@@ -10,7 +10,7 @@ config_path="${root_dir}/config.toml"
 db_dir="${root_dir}/db"
 marker_path="$(snapshot_marker_path "${root_dir}")"
 
-"${script_dir}/render_balance_history_config.sh" "${config_path}"
+"${script_dir}/../helpers/render_balance_history_config.sh" "${config_path}"
 
 case "${snapshot_mode}" in
   none)

@@ -2,21 +2,21 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${script_dir}/snapshot_marker.sh"
+source "${script_dir}/../helpers/snapshot_marker.sh"
 
 root_dir="${BH_ROOT_DIR:-/data/balance-history}"
 config_path="${root_dir}/config.toml"
 snapshot_mode="${SNAPSHOT_MODE:-none}"
 marker_path="$(snapshot_marker_path "${root_dir}")"
 
-"${script_dir}/render_balance_history_config.sh" "${config_path}"
+"${script_dir}/../helpers/render_balance_history_config.sh" "${config_path}"
 
 btc_url="${BTC_RPC_URL:-http://btc-node:8332}"
 btc_target="${btc_url#*://}"
 btc_host="${btc_target%%:*}"
 btc_port="${btc_target##*:}"
 
-"${script_dir}/wait_for_tcp.sh" \
+"${script_dir}/../helpers/wait_for_tcp.sh" \
   "${btc_host}" \
   "${btc_port}" \
   "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"

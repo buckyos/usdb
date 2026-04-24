@@ -337,71 +337,22 @@
 
 ## 5. 关键脚本说明
 
-### 5.1 配置渲染脚本
+`docker/scripts/` 现在按职责拆成了三类目录：
 
-- [render_balance_history_config.sh](/home/bucky/work/usdb/docker/scripts/render_balance_history_config.sh)
-  - 生成 `balance-history` 的 `config.toml`
-- [render_usdb_indexer_config.sh](/home/bucky/work/usdb/docker/scripts/render_usdb_indexer_config.sh)
-  - 生成 `usdb-indexer` 的 `config.json`
-- [render_control_plane_config.sh](/home/bucky/work/usdb/docker/scripts/render_control_plane_config.sh)
-  - 生成 `usdb-control-plane` 配置
+- [docker/scripts/README.md](/home/bucky/work/usdb/docker/scripts/README.md)
+  - 总索引和兼容性说明
+- [docker/scripts/tools/README.md](/home/bucky/work/usdb/docker/scripts/tools/README.md)
+  - 用户直接运行的 helper / tool 脚本
+- [docker/scripts/entrypoints/README.md](/home/bucky/work/usdb/docker/scripts/entrypoints/README.md)
+  - Compose / Dockerfile 内部使用的 container entrypoint 脚本
+- [docker/scripts/helpers/README.md](/home/bucky/work/usdb/docker/scripts/helpers/README.md)
+  - 被其他脚本 source 或调用的 helper 和配置渲染脚本
 
-### 5.2 基础服务启动脚本
+兼容性说明：
 
-- [start_balance_history.sh](/home/bucky/work/usdb/docker/scripts/start_balance_history.sh)
-  - 启动 `balance-history`，并做 snapshot marker gate
-- [start_usdb_indexer.sh](/home/bucky/work/usdb/docker/scripts/start_usdb_indexer.sh)
-  - 启动 `usdb-indexer`
-- [start_control_plane.sh](/home/bucky/work/usdb/docker/scripts/start_control_plane.sh)
-  - 启动控制台服务
-- [start_ethw_node.sh](/home/bucky/work/usdb/docker/scripts/start_ethw_node.sh)
-  - 在 ETHW 已初始化前提下启动节点，并校验 init marker
-
-### 5.3 snapshot / bootstrap 辅助脚本
-
-- [snapshot_loader.sh](/home/bucky/work/usdb/docker/scripts/snapshot_loader.sh)
-  - 安装 `balance-history` snapshot
-- [snapshot_marker.sh](/home/bucky/work/usdb/docker/scripts/snapshot_marker.sh)
-  - snapshot marker 相关逻辑
-- [bootstrap_init.sh](/home/bucky/work/usdb/docker/scripts/bootstrap_init.sh)
-  - 冷启动输入准备器
-- [ethw_init.sh](/home/bucky/work/usdb/docker/scripts/ethw_init.sh)
-  - 执行 `geth init`
-- [ethw_bootstrap_artifact.sh](/home/bucky/work/usdb/docker/scripts/ethw_bootstrap_artifact.sh)
-  - ETHW genesis artifact 校验
-- [ethw_init_marker.sh](/home/bucky/work/usdb/docker/scripts/ethw_init_marker.sh)
-  - ETHW init marker 读写
-
-### 5.4 world-sim 脚本
-
-- [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
-  - world-sim 顶层 helper
-- [start_world_sim.sh](/home/bucky/work/usdb/docker/scripts/start_world_sim.sh)
-  - world-sim bootstrap / runner 主入口
-- [start_world_sim_bitcoind.sh](/home/bucky/work/usdb/docker/scripts/start_world_sim_bitcoind.sh)
-  - world-sim 模式下的 bitcoind 启动器
-- [start_ord_server.sh](/home/bucky/work/usdb/docker/scripts/start_ord_server.sh)
-  - ord server 启动器
-- [build_world_sim_release_images.sh](/home/bucky/work/usdb/docker/scripts/build_world_sim_release_images.sh)
-  - 打包 world-sim 发布镜像
-
-### 5.5 控制台和测试 helper
-
-- [run_console_preview.sh](/home/bucky/work/usdb/docker/scripts/run_console_preview.sh)
-  - 最小控制台预览栈
-- [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_runtime.sh)
-  - 带 `ord` 的 `dev-full` 档位 helper
-- [run_dev_full_sim.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_sim.sh)
-  - 完整 `dev-full-sim` helper
-- [run_container_smoke.sh](/home/bucky/work/usdb/docker/scripts/run_container_smoke.sh)
-  - 容器级 smoke
-
-### 5.6 SourceDAO bootstrap 脚本
-
-- [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
-  - 实际执行 SourceDAO one-shot bootstrap
-- [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
-  - 完整本地 ETHW + SourceDAO bootstrap helper
+- 常用的 `docker/scripts/run_*.sh` 与 `docker/scripts/build_world_sim_release_images.sh`
+  仍然保留旧路径 wrapper，方便继续直接使用。
+- 新的内部引用统一使用分类目录中的 canonical 路径。
 
 ## 6. 本地目录约定
 
@@ -717,10 +668,10 @@ docker compose \
 3. [compose.dev-sim.yml](/home/bucky/work/usdb/docker/compose.dev-sim.yml)
 4. [compose.ord.yml](/home/bucky/work/usdb/docker/compose.ord.yml)
 5. [compose.bootstrap.yml](/home/bucky/work/usdb/docker/compose.bootstrap.yml)
-6. [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/run_dev_full_runtime.sh)
-7. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/run_world_sim.sh)
-8. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/run_sourcedao_bootstrap.sh)
-9. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/start_sourcedao_bootstrap.sh)
+6. [run_dev_full_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_dev_full_runtime.sh)
+7. [run_world_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_world_sim.sh)
+8. [run_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_sourcedao_bootstrap.sh)
+9. [start_sourcedao_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_sourcedao_bootstrap.sh)
 
 再往下看设计文档：
 

@@ -9,11 +9,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY docker/.build-world-sim/bitcoin/bin/ /opt/bitcoin/bin/
-COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
+COPY docker/scripts/entrypoints/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh
 
-RUN chmod +x /opt/bitcoin/bin/bitcoind \
+RUN mkdir -p /opt/usdb/docker/scripts/entrypoints \
+    && chmod +x /opt/bitcoin/bin/bitcoind \
     /opt/bitcoin/bin/bitcoin-cli \
-    /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
+    /opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]

@@ -1,7 +1,7 @@
 services:
   btc-node:
     image: ${WORLD_SIM_BITCOIN_IMAGE:-usdb-bitcoin28-regtest:local}
-    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim_bitcoind.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh"]
     environment:
       BITCOIN_BIN_DIR: /opt/bitcoin/bin
       BTC_NODE_DATA_DIR: ${BTC_NODE_DATA_DIR:-/home/bitcoin/.bitcoin}
@@ -53,7 +53,7 @@ services:
   world-sim-bootstrap:
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
     restart: on-failure
-    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_world_sim.sh"]
     depends_on:
       ord-server:
         condition: service_started
@@ -107,7 +107,7 @@ services:
   world-sim-runner:
     image: ${WORLD_SIM_TOOLS_IMAGE:-usdb-world-sim-tools:local}
     restart: on-failure
-    entrypoint: ["/opt/usdb/docker/scripts/start_world_sim.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_world_sim.sh"]
     depends_on:
       ord-server:
         condition: service_started
@@ -198,7 +198,7 @@ services:
       - usdb-net
 
   ethw-node:
-    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_ethw_full_sim.sh"]
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/entrypoints/start_ethw_full_sim.sh"]
     command: []
     environment:
       ETHW_COMMAND: ${ETHW_COMMAND:-}

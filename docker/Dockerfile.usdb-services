@@ -61,7 +61,7 @@ COPY docker/scripts /opt/usdb/docker/scripts
 COPY web /opt/usdb/web
 COPY --from=web-builder /workspace/web/usdb-console-app/dist /opt/usdb/web/usdb-console-app/dist
 
-ENV PATH="/opt/usdb/docker/scripts:${PATH}"
+ENV PATH="/opt/usdb/docker/scripts:/opt/usdb/docker/scripts/tools:/opt/usdb/docker/scripts/entrypoints:/opt/usdb/docker/scripts/helpers:${PATH}"
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bash"]

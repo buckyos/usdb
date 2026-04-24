@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}"
 config_path="${root_dir}/config.toml"
 
-/opt/usdb/docker/scripts/render_control_plane_config.sh "${config_path}"
+"${script_dir}/../helpers/render_control_plane_config.sh" "${config_path}"
 
 if [[ -n "${CONTROL_PLANE_EXTRA_ARGS:-}" ]]; then
   # shellcheck disable=SC2086

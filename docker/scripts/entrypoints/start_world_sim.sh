@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ord_bin="${ORD_BIN:-/opt/ord/bin/ord}"
 bitcoin_bin_dir="${BITCOIN_BIN_DIR:-/opt/bitcoin/bin}"
 bitcoin_cli="${bitcoin_bin_dir}/bitcoin-cli"
@@ -544,7 +545,7 @@ prepare_runtime_environment() {
 }
 
 wait_core_services() {
-  /opt/usdb/docker/scripts/wait_for_tcp.sh "${btc_host}" "${btc_port}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
+  "${script_dir}/../helpers/wait_for_tcp.sh" "${btc_host}" "${btc_port}" "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
   wait_for_bitcoin_rpc
   wait_http_ready "ord-server" "${ord_server_url}/blockcount"
   wait_rpc_ready "balance-history" "${balance_history_rpc_url}" "get_network_type"

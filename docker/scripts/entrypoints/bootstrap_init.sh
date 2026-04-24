@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${script_dir}/ethw_bootstrap_artifact.sh"
+source "${script_dir}/../helpers/ethw_bootstrap_artifact.sh"
 
 bootstrap_dir="${BOOTSTRAP_DIR:-/bootstrap}"
 

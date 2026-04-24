@@ -25,7 +25,7 @@ services:
       dockerfile: docker/Dockerfile.usdb-services
     image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
     restart: "no"
-    entrypoint: ["/opt/usdb/docker/scripts/snapshot_loader.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/snapshot_loader.sh"]
     environment:
       BH_ROOT_DIR: ${BH_ROOT_DIR:-/data/balance-history}
       BTC_NETWORK: ${BTC_NETWORK:-bitcoin}
@@ -61,7 +61,7 @@ services:
       dockerfile: docker/Dockerfile.usdb-services
     image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
     restart: unless-stopped
-    entrypoint: ["/opt/usdb/docker/scripts/start_balance_history.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_balance_history.sh"]
     depends_on:
       snapshot-loader:
         condition: service_completed_successfully
@@ -103,7 +103,7 @@ services:
       dockerfile: docker/Dockerfile.usdb-services
     image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
     restart: unless-stopped
-    entrypoint: ["/opt/usdb/docker/scripts/start_usdb_indexer.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_usdb_indexer.sh"]
     depends_on:
       balance-history:
         condition: service_started
@@ -161,7 +161,7 @@ services:
       dockerfile: docker/Dockerfile.usdb-services
     image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
     restart: unless-stopped
-    entrypoint: ["/opt/usdb/docker/scripts/start_control_plane.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_control_plane.sh"]
     environment:
       CONTROL_PLANE_ROOT_DIR: ${CONTROL_PLANE_ROOT_DIR:-/data/usdb-control-plane}
       CONTROL_PLANE_HOST: ${CONTROL_PLANE_HOST:-0.0.0.0}

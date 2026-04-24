@@ -42,19 +42,20 @@ RUN apt-get update \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
-COPY docker/scripts/start_ord_server.sh /opt/usdb/docker/scripts/start_ord_server.sh
-COPY docker/scripts/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh
-COPY docker/scripts/start_world_sim.sh /opt/usdb/docker/scripts/start_world_sim.sh
-COPY docker/scripts/wait_for_tcp.sh /opt/usdb/docker/scripts/wait_for_tcp.sh
+COPY docker/scripts/entrypoints/start_ord_server.sh /opt/usdb/docker/scripts/entrypoints/start_ord_server.sh
+COPY docker/scripts/entrypoints/start_world_sim_bitcoind.sh /opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh
+COPY docker/scripts/entrypoints/start_world_sim.sh /opt/usdb/docker/scripts/entrypoints/start_world_sim.sh
+COPY docker/scripts/helpers/wait_for_tcp.sh /opt/usdb/docker/scripts/helpers/wait_for_tcp.sh
 COPY docker/.build-world-sim/bitcoin/bin/bitcoin-cli /opt/bitcoin/bin/bitcoin-cli
 COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY src/btc/usdb-indexer/scripts/regtest_world_simulator.py /opt/usdb/world-sim/regtest_world_simulator.py
 COPY docker/world-sim/bip39-english.txt /opt/usdb/world-sim/bip39-english.txt
 
-RUN chmod +x /opt/usdb/docker/scripts/start_ord_server.sh \
-    /opt/usdb/docker/scripts/start_world_sim_bitcoind.sh \
-    /opt/usdb/docker/scripts/start_world_sim.sh \
-    /opt/usdb/docker/scripts/wait_for_tcp.sh \
+RUN mkdir -p /opt/usdb/docker/scripts/entrypoints /opt/usdb/docker/scripts/helpers \
+    && chmod +x /opt/usdb/docker/scripts/entrypoints/start_ord_server.sh \
+    /opt/usdb/docker/scripts/entrypoints/start_world_sim_bitcoind.sh \
+    /opt/usdb/docker/scripts/entrypoints/start_world_sim.sh \
+    /opt/usdb/docker/scripts/helpers/wait_for_tcp.sh \
     /opt/bitcoin/bin/bitcoin-cli \
     /opt/ord/bin/ord
 

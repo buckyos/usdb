@@ -2,7 +2,7 @@ services:
   ord-server:
     image: ${ORD_IMAGE:-usdb-world-sim-tools:local}
     restart: unless-stopped
-    entrypoint: ["/opt/usdb/docker/scripts/start_ord_server.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_ord_server.sh"]
     depends_on:
       btc-node:
         condition: service_started

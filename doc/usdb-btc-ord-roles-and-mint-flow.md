@@ -47,7 +47,7 @@
 定义位置：
 
 - [docker/compose.ord.yml](/home/bucky/work/usdb/docker/compose.ord.yml)
-- [docker/scripts/start_ord_server.sh](/home/bucky/work/usdb/docker/scripts/start_ord_server.sh)
+- [docker/scripts/entrypoints/start_ord_server.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_ord_server.sh)
 
 它的启动方式是：
 
@@ -78,7 +78,7 @@ ord \
 定义位置：
 
 - [docker/compose.world-sim.yml](/home/bucky/work/usdb/docker/compose.world-sim.yml)
-- [docker/scripts/start_world_sim.sh](/home/bucky/work/usdb/docker/scripts/start_world_sim.sh)
+- [docker/scripts/entrypoints/start_world_sim.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_world_sim.sh)
 
 `world-sim` 本身并不启动第二个 `ord server`。  
 它主要是通过脚本反复调用：

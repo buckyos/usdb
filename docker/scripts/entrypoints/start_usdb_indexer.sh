@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}"
 config_path="${root_dir}/config.json"
 
-/opt/usdb/docker/scripts/render_usdb_indexer_config.sh "${config_path}"
+"${script_dir}/../helpers/render_usdb_indexer_config.sh" "${config_path}"
 
 wait_url() {
   local url="$1"
@@ -12,7 +13,7 @@ wait_url() {
   local target="${url#*://}"
   local host="${target%%:*}"
   local port="${target##*:}"
-  /opt/usdb/docker/scripts/wait_for_tcp.sh "${host}" "${port}" "${timeout_secs}"
+  "${script_dir}/../helpers/wait_for_tcp.sh" "${host}" "${port}" "${timeout_secs}"
 }
 
 wait_url "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}" "${WAIT_FOR_BH_TIMEOUT_SECS:-120}"

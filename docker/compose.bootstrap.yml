@@ -9,7 +9,7 @@ services:
       dockerfile: docker/Dockerfile.usdb-services
     image: ${USDB_SERVICES_IMAGE:-usdb-services:local}
     restart: "no"
-    entrypoint: ["/opt/usdb/docker/scripts/bootstrap_init.sh"]
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/bootstrap_init.sh"]
     depends_on:
       snapshot-loader:
         condition: service_completed_successfully
@@ -38,7 +38,7 @@ services:
   ethw-init:
     image: ${ETHW_IMAGE:-usdb-ethw:local}
     restart: "no"
-    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/ethw_init.sh"]
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/entrypoints/ethw_init.sh"]
     depends_on:
       bootstrap-init:
         condition: service_completed_successfully
@@ -64,7 +64,7 @@ services:
         condition: service_started
       ethw-init:
         condition: service_completed_successfully
-    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_ethw_node.sh"]
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/entrypoints/start_ethw_node.sh"]
     environment:
       ETHW_COMMAND: ${ETHW_COMMAND:-}
       BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
@@ -82,7 +82,7 @@ services:
   sourcedao-bootstrap:
     image: ${SOURCE_DAO_BOOTSTRAP_IMAGE:-node:22-bookworm}
     restart: "no"
-    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/start_sourcedao_bootstrap.sh"]
+    entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/entrypoints/start_sourcedao_bootstrap.sh"]
     depends_on:
       ethw-node:
         condition: service_started
