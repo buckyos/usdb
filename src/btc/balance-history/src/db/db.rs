@@ -1364,6 +1364,8 @@ impl BalanceHistoryDB {
             return Ok(());
         }
 
+        self.ensure_rollback_undo_available(target_height, current_height)?;
+
         self.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1)?;
         self.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, target_height)?;
         self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, current_height)?;
@@ -1426,6 +1428,8 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             return Err(msg);
         }
+
+        self.ensure_rollback_undo_available(target_height, next_height)?;
 
         while next_height > target_height {
             self.rollback_one_block(next_height)?;
@@ -1547,6 +1551,61 @@ impl BalanceHistoryDB {
 
     pub fn get_rollback_supported_from_height(&self) -> Result<Option<u32>, String> {
         self.get_u32_meta(META_KEY_ROLLBACK_SUPPORTED_FROM_HEIGHT)
+    }
+
+    fn ensure_rollback_undo_available(
+        &self,
+        target_height: u32,
+        current_height: u32,
+    ) -> Result<(), String> {
+        if target_height >= current_height {
+            return Ok(());
+        }
+
+        let first_required_height = target_height.saturating_add(1);
+        if let Some(supported_from_height) = self.get_rollback_supported_from_height()? {
+            if first_required_height < supported_from_height {
+                let msg = format!(
+                    "Rollback from height {} to {} requires undo from height {}, but rollback is only supported from height {}. Reset balance-history or install a matching snapshot before continuing.",
+                    current_height, target_height, first_required_height, supported_from_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        match self.get_undo_retained_from_height()? {
+            Some(retained_from_height) if first_required_height < retained_from_height => {
+                let msg = format!(
+                    "Rollback from height {} to {} requires undo from height {}, but undo is only retained from height {}. This usually means the BTC node and balance-history volumes came from different local test chains, or a reorg exceeded the retained undo window. Reset balance-history or reinstall from a matching snapshot before continuing.",
+                    current_height, target_height, first_required_height, retained_from_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            Some(_) => {}
+            None => {
+                let msg = format!(
+                    "Rollback from height {} to {} requires undo bundles, but no undo retention boundary is recorded. Reset balance-history or install a matching snapshot before continuing.",
+                    current_height, target_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        for height in first_required_height..=current_height {
+            if self.get_block_undo_meta(height)?.is_none() {
+                let msg = format!(
+                    "Rollback from height {} to {} requires block undo bundle at height {}, but it is missing. Reset balance-history or install a matching snapshot before continuing.",
+                    current_height, target_height, height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        }
+
+        Ok(())
     }
 
     /// Records snapshot-install provenance in both structured and legacy meta keys.
@@ -3802,6 +3861,97 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT).unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_rollback_to_block_height_refuses_pruned_undo_without_partial_mutation() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_rollback_pruned_undo_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = std::sync::Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let base_script = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let base_entry = BalanceHistoryEntry {
+            script_hash: base_script,
+            block_height: 11,
+            delta: 11,
+            balance: 11,
+        };
+        let base_entries = vec![base_entry];
+        db.update_address_history_with_block_commits_async(&base_entries, 11, &[])
+            .unwrap();
+
+        for height in 12..=13u32 {
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let outpoint = OutPoint {
+                txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
+                vout: height,
+            };
+            let utxo = Arc::new(UTXOValue {
+                script_hash,
+                value: height as u64,
+            });
+            let entry = BalanceHistoryEntry {
+                script_hash,
+                block_height: height,
+                delta: height as i64,
+                balance: height as u64,
+            };
+            let commit = BlockCommitEntry {
+                block_height: height,
+                btc_block_hash: BlockHash::from_slice(&[height as u8; 32]).unwrap(),
+                balance_delta_root: [height as u8; 32],
+                block_commit: [height as u8; 32],
+            };
+            let undo = BlockUndoBundle {
+                block_height: height,
+                btc_block_hash: commit.btc_block_hash,
+                created_utxos: vec![BlockUndoUtxoEntry {
+                    outpoint: outpoint.clone(),
+                    script_hash,
+                    value: height as u64,
+                }],
+                spent_utxos: Vec::new(),
+                touched_script_hashes: vec![script_hash],
+            };
+
+            db.update_block_state_with_undo_async(
+                &[(Arc::new(outpoint.clone()), utxo)],
+                &[],
+                &[entry],
+                height,
+                &[commit],
+                &[undo],
+            )
+            .unwrap();
+        }
+
+        db.prune_undo_before_height(13).unwrap();
+        assert!(db.get_block_undo_bundle(12).unwrap().is_none());
+        assert!(db.get_block_undo_bundle(13).unwrap().is_some());
+
+        let error = db.rollback_to_block_height(11).unwrap_err();
+        assert!(error.contains("undo is only retained from height 13"));
+        assert_eq!(db.get_btc_block_height().unwrap(), 13);
+        assert!(db.get_block_commit(13).unwrap().is_some());
+        assert!(db.get_block_undo_bundle(13).unwrap().is_some());
         assert_eq!(
             db.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS).unwrap(),
             None
