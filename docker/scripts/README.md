@@ -7,6 +7,7 @@ script in one flat directory.
 
 - [tools/README.md](/home/bucky/work/usdb/docker/scripts/tools/README.md)
   - user-facing helpers you can run directly from the repo root
+  - includes runtime profile, service coverage, network, and env comparison tables
 - [entrypoints/README.md](/home/bucky/work/usdb/docker/scripts/entrypoints/README.md)
   - container entrypoints used by Compose services and Docker images
 - [helpers/README.md](/home/bucky/work/usdb/docker/scripts/helpers/README.md)
