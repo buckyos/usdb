@@ -20,8 +20,6 @@ import type {
   ServiceProbe,
   UsdbIndexerSummary,
 } from '../lib/types'
-import { BalanceHistoryExplorerPage } from './BalanceHistoryExplorerPage'
-import { UsdbIndexerExplorerPage } from './UsdbIndexerExplorerPage'
 
 interface ServicesPageProps {
   data?: OverviewResponse
@@ -237,6 +235,52 @@ function renderUsdbIndexerDetails(
         },
       ]}
     />
+  )
+}
+
+function renderExplorerServiceDetails(
+  serviceId: 'balance-history' | 'usdb-indexer',
+  data: OverviewResponse | undefined,
+  locale: string,
+  t: Translate,
+) {
+  const explorerUrl =
+    serviceId === 'balance-history'
+      ? (data?.explorers.balance_history ?? '/explorers/balance-history/')
+      : (data?.explorers.usdb_indexer ?? '/explorers/usdb-indexer/')
+  const serviceData =
+    serviceId === 'balance-history'
+      ? data?.services.balance_history.data
+      : data?.services.usdb_indexer.data
+
+  return (
+    <article className="console-card">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
+            {t('services.workspace.serviceStatusTitle', 'Service Status')}
+          </h3>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[color:var(--cp-muted)]">
+            {t(
+              'services.workspace.explorerRedirectBody',
+              'This page now keeps only service health and runtime metadata. Open the standalone explorer app for full query and protocol tooling.',
+            )}
+          </p>
+        </div>
+        <a
+          className="console-action-button inline-flex items-center gap-2 no-underline"
+          href={explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {t('actions.openApp')}
+        </a>
+      </div>
+
+      {serviceId === 'balance-history'
+        ? renderBalanceHistoryDetails(locale, t, serviceData as BalanceHistorySummary | undefined)
+        : renderUsdbIndexerDetails(locale, t, serviceData as UsdbIndexerSummary | undefined)}
+    </article>
   )
 }
 
@@ -465,9 +509,9 @@ function renderServiceContent(
         </article>
       )
     case 'balance-history':
-      return <BalanceHistoryExplorerPage data={data} locale={locale} t={t} embedded />
+      return renderExplorerServiceDetails('balance-history', data, locale, t)
     case 'usdb-indexer':
-      return <UsdbIndexerExplorerPage data={data} locale={locale} t={t} embedded />
+      return renderExplorerServiceDetails('usdb-indexer', data, locale, t)
     case 'ethw':
       return (
         <article className="console-card">

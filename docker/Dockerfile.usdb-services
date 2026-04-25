@@ -33,14 +33,25 @@ RUN git clone --branch "${ORD_VERSION}" --depth 1 https://github.com/ordinals/or
 
 FROM node:20-bookworm AS web-builder
 
-WORKDIR /workspace/web/usdb-console-app
+WORKDIR /workspace/web
 
-COPY web/usdb-console-app/package.json web/usdb-console-app/package-lock.json ./
-RUN npm ci
+COPY web/usdb-console-app/package.json web/usdb-console-app/package-lock.json ./usdb-console-app/
+COPY web/balance-history-browser/package.json web/balance-history-browser/package-lock.json ./balance-history-browser/
+COPY web/usdb-indexer-browser/package.json web/usdb-indexer-browser/package-lock.json ./usdb-indexer-browser/
+RUN cd usdb-console-app \
+    && npm ci \
+    && cd ../balance-history-browser \
+    && npm ci \
+    && cd ../usdb-indexer-browser \
+    && npm ci
 
-COPY web/usdb-console-app ./
-COPY web/shared /workspace/web/shared
-RUN npm run build
+COPY web /workspace/web
+RUN cd usdb-console-app \
+    && npm run build \
+    && cd ../balance-history-browser \
+    && npm run build \
+    && cd ../usdb-indexer-browser \
+    && npm run build
 
 FROM debian:bookworm-slim
 
@@ -60,6 +71,8 @@ COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY docker/scripts /opt/usdb/docker/scripts
 COPY web /opt/usdb/web
 COPY --from=web-builder /workspace/web/usdb-console-app/dist /opt/usdb/web/usdb-console-app/dist
+COPY --from=web-builder /workspace/web/balance-history-browser/dist /opt/usdb/web/balance-history-browser/dist
+COPY --from=web-builder /workspace/web/usdb-indexer-browser/dist /opt/usdb/web/usdb-indexer-browser/dist
 
 ENV PATH="/opt/usdb/docker/scripts:/opt/usdb/docker/scripts/tools:/opt/usdb/docker/scripts/entrypoints:/opt/usdb/docker/scripts/helpers:${PATH}"
 

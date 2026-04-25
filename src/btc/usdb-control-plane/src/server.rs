@@ -922,11 +922,8 @@ async fn build_overview(state: &AppState) -> OverviewResponse {
 fn build_explorer_links(state: &AppState) -> ExplorerLinks {
     ExplorerLinks {
         control_console: "/#/overview".to_string(),
-        balance_history:
-            "/explorers/balance-history/?rpc_url=%2Fapi%2Fservices%2Fbalance-history%2Frpc"
-                .to_string(),
-        usdb_indexer: "/explorers/usdb-indexer/?rpc_url=%2Fapi%2Fservices%2Fusdb-indexer%2Frpc"
-            .to_string(),
+        balance_history: "/explorers/balance-history/".to_string(),
+        usdb_indexer: "/explorers/usdb-indexer/".to_string(),
         sourcedao_web: state.config.web.sourcedao_web_url.clone(),
     }
 }

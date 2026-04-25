@@ -69,8 +69,8 @@ world_sim_bootstrap_marker = "${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/
 
 [web]
 console_root = "${CONTROL_PLANE_CONSOLE_ROOT:-/opt/usdb/web/usdb-console-app/dist}"
-balance_history_explorer_root = "${CONTROL_PLANE_BH_EXPLORER_ROOT:-/opt/usdb/web/balance-history-browser}"
-usdb_indexer_explorer_root = "${CONTROL_PLANE_INDEXER_EXPLORER_ROOT:-/opt/usdb/web/usdb-indexer-browser}"
+balance_history_explorer_root = "${CONTROL_PLANE_BH_EXPLORER_ROOT:-/opt/usdb/web/balance-history-browser/dist}"
+usdb_indexer_explorer_root = "${CONTROL_PLANE_INDEXER_EXPLORER_ROOT:-/opt/usdb/web/usdb-indexer-browser/dist}"
 sourcedao_web_url = "${CONTROL_PLANE_SOURCEDAO_WEB_URL:-http://127.0.0.1:3050}"
 
 [development_mint]

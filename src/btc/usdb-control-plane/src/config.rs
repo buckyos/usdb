@@ -42,11 +42,11 @@ fn default_console_root() -> PathBuf {
 }
 
 fn default_balance_history_explorer_root() -> PathBuf {
-    PathBuf::from("web/balance-history-browser")
+    PathBuf::from("web/balance-history-browser/dist")
 }
 
 fn default_usdb_indexer_explorer_root() -> PathBuf {
-    PathBuf::from("web/usdb-indexer-browser")
+    PathBuf::from("web/usdb-indexer-browser/dist")
 }
 
 fn default_sourcedao_web_url() -> String {
