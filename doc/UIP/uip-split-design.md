@@ -63,7 +63,7 @@ Activation: <height/governance/TODO>
 | 顺序 | 建议编号 | 标题 | 类型 | 优先级 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | `UIP-0000` | UIP Process and Governance | Process | P0 | Draft |
-| 1 | `UIP-0001` | Miner Pass Inscription Schema | Standards Track | P0 | Planned |
+| 1 | `UIP-0001` | Miner Pass Inscription Schema | Standards Track | P0 | Draft |
 | 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Planned |
 | 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Planned |
 | 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Planned |
@@ -98,15 +98,19 @@ Activation: <height/governance/TODO>
 目标：
 
 - 定义矿工证铭文 JSON schema。
-- 固定 `p`、`op`、`v`、`eth_main`、`eth_collab`、`prev`、`leader_ref` 等字段语义。
+- 固定 `p`、`op`、`v`、`eth_main`、`leader_pass_id`、`leader_btc_addr`、`prev` 等字段语义。
 - 明确可选字段默认值、未知字段策略、重复字段策略和 content-type。
 
 需要解决：
 
 - `prev` 在文档中可选，但当前实现中缺失会 invalid。
 - `eth_collab` 当前只是地址字段，无法表达 leader 绑定。
-- 是否引入 `leader_pass_id`、`leader_btc_addr` 或统一 `leader_ref`。
-- 是否允许旧格式在激活高度前继续有效。
+- 当前草案已采用 `leader_pass_id` / `leader_btc_addr` 二选一作为协作绑定字段，并在激活后禁止新 `eth_collab`。
+- 当前草案已将开发期旧格式排除在正式协议版本序列之外。
+
+当前草案：
+
+- `doc/UIP/UIP-0001-miner-pass-inscription.md`
 
 实现影响：
 

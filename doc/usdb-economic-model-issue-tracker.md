@@ -55,12 +55,12 @@
 | ID | 优先级 | 状态 | 标题 | 关联范围 |
 | --- | --- | --- | --- | --- |
 | ECO-001 | P0 | Done | 统一 UIP 命名、目录、编号和流程 | `doc/UIP/` |
-| ECO-002 | P0 | Todo | 明确矿工证铭文 schema 与兼容策略 | `doc/矿工证铭文协议.md`, `content.rs` |
+| ECO-002 | P0 | In Progress | 明确矿工证铭文 schema 与兼容策略 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `content.rs` |
 | ECO-003 | P0 | Todo | 将 `prev` 继承从 warn/skip 收敛为严格失败 | `pass.rs`, pass tests |
 | ECO-004 | P0 | Todo | Burned 状态必须同步写入 energy 终态 | `pass.rs`, `energy.rs`, tests |
 | ECO-005 | P0 | Todo | 明确并实现 energy penalty v2 公式 | `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | Todo | 明确并实现继承折损规则 | `pass.rs`, `energy.rs` |
-| ECO-007 | P1 | Todo | 定义 collab pass 与 leader 绑定协议 | UIP collab/leader |
+| ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | UIP collab/leader |
 | ECO-008 | P1 | Todo | 定义并实现 effective_energy / level / real_difficulty | RPC, validator payload |
 | ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
@@ -82,7 +82,7 @@
   - 明确标准类、信息类、流程类 UIP 的边界。
 - 下一步：
   - review `doc/UIP/UIP-0000-uip-process.md` 中的状态流、激活矩阵和网络标识。
-  - 确认诸王 mainnet、ETHW testnet/devnet 等正式 `network_id`。
+  - 确认主网、ETHW testnet/devnet 等正式 `network_id`。
 - 验收：
   - `doc/UIP/` 下有统一目录说明。
   - 后续所有正式协议文档都使用同一头部模板。
@@ -91,18 +91,18 @@
 ### ECO-002. 明确矿工证铭文 schema 与兼容策略
 
 - 优先级：`P0`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - `doc/矿工证铭文协议.md` 说明 `prev` 是可选字段。
   - 当前 `USDBMint` 中 `prev` 是必填 `Vec<String>`，缺失会被 serde 判为 schema invalid。
-  - 当前协议没有明确 `v` / `protocol_version` 字段，也没有 `leader_ref`。
+  - 当前协议没有明确 `v` / `protocol_version` 字段，也没有 `leader_pass_id` / `leader_btc_addr`。
   - `eth_collab` 目前只进行 EVM 地址格式校验，尚不能表达协作矿工证绑定哪个 leader。
 - 目标：
   - 明确必填字段、可选字段、默认值和兼容策略。
-  - 明确是否引入 `v`、`leader_pass_id`、`leader_btc_addr` 或其他 `leader_ref` 表达。
-  - 明确旧格式在激活高度前后的处理。
+  - 明确以 `leader_pass_id` / `leader_btc_addr` 二选一作为 leader 引用，并移除新协议中的 `eth_collab`。
+  - 明确开发期旧格式不作为正式协议版本进入 UIP 版本序列。
 - 下一步：
-  - 在 UIP inscription schema 文档中定义规范 JSON schema。
+  - Review `doc/UIP/UIP-0001-miner-pass-inscription.md` 中的 v1 schema。
   - 再决定实现层是否对 `prev` 增加 `serde(default)` 或按协议版本处理。
 - 验收：
   - 有覆盖缺失 `prev`、未知字段、版本字段、collab 字段的单测。
@@ -111,7 +111,7 @@
 ### ECO-003. 将 `prev` 继承从 warn/skip 收敛为严格失败
 
 - 优先级：`P0`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - 当前实现对 `prev` 中 owner 不一致、状态非 `Dormant`、引用不存在等情况采用 warn/skip，并继续 mint。
   - 这适合早期容错，但不适合共识价值继承。
@@ -129,7 +129,7 @@
 ### ECO-004. Burned 状态必须同步写入 energy 终态
 
 - 优先级：`P0`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - `on_pass_burned` 只更新 pass state。
   - energy 查询命中 burn 后高度时，仍可能从 burn 前的 `Dormant` 或 `Active` checkpoint 投影或返回旧值。
@@ -189,11 +189,12 @@
   - `eth_collab` 目前只是可选 EVM 地址字段。
   - 目标模型要求 collab pass 创建时绑定有效 leader。
 - 目标：
-  - 明确 collab pass 如何表达 leader 引用。
+  - 明确 collab pass 如何通过 `leader_pass_id` / `leader_btc_addr` 二选一表达 leader 引用。
   - 明确 leader 失效、collab 退出、collab 转普通 pass 的状态转换。
   - 明确 collab pass 自身是否可独立参与 candidate set。
 - 下一步：
-  - 在单独 UIP 中定义 `leader_ref` 字段和状态机。
+  - Review UIP-0001 中 standard/collab 互斥字段规则。
+  - 在 UIP-0004 中继续定义 leader 有效性、退出和 effective energy。
 - 验收：
   - collab pass 的基础 energy 与 effective energy 不会双重计数。
 
@@ -302,9 +303,9 @@
 
 ## 8. 推荐下一步
 
-建议下一轮从 `ECO-001` 和 `ECO-002` 开始：
+建议下一轮从 `ECO-002` 和 `ECO-007` 的 review 开始：
 
-1. 固化 UIP 目录、模板、编号和拆分边界。
-2. 起草正式 `UIP-0001`：Miner Pass inscription schema。
-3. 明确旧格式兼容和激活高度。
+1. 基于 `UIP-0001` 落地 `leader_pass_id` / `leader_btc_addr` 二选一解析与校验。
+2. 在实现中移除或隔离 `eth_collab`，并避免为开发期格式分配正式协议版本。
+3. 确认 v1 strict schema 的 unknown field、duplicate key 和 `prev` 缺省策略。
 4. 再进入 `prev` 严格继承与 energy v2 的实现工作。
