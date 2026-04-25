@@ -54,7 +54,7 @@
 
 | ID | 优先级 | 状态 | 标题 | 关联范围 |
 | --- | --- | --- | --- | --- |
-| ECO-001 | P0 | Todo | 统一 UIP 命名、目录、编号和流程 | `doc/UIP/` |
+| ECO-001 | P0 | Done | 统一 UIP 命名、目录、编号和流程 | `doc/UIP/` |
 | ECO-002 | P0 | Todo | 明确矿工证铭文 schema 与兼容策略 | `doc/矿工证铭文协议.md`, `content.rs` |
 | ECO-003 | P0 | Todo | 将 `prev` 继承从 warn/skip 收敛为严格失败 | `pass.rs`, pass tests |
 | ECO-004 | P0 | Todo | Burned 状态必须同步写入 energy 终态 | `pass.rs`, `energy.rs`, tests |
@@ -72,7 +72,7 @@
 ### ECO-001. 统一 UIP 命名、目录、编号和流程
 
 - 优先级：`P0`
-- 状态：`Todo`
+- 状态：`Done`
 - 当前现状：
   - `doc/usdb-economic-model-design.md` 头部使用 `UBIP: UBIP-01`。
   - 当前需求中希望采用 `UIP`，并参考 BTC BIP / ETH EIP。
@@ -81,11 +81,12 @@
   - 明确 `Draft / Review / Last Call / Final / Superseded / Withdrawn` 等状态。
   - 明确标准类、信息类、流程类 UIP 的边界。
 - 下一步：
-  - 先根据 `doc/UIP/uip-split-design.md` 固化 UIP 拆分顺序。
-  - 后续新增 `UIP-0000` 作为正式流程规范。
+  - review `doc/UIP/UIP-0000-uip-process.md` 中的状态流、激活矩阵和网络标识。
+  - 确认诸王 mainnet、ETHW testnet/devnet 等正式 `network_id`。
 - 验收：
   - `doc/UIP/` 下有统一目录说明。
   - 后续所有正式协议文档都使用同一头部模板。
+  - 已起草 `UIP-0000`，待 review 后可切换为 `Verified`。
 
 ### ECO-002. 明确矿工证铭文 schema 与兼容策略
 

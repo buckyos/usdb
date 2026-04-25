@@ -62,7 +62,7 @@ Activation: <height/governance/TODO>
 
 | 顺序 | 建议编号 | 标题 | 类型 | 优先级 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
-| 0 | `UIP-0000` | UIP Process and Governance | Process | P0 | Planned |
+| 0 | `UIP-0000` | UIP Process and Governance | Process | P0 | Draft |
 | 1 | `UIP-0001` | Miner Pass Inscription Schema | Standards Track | P0 | Planned |
 | 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Planned |
 | 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Planned |
@@ -89,7 +89,7 @@ Activation: <height/governance/TODO>
 - 正式协议文档与设计讨论稿的优先级。
 - 影响共识的变更如何绑定 `protocol_version` / `formula_version`。
 
-输出：
+当前草案：
 
 - `doc/UIP/UIP-0000-uip-process.md`
 
