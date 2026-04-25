@@ -167,6 +167,16 @@ h2 {
   color: var(--cp-accent);
 }
 
+.status-pill[data-tone='warning'] {
+  background: color-mix(in srgb, var(--cp-warning) 12%, var(--cp-surface));
+  color: color-mix(in srgb, var(--cp-warning) 74%, var(--cp-text));
+}
+
+.status-pill[data-tone='danger'] {
+  background: color-mix(in srgb, var(--cp-danger) 10%, var(--cp-surface));
+  color: var(--cp-danger);
+}
+
 .rpc-box {
   display: flex;
   min-width: 0;
@@ -319,6 +329,13 @@ h2 {
 
 .status-message {
   margin: 8px 0 14px;
+}
+
+.readiness-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -4px 0 14px;
 }
 
 .progress-wrap {
@@ -608,6 +625,10 @@ th {
 
 .mono {
   font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+}
+
+.hash-value {
+  font-size: 0.82rem;
 }
 
 @media (max-width: 1120px) {

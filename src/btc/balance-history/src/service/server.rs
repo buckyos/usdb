@@ -16,10 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 use usdb_util::{
-    BALANCE_HISTORY_SERVICE_NAME, CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION,
-    ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusSnapshotIdentity,
-    ConsensusStateReference, build_consensus_snapshot_id,
+    BALANCE_HISTORY_SERVICE_NAME, BalanceHistoryData, CONSENSUS_SNAPSHOT_ID_HASH_ALGO,
+    CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext, ConsensusRpcErrorCode,
+    ConsensusRpcErrorData, ConsensusSnapshotIdentity, ConsensusStateReference,
+    build_consensus_snapshot_id,
 };
+
+const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
@@ -474,6 +477,146 @@ impl BalanceHistoryRpcServer {
         Ok(snapshot)
     }
 
+    fn validate_aggregate_range(
+        &self,
+        range: &std::ops::Range<u32>,
+    ) -> Result<SnapshotInfo, JsonError> {
+        if range.is_empty() {
+            return Err(Self::to_invalid_params(format!(
+                "Block range must be non-empty, got [{}, {})",
+                range.start, range.end
+            )));
+        }
+
+        self.validate_requested_range(range)
+    }
+
+    fn validate_bucket_params(
+        &self,
+        range: &std::ops::Range<u32>,
+        bucket_size: u32,
+    ) -> Result<u64, JsonError> {
+        if bucket_size == 0 {
+            return Err(Self::to_invalid_params(
+                "bucket_size must be greater than 0".to_string(),
+            ));
+        }
+
+        let span = u64::from(range.end - range.start);
+        let bucket_size = u64::from(bucket_size);
+        let bucket_count = (span + bucket_size - 1) / bucket_size;
+        if bucket_count > MAX_ADDRESS_AGGREGATE_BUCKETS {
+            return Err(Self::to_invalid_params(format!(
+                "Bucket count {} exceeds maximum {}; increase bucket_size or narrow block_range",
+                bucket_count, MAX_ADDRESS_AGGREGATE_BUCKETS
+            )));
+        }
+
+        Ok(bucket_count)
+    }
+
+    fn get_balance_before_range(
+        &self,
+        script_hash: &usdb_util::USDBScriptHash,
+        range_start: u32,
+    ) -> Result<BalanceHistoryData, JsonError> {
+        if range_start == 0 {
+            return Ok(BalanceHistoryData {
+                block_height: 0,
+                delta: 0,
+                balance: 0,
+            });
+        }
+
+        self.db
+            .get_balance_at_block_height(script_hash, range_start - 1)
+            .map_err(|e| {
+                Self::to_internal_error(format!(
+                    "Failed to get range-start balance before height {}: {}",
+                    range_start, e
+                ))
+            })
+    }
+
+    fn get_balance_at_range_end(
+        &self,
+        script_hash: &usdb_util::USDBScriptHash,
+        range_end: u32,
+    ) -> Result<BalanceHistoryData, JsonError> {
+        self.db
+            .get_balance_at_block_height(script_hash, range_end - 1)
+            .map_err(|e| {
+                Self::to_internal_error(format!(
+                    "Failed to get range-end balance before height {}: {}",
+                    range_end, e
+                ))
+            })
+    }
+
+    fn get_range_balance_rows(
+        &self,
+        script_hash: &usdb_util::USDBScriptHash,
+        range: &std::ops::Range<u32>,
+    ) -> Result<Vec<BalanceHistoryData>, JsonError> {
+        self.db
+            .get_balance_in_range(script_hash, range.start, range.end)
+            .map_err(|e| {
+                Self::to_internal_error(format!(
+                    "Failed to get balance rows in block range [{}, {}): {}",
+                    range.start, range.end, e
+                ))
+            })
+    }
+
+    fn build_address_balance_summary(
+        &self,
+        script_hash: &usdb_util::USDBScriptHash,
+        range: &std::ops::Range<u32>,
+        rows: &[BalanceHistoryData],
+    ) -> Result<AddressBalanceSummary, JsonError> {
+        let start = self.get_balance_before_range(script_hash, range.start)?;
+        let end = self.get_balance_at_range_end(script_hash, range.end)?;
+        let mut summary = AddressBalanceSummary {
+            range_start: range.start,
+            range_end: range.end,
+            start_balance: start.balance,
+            end_balance: end.balance,
+            change_count: 0,
+            total_inflow: 0,
+            total_outflow: 0,
+            net_delta: 0,
+            first_movement_height: None,
+            latest_movement_height: None,
+            peak_balance: start.balance,
+            peak_height: range.start,
+            low_balance: start.balance,
+            low_height: range.start,
+        };
+
+        for row in rows {
+            summary.change_count += 1;
+            summary.net_delta += row.delta;
+            if row.delta >= 0 {
+                summary.total_inflow += row.delta as u64;
+            } else {
+                summary.total_outflow += (-row.delta) as u64;
+            }
+            summary.first_movement_height =
+                Some(summary.first_movement_height.unwrap_or(row.block_height));
+            summary.latest_movement_height = Some(row.block_height);
+            if row.balance > summary.peak_balance {
+                summary.peak_balance = row.balance;
+                summary.peak_height = row.block_height;
+            }
+            if row.balance < summary.low_balance {
+                summary.low_balance = row.balance;
+                summary.low_height = row.block_height;
+            }
+        }
+
+        Ok(summary)
+    }
+
     fn readiness_info(&self) -> Result<ReadinessInfo, String> {
         let sync_status = self.status.get_status();
         let runtime = self.status.get_runtime_readiness();
@@ -851,6 +994,110 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             .collect();
 
         results
+    }
+
+    fn get_address_balance_summary(
+        &self,
+        params: GetAddressBalanceSummaryParams,
+    ) -> JsonResult<AddressBalanceSummary> {
+        self.validate_aggregate_range(&params.block_range)?;
+        let rows = self.get_range_balance_rows(&params.script_hash, &params.block_range)?;
+        self.build_address_balance_summary(&params.script_hash, &params.block_range, &rows)
+    }
+
+    fn get_address_balance_timeseries(
+        &self,
+        params: GetAddressBalanceBucketsParams,
+    ) -> JsonResult<Vec<AddressBalanceTimeseriesPoint>> {
+        self.validate_aggregate_range(&params.block_range)?;
+        self.validate_bucket_params(&params.block_range, params.bucket_size)?;
+        let rows = self.get_range_balance_rows(&params.script_hash, &params.block_range)?;
+        let start_balance =
+            self.get_balance_before_range(&params.script_hash, params.block_range.start)?;
+
+        let mut result = Vec::new();
+        let mut row_index = 0usize;
+        let mut bucket_start = params.block_range.start;
+        let mut current_balance = start_balance.balance;
+        while bucket_start < params.block_range.end {
+            let bucket_end = bucket_start
+                .saturating_add(params.bucket_size)
+                .min(params.block_range.end);
+            let mut net_delta = 0i64;
+            let mut change_count = 0u64;
+            let mut latest_movement_height = None;
+
+            while row_index < rows.len() && rows[row_index].block_height < bucket_end {
+                let row = &rows[row_index];
+                debug_assert!(row.block_height >= bucket_start);
+                current_balance = row.balance;
+                net_delta += row.delta;
+                change_count += 1;
+                latest_movement_height = Some(row.block_height);
+                row_index += 1;
+            }
+
+            result.push(AddressBalanceTimeseriesPoint {
+                bucket_start,
+                bucket_end,
+                balance: current_balance,
+                net_delta,
+                change_count,
+                latest_movement_height,
+            });
+
+            bucket_start = bucket_end;
+        }
+
+        Ok(result)
+    }
+
+    fn get_address_flow_buckets(
+        &self,
+        params: GetAddressBalanceBucketsParams,
+    ) -> JsonResult<Vec<AddressFlowBucket>> {
+        self.validate_aggregate_range(&params.block_range)?;
+        self.validate_bucket_params(&params.block_range, params.bucket_size)?;
+        let rows = self.get_range_balance_rows(&params.script_hash, &params.block_range)?;
+
+        let mut result = Vec::new();
+        let mut row_index = 0usize;
+        let mut bucket_start = params.block_range.start;
+        while bucket_start < params.block_range.end {
+            let bucket_end = bucket_start
+                .saturating_add(params.bucket_size)
+                .min(params.block_range.end);
+            let mut inflow = 0u64;
+            let mut outflow = 0u64;
+            let mut net_delta = 0i64;
+            let mut change_count = 0u64;
+
+            while row_index < rows.len() && rows[row_index].block_height < bucket_end {
+                let row = &rows[row_index];
+                debug_assert!(row.block_height >= bucket_start);
+                if row.delta >= 0 {
+                    inflow += row.delta as u64;
+                } else {
+                    outflow += (-row.delta) as u64;
+                }
+                net_delta += row.delta;
+                change_count += 1;
+                row_index += 1;
+            }
+
+            result.push(AddressFlowBucket {
+                bucket_start,
+                bucket_end,
+                inflow,
+                outflow,
+                net_delta,
+                change_count,
+            });
+
+            bucket_start = bucket_end;
+        }
+
+        Ok(result)
     }
 
     fn get_live_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
@@ -1757,6 +2004,141 @@ mod tests {
         assert_eq!(results[2].len(), 1);
         assert_eq!(results[2][0].block_height, 11);
         assert_eq!(results[2][0].balance, 7);
+    }
+
+    #[test]
+    fn test_address_aggregate_rpcs_return_summary_and_bucketed_series() {
+        let server = make_test_server("address_aggregates");
+        let script_hash = make_script_hash(6);
+        seed_balance_entries(
+            &server,
+            &[
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 10,
+                    delta: 100,
+                    balance: 100,
+                },
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 12,
+                    delta: -40,
+                    balance: 60,
+                },
+                BalanceHistoryEntry {
+                    script_hash,
+                    block_height: 18,
+                    delta: 90,
+                    balance: 150,
+                },
+            ],
+        );
+        seed_stable_commit(&server, 30, 51);
+
+        let summary = server
+            .get_address_balance_summary(GetAddressBalanceSummaryParams {
+                script_hash,
+                block_range: 9..20,
+            })
+            .unwrap();
+        assert_eq!(summary.range_start, 9);
+        assert_eq!(summary.range_end, 20);
+        assert_eq!(summary.start_balance, 0);
+        assert_eq!(summary.end_balance, 150);
+        assert_eq!(summary.change_count, 3);
+        assert_eq!(summary.total_inflow, 190);
+        assert_eq!(summary.total_outflow, 40);
+        assert_eq!(summary.net_delta, 150);
+        assert_eq!(summary.first_movement_height, Some(10));
+        assert_eq!(summary.latest_movement_height, Some(18));
+        assert_eq!(summary.peak_balance, 150);
+        assert_eq!(summary.peak_height, 18);
+        assert_eq!(summary.low_balance, 0);
+        assert_eq!(summary.low_height, 9);
+
+        let timeseries = server
+            .get_address_balance_timeseries(GetAddressBalanceBucketsParams {
+                script_hash,
+                block_range: 9..20,
+                bucket_size: 5,
+            })
+            .unwrap();
+        assert_eq!(timeseries.len(), 3);
+        assert_eq!(timeseries[0].bucket_start, 9);
+        assert_eq!(timeseries[0].bucket_end, 14);
+        assert_eq!(timeseries[0].balance, 60);
+        assert_eq!(timeseries[0].net_delta, 60);
+        assert_eq!(timeseries[0].change_count, 2);
+        assert_eq!(timeseries[0].latest_movement_height, Some(12));
+        assert_eq!(timeseries[1].bucket_start, 14);
+        assert_eq!(timeseries[1].bucket_end, 19);
+        assert_eq!(timeseries[1].balance, 150);
+        assert_eq!(timeseries[1].net_delta, 90);
+        assert_eq!(timeseries[1].change_count, 1);
+        assert_eq!(timeseries[1].latest_movement_height, Some(18));
+        assert_eq!(timeseries[2].bucket_start, 19);
+        assert_eq!(timeseries[2].bucket_end, 20);
+        assert_eq!(timeseries[2].balance, 150);
+        assert_eq!(timeseries[2].net_delta, 0);
+        assert_eq!(timeseries[2].change_count, 0);
+        assert_eq!(timeseries[2].latest_movement_height, None);
+
+        let flow = server
+            .get_address_flow_buckets(GetAddressBalanceBucketsParams {
+                script_hash,
+                block_range: 9..20,
+                bucket_size: 5,
+            })
+            .unwrap();
+        assert_eq!(flow.len(), 3);
+        assert_eq!(flow[0].inflow, 100);
+        assert_eq!(flow[0].outflow, 40);
+        assert_eq!(flow[0].net_delta, 60);
+        assert_eq!(flow[0].change_count, 2);
+        assert_eq!(flow[1].inflow, 90);
+        assert_eq!(flow[1].outflow, 0);
+        assert_eq!(flow[1].net_delta, 90);
+        assert_eq!(flow[1].change_count, 1);
+        assert_eq!(flow[2].inflow, 0);
+        assert_eq!(flow[2].outflow, 0);
+        assert_eq!(flow[2].net_delta, 0);
+        assert_eq!(flow[2].change_count, 0);
+    }
+
+    #[test]
+    fn test_address_aggregate_rpcs_reject_invalid_ranges_and_buckets() {
+        let server = make_test_server("address_aggregate_params");
+        let script_hash = make_script_hash(7);
+        seed_stable_commit(&server, 3_000, 61);
+
+        let empty_range = server
+            .get_address_balance_summary(GetAddressBalanceSummaryParams {
+                script_hash,
+                block_range: 10..10,
+            })
+            .unwrap_err();
+        assert_eq!(empty_range.code, ErrorCode::InvalidParams);
+        assert!(empty_range.message.contains("non-empty"));
+
+        let zero_bucket = server
+            .get_address_balance_timeseries(GetAddressBalanceBucketsParams {
+                script_hash,
+                block_range: 0..10,
+                bucket_size: 0,
+            })
+            .unwrap_err();
+        assert_eq!(zero_bucket.code, ErrorCode::InvalidParams);
+        assert!(zero_bucket.message.contains("bucket_size"));
+
+        let too_many_buckets = server
+            .get_address_flow_buckets(GetAddressBalanceBucketsParams {
+                script_hash,
+                block_range: 0..2_001,
+                bucket_size: 1,
+            })
+            .unwrap_err();
+        assert_eq!(too_many_buckets.code, ErrorCode::InvalidParams);
+        assert!(too_many_buckets.message.contains("exceeds maximum"));
     }
 
     #[test]

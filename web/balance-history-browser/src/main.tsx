@@ -19,6 +19,59 @@ interface BalanceHistorySyncStatus {
   message?: string | null
 }
 
+interface BalanceHistoryReadiness {
+  service: string
+  rpc_alive: boolean
+  query_ready: boolean
+  consensus_ready: boolean
+  phase: string
+  current: number
+  total: number
+  message?: string | null
+  stable_height?: number | null
+  stable_block_hash?: string | null
+  latest_block_commit?: string | null
+  snapshot_origin?: unknown
+  snapshot_verification_state?: unknown
+  snapshot_signing_key_id?: string | null
+  blockers?: string[]
+}
+
+interface AddressBalanceSummaryRpc {
+  range_start: number
+  range_end: number
+  start_balance: number
+  end_balance: number
+  change_count: number
+  total_inflow: number
+  total_outflow: number
+  net_delta: number
+  first_movement_height?: number | null
+  latest_movement_height?: number | null
+  peak_balance: number
+  peak_height: number
+  low_balance: number
+  low_height: number
+}
+
+interface AddressBalanceTimeseriesPoint {
+  bucket_start: number
+  bucket_end: number
+  balance: number
+  net_delta: number
+  change_count: number
+  latest_movement_height?: number | null
+}
+
+interface AddressFlowBucket {
+  bucket_start: number
+  bucket_end: number
+  inflow: number
+  outflow: number
+  net_delta: number
+  change_count: number
+}
+
 interface AddressAnalysisSummary {
   count: number
   latestHeight: number
@@ -64,6 +117,19 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     current: 'Current',
     total: 'Total',
     phase: 'Phase',
+    rpcAlive: 'RPC Alive',
+    queryReady: 'Query Ready',
+    consensusReady: 'Consensus Ready',
+    ready: 'Ready',
+    notReady: 'Not Ready',
+    stableHeight: 'Stable Height',
+    stableBlockHash: 'Stable Block Hash',
+    latestBlockCommit: 'Latest Block Commit',
+    snapshotOrigin: 'Snapshot Origin',
+    snapshotVerification: 'Snapshot Verification',
+    snapshotSigner: 'Snapshot Signer',
+    blockers: 'Blockers',
+    none: 'None',
     queryWorkspace: 'Query Workspace',
     scriptHash: 'Script Hash',
     scriptHashPlaceholder: 'Enter USDBScriptHash',
@@ -157,6 +223,19 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     current: '当前进度',
     total: '进度上限',
     phase: '阶段',
+    rpcAlive: 'RPC 可用',
+    queryReady: '查询可用',
+    consensusReady: '共识可用',
+    ready: '就绪',
+    notReady: '未就绪',
+    stableHeight: '稳定高度',
+    stableBlockHash: '稳定区块 Hash',
+    latestBlockCommit: '最新 Commit ID',
+    snapshotOrigin: '快照来源',
+    snapshotVerification: '快照验证',
+    snapshotSigner: '快照签名方',
+    blockers: '阻塞原因',
+    none: '无',
     queryWorkspace: '查询工作台',
     scriptHash: 'Script Hash',
     scriptHashPlaceholder: '输入 USDBScriptHash',
@@ -339,6 +418,44 @@ function analyzeRows(rows: AddressBalanceRow[]): AddressAnalysisSummary | null {
   )
 }
 
+function normalizeAggregateSummary(summary: AddressBalanceSummaryRpc | null): AddressAnalysisSummary | null {
+  if (!summary) return null
+  return {
+    count: summary.change_count,
+    latestHeight: summary.latest_movement_height ?? Math.max(summary.range_start, summary.range_end - 1),
+    latestBalance: summary.end_balance,
+    firstHeight: summary.first_movement_height ?? summary.range_start,
+    net: summary.net_delta,
+    inflow: summary.total_inflow,
+    outflow: summary.total_outflow,
+    peakBalance: summary.peak_balance,
+    peakHeight: summary.peak_height,
+    lowBalance: summary.low_balance,
+    lowHeight: summary.low_height,
+  }
+}
+
+function chooseBucketSize(start: number, end: number) {
+  const span = Math.max(1, end - start)
+  return Math.max(1, Math.ceil(span / 160))
+}
+
+function compactHash(value?: string | null) {
+  if (!value) return '-'
+  if (value.length <= 24) return value
+  return `${value.slice(0, 12)}...${value.slice(-8)}`
+}
+
+function formatReadinessExtra(value: unknown) {
+  if (value == null || value === '') return '-'
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
 function movementTone(delta: number) {
   if (delta > 0) return 'positive'
   if (delta < 0) return 'negative'
@@ -496,6 +613,7 @@ function App() {
   const [rpcUrl, setRpcUrl] = React.useState(readInitialRpcUrl)
   const [rpcDraft, setRpcDraft] = React.useState(readInitialRpcUrl)
   const [status, setStatus] = React.useState<BalanceHistorySyncStatus | null>(null)
+  const [readiness, setReadiness] = React.useState<BalanceHistoryReadiness | null>(null)
   const [network, setNetwork] = React.useState('-')
   const [height, setHeight] = React.useState<number | null>(null)
   const [latency, setLatency] = React.useState<string>('-')
@@ -507,6 +625,9 @@ function App() {
   const [singleStart, setSingleStart] = React.useState('')
   const [singleEnd, setSingleEnd] = React.useState('')
   const [singleRows, setSingleRows] = React.useState<AddressBalanceRow[]>([])
+  const [singleAggregateSummary, setSingleAggregateSummary] = React.useState<AddressBalanceSummaryRpc | null>(null)
+  const [singleTimeseries, setSingleTimeseries] = React.useState<AddressBalanceTimeseriesPoint[]>([])
+  const [singleFlowBuckets, setSingleFlowBuckets] = React.useState<AddressFlowBucket[]>([])
   const [singlePage, setSinglePage] = React.useState(0)
   const [singleHint, setSingleHint] = React.useState('')
   const [batchScriptHashes, setBatchScriptHashes] = React.useState('')
@@ -556,16 +677,19 @@ function App() {
 
   const refreshStatus = React.useCallback(async () => {
     try {
-      const [nextNetwork, nextHeight, nextStatus] = await Promise.all([
+      const [nextNetwork, nextHeight, nextStatus, nextReadiness] = await Promise.all([
         rpcCall<string>('get_network_type'),
         rpcCall<number>('get_block_height'),
         rpcCall<BalanceHistorySyncStatus>('get_sync_status'),
+        rpcCall<BalanceHistoryReadiness>('get_readiness'),
       ])
       setNetwork(String(nextNetwork))
       setHeight(nextHeight)
       setStatus(nextStatus)
+      setReadiness(nextReadiness)
       setRpcHint(t('connected', { time: new Date().toLocaleTimeString(locale) }))
     } catch (error) {
+      setReadiness(null)
       setRpcHint(t('connectFailed', { error: errorMessage(error) }))
     }
   }, [locale, rpcCall, t])
@@ -604,14 +728,42 @@ function App() {
     try {
       if (!singleScriptHash.trim()) throw new Error(t('scriptHashRequired'))
       const selector = buildSelector(singleMode, singleHeight, singleStart, singleEnd, t)
-      const rows = await rpcCall<AddressBalanceRow[]>('get_address_balance', [
-        { script_hash: singleScriptHash.trim(), ...selector },
+      const scriptHash = singleScriptHash.trim()
+      const rawRowsRequest = rpcCall<AddressBalanceRow[]>('get_address_balance', [
+        { script_hash: scriptHash, ...selector },
       ])
-      setSingleRows(Array.isArray(rows) ? rows : [])
+      if (selector.block_range) {
+        const bucketSize = chooseBucketSize(selector.block_range.start, selector.block_range.end)
+        const [rows, summary, timeseries, flowBuckets] = await Promise.all([
+          rawRowsRequest,
+          rpcCall<AddressBalanceSummaryRpc>('get_address_balance_summary', [
+            { script_hash: scriptHash, block_range: selector.block_range },
+          ]),
+          rpcCall<AddressBalanceTimeseriesPoint[]>('get_address_balance_timeseries', [
+            { script_hash: scriptHash, block_range: selector.block_range, bucket_size: bucketSize },
+          ]),
+          rpcCall<AddressFlowBucket[]>('get_address_flow_buckets', [
+            { script_hash: scriptHash, block_range: selector.block_range, bucket_size: bucketSize },
+          ]),
+        ])
+        setSingleRows(Array.isArray(rows) ? rows : [])
+        setSingleAggregateSummary(summary)
+        setSingleTimeseries(Array.isArray(timeseries) ? timeseries : [])
+        setSingleFlowBuckets(Array.isArray(flowBuckets) ? flowBuckets : [])
+      } else {
+        const rows = await rawRowsRequest
+        setSingleRows(Array.isArray(rows) ? rows : [])
+        setSingleAggregateSummary(null)
+        setSingleTimeseries([])
+        setSingleFlowBuckets([])
+      }
       setSinglePage(0)
       setSingleHint(t('querySuccess'))
     } catch (error) {
       setSingleRows([])
+      setSingleAggregateSummary(null)
+      setSingleTimeseries([])
+      setSingleFlowBuckets([])
       setSinglePage(0)
       setSingleHint(t('queryFailed', { error: errorMessage(error) }))
     }
@@ -635,7 +787,21 @@ function App() {
   }
 
   const singleSummary = summarizeRows(singleRows)
-  const singleAnalysis = analyzeRows(singleRows)
+  const singleAnalysis = normalizeAggregateSummary(singleAggregateSummary) ?? analyzeRows(singleRows)
+  const balanceChartRows = singleTimeseries.length > 0
+    ? singleTimeseries.map((point) => ({
+        block_height: Math.max(point.bucket_start, point.bucket_end - 1),
+        balance: point.balance,
+        delta: point.net_delta,
+      }))
+    : singleRows
+  const flowChartRows = singleFlowBuckets.length > 0
+    ? singleFlowBuckets.map((bucket) => ({
+        block_height: Math.max(bucket.bucket_start, bucket.bucket_end - 1),
+        balance: bucket.inflow - bucket.outflow,
+        delta: bucket.net_delta,
+      }))
+    : singleRows
   const sortedSingleRows = React.useMemo(
     () => [...singleRows].sort((left, right) => right.block_height - left.block_height),
     [singleRows],
@@ -743,12 +909,32 @@ function App() {
             </div>
             <button className="ghost" type="button" onClick={() => void refreshStatus()}>{dict.refresh}</button>
           </div>
-          <p className="status-message">{status?.message || dict.waiting}</p>
+          <p className="status-message">{readiness?.message || status?.message || dict.waiting}</p>
+          <div className="readiness-pills">
+            <span className="status-pill" data-tone={readiness?.rpc_alive ? 'success' : 'danger'}>
+              {dict.rpcAlive}: {readiness?.rpc_alive ? dict.ready : dict.notReady}
+            </span>
+            <span className="status-pill" data-tone={readiness?.query_ready ? 'success' : 'warning'}>
+              {dict.queryReady}: {readiness?.query_ready ? dict.ready : dict.notReady}
+            </span>
+            <span className="status-pill" data-tone={readiness?.consensus_ready ? 'success' : 'warning'}>
+              {dict.consensusReady}: {readiness?.consensus_ready ? dict.ready : dict.notReady}
+            </span>
+          </div>
           <div className="progress-wrap"><div className="progress-bar" style={{ width: `${progress.toFixed(2)}%` }} /></div>
           <dl className="kv">
             <dt>{dict.current}</dt><dd>{nf.format(status?.current ?? 0)}</dd>
             <dt>{dict.total}</dt><dd>{nf.format(status?.total ?? 0)}</dd>
             <dt>{dict.phase}</dt><dd>{status?.phase ?? '-'}</dd>
+            <dt>{dict.stableHeight}</dt><dd>{readiness?.stable_height == null ? '-' : nf.format(readiness.stable_height)}</dd>
+            <dt>{dict.stableBlockHash}</dt>
+            <dd className="mono hash-value" title={readiness?.stable_block_hash ?? ''}>{compactHash(readiness?.stable_block_hash)}</dd>
+            <dt>{dict.latestBlockCommit}</dt>
+            <dd className="mono hash-value" title={readiness?.latest_block_commit ?? ''}>{compactHash(readiness?.latest_block_commit)}</dd>
+            <dt>{dict.snapshotOrigin}</dt><dd>{formatReadinessExtra(readiness?.snapshot_origin)}</dd>
+            <dt>{dict.snapshotVerification}</dt><dd>{formatReadinessExtra(readiness?.snapshot_verification_state)}</dd>
+            <dt>{dict.snapshotSigner}</dt><dd className="mono hash-value">{readiness?.snapshot_signing_key_id || '-'}</dd>
+            <dt>{dict.blockers}</dt><dd>{readiness?.blockers?.length ? readiness.blockers.join(', ') : dict.none}</dd>
           </dl>
         </article>
 
@@ -816,9 +1002,9 @@ function App() {
               <p className="eyebrow">{singleWindowLabel}</p>
               <h2>{dict.balanceTrend}</h2>
             </div>
-            <p className="hint">{singleRows.length > 0 ? `${nf.format(singleRows.length)} ${dict.records}` : dict.noMovements}</p>
+            <p className="hint">{singleAnalysis ? `${nf.format(singleAnalysis.count)} ${dict.records}` : dict.noMovements}</p>
           </div>
-          <LineChart rows={singleRows} nf={nf} emptyText={dict.noMovements} xLabel={dict.blockAxis} yLabel={dict.balanceAxis} />
+          <LineChart rows={balanceChartRows} nf={nf} emptyText={dict.noMovements} xLabel={dict.blockAxis} yLabel={dict.balanceAxis} />
         </article>
         <article className="card">
           <div className="card-head">
@@ -833,7 +1019,7 @@ function App() {
               delta: formatDelta(singleAnalysis.net, nf),
             }) : dict.noMovements}</p>
           </div>
-          <DeltaChart rows={singleRows} nf={nf} emptyText={dict.noMovements} xLabel={dict.blockAxis} yLabel={dict.netFlowAxis} />
+          <DeltaChart rows={flowChartRows} nf={nf} emptyText={dict.noMovements} xLabel={dict.blockAxis} yLabel={dict.netFlowAxis} />
         </article>
       </section>
 

@@ -83,6 +83,96 @@ pub struct AddressBalance {
     pub delta: i64,
 }
 
+/// Query parameters for one address-level aggregate over a block range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetAddressBalanceSummaryParams {
+    /// Target script hash in balance-history's canonical internal format.
+    pub script_hash: USDBScriptHash,
+
+    /// Half-open range `[start, end)` to summarize.
+    pub block_range: Range<u32>,
+}
+
+/// Query parameters for bucketed address-level aggregates over a block range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetAddressBalanceBucketsParams {
+    /// Target script hash in balance-history's canonical internal format.
+    pub script_hash: USDBScriptHash,
+
+    /// Half-open range `[start, end)` to aggregate.
+    pub block_range: Range<u32>,
+
+    /// Number of blocks covered by each bucket.
+    pub bucket_size: u32,
+}
+
+/// Address-level balance and flow summary for a block range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressBalanceSummary {
+    /// Query range start, inclusive.
+    pub range_start: u32,
+    /// Query range end, exclusive.
+    pub range_end: u32,
+    /// Balance immediately before `range_start`, in satoshi.
+    pub start_balance: u64,
+    /// Balance at or before `range_end - 1`, in satoshi.
+    pub end_balance: u64,
+    /// Number of persisted balance movements in the range.
+    pub change_count: u64,
+    /// Sum of positive deltas in the range, in satoshi.
+    pub total_inflow: u64,
+    /// Sum of absolute negative deltas in the range, in satoshi.
+    pub total_outflow: u64,
+    /// Signed net delta in the range, in satoshi.
+    pub net_delta: i64,
+    /// First movement height in the range, when present.
+    pub first_movement_height: Option<u32>,
+    /// Latest movement height in the range, when present.
+    pub latest_movement_height: Option<u32>,
+    /// Highest observed balance across range-start and movement records.
+    pub peak_balance: u64,
+    /// Height where `peak_balance` was observed.
+    pub peak_height: u32,
+    /// Lowest observed balance across range-start and movement records.
+    pub low_balance: u64,
+    /// Height where `low_balance` was observed.
+    pub low_height: u32,
+}
+
+/// One bucketed balance point, intended for downsampled balance charts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressBalanceTimeseriesPoint {
+    /// Bucket start height, inclusive.
+    pub bucket_start: u32,
+    /// Bucket end height, exclusive.
+    pub bucket_end: u32,
+    /// Balance at or before `bucket_end - 1`, in satoshi.
+    pub balance: u64,
+    /// Signed net delta recorded inside this bucket, in satoshi.
+    pub net_delta: i64,
+    /// Number of persisted balance movements inside this bucket.
+    pub change_count: u64,
+    /// Latest movement height inside this bucket, when present.
+    pub latest_movement_height: Option<u32>,
+}
+
+/// One bucketed flow aggregate, intended for inflow/outflow charts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressFlowBucket {
+    /// Bucket start height, inclusive.
+    pub bucket_start: u32,
+    /// Bucket end height, exclusive.
+    pub bucket_end: u32,
+    /// Sum of positive deltas inside this bucket, in satoshi.
+    pub inflow: u64,
+    /// Sum of absolute negative deltas inside this bucket, in satoshi.
+    pub outflow: u64,
+    /// Signed net delta inside this bucket, in satoshi.
+    pub net_delta: i64,
+    /// Number of persisted balance movements inside this bucket.
+    pub change_count: u64,
+}
+
 /// Stable snapshot metadata exposed to downstream consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotInfo {
@@ -459,6 +549,38 @@ pub trait BalanceHistoryRpc {
         &self,
         params: GetBalancesParams,
     ) -> JsonResult<Vec<Vec<Option<AddressBalance>>>>;
+
+    /// Returns address-level balance and flow summary over one block range.
+    ///
+    /// This is an aggregate view over the same persisted movement records used
+    /// by `get_address_balance(block_range=...)`, with explicit range and stable
+    /// height validation.
+    #[rpc(name = "get_address_balance_summary")]
+    fn get_address_balance_summary(
+        &self,
+        params: GetAddressBalanceSummaryParams,
+    ) -> JsonResult<AddressBalanceSummary>;
+
+    /// Returns downsampled address balance points over fixed block buckets.
+    ///
+    /// Every bucket in the requested range is returned, including buckets with
+    /// no movement, so browsers can render a continuous balance curve without
+    /// fetching every raw movement on mainnet-scale ranges.
+    #[rpc(name = "get_address_balance_timeseries")]
+    fn get_address_balance_timeseries(
+        &self,
+        params: GetAddressBalanceBucketsParams,
+    ) -> JsonResult<Vec<AddressBalanceTimeseriesPoint>>;
+
+    /// Returns bucketed inflow/outflow aggregates for one address.
+    ///
+    /// Every bucket in the requested range is returned. `inflow` and `outflow`
+    /// are non-negative absolute values; `net_delta` is signed.
+    #[rpc(name = "get_address_flow_buckets")]
+    fn get_address_flow_buckets(
+        &self,
+        params: GetAddressBalanceBucketsParams,
+    ) -> JsonResult<Vec<AddressFlowBucket>>;
 
     /// Gets one currently-live UTXO from balance-history's persisted UTXO view.
     ///

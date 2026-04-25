@@ -1,6 +1,7 @@
 use super::rpc::{
-    AddressBalance, BlockCommitInfo, GetStateRefAtHeightParams, HistoricalSnapshotStateRef,
-    ReadinessInfo, SnapshotInfo, UtxoInfo,
+    AddressBalance, AddressBalanceSummary, AddressBalanceTimeseriesPoint, AddressFlowBucket,
+    BlockCommitInfo, GetStateRefAtHeightParams, HistoricalSnapshotStateRef, ReadinessInfo,
+    SnapshotInfo, UtxoInfo,
 };
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::SyncStatus;
@@ -193,6 +194,56 @@ impl RpcClient {
             params,
         )
         .await
+    }
+
+    pub async fn get_address_balance_summary(
+        &self,
+        script_hash: USDBScriptHash,
+        block_range: Range<u32>,
+    ) -> Result<AddressBalanceSummary, String> {
+        let params = json!([{
+            "script_hash": script_hash,
+            "block_range": block_range,
+        }]);
+
+        self.rpc_call::<AddressBalanceSummary>(&self.url, "get_address_balance_summary", params)
+            .await
+    }
+
+    pub async fn get_address_balance_timeseries(
+        &self,
+        script_hash: USDBScriptHash,
+        block_range: Range<u32>,
+        bucket_size: u32,
+    ) -> Result<Vec<AddressBalanceTimeseriesPoint>, String> {
+        let params = json!([{
+            "script_hash": script_hash,
+            "block_range": block_range,
+            "bucket_size": bucket_size,
+        }]);
+
+        self.rpc_call::<Vec<AddressBalanceTimeseriesPoint>>(
+            &self.url,
+            "get_address_balance_timeseries",
+            params,
+        )
+        .await
+    }
+
+    pub async fn get_address_flow_buckets(
+        &self,
+        script_hash: USDBScriptHash,
+        block_range: Range<u32>,
+        bucket_size: u32,
+    ) -> Result<Vec<AddressFlowBucket>, String> {
+        let params = json!([{
+            "script_hash": script_hash,
+            "block_range": block_range,
+            "bucket_size": bucket_size,
+        }]);
+
+        self.rpc_call::<Vec<AddressFlowBucket>>(&self.url, "get_address_flow_buckets", params)
+            .await
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(

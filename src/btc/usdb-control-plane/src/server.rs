@@ -94,6 +94,9 @@ const BALANCE_HISTORY_PROXY_METHODS: &[&str] = &[
     "get_addresses_balances",
     "get_address_balance_delta",
     "get_addresses_balances_delta",
+    "get_address_balance_summary",
+    "get_address_balance_timeseries",
+    "get_address_flow_buckets",
 ];
 
 const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
@@ -1164,6 +1167,9 @@ async fn normalize_balance_history_request(
             | "get_addresses_balances"
             | "get_address_balance_delta"
             | "get_addresses_balances_delta"
+            | "get_address_balance_summary"
+            | "get_address_balance_timeseries"
+            | "get_address_flow_buckets"
     ) {
         return Ok(request);
     }
@@ -1396,7 +1402,11 @@ fn normalize_balance_history_params(
         .ok_or_else(|| format!("{} requires the first param to be an object", method))?;
 
     match method {
-        "get_address_balance" | "get_address_balance_delta" => {
+        "get_address_balance"
+        | "get_address_balance_delta"
+        | "get_address_balance_summary"
+        | "get_address_balance_timeseries"
+        | "get_address_flow_buckets" => {
             let candidate = first
                 .get("script_hash")
                 .and_then(Value::as_str)
@@ -2349,19 +2359,28 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let normalized = normalize_balance_history_params(
+        for method in [
             "get_address_balance",
-            json!([{
-                "address": address,
-                "block_height": null,
-                "block_range": null
-            }]),
-            Network::Bitcoin,
-        )
-        .unwrap();
+            "get_address_balance_delta",
+            "get_address_balance_summary",
+            "get_address_balance_timeseries",
+            "get_address_flow_buckets",
+        ] {
+            assert!(BALANCE_HISTORY_PROXY_METHODS.contains(&method));
+            let normalized = normalize_balance_history_params(
+                method,
+                json!([{
+                    "address": address,
+                    "block_height": null,
+                    "block_range": null
+                }]),
+                Network::Bitcoin,
+            )
+            .unwrap();
 
-        assert_eq!(normalized[0]["script_hash"], expected);
-        assert!(normalized[0].get("address").is_none());
+            assert_eq!(normalized[0]["script_hash"], expected);
+            assert!(normalized[0].get("address").is_none());
+        }
     }
 
     #[test]
