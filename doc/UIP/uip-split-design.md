@@ -174,18 +174,20 @@ Activation: <height/governance/TODO>
 建议公式拆分：
 
 ```text
-eligible_balance_sats(balance)
-    = 0,       if balance < 100_000
-    = balance, otherwise
+balance_units = floor(owner_balance_sats / 100_000)
 
 growth_delta
-    = eligible_balance_sats * 10_000 * block_delta
+    = balance_units * 1_000_000_000 * block_delta
 ```
 
 惩罚目标：
 
 ```text
-penalty = floor(lost_sats * age_blocks * 10_000 * 3 / 2)
+units_before = floor(balance_before_sats / 100_000)
+units_after  = floor(balance_after_sats  / 100_000)
+lost_units   = max(0, units_before - units_after)
+
+penalty = floor(lost_units * age_blocks * 1_000_000_000 * 3 / 2)
 ```
 
 继承目标：
@@ -196,12 +198,11 @@ inherit(prev_i) = floor(raw_energy(prev_i) * 9500 / 10000)
 
 需要解决：
 
-- 定点精度和 rounding。
-- `active_block_height` 在增资和部分减仓时的比例更新。
-- `lambda`、`INHERIT_DISCOUNT` 的最终参数。
-- `u64` saturation 是否作为协议语义。
+- `uint128` energy 在 RocksDB、RPC、validator payload 和前端展示中的迁移。
+- decimal string 的 canonical encoding。
+- `active_block_height` 在部分减仓时的比例更新。
 - Burned energy 终态是否强制为 0。
-- 增长口径是否继续采用当前实现的 sat 级线性增长，还是改为离散 `0.001 BTC` 单位增长。
+- 开发期从高度 `0` 激活后，旧公式数据如何重建。
 
 当前草案：
 

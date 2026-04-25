@@ -6,7 +6,7 @@ Layer: BTC Application / Consensus Input
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0001, UIP-0002
 Supersedes: doc/usdb-economic-model-design.md raw energy sections after activation
-Activation: BTC network activation matrix
+Activation: BTC network activation matrix; development networks activate from height 0
 
 # 摘要
 
@@ -51,7 +51,10 @@ Activation: BTC network activation matrix
 | `inheritable_energy` | 某张 pass 可通过 `prev` 传给新 pass 的 raw energy。 |
 | `effective_energy` | 挖矿候选和难度计算使用的有效能量，由 UIP-0004/0005 定义，不可继承。 |
 | `owner_balance_sats` | pass 当前 owner 在 BTC 侧的可计入余额，单位 sat。 |
-| `active_block_height` | 当前 raw energy checkpoint 对应的余额年龄起点。 |
+| `balance_units` | 将 owner BTC 余额按 `UNIT_SATS` 向下取整后的离散余额单位。 |
+| `last_settlement_height` | 最近一条 energy checkpoint 的高度，即 `latest_energy_record.block_height`。 |
+| `active_block_height` | 用于 penalty 的余额年龄起点，只由 mint 或余额减少规则调整。 |
+| `energy_uint` | 无符号 128 位整数能量值。 |
 
 # 规范关键词
 
@@ -90,48 +93,89 @@ Leader 关系不得改变 collab pass 自己的 `raw_energy` 计算。
 
 # 参数草案
 
-| 参数 | 建议值 | 含义 |
+| 参数 | 值 | 含义 |
 | --- | ---: | --- |
-| `MIN_BALANCE_SATS` | `100_000` | 余额达到 0.001 BTC 后才开始增长。 |
-| `RAW_GROWTH_PER_SAT_BLOCK` | `10_000` | 每 sat 每 BTC block 的 raw energy 增长倍率。 |
+| `UNIT_SATS` | `100_000` | 1 个离散余额单位，等于 0.001 BTC。 |
+| `ENERGY_PER_UNIT_BLOCK` | `1_000_000_000` | 每个 `balance_unit` 每 BTC block 增长的 raw energy。 |
 | `PENALTY_LAMBDA_NUM` | `3` | penalty 倍率分子。 |
 | `PENALTY_LAMBDA_DEN` | `2` | penalty 倍率分母，即 `lambda = 1.5`。 |
 | `INHERIT_DISCOUNT_BPS` | `500` | `prev` 继承折损，500 bps = 5%。 |
 | `BPS_DENOMINATOR` | `10_000` | bps 分母。 |
+| `ENERGY_MAX` | `2^128 - 1` | `energy_uint` 最大值。 |
 
 所有公式必须使用整数或定点数实现。禁止在共识路径使用浮点数。
 
-# Raw Energy 增长
+# Balance Units
 
-## 可计入余额
+UIP-0003 采用离散余额单位，而不是 sat 级线性增长。
 
-余额阈值规则：
+余额换算规则：
 
 ```text
-eligible_balance_sats(balance)
-    = 0,       if balance < MIN_BALANCE_SATS
-    = balance, otherwise
+balance_units(balance_sats)
+    = floor(balance_sats / UNIT_SATS)
 ```
 
-本文草案采用“达到阈值后按 sat 线性增长”的规则，以保持与当前实现的增长口径一致。
+余额低于 `UNIT_SATS` 时：
+
+```text
+balance_units = 0
+```
+
+因此低于 0.001 BTC 的余额不增长 raw energy，也不会形成 penalty 单位。
+
+## Unit Delta
+
+余额变化时，必须先分别计算变化前后的 unit 快照，再计算 unit delta：
+
+```text
+units_before = floor(balance_before_sats / UNIT_SATS)
+units_after  = floor(balance_after_sats  / UNIT_SATS)
+
+gained_units = max(0, units_after - units_before)
+lost_units   = max(0, units_before - units_after)
+```
+
+禁止使用：
+
+```text
+floor(abs(balance_after_sats - balance_before_sats) / UNIT_SATS)
+```
+
+直接计算 `lost_units` 或 `gained_units`。该写法会在 unit 边界附近多算或少算。
+
+示例：
+
+| `balance_before_sats` | `balance_after_sats` | sat delta | `units_before` | `units_after` | `lost_units` | `gained_units` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `199_999` | `100_000` | `-99_999` | `1` | `1` | `0` | `0` |
+| `100_001` | `99_999` | `-2` | `1` | `0` | `1` | `0` |
+| `250_000` | `150_000` | `-100_000` | `2` | `1` | `1` | `0` |
+| `99_999` | `100_000` | `+1` | `0` | `1` | `0` | `1` |
+| `100_000` | `199_999` | `+99_999` | `1` | `1` | `0` | `0` |
+
+# Raw Energy 增长
 
 ## 增长公式
 
-Active pass 从 `from_height` 投影到 `to_height` 时：
+Active pass 从最近结算点投影到目标高度时：
 
 ```text
-block_delta = max(0, to_height - from_height)
+last_settlement_height = latest_energy_record.block_height
+block_delta = max(0, to_height - last_settlement_height)
 
 growth_delta
-    = eligible_balance_sats(owner_balance_sats)
-      * RAW_GROWTH_PER_SAT_BLOCK
+    = balance_units(owner_balance_sats)
+      * ENERGY_PER_UNIT_BLOCK
       * block_delta
 
 projected_raw_energy
     = settled_raw_energy + growth_delta
 ```
 
-当 `to_height <= from_height` 时，`growth_delta = 0`。
+当 `to_height <= last_settlement_height` 时，`growth_delta = 0`。
+
+`active_block_height` 不参与增长窗口计算。它只用于余额减少时的 penalty age。
 
 ## 增长示例
 
@@ -141,6 +185,8 @@ projected_raw_energy
 | ---: | ---: | ---: | ---: |
 | `99_999` sats | `0` | `0` | `0` |
 | `100_000` sats | `1_000_000_000` | `144_000_000_000` | `1_008_000_000_000` |
+| `199_999` sats | `1_000_000_000` | `144_000_000_000` | `1_008_000_000_000` |
+| `200_000` sats | `2_000_000_000` | `288_000_000_000` | `2_016_000_000_000` |
 | `1 BTC` | `1_000_000_000_000` | `144_000_000_000_000` | `1_008_000_000_000_000` |
 
 # 余额增加
@@ -152,34 +198,27 @@ settled_raw_energy_h
     = projected_raw_energy(pass, h, balance_before)
 ```
 
-余额增加后的推荐 age 规则：
+然后写入新的 settlement record：
 
 ```text
-age_before = h - active_block_height_before
-
-remaining_age_after_increase
-    = floor(age_before * balance_before / balance_after)
-
-active_block_height_after
-    = h - remaining_age_after_increase
+record.block_height = h
+record.owner_balance_sats = balance_after
+record.raw_energy = settled_raw_energy_h
+record.active_block_height = active_block_height_before
 ```
 
-如果 `balance_before = 0`，则：
+正向增资禁止重置或折算 `active_block_height`。
 
-```text
-active_block_height_after = h
-```
-
-该规则表达：新增 BTC 不能免费继承旧余额的全部持有年龄。
-
-当前实现对正向增资不调整 `active_block_height`。因此，本节是 v2 目标规则，进入 Review 前需要审计是否作为激活变更落地，还是保留当前实现口径。
+后续增长从新的 `record.block_height` 开始，并使用新的 `balance_units(balance_after)` 作为增长斜率。
 
 # 余额减少与 Penalty
 
 当 Active pass 的 owner 余额在高度 `h` 从 `balance_before` 减少到 `balance_after` 时：
 
 ```text
-lost_sats = balance_before - balance_after
+units_before = floor(balance_before / UNIT_SATS)
+units_after  = floor(balance_after  / UNIT_SATS)
+lost_units   = max(0, units_before - units_after)
 age_before = h - active_block_height_before
 ```
 
@@ -190,14 +229,16 @@ settled_raw_energy_h
     = projected_raw_energy(pass, h, balance_before)
 ```
 
+如果 `units_before = 0` 或 `lost_units = 0`，不得施加 penalty，且 `active_block_height` 保持不变。实现可以写入新的 settlement record 以更新 `owner_balance_sats`，也可以在不影响后续 `balance_units` 的前提下跳过该记录。
+
 目标 penalty 公式：
 
 ```text
 penalty
     = floor(
-        lost_sats
+        lost_units
         * age_before
-        * RAW_GROWTH_PER_SAT_BLOCK
+        * ENERGY_PER_UNIT_BLOCK
         * PENALTY_LAMBDA_NUM
         / PENALTY_LAMBDA_DEN
       )
@@ -209,7 +250,7 @@ raw_energy_after_penalty
 使用建议参数时：
 
 ```text
-penalty = floor(lost_sats * age_before * 15_000)
+penalty = floor(lost_units * age_before * 1_500_000_000)
 ```
 
 ## 余额年龄折旧
@@ -218,39 +259,44 @@ penalty = floor(lost_sats * age_before * 15_000)
 
 ```text
 remaining_age_after_loss
-    = floor(age_before * balance_after / balance_before)
+    = floor(age_before * units_after / units_before)
 
 active_block_height_after
     = h - remaining_age_after_loss
 ```
 
-如果 `balance_after = 0` 或 `balance_after < MIN_BALANCE_SATS`，则：
+如果 `lost_units > 0` 且 `units_after = 0`，则：
 
 ```text
 active_block_height_after = h
 ```
 
-如果 `balance_before = 0`，该事件不得产生 penalty，且：
+使用 `floor(age_before * units_after / units_before)` 是有意选择：剩余 unit 的保留年龄不会超过精确比例值，从而避免少扣年龄。对应的损失年龄会向上取整。
+
+余额减少后的 settlement record：
 
 ```text
-active_block_height_after = h
+record.block_height = h
+record.owner_balance_sats = balance_after
+record.raw_energy = raw_energy_after_penalty
+record.active_block_height = active_block_height_after
 ```
 
 ## 当前实现兼容说明
 
-当前实现采用固定窗口近似：
+开发期旧实现曾采用 sat 级固定窗口近似：
 
 ```text
 penalty_current = lost_sats * 43_200_000
 ```
 
-该公式可理解为把目标公式中的 `age_before` 固定为 `2880` blocks：
+该公式可理解为把旧 sat 级公式中的 `age_before` 固定为 `2880` blocks：
 
 ```text
 10_000 * 1.5 * 2880 = 43_200_000
 ```
 
-因此，UIP-0003 的 penalty v2 是协议变更，不应在未配置激活高度时替换当前历史重放结果。
+UIP-0003 不保留该近似作为正式协议语义。当前开发网络可以从高度 `0` 使用本节定义的 unit penalty。
 
 # 继承折损
 
@@ -264,6 +310,8 @@ inheritable_energy(prev_i, h)
         / BPS_DENOMINATOR
       )
 ```
+
+`settled_raw_energy`、乘法中间值和结果都按 `energy_uint` 处理。
 
 使用建议参数时：
 
@@ -301,13 +349,67 @@ raw_energy(prev_i, h_after_event) = 0
 
 # 数值边界
 
-所有实现必须使用足够宽的中间整数执行乘法。
+## 内部表示
 
-草案建议：
+UIP-0003 的 energy 类型为：
 
-- 中间计算至少使用 `u128`。
-- 对外存储字段若仍为 `u64`，溢出时饱和到 `u64::MAX`。
-- 是否把 `u64::MAX` saturation 固化为长期协议语义，仍需在 Review 阶段确认。
+```text
+energy_uint = uint128
+ENERGY_MAX  = 2^128 - 1
+```
+
+所有 `raw_energy`、`settled_raw_energy`、`projected_raw_energy`、`inheritable_energy` 都必须使用 `energy_uint`。
+
+协议语义定义为：
+
+```text
+energy_result = min(exact_integer_result, ENERGY_MAX)
+```
+
+也就是说，乘法、加法和多 `prev` 求和必须等价于“先用无限精度整数计算，再在最终写入 energy 字段时 saturate 到 `ENERGY_MAX`”。实现可以使用更宽整数、checked arithmetic 或 arbitrary precision，只要结果一致。
+
+## JSON / RPC / Validator Payload 表示
+
+任何 JSON、RPC、validator payload 或跨语言接口中的 energy 值必须编码为十进制字符串：
+
+```json
+{
+  "raw_energy": "1000000000000000000"
+}
+```
+
+规则：
+
+- 使用 base-10 ASCII 字符串。
+- 禁止前导零，数值 `0` 只能编码为 `"0"`。
+- 禁止小数点、科学计数法、正负号和空白。
+- 解码后必须满足 `0 <= value <= ENERGY_MAX`。
+
+原因是 JavaScript number 和部分 JSON consumer 无法精确表示超过 `2^53 - 1` 的整数。
+
+## Saturation 风险估算
+
+使用 `UNIT_SATS = 100_000` 和 `ENERGY_PER_UNIT_BLOCK = 1_000_000_000` 时：
+
+| BTC balance | units | energy / block | 到达 `u128::MAX` 的约略时间 |
+| ---: | ---: | ---: | ---: |
+| `1 BTC` | `1_000` | `1_000_000_000_000` | 约 `6.5e21` 年 |
+| `1_000 BTC` | `1_000_000` | `1_000_000_000_000_000` | 约 `6.5e18` 年 |
+| `21_000_000 BTC` | `21_000_000_000` | `21_000_000_000_000_000_000` | 约 `3.1e14` 年 |
+
+因此 `uint128` saturation 是协议兜底，正常经济场景不会触发。
+
+# 激活语义
+
+USDB 仍处于开发阶段，UIP-0003 不需要兼容开发期旧公式。
+
+当前开发网络和后续全量重放环境可以按如下语义处理：
+
+```text
+activation_height = 0
+```
+
+正式公开网络发布后，未来对 energy 公式的修改必须通过 UIP-0007 或后续版本激活机制定义，不得再隐式从高度 `0` 改写历史。
 
 # 与 UIP-0004 的边界
 
@@ -347,22 +449,33 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 
 实现 UIP-0003 时，至少需要覆盖：
 
-- 低于 `MIN_BALANCE_SATS` 不增长。
-- 达到阈值后按 sat 线性增长。
-- 正向增资后的 age 折算。
+- 低于 `UNIT_SATS` 不增长。
+- 达到 `UNIT_SATS` 后按离散 `balance_units` 增长。
+- unit 边界附近的增减仓计算，例如 `100_001 -> 99_999` 和 `199_999 -> 100_000`。
+- 正向增资只写入新的 settlement record，不重置或折算 `active_block_height`。
 - 部分减仓 penalty 和 age 折算。
 - 全部减仓后 `active_block_height = h`。
 - 单 `prev` 继承折损和 rounding。
 - 多 `prev` 逐项折损后求和。
 - `Consumed` / `Burned` 查询 energy 为 `0`。
-- 溢出时 saturation 行为。
+- `uint128` energy 的内部计算、saturation 和 JSON decimal string 编码。
 
-# 审计点
+# 已确认规则
 
-进入 Review 前需要确认：
+本轮审计已确认：
 
-1. 增长口径是否继续采用当前实现的 sat 级线性增长，还是改为离散 `0.001 BTC` 单位增长。
-2. 正向增资是否必须按比例折算 `active_block_height`。
-3. `PENALTY_LAMBDA = 1.5` 和 `INHERIT_DISCOUNT_BPS = 500` 是否作为首个正式参数。
-4. `u64::MAX` saturation 是否长期成为协议语义。
-5. penalty v2 的激活高度是否由 UIP-0007 统一定义。
+1. 增长口径采用离散 `0.001 BTC` unit 模型。
+2. unit delta 必须通过 `units_before` / `units_after` 快照计算，不得通过 sat delta 直接取整。
+3. 正向增资只更新 settlement height 和 owner balance，不重置、不折算 `active_block_height`。
+4. 首版参数固定为 `PENALTY_LAMBDA = 1.5`、`INHERIT_DISCOUNT_BPS = 500`。
+5. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
+6. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0007 处理。
+
+# 后续实现风险
+
+实现层仍需专项处理：
+
+- RocksDB `PassEnergyValue.energy` 当前为 `u64`，改为 `u128` 会改变 bincode 编码；开发期可以重建 DB，正式网络需要迁移版本。
+- RPC 结构体当前以 JSON number 返回 `energy`，必须切换为 decimal string。
+- 前端 TypeScript 类型当前使用 `number`，必须切换为 `string` 并只在展示层格式化。
+- validator payload 和 state ref 若包含 energy，也必须使用 decimal string 并按本文规则 canonicalize。

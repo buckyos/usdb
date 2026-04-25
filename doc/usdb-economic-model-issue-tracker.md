@@ -151,20 +151,21 @@
 - 优先级：`P0`
 - 状态：`In Progress`
 - 当前现状：
-  - 当前实现增长公式与达到阈值后按 sat 线性增长的模型对齐。
-  - 离散 `0.001 BTC` 单位增长是否替代当前增长口径仍需审计。
+  - UIP-0003 已确认采用离散 `0.001 BTC` unit 增长模型。
+  - 当前实现仍是达到阈值后的 sat 级线性增长，需要调整为 `balance_units`。
   - 当前惩罚是固定窗口近似：`abs(delta_sats) * 43_200_000`。
-  - 目标文档提出 `penalty = lost_units * H_now * lambda`，并按损失比例调整 `active_block_height`。
+  - UIP-0003 已确认 `penalty = lost_units * age_blocks * 1_000_000_000 * 1.5`，并按剩余 units 比例调整 `active_block_height`。
 - 目标：
-  - 明确定点精度、rounding、saturation、分母为 0 的处理。
+  - 将公式实现切换到 `uint128` energy 和 unit delta 快照计算。
+  - 将 RPC / validator payload / 前端 energy 表示切换为 canonical decimal string。
   - 明确 `active_block_height'` 的更新公式。
-  - 明确公式版本升级和激活高度。
+  - 当前开发阶段从高度 `0` 激活新公式；未来正式升级再交给 UIP-0007。
 - 下一步：
-  - Review `doc/UIP/UIP-0003-pass-energy-formula.md` 中的整数公式、age 折算和 saturation 规则。
-  - 再实现 `calc_penalty_v2` 和对应迁移路径。
+  - 基于 `doc/UIP/UIP-0003-pass-energy-formula.md` 修改 `energy_formula.rs`、`energy.rs` 和 energy storage/RPC 类型。
+  - 增加 unit 边界、正向增资 settlement、部分减仓和 `uint128` decimal string 测试。
 - 验收：
-  - 有参数化公式单测和 timeline 测试。
-  - validator state ref 中公式版本能区分 v1/v2。
+  - 有参数化公式单测、unit 边界测试和 timeline 测试。
+  - RPC、validator payload 和前端都不再用 JSON number 承载 energy。
 
 ### ECO-006. 明确并实现继承折损规则
 
