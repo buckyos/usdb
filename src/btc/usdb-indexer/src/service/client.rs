@@ -308,6 +308,38 @@ impl RpcClient {
         .await
     }
 
+    /// Returns all passes currently owned by an address at a target height.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner script hash string.
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
+    /// * `states` - Optional state filter. `None` or empty means all states.
+    /// * `order` - Optional sort order by latest event height: `Some("desc")` or `Some("asc")`.
+    /// * `page` - Zero-based page index.
+    /// * `page_size` - Number of rows per page.
+    pub async fn get_owner_passes_at_height(
+        &self,
+        owner: &str,
+        at_height: Option<u32>,
+        states: Option<Vec<String>>,
+        order: Option<&str>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<OwnerPassesAtHeight, String> {
+        self.rpc_call::<OwnerPassesAtHeight>(
+            "get_owner_passes_at_height",
+            json!([{
+                "owner": owner,
+                "at_height": at_height,
+                "states": states,
+                "order": order,
+                "page": page,
+                "page_size": page_size,
+            }]),
+        )
+        .await
+    }
+
     /// Returns pass energy snapshot at a target height.
     ///
     /// # Arguments

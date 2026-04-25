@@ -6,17 +6,36 @@ import './index.css'
 type Locale = 'en' | 'zh-CN'
 type Tab = 'home' | 'pass' | 'energy'
 type EnergyScope = 'active' | 'active_dormant' | 'all'
+type PassQueryMode = 'id' | 'owner'
+type OwnerPassScope = 'all' | 'active' | 'active_dormant'
 
 interface UsdbRpcInfo {
   network: string
 }
 
 interface UsdbIndexerSyncStatus {
+  genesis_block_height?: number | null
   synced_block_height?: number | null
   balance_history_stable_height?: number | null
   current: number
   total: number
   message?: string | null
+}
+
+interface UsdbIndexerReadiness {
+  service: string
+  rpc_alive: boolean
+  query_ready: boolean
+  consensus_ready: boolean
+  synced_block_height?: number | null
+  balance_history_stable_height?: number | null
+  upstream_snapshot_id?: string | null
+  local_state_commit?: string | null
+  system_state_id?: string | null
+  current: number
+  total: number
+  message?: string | null
+  blockers: string[]
 }
 
 interface PassStatsAtHeight {
@@ -54,6 +73,25 @@ interface PassSnapshot {
   last_event_id: number
   last_event_type: string
   resolved_height: number
+}
+
+interface OwnerPassItem {
+  inscription_id: string
+  inscription_number: number
+  mint_block_height: number
+  owner: string
+  state: string
+  latest_event_height: number
+  eth_main: string
+  eth_collab?: string | null
+  satpoint: string
+}
+
+interface OwnerPassesAtHeightPage {
+  resolved_height: number
+  owner: string
+  total: number
+  items: OwnerPassItem[]
 }
 
 interface PassHistoryEvent {
@@ -142,13 +180,35 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     totalPasses: 'Total Passes',
     activeBalance: 'Active BTC Balance',
     syncStatus: 'Sync Status',
+    consistencyStatus: 'Consistency Status',
     currentProgress: 'Current Progress',
     progressLimit: 'Progress Limit',
+    genesisHeight: 'Genesis Height',
+    rpcAlive: 'RPC Alive',
+    queryReady: 'Query Ready',
+    consensusReady: 'Consensus Ready',
+    ready: 'Ready',
+    notReady: 'Not Ready',
+    upstreamSnapshot: 'Upstream Snapshot',
+    localStateCommit: 'Local State Commit',
+    systemStateId: 'System State ID',
+    blockers: 'Blockers',
+    none: 'None',
     rpcLatency: 'RPC Latency',
     updated: 'Updated',
     latestCommit: 'Latest Local Pass Commit',
     openInPass: 'Open in Pass',
     passQuery: 'Miner Pass Query',
+    queryByPassId: 'By Pass ID',
+    queryByOwner: 'By Owner Address',
+    ownerPasses: 'Owner Passes',
+    ownerAddress: 'Owner BTC Address / Script Hash',
+    ownerAddressPlaceholder: 'Enter BTC address or owner script hash',
+    ownerStateScope: 'State Scope',
+    allStates: 'All states',
+    activeOnly: 'Active only',
+    activeDormant: 'Active + dormant',
+    openDetail: 'Open Detail',
     passDetail: 'Miner Pass Detail',
     blockCommit: 'Block Commit',
     history: 'History',
@@ -169,11 +229,14 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     preset: 'RPC filled from network preset: {{url}}',
     bitcoind: 'This looks like a bitcoind RPC endpoint, which browsers usually block via CORS. Use a usdb-indexer RPC endpoint.',
     passIdRequired: 'Enter an inscription id.',
+    ownerRequired: 'Enter an owner address or script hash.',
     heightInvalid: 'Enter a non-negative integer height.',
     passMissing: 'This miner pass does not exist or is not visible at the target height.',
     querySuccess: 'Query completed.',
     queryFailed: 'Query failed: {{error}}',
     historyFailed: 'History query failed: {{error}}',
+    ownerPassesFailed: 'Owner pass query failed: {{error}}',
+    ownerPassesSuccess: 'Found {{count}} passes at height {{height}}.',
     commitMissing: 'No local pass block commit exists at the target height.',
     commitSuccess: 'Query completed, height={{height}}.',
     leaderboardFailed: 'Leaderboard failed: {{error}}',
@@ -205,13 +268,35 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     totalPasses: '矿工证总量',
     activeBalance: '活跃地址 BTC 总额',
     syncStatus: '同步状态',
+    consistencyStatus: '一致性状态',
     currentProgress: '当前进度',
     progressLimit: '进度上限',
+    genesisHeight: '创世高度',
+    rpcAlive: 'RPC 可用',
+    queryReady: '查询可用',
+    consensusReady: '共识可用',
+    ready: '就绪',
+    notReady: '未就绪',
+    upstreamSnapshot: '上游 Snapshot',
+    localStateCommit: '本地 State Commit',
+    systemStateId: '系统 State ID',
+    blockers: '阻塞原因',
+    none: '无',
     rpcLatency: 'RPC 延迟',
     updated: '更新时间',
     latestCommit: '最近本地 Pass Commit',
     openInPass: '带入 Pass 页',
     passQuery: '矿工证查询',
+    queryByPassId: '按矿工证 ID',
+    queryByOwner: '按 Owner 地址',
+    ownerPasses: '地址下的矿工证',
+    ownerAddress: 'Owner BTC 地址 / Script Hash',
+    ownerAddressPlaceholder: '输入 BTC 地址或 owner script hash',
+    ownerStateScope: '状态范围',
+    allStates: '全部状态',
+    activeOnly: '仅 Active',
+    activeDormant: 'Active + Dormant',
+    openDetail: '查看详情',
     passDetail: '矿工证详情',
     blockCommit: '区块 Commit',
     history: '历史记录',
@@ -232,11 +317,14 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     preset: '已按网络预设填充 RPC: {{url}}',
     bitcoind: '你输入的是 bitcoind RPC 端口，浏览器会触发 CORS。请使用 usdb-indexer RPC。',
     passIdRequired: '请输入 inscription id。',
+    ownerRequired: '请输入 owner 地址或 script hash。',
     heightInvalid: '请输入非负整数高度',
     passMissing: '该矿工证不存在或在目标高度不可见。',
     querySuccess: '查询成功。',
     queryFailed: '查询失败：{{error}}',
     historyFailed: '历史查询失败：{{error}}',
+    ownerPassesFailed: 'Owner 矿工证查询失败：{{error}}',
+    ownerPassesSuccess: '在高度 {{height}} 找到 {{count}} 个矿工证。',
     commitMissing: '目标高度还没有本地 pass block commit 记录。',
     commitSuccess: '查询成功，高度={{height}}。',
     leaderboardFailed: '排行加载失败：{{error}}',
@@ -316,6 +404,10 @@ function shortText(value: unknown, head = 14, tail = 12) {
   return `${text.slice(0, head)}...${text.slice(-tail)}`
 }
 
+function hashTitle(value?: string | null) {
+  return value || ''
+}
+
 function formatBtc(value: number | null | undefined, nf: Intl.NumberFormat) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
   const sat = Number(value)
@@ -340,6 +432,12 @@ function isLikelyBitcoindRpcUrl(rawUrl: string) {
   }
 }
 
+function ownerPassStates(scope: OwnerPassScope) {
+  if (scope === 'active') return ['active']
+  if (scope === 'active_dormant') return ['active', 'dormant']
+  return undefined
+}
+
 function App() {
   const [locale, setLocale] = React.useState<Locale>(readInitialLocale)
   const [rpcUrl, setRpcUrl] = React.useState(readInitialRpcUrl)
@@ -352,11 +450,19 @@ function App() {
   const [homeError, setHomeError] = React.useState('')
   const [rpcInfo, setRpcInfo] = React.useState<UsdbRpcInfo | null>(null)
   const [syncStatus, setSyncStatus] = React.useState<UsdbIndexerSyncStatus | null>(null)
+  const [readiness, setReadiness] = React.useState<UsdbIndexerReadiness | null>(null)
   const [passStats, setPassStats] = React.useState<PassStatsAtHeight | null>(null)
   const [activeBalance, setActiveBalance] = React.useState<RpcActiveBalanceSnapshot | null>(null)
   const [latestCommit, setLatestCommit] = React.useState<PassBlockCommitInfo | null>(null)
+  const [passQueryMode, setPassQueryMode] = React.useState<PassQueryMode>('id')
   const [passId, setPassId] = React.useState('')
   const [passHeight, setPassHeight] = React.useState('')
+  const [ownerAddress, setOwnerAddress] = React.useState('')
+  const [ownerHeight, setOwnerHeight] = React.useState('')
+  const [ownerScope, setOwnerScope] = React.useState<OwnerPassScope>('all')
+  const [ownerPasses, setOwnerPasses] = React.useState<OwnerPassesAtHeightPage | null>(null)
+  const [ownerPassesPage, setOwnerPassesPage] = React.useState(0)
+  const [ownerHint, setOwnerHint] = React.useState('')
   const [passSnapshot, setPassSnapshot] = React.useState<PassSnapshot | null>(null)
   const [passCommit, setPassCommit] = React.useState<PassBlockCommitInfo | null>(null)
   const [passHistory, setPassHistory] = React.useState<PassHistoryPage | null>(null)
@@ -419,21 +525,24 @@ function App() {
   const refreshHome = React.useCallback(async () => {
     setHomeError('')
     try {
-      const [nextRpcInfo, nextSyncStatus, nextPassStats, nextActiveBalance, nextCommit] = await Promise.all([
+      const [nextRpcInfo, nextSyncStatus, nextReadiness, nextPassStats, nextActiveBalance, nextCommit] = await Promise.all([
         rpcCall<UsdbRpcInfo>('get_rpc_info'),
         rpcCall<UsdbIndexerSyncStatus>('get_sync_status'),
+        rpcCall<UsdbIndexerReadiness>('get_readiness'),
         rpcCall<PassStatsAtHeight>('get_pass_stats_at_height', [{ at_height: null }]),
         rpcCall<RpcActiveBalanceSnapshot | null>('get_latest_active_balance_snapshot'),
         rpcCall<PassBlockCommitInfo | null>('get_pass_block_commit', [{ block_height: null }]),
       ])
       setRpcInfo(nextRpcInfo)
       setSyncStatus(nextSyncStatus)
+      setReadiness(nextReadiness)
       setPassStats(nextPassStats)
       setActiveBalance(nextActiveBalance)
       setLatestCommit(nextCommit)
       setRpcHint(t('connected', { time: new Date().toLocaleTimeString(locale) }))
       setNetworkPreset(normalizeNetwork(nextRpcInfo.network))
     } catch (error) {
+      setReadiness(null)
       setHomeError(t('homeError', { error: errorMessage(error) }))
       setRpcHint(t('rpcError', { error: errorMessage(error) }))
     }
@@ -481,11 +590,17 @@ function App() {
 
   async function queryPass(event?: React.FormEvent<HTMLFormElement>) {
     event?.preventDefault()
+    await queryPassById(passId, passHeight)
+  }
+
+  async function queryPassById(targetId: string, targetHeight: string) {
     try {
-      if (!passId.trim()) throw new Error(t('passIdRequired'))
-      const atHeight = parseOptionalHeight(passHeight, t)
-      const snapshot = await rpcCall<PassSnapshot | null>('get_pass_snapshot', [{ inscription_id: passId.trim(), at_height: atHeight }])
+      if (!targetId.trim()) throw new Error(t('passIdRequired'))
+      const atHeight = parseOptionalHeight(targetHeight, t)
+      const snapshot = await rpcCall<PassSnapshot | null>('get_pass_snapshot', [{ inscription_id: targetId.trim(), at_height: atHeight }])
       if (!snapshot) throw new Error(t('passMissing'))
+      setPassId(snapshot.inscription_id)
+      setPassHeight(targetHeight)
       setPassSnapshot(snapshot)
       setPassHint(t('querySuccess'))
       setPassHistoryPage(0)
@@ -511,6 +626,38 @@ function App() {
       setPassHistory(null)
       setPassCommit(null)
     }
+  }
+
+  async function queryOwnerPasses(event?: React.FormEvent<HTMLFormElement>, nextPage = ownerPassesPage) {
+    event?.preventDefault()
+    try {
+      if (!ownerAddress.trim()) throw new Error(t('ownerRequired'))
+      const atHeight = parseOptionalHeight(ownerHeight, t)
+      const page = await rpcCall<OwnerPassesAtHeightPage>('get_owner_passes_at_height', [
+        {
+          address: ownerAddress.trim(),
+          at_height: atHeight,
+          states: ownerPassStates(ownerScope),
+          order: 'desc',
+          page: nextPage,
+          page_size: 20,
+        },
+      ])
+      setOwnerPasses(page)
+      setOwnerPassesPage(nextPage)
+      setOwnerHint(t('ownerPassesSuccess', { count: nf.format(page.total), height: nf.format(page.resolved_height) }))
+    } catch (error) {
+      setOwnerPasses(null)
+      setOwnerHint(t('ownerPassesFailed', { error: errorMessage(error) }))
+    }
+  }
+
+  async function openOwnerPass(item: OwnerPassItem) {
+    setPassQueryMode('id')
+    setPassId(item.inscription_id)
+    const height = String(ownerPasses?.resolved_height ?? item.latest_event_height)
+    setPassHeight(height)
+    await queryPassById(item.inscription_id, height)
   }
 
   async function loadPassHistory(nextPage: number) {
@@ -596,6 +743,7 @@ function App() {
 
   const progress = syncStatus && syncStatus.total > 0 ? Math.min(100, (syncStatus.current / syncStatus.total) * 100) : 0
   const passTotalPages = Math.max(1, Math.ceil((passHistory?.total ?? 0) / 20))
+  const ownerPassesTotalPages = Math.max(1, Math.ceil((ownerPasses?.total ?? 0) / 20))
   const leaderboardTotalPages = Math.max(1, Math.ceil((leaderboard?.total ?? 0) / 50))
   const rangeTotalPages = Math.max(1, Math.ceil((energyRange?.total ?? 0) / 50))
 
@@ -665,8 +813,8 @@ function App() {
           <section className="metric-grid">
             <Metric icon={<Clock3 size={18} />} label={dict.currentTime} value={now.toLocaleString(locale, { hour12: false })} />
             <Metric icon={<Database size={18} />} label={dict.btcNetwork} value={rpcInfo?.network ?? '-'} />
-            <Metric icon={<Activity size={18} />} label={dict.syncedHeight} value={nf.format(syncStatus?.synced_block_height ?? 0)} />
-            <Metric icon={<RefreshCw size={18} />} label={dict.stableHeight} value={nf.format(syncStatus?.balance_history_stable_height ?? 0)} />
+            <Metric icon={<Activity size={18} />} label={dict.syncedHeight} value={readiness?.synced_block_height == null ? '-' : nf.format(readiness.synced_block_height)} />
+            <Metric icon={<RefreshCw size={18} />} label={dict.stableHeight} value={readiness?.balance_history_stable_height == null ? '-' : nf.format(readiness.balance_history_stable_height)} />
           </section>
           <section className="metric-grid three">
             <Metric icon={<Badge size={18} />} label={dict.activePasses} value={nf.format(passStats?.active_count ?? 0)} />
@@ -678,15 +826,39 @@ function App() {
               <div><p className="eyebrow">Sync State</p><h2>{dict.syncStatus}</h2></div>
               <button className="ghost" onClick={() => void refreshHome()}>{dict.refresh}</button>
             </div>
-            <p className="status-message">{syncStatus?.message ?? '-'}</p>
+            <p className="status-message">{readiness?.message ?? syncStatus?.message ?? '-'}</p>
+            <div className="readiness-pills">
+              <span className="status-pill" data-tone={readiness?.rpc_alive ? 'success' : 'danger'}>
+                {dict.rpcAlive}: {readiness?.rpc_alive ? dict.ready : dict.notReady}
+              </span>
+              <span className="status-pill" data-tone={readiness?.query_ready ? 'success' : 'warning'}>
+                {dict.queryReady}: {readiness?.query_ready ? dict.ready : dict.notReady}
+              </span>
+              <span className="status-pill" data-tone={readiness?.consensus_ready ? 'success' : 'warning'}>
+                {dict.consensusReady}: {readiness?.consensus_ready ? dict.ready : dict.notReady}
+              </span>
+            </div>
             <div className="progress-wrap"><div className="progress-bar" style={{ width: `${progress.toFixed(2)}%` }} /></div>
             <div className="kv-grid">
               <Field label={dict.currentProgress} value={nf.format(syncStatus?.current ?? 0)} />
               <Field label={dict.progressLimit} value={nf.format(syncStatus?.total ?? 0)} />
+              <Field label={dict.genesisHeight} value={syncStatus?.genesis_block_height == null ? '-' : nf.format(syncStatus.genesis_block_height)} />
               <Field label={dict.rpcLatency} value={latency} />
               <Field label={dict.updated} value={now.toLocaleTimeString(locale)} />
             </div>
             {homeError ? <p className="hint negative">{homeError}</p> : null}
+          </article>
+          <article className="card">
+            <div className="card-head">
+              <div><p className="eyebrow">State Identity</p><h2>{dict.consistencyStatus}</h2></div>
+              <span className="pill">Consensus</span>
+            </div>
+            <DetailGrid entries={[
+              [dict.upstreamSnapshot, <span className="mono" title={hashTitle(readiness?.upstream_snapshot_id)}>{shortText(readiness?.upstream_snapshot_id, 18, 14)}</span>],
+              [dict.localStateCommit, <span className="mono" title={hashTitle(readiness?.local_state_commit)}>{shortText(readiness?.local_state_commit, 18, 14)}</span>],
+              [dict.systemStateId, <span className="mono" title={hashTitle(readiness?.system_state_id)}>{shortText(readiness?.system_state_id, 18, 14)}</span>],
+              [dict.blockers, readiness?.blockers?.length ? readiness.blockers.join(', ') : dict.none],
+            ]} />
           </article>
           <article className="card">
             <div className="card-head">
@@ -706,14 +878,62 @@ function App() {
       {activeTab === 'pass' ? (
         <section>
           <article className="card">
-            <div className="card-head"><div><p className="eyebrow">Pass Lookup</p><h2>{dict.passQuery}</h2></div></div>
-            <form className="query" onSubmit={(event) => void queryPass(event)}>
-              <input required placeholder={dict.inscriptionPlaceholder} value={passId} onChange={(event) => setPassId(event.target.value)} />
-              <input type="number" min="0" placeholder={dict.optionalHeight} value={passHeight} onChange={(event) => setPassHeight(event.target.value)} />
-              <button type="submit"><Search size={16} />{dict.query}</button>
-            </form>
-            {passHint ? <p className={passHint.includes('失败') || passHint.includes('failed') ? 'hint negative' : 'hint'}>{passHint}</p> : null}
+            <div className="card-head">
+              <div><p className="eyebrow">Pass Lookup</p><h2>{dict.passQuery}</h2></div>
+              <div className="tabs compact-tabs" aria-label="Pass query mode">
+                <button className={passQueryMode === 'id' ? 'tab active' : 'tab'} type="button" onClick={() => setPassQueryMode('id')}>{dict.queryByPassId}</button>
+                <button className={passQueryMode === 'owner' ? 'tab active' : 'tab'} type="button" onClick={() => setPassQueryMode('owner')}>{dict.queryByOwner}</button>
+              </div>
+            </div>
+            {passQueryMode === 'id' ? (
+              <>
+                <form className="query" onSubmit={(event) => void queryPass(event)}>
+                  <input required placeholder={dict.inscriptionPlaceholder} value={passId} onChange={(event) => setPassId(event.target.value)} />
+                  <input type="number" min="0" placeholder={dict.optionalHeight} value={passHeight} onChange={(event) => setPassHeight(event.target.value)} />
+                  <button type="submit"><Search size={16} />{dict.query}</button>
+                </form>
+                {passHint ? <p className={passHint.includes('失败') || passHint.includes('failed') ? 'hint negative' : 'hint'}>{passHint}</p> : null}
+              </>
+            ) : (
+              <>
+                <form className="query" onSubmit={(event) => void queryOwnerPasses(event, 0)}>
+                  <input required placeholder={dict.ownerAddressPlaceholder} value={ownerAddress} onChange={(event) => setOwnerAddress(event.target.value)} aria-label={dict.ownerAddress} />
+                  <input type="number" min="0" placeholder={dict.optionalHeight} value={ownerHeight} onChange={(event) => setOwnerHeight(event.target.value)} />
+                  <select value={ownerScope} onChange={(event) => { setOwnerScope(event.target.value as OwnerPassScope); setOwnerPassesPage(0) }} aria-label={dict.ownerStateScope}>
+                    <option value="all">{dict.allStates}</option>
+                    <option value="active">{dict.activeOnly}</option>
+                    <option value="active_dormant">{dict.activeDormant}</option>
+                  </select>
+                  <button type="submit"><Search size={16} />{dict.query}</button>
+                </form>
+                {ownerHint ? <p className={ownerHint.includes('失败') || ownerHint.includes('failed') ? 'hint negative' : 'hint'}>{ownerHint}</p> : null}
+              </>
+            )}
           </article>
+          {passQueryMode === 'owner' ? (
+            <article className="card">
+              <div className="card-head">
+                <div>
+                  <p className="eyebrow">{ownerPasses ? `${nf.format(ownerPasses.total)} records @ ${nf.format(ownerPasses.resolved_height)}` : 'Owner Portfolio'}</p>
+                  <h2>{dict.ownerPasses}</h2>
+                </div>
+                <div className="pager">
+                  <button className="ghost" disabled={ownerPassesPage === 0} onClick={() => void queryOwnerPasses(undefined, ownerPassesPage - 1)}>{dict.previous}</button>
+                  <span>{ownerPassesPage + 1}/{ownerPassesTotalPages}</span>
+                  <button className="ghost" disabled={ownerPassesPage + 1 >= ownerPassesTotalPages} onClick={() => void queryOwnerPasses(undefined, ownerPassesPage + 1)}>{dict.next}</button>
+                </div>
+              </div>
+              <DataTable headers={['inscription_id', 'state', 'latest_event_height', 'mint_height', 'eth_main', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
+                shortText(item.inscription_id, 16, 14),
+                item.state,
+                nf.format(item.latest_event_height),
+                nf.format(item.mint_block_height),
+                shortText(item.eth_main, 12, 10),
+                shortText(item.satpoint, 16, 12),
+                <button className="link-button" onClick={() => void openOwnerPass(item)}>{dict.openDetail}</button>,
+              ])} />
+            </article>
+          ) : null}
           <section className="workspace-grid">
             <article className="card">
               <div className="card-head"><h2>{dict.passDetail}</h2></div>

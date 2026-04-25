@@ -107,6 +107,7 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_pass_snapshot",
     "get_active_passes_at_height",
     "get_owner_active_pass_at_height",
+    "get_owner_passes_at_height",
     "get_pass_stats_at_height",
     "get_pass_history",
     "get_pass_energy",
@@ -1211,7 +1212,10 @@ async fn normalize_usdb_indexer_request(
     state: &AppState,
     request: ServiceRpcRequest,
 ) -> Result<ServiceRpcRequest, (StatusCode, Json<ApiError>)> {
-    if request.method.as_str() != "get_owner_active_pass_at_height" {
+    if !matches!(
+        request.method.as_str(),
+        "get_owner_active_pass_at_height" | "get_owner_passes_at_height"
+    ) {
         return Ok(request);
     }
 
@@ -1472,14 +1476,15 @@ fn normalize_usdb_indexer_params(
         .and_then(Value::as_object_mut)
         .ok_or_else(|| format!("{} requires the first param to be an object", method))?;
 
-    if method == "get_owner_active_pass_at_height" {
+    if matches!(
+        method,
+        "get_owner_active_pass_at_height" | "get_owner_passes_at_height"
+    ) {
         let candidate = first
             .get("owner")
             .and_then(Value::as_str)
             .or_else(|| first.get("address").and_then(Value::as_str))
-            .ok_or_else(|| {
-                "Provide either owner or address for owner-active-pass queries".to_string()
-            })?
+            .ok_or_else(|| "Provide either owner or address for owner pass queries".to_string())?
             .to_string();
         let normalized_owner = parse_script_hash_any(candidate.as_str(), &network)
             .map_err(|e| format!("Failed to resolve {}: {}", candidate, e))?
@@ -2416,18 +2421,24 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let normalized = normalize_usdb_indexer_params(
+        for method in [
             "get_owner_active_pass_at_height",
-            json!([{
-                "address": address,
-                "at_height": null
-            }]),
-            Network::Bitcoin,
-        )
-        .unwrap();
+            "get_owner_passes_at_height",
+        ] {
+            assert!(USDB_INDEXER_PROXY_METHODS.contains(&method));
+            let normalized = normalize_usdb_indexer_params(
+                method,
+                json!([{
+                    "address": address,
+                    "at_height": null
+                }]),
+                Network::Bitcoin,
+            )
+            .unwrap();
 
-        assert_eq!(normalized[0]["owner"], expected);
-        assert!(normalized[0].get("address").is_none());
+            assert_eq!(normalized[0]["owner"], expected);
+            assert!(normalized[0].get("address").is_none());
+        }
     }
 
     #[test]

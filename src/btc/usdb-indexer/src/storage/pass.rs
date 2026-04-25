@@ -67,6 +67,11 @@ pub struct ActiveMinerPassInfo {
     pub owner: USDBScriptHash,
 }
 
+pub struct OwnerMinerPassSnapshotInfo {
+    pub pass: MinerPassInfo,
+    pub latest_event_height: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MinerPassStateStats {
     pub total_count: u64,
@@ -3677,6 +3682,194 @@ impl MinerPassStorage {
             passes.push(ActiveMinerPassInfo {
                 inscription_id,
                 owner,
+            });
+        }
+
+        Ok(passes)
+    }
+
+    pub fn get_owner_pass_count_from_history_at_height_by_states(
+        &self,
+        owner: &USDBScriptHash,
+        block_height: u32,
+        states: &[MinerPassState],
+    ) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        let state_filter = if states.is_empty() {
+            String::new()
+        } else {
+            let placeholders = (0..states.len())
+                .map(|idx| format!("?{}", idx + 3))
+                .collect::<Vec<String>>()
+                .join(", ");
+            format!("AND h.new_state IN ({})", placeholders)
+        };
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT
+                    inscription_id,
+                    MAX(id) AS max_id
+                FROM miner_pass_state_history
+                WHERE block_height <= ?1
+                GROUP BY inscription_id
+            )
+            SELECT COUNT(*)
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.max_id
+            WHERE h.new_owner = ?2
+            {};
+            ",
+            state_filter
+        );
+
+        let mut params = Vec::<rusqlite::types::Value>::with_capacity(states.len() + 2);
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        params.push(rusqlite::types::Value::Text(owner.to_string()));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+
+        let count: i64 = conn
+            .query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to count owner passes from history: owner={}, block_height={}, error={}",
+                    owner, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if count < 0 {
+            let msg = format!(
+                "Invalid negative owner pass count at block height {} for owner {}: {}",
+                block_height, owner, count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(count as u64)
+    }
+
+    pub fn get_owner_passes_by_page_from_history_at_height_by_states(
+        &self,
+        owner: &USDBScriptHash,
+        block_height: u32,
+        states: &[MinerPassState],
+        page: usize,
+        page_size: usize,
+        desc: bool,
+    ) -> Result<Vec<OwnerMinerPassSnapshotInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+        let state_filter = if states.is_empty() {
+            String::new()
+        } else {
+            let placeholders = (0..states.len())
+                .map(|idx| format!("?{}", idx + 3))
+                .collect::<Vec<String>>()
+                .join(", ");
+            format!("AND h.new_state IN ({})", placeholders)
+        };
+        let order = if desc { "DESC" } else { "ASC" };
+        let limit_placeholder = states.len() + 3;
+        let offset_placeholder = states.len() + 4;
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT
+                    inscription_id,
+                    MAX(id) AS max_id
+                FROM miner_pass_state_history
+                WHERE block_height <= ?1
+                GROUP BY inscription_id
+            )
+            SELECT
+                m.inscription_id,
+                m.inscription_number,
+                m.mint_txid,
+                m.mint_block_height,
+                m.mint_owner,
+                h.new_satpoint AS satpoint,
+                m.eth_main,
+                m.eth_collab,
+                m.prev,
+                h.new_owner AS owner,
+                h.new_state AS state,
+                m.invalid_code,
+                m.invalid_reason,
+                h.block_height AS latest_event_height
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.max_id
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.new_owner = ?2
+            {}
+            ORDER BY h.block_height {}, h.id {}
+            LIMIT ?{} OFFSET ?{};
+            ",
+            state_filter, order, order, limit_placeholder, offset_placeholder
+        );
+
+        let mut params = Vec::<rusqlite::types::Value>::with_capacity(states.len() + 4);
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        params.push(rusqlite::types::Value::Text(owner.to_string()));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+        params.push(rusqlite::types::Value::Integer(page_size as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            let msg = format!(
+                "Failed to prepare statement to get owner pass snapshots from history: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query owner pass snapshots from history: owner={}, block_height={}, error={}",
+                    owner, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read owner pass snapshot row from history query: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            let pass = Self::row_to_pass_item(row)?;
+            let latest_event_height = row.get::<_, i64>(13).map_err(|e| {
+                let msg = format!(
+                    "Failed to get latest_event_height from owner pass snapshot row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if latest_event_height < 0 {
+                let msg = format!(
+                    "Invalid negative latest_event_height in owner pass snapshot row: {}",
+                    latest_event_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            passes.push(OwnerMinerPassSnapshotInfo {
+                pass,
+                latest_event_height: latest_event_height as u32,
             });
         }
 

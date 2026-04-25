@@ -628,6 +628,59 @@ pub struct GetOwnerActivePassAtHeightParams {
     pub at_height: Option<u32>,
 }
 
+/// Parameters for `get_owner_passes_at_height`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetOwnerPassesAtHeightParams {
+    /// Target owner script hash.
+    pub owner: String,
+    /// Optional query height; `None` resolves to the current local synced height.
+    pub at_height: Option<u32>,
+    /// Optional state filter. Empty or absent means all pass states.
+    pub states: Option<Vec<String>>,
+    /// Optional order by latest event height, `desc` by default.
+    pub order: Option<String>,
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of rows per page.
+    pub page_size: usize,
+}
+
+/// One pass currently owned by an owner at a target height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerPassItem {
+    /// Pass inscription id.
+    pub inscription_id: String,
+    /// Global inscription number.
+    pub inscription_number: i32,
+    /// Mint block height.
+    pub mint_block_height: u32,
+    /// Owner script hash at the resolved height.
+    pub owner: String,
+    /// Pass state at the resolved height.
+    pub state: String,
+    /// Latest event height that produced this state snapshot.
+    pub latest_event_height: u32,
+    /// Primary ETH address declared by the pass mint content.
+    pub eth_main: String,
+    /// Optional collaborator ETH address.
+    pub eth_collab: Option<String>,
+    /// Current satpoint at the resolved height.
+    pub satpoint: String,
+}
+
+/// Paged owner-pass response for a target height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerPassesAtHeight {
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Target owner script hash.
+    pub owner: String,
+    /// Total number of matching passes.
+    pub total: u64,
+    /// Matching pass rows in the requested page.
+    pub items: Vec<OwnerPassItem>,
+}
+
 /// Parameters for `get_pass_energy`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassEnergyParams {
@@ -937,6 +990,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetOwnerActivePassAtHeightParams,
     ) -> JsonResult<Option<PassSnapshot>>;
+
+    /// Returns pass snapshots currently owned by an owner at a target height.
+    #[rpc(name = "get_owner_passes_at_height")]
+    fn get_owner_passes_at_height(
+        &self,
+        params: GetOwnerPassesAtHeightParams,
+    ) -> JsonResult<OwnerPassesAtHeight>;
 
     /// Returns one pass energy snapshot.
     #[rpc(name = "get_pass_energy")]

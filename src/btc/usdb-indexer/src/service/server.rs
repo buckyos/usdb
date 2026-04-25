@@ -1187,6 +1187,42 @@ impl UsdbIndexerRpcServer {
         }
     }
 
+    fn parse_optional_pass_states(
+        &self,
+        values: Option<Vec<String>>,
+    ) -> Result<Vec<MinerPassState>, JsonError> {
+        let Some(values) = values else {
+            return Ok(Vec::new());
+        };
+
+        let mut states = Vec::new();
+        for value in values {
+            let normalized = value.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            let state = MinerPassState::from_str(normalized).map_err(|e| {
+                Self::to_invalid_params(format!("Invalid pass state {}: {}", normalized, e))
+            })?;
+            if !states.contains(&state) {
+                states.push(state);
+            }
+        }
+        Ok(states)
+    }
+
+    fn parse_order_desc(&self, value: Option<&str>) -> Result<bool, JsonError> {
+        let normalized = value.unwrap_or("desc").trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "desc" => Ok(true),
+            "asc" => Ok(false),
+            _ => Err(Self::to_invalid_params(format!(
+                "Invalid order {}, expected asc or desc",
+                normalized
+            ))),
+        }
+    }
+
     fn build_pass_snapshot(
         &self,
         inscription_id: &InscriptionId,
@@ -1451,6 +1487,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "active_passes_at_height".to_string(),
                 "pass_stats_at_height".to_string(),
                 "owner_active_pass_at_height".to_string(),
+                "owner_passes_at_height".to_string(),
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
                 "pass_energy_leaderboard".to_string(),
@@ -1703,6 +1740,52 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 }),
             )),
         }
+    }
+
+    fn get_owner_passes_at_height(
+        &self,
+        params: GetOwnerPassesAtHeightParams,
+    ) -> JsonResult<OwnerPassesAtHeight> {
+        self.validate_pagination(params.page, params.page_size)?;
+
+        let owner = self.parse_owner(&params.owner)?;
+        let resolved_height = self.resolve_height(params.at_height)?;
+        let states = self.parse_optional_pass_states(params.states)?;
+        let desc = self.parse_order_desc(params.order.as_deref())?;
+        let storage = self.indexer.miner_pass_storage();
+        let total = storage
+            .get_owner_pass_count_from_history_at_height_by_states(&owner, resolved_height, &states)
+            .map_err(Self::to_internal_error)?;
+        let rows = storage
+            .get_owner_passes_by_page_from_history_at_height_by_states(
+                &owner,
+                resolved_height,
+                &states,
+                params.page,
+                params.page_size,
+                desc,
+            )
+            .map_err(Self::to_internal_error)?;
+
+        Ok(OwnerPassesAtHeight {
+            resolved_height,
+            owner: owner.to_string(),
+            total,
+            items: rows
+                .into_iter()
+                .map(|row| OwnerPassItem {
+                    inscription_id: row.pass.inscription_id.to_string(),
+                    inscription_number: row.pass.inscription_number,
+                    mint_block_height: row.pass.mint_block_height,
+                    owner: row.pass.owner.to_string(),
+                    state: row.pass.state.as_str().to_string(),
+                    latest_event_height: row.latest_event_height,
+                    eth_main: row.pass.eth_main,
+                    eth_collab: row.pass.eth_collab,
+                    satpoint: row.pass.satpoint.to_string(),
+                })
+                .collect(),
+        })
     }
 
     fn get_pass_energy(&self, params: GetPassEnergyParams) -> JsonResult<PassEnergySnapshot> {
@@ -3711,6 +3794,106 @@ mod tests {
             _ => panic!("unexpected error code: {:?}", err.code),
         }
         assert_eq!(err.message, "DUPLICATE_ACTIVE_OWNER");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_owner_passes_at_height_returns_current_owner_rows_desc() {
+        let (server, root_dir) = build_server("owner_passes", 200);
+        let storage = server.indexer.miner_pass_storage();
+        let owner = test_script_hash(77);
+
+        let mut active = make_active_pass(41, 77, 100);
+        active.owner = owner;
+        active.mint_owner = owner;
+        storage.add_new_mint_pass_at_height(&active, 100).unwrap();
+
+        let dormant_owner = test_script_hash(78);
+        let mut dormant = make_active_pass(42, 78, 101);
+        dormant.owner = dormant_owner;
+        dormant.mint_owner = dormant_owner;
+        storage.add_new_mint_pass_at_height(&dormant, 101).unwrap();
+        storage
+            .update_state_at_height(
+                &dormant.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                110,
+            )
+            .unwrap();
+        storage
+            .transfer_owner_at_height(
+                &dormant.inscription_id,
+                &owner,
+                &test_satpoint(42, 1, 0),
+                125,
+            )
+            .unwrap();
+
+        let mut invalid = make_invalid_pass(43, 77, 102, "INVALID_ETH_MAIN");
+        invalid.owner = owner;
+        invalid.mint_owner = owner;
+        storage
+            .add_invalid_mint_pass_at_height(&invalid, 102)
+            .unwrap();
+
+        let page0 = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: owner.to_string(),
+                at_height: Some(200),
+                states: None,
+                order: None,
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+
+        assert_eq!(page0.resolved_height, 200);
+        assert_eq!(page0.owner, owner.to_string());
+        assert_eq!(page0.total, 3);
+        assert_eq!(page0.items.len(), 2);
+        assert_eq!(
+            page0.items[0].inscription_id,
+            dormant.inscription_id.to_string()
+        );
+        assert_eq!(page0.items[0].state, "dormant");
+        assert_eq!(page0.items[0].latest_event_height, 125);
+        assert_eq!(page0.items[1].latest_event_height, 102);
+
+        let page1 = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: owner.to_string(),
+                at_height: Some(200),
+                states: None,
+                order: None,
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 1);
+        assert_eq!(
+            page1.items[0].inscription_id,
+            active.inscription_id.to_string()
+        );
+
+        let active_only = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: owner.to_string(),
+                at_height: Some(200),
+                states: Some(vec!["active".to_string()]),
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(active_only.total, 1);
+        assert_eq!(
+            active_only.items[0].inscription_id,
+            active.inscription_id.to_string()
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
