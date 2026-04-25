@@ -64,7 +64,7 @@ Activation: <height/governance/TODO>
 | --- | --- | --- | --- | --- | --- |
 | 0 | `UIP-0000` | UIP Process and Governance | Process | P0 | Draft |
 | 1 | `UIP-0001` | Miner Pass Inscription Schema | Standards Track | P0 | Draft |
-| 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Planned |
+| 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Draft |
 | 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Planned |
 | 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Planned |
 | 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Planned |
@@ -142,6 +142,10 @@ Activation: <height/governance/TODO>
 - owner 一致性到底是 BTC owner、控制权、还是 lineage。
 - Burned pass 是否可被引用，以及引用时如何 invalid。
 - 同 block transfer + mint 的排序必须成为协议规则。
+
+当前草案：
+
+- `doc/UIP/UIP-0002-pass-state-machine.md`
 
 实现影响：
 

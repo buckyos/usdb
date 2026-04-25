@@ -56,8 +56,8 @@
 | --- | --- | --- | --- | --- |
 | ECO-001 | P0 | Done | 统一 UIP 命名、目录、编号和流程 | `doc/UIP/` |
 | ECO-002 | P0 | In Progress | 明确矿工证铭文 schema 与兼容策略 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `content.rs` |
-| ECO-003 | P0 | Todo | 将 `prev` 继承从 warn/skip 收敛为严格失败 | `pass.rs`, pass tests |
-| ECO-004 | P0 | Todo | Burned 状态必须同步写入 energy 终态 | `pass.rs`, `energy.rs`, tests |
+| ECO-003 | P0 | In Progress | 将 `prev` 继承从 warn/skip 收敛为严格失败 | `doc/UIP/UIP-0002-pass-state-machine.md`, `pass.rs` |
+| ECO-004 | P0 | In Progress | Burned 状态必须同步写入 energy 终态 | `doc/UIP/UIP-0002-pass-state-machine.md`, `energy.rs` |
 | ECO-005 | P0 | Todo | 明确并实现 energy penalty v2 公式 | `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | Todo | 明确并实现继承折损规则 | `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | UIP collab/leader |
@@ -120,7 +120,7 @@
   - 明确所有权一致性是 owner 相同、控制权相同还是 lineage 相同。
   - 同一个 `prev` 在同一列表中重复出现必须 invalid。
 - 下一步：
-  - 先在 UIP pass state / remint 文档中定义严格规则。
+  - Review `doc/UIP/UIP-0002-pass-state-machine.md` 中的 `prev` strict invalid 规则。
   - 再修改 `MinerPassManager::on_mint_pass` 的处理路径。
 - 验收：
   - 增加 owner mismatch、missing prev、already consumed、burned prev、duplicate prev 的严格 invalid 测试。
@@ -139,7 +139,7 @@
   - `Burned` energy 必须为 `0`。
   - 任意历史查询命中 burn 后高度，不得继续返回 burn 前可用能量。
 - 下一步：
-  - 在 UIP pass state / energy 文档中定义 burn 终态。
+  - Review `doc/UIP/UIP-0002-pass-state-machine.md` 中的 burn 终态规则。
   - 增加 `PassEnergyManager::on_pass_burned` 或等价接口。
   - 更新 burn 相关测试断言。
 - 验收：
@@ -303,9 +303,9 @@
 
 ## 8. 推荐下一步
 
-建议下一轮从 `ECO-002` 和 `ECO-007` 的 review 开始：
+建议下一轮从 `ECO-003` 和 `ECO-004` 的 review 开始：
 
-1. 基于 `UIP-0001` 落地 `leader_pass_id` / `leader_btc_addr` 二选一解析与校验。
-2. 在实现中移除或隔离 `eth_collab`，并避免为开发期格式分配正式协议版本。
-3. 确认 v1 strict schema 的 unknown field、duplicate key 和 `prev` 缺省策略。
-4. 再进入 `prev` 严格继承与 energy v2 的实现工作。
+1. Review `UIP-0002` 的 mint 原子提交顺序和同 block event ordering。
+2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
+3. 确认 burn 后 pass state 与 energy state 同步写入 `Burned`。
+4. 再进入 `prev` 严格继承和 burn 终态的实现工作。
