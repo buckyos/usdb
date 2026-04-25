@@ -65,8 +65,8 @@ Activation: <height/governance/TODO>
 | 0 | `UIP-0000` | UIP Process and Governance | Process | P0 | Draft |
 | 1 | `UIP-0001` | Miner Pass Inscription Schema | Standards Track | P0 | Draft |
 | 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Draft |
-| 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Planned |
-| 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Planned |
+| 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Draft |
+| 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Draft |
 | 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Planned |
 | 6 | `UIP-0006` | Validator Economic Payload | Standards Track | P1 | Planned |
 | 7 | `UIP-0007` | Formula Versioning and Activation | Process / Standards Track | P1 | Planned |
@@ -169,33 +169,43 @@ Activation: <height/governance/TODO>
 - 定义 energy 增长、惩罚、继承和终态语义。
 - 明确所有公式使用整数或定点数，不使用浮点非确定性计算。
 - 明确 `Dormant / Consumed / Burned` 查询语义。
+- 明确 `raw_energy` 是唯一可继承能量，`effective_energy` 和 collab contribution 不得写回 raw energy。
 
 建议公式拆分：
 
 ```text
-balance_units = floor(owner_balance_sats / 100_000)
-growth_delta  = balance_units * ENERGY_SCALE * block_delta
+eligible_balance_sats(balance)
+    = 0,       if balance < 100_000
+    = balance, otherwise
+
+growth_delta
+    = eligible_balance_sats * 10_000 * block_delta
 ```
 
 惩罚目标：
 
 ```text
-penalty = lost_units * H_now * lambda * ENERGY_SCALE
+penalty = floor(lost_sats * age_blocks * 10_000 * 3 / 2)
 ```
 
 继承目标：
 
 ```text
-inherit(prev_i) = dormant_energy(prev_i) * (1 - INHERIT_DISCOUNT)
+inherit(prev_i) = floor(raw_energy(prev_i) * 9500 / 10000)
 ```
 
 需要解决：
 
 - 定点精度和 rounding。
-- `active_block_height` 在部分减仓时的比例更新。
+- `active_block_height` 在增资和部分减仓时的比例更新。
 - `lambda`、`INHERIT_DISCOUNT` 的最终参数。
 - `u64` saturation 是否作为协议语义。
 - Burned energy 终态是否强制为 0。
+- 增长口径是否继续采用当前实现的 sat 级线性增长，还是改为离散 `0.001 BTC` 单位增长。
+
+当前草案：
+
+- `doc/UIP/UIP-0003-pass-energy-formula.md`
 
 实现影响：
 
@@ -220,21 +230,29 @@ inherit(prev_i) = dormant_energy(prev_i) * (1 - INHERIT_DISCOUNT)
 - 定义标准矿工证和协作矿工证的区别。
 - 定义 collab pass 创建时如何绑定 leader。
 - 定义 leader 有效性窗口。
-- 定义 `effective_energy`。
+- 定义 `collab_contribution` 与 `effective_energy`。
+- 明确 `effective_energy` 是派生值，不可继承，不得进入 raw energy ledger。
 
 候选规则：
 
 ```text
-effective_energy = self_energy + sum(collab_energy_i * COLLAB_WEIGHT)
-COLLAB_WEIGHT = 0.5
+collab_contribution
+    = floor(raw_energy(collab_i) * 5000 / 10000)
+
+effective_energy
+    = raw_energy(leader) + sum(collab_contribution_i)
 ```
 
 需要解决：
 
-- `leader_ref` 字段采用 pass id、BTC owner、ETH address 还是组合引用。
-- leader 无效时 collab energy 如何处理。
-- collab pass 自身是否可独立进入 candidate set。
-- collab 退出转普通 pass 的损失率。
+- `leader_btc_addr` 自动跟随 remint 后，如何证明 collab contribution 不会被重复继承。
+- leader 有效性窗口是否在本 UIP 中绑定 ETHW 出块行为，还是先默认只做 BTC 侧解析。
+- collab pass dormant 后是否允许通过 remint 重新成为 collab 或 standard。
+- collab 退出转普通 pass 的额外损失率。
+
+当前草案：
+
+- `doc/UIP/UIP-0004-collab-leader-effective-energy.md`
 
 实现影响：
 
@@ -419,14 +437,15 @@ real_difficulty = difficulty * (1 - level * 0.01)
 第二阶段：当前实现收敛
 
 1. `UIP-0003`
-2. `UIP-0007`
-3. 更新 `doc/usdb-economic-model-issue-tracker.md` 中 ECO-003、ECO-004、ECO-005、ECO-006 状态。
+2. `UIP-0004`
+3. 成对审计 raw energy、collab contribution、effective energy 的边界。
+4. 更新 `doc/usdb-economic-model-issue-tracker.md` 中 ECO-005、ECO-006、ECO-007、ECO-008 状态。
 
 第三阶段：validator 与挖矿选择
 
-1. `UIP-0004`
-2. `UIP-0005`
-3. `UIP-0006`
+1. `UIP-0005`
+2. `UIP-0006`
+3. `UIP-0007`
 
 第四阶段：完整经济系统
 

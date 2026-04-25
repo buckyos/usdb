@@ -8,7 +8,7 @@
 
 - 记录当前 review 发现的问题。
 - 新发现的问题先进入 `Todo` 状态。
-- 开始修复时切换为 `Doing`。
+- 开始协议拆分、实现或补测试时切换为 `In Progress`。
 - 代码与文档完成后切换为 `Done`。
 - 验证完成后切换为 `Verified`。
 - 因协议决议或外部依赖暂时无法推进时切换为 `Blocked`。
@@ -24,7 +24,7 @@
 | 状态 | 含义 |
 | --- | --- |
 | `Todo` | 已确认需要处理，但尚未开始。 |
-| `Doing` | 正在拆分协议、实现或补测试。 |
+| `In Progress` | 正在拆分协议、实现或补测试。 |
 | `Blocked` | 需要先完成协议决议、依赖实现或参数选择。 |
 | `Done` | 已完成文档/实现更新，但尚未完成最终验证。 |
 | `Verified` | 已通过对应测试、review 或协议验收。 |
@@ -58,10 +58,10 @@
 | ECO-002 | P0 | In Progress | 明确矿工证铭文 schema 与兼容策略 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `content.rs` |
 | ECO-003 | P0 | In Progress | 将 `prev` 继承从 warn/skip 收敛为严格失败 | `doc/UIP/UIP-0002-pass-state-machine.md`, `pass.rs` |
 | ECO-004 | P0 | In Progress | Burned 状态必须同步写入 energy 终态 | `doc/UIP/UIP-0002-pass-state-machine.md`, `energy.rs` |
-| ECO-005 | P0 | Todo | 明确并实现 energy penalty v2 公式 | `energy_formula.rs`, `energy.rs` |
-| ECO-006 | P1 | Todo | 明确并实现继承折损规则 | `pass.rs`, `energy.rs` |
-| ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | UIP collab/leader |
-| ECO-008 | P1 | Todo | 定义并实现 effective_energy / level / real_difficulty | RPC, validator payload |
+| ECO-005 | P0 | In Progress | 明确并实现 energy penalty v2 公式 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `energy_formula.rs`, `energy.rs` |
+| ECO-006 | P1 | In Progress | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
+| ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
+| ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, RPC, validator payload |
 | ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
 | ECO-011 | P1 | Todo | validator payload 补齐经济字段边界 | validator block-body docs/tests |
@@ -149,9 +149,10 @@
 ### ECO-005. 明确并实现 energy penalty v2 公式
 
 - 优先级：`P0`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
-  - 当前实现增长公式可与抽象单位模型对齐。
+  - 当前实现增长公式与达到阈值后按 sat 线性增长的模型对齐。
+  - 离散 `0.001 BTC` 单位增长是否替代当前增长口径仍需审计。
   - 当前惩罚是固定窗口近似：`abs(delta_sats) * 43_200_000`。
   - 目标文档提出 `penalty = lost_units * H_now * lambda`，并按损失比例调整 `active_block_height`。
 - 目标：
@@ -159,7 +160,7 @@
   - 明确 `active_block_height'` 的更新公式。
   - 明确公式版本升级和激活高度。
 - 下一步：
-  - 在 UIP energy formula 文档中把公式写成整数/定点实现规则。
+  - Review `doc/UIP/UIP-0003-pass-energy-formula.md` 中的整数公式、age 折算和 saturation 规则。
   - 再实现 `calc_penalty_v2` 和对应迁移路径。
 - 验收：
   - 有参数化公式单测和 timeline 测试。
@@ -168,7 +169,7 @@
 ### ECO-006. 明确并实现继承折损规则
 
 - 优先级：`P1`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - 目标文档建议 `INHERIT_DISCOUNT = 0.05`。
   - 当前实现是全额继承 dormant energy。
@@ -176,7 +177,7 @@
   - 明确折损率、rounding 和多 `prev` 累加顺序。
   - 明确旧版本和新版本的差异。
 - 下一步：
-  - 先在 UIP energy formula 中定义继承折损。
+  - Review `doc/UIP/UIP-0003-pass-energy-formula.md` 中的 `INHERIT_DISCOUNT_BPS`、逐项 rounding 和多 `prev` 累加规则。
   - 再修改 consume/inherit 路径。
 - 验收：
   - 多 prev 继承、单 prev 继承、边界 rounding 都有测试。
@@ -184,7 +185,7 @@
 ### ECO-007. 定义 collab pass 与 leader 绑定协议
 
 - 优先级：`P1`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - `eth_collab` 目前只是可选 EVM 地址字段。
   - 目标模型要求 collab pass 创建时绑定有效 leader。
@@ -194,14 +195,14 @@
   - 明确 collab pass 自身是否可独立参与 candidate set。
 - 下一步：
   - Review UIP-0001 中 standard/collab 互斥字段规则。
-  - 在 UIP-0004 中继续定义 leader 有效性、退出和 effective energy。
+  - Review `doc/UIP/UIP-0004-collab-leader-effective-energy.md` 中的 Leader 解析、地址跟随和 collab 退出规则。
 - 验收：
   - collab pass 的基础 energy 与 effective energy 不会双重计数。
 
 ### ECO-008. 定义并实现 effective_energy / level / real_difficulty
 
 - 优先级：`P1`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - 当前 leaderboard 和 validator 样例主要使用 raw `energy`。
   - 目标模型需要 `effective_energy`、`level`、`real_difficulty`。
@@ -210,7 +211,8 @@
   - 定义 `real_difficulty` 下界，如 `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR`。
   - 明确 RPC 与 validator payload 返回 raw energy 还是 effective energy。
 - 下一步：
-  - 先完成 UIP effective energy / difficulty。
+  - 先审计 `UIP-0004` 中 `raw_energy`、`collab_contribution`、`effective_energy` 的不可继承边界。
+  - 再进入 UIP-0005 level / real difficulty。
   - 再加 RPC 字段和 validator payload 字段。
 - 验收：
   - 单元测试覆盖 level 边界、rounding、最大折扣。
@@ -303,9 +305,9 @@
 
 ## 8. 推荐下一步
 
-建议下一轮从 `ECO-003` 和 `ECO-004` 的 review 开始：
+建议下一轮从 `UIP-0003` 和 `UIP-0004` 的成对审计开始：
 
-1. Review `UIP-0002` 的 mint 原子提交顺序和同 block event ordering。
-2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
-3. 确认 burn 后 pass state 与 energy state 同步写入 `Burned`。
-4. 再进入 `prev` 严格继承和 burn 终态的实现工作。
+1. 确认 `raw_energy` 是唯一可继承能量，`effective_energy` 永远只是派生值。
+2. 审计 `leader_btc_addr` 自动跟随 remint 的示例，确认不会发生 collab contribution 双重计数。
+3. 确认 penalty v2、继承折损和 collab 权重的首版参数。
+4. 决定 `leader_eligible` 是否在 `UIP-0004` 首版中绑定 ETHW 出块窗口，还是先默认只做 BTC 侧 Leader 解析。
