@@ -604,27 +604,29 @@ function App() {
       <div className="console-noise" />
       <header className="page-intro">
         <section className="masthead">
-          <div>
+          <div className="title-block">
             <p className="shell-kicker">{dict.kicker}</p>
             <h1>{dict.title}</h1>
             <p className="subtitle">{dict.subtitle}</p>
+          </div>
+          <div className="header-actions">
+            <label className="toolbar-control">
+              <Languages size={15} />
+              <span>{dict.language}</span>
+              <select value={locale} onChange={(event) => setLocale(normalizeLocale(event.target.value))}>
+                <option value="en">English</option>
+                <option value="zh-CN">简体中文</option>
+              </select>
+            </label>
             <div className="hero-tags">
               <span className="status-pill" data-tone="success">{dict.runtimeStatus}</span>
               <span className="status-pill" data-tone="info">{dict.minerPass}</span>
               <span className="status-pill" data-tone="info">{dict.energy}</span>
             </div>
           </div>
-          <label className="toolbar-control">
-            <Languages size={16} />
-            <span>{dict.language}</span>
-            <select value={locale} onChange={(event) => setLocale(normalizeLocale(event.target.value))}>
-              <option value="en">English</option>
-              <option value="zh-CN">简体中文</option>
-            </select>
-          </label>
         </section>
 
-        <form className="rpc-box" onSubmit={handleRpcSubmit}>
+        <form className="rpc-box endpoint-strip" onSubmit={handleRpcSubmit}>
           <div className="section-title">
             <div>
               <p className="eyebrow">Runtime Endpoint</p>
@@ -632,7 +634,7 @@ function App() {
             </div>
             <span className="pill">JSON-RPC</span>
           </div>
-          <label>
+          <label className="endpoint-field">
             {dict.rpcEndpoint}
             <div className="input-row">
               <select value={networkPreset} onChange={(event) => applyNetworkPreset(event.target.value)}>
