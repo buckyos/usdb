@@ -230,9 +230,9 @@ inherit(prev_i) = floor(raw_energy(prev_i) * 9500 / 10000)
 
 - 定义标准矿工证和协作矿工证的区别。
 - 定义 collab pass 创建时如何绑定 leader。
-- 定义 leader 有效性窗口。
 - 定义 `collab_contribution` 与 `effective_energy`。
 - 明确 `effective_energy` 是派生值，不可继承，不得进入 raw energy ledger。
+- 明确 ETHW Leader eligibility 不反向进入 USDB indexer 派生能量。
 
 候选规则：
 
@@ -247,9 +247,9 @@ effective_energy
 需要解决：
 
 - `leader_btc_addr` 自动跟随 remint 后，如何证明 collab contribution 不会被重复继承。
-- leader 有效性窗口是否在本 UIP 中绑定 ETHW 出块行为，还是先默认只做 BTC 侧解析。
-- collab pass dormant 后是否允许通过 remint 重新成为 collab 或 standard。
-- collab 退出转普通 pass 的额外损失率。
+- collab pass remint 为 standard 或新 collab 后，旧 contribution 如何归零。
+- payload / 查询如何同时暴露 `raw_energy`、`collab_contribution`、`effective_energy` 和审计明细。
+- ETHW 侧如何在 UIP-0005 / UIP-0006 中基于出块历史判断 Leader eligibility。
 
 当前草案：
 

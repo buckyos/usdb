@@ -189,16 +189,18 @@
 - 状态：`In Progress`
 - 当前现状：
   - `eth_collab` 目前只是可选 EVM 地址字段。
-  - 目标模型要求 collab pass 创建时绑定有效 leader。
+  - 目标模型要求 collab pass 创建时绑定 Leader 引用。
 - 目标：
   - 明确 collab pass 如何通过 `leader_pass_id` / `leader_btc_addr` 二选一表达 leader 引用。
-  - 明确 leader 失效、collab 退出、collab 转普通 pass 的状态转换。
+  - 明确 ETHW Leader eligibility 不反向进入 USDB indexer 派生能量。
+  - 明确 collab 退出和 collab 转普通 pass 统一走 remint + `prev`。
   - 明确 collab pass 自身是否可独立参与 candidate set。
 - 下一步：
   - Review UIP-0001 中 standard/collab 互斥字段规则。
-  - Review `doc/UIP/UIP-0004-collab-leader-effective-energy.md` 中的 Leader 解析、地址跟随和 collab 退出规则。
+  - 基于 `doc/UIP/UIP-0004-collab-leader-effective-energy.md` 实现 Leader 解析、地址跟随和 collab contribution 聚合。
 - 验收：
   - collab pass 的基础 energy 与 effective energy 不会双重计数。
+  - old collab consumed 后不再向旧 Leader 贡献 `collab_contribution`。
 
 ### ECO-008. 定义并实现 effective_energy / level / real_difficulty
 
@@ -210,9 +212,9 @@
 - 目标：
   - 定义 `level(effective_energy)` 的整数或定点计算方式。
   - 定义 `real_difficulty` 下界，如 `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR`。
-  - 明确 RPC 与 validator payload 返回 raw energy 还是 effective energy。
+  - 明确 RPC 与 validator payload 同时返回 `raw_energy`、`collab_contribution` 和 `effective_energy`。
 - 下一步：
-  - 先审计 `UIP-0004` 中 `raw_energy`、`collab_contribution`、`effective_energy` 的不可继承边界。
+  - 先基于 UIP-0004 增加可审计的 `collab_contribution` 明细查询或 payload 字段。
   - 再进入 UIP-0005 level / real difficulty。
   - 再加 RPC 字段和 validator payload 字段。
 - 验收：
@@ -306,9 +308,9 @@
 
 ## 8. 推荐下一步
 
-建议下一轮从 `UIP-0003` 和 `UIP-0004` 的成对审计开始：
+建议下一轮进入 `UIP-0003` / `UIP-0004` 的实现前置设计：
 
-1. 确认 `raw_energy` 是唯一可继承能量，`effective_energy` 永远只是派生值。
-2. 审计 `leader_btc_addr` 自动跟随 remint 的示例，确认不会发生 collab contribution 双重计数。
-3. 确认 penalty v2、继承折损和 collab 权重的首版参数。
-4. 决定 `leader_eligible` 是否在 `UIP-0004` 首版中绑定 ETHW 出块窗口，还是先默认只做 BTC 侧 Leader 解析。
+1. 设计 `uint128` energy 与 canonical decimal string 在 storage / RPC / frontend / validator payload 的改造路径。
+2. 设计 `raw_energy`、`collab_contribution`、`effective_energy` 的存储和查询结构。
+3. 明确 collab contribution breakdown 的最小字段和分页查询方式。
+4. 再实现 UIP-0003 unit energy 公式与 UIP-0004 Leader 解析 / contribution 聚合。
