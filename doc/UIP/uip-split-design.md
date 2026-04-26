@@ -67,7 +67,7 @@ Activation: <height/governance/TODO>
 | 2 | `UIP-0002` | Miner Pass State Machine | Standards Track | P0 | Draft |
 | 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Draft |
 | 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Draft |
-| 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Planned |
+| 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Draft |
 | 6 | `UIP-0006` | Validator Economic Payload | Standards Track | P1 | Planned |
 | 7 | `UIP-0007` | Formula Versioning and Activation | Process / Standards Track | P1 | Planned |
 | 8 | `UIP-0008` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
@@ -177,7 +177,7 @@ Activation: <height/governance/TODO>
 balance_units = floor(owner_balance_sats / 100_000)
 
 growth_delta
-    = balance_units * 1_000_000_000 * block_delta
+    = balance_units * block_delta
 ```
 
 惩罚目标：
@@ -187,7 +187,7 @@ units_before = floor(balance_before_sats / 100_000)
 units_after  = floor(balance_after_sats  / 100_000)
 lost_units   = max(0, units_before - units_after)
 
-penalty = floor(lost_units * age_blocks * 1_000_000_000 * 3 / 2)
+penalty = floor(lost_units * age_blocks * 3 / 2)
 ```
 
 继承目标：
@@ -271,26 +271,33 @@ effective_energy
 
 ## 12. UIP-0005: Level and Real Difficulty
 
+当前草案：
+
+- `doc/UIP/UIP-0005-level-and-real-difficulty.md`
+
 目标：
 
 - 定义 `level(effective_energy)`。
 - 定义 `real_difficulty`。
 - 定义下界约束。
 
-目标公式草案：
+当前公式草案：
 
 ```text
-level = floor(log_q(1 + (q - 1) * effective_energy / E0))
-E0 = 1_000_000
-q  = 1.18
-real_difficulty = difficulty * (1 - level * 0.01)
+level_threshold(0) = 0
+level_threshold(L) = ceil(E0 * Σ(i = 0..L-1) q^i)
+level = max L where effective_energy >= level_threshold(L)
+
+difficulty_factor_bps = max(5000, 10000 - level * 100)
+real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 ```
 
 需要解决：
 
-- 用整数/定点规则替代非确定性 `log`。
-- `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR`。
-- level 是否进入 validator payload，还是由 validator 重算。
+- 已用整数阈值表替代非确定性 `log`。
+- 当前草案采用 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
+- UIP-0003 已采用 `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 `E0 = 1_000_000` 量纲匹配。
+- level 是否必须进入 validator payload，还是只作为可重算字段携带。
 
 实现影响：
 

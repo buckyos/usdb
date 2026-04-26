@@ -96,7 +96,7 @@ Leader 关系不得改变 collab pass 自己的 `raw_energy` 计算。
 | 参数 | 值 | 含义 |
 | --- | ---: | --- |
 | `UNIT_SATS` | `100_000` | 1 个离散余额单位，等于 0.001 BTC。 |
-| `ENERGY_PER_UNIT_BLOCK` | `1_000_000_000` | 每个 `balance_unit` 每 BTC block 增长的 raw energy。 |
+| `ENERGY_PER_UNIT_BLOCK` | `1` | 每个 `balance_unit` 每 BTC block 增长的 raw energy。 |
 | `PENALTY_LAMBDA_NUM` | `3` | penalty 倍率分子。 |
 | `PENALTY_LAMBDA_DEN` | `2` | penalty 倍率分母，即 `lambda = 1.5`。 |
 | `INHERIT_DISCOUNT_BPS` | `500` | `prev` 继承折损，500 bps = 5%。 |
@@ -184,10 +184,10 @@ projected_raw_energy
 | owner balance | 1 block | 144 blocks | 1008 blocks |
 | ---: | ---: | ---: | ---: |
 | `99_999` sats | `0` | `0` | `0` |
-| `100_000` sats | `1_000_000_000` | `144_000_000_000` | `1_008_000_000_000` |
-| `199_999` sats | `1_000_000_000` | `144_000_000_000` | `1_008_000_000_000` |
-| `200_000` sats | `2_000_000_000` | `288_000_000_000` | `2_016_000_000_000` |
-| `1 BTC` | `1_000_000_000_000` | `144_000_000_000_000` | `1_008_000_000_000_000` |
+| `100_000` sats | `1` | `144` | `1_008` |
+| `199_999` sats | `1` | `144` | `1_008` |
+| `200_000` sats | `2` | `288` | `2_016` |
+| `1 BTC` | `1_000` | `144_000` | `1_008_000` |
 
 # 余额增加
 
@@ -250,7 +250,7 @@ raw_energy_after_penalty
 使用建议参数时：
 
 ```text
-penalty = floor(lost_units * age_before * 1_500_000_000)
+penalty = floor(lost_units * age_before * 3 / 2)
 ```
 
 ## 余额年龄折旧
@@ -284,19 +284,33 @@ record.active_block_height = active_block_height_after
 
 ## 当前实现兼容说明
 
-开发期旧实现曾采用 sat 级固定窗口近似：
+开发期旧实现曾采用 sat 级增长和固定窗口 penalty 近似：
+
+```text
+growth_delta_legacy = owner_balance_sats * 10_000 * block_delta
+```
+
+该增长公式等价于：
+
+```text
+balance_units * 1_000_000_000 * block_delta
+```
+
+这会把 issue #23 中讨论的 unit-block 能量模型整体放大 `1_000_000_000` 倍，并导致 UIP-0005 的 `LEVEL_E0 = 1_000_000` 失去原始量纲。UIP-0003 不保留该 scale 作为正式协议语义。
+
+旧 penalty 近似为：
 
 ```text
 penalty_current = lost_sats * 43_200_000
 ```
 
-该公式可理解为把旧 sat 级公式中的 `age_before` 固定为 `2880` blocks：
+该公式可理解为旧 `1_000_000_000` raw scale 下，把 `age_before` 固定为 `2880` blocks 的近似：
 
 ```text
 10_000 * 1.5 * 2880 = 43_200_000
 ```
 
-UIP-0003 不保留该近似作为正式协议语义。当前开发网络可以从高度 `0` 使用本节定义的 unit penalty。
+UIP-0003 不保留该近似作为正式协议语义。当前开发网络可以从高度 `0` 重建并使用本节定义的 unit-block growth 与 unit penalty。
 
 # 继承折损
 
@@ -389,13 +403,13 @@ energy_result = min(exact_integer_result, ENERGY_MAX)
 
 ## Saturation 风险估算
 
-使用 `UNIT_SATS = 100_000` 和 `ENERGY_PER_UNIT_BLOCK = 1_000_000_000` 时：
+使用 `UNIT_SATS = 100_000` 和 `ENERGY_PER_UNIT_BLOCK = 1` 时：
 
 | BTC balance | units | energy / block | 到达 `u128::MAX` 的约略时间 |
 | ---: | ---: | ---: | ---: |
-| `1 BTC` | `1_000` | `1_000_000_000_000` | 约 `6.5e21` 年 |
-| `1_000 BTC` | `1_000_000` | `1_000_000_000_000_000` | 约 `6.5e18` 年 |
-| `21_000_000 BTC` | `21_000_000_000` | `21_000_000_000_000_000_000` | 约 `3.1e14` 年 |
+| `1 BTC` | `1_000` | `1_000` | 约 `6.5e30` 年 |
+| `1_000 BTC` | `1_000_000` | `1_000_000` | 约 `6.5e27` 年 |
+| `21_000_000 BTC` | `21_000_000_000` | `21_000_000_000` | 约 `3.1e23` 年 |
 
 因此 `uint128` saturation 是协议兜底，正常经济场景不会触发。
 
@@ -468,8 +482,9 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 2. unit delta 必须通过 `units_before` / `units_after` 快照计算，不得通过 sat delta 直接取整。
 3. 正向增资只更新 settlement height 和 owner balance，不重置、不折算 `active_block_height`。
 4. 首版参数固定为 `PENALTY_LAMBDA = 1.5`、`INHERIT_DISCOUNT_BPS = 500`。
-5. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
-6. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0007 处理。
+5. `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 unit-block 能量量纲保持一致。
+6. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
+7. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0007 处理。
 
 # 后续实现风险
 

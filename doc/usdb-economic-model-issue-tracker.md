@@ -61,7 +61,7 @@
 | ECO-005 | P0 | In Progress | 明确并实现 energy penalty v2 公式 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | In Progress | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
-| ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, RPC, validator payload |
+| ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, validator payload |
 | ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
 | ECO-011 | P1 | Todo | validator payload 补齐经济字段边界 | validator block-body docs/tests |
@@ -154,7 +154,9 @@
   - UIP-0003 已确认采用离散 `0.001 BTC` unit 增长模型。
   - 当前实现仍是达到阈值后的 sat 级线性增长，需要调整为 `balance_units`。
   - 当前惩罚是固定窗口近似：`abs(delta_sats) * 43_200_000`。
-  - UIP-0003 已确认 `penalty = lost_units * age_blocks * 1_000_000_000 * 1.5`，并按剩余 units 比例调整 `active_block_height`。
+  - UIP-0003 已确认 `ENERGY_PER_UNIT_BLOCK = 1`，并采用 `penalty = floor(lost_units * age_blocks * 3 / 2)`。
+  - 余额减少后按剩余 units 比例调整 `active_block_height`。
+  - 相关 GitHub 讨论：[#27](https://github.com/buckyos/usdb/issues/27)。
 - 目标：
   - 将公式实现切换到 `uint128` energy 和 unit delta 快照计算。
   - 将 RPC / validator payload / 前端 energy 表示切换为 canonical decimal string。
@@ -209,13 +211,16 @@
 - 当前现状：
   - 当前 leaderboard 和 validator 样例主要使用 raw `energy`。
   - 目标模型需要 `effective_energy`、`level`、`real_difficulty`。
+  - `doc/UIP/UIP-0004-collab-leader-effective-energy.md` 已定义 `effective_energy`。
+  - `doc/UIP/UIP-0005-level-and-real-difficulty.md` 已进入 Draft，并与 UIP-0003 unit-block energy 量纲对齐。
+  - 相关 GitHub 讨论：[#27](https://github.com/buckyos/usdb/issues/27)。
 - 目标：
   - 定义 `level(effective_energy)` 的整数或定点计算方式。
   - 定义 `real_difficulty` 下界，如 `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR`。
   - 明确 RPC 与 validator payload 同时返回 `raw_energy`、`collab_contribution` 和 `effective_energy`。
 - 下一步：
-  - 先基于 UIP-0004 增加可审计的 `collab_contribution` 明细查询或 payload 字段。
-  - 再进入 UIP-0005 level / real difficulty。
+  - 确认 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000` 是否作为首版正式参数。
+  - 基于 UIP-0004 增加可审计的 `collab_contribution` 明细查询或 payload 字段。
   - 再加 RPC 字段和 validator payload 字段。
 - 验收：
   - 单元测试覆盖 level 边界、rounding、最大折扣。

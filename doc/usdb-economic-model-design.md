@@ -376,38 +376,36 @@ inherit(prev_i) = dormant_energy(prev_i)
 
 任何历史查询如果命中 `Dormant`，只能返回冻结值；如果命中 `Consumed` 或 `Burned`，只能返回 `0`。
 
-## 5.9 抽象公式到当前实现常量的映射
+## 5.9 抽象公式与开发期旧实现差异
 
-为了兼容当前 `usdb-indexer` 的 raw energy 实现，建议采用以下解释层：
+目标模型采用 issue #23 讨论中的 unit-block 能量量纲：
 
 ```text
 BALANCE_UNIT_SATS = 100_000
-ENERGY_SCALE      = 1_000_000_000
+ENERGY_PER_UNIT_BLOCK = 1
 ```
 
-则每区块的 raw energy 增长可写为：
+每区块的 raw energy 增长为：
 
 ```text
 growth_delta_raw
-    = balance_units * ENERGY_SCALE
-    = (owner_balance_sats / 100_000) * 1_000_000_000
-    = owner_balance_sats * 10_000
+    = balance_units * ENERGY_PER_UNIT_BLOCK
+    = floor(owner_balance_sats / 100_000)
 ```
 
-这与当前实现中的：
+开发期旧实现曾使用：
 
 ```text
 growth_delta = owner_balance * 10_000 * r
 ```
 
-是等价的。
+该旧公式等价于把目标模型整体乘以 `1_000_000_000` 的 raw scale。这个 scale 主要用于解释历史代码常量，会使 `level` 中的 `E0 = 1_000_000` 失去原始量纲，因此不进入正式协议语义。
 
 对于惩罚项，目标模型的 raw 形式应为：
 
 ```text
 penalty_raw_target
-    = lost_units * H_now * 1.5 * ENERGY_SCALE
-    = abs(owner_delta_sats) * H_now * 15_000
+    = floor(lost_units * H_now * 3 / 2)
 ```
 
 当前实现采用：
@@ -416,7 +414,7 @@ penalty_raw_target
 penalty_raw_current = abs(owner_delta_sats) * 43_200_000
 ```
 
-可将其理解为把 `H_now` 近似固定为 `2880` blocks 时的兼容常量：
+可将其理解为旧 `1_000_000_000` raw scale 下，把 `H_now` 近似固定为 `2880` blocks 时的兼容常量：
 
 ```text
 15_000 * 2880 = 43_200_000
@@ -424,8 +422,8 @@ penalty_raw_current = abs(owner_delta_sats) * 43_200_000
 
 因此：
 
-- 当前实现的增长模型，与本文抽象模型可以严格对齐。
-- 当前实现的惩罚模型，可理解为对 `lambda * H_now` 的固定窗口近似，而非完整目标模型。
+- 当前实现的增长模型属于开发期旧量纲，需要切换为 unit-block 量纲。
+- 当前实现的惩罚模型属于旧 scale 下的固定窗口近似，而非完整目标模型。
 
 ## 6. 协作矿工证与 Leader
 
@@ -806,14 +804,12 @@ else:
 
 ## 1. 采用抽象单位而不是直接暴露实现常量
 
-`review.md` 使用 `balance_units` 描述经济直觉，当前实现使用 sats 和大整数乘子。本文通过：
+`review.md` 和 issue #23 使用 `balance_units` 描述经济直觉。本文采用：
 
 - `1 balance_unit = 100_000 sats`
-- `ENERGY_SCALE = 1_000_000_000`
+- `ENERGY_PER_UNIT_BLOCK = 1`
 
-把两者衔接起来。
-
-这样既能保留“1 BTC = 1000 单位”的直观模型，又能解释为什么当前代码中会出现 `10_000` 的增长乘子。
+这样可以保留“1 BTC = 1000 单位”的直观模型，并让 `E0 = 1_000_000` 的 level 曲线与样本场景保持一致。当前代码中的 `10_000` 增长乘子属于开发期旧实现，需要在协议落地时移除。
 
 ## 2. 对惩罚模型显式分离“目标公式”与“当前兼容近似”
 
