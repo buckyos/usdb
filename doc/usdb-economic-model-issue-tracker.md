@@ -213,15 +213,18 @@
   - 目标模型需要 `effective_energy`、`level`、`real_difficulty`。
   - `doc/UIP/UIP-0004-collab-leader-effective-energy.md` 已定义 `effective_energy`。
   - `doc/UIP/UIP-0005-level-and-real-difficulty.md` 已进入 Draft，并与 UIP-0003 unit-block energy 量纲对齐。
+  - 已确认 `MAX_LEVEL = 50`，最大 difficulty discount = 50%。
+  - 已确认 usdb-indexer 不读取 ETHW `base_difficulty`，只动态派生 `level` 和 `difficulty_factor_bps`。
   - 相关 GitHub 讨论：[#27](https://github.com/buckyos/usdb/issues/27)。
 - 目标：
   - 定义 `level(effective_energy)` 的整数或定点计算方式。
-  - 定义 `real_difficulty` 下界，如 `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR`。
-  - 明确 RPC 与 validator payload 同时返回 `raw_energy`、`collab_contribution` 和 `effective_energy`。
+  - 定义 `difficulty_factor_bps(level)` 的下界，即 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
+  - 明确 RPC 与 validator payload 同时返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 `difficulty_factor_bps`。
+  - 明确 ETHW 侧基于 `base_difficulty` 和 `difficulty_factor_bps` 计算 `real_difficulty`。
 - 下一步：
-  - 确认 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000` 是否作为首版正式参数。
   - 基于 UIP-0004 增加可审计的 `collab_contribution` 明细查询或 payload 字段。
-  - 再加 RPC 字段和 validator payload 字段。
+  - 增加 RPC 动态派生字段和 validator payload 字段。
+  - 在 UIP-0006 中定义 ETHW `base_difficulty` / `real_difficulty` 的 payload 编码。
 - 验收：
   - 单元测试覆盖 level 边界、rounding、最大折扣。
   - candidate set 选择规则使用协议指定字段。

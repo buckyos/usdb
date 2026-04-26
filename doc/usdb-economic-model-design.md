@@ -508,16 +508,25 @@ q  = 1.18
 
 ## 7.2 实际难度
 
-矿工实际难度为：
+矿工证只决定难度折算系数：
 
 ```text
-real_difficulty = difficulty * (1 - level * 0.01)
+difficulty_factor_bps = max(5000, 10000 - level * 100)
 ```
+
+`MAX_LEVEL = 50`，因此矿工证最多将 ETHW 侧基础难度降低到 50%。
+
+ETHW validator / mining policy 使用当前 `base_difficulty` 计算实际难度：
+
+```text
+real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
+```
+
+`base_difficulty` 由 ETHW 提供，USDB indexer 不查询、不持久化该值。
 
 ### 7.2.1 下界约束
 
-实现不得允许 `real_difficulty <= 0`。实际上的约束，是level很难超过50
-也就是说，最多通过矿工证，降低1半的USDB PoW难度
+实现不得允许 `real_difficulty <= 0`。实际约束为 `difficulty_factor_bps >= 5000`，也就是说最多通过矿工证降低一半 USDB PoW 难度。
 
 
 ## 8. 收益与发行
@@ -878,7 +887,7 @@ else:
 
 ## 5. 难度下穿
 
-`real_difficulty = difficulty * (1 - level * 0.01)` 如果不设边界，可能导致难度降为零或负值。实现必须在公式版本中显式约束这一点。
+`real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)` 如果不设 `difficulty_factor_bps` 下界，可能导致难度降为零或过低。实现必须在公式版本中显式约束这一点。
 
 # 待定问题
 
@@ -887,8 +896,8 @@ else:
 3. `prev` 的所有权一致性应如何精确定义。`<TODO>`
 4. 协作矿工退出普通矿工时的附加损失参数。`<TODO>`
 5. “带报价的 B 出块” 的共识字段与验证方式。`<TODO>`
-6. `effective_energy`、`level` 与 `real_difficulty` 的 rounding 规则。`<TODO>`
-7. `MAX_LEVEL` 或 `MIN_DIFFICULTY_FACTOR` 的选择。`<TODO>`
+6. ETHW `base_difficulty` / `real_difficulty` 的 payload 编码。`<TODO>`
+7. local / regtest level 参数 override 的标识方式。`<TODO>`
 8. `TOTAL_MINER_BTC` 的统计口径。`<TODO>`
 9. `K = f(CE, AE)` 的最终函数。`<TODO>`
 10. 叔块奖励规则的精确定义。`<TODO>`

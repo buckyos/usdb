@@ -278,7 +278,8 @@ effective_energy
 目标：
 
 - 定义 `level(effective_energy)`。
-- 定义 `real_difficulty`。
+- 定义 `difficulty_factor_bps(level)`。
+- 定义 ETHW 侧 `real_difficulty` 折算规则。
 - 定义下界约束。
 
 当前公式草案：
@@ -295,9 +296,11 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 需要解决：
 
 - 已用整数阈值表替代非确定性 `log`。
-- 当前草案采用 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
+- 当前草案已确认采用 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
 - UIP-0003 已采用 `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 `E0 = 1_000_000` 量纲匹配。
-- level 是否必须进入 validator payload，还是只作为可重算字段携带。
+- usdb-indexer 只动态派生 `level` 和 `difficulty_factor_bps`，不持久化，也不读取 ETHW `base_difficulty`。
+- `real_difficulty` 由 ETHW validator / mining policy 基于当前 `base_difficulty` 计算。
+- ETHW payload 是否必须显式携带 `base_difficulty` / `real_difficulty` 留给 UIP-0006。
 
 实现影响：
 
