@@ -108,6 +108,7 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_active_passes_at_height",
     "get_owner_active_pass_at_height",
     "get_owner_passes_at_height",
+    "get_recent_passes",
     "get_pass_stats_at_height",
     "get_pass_history",
     "get_pass_energy",

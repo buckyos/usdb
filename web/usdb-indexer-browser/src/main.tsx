@@ -39,8 +39,13 @@ interface UsdbIndexerReadiness {
 }
 
 interface PassStatsAtHeight {
+  resolved_height: number
   total_count: number
   active_count: number
+  dormant_count: number
+  consumed_count: number
+  burned_count: number
+  invalid_count: number
 }
 
 interface RpcActiveBalanceSnapshot {
@@ -90,6 +95,12 @@ interface OwnerPassItem {
 interface OwnerPassesAtHeightPage {
   resolved_height: number
   owner: string
+  total: number
+  items: OwnerPassItem[]
+}
+
+interface RecentPassesPage {
+  resolved_height: number
   total: number
   items: OwnerPassItem[]
 }
@@ -178,7 +189,14 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     stableHeight: 'Stable Height',
     activePasses: 'Active Passes',
     totalPasses: 'Total Passes',
+    dormantPasses: 'Dormant Passes',
+    consumedPasses: 'Consumed Passes',
+    burnedPasses: 'Burned Passes',
+    invalidPasses: 'Invalid Passes',
     activeBalance: 'Active BTC Balance',
+    passOverview: 'Miner Pass Overview',
+    recentMints: 'Recent Minted Passes',
+    topEnergyPasses: 'Top Energy Passes',
     syncStatus: 'Sync Status',
     consistencyStatus: 'Consistency Status',
     currentProgress: 'Current Progress',
@@ -267,7 +285,14 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     stableHeight: '稳定高度',
     activePasses: '活跃矿工证',
     totalPasses: '矿工证总量',
+    dormantPasses: 'Dormant 矿工证',
+    consumedPasses: 'Consumed 矿工证',
+    burnedPasses: 'Burned 矿工证',
+    invalidPasses: 'Invalid 矿工证',
     activeBalance: '活跃地址 BTC 总额',
+    passOverview: '矿工证概览',
+    recentMints: '最近铸造的矿工证',
+    topEnergyPasses: '能量 Top 矿工证',
     syncStatus: '同步状态',
     consistencyStatus: '一致性状态',
     currentProgress: '当前进度',
@@ -456,6 +481,8 @@ function App() {
   const [passStats, setPassStats] = React.useState<PassStatsAtHeight | null>(null)
   const [activeBalance, setActiveBalance] = React.useState<RpcActiveBalanceSnapshot | null>(null)
   const [latestCommit, setLatestCommit] = React.useState<PassBlockCommitInfo | null>(null)
+  const [recentPasses, setRecentPasses] = React.useState<RecentPassesPage | null>(null)
+  const [overviewLeaderboard, setOverviewLeaderboard] = React.useState<PassEnergyLeaderboardPage | null>(null)
   const [passQueryMode, setPassQueryMode] = React.useState<PassQueryMode>('id')
   const [passId, setPassId] = React.useState('')
   const [passHeight, setPassHeight] = React.useState('')
@@ -527,13 +554,28 @@ function App() {
   const refreshHome = React.useCallback(async () => {
     setHomeError('')
     try {
-      const [nextRpcInfo, nextSyncStatus, nextReadiness, nextPassStats, nextActiveBalance, nextCommit] = await Promise.all([
+      const [
+        nextRpcInfo,
+        nextSyncStatus,
+        nextReadiness,
+        nextPassStats,
+        nextActiveBalance,
+        nextCommit,
+        nextRecentPasses,
+        nextOverviewLeaderboard,
+      ] = await Promise.all([
         rpcCall<UsdbRpcInfo>('get_rpc_info'),
         rpcCall<UsdbIndexerSyncStatus>('get_sync_status'),
         rpcCall<UsdbIndexerReadiness>('get_readiness'),
         rpcCall<PassStatsAtHeight>('get_pass_stats_at_height', [{ at_height: null }]),
         rpcCall<RpcActiveBalanceSnapshot | null>('get_latest_active_balance_snapshot'),
         rpcCall<PassBlockCommitInfo | null>('get_pass_block_commit', [{ block_height: null }]),
+        rpcCall<RecentPassesPage>('get_recent_passes', [
+          { at_height: null, states: undefined, order: 'desc', page: 0, page_size: 8 },
+        ]),
+        rpcCall<PassEnergyLeaderboardPage>('get_pass_energy_leaderboard', [
+          { at_height: null, scope: 'active', page: 0, page_size: 8 },
+        ]),
       ])
       setRpcInfo(nextRpcInfo)
       setSyncStatus(nextSyncStatus)
@@ -541,10 +583,14 @@ function App() {
       setPassStats(nextPassStats)
       setActiveBalance(nextActiveBalance)
       setLatestCommit(nextCommit)
+      setRecentPasses(nextRecentPasses)
+      setOverviewLeaderboard(nextOverviewLeaderboard)
       setRpcHint(t('connected', { time: new Date().toLocaleTimeString(locale) }))
       setNetworkPreset(normalizeNetwork(nextRpcInfo.network))
     } catch (error) {
       setReadiness(null)
+      setRecentPasses(null)
+      setOverviewLeaderboard(null)
       setHomeError(t('homeError', { error: errorMessage(error) }))
       setRpcHint(t('rpcError', { error: errorMessage(error) }))
     }
@@ -650,7 +696,7 @@ function App() {
       const atHeight = parseOptionalHeight(ownerHeight, t)
       const page = await rpcCall<OwnerPassesAtHeightPage>('get_owner_passes_at_height', [
         {
-          address: ownerAddress.trim(),
+          owner: ownerAddress.trim(),
           at_height: atHeight,
           states: ownerPassStates(ownerScope),
           order: 'desc',
@@ -667,12 +713,17 @@ function App() {
     }
   }
 
-  async function openOwnerPass(item: OwnerPassItem) {
+  async function openPassById(inscriptionId: string, resolvedHeight?: number) {
+    setActiveTab('pass')
     setPassQueryMode('id')
-    setPassId(item.inscription_id)
-    const height = String(ownerPasses?.resolved_height ?? item.latest_event_height)
+    setPassId(inscriptionId)
+    const height = resolvedHeight == null ? '' : String(resolvedHeight)
     setPassHeight(height)
-    await queryPassById(item.inscription_id, height)
+    await queryPassById(inscriptionId, height)
+  }
+
+  async function openPassDetail(item: OwnerPassItem, resolvedHeight?: number) {
+    await openPassById(item.inscription_id, resolvedHeight ?? item.latest_event_height)
   }
 
   async function loadPassHistory(nextPage: number) {
@@ -836,6 +887,12 @@ function App() {
             <Metric icon={<Badge size={18} />} label={dict.totalPasses} value={nf.format(passStats?.total_count ?? 0)} />
             <Metric icon={<Zap size={18} />} label={dict.activeBalance} value={formatBtc(activeBalance?.total_balance, nf)} />
           </section>
+          <section className="metric-grid">
+            <Metric icon={<Badge size={18} />} label={dict.dormantPasses} value={nf.format(passStats?.dormant_count ?? 0)} />
+            <Metric icon={<Badge size={18} />} label={dict.consumedPasses} value={nf.format(passStats?.consumed_count ?? 0)} />
+            <Metric icon={<Badge size={18} />} label={dict.burnedPasses} value={nf.format(passStats?.burned_count ?? 0)} />
+            <Metric icon={<Badge size={18} />} label={dict.invalidPasses} value={nf.format(passStats?.invalid_count ?? 0)} />
+          </section>
           <article className="card">
             <div className="card-head">
               <div><p className="eyebrow">Sync State</p><h2>{dict.syncStatus}</h2></div>
@@ -925,6 +982,41 @@ function App() {
               </>
             )}
           </article>
+          <section className="overview-stack">
+            <article className="card">
+              <div className="card-head">
+                <div>
+                  <p className="eyebrow">{recentPasses ? `${nf.format(recentPasses.total)} records @ ${nf.format(recentPasses.resolved_height)}` : 'Mint Stream'}</p>
+                  <h2>{dict.recentMints}</h2>
+                </div>
+                <button className="ghost" onClick={() => void refreshHome()}>{dict.refresh}</button>
+              </div>
+              <DataTable headers={['inscription_id', 'state', 'mint_height', 'latest_event', 'owner', 'satpoint']} rows={(recentPasses?.items ?? []).map((item) => [
+                <IdButton value={item.inscription_id} onClick={() => void openPassDetail(item, recentPasses?.resolved_height)} />,
+                item.state,
+                nf.format(item.mint_block_height),
+                nf.format(item.latest_event_height),
+                <span className="mono compact-id" title={item.owner}>{shortText(item.owner, 18, 14)}</span>,
+                <span className="mono compact-id" title={item.satpoint}>{shortText(item.satpoint, 18, 14)}</span>,
+              ])} />
+            </article>
+            <article className="card">
+              <div className="card-head">
+                <div>
+                  <p className="eyebrow">{overviewLeaderboard ? `${nf.format(overviewLeaderboard.total)} active records @ ${nf.format(overviewLeaderboard.resolved_height)}` : 'Active Energy'}</p>
+                  <h2>{dict.topEnergyPasses}</h2>
+                </div>
+                <button className="ghost" onClick={() => setActiveTab('energy')}>{dict.energyLeaderboard}</button>
+              </div>
+              <DataTable headers={['rank', 'energy', 'inscription_id', 'state', 'height']} rows={(overviewLeaderboard?.items ?? []).map((item, index) => [
+                index + 1,
+                nf.format(item.energy),
+                <IdButton value={item.inscription_id} onClick={() => void openPassById(item.inscription_id, overviewLeaderboard?.resolved_height ?? item.record_block_height)} />,
+                item.state,
+                nf.format(item.record_block_height),
+              ])} />
+            </article>
+          </section>
           {passQueryMode === 'owner' ? (
             <article className="card">
               <div className="card-head">
@@ -939,13 +1031,13 @@ function App() {
                 </div>
               </div>
               <DataTable headers={['inscription_id', 'state', 'latest_event_height', 'mint_height', 'eth_main', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
-                shortText(item.inscription_id, 16, 14),
+                <IdButton value={item.inscription_id} onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)} />,
                 item.state,
                 nf.format(item.latest_event_height),
                 nf.format(item.mint_block_height),
                 shortText(item.eth_main, 12, 10),
                 shortText(item.satpoint, 16, 12),
-                <button className="link-button" onClick={() => void openOwnerPass(item)}>{dict.openDetail}</button>,
+                <button className="link-button" onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)}>{dict.openDetail}</button>,
               ])} />
             </article>
           ) : null}
@@ -1083,6 +1175,14 @@ function DataTable({ headers, rows }: { headers: string[]; rows: React.ReactNode
         <tbody>{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody>
       </table>
     </div>
+  )
+}
+
+function IdButton({ value, onClick }: { value: string; onClick: () => void }) {
+  return (
+    <button className="link-button id-link" title={value} onClick={onClick}>
+      {value}
+    </button>
   )
 }
 

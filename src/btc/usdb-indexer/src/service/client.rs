@@ -340,6 +340,35 @@ impl RpcClient {
         .await
     }
 
+    /// Returns recently minted passes visible at a target height.
+    ///
+    /// # Arguments
+    /// * `at_height` - Optional query height. `None` resolves to current local synced height.
+    /// * `states` - Optional state filter. `None` or empty means all states.
+    /// * `order` - Optional sort order by mint height: `Some("desc")` or `Some("asc")`.
+    /// * `page` - Zero-based page index.
+    /// * `page_size` - Number of rows per page.
+    pub async fn get_recent_passes(
+        &self,
+        at_height: Option<u32>,
+        states: Option<Vec<String>>,
+        order: Option<&str>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<RecentPassesPage, String> {
+        self.rpc_call::<RecentPassesPage>(
+            "get_recent_passes",
+            json!([{
+                "at_height": at_height,
+                "states": states,
+                "order": order,
+                "page": page,
+                "page_size": page_size,
+            }]),
+        )
+        .await
+    }
+
     /// Returns pass energy snapshot at a target height.
     ///
     /// # Arguments

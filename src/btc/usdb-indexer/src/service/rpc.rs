@@ -681,6 +681,55 @@ pub struct OwnerPassesAtHeight {
     pub items: Vec<OwnerPassItem>,
 }
 
+/// Parameters for `get_recent_passes`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetRecentPassesParams {
+    /// Optional query height; `None` resolves to the current local synced height.
+    pub at_height: Option<u32>,
+    /// Optional state filter. Empty or absent means all pass states.
+    pub states: Option<Vec<String>>,
+    /// Optional order by mint height, `desc` by default.
+    pub order: Option<String>,
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of rows per page.
+    pub page_size: usize,
+}
+
+/// One recently minted pass resolved at a target height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentPassItem {
+    /// Pass inscription id.
+    pub inscription_id: String,
+    /// Global inscription number.
+    pub inscription_number: i32,
+    /// Mint block height.
+    pub mint_block_height: u32,
+    /// Owner script hash at the resolved height.
+    pub owner: String,
+    /// Pass state at the resolved height.
+    pub state: String,
+    /// Latest event height that produced this state snapshot.
+    pub latest_event_height: u32,
+    /// Primary ETH address declared by the pass mint content.
+    pub eth_main: String,
+    /// Optional collaborator ETH address.
+    pub eth_collab: Option<String>,
+    /// Current satpoint at the resolved height.
+    pub satpoint: String,
+}
+
+/// Paged recent-pass response for a target height.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentPassesPage {
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Total number of matching passes.
+    pub total: u64,
+    /// Matching recent pass rows in the requested page.
+    pub items: Vec<RecentPassItem>,
+}
+
 /// Parameters for `get_pass_energy`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetPassEnergyParams {
@@ -997,6 +1046,10 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetOwnerPassesAtHeightParams,
     ) -> JsonResult<OwnerPassesAtHeight>;
+
+    /// Returns recently minted pass snapshots at a target height.
+    #[rpc(name = "get_recent_passes")]
+    fn get_recent_passes(&self, params: GetRecentPassesParams) -> JsonResult<RecentPassesPage>;
 
     /// Returns one pass energy snapshot.
     #[rpc(name = "get_pass_energy")]

@@ -240,6 +240,13 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.overview-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  margin: 16px 0;
+}
+
 .energy-grid {
   grid-template-columns: minmax(620px, 1.05fr) minmax(620px, 1fr);
 }
@@ -408,6 +415,19 @@ button.ghost {
   padding: 0;
   text-align: left;
   white-space: normal;
+}
+
+.id-link {
+  max-width: 100%;
+  font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.compact-id {
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .tabs {

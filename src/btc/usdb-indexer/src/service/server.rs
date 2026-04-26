@@ -11,12 +11,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
-use usdb_util::USDBScriptHash;
 use usdb_util::{
     CONSENSUS_SOURCE_CHAIN_BTC, ConsensusQueryContext, ConsensusRpcErrorCode,
     ConsensusRpcErrorData, ConsensusStateReference, LocalStateActiveBalanceSnapshot,
     LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id,
 };
+use usdb_util::{USDBScriptHash, parse_script_hash_any};
 
 fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -26,6 +26,8 @@ fn encode_hex(bytes: &[u8]) -> String {
     }
     output
 }
+
+const MAX_RPC_PAGE_SIZE: usize = 1_000;
 
 #[derive(Clone, Debug)]
 struct PassEnergyLeaderboardCacheEntry {
@@ -1140,16 +1142,21 @@ impl UsdbIndexerRpcServer {
     }
 
     fn parse_owner(&self, value: &str) -> Result<USDBScriptHash, JsonError> {
-        USDBScriptHash::from_str(value)
+        parse_script_hash_any(value, &self.config.config().bitcoin.network())
             .map_err(|e| Self::to_invalid_params(format!("Invalid owner {}: {}", value, e)))
     }
 
     fn validate_pagination(&self, page: usize, page_size: usize) -> Result<(), JsonError> {
-        if page_size == 0 {
+        if page_size == 0 || page_size > MAX_RPC_PAGE_SIZE || page.checked_mul(page_size).is_none()
+        {
             return Err(Self::to_business_error(
                 ERR_INVALID_PAGINATION,
                 "INVALID_PAGINATION",
-                json!({"page": page, "page_size": page_size}),
+                json!({
+                    "page": page,
+                    "page_size": page_size,
+                    "max_page_size": MAX_RPC_PAGE_SIZE
+                }),
             ));
         }
         Ok(())
@@ -1488,6 +1495,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "pass_stats_at_height".to_string(),
                 "owner_active_pass_at_height".to_string(),
                 "owner_passes_at_height".to_string(),
+                "recent_passes".to_string(),
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
                 "pass_energy_leaderboard".to_string(),
@@ -1774,6 +1782,46 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             items: rows
                 .into_iter()
                 .map(|row| OwnerPassItem {
+                    inscription_id: row.pass.inscription_id.to_string(),
+                    inscription_number: row.pass.inscription_number,
+                    mint_block_height: row.pass.mint_block_height,
+                    owner: row.pass.owner.to_string(),
+                    state: row.pass.state.as_str().to_string(),
+                    latest_event_height: row.latest_event_height,
+                    eth_main: row.pass.eth_main,
+                    eth_collab: row.pass.eth_collab,
+                    satpoint: row.pass.satpoint.to_string(),
+                })
+                .collect(),
+        })
+    }
+
+    fn get_recent_passes(&self, params: GetRecentPassesParams) -> JsonResult<RecentPassesPage> {
+        self.validate_pagination(params.page, params.page_size)?;
+
+        let resolved_height = self.resolve_height(params.at_height)?;
+        let states = self.parse_optional_pass_states(params.states)?;
+        let desc = self.parse_order_desc(params.order.as_deref())?;
+        let storage = self.indexer.miner_pass_storage();
+        let total = storage
+            .get_recent_pass_count_from_history_at_height_by_states(resolved_height, &states)
+            .map_err(Self::to_internal_error)?;
+        let rows = storage
+            .get_recent_passes_by_page_from_history_at_height_by_states(
+                resolved_height,
+                &states,
+                params.page,
+                params.page_size,
+                desc,
+            )
+            .map_err(Self::to_internal_error)?;
+
+        Ok(RecentPassesPage {
+            resolved_height,
+            total,
+            items: rows
+                .into_iter()
+                .map(|row| RecentPassItem {
                     inscription_id: row.pass.inscription_id.to_string(),
                     inscription_number: row.pass.inscription_number,
                     mint_block_height: row.pass.mint_block_height,
@@ -2186,7 +2234,7 @@ mod tests {
         ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
         ConsensusStateReference, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
         LocalStatePassCommitIdentity, SystemStateIdentity, ToUSDBScriptHash, USDBScriptHash,
-        build_local_state_commit, build_system_state_id,
+        address_string_to_script_hash, build_local_state_commit, build_system_state_id,
     };
 
     fn test_root_dir(tag: &str) -> PathBuf {
@@ -3893,6 +3941,124 @@ mod tests {
         assert_eq!(
             active_only.items[0].inscription_id,
             active.inscription_id.to_string()
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_owner_passes_at_height_accepts_btc_address() {
+        let (server, root_dir) = build_server("owner_passes_address", 200);
+        let storage = server.indexer.miner_pass_storage();
+        let address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let owner =
+            address_string_to_script_hash(address, &server.config.config().bitcoin.network())
+                .unwrap();
+
+        let mut pass = make_active_pass(65, 95, 100);
+        pass.owner = owner;
+        pass.mint_owner = owner;
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+
+        let page = server
+            .get_owner_passes_at_height(GetOwnerPassesAtHeightParams {
+                owner: address.to_string(),
+                at_height: Some(200),
+                states: Some(vec!["active".to_string()]),
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+
+        assert_eq!(page.owner, owner.to_string());
+        assert_eq!(page.total, 1);
+        assert_eq!(
+            page.items[0].inscription_id,
+            pass.inscription_id.to_string()
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_recent_passes_returns_rows_by_mint_height_desc_and_filters_state() {
+        let (server, root_dir) = build_server("recent_passes", 200);
+        let storage = server.indexer.miner_pass_storage();
+
+        let older = make_active_pass(61, 91, 100);
+        storage.add_new_mint_pass_at_height(&older, 100).unwrap();
+
+        let newer = make_active_pass(62, 92, 130);
+        storage.add_new_mint_pass_at_height(&newer, 130).unwrap();
+
+        let dormant = make_active_pass(63, 93, 120);
+        storage.add_new_mint_pass_at_height(&dormant, 120).unwrap();
+        storage
+            .update_state_at_height(
+                &dormant.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                140,
+            )
+            .unwrap();
+
+        let page0 = server
+            .get_recent_passes(GetRecentPassesParams {
+                at_height: Some(200),
+                states: None,
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+
+        assert_eq!(page0.resolved_height, 200);
+        assert_eq!(page0.total, 3);
+        assert_eq!(page0.items.len(), 2);
+        assert_eq!(
+            page0.items[0].inscription_id,
+            newer.inscription_id.to_string()
+        );
+        assert_eq!(page0.items[0].mint_block_height, 130);
+        assert_eq!(
+            page0.items[1].inscription_id,
+            dormant.inscription_id.to_string()
+        );
+        assert_eq!(page0.items[1].state, "dormant");
+        assert_eq!(page0.items[1].latest_event_height, 140);
+
+        let page1 = server
+            .get_recent_passes(GetRecentPassesParams {
+                at_height: Some(200),
+                states: None,
+                order: Some("desc".to_string()),
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 1);
+        assert_eq!(
+            page1.items[0].inscription_id,
+            older.inscription_id.to_string()
+        );
+
+        let dormant_only = server
+            .get_recent_passes(GetRecentPassesParams {
+                at_height: Some(200),
+                states: Some(vec!["dormant".to_string()]),
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(dormant_only.total, 1);
+        assert_eq!(
+            dormant_only.items[0].inscription_id,
+            dormant.inscription_id.to_string()
         );
 
         drop(server);
