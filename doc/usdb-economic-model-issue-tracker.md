@@ -62,7 +62,7 @@
 | ECO-006 | P1 | In Progress | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
 | ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
-| ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
+| ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
 | ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
@@ -232,16 +232,20 @@
 ### ECO-009. 建立经济公式版本与激活高度治理
 
 - 优先级：`P1`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - `USDB_INDEX_FORMULA_VERSION` 当前是全局常量 `pass-energy-formula:v1`。
   - 文档要求公式变更必须通过显式激活高度或治理决议，不应代码发布即生效。
+  - `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md` 已进入 Draft。
+  - 已确认 `local_state_commit` 只需要承诺 `active_version_set_id`，不需要内联完整 `active_version_set`。
+  - 已确认首个正式 ETHW 网络必须启用 level-based difficulty policy，不保留 `difficulty_policy_version = 0` 语义。
 - 目标：
   - 建立公式版本、协议版本、查询语义版本之间的关系。
   - 明确历史高度按当时激活版本重放。
   - 明确 state ref / snapshot id 是否包含激活版本表。
+  - 明确 `active_version_set`、`activation_registry_id` 和 `local_state_commit` 的关系。
 - 下一步：
-  - 在 UIP process / versioning 文档中定义激活机制。
+  - Review UIP-0008 中 version family、activation record、state commit 绑定和跨版本 `prev` 继承规则。
   - 再更新共识 identity 和历史查询路径。
 - 验收：
   - 同一节点能对不同历史高度按对应公式版本查询。

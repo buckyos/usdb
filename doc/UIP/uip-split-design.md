@@ -70,7 +70,7 @@ Activation: <height/governance/TODO>
 | 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Draft |
 | 6 | `UIP-0006` | USDB Economic State View | Standards Track | P1 | Draft |
 | 7 | `UIP-0007` | ETHW Consensus Profile Selector | Standards Track | P1 | Draft |
-| 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Planned |
+| 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Draft |
 | 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Planned |
 | 10 | `UIP-0010` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
 | 11 | `UIP-0011` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
@@ -413,17 +413,24 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 ## 15. UIP-0008: Protocol Versioning and Activation Matrix
 
+当前草案：
+
+- `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`
+
 目标：
 
 - 定义协议版本、公式版本和查询语义版本。
 - 定义激活高度和历史重放规则。
 - 定义 state ref / snapshot id 如何承诺公式版本。
+- 定义 `active_version_set`、`activation_registry_id` 和 `local_state_commit` 的关系。
 
 需要解决：
 
 - 当前 `USDB_INDEX_FORMULA_VERSION` 是全局常量。
 - 历史高度在公式升级后如何按旧公式重放。
 - 旧 pass 和新 pass 是否允许跨版本继承。
+- `activation_registry_id` / `active_version_set_id` 的 canonical encoding 何时固定。
+- 机器可读 activation registry 是否作为纯文档资产先落地。
 
 实现影响：
 
