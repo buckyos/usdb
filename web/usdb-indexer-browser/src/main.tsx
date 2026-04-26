@@ -227,6 +227,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     homeError: 'Home refresh failed: {{error}}',
     switched: 'RPC switched: {{url}}',
     preset: 'RPC filled from network preset: {{url}}',
+    hostedProxy: 'Console-hosted mode uses the same-origin control-plane proxy: {{url}}',
     bitcoind: 'This looks like a bitcoind RPC endpoint, which browsers usually block via CORS. Use a usdb-indexer RPC endpoint.',
     passIdRequired: 'Enter an inscription id.',
     ownerRequired: 'Enter an owner address or script hash.',
@@ -315,6 +316,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     homeError: '首页刷新失败：{{error}}',
     switched: '已切换 RPC: {{url}}',
     preset: '已按网络预设填充 RPC: {{url}}',
+    hostedProxy: '控制台内嵌模式使用同源 control-plane 代理：{{url}}',
     bitcoind: '你输入的是 bitcoind RPC 端口，浏览器会触发 CORS。请使用 usdb-indexer RPC。',
     passIdRequired: '请输入 inscription id。',
     ownerRequired: '请输入 owner 地址或 script hash。',
@@ -364,11 +366,11 @@ function readInitialLocale() {
 
 function readInitialRpcUrl() {
   const params = new URLSearchParams(window.location.search)
-  return (
-    params.get('rpc_url') ||
-    params.get('rpc') ||
-    (isHostedByControlPlane() ? CONTROL_PLANE_RPC_URL : rpcDefaults.mainnet)
-  ).trim()
+  const requested = (params.get('rpc_url') || params.get('rpc') || '').trim()
+  if (isHostedByControlPlane()) {
+    return requested.startsWith('/') ? requested : CONTROL_PLANE_RPC_URL
+  }
+  return (requested || rpcDefaults.mainnet).trim()
 }
 
 function interpolate(template: string, variables: Record<string, string | number> = {}) {
@@ -575,12 +577,25 @@ function App() {
     event.preventDefault()
     const next = rpcDraft.trim()
     if (!next) return
+    if (isHostedByControlPlane() && !next.startsWith('/')) {
+      setRpcDraft(CONTROL_PLANE_RPC_URL)
+      setRpcUrl(CONTROL_PLANE_RPC_URL)
+      setRpcHint(t('hostedProxy', { url: CONTROL_PLANE_RPC_URL }))
+      return
+    }
     setRpcUrl(next)
     setRpcHint(t('switched', { url: next }))
   }
 
   function applyNetworkPreset(nextNetwork: string) {
     const normalized = normalizeNetwork(nextNetwork)
+    if (isHostedByControlPlane()) {
+      setNetworkPreset(normalized)
+      setRpcDraft(CONTROL_PLANE_RPC_URL)
+      setRpcUrl(CONTROL_PLANE_RPC_URL)
+      setRpcHint(t('hostedProxy', { url: CONTROL_PLANE_RPC_URL }))
+      return
+    }
     const nextUrl = rpcDefaults[normalized as keyof typeof rpcDefaults] ?? rpcDefaults.mainnet
     setNetworkPreset(normalized)
     setRpcDraft(nextUrl)
