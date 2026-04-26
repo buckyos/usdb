@@ -281,7 +281,7 @@
   - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。
   - Review UIP-0007 中 `RewardPayloadV1` 二进制布局和 validator replay 流程。
   - 决定 future `base_difficulty` / `real_difficulty` 是否进入 UIP-0007 v2 或独立 ETHW difficulty UIP。
-  - 决定 `collab_breakdown` 在 UIP-0006 主 profile 中是否必填。
+  - 在实现阶段基于数据库索引和性能测试确定 `get_collab_breakdown` 排序策略、分页 cursor 和最大 `limit`。
 - 验收：
   - USDB state view 可在历史 context 下重放。
   - ETHW reward payload 只用最小 selector 即可重放 reward input。

@@ -345,10 +345,11 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 需要解决：
 
-- candidate set audit view 是否由 usdb-indexer 一等提供。
+- candidate set audit view 作为 usdb-indexer 一等查询后的性能参数、分页 cursor 和 `max_limit`。
 - view 与 historical state ref 的绑定方式。
-- collab breakdown 是否必须内联，还是允许分页审计查询。
-- owner 字段 canonical 表示。
+- collab breakdown 通过单独确定性分页查询提供后的可选排序策略和索引成本。
+- owner 字段采用 `owner_script_hash` 作为 canonical id，并在可确定时返回 `owner_btc_addr`。
+- script hash -> BTC address 反向索引作为后续独立议题，不阻塞 core state view。
 
 实现影响：
 

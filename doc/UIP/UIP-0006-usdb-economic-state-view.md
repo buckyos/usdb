@@ -16,7 +16,8 @@ Activation: USDB index protocol and formula version; development networks activa
 核心规则：
 
 - view 必须绑定一个可重放的 BTC / USDB `external_state`。
-- view 可以返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 和 `collab_breakdown`。
+- view 可以返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 和 `collab_breakdown_count`。
+- 完整 `collab_breakdown` 通过同一历史 context 下的确定性分页查询提供，不要求内联到主 profile。
 - energy 类字段必须使用 UIP-0003 的 `uint128` canonical decimal string。
 - `level` 和 `difficulty_factor_bps` 是基于 `effective_energy` 的查询时派生值，不要求持久化。
 - `leader_eligible`、ETHW `base_difficulty`、ETHW `real_difficulty`、reward rule 和 header payload encoding 不属于本文。
@@ -93,13 +94,13 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 | `btc_height` | integer | 是 | 查询对应的 BTC 高度。 |
 | `snapshot_id` | string | 是 | upstream balance-history consensus snapshot id。 |
 | `system_state_id` | string | 是 | 下游链消费的顶层 USDB system state id。 |
-| `stable_block_hash` | string | 建议 | `btc_height` 对应的 stable BTC block hash。 |
-| `local_state_commit` | string | 建议 | usdb-indexer local durable state commit。 |
+| `stable_block_hash` | string | 是 | `btc_height` 对应的 stable BTC block hash。 |
+| `local_state_commit` | string | 是 | usdb-indexer local durable state commit。 |
 | `balance_history_semantics_version` | string | 建议 | balance-history 历史查询语义版本。 |
 | `usdb_index_protocol_version` | string | 是 | usdb-indexer 外部协议版本。 |
 | `usdb_index_formula_version` | string | 是 | energy / effective energy / level 公式版本。 |
 
-最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id。USDB-side view 查询返回时应该尽量补齐完整 `external_state`，便于审计和排错。
+最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id。USDB-side economic profile 响应必须补齐 `stable_block_hash` 和 `local_state_commit`，便于审计和排错。只有明确声明为 selector-only 的轻量接口才可以省略这两个字段。
 
 # Pass Economic Profile
 
@@ -120,7 +121,8 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
   },
   "pass": {
     "pass_id": "txidi0",
-    "owner": "...",
+    "owner_script_hash": "...",
+    "owner_btc_addr": "bc1...",
     "state": "active",
     "pass_kind": "standard",
     "raw_energy": "1000000",
@@ -128,7 +130,7 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
     "effective_energy": "1500000",
     "level": 1,
     "difficulty_factor_bps": 9900,
-    "collab_breakdown": []
+    "collab_breakdown_count": 3
   }
 }
 ```
@@ -138,7 +140,8 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 | 字段 | 类型 | 来源 | 说明 |
 | --- | --- | --- | --- |
 | `pass_id` | string | UIP-0001 / UIP-0002 | inscription id。 |
-| `owner` | string | pass snapshot | 当前历史 context 下的 BTC owner。 |
+| `owner_script_hash` | string | pass snapshot | 当前历史 context 下的 canonical owner id，用于比较和索引。 |
+| `owner_btc_addr` | string | pass snapshot | 当前历史 context 下可展示的 BTC address；当实现能确定 address 时应该返回。 |
 | `state` | string | UIP-0002 | `active` / `dormant` / `consumed` / `burned` / `invalid`。 |
 | `pass_kind` | string | UIP-0001 | `standard` / `collab`。 |
 | `raw_energy` | decimal string | UIP-0003 | pass 自身 raw energy。 |
@@ -146,7 +149,21 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 | `effective_energy` | decimal string | UIP-0004 | `raw_energy + collab_contribution`，仅 standard active pass 可用于 candidate。 |
 | `level` | integer | UIP-0005 | 从 `effective_energy` 动态派生。 |
 | `difficulty_factor_bps` | integer | UIP-0005 | 从 `level` 动态派生。 |
-| `collab_breakdown` | array | UIP-0004 | 协作贡献明细，可内联或通过审计查询分页获取。 |
+| `collab_breakdown_count` | integer | UIP-0004 | 当前 context 下贡献给该 Leader 的 collab pass 数量。 |
+
+## Owner 表示
+
+owner 的 canonical 表示必须是 script hash 或等价确定性 owner id。该字段用于：
+
+- 单 owner 单 active pass 校验。
+- history query 比对。
+- candidate set 聚合和索引。
+
+当实现能够从 pass satpoint 或历史输出脚本明确得到 BTC address 时，profile 应该同时返回 `owner_btc_addr`。address 可以推导出 script hash，但 script hash 反查 address 需要额外上下文，因此浏览器和审计视图保留 address display 字段是合理的。
+
+如果存在无法唯一编码为标准 BTC address 的 script，`owner_btc_addr` 可以为空，但 `owner_script_hash` 必须存在。
+
+从 `owner_script_hash` 反查 `owner_btc_addr` 不属于 UIP-0006 的核心要求。若后续需要一等反向查询能力，应通过独立索引器或后续 UIP 定义 script hash -> address 映射、快照语义和历史保留规则。缺少该反向索引不得阻塞 core profile、candidate set 或 ETHW reward replay。
 
 ## Energy 字段编码
 
@@ -169,16 +186,41 @@ collab pass:
 - 不得直接作为下游链 independent candidate。
 - 对自身查询时 `collab_contribution = 0`。
 - 对自身查询时 `effective_energy = 0`，除非后续 UIP 明确引入新的用途。
-- 其贡献必须通过 Leader 的 `collab_breakdown` 进入 Leader 的 `collab_contribution`。
+- 其贡献必须通过 Leader 的 collab breakdown 查询进入 Leader 的 `collab_contribution`。
 
 # Collab Breakdown
 
-`collab_breakdown` 建议 item：
+`collab_breakdown` 不要求内联在主 profile 中。原因是一个 Leader 可能拥有大量 collab pass，直接在主 profile 中返回完整数组会影响浏览器 overview、ETHW validator replay 和普通单 pass 查询的响应大小。
+
+实现必须提供确定历史状态下的额外 list 查询，例如：
+
+```text
+get_collab_breakdown(leader_pass_id, external_state, cursor, limit, sort)
+```
+
+该查询必须：
+
+- 使用与主 profile 相同的 `external_state`。
+- 支持稳定分页。
+- 返回 deterministic ordering，并在请求或响应中显式声明 `sort`。
+- 允许下游通过所有分页结果重算主 profile 中的 `collab_contribution`。
+
+协议不强制唯一排序策略。实现可以根据数据库索引能力和使用场景提供多个排序策略，例如：
+
+| sort | 语义 | 典型用途 |
+| --- | --- | --- |
+| `collab_pass_id_asc` | 按 `collab_pass_id` 升序。 | 最小实现、稳定全量审计、分页简单。 |
+| `contribution_desc_pass_id_asc` | 按 `collab_contribution` 降序，`collab_pass_id` 升序打破平局。 | 浏览器展示最大贡献者、Leader 贡献分析。 |
+
+无论提供哪种排序，cursor 都必须绑定 `external_state`、`leader_pass_id`、`sort` 和分页边界，不得跨历史 context 或跨排序策略复用。
+
+建议 item：
 
 ```json
 {
   "collab_pass_id": "txidi1",
-  "collab_owner": "...",
+  "collab_owner_script_hash": "...",
+  "collab_owner_btc_addr": "bc1...",
   "collab_raw_energy": "1000000",
   "collab_weight_bps": 5000,
   "collab_contribution": "500000",
@@ -187,13 +229,11 @@ collab pass:
 }
 ```
 
-如果主 profile 不内联完整 `collab_breakdown`，必须提供等价的审计查询，使下游能在同一 `external_state` 下重算 aggregate `collab_contribution`。
-
 aggregate `collab_contribution` 不得被视为不可验证黑盒。
 
 # Candidate Set View
 
-USDB-side 可以提供 candidate set audit view，用于浏览器、测试或下游链调试。
+USDB-side 应提供 candidate set audit view，用于浏览器 overview、排行榜、测试和下游链调试。
 
 建议排序规则：
 
@@ -209,6 +249,29 @@ tie_break = smallest pass_id lexical order
 ```
 
 该规则只定义 USDB-side audit view 的确定性排序。ETHW 链上 payload 是否携带 candidate set、是否只携带 selected `pass_id`、是否使用 PoW threshold 验证，由 ETHW-side UIP 定义。
+
+Candidate set view 是一等查询，不要求下游先逐个读取所有 pass profile 后自行排序。实现可以按分页返回：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "external_state": {},
+  "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "items": [],
+  "limit": 100,
+  "max_limit": 500,
+  "next_cursor": "..."
+}
+```
+
+分页 cursor 必须绑定同一 `external_state`、同一 `selection_rule`、同一 filter 和同一 page size 语义，不得在分页过程中漂移到 current head。
+
+cursor 的具体 canonical encoding 和 `max_limit` 属于实现层性能参数。协议只要求：
+
+- cursor 对调用方可以是 opaque string。
+- 服务必须能检测 cursor 与当前请求参数不匹配。
+- 服务必须限制最大 `limit`，并在响应或能力查询中暴露当前 `max_limit`。
+- `limit` 超过 `max_limit` 时必须返回明确错误或按 `max_limit` 截断，并在响应中体现实际生效值。
 
 # 查询语义
 
@@ -266,7 +329,7 @@ USDB Economic State View
     -> effective_energy
     -> level
     -> difficulty_factor_bps
-    -> collab_breakdown
+    -> collab_breakdown_count / collab_breakdown query
 ```
 
 因此，本文字段集合是 ETHW 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。
@@ -284,9 +347,8 @@ USDB Economic State View
 - `view_version` / `protocol_version` / `formula_version` mismatch。
 - history retention 不足时返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
 
-# 待审计问题
+# 后续实现议题
 
-1. `collab_breakdown` 是否在主 profile 中必填，还是允许通过分页审计查询按需获取。
-2. candidate set view 是否由 usdb-indexer 一等提供，还是只提供单 pass profile 后由下游自行排序。
-3. owner 字段的 canonical 表示是否统一为 script hash，还是保留 BTC address display 字段。
-4. `stable_block_hash` 和 `local_state_commit` 是否应在所有 profile 响应中强制返回。
+1. `get_collab_breakdown` 首批实现支持哪些 `sort`，以及对应数据库索引成本。
+2. candidate set view 的 cursor 具体编码、默认 `limit` 和 `max_limit`。
+3. script hash -> BTC address 反向索引是否作为后续独立能力实现。
