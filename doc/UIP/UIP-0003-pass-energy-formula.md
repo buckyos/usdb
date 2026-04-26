@@ -423,7 +423,7 @@ USDB 仍处于开发阶段，UIP-0003 不需要兼容开发期旧公式。
 activation_height = 0
 ```
 
-正式公开网络发布后，未来对 energy 公式的修改必须通过 UIP-0007 或后续版本激活机制定义，不得再隐式从高度 `0` 改写历史。
+正式公开网络发布后，未来对 energy 公式的修改必须通过 UIP-0008 或后续版本激活机制定义，不得再隐式从高度 `0` 改写历史。
 
 # 与 UIP-0004 的边界
 
@@ -484,7 +484,7 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 4. 首版参数固定为 `PENALTY_LAMBDA = 1.5`、`INHERIT_DISCOUNT_BPS = 500`。
 5. `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 unit-block 能量量纲保持一致。
 6. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
-7. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0007 处理。
+7. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0008 处理。
 
 # 后续实现风险
 

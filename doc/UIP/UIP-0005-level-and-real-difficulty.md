@@ -374,7 +374,7 @@ level(pass, h)
 | UIP-0004 | 产出 `effective_energy`；不定义 level 和 difficulty。 |
 | UIP-0005 | 从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`；定义 ETHW 侧 real difficulty 折算公式。 |
 | UIP-0006 | 定义 validator payload 如何携带或验证这些派生字段，以及 ETHW `base_difficulty` 的编码。 |
-| UIP-0007 | 定义参数变更、阈值表变更和激活高度。 |
+| UIP-0008 | 定义参数变更、阈值表变更和激活高度。 |
 
 # 安全性
 

@@ -61,10 +61,10 @@
 | ECO-005 | P0 | In Progress | 明确并实现 energy penalty v2 公式 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | In Progress | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
-| ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, validator payload |
+| ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
 | ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
-| ECO-011 | P1 | Todo | validator payload 补齐经济字段边界 | validator block-body docs/tests |
+| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-reward-payload.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
 
 ## 6. 详细条目
@@ -161,7 +161,7 @@
   - 将公式实现切换到 `uint128` energy 和 unit delta 快照计算。
   - 将 RPC / validator payload / 前端 energy 表示切换为 canonical decimal string。
   - 明确 `active_block_height'` 的更新公式。
-  - 当前开发阶段从高度 `0` 激活新公式；未来正式升级再交给 UIP-0007。
+  - 当前开发阶段从高度 `0` 激活新公式；未来正式升级再交给 UIP-0008。
 - 下一步：
   - 基于 `doc/UIP/UIP-0003-pass-energy-formula.md` 修改 `energy_formula.rs`、`energy.rs` 和 energy storage/RPC 类型。
   - 增加 unit 边界、正向增资 settlement、部分减仓和 `uint128` decimal string 测试。
@@ -224,7 +224,7 @@
 - 下一步：
   - 基于 UIP-0004 增加可审计的 `collab_contribution` 明细查询或 payload 字段。
   - 增加 RPC 动态派生字段和 validator payload 字段。
-  - 在 UIP-0006 中定义 ETHW `base_difficulty` / `real_difficulty` 的 payload 编码。
+  - 在 UIP-0006 中定义 USDB-side state view，并在 UIP-0007 或后续 ETHW policy UIP 中定义链上 payload / difficulty 编码。
 - 验收：
   - 单元测试覆盖 level 边界、rounding、最大折扣。
   - candidate set 选择规则使用协议指定字段。
@@ -262,21 +262,29 @@
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 
-### ECO-011. validator payload 补齐经济字段边界
+### ECO-011. 拆分 USDB 经济状态视图与 ETHW 链上 payload
 
 - 优先级：`P1`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - 当前 validator block-body 文档已经覆盖 `external_state`、`miner_selection.energy` 和 candidate set。
   - 经济模型后续会引入 effective energy、level、difficulty、reward、price 等字段。
+  - 已决定拆分为 USDB-side state view 和 ETHW-side on-chain payload 两层，避免把审计字段和区块头字段混在一个 UIP 中。
+  - `doc/UIP/UIP-0006-usdb-economic-state-view.md` 已进入 Draft。
+  - `doc/UIP/UIP-0007-ethw-consensus-reward-payload.md` 已进入 Draft。
 - 目标：
-  - 明确哪些字段必须进入 payload。
-  - 明确哪些字段可由 validator 本地重算，不需要 payload 直接携带。
+  - 明确 USDB indexer 可以提供的完整经济状态 / 审计视图。
+  - 明确 ETHW `header.Extra` 只携带最小历史 selector。
+  - 明确哪些字段由 validator 通过 UIP-0006 本地重算，不需要进入 ETHW 链上 payload。
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
-  - 在 UIP validator payload 中补齐经济字段边界。
+  - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。
+  - Review UIP-0007 中 `RewardPayloadV1` 二进制布局和 validator replay 流程。
+  - 决定 future `base_difficulty` / `real_difficulty` 是否进入 UIP-0007 v2 或独立 ETHW difficulty UIP。
+  - 决定 `collab_breakdown` 在 UIP-0006 主 profile 中是否必填。
 - 验收：
-  - candidate set / reward / difficulty 相关 payload 可在历史 context 下重放。
+  - USDB state view 可在历史 context 下重放。
+  - ETHW reward payload 只用最小 selector 即可重放 reward input。
 
 ### ECO-012. 明确 canonical JSON、content-type 和未知字段策略
 

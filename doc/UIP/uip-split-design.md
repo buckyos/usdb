@@ -68,11 +68,12 @@ Activation: <height/governance/TODO>
 | 3 | `UIP-0003` | Pass Energy Formula and Inheritance | Standards Track | P0 | Draft |
 | 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Draft |
 | 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Draft |
-| 6 | `UIP-0006` | Validator Economic Payload | Standards Track | P1 | Planned |
-| 7 | `UIP-0007` | Formula Versioning and Activation | Process / Standards Track | P1 | Planned |
-| 8 | `UIP-0008` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
-| 9 | `UIP-0009` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
-| 10 | `UIP-0010` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
+| 6 | `UIP-0006` | USDB Economic State View | Standards Track | P1 | Draft |
+| 7 | `UIP-0007` | ETHW Consensus Reward Payload | Standards Track | P1 | Draft |
+| 8 | `UIP-0008` | Formula Versioning and Activation | Process / Standards Track | P1 | Planned |
+| 9 | `UIP-0009` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
+| 10 | `UIP-0010` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
+| 11 | `UIP-0011` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
 ## 7. UIP-0000: UIP Process and Governance
 
@@ -300,7 +301,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - UIP-0003 已采用 `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 `E0 = 1_000_000` 量纲匹配。
 - usdb-indexer 只动态派生 `level` 和 `difficulty_factor_bps`，不持久化，也不读取 ETHW `base_difficulty`。
 - `real_difficulty` 由 ETHW validator / mining policy 基于当前 `base_difficulty` 计算。
-- ETHW payload 是否必须显式携带 `base_difficulty` / `real_difficulty` 留给 UIP-0006。
+- ETHW payload 是否必须显式携带 `base_difficulty` / `real_difficulty` 留给 UIP-0007 或后续 ETHW policy UIP。
 
 实现影响：
 
@@ -314,30 +315,40 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - max level。
 - real difficulty lower bound。
 
-## 13. UIP-0006: Validator Economic Payload
+## 13. UIP-0006: USDB Economic State View
+
+当前草案：
+
+- `doc/UIP/UIP-0006-usdb-economic-state-view.md`
 
 目标：
 
-- 定义下游链验证 USDB 经济状态所需 payload。
-- 明确哪些字段携带，哪些字段重算。
-- 明确 tamper、version mismatch、history unavailable 的错误行为。
+- 定义 `usdb-indexer` 对外提供的经济状态视图。
+- 明确 USDB-side 能查询和审计的字段集合。
+- 明确 historical context、version mismatch、history unavailable 的错误行为。
+- 避免把 USDB-side 审计视图与 ETHW 链上 payload 混为一体。
 
-需要纳入的候选字段：
+需要纳入的字段：
 
 - BTC external state。
-- pass candidate set。
+- pass snapshot。
 - raw energy。
+- collab contribution。
 - effective energy。
 - level。
-- real difficulty。
+- difficulty factor。
+- collab breakdown。
+- optional candidate set audit view。
 - formula version。
 - protocol version。
+- view version。
 
 需要解决：
 
-- candidate set 排序和 tie-break。
-- payload 与 historical state ref 的绑定方式。
-- reward / price 进入 payload 的阶段边界。
+- candidate set audit view 是否由 usdb-indexer 一等提供。
+- view 与 historical state ref 的绑定方式。
+- collab breakdown 是否必须内联，还是允许分页审计查询。
+- owner 字段 canonical 表示。
 
 实现影响：
 
@@ -347,12 +358,55 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 测试要求：
 
-- tamper winner。
+- economic field recompute。
 - version mismatch。
 - historical context。
 - reorg mismatch。
 
-## 14. UIP-0007: Formula Versioning and Activation
+## 14. UIP-0007: ETHW Consensus Reward Payload
+
+当前草案：
+
+- `doc/UIP/UIP-0007-ethw-consensus-reward-payload.md`
+
+目标：
+
+- 定义 ETHW `header.Extra` 中的最小 USDB reward payload。
+- 对齐当前 go-ethereum `RewardPayloadV1` 的固定二进制编码。
+- 明确链上 payload 只携带 selector，不携带完整经济审计字段。
+- 明确 validator 如何通过 UIP-0006 state view 重算 reward input。
+
+当前 v1 字段：
+
+- `payload_version`。
+- `btc_height`。
+- `snapshot_id`。
+- `system_state_id`。
+- `pass_id`。
+
+需要解决：
+
+- future v2 是否加入 `stable_block_hash`。
+- difficulty policy 是否复用 reward payload selector。
+- collab bonus 是否需要显式携带 `collab_pass_id`。
+- reward rule version 与 payload version 的边界。
+
+实现影响：
+
+- `/home/bucky/work/go-ethereum/internal/usdb/payload.go`
+- `/home/bucky/work/go-ethereum/internal/usdb/verifier.go`
+- `/home/bucky/work/go-ethereum/miner/worker.go`
+- `/home/bucky/work/go-ethereum/consensus/ethash/consensus.go`
+
+测试要求：
+
+- binary roundtrip。
+- invalid version / invalid size。
+- historical USDB replay。
+- USDB unavailable fail-closed。
+- BTC reorg mismatch。
+
+## 15. UIP-0008: Formula Versioning and Activation
 
 目标：
 
@@ -378,7 +432,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - expected formula version mismatch。
 - rollback 后版本重放一致。
 
-## 15. UIP-0008: CoinBase Emission and Reward Split
+## 16. UIP-0009: CoinBase Emission and Reward Split
 
 目标：
 
@@ -398,7 +452,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 依赖 pass / energy / leader / validator payload 稳定。
 
-## 16. UIP-0009: Price and Real Price Update Rules
+## 17. UIP-0010: Price and Real Price Update Rules
 
 目标：
 
@@ -418,7 +472,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 依赖发行和交易/挂单证明机制。
 
-## 17. UIP-0010: Auxiliary Hashpower Pool
+## 18. UIP-0011: Auxiliary Hashpower Pool
 
 目标：
 
@@ -437,7 +491,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 独立性较强，但实现和验证成本高，应在核心经济模型稳定后推进。
 
-## 18. 推荐实施顺序
+## 19. 推荐实施顺序
 
 第一阶段：协议骨架
 
@@ -457,14 +511,15 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 1. `UIP-0005`
 2. `UIP-0006`
 3. `UIP-0007`
+4. `UIP-0008`
 
 第四阶段：完整经济系统
 
-1. `UIP-0008`
-2. `UIP-0009`
-3. `UIP-0010`
+1. `UIP-0009`
+2. `UIP-0010`
+3. `UIP-0011`
 
-## 19. 与当前文档的关系
+## 20. 与当前文档的关系
 
 - `doc/usdb-economic-model-design.md`：目标经济模型总览和讨论稿。
 - `doc/usdb-economic-model-issue-tracker.md`：问题、修复状态和下一步工作跟踪。
