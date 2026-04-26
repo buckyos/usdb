@@ -64,7 +64,7 @@
 | ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
 | ECO-009 | P1 | Todo | 建立经济公式版本与激活高度治理 | `usdb-util`, state ref |
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
-| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-reward-payload.md`, validator block-body docs/tests |
+| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
 
 ## 6. 详细条目
@@ -271,7 +271,12 @@
   - 经济模型后续会引入 effective energy、level、difficulty、reward、price 等字段。
   - 已决定拆分为 USDB-side state view 和 ETHW-side on-chain payload 两层，避免把审计字段和区块头字段混在一个 UIP 中。
   - `doc/UIP/UIP-0006-usdb-economic-state-view.md` 已进入 Draft。
-  - `doc/UIP/UIP-0007-ethw-consensus-reward-payload.md` 已进入 Draft。
+  - `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md` 已进入 Draft。
+  - 已确认 `stable_block_hash` 不进入 UIP-0007 v1 header payload，由 UIP-0006 state view 返回。
+  - 已确认 reward rule 与 future difficulty policy 复用同一 profile selector。
+  - 已确认 `ProfileSelectorPayload` 是正式 payload 命名；当前 go-ethereum 原型中的 `RewardPayloadV1` 应在正式实现前重命名。
+  - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 ETHW chain config / fork policy 的 expected version。
+  - 已确认 collab bonus 不在 header 中携带全量 `collab_pass_id`。
 - 目标：
   - 明确 USDB indexer 可以提供的完整经济状态 / 审计视图。
   - 明确 ETHW `header.Extra` 只携带最小历史 selector。
@@ -279,12 +284,12 @@
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
   - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。
-  - Review UIP-0007 中 `RewardPayloadV1` 二进制布局和 validator replay 流程。
-  - 决定 future `base_difficulty` / `real_difficulty` 是否进入 UIP-0007 v2 或独立 ETHW difficulty UIP。
+  - Review UIP-0007 中 profile selector 二进制布局和 validator replay 流程。
+  - 在 UIP-0009 中定义 ETHW chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
   - 在实现阶段基于数据库索引和性能测试确定 `get_collab_breakdown` 排序策略、分页 cursor 和最大 `limit`。
 - 验收：
   - USDB state view 可在历史 context 下重放。
-  - ETHW reward payload 只用最小 selector 即可重放 reward input。
+  - ETHW profile selector 只用最小字段即可重放 reward input，并可供 future difficulty policy 复用。
 
 ### ECO-012. 明确 canonical JSON、content-type 和未知字段策略
 

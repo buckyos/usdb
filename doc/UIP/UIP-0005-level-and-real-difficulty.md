@@ -308,7 +308,7 @@ real_difficulty
 
 `base_difficulty` 必须是正整数。若 `base_difficulty = 0`，validator / mining policy 必须视为无效输入。
 
-`base_difficulty` 的来源、更新规则、ETHW 网络上下文和 payload 编码由 UIP-0006 或 ETHW mining policy 定义。USDB indexer 禁止为了计算本文字段而查询 ETHW `base_difficulty`。
+`base_difficulty` 的来源、更新规则、ETHW 网络上下文和是否需要显式承诺由 UIP-0009 或后续 ETHW mining policy 定义。USDB indexer 禁止为了计算本文字段而查询 ETHW `base_difficulty`。
 
 整数 `ceil` 必须按如下方式实现：
 
@@ -339,16 +339,16 @@ USDB indexer 查询接口应该携带以下 BTC-side 派生字段：
 
 这些字段可以动态计算，不需要作为独立状态持久化。实现可以缓存查询结果，但缓存不得改变历史重放语义。
 
-validator payload 可以携带 `level` 和 `difficulty_factor_bps` 作为审计友好的明细字段。validator 必须按本文规则从 `effective_energy` 重算 `level` 和 `difficulty_factor_bps`。若重算结果与 payload 中的字段不一致，必须拒绝该 payload 或将其标记为 invalid。
+UIP-0006 economic state view 可以返回 `level` 和 `difficulty_factor_bps` 作为审计友好的明细字段。validator 必须按本文规则从 `effective_energy` 重算 `level` 和 `difficulty_factor_bps`。若重算结果与 state view 中的字段不一致，必须拒绝该结果或将其标记为 invalid。
 
-ETHW block、mining proof 或 validator payload 若携带以下 ETHW-side 字段，其来源和编码由 UIP-0006 或 ETHW mining policy 定义：
+ETHW block、mining proof 或 validator 逻辑若使用以下 ETHW-side 字段，其来源和编码由 UIP-0009 chain config 或后续 ETHW mining policy 定义：
 
 | 字段 | 类型建议 | 含义 |
 | --- | --- | --- |
 | `base_difficulty` | decimal string | ETHW 当前基础难度。 |
 | `real_difficulty` | decimal string | ETHW 侧折算后的实际难度。 |
 
-如果 payload 同时携带 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，ETHW validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该 payload 或将其标记为 invalid。
+如果后续 ETHW policy 显式携带或承诺 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，ETHW validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该区块或将其标记为 invalid。
 
 # 历史查询与 Reorg 语义
 
@@ -373,8 +373,10 @@ level(pass, h)
 | UIP-0003 | 产出 `raw_energy` 和 `inheritable_energy`；禁止读取或继承 level / difficulty。 |
 | UIP-0004 | 产出 `effective_energy`；不定义 level 和 difficulty。 |
 | UIP-0005 | 从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`；定义 ETHW 侧 real difficulty 折算公式。 |
-| UIP-0006 | 定义 validator payload 如何携带或验证这些派生字段，以及 ETHW `base_difficulty` 的编码。 |
+| UIP-0006 | 定义 USDB economic state view 如何返回这些派生字段。 |
+| UIP-0007 | 定义 ETHW header 中如何用最小 selector 引用同一份 USDB profile。 |
 | UIP-0008 | 定义参数变更、阈值表变更和激活高度。 |
+| UIP-0009 | 定义 ETHW chain config、reward rule version 和 expected difficulty policy version。 |
 
 # 安全性
 
@@ -408,11 +410,11 @@ level(pass, h)
 - usdb-indexer 查询可动态返回 `level` 和 `difficulty_factor_bps`，但不需要持久化它们。
 - usdb-indexer 不查询、不持久化 `base_difficulty` 和 `real_difficulty`。
 - ETHW 侧 `real_difficulty` 使用向上取整，例如 `base_difficulty = 101, factor = 9900` 时结果为 `100`。
-- payload 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
+- state view 或 future ETHW policy 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
 - 参数表变更时，历史高度按当时激活版本重算。
 
 # 待审计问题
 
-1. `base_difficulty` 的具体来源和数据类型是否应在 UIP-0006 中固定为 ETHW `uint256` decimal string。
-2. ETHW validator payload 是否必须显式携带 `base_difficulty` 和 `real_difficulty`，还是只携带可重算输入。
+1. `base_difficulty` 的具体来源和数据类型是否应在 UIP-0009 或后续 ETHW difficulty policy 中固定为 ETHW `uint256` decimal string。
+2. ETHW difficulty policy 是否必须显式承诺 `base_difficulty` 和 `real_difficulty`，还是只使用可重算输入。
 3. local / regtest 的 level 参数 override 如何标识，避免误进入公开网络配置。

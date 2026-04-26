@@ -45,7 +45,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 本文不定义：
 
 - ETHW `header.Extra` 二进制编码。
-- ETHW `RewardPayloadV1` 字段布局。
+- ETHW `ProfileSelectorPayload` 字段布局。
 - ETHW `base_difficulty` 来源、PoW target 编码或 chain weight 规则。
 - ETHW block reward、fee split、uncle reward、CoinBase 或分红池规则。
 - pass 铭文 schema、pass 状态机、energy 公式本身。
@@ -315,7 +315,7 @@ ETHW 链上 payload 应只携带验证旧块所需的最小 selector。validator
 当前关系：
 
 ```text
-ETHW RewardPayloadV1
+ETHW ProfileSelectorPayload
     -> btc_height
     -> snapshot_id
     -> system_state_id
