@@ -16,6 +16,9 @@
         "bucky",
         "regtest",
         "sourcedao",
+        "collab",
+        "bootnodes",
+        "devnet",
     ],
     "rust-analyzer.linkedProjects": [
         "./src/btc/Cargo.toml"
