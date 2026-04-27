@@ -743,11 +743,16 @@ mod tests {
     use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode};
     use crate::output::IndexOutput;
     use crate::status::SyncStatusManager;
+    #[cfg(usdb_bh_real_btc)]
+    use bitcoincore_rpc::bitcoin::Network;
     use bitcoincore_rpc::bitcoin::{Amount, BlockHash, OutPoint, ScriptBuf};
     use std::collections::BTreeMap;
+    #[cfg(usdb_bh_real_btc)]
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::BTCRpcClient;
+    #[cfg(usdb_bh_real_btc)]
+    use usdb_util::{BTCAuth, BTCRpcClient};
 
+    #[cfg(usdb_bh_real_btc)]
     const TEST_SUBSET_BLK_FILE_COUNT: usize = 4;
 
     struct MockBTCClient {
@@ -929,6 +934,7 @@ mod tests {
         assert!(cache.lock().unwrap().sorted_blocks.is_empty());
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn real_test_root(tag: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -937,12 +943,71 @@ mod tests {
         std::env::temp_dir().join(format!("balance_history_local_loader_{}_{}", tag, nanos))
     }
 
-    fn load_real_test_base_config() -> BalanceHistoryConfig {
-        let default_root = BalanceHistoryConfig::default().root_dir.clone();
-        BalanceHistoryConfig::load(&default_root)
-            .unwrap_or_else(|_| BalanceHistoryConfig::default())
+    #[cfg(usdb_bh_real_btc)]
+    fn required_real_btc_env(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| {
+            panic!(
+                "{} must be set when USDB_BH_REAL_BTC=1 real-data tests are compiled",
+                name
+            )
+        })
     }
 
+    #[cfg(usdb_bh_real_btc)]
+    fn parse_real_btc_network() -> Network {
+        match std::env::var("BTC_NETWORK")
+            .unwrap_or_else(|_| "bitcoin".to_string())
+            .as_str()
+        {
+            "bitcoin" | "mainnet" => Network::Bitcoin,
+            "testnet" | "testnet3" => Network::Testnet,
+            "regtest" => Network::Regtest,
+            "signet" => Network::Signet,
+            "testnet4" => Network::Testnet4,
+            other => panic!(
+                "unsupported BTC_NETWORK='{}'; expected bitcoin, testnet, regtest, signet, or testnet4",
+                other
+            ),
+        }
+    }
+
+    #[cfg(usdb_bh_real_btc)]
+    fn load_real_test_base_config() -> BalanceHistoryConfig {
+        assert_eq!(
+            std::env::var("USDB_BH_REAL_BTC").as_deref(),
+            Ok("1"),
+            "real BTC tests require USDB_BH_REAL_BTC=1"
+        );
+
+        let data_dir = std::path::PathBuf::from(required_real_btc_env("BTC_DATA_DIR"));
+        let rpc_url = required_real_btc_env("BTC_RPC_URL");
+        let mut config = BalanceHistoryConfig::default();
+        config.btc.network = parse_real_btc_network();
+        config.btc.data_dir = Some(data_dir.clone());
+        config.btc.rpc_url = Some(rpc_url);
+        config.btc.auth = if let Ok(cookie_file) = std::env::var("BTC_COOKIE_FILE") {
+            Some(BTCAuth::CookieFile(std::path::PathBuf::from(cookie_file)))
+        } else if let Ok(user) = std::env::var("BTC_RPC_USER") {
+            Some(BTCAuth::UserPass(
+                user,
+                std::env::var("BTC_RPC_PASSWORD").unwrap_or_default(),
+            ))
+        } else {
+            Some(BTCAuth::CookieFile(data_dir.join(".cookie")))
+        };
+        if let Ok(block_magic) = std::env::var("BTC_BLOCK_MAGIC") {
+            let parsed = if let Some(hex) = block_magic.strip_prefix("0x") {
+                u32::from_str_radix(hex, 16)
+            } else {
+                block_magic.parse()
+            }
+            .expect("BTC_BLOCK_MAGIC must be a hex or decimal u32");
+            config.btc.block_magic = Some(parsed);
+        }
+        config
+    }
+
+    #[cfg(usdb_bh_real_btc)]
     fn prepare_subset_block_data_dir(tag: &str, file_count: usize) -> std::path::PathBuf {
         let source_config = load_real_test_base_config();
         let source_data_dir = source_config.btc.data_dir();
@@ -970,6 +1035,7 @@ mod tests {
         target_data_dir
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn make_real_test_env(
         tag: &str,
     ) -> (
@@ -1001,6 +1067,7 @@ mod tests {
         (config, client, db, output)
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn build_real_loader(
         config: Arc<BalanceHistoryConfig>,
         client: BTCClientRef,
@@ -1017,25 +1084,25 @@ mod tests {
         .unwrap()
     }
 
-    fn ensure_real_rpc_available(client: &BTCClientRef) -> bool {
+    #[cfg(usdb_bh_real_btc)]
+    fn assert_real_rpc_available(client: &BTCClientRef) {
         match client.get_latest_block_height() {
             Ok(height) => {
                 println!(
                     "real local-loader test connected to bitcoind RPC, latest height={}",
                     height
                 );
-                true
             }
             Err(err) => {
-                eprintln!(
-                    "skipping real local-loader test because bitcoind RPC is unavailable: {}",
+                panic!(
+                    "real BTC tests require a reachable bitcoind RPC configured by BTC_RPC_URL/auth env: {}",
                     err
                 );
-                false
             }
         }
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn sample_heights(latest_indexed_height: u32) -> Vec<u32> {
         let mut heights = vec![0, latest_indexed_height];
         if latest_indexed_height >= 2 {
@@ -1046,6 +1113,7 @@ mod tests {
         heights
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn make_subset_reader(
         tag: &str,
         file_count: usize,
@@ -1059,10 +1127,12 @@ mod tests {
         (config, reader)
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn make_default_subset_reader(tag: &str) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
         make_subset_reader(tag, TEST_SUBSET_BLK_FILE_COUNT)
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn make_live_reader_and_client() -> (
         Arc<BalanceHistoryConfig>,
         BTCClientRef,
@@ -1077,6 +1147,7 @@ mod tests {
         (config, client, reader)
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn non_empty_file_indices(reader: &BlockFileReader, max_file_index: usize) -> Vec<usize> {
         let mut result = Vec::new();
         for file_index in 0..=max_file_index {
@@ -1088,6 +1159,7 @@ mod tests {
         result
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn assert_subset_latest_blk_file(reader: &BlockFileReader) -> usize {
         let latest_index = reader.find_latest_blk_file().unwrap();
         assert_eq!(
@@ -1099,6 +1171,7 @@ mod tests {
         latest_index
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn first_non_empty_file_with_min_blocks(
         reader: &BlockFileReader,
         min_block_count: usize,
@@ -1117,13 +1190,11 @@ mod tests {
         );
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_local_loader_build_index_matches_rpc_on_sample_heights() {
+    fn real_btc_correctness_local_loader_build_index_matches_rpc_on_sample_heights() {
         let (config, client, db, output) = make_real_test_env("build_match_rpc");
-        if !ensure_real_rpc_available(&client) {
-            return;
-        }
+        assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         let subset_latest = assert_subset_latest_blk_file(&subset_reader);
@@ -1162,13 +1233,11 @@ mod tests {
         }
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_try_restore_block_index_from_db_real() {
+    fn real_btc_correctness_restore_block_index_from_db() {
         let (config, client, db, output) = make_real_test_env("restore_valid");
-        if !ensure_real_rpc_available(&client) {
-            return;
-        }
+        assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         assert_subset_latest_blk_file(&subset_reader);
@@ -1203,13 +1272,11 @@ mod tests {
         assert_eq!(restored_hash, rpc_hash);
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_build_index_rebuilds_after_corrupted_persisted_state_real() {
+    fn real_btc_correctness_build_index_rebuilds_after_corrupted_persisted_state() {
         let (config, client, db, output) = make_real_test_env("rebuild_after_corrupt");
-        if !ensure_real_rpc_available(&client) {
-            return;
-        }
+        assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         assert_subset_latest_blk_file(&subset_reader);
@@ -1270,9 +1337,9 @@ mod tests {
         assert_eq!(rebuilt_hash, rpc_hash);
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local blk files"]
-    fn test_read_blk_blocks_matches_direct_reader_on_subset_files() {
+    fn real_btc_correctness_read_blk_blocks_matches_direct_reader_on_subset_files() {
         let (_config, reader) = make_default_subset_reader("read_blk_blocks");
         let latest_index = assert_subset_latest_blk_file(&reader);
 
@@ -1307,6 +1374,7 @@ mod tests {
         }
     }
 
+    #[cfg(usdb_bh_real_btc)]
     fn measure_blk_file_memory_usage(
         reader: &BlockFileReader,
         start_index: usize,
@@ -1353,9 +1421,9 @@ mod tests {
         (result.len(), used_memory)
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "manual profiling helper for local blk files"]
-    fn test_profile_blk_file_reader_memory_usage() {
+    fn real_btc_profile_blk_file_reader_memory_usage() {
         let (_config, reader) = make_default_subset_reader("memory_profile");
         let (loaded_file_count, used_memory) =
             measure_blk_file_memory_usage(&reader, 0, TEST_SUBSET_BLK_FILE_COUNT);
@@ -1369,13 +1437,11 @@ mod tests {
         );
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local bitcoind RPC and blk files"]
-    fn test_latest_complete_blk_file_blocks_are_available_via_rpc() {
+    fn real_btc_correctness_latest_complete_blk_file_blocks_are_available_via_rpc() {
         let (_config, client, reader) = make_live_reader_and_client();
-        if !ensure_real_rpc_available(&client) {
-            return;
-        }
+        assert_real_rpc_available(&client);
         let latest_index = reader.find_latest_blk_file().unwrap();
         println!("Latest blk file index: {}", latest_index);
 
@@ -1408,9 +1474,9 @@ mod tests {
         }
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local blk files"]
-    fn test_block_file_cache_returns_consistent_block_on_repeat_access() {
+    fn real_btc_correctness_block_file_cache_returns_consistent_block_on_repeat_access() {
         let (_config, reader) = make_default_subset_reader("cache_repeat_access");
         let cache = BlockFileCache::new(reader.clone()).unwrap();
         let file_index = first_non_empty_file_with_min_blocks(&reader, 2);
@@ -1425,9 +1491,9 @@ mod tests {
         assert_eq!(first_block.block_hash(), first_block_again.block_hash());
     }
 
+    #[cfg(usdb_bh_real_btc)]
     #[test]
-    #[ignore = "requires local blk files"]
-    fn test_block_file_cache_matches_reader_across_multiple_files() {
+    fn real_btc_correctness_block_file_cache_matches_reader_across_multiple_files() {
         let (_config, reader) = make_default_subset_reader("cache_multiple_files");
         let cache = BlockFileCache::new(reader.clone()).unwrap();
         let non_empty_files =

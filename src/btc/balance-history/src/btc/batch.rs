@@ -179,16 +179,44 @@ impl BTCBatchClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, usdb_bh_real_btc))]
+mod real_btc_tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::consensus::Decodable;
-    use usdb_util::BTCConfig;
+    use usdb_util::{BTCAuth, BTCConfig};
+
+    fn real_btc_config() -> BTCConfig {
+        assert_eq!(
+            std::env::var("USDB_BH_REAL_BTC").as_deref(),
+            Ok("1"),
+            "real BTC tests require USDB_BH_REAL_BTC=1"
+        );
+
+        let mut config = BTCConfig::default();
+        let btc_data_dir = std::env::var("BTC_DATA_DIR")
+            .expect("BTC_DATA_DIR must be set when USDB_BH_REAL_BTC=1");
+        config.data_dir = Some(std::path::PathBuf::from(&btc_data_dir));
+        config.rpc_url = Some(
+            std::env::var("BTC_RPC_URL")
+                .expect("BTC_RPC_URL must be set when USDB_BH_REAL_BTC=1"),
+        );
+        config.auth = if let Ok(cookie_file) = std::env::var("BTC_COOKIE_FILE") {
+            Some(BTCAuth::CookieFile(std::path::PathBuf::from(cookie_file)))
+        } else if let Ok(user) = std::env::var("BTC_RPC_USER") {
+            Some(BTCAuth::UserPass(
+                user,
+                std::env::var("BTC_RPC_PASSWORD").unwrap_or_default(),
+            ))
+        } else {
+            Some(BTCAuth::CookieFile(
+                std::path::PathBuf::from(btc_data_dir).join(".cookie"),
+            ))
+        };
+        config
+    }
 
     #[tokio::test]
-    #[ignore = "requires local bitcoind RPC"]
-    async fn test_batch_get_blocks() {
-        let config = BTCConfig::default();
+    async fn real_btc_correctness_batch_get_blocks() {
+        let config = real_btc_config();
         let rpc_url = config.rpc_url();
         let auth = config.auth();
 

@@ -25,10 +25,10 @@
 | 分层 | 当前入口 | 默认执行 | 外部服务 | 主要覆盖 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
 | Rust unit tests | `cargo test -p balance-history` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、readiness、script registry unit paths | 本地可运行并已通过 |
-| Ignored Rust real-data tests | `cargo test -p balance-history -- --ignored` | 否 | 本机 bitcoind 和本机 blk 文件 | BTC batch RPC、local loader、block file cache、真实 blk/RPC 对齐 | 已存在，但仍是手工、环境敏感测试 |
+| Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，不进入默认 `ignored` unit tests |
 | Regtest scripts | `bash src/btc/balance-history/scripts/regtest_*.sh` | 否 | 本机 bitcoind binary | 端到端 smoke、reorg、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已存在，但还没有统一 runner |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
-| Performance/manual profiling | ignored Rust tests and runtime logs | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、batch preloader timing counters | 仅手工使用 |
+| Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用 |
 
 ## 基线命令
 
@@ -124,24 +124,39 @@ bash src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh
 
 ## 真实 BTC 数据测试
 
-以下 Rust 测试有意不进入默认套件，因为它们依赖本机 blk 文件和/或本机 bitcoind RPC：
+以下 Rust 测试有意不进入默认套件，因为它们依赖本机 blk 文件和/或本机 bitcoind RPC。它们不再使用 `#[ignore]`，而是由 `USDB_BH_REAL_BTC=1` 打开 `cfg(usdb_bh_real_btc)` 后才编译。
 
 | 范围 | 测试 | 依赖 |
 | --- | --- | --- |
-| BTC batch RPC | `btc::batch::tests::test_batch_get_blocks` | 本机 bitcoind RPC |
-| Local loader index | `btc::local_loader::*_real` | 本机 bitcoind RPC + 本机 blk 文件 |
-| Block file reader/cache | `btc::local_loader::*blk*`, `cache::block_file::tests::test_block_file_cache` | 本机 blk 文件 |
-| Manual profiling | `btc::local_loader::tests::test_profile_blk_file_reader_memory_usage` | 本机 blk 文件 + 手工解读 |
+| Local loader index | `real_btc_correctness_local_loader_build_index_matches_rpc_on_sample_heights` | 本机 bitcoind RPC + 本机 blk 文件 |
+| Persisted local-loader index | `real_btc_correctness_restore_block_index_from_db`, `real_btc_correctness_build_index_rebuilds_after_corrupted_persisted_state` | 本机 bitcoind RPC + 本机 blk 文件 |
+| Block file reader/cache | `real_btc_correctness_read_blk_blocks_matches_direct_reader_on_subset_files`, `real_btc_correctness_block_file_cache_*` | 本机 blk 文件 |
+| Latest complete blk RPC parity | `real_btc_correctness_latest_complete_blk_file_blocks_are_available_via_rpc` | 本机 bitcoind RPC + 本机 blk 文件 |
+| Manual profiling | `real_btc_profile_blk_file_reader_memory_usage`, `real_btc_profile_block_file_cache_prefetch_sample_range` | 本机 blk 文件 + 手工解读 |
 
-当前问题：这些测试会从默认服务配置推导环境，尚未形成稳定命令契约。下一步应引入显式 env-gated 命令，例如：
+固定 correctness 命令：
 
 ```bash
 USDB_BH_REAL_BTC=1 \
-BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
-cargo test -p balance-history -- --ignored
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness
 ```
 
-实现上应在未设置 `USDB_BH_REAL_BTC` 时给出明确 skip 信息，并要求显式传入 `BTC_DATA_DIR`/RPC 设置，避免静默读取无关默认配置。
+固定 profile 命令：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+USDB_BH_REAL_BTC_CACHE_START_FILE=0 \
+USDB_BH_REAL_BTC_CACHE_FILE_COUNT=4 \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
+```
+
+这些命令要求显式传入 `BTC_DATA_DIR` 和 `BTC_RPC_URL`，避免静默读取开发者默认配置。`BTC_COOKIE_FILE` 可替换为 `BTC_RPC_USER` / `BTC_RPC_PASSWORD`。
 
 ## 当前覆盖缺口
 
@@ -151,7 +166,7 @@ cargo test -p balance-history -- --ignored
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
 | `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |
-| 真实 BTC local loader 测试仍是手工 | local blk 加速路径可能在无日常信号下退化 | 增加显式 real-data test mode，以及 fixture/regtest-generated blk subset 测试 |
+| 真实 BTC local loader 测试仍需人工提供节点 | local blk 加速路径可能在无日常信号下退化 | 已有显式 real-data test mode；下一步补 fixture/regtest-generated blk subset，让 CI 也能覆盖 local-loader 子集 |
 | shell helper 重复 | 多个脚本重复定义 JSON assertion helper | 把通用 JSON assertion helper 移入 `regtest_lib.sh` |
 | 大模块 ownership 不清晰 | DB/server/snapshot/block 文件过大，review 与补测成本高 | lib export 后拆分 helper，并把共享 test builders 移入 `tests/common` |
 
@@ -164,6 +179,7 @@ cargo test -p balance-history -- --ignored
 5. 增加生成式小链 Rust integration tests：same-block spends、multi-input spends、OP_RETURN output ignore、block commit continuity、reorg rollback。
 6. 增加 aggregate RPC 和 `resolve_script_hashes` 的 regtest 覆盖。
 7. 增加 local blk loader 与 BTC RPC 对齐的显式 real-data test mode。
+8. 增加 fixture/regtest-generated blk subset，降低真实主网数据测试对本机节点的依赖。
 
 ## 验收标准
 

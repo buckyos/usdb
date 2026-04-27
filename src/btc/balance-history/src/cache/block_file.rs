@@ -274,28 +274,59 @@ impl PrefetchManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, usdb_bh_real_btc))]
+mod real_btc_tests {
     use super::*;
     use crate::btc::BlockFileReader;
     use crate::config::BalanceHistoryConfig;
-    use usdb_util::LogConfig;
+
+    fn real_btc_config() -> Arc<BalanceHistoryConfig> {
+        assert_eq!(
+            std::env::var("USDB_BH_REAL_BTC").as_deref(),
+            Ok("1"),
+            "real BTC tests require USDB_BH_REAL_BTC=1"
+        );
+
+        let mut config = BalanceHistoryConfig::default();
+        let btc_data_dir = std::env::var("BTC_DATA_DIR")
+            .expect("BTC_DATA_DIR must be set when USDB_BH_REAL_BTC=1");
+        config.btc.data_dir = Some(std::path::PathBuf::from(btc_data_dir));
+        if let Ok(block_magic) = std::env::var("BTC_BLOCK_MAGIC") {
+            let parsed = if let Some(hex) = block_magic.strip_prefix("0x") {
+                u32::from_str_radix(hex, 16)
+            } else {
+                block_magic.parse()
+            }
+            .expect("BTC_BLOCK_MAGIC must be a hex or decimal u32");
+            config.btc.block_magic = Some(parsed);
+        }
+        let config = std::sync::Arc::new(config);
+        config
+    }
+
+    fn env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .map(|value| {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{} must be a usize", name))
+            })
+            .unwrap_or(default)
+    }
 
     #[test]
-    #[ignore = "requires local blk files"]
-    fn test_block_file_cache() {
-        let config = LogConfig::new("block_file_cache_test").enable_console(true);
-        usdb_util::init_log(config);
-
-        let config = BalanceHistoryConfig::default();
-        let config = std::sync::Arc::new(config);
-
+    fn real_btc_profile_block_file_cache_prefetch_sample_range() {
+        let config = real_btc_config();
         let reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
         let reader = Arc::new(reader);
 
         let cache = BlockFileCache::new(reader.clone()).unwrap();
-        for i in 1000..1100 {
+        let start = env_usize("USDB_BH_REAL_BTC_CACHE_START_FILE", 0);
+        let count = env_usize("USDB_BH_REAL_BTC_CACHE_FILE_COUNT", 4);
+        let sleep_ms = env_usize("USDB_BH_REAL_BTC_CACHE_SLEEP_MS", 0) as u64;
+        for i in start..start + count {
             let block = cache.get_block_by_file_index(i, 0).unwrap();
             println!(
                 "Got block at file index {}, record 0: {}",
@@ -303,8 +334,9 @@ mod tests {
                 block.block_hash()
             );
 
-            // Sleep a bit to allow prefetching
-            std::thread::sleep(std::time::Duration::from_millis(3000));
+            if sleep_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+            }
         }
     }
 }

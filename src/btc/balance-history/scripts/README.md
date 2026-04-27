@@ -4,6 +4,8 @@
 
 当前已有最小版 `run_regtest_suite.sh` runner，先收敛 smoke 子集；更大的 reorg/snapshot 套件仍保留为手工入口。
 
+真实本地 BTC 数据测试使用单独入口 `run_real_btc_tests.sh`，它不会启动 bitcoind，而是连接调用者显式指定的本机节点和 blk datadir。
+
 ## 前置依赖
 
 - `cargo`
@@ -63,6 +65,7 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 | 脚本 | 分层 | 默认端口 `btc-rpc/p2p/bh-rpc` | 目标 |
 | --- | --- | --- | --- |
 | `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke` |
+| `run_real_btc_tests.sh` | Real BTC | N/A | 显式 `USDB_BH_REAL_BTC=1` 后运行本机真实 blk/RPC 测试 |
 | `regtest_smoke.sh` | Smoke | `28132/28133/28110` | 基础同步、网络类型、地址余额查询 |
 | `regtest_rpc_semantics.sh` | Smoke/query | `29032/29033/29010` | latest/exact/range balance、delta、batch 顺序、live UTXO 语义 |
 | `regtest_reorg_smoke.sh` | Reorg | `28232/28233/28210` | 基础 reorg rollback 和 block commit 恢复 |
@@ -118,6 +121,30 @@ bash src/btc/balance-history/scripts/regtest_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh
 bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```
+
+### Real BTC Data
+
+这些测试读取本机真实 Bitcoin Core datadir，并连接真实 bitcoind RPC。默认 `cargo test` 不会编译它们，必须显式 opt-in：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness
+```
+
+性能/profile 入口：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
+```
+
+详细说明见 [balance-history-real-btc-tests.md](/home/bucky/work/usdb/doc/balance-history/balance-history-real-btc-tests.md)。
 
 ### Snapshot Full
 
