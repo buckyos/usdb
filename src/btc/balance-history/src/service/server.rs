@@ -24,6 +24,7 @@ use usdb_util::{
 
 const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
 const MAX_SCRIPT_RESOLUTION_ITEMS: usize = 1_000;
+const SCRIPT_REGISTRY_POLICY: &str = "auxiliary_seen_scripts_non_consensus_v1";
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
@@ -657,6 +658,7 @@ impl BalanceHistoryRpcServer {
         let runtime = self.status.get_runtime_readiness();
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
+        let script_registry = self.script_registry_status();
         let snapshot_provenance = self.db.get_snapshot_install_provenance()?;
         let snapshot_install_used = if snapshot_provenance.is_some() {
             true
@@ -743,8 +745,27 @@ impl BalanceHistoryRpcServer {
             snapshot_signing_key_id: snapshot_provenance
                 .as_ref()
                 .and_then(|value| value.signing_key_id.clone()),
+            script_registry,
             blockers,
         })
+    }
+
+    fn script_registry_status(&self) -> ScriptRegistryStatus {
+        match self.db.get_script_registry_count() {
+            Ok(count) => ScriptRegistryStatus {
+                available: true,
+                count: Some(count),
+                policy: SCRIPT_REGISTRY_POLICY.to_string(),
+            },
+            Err(e) => {
+                log::warn!("Failed to read script registry status: {}", e);
+                ScriptRegistryStatus {
+                    available: false,
+                    count: None,
+                    policy: SCRIPT_REGISTRY_POLICY.to_string(),
+                }
+            }
+        }
     }
 
     fn snapshot_provenance(&self) -> Result<Option<SnapshotInstallProvenance>, String> {
@@ -1672,6 +1693,9 @@ mod tests {
                 .blockers
                 .contains(&ReadinessBlocker::LatestBlockCommitMissing)
         );
+        assert!(readiness.script_registry.available);
+        assert!(readiness.script_registry.count.is_some());
+        assert_eq!(readiness.script_registry.policy, SCRIPT_REGISTRY_POLICY);
     }
 
     #[test]
@@ -1694,6 +1718,14 @@ mod tests {
             .db
             .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
             .unwrap();
+        let script_hash = make_script_hash(88);
+        server
+            .db
+            .put_script_registry_entries(&[ScriptRegistryEntry {
+                script_hash,
+                script_pubkey: make_p2tr_script(88),
+            }])
+            .unwrap();
 
         let readiness = server.get_readiness().unwrap();
         assert!(readiness.rpc_alive);
@@ -1711,6 +1743,9 @@ mod tests {
             readiness.latest_block_commit,
             Some(encode_hex(&commit.block_commit))
         );
+        assert!(readiness.script_registry.available);
+        assert!(readiness.script_registry.count.unwrap_or_default() >= 1);
+        assert_eq!(readiness.script_registry.policy, SCRIPT_REGISTRY_POLICY);
         assert!(readiness.blockers.is_empty());
     }
 

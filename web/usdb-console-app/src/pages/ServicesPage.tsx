@@ -166,6 +166,21 @@ function renderBalanceHistoryDetails(
           helpText: t('help.fields.snapshotSigningKey'),
         },
         {
+          label: t('fields.scriptRegistryAvailable'),
+          value: displayBoolean(data?.script_registry?.available, t),
+          helpText: t('help.fields.scriptRegistryAvailable'),
+        },
+        {
+          label: t('fields.scriptRegistryCount'),
+          value: displayNumber(locale, data?.script_registry?.count, t),
+          helpText: t('help.fields.scriptRegistryCount'),
+        },
+        {
+          label: t('fields.scriptRegistryPolicy'),
+          value: displayText(data?.script_registry?.policy, t),
+          helpText: t('help.fields.scriptRegistryPolicy'),
+        },
+        {
           label: t('fields.statusMessage'),
           value: displayText(data?.message, t),
           helpText: t('help.fields.statusMessage'),

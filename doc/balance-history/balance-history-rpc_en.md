@@ -78,6 +78,22 @@ Returns structured readiness state for:
 Downstream callers should gate on `consensus_ready=true` instead of treating
 `get_network_type` reachability as readiness.
 
+The response also includes `script_registry`, a display-only diagnostic summary:
+
+```json
+{
+  "script_registry": {
+    "available": true,
+    "count": 123456,
+    "policy": "auxiliary_seen_scripts_non_consensus_v1"
+  }
+}
+```
+
+- `available`: whether this node can query the auxiliary registry.
+- `count`: approximate number of known `script_hash -> scriptPubKey` mappings.
+- `policy`: machine-readable semantics. The current policy means the registry is a non-consensus seen-script cache populated by indexing and snapshot import.
+
 ### 5) `get_snapshot_info`
 
 Returns metadata for the current stable snapshot.

@@ -34,7 +34,14 @@ interface BalanceHistoryReadiness {
   snapshot_origin?: unknown
   snapshot_verification_state?: unknown
   snapshot_signing_key_id?: string | null
+  script_registry?: ScriptRegistryStatus | null
   blockers?: string[]
+}
+
+interface ScriptRegistryStatus {
+  available: boolean
+  count?: number | null
+  policy: string
 }
 
 interface AddressBalanceSummaryRpc {
@@ -142,6 +149,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     snapshotOrigin: 'Snapshot Origin',
     snapshotVerification: 'Snapshot Verification',
     snapshotSigner: 'Snapshot Signer',
+    scriptRegistry: 'Script Registry',
+    scriptRegistryCount: 'Registry Entries',
+    scriptRegistryPolicy: 'Registry Policy',
     blockers: 'Blockers',
     none: 'None',
     queryWorkspace: 'Query Workspace',
@@ -251,6 +261,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     snapshotOrigin: '快照来源',
     snapshotVerification: '快照验证',
     snapshotSigner: '快照签名方',
+    scriptRegistry: 'Script Registry',
+    scriptRegistryCount: 'Registry 条目数',
+    scriptRegistryPolicy: 'Registry 策略',
     blockers: '阻塞原因',
     none: '无',
     queryWorkspace: '查询工作台',
@@ -990,6 +1003,14 @@ function App() {
             <dt>{dict.snapshotOrigin}</dt><dd>{formatReadinessExtra(readiness?.snapshot_origin)}</dd>
             <dt>{dict.snapshotVerification}</dt><dd>{formatReadinessExtra(readiness?.snapshot_verification_state)}</dd>
             <dt>{dict.snapshotSigner}</dt><dd className="mono hash-value">{readiness?.snapshot_signing_key_id || '-'}</dd>
+            <dt>{dict.scriptRegistry}</dt>
+            <dd>{readiness?.script_registry?.available == null ? '-' : readiness.script_registry.available ? dict.ready : dict.notReady}</dd>
+            <dt>{dict.scriptRegistryCount}</dt>
+            <dd>{readiness?.script_registry?.count == null ? '-' : nf.format(readiness.script_registry.count)}</dd>
+            <dt>{dict.scriptRegistryPolicy}</dt>
+            <dd className="mono hash-value" title={readiness?.script_registry?.policy ?? ''}>
+              {readiness?.script_registry?.policy || '-'}
+            </dd>
             <dt>{dict.blockers}</dt><dd>{readiness?.blockers?.length ? readiness.blockers.join(', ') : dict.none}</dd>
           </dl>
         </article>

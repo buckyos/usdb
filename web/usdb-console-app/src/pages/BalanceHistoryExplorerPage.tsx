@@ -4,7 +4,7 @@ import {
   fetchBalanceHistorySingleBalance,
   fetchBalanceHistorySyncStatus,
 } from '../lib/api'
-import { displayNumber, displayText } from '../lib/format'
+import { displayBoolean, displayNumber, displayText } from '../lib/format'
 import type { AddressBalanceRow, BalanceHistorySummary, BalanceHistorySyncStatus, OverviewResponse } from '../lib/types'
 import { FieldValueList } from '../components/FieldValueList'
 
@@ -243,6 +243,21 @@ export function BalanceHistoryExplorerPage({
                 label: t('fields.statusMessage'),
                 value: displayText(syncStatus?.message ?? summary?.message, t),
                 helpText: t('help.fields.statusMessage'),
+              },
+              {
+                label: t('fields.scriptRegistryAvailable'),
+                value: displayBoolean(summary?.script_registry?.available, t),
+                helpText: t('help.fields.scriptRegistryAvailable'),
+              },
+              {
+                label: t('fields.scriptRegistryCount'),
+                value: displayNumber(locale, summary?.script_registry?.count ?? null, t),
+                helpText: t('help.fields.scriptRegistryCount'),
+              },
+              {
+                label: t('fields.scriptRegistryPolicy'),
+                value: displayText(summary?.script_registry?.policy, t),
+                helpText: t('help.fields.scriptRegistryPolicy'),
               },
             ]}
           />

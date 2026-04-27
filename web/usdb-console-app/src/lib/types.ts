@@ -45,7 +45,14 @@ export interface BalanceHistorySummary {
   latest_block_commit?: string | null
   snapshot_verification_state?: string | null
   snapshot_signing_key_id?: string | null
+  script_registry?: BalanceHistoryScriptRegistryStatus | null
   blockers?: string[]
+}
+
+export interface BalanceHistoryScriptRegistryStatus {
+  available: boolean
+  count?: number | null
+  policy: string
 }
 
 export interface UsdbIndexerSummary {

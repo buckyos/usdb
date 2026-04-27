@@ -398,8 +398,25 @@ pub struct ReadinessInfo {
     pub snapshot_verification_state: Option<SnapshotVerificationState>,
     /// Signer identifier for trusted snapshot installs, when present.
     pub snapshot_signing_key_id: Option<String>,
+    /// Display-only status for the auxiliary script registry.
+    pub script_registry: ScriptRegistryStatus,
     /// Machine-readable reasons keeping the service from a stricter ready state.
     pub blockers: Vec<ReadinessBlocker>,
+}
+
+/// Display and diagnostic status for the auxiliary script registry.
+///
+/// The registry is a best-effort cache of scripts observed during indexing or
+/// snapshot installation. It helps callers resolve script hashes back to BTC
+/// addresses, but it is not part of balance-history consensus commits.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScriptRegistryStatus {
+    /// True when the local DB can query the registry column family.
+    pub available: bool,
+    /// Approximate number of known script hash mappings, when available.
+    pub count: Option<u64>,
+    /// Machine-readable policy describing registry semantics.
+    pub policy: String,
 }
 
 /// Logical block-commit metadata recorded for one exact BTC block height.

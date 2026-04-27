@@ -1985,6 +1985,9 @@ async fn probe_balance_history(state: &AppState) -> ServiceProbe<BalanceHistoryS
             snapshot_signing_key_id: readiness
                 .as_ref()
                 .and_then(|item| item.snapshot_signing_key_id.clone()),
+            script_registry: readiness
+                .as_ref()
+                .and_then(|item| item.script_registry.clone()),
             blockers: readiness
                 .as_ref()
                 .map(|item| item.blockers.clone())

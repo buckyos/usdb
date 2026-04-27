@@ -243,7 +243,15 @@ pub struct BalanceHistoryServiceSummary {
     pub latest_block_commit: Option<String>,
     pub snapshot_verification_state: Option<String>,
     pub snapshot_signing_key_id: Option<String>,
+    pub script_registry: Option<BalanceHistoryScriptRegistryStatus>,
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalanceHistoryScriptRegistryStatus {
+    pub available: bool,
+    pub count: Option<u64>,
+    pub policy: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -319,6 +327,8 @@ pub struct BalanceHistoryReadiness {
     pub latest_block_commit: Option<String>,
     pub snapshot_verification_state: Option<String>,
     pub snapshot_signing_key_id: Option<String>,
+    #[serde(default)]
+    pub script_registry: Option<BalanceHistoryScriptRegistryStatus>,
     pub blockers: Vec<String>,
 }
 
