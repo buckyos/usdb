@@ -2,6 +2,11 @@
 
 本文档说明 `balance-history` 当前的 regtest 脚本框架，目标是让后续 smoke、reorg、范围查询、恢复场景都复用同一套基础设施，而不是复制整段脚本。
 
+## 相关入口
+
+- 测试分层与推荐执行矩阵：[balance-history-test-matrix.md](./balance-history-test-matrix.md)
+- 脚本目录执行说明：[src/btc/balance-history/scripts/README.md](../../src/btc/balance-history/scripts/README.md)
+
 ## 入口文件
 
 - 共享库：[src/btc/balance-history/scripts/regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)

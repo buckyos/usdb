@@ -12,6 +12,7 @@
 
 ## Regtest 框架
 
+- [balance-history-test-matrix.md](./balance-history-test-matrix.md)
 - [balance-history-regtest-framework.md](./balance-history-regtest-framework.md)
 - [balance-history-regtest-smoke.md](./balance-history-regtest-smoke.md)
 - [balance-history-regtest-stable-lag-smoke.md](./balance-history-regtest-stable-lag-smoke.md)
