@@ -72,9 +72,10 @@ Activation: <height/governance/TODO>
 | 7 | `UIP-0007` | ETHW Consensus Profile Selector | Standards Track | P1 | Draft |
 | 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Draft |
 | 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
-| 10 | `UIP-0010` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
-| 11 | `UIP-0011` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
-| 12 | `UIP-0012` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
+| 10 | `UIP-0010` | SourceDAO and Dividend Bootstrap | Standards Track | P1 | Draft |
+| 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
+| 12 | `UIP-0012` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
+| 13 | `UIP-0013` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
 ## 7. UIP-0000: UIP Process and Governance
 
@@ -481,14 +482,50 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - USDB reward rule 从 genesis 生效。
 - payload version / reward rule version mismatch。
 
-## 17. UIP-0010: CoinBase Emission and Reward Split
+## 17. UIP-0010: SourceDAO and Dividend Bootstrap
+
+目标：
+
+- 定义 SourceDAO / Dividend system contract 的冷启动流程。
+- 定义固定系统地址、genesis predeploy runtime code、bootstrap admin、bootstrap 交易顺序和 fee split activation height。
+- 定义 canonical genesis artifact、SourceDAO bootstrap config、bootstrap state marker 和后续 joiner 审计方式。
+- 明确 fee split activation 的启动条件，但不定义手续费比例和 CoinBase 释放公式。
+
+当前草案：
+
+- `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`
+
+需要解决：
+
+- public network 的 `DaoAddress` / `DividendAddress` 最终取值。
+- SourceDAO artifact hash / runtime code hash 的 canonical encoding。
+- bootstrap admin 的权限生命周期和私钥治理。
+- `DividendFeeSplitBlock` 是否必须大于 bootstrap 完成高度，以及最小安全间隔。
+- SourceDAO full bootstrap 中其他模块是否进入本 UIP，还是只把 Dao / Dividend 作为 fee split 前置条件。
+
+实现影响：
+
+- `/home/bucky/work/go-ethereum/cmd/geth/usdbbootstrap.go`
+- `/home/bucky/work/go-ethereum/core/genesis.go`
+- `/home/bucky/work/go-ethereum/params/config.go`
+- `/home/bucky/work/SourceDAO/scripts/usdb_bootstrap_full.ts`
+- `docker/compose.bootstrap.yml`
+
+测试要求：
+
+- canonical genesis 可复现。
+- genesis predeploy code hash 与 manifest 一致。
+- bootstrap tx 顺序正确。
+- activation block 前后 fee split 状态可验证。
+- 新 joiner 能通过 genesis、manifest 和链上状态审计 bootstrap 完成状态。
+
+## 18. UIP-0011: CoinBase Emission and Reward Split
 
 目标：
 
 - 定义 CoinBase 释放公式。
 - 定义矿工、辅助算力池、DAO 分红池、手续费分配。
 - 定义叔块奖励兼容边界。
-- 定义 SourceDAO / Dividend 系统地址、bootstrap 初始化、fee split activation height 与 reward/fee split 的关系，或明确该部分拆到单独 UIP。
 
 需要解决：
 
@@ -497,13 +534,13 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `K` 函数。
 - 叔块奖励采用哪一版规则。
 - 收入合约是否进入共识验证。
-- SourceDAO / Dividend 是否使用固定系统地址、genesis predeploy runtime code、启动后 bootstrap 交易和指定高度激活。
 
 建议延后原因：
 
 - 依赖 pass / energy / leader / validator payload 稳定。
+- 依赖 UIP-0010 先确定分红池地址、bootstrap 状态和 fee split activation 边界。
 
-## 18. UIP-0011: Price and Real Price Update Rules
+## 19. UIP-0012: Price and Real Price Update Rules
 
 目标：
 
@@ -523,7 +560,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 依赖发行和交易/挂单证明机制。
 
-## 19. UIP-0012: Auxiliary Hashpower Pool
+## 20. UIP-0013: Auxiliary Hashpower Pool
 
 目标：
 
@@ -570,6 +607,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 1. `UIP-0010`
 2. `UIP-0011`
 3. `UIP-0012`
+4. `UIP-0013`
 
 ## 21. 与当前文档的关系
 

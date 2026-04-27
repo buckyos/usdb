@@ -13,7 +13,7 @@ Activation: ETHW network activation matrix; first official networks activate v1 
 
 UIP-0009 的目标是把 USDB 作为一条新的 ETHW-compatible PoW 链从 genesis 启动，而不是继续保留“从既有 Ethereum / ETHW 网络迁移”的历史语义。
 
-本文只定义 chain config 和 bootstrap 边界，不定义具体 reward、fee split、CoinBase emission、collab bonus 或 price 公式。相关公式由后续 UIP 定义，并通过本文定义的 version 字段在 ETHW chain config 中激活。
+本文只定义 chain config 和 bootstrap 边界，不定义具体 reward、fee split、CoinBase emission、collab bonus 或 price 公式。SourceDAO / Dividend 冷启动由 UIP-0010 定义，相关经济公式由后续 UIP 定义，并通过本文定义的 version 字段在 ETHW chain config 中激活。
 
 # 动机
 
@@ -41,7 +41,7 @@ USDB 目标是一条新的链：
 - `level -> difficulty_factor_bps` 公式，见 UIP-0005。
 - `base_difficulty -> real_difficulty` 的完整 difficulty policy 公式。
 - reward、fee split、CoinBase emission、uncle reward、collab bonus 或分红池公式。
-- SourceDAO / dividend pool 的合约初始化细节。
+- SourceDAO / dividend pool 的合约初始化细节，见 UIP-0010。
 - public mainnet / public testnet 最终 ChainID、NetworkId 或 bootnodes。
 
 # 术语
@@ -182,7 +182,7 @@ release_manifest_hash_or_signature
 - `Dividend.initialize(...)` 作为 block 0 之后的交易执行时，不进入 genesis hash。
 - `Dao.setTokenDividendAddress(...)` 作为 block 0 之后的交易执行时，不进入 genesis hash。
 
-这些 post-start bootstrap 交易应由后续 SourceDAO / Dividend Bootstrap UIP 定义，并通过 release manifest、bootstrap state marker、交易 hash 或激活高度审计。
+这些 post-start bootstrap 交易由 UIP-0010 定义，并通过 release manifest、bootstrap state marker、交易 hash 或激活高度审计。
 
 如果未来选择把初始化后的 storage 直接写入 genesis，则对应 storage 必须进入 `alloc`，并会改变 `USDBGenesisHash`。
 
@@ -359,7 +359,7 @@ USDB ETHW miner 和 validator 都依赖本地 USDB companion service。
 
 # SourceDAO / Dividend Bootstrap 边界
 
-SourceDAO / dividend pool 与 fee split 是同一个冷启动问题，不应在 UIP-0009 内直接定义完整合约流程。
+SourceDAO / dividend pool 与 fee split 是同一个冷启动问题，不应在 UIP-0009 内直接定义完整合约流程。该流程由 UIP-0010 处理。
 
 当前 docker / go-ethereum 原型已经形成开发期流程：
 
@@ -375,7 +375,7 @@ SourceDAO / dividend pool 与 fee split 是同一个冷启动问题，不应在 
 - UIP-0009 只保留 chain config hook，例如 `fee_split_policy_version`、`DividendAddress`、`DividendFeeSplitBlock` 等字段的占位边界。
 - 是否从 genesis 预置 SourceDAO / Dividend code，以及是否在启动后由 bootstrap 交易初始化，应由单独 UIP 标准化。
 
-建议后续单独起草 SourceDAO / Dividend Bootstrap UIP，核心原则暂定为：
+UIP-0010 的核心原则暂定为：
 
 ```text
 fixed_system_addresses
@@ -526,4 +526,4 @@ USDB:
 3. `DifficultyBoundDivisor` 和 `DurationLimit` 是否沿用当前值。v1 暂建议优先不改，除非测试网数据证明 retarget 曲线需要调整。
 4. `USDBGenesisHash` 必须在 chain config、genesis、system contract predeploy 和 bootstrap 参数 finalization 后更新。
 5. bootnodes / DNS discovery 何时进入内置配置，何时作为 release artifact 分发。
-6. SourceDAO / dividend pool / fee split 冷启动流程进入哪个后续 UIP，以及是否采用固定地址、genesis predeploy、启动后初始化交易和激活高度的组合方案。
+6. UIP-0010 中 SourceDAO / dividend pool / fee split 冷启动流程是否采用固定地址、genesis predeploy、启动后初始化交易和激活高度的组合方案。
