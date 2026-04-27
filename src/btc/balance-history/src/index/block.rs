@@ -2,7 +2,8 @@ use crate::bench::{BatchBlockBenchMark, BatchBlockBenchMarkRef};
 use crate::btc::BTCClientRef;
 use crate::cache::{AddressBalanceCacheRef, UTXOCacheRef};
 use crate::db::{
-    BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockUndoBundle, BlockUndoUtxoEntry,
+    BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry, BlockStateUpdateBatch,
+    BlockUndoBundle, BlockUndoUtxoEntry, ScriptRegistryEntry,
 };
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{Block, BlockHash, OutPoint, Txid};
@@ -87,6 +88,9 @@ pub struct BatchBlockData {
     // Keep deterministic per-block balance deltas for block commit calculation.
     block_balance_deltas: Arc<Mutex<Vec<BlockBalanceDelta>>>,
 
+    // Keep auxiliary script registry entries discovered while preloading block outputs.
+    script_registry: Arc<Mutex<Vec<ScriptRegistryEntry>>>,
+
     bench_mark: BatchBlockBenchMarkRef,
 }
 
@@ -99,6 +103,7 @@ impl BatchBlockData {
             balances: Arc::new(DashMap::new()),
             balance_history: Arc::new(Mutex::new(Vec::new())),
             block_balance_deltas: Arc::new(Mutex::new(Vec::new())),
+            script_registry: Arc::new(Mutex::new(Vec::new())),
             bench_mark: Arc::new(BatchBlockBenchMark::new()),
         }
     }
@@ -350,6 +355,7 @@ impl BatchBlockPreloader {
             block_hash: block.block_hash(),
             txdata: Vec::with_capacity(block.txdata.len()),
         };
+        let mut script_registry_entries = Vec::new();
 
         // Load all vins' UTXOs into cache
         // Here we do not use rayon because we already used rayon to process blocks in higher level
@@ -387,10 +393,15 @@ impl BatchBlockPreloader {
                         txid: preload_tx.txid,
                         vout: n as u32,
                     };
+                    let script_hash = vout.script_pubkey.to_usdb_script_hash();
+                    script_registry_entries.push(ScriptRegistryEntry {
+                        script_hash,
+                        script_pubkey: vout.script_pubkey.clone(),
+                    });
 
                     let cache_tx_out = UTXOValue {
                         value: vout.value.to_sat(),
-                        script_hash: vout.script_pubkey.to_usdb_script_hash(),
+                        script_hash,
                     };
 
                     let preload_vout = PreloadVOut {
@@ -403,6 +414,13 @@ impl BatchBlockPreloader {
                 preload_tx
             })
             .collect();
+
+        if !script_registry_entries.is_empty() {
+            data.script_registry
+                .lock()
+                .unwrap()
+                .extend(script_registry_entries);
+        }
 
         // Append all vout UTXOs to UTXO cache
         let mut vout_utxo_map = data.vout_utxos.write().unwrap();
@@ -634,17 +652,20 @@ impl BatchBlockFlusher {
         let (new_utxos, spent_utxos) = self.collect_utxo_updates(data)?;
         let (balance_entries, block_commits, last_block_height) =
             self.collect_balance_updates(data)?;
+        let script_registry_entries = self.collect_script_registry_updates(data)?;
         let undo_bundles = self.collect_undo_bundles(data)?;
 
         let begin = std::time::Instant::now();
-        self.db.update_block_state_with_undo_async(
-            &new_utxos,
-            &spent_utxos,
-            &balance_entries,
-            last_block_height,
-            &block_commits,
-            &undo_bundles,
-        )?;
+        self.db
+            .update_block_state_batch_async(BlockStateUpdateBatch {
+                new_utxos: &new_utxos,
+                remove_utxos: &spent_utxos,
+                entries_list: &balance_entries,
+                block_height: last_block_height,
+                block_commits: &block_commits,
+                script_registry_entries: &script_registry_entries,
+                undo_bundles: &undo_bundles,
+            })?;
         let duration = begin.elapsed();
 
         data.bench_mark.batch_update_utxo_duration_micros.store(
@@ -683,6 +704,36 @@ impl BatchBlockFlusher {
             .store(all.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
         Ok((all, block_commits, last_block_height as u32))
+    }
+
+    fn collect_script_registry_updates(
+        &self,
+        data: &BatchBlockDataRef,
+    ) -> Result<Vec<ScriptRegistryEntry>, String> {
+        let mut entries = data.script_registry.lock().unwrap().clone();
+        entries.par_sort_unstable_by(|left, right| left.script_hash.cmp(&right.script_hash));
+
+        let mut deduped: Vec<ScriptRegistryEntry> = Vec::with_capacity(entries.len());
+        for entry in entries {
+            if let Some(last) = deduped.last() {
+                if last.script_hash == entry.script_hash {
+                    if last.script_pubkey.as_bytes() != entry.script_pubkey.as_bytes() {
+                        let msg = format!(
+                            "Conflicting script registry entries for script_hash {}",
+                            entry.script_hash
+                        );
+                        error!("{}", msg);
+                        return Err(msg);
+                    }
+
+                    continue;
+                }
+            }
+
+            deduped.push(entry);
+        }
+
+        Ok(deduped)
     }
 
     fn collect_undo_bundles(
@@ -933,6 +984,14 @@ mod block_commit_tests {
         }
     }
 
+    fn make_script_registry_entry(seed: u8) -> ScriptRegistryEntry {
+        let script_pubkey = ScriptBuf::from(vec![seed; 32]);
+        ScriptRegistryEntry {
+            script_hash: script_pubkey.to_usdb_script_hash(),
+            script_pubkey,
+        }
+    }
+
     #[test]
     fn test_balance_delta_root_is_stable() {
         let block_hash = BlockHash::from_slice(&[7u8; 32]).unwrap();
@@ -1062,6 +1121,60 @@ mod block_commit_tests {
         assert_eq!(
             block_commits,
             build_block_commits(&[block], EMPTY_COMMIT_HASH)
+        );
+    }
+
+    #[test]
+    fn test_collect_script_registry_updates_deduplicates_same_script() {
+        let db = temp_db("balance_history_script_registry_dedup");
+        let flusher = test_flusher(db);
+        let data = Arc::new(BatchBlockData::new());
+        let entry = make_script_registry_entry(42);
+
+        *data.script_registry.lock().unwrap() = vec![entry.clone(), entry.clone()];
+
+        let entries = flusher.collect_script_registry_updates(&data).unwrap();
+        assert_eq!(entries, vec![entry]);
+    }
+
+    #[test]
+    fn test_collect_script_registry_updates_rejects_conflicting_script() {
+        let db = temp_db("balance_history_script_registry_conflict");
+        let flusher = test_flusher(db);
+        let data = Arc::new(BatchBlockData::new());
+        let entry = make_script_registry_entry(42);
+        let conflicting = ScriptRegistryEntry {
+            script_hash: entry.script_hash,
+            script_pubkey: ScriptBuf::from(vec![43u8; 32]),
+        };
+
+        *data.script_registry.lock().unwrap() = vec![entry, conflicting];
+
+        let error = flusher.collect_script_registry_updates(&data).unwrap_err();
+        assert!(error.contains("Conflicting script registry entries"));
+    }
+
+    #[test]
+    fn test_flusher_persists_script_registry_entries() {
+        let db = temp_db("balance_history_script_registry_flush");
+        let flusher = test_flusher(db.clone());
+        let mut data = BatchBlockData::new();
+        let entry = make_script_registry_entry(44);
+
+        data.block_range = 1..2;
+        *data.block_balance_deltas.lock().unwrap() = vec![BlockBalanceDelta {
+            block_height: 1,
+            block_hash: BlockHash::from_slice(&[1u8; 32]).unwrap(),
+            entries: Vec::new(),
+        }];
+        *data.script_registry.lock().unwrap() = vec![entry.clone()];
+        let data = Arc::new(data);
+
+        flusher.flush(&data).unwrap();
+
+        assert_eq!(
+            db.get_script_registry_entry(&entry.script_hash).unwrap(),
+            Some(entry.script_pubkey)
         );
     }
 

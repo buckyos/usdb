@@ -2,7 +2,7 @@ use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, Txid};
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf, Txid};
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
     WriteOptions,
@@ -18,6 +18,7 @@ use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOVa
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
 pub const UTXO_CF: &str = "utxo";
+pub const SCRIPT_REGISTRY_CF: &str = "script_registry";
 pub const BLOCKS_CF: &str = "blocks";
 pub const BLOCK_HEIGHTS_CF: &str = "block_heights";
 // BLOCK_COMMITS_CF stores the first-version logical commit chain metadata for balance-history.
@@ -120,6 +121,27 @@ pub struct BlockUndoBundle {
     pub spent_utxos: Vec<BlockUndoUtxoEntry>,
     // Script hashes whose exact block-height balance rows must be deleted.
     pub touched_script_hashes: Vec<USDBScriptHash>,
+}
+
+/// Auxiliary mapping from the canonical script hash key to the original BTC locking script.
+///
+/// This registry is a display/lookup cache produced by the balance-history indexer. It is not
+/// part of the balance-history block commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptRegistryEntry {
+    pub script_hash: USDBScriptHash,
+    pub script_pubkey: ScriptBuf,
+}
+
+/// Inputs persisted as one atomic balance-history block-state batch.
+pub struct BlockStateUpdateBatch<'a> {
+    pub new_utxos: &'a [(OutPointRef, UTXOEntryRef)],
+    pub remove_utxos: &'a [OutPointRef],
+    pub entries_list: &'a [BalanceHistoryEntry],
+    pub block_height: u32,
+    pub block_commits: &'a [BlockCommitEntry],
+    pub script_registry_entries: &'a [ScriptRegistryEntry],
+    pub undo_bundles: &'a [BlockUndoBundle],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +267,13 @@ impl BalanceHistoryDB {
                 error!("{}", msg);
                 msg
             })?;
+
+            let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).unwrap();
+            self.db.set_options_cf(cf, &new_opts).map_err(|e| {
+                let msg = format!("Failed to set new options for ScriptRegistry CF: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
         }
 
         Ok(())
@@ -277,6 +306,10 @@ impl BalanceHistoryDB {
             ),
             ColumnFamilyDescriptor::new(META_CF, Options::default()),
             ColumnFamilyDescriptor::new(UTXO_CF, Self::get_utxo_cf_opts_on_mode(mode)),
+            ColumnFamilyDescriptor::new(
+                SCRIPT_REGISTRY_CF,
+                Self::get_script_registry_cf_opts_on_mode(mode),
+            ),
             ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
             ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
             ColumnFamilyDescriptor::new(BLOCK_COMMITS_CF, Options::default()),
@@ -372,6 +405,35 @@ impl BalanceHistoryDB {
         utxo_cf_options
     }
 
+    fn get_script_registry_cf_opts_on_mode(mode: BalanceHistoryDBMode) -> Options {
+        match mode {
+            BalanceHistoryDBMode::BestEffort => Self::best_script_registry_cf_opts(),
+            BalanceHistoryDBMode::Normal => Self::normal_script_registry_cf_opts(),
+        }
+    }
+
+    fn best_script_registry_cf_opts() -> Options {
+        let mut opts = Self::normal_script_registry_cf_opts();
+
+        opts.set_write_buffer_size(256 * 1024 * 1024); // 256MB
+        opts.set_max_write_buffer_number(8);
+        opts.set_min_write_buffer_number_to_merge(3);
+
+        opts
+    }
+
+    fn normal_script_registry_cf_opts() -> Options {
+        let mut script_registry_cf_options = Options::default();
+        script_registry_cf_options.set_level_compaction_dynamic_level_bytes(true);
+        script_registry_cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
+        script_registry_cf_options.create_if_missing(true);
+        script_registry_cf_options.set_max_bytes_for_level_base(1024 * 1024 * 1024); // 1GB
+        script_registry_cf_options.set_target_file_size_base(64 * 1024 * 1024);
+        script_registry_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
+
+        script_registry_cf_options
+    }
+
     pub fn open_for_read(
         config: BalanceHistoryConfigRef,
         mode: BalanceHistoryDBMode,
@@ -400,6 +462,7 @@ impl BalanceHistoryDB {
             BALANCE_HISTORY_CF,
             META_CF,
             UTXO_CF,
+            SCRIPT_REGISTRY_CF,
             BLOCKS_CF,
             BLOCK_HEIGHTS_CF,
             BLOCK_COMMITS_CF,
@@ -882,6 +945,21 @@ impl BalanceHistoryDB {
         block_commits: &[BlockCommitEntry],
         undo_bundles: &[BlockUndoBundle],
     ) -> Result<(), String> {
+        self.update_block_state_batch_async(BlockStateUpdateBatch {
+            new_utxos,
+            remove_utxos,
+            entries_list,
+            block_height,
+            block_commits,
+            script_registry_entries: &[],
+            undo_bundles,
+        })
+    }
+
+    pub fn update_block_state_batch_async(
+        &self,
+        update: BlockStateUpdateBatch<'_>,
+    ) -> Result<(), String> {
         let mut batch = WriteBatch::default();
 
         let utxo_cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -890,13 +968,13 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for (outpoint, utxo) in new_utxos {
+        for (outpoint, utxo) in update.new_utxos {
             let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
             let key = Self::make_utxo_key(outpoint);
             batch.put_cf(utxo_cf, key, value);
         }
 
-        for outpoint in remove_utxos {
+        for outpoint in update.remove_utxos {
             let key = Self::make_utxo_key(outpoint);
             batch.delete_cf(utxo_cf, key);
         }
@@ -907,7 +985,7 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for entry in entries_list {
+        for entry in update.entries_list {
             let key = Self::make_balance_history_key(&entry.script_hash, entry.block_height);
 
             let mut value = [0u8; 16];
@@ -923,7 +1001,7 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        for entry in block_commits {
+        for entry in update.block_commits {
             let key = Self::make_block_commit_key(entry.block_height);
             let value = Self::serialize_block_commit_value(entry);
             batch.put_cf(block_commit_cf, key, value);
@@ -934,13 +1012,15 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             msg
         })?;
-        let height_bytes = block_height.to_be_bytes();
+        let height_bytes = update.block_height.to_be_bytes();
         batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
 
-        self.append_block_undo_bundles_to_batch(&mut batch, undo_bundles)?;
+        self.append_script_registry_entries_to_batch(&mut batch, update.script_registry_entries)?;
+        self.append_block_undo_bundles_to_batch(&mut batch, update.undo_bundles)?;
 
-        if !undo_bundles.is_empty() {
-            let first_undo_height = undo_bundles
+        if !update.undo_bundles.is_empty() {
+            let first_undo_height = update
+                .undo_bundles
                 .iter()
                 .map(|bundle| bundle.block_height)
                 .min()
@@ -970,6 +1050,32 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             msg
         })?;
+
+        Ok(())
+    }
+
+    fn append_script_registry_entries_to_batch(
+        &self,
+        batch: &mut WriteBatch,
+        entries: &[ScriptRegistryEntry],
+    ) -> Result<(), String> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        for entry in entries {
+            batch.put_cf(
+                cf,
+                entry.script_hash.as_ref() as &[u8],
+                entry.script_pubkey.as_bytes(),
+            );
+        }
 
         Ok(())
     }
@@ -2275,6 +2381,86 @@ impl BalanceHistoryDB {
         Ok(entries)
     }
 
+    /// Persist auxiliary script registry entries in one batch.
+    ///
+    /// The caller is responsible for batch-level deduplication. Rewriting an existing identical
+    /// mapping is allowed and keeps the registry append-like.
+    pub fn put_script_registry_entries(
+        &self,
+        entries: &[ScriptRegistryEntry],
+    ) -> Result<(), String> {
+        let mut batch = WriteBatch::default();
+        self.append_script_registry_entries_to_batch(&mut batch, entries)?;
+
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to write script registry batch to DB: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn get_script_registry_entry(
+        &self,
+        script_hash: &USDBScriptHash,
+    ) -> Result<Option<ScriptBuf>, String> {
+        let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        match self.db.get_pinned_cf(cf, script_hash.as_ref() as &[u8]) {
+            Ok(Some(value)) => Ok(Some(ScriptBuf::from(value.as_ref().to_vec()))),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                let msg = format!(
+                    "Failed to get script registry entry for script hash {}: {}",
+                    script_hash, e
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    pub fn get_script_registry_entries(
+        &self,
+        script_hashes: &[USDBScriptHash],
+    ) -> Result<Vec<Option<ScriptBuf>>, String> {
+        let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let cf_keys = script_hashes
+            .iter()
+            .map(|script_hash| (cf, script_hash.as_ref() as &[u8]));
+        let results = self.db.multi_get_pinned_cf(cf_keys);
+
+        let mut entries = Vec::with_capacity(script_hashes.len());
+        for (script_hash, result) in script_hashes.iter().zip(results.into_iter()) {
+            match result {
+                Ok(Some(value)) => entries.push(Some(ScriptBuf::from(value.as_ref().to_vec()))),
+                Ok(None) => entries.push(None),
+                Err(e) => {
+                    let msg = format!(
+                        "Failed to get script registry entry for script hash {} in bulk: {}",
+                        script_hash, e
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
     /*
     // Remove and return the UTXO entry for the given outpoint
     pub fn spend_utxo(&self, outpoint: &OutPoint) -> Result<Option<UTXOValue>, String> {
@@ -2369,6 +2555,10 @@ impl BalanceHistoryDB {
 
     pub fn get_utxo_count(&self) -> Result<u64, String> {
         get_approx_cf_key_count(&self.db, UTXO_CF)
+    }
+
+    pub fn get_script_registry_count(&self) -> Result<u64, String> {
+        get_approx_cf_key_count(&self.db, SCRIPT_REGISTRY_CF)
     }
 
     pub fn get_block_commit_count(&self) -> Result<u64, String> {
@@ -3273,6 +3463,53 @@ mod tests {
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
         assert!(db.get_block_commit(99).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_script_registry_round_trip() {
+        let mut config = BalanceHistoryConfig::default();
+
+        let temp_dir = std::env::temp_dir().join("balance_history_script_registry_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let script_a = ScriptBuf::from(vec![1u8; 32]);
+        let script_b = ScriptBuf::from(vec![2u8; 32]);
+        let script_hash_a = script_a.to_usdb_script_hash();
+        let script_hash_b = script_b.to_usdb_script_hash();
+        let missing_hash = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+
+        db.put_script_registry_entries(&[
+            ScriptRegistryEntry {
+                script_hash: script_hash_a,
+                script_pubkey: script_a.clone(),
+            },
+            ScriptRegistryEntry {
+                script_hash: script_hash_b,
+                script_pubkey: script_b.clone(),
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            db.get_script_registry_entry(&script_hash_a).unwrap(),
+            Some(script_a.clone())
+        );
+        assert!(
+            db.get_script_registry_entry(&missing_hash)
+                .unwrap()
+                .is_none()
+        );
+
+        let entries = db
+            .get_script_registry_entries(&[script_hash_b, missing_hash, script_hash_a])
+            .unwrap();
+        assert_eq!(entries, vec![Some(script_b), None, Some(script_a)]);
+        assert!(db.get_script_registry_count().unwrap() >= 2);
     }
 
     #[test]
