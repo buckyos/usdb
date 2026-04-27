@@ -140,7 +140,59 @@ Batch version of `get_address_balance`.
 - Height/range validation matches `get_address_balance`, including
   `HEIGHT_NOT_SYNCED` for future stable heights.
 
-### 8) `stop`
+### 8) `resolve_script_hashes`
+
+Batch resolves `script_hash -> scriptPubKey -> BTC address?`.
+
+This method is for display and diagnostics only. It does not participate in
+balance-history block commits and does not change existing balance query
+semantics. Result order matches the input `script_hashes` order.
+
+Input object:
+
+```json
+{
+  "script_hashes": ["<USDBScriptHash-1>", "<USDBScriptHash-2>"],
+  "include_script_pubkey": false
+}
+```
+
+- `script_hashes`: required, at most 1000 items per request.
+- `include_script_pubkey`: optional, default `false`; when true, returns raw scriptPubKey hex.
+
+Example result:
+
+```json
+{
+  "network": "regtest",
+  "items": [
+    {
+      "script_hash": "<USDBScriptHash>",
+      "found": true,
+      "script_pubkey": null,
+      "address": "bcrt1p...",
+      "address_type": "p2tr",
+      "standard": true
+    },
+    {
+      "script_hash": "<missing-USDBScriptHash>",
+      "found": false,
+      "script_pubkey": null,
+      "address": null,
+      "address_type": null,
+      "standard": false
+    }
+  ]
+}
+```
+
+Notes:
+
+- `found=false` means this node's auxiliary `script_registry` has not seen the script hash.
+- `address=null` means a scriptPubKey exists but cannot be encoded as a standard address on the current BTC network.
+- `address_type` is a display classification such as `p2tr`, `p2wpkh`, `p2wsh`, `p2sh`, `p2pkh`, `op_return`, or `non_standard`.
+
+### 9) `stop`
 
 Sends shutdown signal to service for graceful stop.
 

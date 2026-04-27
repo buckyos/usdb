@@ -432,6 +432,41 @@ pub struct UtxoInfo {
     pub value: u64,
 }
 
+/// Parameters for resolving stored script hashes into display-oriented BTC script metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResolveScriptHashesParams {
+    /// Ordered list of target script hashes.
+    pub script_hashes: Vec<USDBScriptHash>,
+    /// When true, include raw scriptPubKey hex in each resolved item.
+    pub include_script_pubkey: Option<bool>,
+}
+
+/// One script hash resolution result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptHashResolution {
+    /// Target script hash in balance-history's canonical internal format.
+    pub script_hash: String,
+    /// True when the auxiliary script registry has a scriptPubKey for this hash.
+    pub found: bool,
+    /// Raw scriptPubKey hex. Only populated when explicitly requested.
+    pub script_pubkey: Option<String>,
+    /// BTC address derived for the service network when the script is address-encodable.
+    pub address: Option<String>,
+    /// Best-effort script classification for display and filtering.
+    pub address_type: Option<String>,
+    /// True when `address` can be derived for the configured BTC network.
+    pub standard: bool,
+}
+
+/// Batch script hash resolution response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptHashResolutionResponse {
+    /// BTC network used when deriving address strings.
+    pub network: String,
+    /// Resolution results in the same order as the request.
+    pub items: Vec<ScriptHashResolution>,
+}
+
 #[rpc(server)]
 pub trait BalanceHistoryRpc {
     /// Returns the BTC network configured for the current service instance.
@@ -592,6 +627,18 @@ pub trait BalanceHistoryRpc {
     /// bitcoind RPC when the outpoint is missing from the local DB/cache.
     #[rpc(name = "get_live_utxo")]
     fn get_live_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>>;
+
+    /// Resolves script hashes through balance-history's auxiliary script registry.
+    ///
+    /// This endpoint is for display and diagnostics only. It does not alter
+    /// canonical balance-history query semantics and does not participate in
+    /// consensus commits. Results preserve request order and return
+    /// `found=false` when a hash is absent from the local registry.
+    #[rpc(name = "resolve_script_hashes")]
+    fn resolve_script_hashes(
+        &self,
+        params: ResolveScriptHashesParams,
+    ) -> JsonResult<ScriptHashResolutionResponse>;
 
     /// Requests graceful shutdown of the balance-history process.
     ///

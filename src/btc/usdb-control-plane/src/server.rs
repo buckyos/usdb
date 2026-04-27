@@ -97,6 +97,7 @@ const BALANCE_HISTORY_PROXY_METHODS: &[&str] = &[
     "get_address_balance_summary",
     "get_address_balance_timeseries",
     "get_address_flow_buckets",
+    "resolve_script_hashes",
 ];
 
 const USDB_INDEXER_PROXY_METHODS: &[&str] = &[

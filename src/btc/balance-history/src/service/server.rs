@@ -8,7 +8,7 @@ use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
-use bitcoincore_rpc::bitcoin::OutPoint;
+use bitcoincore_rpc::bitcoin::{Address, OutPoint, Script};
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
@@ -23,6 +23,7 @@ use usdb_util::{
 };
 
 const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
+const MAX_SCRIPT_RESOLUTION_ITEMS: usize = 1_000;
 
 #[derive(Clone)]
 pub struct BalanceHistoryRpcServer {
@@ -513,6 +514,40 @@ impl BalanceHistoryRpcServer {
         }
 
         Ok(bucket_count)
+    }
+
+    fn validate_script_resolution_params(
+        &self,
+        params: &ResolveScriptHashesParams,
+    ) -> Result<(), JsonError> {
+        if params.script_hashes.len() > MAX_SCRIPT_RESOLUTION_ITEMS {
+            return Err(Self::to_invalid_params(format!(
+                "script_hashes length {} exceeds maximum {}",
+                params.script_hashes.len(),
+                MAX_SCRIPT_RESOLUTION_ITEMS
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn classify_script(script: &Script) -> String {
+        if script.is_p2tr() {
+            "p2tr"
+        } else if script.is_p2wpkh() {
+            "p2wpkh"
+        } else if script.is_p2wsh() {
+            "p2wsh"
+        } else if script.is_p2sh() {
+            "p2sh"
+        } else if script.is_p2pkh() {
+            "p2pkh"
+        } else if script.is_op_return() {
+            "op_return"
+        } else {
+            "non_standard"
+        }
+        .to_string()
     }
 
     fn get_balance_before_range(
@@ -1117,6 +1152,59 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             value: entry.value,
         }))
     }
+
+    fn resolve_script_hashes(
+        &self,
+        params: ResolveScriptHashesParams,
+    ) -> JsonResult<ScriptHashResolutionResponse> {
+        self.validate_script_resolution_params(&params)?;
+        let include_script_pubkey = params.include_script_pubkey.unwrap_or(false);
+        let network = self.config.btc.network();
+        let entries = self
+            .db
+            .get_script_registry_entries(&params.script_hashes)
+            .map_err(|e| {
+                Self::to_internal_error(format!("Failed to resolve script hashes: {}", e))
+            })?;
+
+        let items = params
+            .script_hashes
+            .iter()
+            .zip(entries)
+            .map(|(script_hash, script_pubkey)| {
+                let Some(script_pubkey) = script_pubkey else {
+                    return ScriptHashResolution {
+                        script_hash: script_hash.to_string(),
+                        found: false,
+                        script_pubkey: None,
+                        address: None,
+                        address_type: None,
+                        standard: false,
+                    };
+                };
+
+                let address = Address::from_script(&script_pubkey, network)
+                    .ok()
+                    .map(|address| address.to_string());
+                let address_type = Some(Self::classify_script(script_pubkey.as_script()));
+
+                ScriptHashResolution {
+                    script_hash: script_hash.to_string(),
+                    found: true,
+                    script_pubkey: include_script_pubkey
+                        .then(|| encode_hex(script_pubkey.as_bytes())),
+                    standard: address.is_some(),
+                    address,
+                    address_type,
+                }
+            })
+            .collect();
+
+        Ok(ScriptHashResolutionResponse {
+            network: network.to_string(),
+            items,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1125,19 +1213,20 @@ mod tests {
     use crate::config::BalanceHistoryConfig;
     use crate::db::{
         BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryEntry, BlockCommitEntry,
+        ScriptRegistryEntry,
     };
     use crate::snapshot_provenance::{
         SnapshotInstallOrigin, SnapshotInstallProvenance, SnapshotVerificationState,
     };
     use crate::status::SyncStatusManager;
-    use bitcoincore_rpc::bitcoin::BlockHash;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
     use jsonrpc_core::ErrorCode as JsonErrorCode;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
         BALANCE_HISTORY_SERVICE_NAME, ConsensusQueryContext, ConsensusRpcErrorCode,
-        ConsensusRpcErrorData, ConsensusStateReference, USDBScriptHash,
+        ConsensusRpcErrorData, ConsensusStateReference, ToUSDBScriptHash, USDBScriptHash,
     };
 
     fn make_test_server(tag: &str) -> BalanceHistoryRpcServer {
@@ -1187,6 +1276,14 @@ mod tests {
             .db
             .update_address_history_with_block_commits_async(&Vec::new(), block_height, &[commit])
             .unwrap();
+    }
+
+    fn make_p2tr_script(seed: u8) -> ScriptBuf {
+        let mut bytes = Vec::with_capacity(34);
+        bytes.push(0x51);
+        bytes.push(0x20);
+        bytes.extend([seed; 32]);
+        ScriptBuf::from(bytes)
     }
 
     fn decode_consensus_error_data(err: &JsonError) -> ConsensusRpcErrorData {
@@ -2159,5 +2256,86 @@ mod tests {
         assert_eq!(loaded.vout, outpoint.vout);
         assert_eq!(loaded.script_hash, format!("{:x}", script_hash));
         assert_eq!(loaded.value, 12345);
+    }
+
+    #[test]
+    fn test_resolve_script_hashes_returns_addresses_and_missing_rows() {
+        let server = make_test_server("resolve_script_hashes");
+        let script = make_p2tr_script(9);
+        let script_hash = script.to_usdb_script_hash();
+        let missing_hash = make_script_hash(88);
+        server
+            .db
+            .put_script_registry_entries(&[ScriptRegistryEntry {
+                script_hash,
+                script_pubkey: script.clone(),
+            }])
+            .unwrap();
+
+        let response = server
+            .resolve_script_hashes(ResolveScriptHashesParams {
+                script_hashes: vec![script_hash, missing_hash],
+                include_script_pubkey: Some(true),
+            })
+            .unwrap();
+
+        assert_eq!(response.network, "bitcoin");
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items[0].script_hash, script_hash.to_string());
+        assert!(response.items[0].found);
+        assert_eq!(response.items[0].address_type.as_deref(), Some("p2tr"));
+        assert!(response.items[0].standard);
+        assert!(
+            response.items[0]
+                .address
+                .as_deref()
+                .unwrap()
+                .starts_with("bc1p")
+        );
+        let expected_script_hex = encode_hex(script.as_bytes());
+        assert_eq!(
+            response.items[0].script_pubkey.as_deref(),
+            Some(expected_script_hex.as_str())
+        );
+        assert_eq!(response.items[1].script_hash, missing_hash.to_string());
+        assert!(!response.items[1].found);
+        assert!(response.items[1].address.is_none());
+        assert!(response.items[1].address_type.is_none());
+    }
+
+    #[test]
+    fn test_resolve_script_hashes_handles_non_address_scripts_and_limits_batch_size() {
+        let server = make_test_server("resolve_nonstandard");
+        let script = ScriptBuf::from(vec![0x6a, 0x01, 0x00]);
+        let script_hash = script.to_usdb_script_hash();
+        server
+            .db
+            .put_script_registry_entries(&[ScriptRegistryEntry {
+                script_hash,
+                script_pubkey: script,
+            }])
+            .unwrap();
+
+        let response = server
+            .resolve_script_hashes(ResolveScriptHashesParams {
+                script_hashes: vec![script_hash],
+                include_script_pubkey: Some(false),
+            })
+            .unwrap();
+
+        assert!(response.items[0].found);
+        assert_eq!(response.items[0].address_type.as_deref(), Some("op_return"));
+        assert!(!response.items[0].standard);
+        assert!(response.items[0].address.is_none());
+        assert!(response.items[0].script_pubkey.is_none());
+
+        let err = server
+            .resolve_script_hashes(ResolveScriptHashesParams {
+                script_hashes: vec![make_script_hash(1); MAX_SCRIPT_RESOLUTION_ITEMS + 1],
+                include_script_pubkey: None,
+            })
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+        assert!(err.message.contains("exceeds maximum"));
     }
 }

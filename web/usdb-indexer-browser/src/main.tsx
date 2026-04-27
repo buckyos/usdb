@@ -121,6 +121,7 @@ interface PassHistoryPage {
 
 interface PassEnergyLeaderboardItem {
   inscription_id: string
+  owner: string
   record_block_height: number
   state: string
   energy: number
@@ -159,7 +160,22 @@ interface PassEnergyRangePage {
   items: PassEnergyRangeItem[]
 }
 
+interface ScriptHashResolution {
+  script_hash: string
+  found: boolean
+  script_pubkey?: string | null
+  address?: string | null
+  address_type?: string | null
+  standard: boolean
+}
+
+interface ScriptHashResolutionResponse {
+  network: string
+  items: ScriptHashResolution[]
+}
+
 const CONTROL_PLANE_RPC_URL = '/api/services/usdb-indexer/rpc'
+const BALANCE_HISTORY_CONTROL_PLANE_RPC_URL = '/api/services/balance-history/rpc'
 const localeStorageKey = 'usdb.usdb-indexer-browser.locale.v2'
 const rpcDefaults = {
   mainnet: 'http://127.0.0.1:28020',
@@ -167,6 +183,13 @@ const rpcDefaults = {
   testnet: 'http://127.0.0.1:28220',
   signet: 'http://127.0.0.1:28320',
   testnet4: 'http://127.0.0.1:28420',
+}
+const balanceHistoryRpcDefaults = {
+  mainnet: 'http://127.0.0.1:28010',
+  regtest: 'http://127.0.0.1:28110',
+  testnet: 'http://127.0.0.1:28210',
+  signet: 'http://127.0.0.1:28310',
+  testnet4: 'http://127.0.0.1:28410',
 }
 
 const dictionaries: Record<Locale, Record<string, string>> = {
@@ -398,6 +421,13 @@ function readInitialRpcUrl() {
   return (requested || rpcDefaults.mainnet).trim()
 }
 
+function balanceHistoryRpcUrlFor(networkPreset: string) {
+  if (isHostedByControlPlane()) return BALANCE_HISTORY_CONTROL_PLANE_RPC_URL
+  const params = new URLSearchParams(window.location.search)
+  const requested = (params.get('balance_history_rpc_url') || params.get('bh_rpc_url') || '').trim()
+  return requested || balanceHistoryRpcDefaults[networkPreset as keyof typeof balanceHistoryRpcDefaults] || balanceHistoryRpcDefaults.mainnet
+}
+
 function interpolate(template: string, variables: Record<string, string | number> = {}) {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key) => String(variables[key] ?? ''))
 }
@@ -433,6 +463,14 @@ function shortText(value: unknown, head = 14, tail = 12) {
 
 function hashTitle(value?: string | null) {
   return value || ''
+}
+
+function isLikelyScriptHash(value: string) {
+  return /^[0-9a-fA-F]{64}$/.test(value.trim())
+}
+
+function buildResolutionMap(items: ScriptHashResolution[] = []) {
+  return Object.fromEntries(items.map((item) => [item.script_hash, item])) as Record<string, ScriptHashResolution>
 }
 
 function formatBtc(value: number | null | undefined, nf: Intl.NumberFormat) {
@@ -511,6 +549,7 @@ function App() {
   const [energyRangePage, setEnergyRangePage] = React.useState(0)
   const [energyHint, setEnergyHint] = React.useState('')
   const [rangeHint, setRangeHint] = React.useState('')
+  const [ownerResolutions, setOwnerResolutions] = React.useState<Record<string, ScriptHashResolution>>({})
 
   const dict = dictionaries[locale]
   const t = React.useCallback((key: string, variables?: Record<string, string | number>) => {
@@ -551,6 +590,29 @@ function App() {
     return decodeRpcPayload(await response.json()) as T
   }, [rpcUrl, t])
 
+  const balanceHistoryRpcCall = React.useCallback(async <T,>(method: string, params: unknown[] = []): Promise<T> => {
+    const response = await fetch(balanceHistoryRpcUrlFor(networkPreset), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    return decodeRpcPayload(await response.json()) as T
+  }, [networkPreset])
+
+  const resolveOwnerHashes = React.useCallback(async (hashes: Array<string | null | undefined>) => {
+    const targets = Array.from(new Set(hashes.filter((hash): hash is string => Boolean(hash)).filter(isLikelyScriptHash)))
+    if (targets.length === 0) return
+    try {
+      const resolved = await balanceHistoryRpcCall<ScriptHashResolutionResponse>('resolve_script_hashes', [
+        { script_hashes: targets, include_script_pubkey: false },
+      ])
+      setOwnerResolutions((previous) => ({ ...previous, ...buildResolutionMap(resolved.items) }))
+    } catch (error) {
+      console.warn('Failed to resolve owner script hashes', error)
+    }
+  }, [balanceHistoryRpcCall])
+
   const refreshHome = React.useCallback(async () => {
     setHomeError('')
     try {
@@ -587,6 +649,10 @@ function App() {
       setOverviewLeaderboard(nextOverviewLeaderboard)
       setRpcHint(t('connected', { time: new Date().toLocaleTimeString(locale) }))
       setNetworkPreset(normalizeNetwork(nextRpcInfo.network))
+      void resolveOwnerHashes([
+        ...nextRecentPasses.items.flatMap((item) => [item.owner]),
+        ...nextOverviewLeaderboard.items.flatMap((item) => [item.owner]),
+      ])
     } catch (error) {
       setReadiness(null)
       setRecentPasses(null)
@@ -594,7 +660,7 @@ function App() {
       setHomeError(t('homeError', { error: errorMessage(error) }))
       setRpcHint(t('rpcError', { error: errorMessage(error) }))
     }
-  }, [locale, rpcCall, t])
+  }, [locale, resolveOwnerHashes, rpcCall, t])
 
   const loadLeaderboard = React.useCallback(async () => {
     try {
@@ -602,12 +668,13 @@ function App() {
         { at_height: null, scope, page: leaderboardPage, page_size: 50 },
       ])
       setLeaderboard(page)
+      void resolveOwnerHashes(page.items.map((item) => item.owner))
       setLeaderboardHint('')
     } catch (error) {
       setLeaderboard(null)
       setLeaderboardHint(t('leaderboardFailed', { error: errorMessage(error) }))
     }
-  }, [leaderboardPage, rpcCall, scope, t])
+  }, [leaderboardPage, resolveOwnerHashes, rpcCall, scope, t])
 
   React.useEffect(() => {
     void refreshHome()
@@ -681,6 +748,11 @@ function App() {
       ])
       setPassHistory(history)
       setPassCommit(commit)
+      void resolveOwnerHashes([
+        snapshot.owner,
+        snapshot.mint_owner,
+        ...history.items.map((event) => event.owner),
+      ])
     } catch (error) {
       setPassHint(t('queryFailed', { error: errorMessage(error) }))
       setPassSnapshot(null)
@@ -706,6 +778,7 @@ function App() {
       ])
       setOwnerPasses(page)
       setOwnerPassesPage(nextPage)
+      void resolveOwnerHashes([page.owner, ...page.items.map((item) => item.owner)])
       setOwnerHint(t('ownerPassesSuccess', { count: nf.format(page.total), height: nf.format(page.resolved_height) }))
     } catch (error) {
       setOwnerPasses(null)
@@ -741,6 +814,7 @@ function App() {
       ])
       setPassHistory(history)
       setPassHistoryPage(nextPage)
+      void resolveOwnerHashes(history.items.map((event) => event.owner))
     } catch (error) {
       setPassHint(t('historyFailed', { error: errorMessage(error) }))
     }
@@ -782,6 +856,7 @@ function App() {
       setRangeFrom(String(from))
       setRangeTo(String(to))
       setEnergyRangePage(0)
+      void resolveOwnerHashes([snapshot.owner_address, pass?.owner, pass?.mint_owner])
       await loadEnergyRange(snapshot.inscription_id, from, to, 0)
     } catch (error) {
       setEnergyHint(t('queryFailed', { error: errorMessage(error) }))
@@ -800,6 +875,7 @@ function App() {
       ])
       setEnergyRange(range)
       setEnergyRangePage(page)
+      void resolveOwnerHashes(range.items.map((item) => item.owner_address))
       setRangeHint('')
       setEnergyHint(t('energySuccess', { total: nf.format(range.total) }))
     } catch (error) {
@@ -812,6 +888,13 @@ function App() {
   const ownerPassesTotalPages = Math.max(1, Math.ceil((ownerPasses?.total ?? 0) / 20))
   const leaderboardTotalPages = Math.max(1, Math.ceil((leaderboard?.total ?? 0) / 50))
   const rangeTotalPages = Math.max(1, Math.ceil((energyRange?.total ?? 0) / 50))
+  const renderOwner = React.useCallback((scriptHash?: string | null) => {
+    if (!scriptHash) return '-'
+    const resolution = ownerResolutions[scriptHash]
+    const label = resolution?.address || shortText(scriptHash, 18, 14)
+    const title = resolution?.address ? `${resolution.address}\n${scriptHash}` : scriptHash
+    return <span className="mono compact-id" title={title}>{label}</span>
+  }, [ownerResolutions])
 
   return (
     <main className="explorer-shell">
@@ -996,7 +1079,7 @@ function App() {
                 item.state,
                 nf.format(item.mint_block_height),
                 nf.format(item.latest_event_height),
-                <span className="mono compact-id" title={item.owner}>{shortText(item.owner, 18, 14)}</span>,
+                renderOwner(item.owner),
                 <span className="mono compact-id" title={item.satpoint}>{shortText(item.satpoint, 18, 14)}</span>,
               ])} />
             </article>
@@ -1008,10 +1091,11 @@ function App() {
                 </div>
                 <button className="ghost" onClick={() => setActiveTab('energy')}>{dict.energyLeaderboard}</button>
               </div>
-              <DataTable headers={['rank', 'energy', 'inscription_id', 'state', 'height']} rows={(overviewLeaderboard?.items ?? []).map((item, index) => [
+              <DataTable headers={['rank', 'energy', 'inscription_id', 'owner', 'state', 'height']} rows={(overviewLeaderboard?.items ?? []).map((item, index) => [
                 index + 1,
                 nf.format(item.energy),
                 <IdButton value={item.inscription_id} onClick={() => void openPassById(item.inscription_id, overviewLeaderboard?.resolved_height ?? item.record_block_height)} />,
+                renderOwner(item.owner),
                 item.state,
                 nf.format(item.record_block_height),
               ])} />
@@ -1044,7 +1128,7 @@ function App() {
           <section className="workspace-grid">
             <article className="card">
               <div className="card-head"><h2>{dict.passDetail}</h2></div>
-              {passSnapshot ? <DetailGrid entries={passEntries(passSnapshot, nf)} /> : <p className="empty">{dict.noData}</p>}
+              {passSnapshot ? <DetailGrid entries={passEntries(passSnapshot, nf, renderOwner)} /> : <p className="empty">{dict.noData}</p>}
             </article>
             <article className="card">
               <div className="card-head"><h2>{dict.blockCommit}</h2></div>
@@ -1070,7 +1154,7 @@ function App() {
               event.block_height,
               event.event_type,
               event.state,
-              shortText(event.owner),
+              renderOwner(event.owner),
               shortText(event.satpoint),
             ])} />
           </article>
@@ -1094,10 +1178,11 @@ function App() {
               </div>
             </div>
             {leaderboardHint ? <p className="hint negative">{leaderboardHint}</p> : null}
-            <DataTable headers={['rank', 'energy', 'inscription_id', 'state', 'height']} rows={(leaderboard?.items ?? []).map((item, index) => [
+            <DataTable headers={['rank', 'energy', 'inscription_id', 'owner', 'state', 'height']} rows={(leaderboard?.items ?? []).map((item, index) => [
               leaderboardPage * 50 + index + 1,
               nf.format(item.energy),
               <button className="link-button" onClick={() => { setActiveTab('energy'); void queryEnergy(undefined, item.inscription_id) }}>{shortText(item.inscription_id, 14, 14)}</button>,
+              renderOwner(item.owner),
               item.state,
               nf.format(item.record_block_height),
             ])} />
@@ -1109,7 +1194,7 @@ function App() {
               <button type="submit">{dict.query}</button>
             </form>
             {energyHint ? <p className={energyHint.includes('失败') || energyHint.includes('failed') ? 'hint negative' : 'hint'}>{energyHint}</p> : null}
-            {energySnapshot ? <DetailGrid entries={energyEntries(energySnapshot, nf)} /> : <p className="empty">{dict.noData}</p>}
+            {energySnapshot ? <DetailGrid entries={energyEntries(energySnapshot, nf, renderOwner)} /> : <p className="empty">{dict.noData}</p>}
             <div className="card-head inner-head">
               <h2>{dict.timeline}</h2>
               <div className="pager">
@@ -1128,7 +1213,7 @@ function App() {
               nf.format(item.record_block_height),
               item.state,
               nf.format(item.active_block_height),
-              shortText(item.owner_address),
+              renderOwner(item.owner_address),
               formatBtc(item.owner_balance, nf),
               formatDelta(item.owner_delta, nf),
               nf.format(item.energy),
@@ -1198,15 +1283,19 @@ function commitEntries(commit: PassBlockCommitInfo, nf: Intl.NumberFormat): Arra
   ]
 }
 
-function passEntries(pass: PassSnapshot, nf: Intl.NumberFormat): Array<[string, React.ReactNode]> {
+function passEntries(
+  pass: PassSnapshot,
+  nf: Intl.NumberFormat,
+  renderOwner: (scriptHash?: string | null) => React.ReactNode,
+): Array<[string, React.ReactNode]> {
   return [
     ['inscription_id', pass.inscription_id],
     ['inscription_number', nf.format(pass.inscription_number)],
     ['resolved_height', nf.format(pass.resolved_height)],
     ['state', pass.state],
-    ['owner', shortText(pass.owner, 18, 16)],
+    ['owner', renderOwner(pass.owner)],
     ['mint_block_height', nf.format(pass.mint_block_height)],
-    ['mint_owner', shortText(pass.mint_owner, 18, 16)],
+    ['mint_owner', renderOwner(pass.mint_owner)],
     ['eth_main', pass.eth_main],
     ['eth_collab', pass.eth_collab || '-'],
     ['prev', pass.prev.join(', ') || '-'],
@@ -1218,13 +1307,17 @@ function passEntries(pass: PassSnapshot, nf: Intl.NumberFormat): Array<[string, 
   ]
 }
 
-function energyEntries(snapshot: PassEnergySnapshot, nf: Intl.NumberFormat): Array<[string, React.ReactNode]> {
+function energyEntries(
+  snapshot: PassEnergySnapshot,
+  nf: Intl.NumberFormat,
+  renderOwner: (scriptHash?: string | null) => React.ReactNode,
+): Array<[string, React.ReactNode]> {
   return [
     ['inscription_id', snapshot.inscription_id],
     ['current_height', nf.format(snapshot.query_block_height)],
     ['current_state', snapshot.state],
     ['current_energy', nf.format(snapshot.energy)],
-    ['current_owner', shortText(snapshot.owner_address, 18, 16)],
+    ['current_owner', renderOwner(snapshot.owner_address)],
     ['owner_balance', formatBtc(snapshot.owner_balance, nf)],
     ['owner_delta', formatDelta(snapshot.owner_delta, nf)],
   ]

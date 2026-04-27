@@ -72,6 +72,20 @@ interface AddressFlowBucket {
   change_count: number
 }
 
+interface ScriptHashResolution {
+  script_hash: string
+  found: boolean
+  script_pubkey?: string | null
+  address?: string | null
+  address_type?: string | null
+  standard: boolean
+}
+
+interface ScriptHashResolutionResponse {
+  network: string
+  items: ScriptHashResolution[]
+}
+
 interface AddressAnalysisSummary {
   count: number
   latestHeight: number
@@ -132,6 +146,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     none: 'None',
     queryWorkspace: 'Query Workspace',
     scriptHash: 'Script Hash',
+    resolvedAddress: 'Resolved BTC Address',
+    addressType: 'Address Type',
+    scriptHashOnly: 'Script hash only',
     scriptHashPlaceholder: 'Enter USDBScriptHash',
     height: 'Height',
     range: 'Range',
@@ -238,6 +255,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     none: '无',
     queryWorkspace: '查询工作台',
     scriptHash: 'Script Hash',
+    resolvedAddress: '解析出的 BTC 地址',
+    addressType: '地址类型',
+    scriptHashOnly: '仅 Script Hash',
     scriptHashPlaceholder: '输入 USDBScriptHash',
     height: 'Height',
     range: 'Range',
@@ -446,6 +466,18 @@ function compactHash(value?: string | null) {
   return `${value.slice(0, 12)}...${value.slice(-8)}`
 }
 
+function isLikelyScriptHash(value: string) {
+  return /^[0-9a-fA-F]{64}$/.test(value.trim())
+}
+
+function buildResolutionMap(items: ScriptHashResolution[] = []) {
+  return Object.fromEntries(items.map((item) => [item.script_hash, item])) as Record<string, ScriptHashResolution>
+}
+
+function resolutionPrimary(scriptHash: string, resolutions: Record<string, ScriptHashResolution>) {
+  return resolutions[scriptHash]?.address || scriptHash
+}
+
 function formatReadinessExtra(value: unknown) {
   if (value == null || value === '') return '-'
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
@@ -628,6 +660,7 @@ function App() {
   const [singleAggregateSummary, setSingleAggregateSummary] = React.useState<AddressBalanceSummaryRpc | null>(null)
   const [singleTimeseries, setSingleTimeseries] = React.useState<AddressBalanceTimeseriesPoint[]>([])
   const [singleFlowBuckets, setSingleFlowBuckets] = React.useState<AddressFlowBucket[]>([])
+  const [singleResolution, setSingleResolution] = React.useState<ScriptHashResolution | null>(null)
   const [singlePage, setSinglePage] = React.useState(0)
   const [singleHint, setSingleHint] = React.useState('')
   const [batchScriptHashes, setBatchScriptHashes] = React.useState('')
@@ -635,6 +668,7 @@ function App() {
   const [batchStart, setBatchStart] = React.useState('')
   const [batchEnd, setBatchEnd] = React.useState('')
   const [batchRows, setBatchRows] = React.useState<AddressBalanceRow[][]>([])
+  const [batchResolutions, setBatchResolutions] = React.useState<Record<string, ScriptHashResolution>>({})
   const [batchHint, setBatchHint] = React.useState('')
 
   const dict = dictionaries[locale]
@@ -674,6 +708,15 @@ function App() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     return decodeRpcPayload(await response.json()) as T
   }, [rpcUrl])
+
+  const resolveScriptHashes = React.useCallback(async (scriptHashes: string[]) => {
+    const targets = Array.from(new Set(scriptHashes.map((item) => item.trim()).filter(isLikelyScriptHash)))
+    if (targets.length === 0) return {}
+    const resolved = await rpcCall<ScriptHashResolutionResponse>('resolve_script_hashes', [
+      { script_hashes: targets, include_script_pubkey: false },
+    ])
+    return buildResolutionMap(resolved.items)
+  }, [rpcCall])
 
   const refreshStatus = React.useCallback(async () => {
     try {
@@ -757,6 +800,14 @@ function App() {
         setSingleTimeseries([])
         setSingleFlowBuckets([])
       }
+      if (isLikelyScriptHash(scriptHash)) {
+        const resolved = await resolveScriptHashes([scriptHash]).catch(
+          () => ({}) as Record<string, ScriptHashResolution>,
+        )
+        setSingleResolution(resolved[scriptHash] ?? null)
+      } else {
+        setSingleResolution(null)
+      }
       setSinglePage(0)
       setSingleHint(t('querySuccess'))
     } catch (error) {
@@ -764,6 +815,7 @@ function App() {
       setSingleAggregateSummary(null)
       setSingleTimeseries([])
       setSingleFlowBuckets([])
+      setSingleResolution(null)
       setSinglePage(0)
       setSingleHint(t('queryFailed', { error: errorMessage(error) }))
     }
@@ -779,9 +831,13 @@ function App() {
         { script_hashes: scriptHashes, ...selector },
       ])
       setBatchRows(Array.isArray(rows) ? rows : [])
+      setBatchResolutions(await resolveScriptHashes(scriptHashes).catch(
+        () => ({}) as Record<string, ScriptHashResolution>,
+      ))
       setBatchHint('')
     } catch (error) {
       setBatchRows([])
+      setBatchResolutions({})
       setBatchHint(t('batchFailed', { error: errorMessage(error) }))
     }
   }
@@ -984,6 +1040,16 @@ function App() {
           <p className="hint">{singleAnalysis ? t('blockSpan', { start: nf.format(singleAnalysis.firstHeight), end: nf.format(singleAnalysis.latestHeight) }) : dict.noMovements}</p>
         </div>
         <section className="analysis-grid">
+          <AnalysisMetric
+            label={dict.resolvedAddress}
+            value={singleResolution?.address || (singleResolution?.found ? dict.scriptHashOnly : '-')}
+            suffix={singleResolution?.address ? singleResolution.script_hash : undefined}
+          />
+          <AnalysisMetric
+            label={dict.addressType}
+            value={singleResolution?.address_type || '-'}
+            suffix={singleResolution?.standard ? dict.ready : undefined}
+          />
           <AnalysisMetric label={dict.currentBalance} value={singleAnalysis ? formatAmount(singleAnalysis.latestBalance, nf) : '-'} />
           <AnalysisMetric label={dict.netChange} value={singleAnalysis ? formatDelta(singleAnalysis.net, nf) : '-'} tone={singleAnalysis ? movementTone(singleAnalysis.net) : 'neutral'} />
           <AnalysisMetric label={dict.totalInflow} value={singleAnalysis ? formatAmount(singleAnalysis.inflow, nf, true) : '-'} tone="positive" />
@@ -1094,10 +1160,11 @@ function App() {
         <p className={batchHint ? 'hint negative' : 'hint'}>{batchHint || batchTotal}</p>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>{dict.scriptHash}</th><th>{dict.records}</th><th>{dict.latestHeight}</th><th>{dict.latestBalance}</th><th>{dict.netDelta}</th></tr></thead>
+            <thead><tr><th>{dict.resolvedAddress}</th><th>{dict.scriptHash}</th><th>{dict.records}</th><th>{dict.latestHeight}</th><th>{dict.latestBalance}</th><th>{dict.netDelta}</th></tr></thead>
             <tbody>
               {batchItems.map((item) => (
                 <tr key={item.hash}>
+                  <td className="mono" title={resolutionPrimary(item.hash, batchResolutions)}>{compactHash(resolutionPrimary(item.hash, batchResolutions))}</td>
                   <td className="mono">{item.hash}</td>
                   <td>{nf.format(item.records)}</td>
                   <td>{nf.format(item.latestHeight)}</td>

@@ -1,7 +1,7 @@
 use super::rpc::{
     AddressBalance, AddressBalanceSummary, AddressBalanceTimeseriesPoint, AddressFlowBucket,
     BlockCommitInfo, GetStateRefAtHeightParams, HistoricalSnapshotStateRef, ReadinessInfo,
-    SnapshotInfo, UtxoInfo,
+    ResolveScriptHashesParams, ScriptHashResolutionResponse, SnapshotInfo, UtxoInfo,
 };
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::SyncStatus;
@@ -244,6 +244,22 @@ impl RpcClient {
 
         self.rpc_call::<Vec<AddressFlowBucket>>(&self.url, "get_address_flow_buckets", params)
             .await
+    }
+
+    pub async fn resolve_script_hashes(
+        &self,
+        script_hashes: Vec<USDBScriptHash>,
+        include_script_pubkey: bool,
+    ) -> Result<ScriptHashResolutionResponse, String> {
+        self.rpc_call::<ScriptHashResolutionResponse>(
+            &self.url,
+            "resolve_script_hashes",
+            json!([ResolveScriptHashesParams {
+                script_hashes,
+                include_script_pubkey: Some(include_script_pubkey),
+            }]),
+        )
+        .await
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(

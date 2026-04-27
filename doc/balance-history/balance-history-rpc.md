@@ -357,6 +357,57 @@
 - 对高度/区间的合法性约束与 `get_address_balance` 相同；
 - 若任一请求高度越过当前 `stable_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`。
 
+### 9) `resolve_script_hashes`
+
+批量解析 `script_hash -> scriptPubKey -> BTC address?`。
+
+这个接口只用于展示和诊断，不参与 balance-history block commit，也不改变现有余额查询
+语义。返回顺序与输入 `script_hashes` 顺序一致。
+
+参数对象：
+
+```json
+{
+  "script_hashes": ["<USDBScriptHash-1>", "<USDBScriptHash-2>"],
+  "include_script_pubkey": false
+}
+```
+
+- `script_hashes`：必填，单次最多 1000 个。
+- `include_script_pubkey`：可选，默认 `false`；为 `true` 时返回原始 scriptPubKey hex。
+
+结果示例：
+
+```json
+{
+  "network": "regtest",
+  "items": [
+    {
+      "script_hash": "<USDBScriptHash>",
+      "found": true,
+      "script_pubkey": null,
+      "address": "bcrt1p...",
+      "address_type": "p2tr",
+      "standard": true
+    },
+    {
+      "script_hash": "<missing-USDBScriptHash>",
+      "found": false,
+      "script_pubkey": null,
+      "address": null,
+      "address_type": null,
+      "standard": false
+    }
+  ]
+}
+```
+
+说明：
+
+- `found=false` 表示当前节点的辅助 `script_registry` 没有见过这个 script hash。
+- `address=null` 表示有 scriptPubKey，但它不能编码成当前 BTC 网络的标准 address。
+- `address_type` 是展示用分类，例如 `p2tr`、`p2wpkh`、`p2wsh`、`p2sh`、`p2pkh`、`op_return`、`non_standard`。
+
 ## 统一错误模型（共识查询层）
 
 对外 JSON-RPC 仍然保留标准：
