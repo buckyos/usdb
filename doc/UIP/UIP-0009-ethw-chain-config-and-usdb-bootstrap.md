@@ -85,7 +85,7 @@ USDBBootnodes = []
 USDBV5Bootnodes = []
 ```
 
-这些值是当前实现基线，不自动等同于 public mainnet final 参数。进入 public testnet / mainnet 前必须重新确认。
+这些值是当前实现基线。`ChainID`、`NetworkId` 和 network name 可以沿用当前原型命名继续开发，但不自动等同于 public mainnet final 参数。进入 public testnet / mainnet 前必须重新核实并冻结。
 
 # Genesis Policy
 
@@ -101,6 +101,102 @@ USDB v1 genesis 应满足：
 
 - 如果 SourceDAO、dividend pool 或系统合约需要 genesis predeploy，必须由对应 UIP 或 bootstrap 文档单独定义。
 - 一旦 genesis 包含系统合约 code/storage，这些 code/storage 必须进入 genesis hash，且 public network 不得再静默修改。
+
+# USDBGenesisHash 生成与作用
+
+`USDBGenesisHash` 是 USDB ETHW 网络的 genesis block hash。它不是人工指定的业务 id，而是由最终 genesis spec 生成 block 0 后得到的区块 hash。
+
+当前 go-ethereum 原型中的生成口径等价于：
+
+```text
+USDBGenesisHash = DefaultUSDBGenesisBlock().ToBlock().Hash()
+```
+
+测试中也必须用以下两条路径交叉校验同一个值：
+
+```text
+DefaultUSDBGenesisBlock().ToBlock().Hash()
+DefaultUSDBGenesisBlock().MustCommit(memory_db).Hash()
+```
+
+## 直接进入 genesis hash 的数据
+
+`USDBGenesisHash` 直接绑定 genesis block header 以及由 `alloc` 派生出的 state root。实际影响 hash 的内容包括：
+
+- genesis header 字段：
+  - `nonce`
+  - `timestamp`
+  - `extraData`
+  - `gasLimit`
+  - `difficulty`
+  - `mixHash`
+  - `coinbase`
+  - `baseFeePerGas`，当 genesis 所采用的 chain config 在 block 0 启用 London 时必须固定。
+  - `parentHash`、`number`、`gasUsed` 等 block 0 固定字段。
+- genesis `alloc` 派生的 state root：
+  - 每个预置账户地址。
+  - 每个账户的 `balance`。
+  - 每个账户的 `nonce`。
+  - 每个账户的 runtime `code`。
+  - 每个账户的 `storage`。
+
+因此，如果正式网络采用 SourceDAO / Dividend system contract predeploy，则以下内容都会通过 `alloc` 进入 `USDBGenesisHash`：
+
+- `DaoAddress`。
+- `DaoAddress` 对应的 runtime code。
+- `DividendAddress`。
+- `DividendAddress` 对应的 runtime code。
+- `bootstrapAdmin` 的初始余额，如果该余额在 genesis 中预置。
+- 任何直接写入 genesis 的 system contract storage。
+
+## 不直接进入 genesis hash 但必须同时冻结的数据
+
+`ChainConfig` 本身通常不是 genesis block header 的直接 RLP 字段。go-ethereum 会把 chain config 以 genesis hash 为 key 写入数据库，并在后续共识校验中使用它。
+
+因此，下列字段不一定直接改变 `USDBGenesisHash`，但必须与 genesis hash 一起作为同一份 public network release artifact 冻结：
+
+- `ChainID` / `NetworkId`。
+- EVM fork schedule。
+- `EthPoWForkBlock` / `ChainID_ALT` 等遗留兼容字段的 USDB 填充值。
+- `payload_version`、`difficulty_policy_version`、`reward_rule_version`。
+- `MaximumExtraDataSize`。
+- `DividendAddress`、`DividendFeeSplitBlock`、`fee_split_policy_version` 等后续 fee split hook。
+- bootnodes / DNS discovery release 列表。
+
+如果这些字段在同一个 `USDBGenesisHash` 下被不同节点配置成不同值，节点可能在后续出块或验证时发生共识分叉。因此 public testnet / mainnet 发布时，必须同时发布：
+
+```text
+canonical_genesis_json
+canonical_chain_config
+USDBGenesisHash
+release_manifest_hash_or_signature
+```
+
+## bootstrap 参数与 genesis hash 的边界
+
+启动后的 SourceDAO 初始化交易不直接进入 `USDBGenesisHash`，除非它们的结果被预先写成 genesis `alloc.storage`。
+
+例如：
+
+- `Dao.initialize()` 作为 block 0 之后的交易执行时，不进入 genesis hash。
+- `Dividend.initialize(...)` 作为 block 0 之后的交易执行时，不进入 genesis hash。
+- `Dao.setTokenDividendAddress(...)` 作为 block 0 之后的交易执行时，不进入 genesis hash。
+
+这些 post-start bootstrap 交易应由后续 SourceDAO / Dividend Bootstrap UIP 定义，并通过 release manifest、bootstrap state marker、交易 hash 或激活高度审计。
+
+如果未来选择把初始化后的 storage 直接写入 genesis，则对应 storage 必须进入 `alloc`，并会改变 `USDBGenesisHash`。
+
+## 更新要求
+
+在以下内容 finalization 之后，必须重新生成并更新 `USDBGenesisHash`：
+
+- `DefaultUSDBGenesisBlock()` 的任意字段。
+- public network 的 canonical genesis JSON。
+- `GenesisDifficulty`、`gasLimit`、`timestamp`、`extraData`、`baseFeePerGas` 等 genesis header 字段。
+- system contract predeploy 地址、runtime code、初始余额或 storage。
+- bootstrap admin 初始余额，如果该余额在 genesis 中预置。
+
+如果只修改 chain config 中不直接进入 genesis header/state root 的字段，也必须重新发布 chain config manifest，并评估是否需要新网络或显式 fork activation；不得在已发布网络上静默修改。
 
 # EVM Fork Schedule
 
@@ -145,8 +241,30 @@ DurationLimit = 13
 说明：
 
 - `8192` 是开发期 bring-up 值，不是 public mainnet final 值。
+- 本地测试已经发现 `8192` 可能过低，虽然 ETHW difficulty 会自动调整，但从过低起点恢复到合理区间可能较慢。
 - public testnet / mainnet 参数必须通过私链和测试网出块数据确认。
 - 若后续引入 level-based difficulty，`base_difficulty` 仍由 ETHW PoW difficulty policy 产生，USDB level 只参与折算。
+
+## Difficulty Retarget 参数
+
+当前 go-ethereum 原型继续沿用：
+
+```text
+DifficultyBoundDivisor = 2048
+DurationLimit = 13
+```
+
+语义：
+
+- `DifficultyBoundDivisor` 控制每个 block 难度调整步长，核心项是 `parent_difficulty / DifficultyBoundDivisor`。值越小，单块调整幅度越大；值越大，难度变化越平滑但响应更慢。
+- `DurationLimit` 是旧 Frontier difficulty 路径中的出块时间阈值：当新区块时间间隔低于该值时提高难度，否则降低难度。
+- 当前 USDB 使用的 ETHW no-bomb 路径主要采用 Byzantium 风格的时间项，其中核心公式包含 `((timestamp - parent.timestamp) // 9)` 和 `parent_difficulty / 2048`；因此 `DifficultyBoundDivisor` 仍直接影响调整速度，`DurationLimit` 主要保留为旧路径兼容参数。
+
+v1 建议：
+
+- 优先调参 `GenesisDifficulty` 和 `MinimumDifficulty`，不要先修改 `DifficultyBoundDivisor` 或 `DurationLimit`。
+- 只有当测试网数据证明 difficulty retarget 曲线本身不合适时，才单独调整 `DifficultyBoundDivisor` 或 difficulty policy。
+- `GenesisDifficulty` / `MinimumDifficulty` 的正式值必须作为 public testnet / mainnet finalization 的待办事项。
 
 # Legacy ETHW Migration Fields
 
@@ -174,7 +292,7 @@ TerminalTotalDifficulty = nil
 
 UIP-0007 `ProfileSelectorPayload` v1 固定长度为 `107 bytes`。
 
-ETHW chain config / protocol params 必须允许 `header.Extra` 至少容纳该 payload。当前 go-ethereum 原型将：
+ETHW chain config / protocol params 必须允许 `header.Extra` 容纳该 payload。v1 固定：
 
 ```text
 MaximumExtraDataSize = 160
@@ -183,7 +301,7 @@ MaximumExtraDataSize = 160
 v1 规则：
 
 - USDB reward / difficulty consensus 激活后，普通区块 `header.Extra` 必须正好等于 UIP-0007 payload。
-- `MaximumExtraDataSize` 可以大于 `107`，作为未来扩展上限。
+- `MaximumExtraDataSize` 固定为 `160`，作为当前 v1 的共识上限和未来小幅扩展余量。
 - validator 必须按 UIP-0007 的精确 payload size 校验当前版本，不能因为上限是 `160` 就接受任意长度。
 
 # USDB Consensus Version Fields
@@ -239,6 +357,33 @@ USDB ETHW miner 和 validator 都依赖本地 USDB companion service。
 
 旧 go-ethereum 备忘中的 reward-only、mock level、`0.5..2.0` multiplier 等设计，只能作为实现历史参考。正式规则以后续 UIP 为准。
 
+# SourceDAO / Dividend Bootstrap 边界
+
+SourceDAO / dividend pool 与 fee split 是同一个冷启动问题，不应在 UIP-0009 内直接定义完整合约流程。
+
+当前 docker / go-ethereum 原型已经形成开发期流程：
+
+1. `bootstrap-init` 复制并校验 ETHW genesis artifact、manifest、SourceDAO bootstrap config。
+2. `ethw-init` 使用 canonical genesis 执行 `geth init`，并写入 genesis hash marker。
+3. `ethw-node` 启动 USDB ETHW 节点。
+4. `sourcedao-bootstrap` 等待 ETHW RPC ready 后，调用 SourceDAO 工作区脚本完成 `Dao` / `Dividend` bootstrap，并写入 state / marker。
+
+该流程说明：
+
+- 现在已经有完整开发期部署链路，但它依赖本地 SourceDAO workspace 和外部 bootstrap config，尚不是协议标准。
+- 正式协议应单独定义内置系统地址、SourceDAO / Dividend code 来源、bootstrap admin、初始化交易顺序、`DividendFeeSplitBlock` 激活高度和审计 artifact。
+- UIP-0009 只保留 chain config hook，例如 `fee_split_policy_version`、`DividendAddress`、`DividendFeeSplitBlock` 等字段的占位边界。
+- 是否从 genesis 预置 SourceDAO / Dividend code，以及是否在启动后由 bootstrap 交易初始化，应由单独 UIP 标准化。
+
+建议后续单独起草 SourceDAO / Dividend Bootstrap UIP，核心原则暂定为：
+
+```text
+fixed_system_addresses
+    -> genesis predeploy runtime code
+    -> post-start bootstrap initialization transactions
+    -> fee split activation height
+```
+
 # Bootstrap Network Defaults
 
 开发期建议：
@@ -253,6 +398,12 @@ USDB ETHW miner 和 validator 都依赖本地 USDB companion service。
 - public testnet / mainnet 必须定义稳定 bootnodes 或明确的发现机制。
 - network id、genesis hash 和 bootnodes 必须在 release artifact 中固定。
 - 节点不得自动连接 Ethereum / ETHW 默认 bootnodes。
+
+bootnodes / DNS discovery 与公开网络冷启动流程绑定，当前作为 public network finalization 待办事项。后续需要覆盖：
+
+- 第一批 bootnode 的生成、签名和发布方式。
+- 新 joiner 如何取得 canonical genesis、bootnodes、trusted manifest 和 SourceDAO bootstrap 状态。
+- bootnodes 何时进入内置配置，何时只作为外部 release artifact 分发。
 
 # Activation
 
@@ -343,7 +494,7 @@ USDB:
 - no Merge transition。
 - no difficulty bomb path。
 - USDB minimum difficulty 使用 `USDBMinimumDifficulty`。
-- `MaximumExtraDataSize >= 107`。
+- `MaximumExtraDataSize == 160`。
 - 当前 payload 精确长度校验为 `107`。
 - `payload_version` mismatch fail closed。
 - `difficulty_policy_version` mismatch fail closed。
@@ -370,11 +521,9 @@ USDB:
 
 # 待审计问题
 
-1. public testnet / mainnet 的最终 `ChainID`、`NetworkId` 和 network name。
-2. public testnet / mainnet 的最终 `GenesisDifficulty` 和 `MinimumDifficulty`。
-3. `DifficultyBoundDivisor` 和 `DurationLimit` 是否沿用当前值。
-4. `USDBGenesisHash` 是否在 chain config finalization 后更新。
-5. 是否在 UIP-0009 中固定 `MaximumExtraDataSize = 160`，还是只规定 `>= 107`。
-6. bootnodes / DNS discovery 何时进入内置配置。
-7. fee split / dividend pool 是否从 genesis 启用，还是等待 UIP-0010 / 后续 UIP。
-8. SourceDAO / dividend system contract 是否需要 genesis predeploy。
+1. public testnet / mainnet 的最终 `ChainID`、`NetworkId` 和 network name。当前可延续原型命名，正式上线前必须复核。
+2. public testnet / mainnet 的最终 `GenesisDifficulty` 和 `MinimumDifficulty`。当前 `8192` 是开发期值，且本地测试显示可能过低，需要专项调参。
+3. `DifficultyBoundDivisor` 和 `DurationLimit` 是否沿用当前值。v1 暂建议优先不改，除非测试网数据证明 retarget 曲线需要调整。
+4. `USDBGenesisHash` 必须在 chain config、genesis、system contract predeploy 和 bootstrap 参数 finalization 后更新。
+5. bootnodes / DNS discovery 何时进入内置配置，何时作为 release artifact 分发。
+6. SourceDAO / dividend pool / fee split 冷启动流程进入哪个后续 UIP，以及是否采用固定地址、genesis predeploy、启动后初始化交易和激活高度的组合方案。

@@ -66,6 +66,7 @@
 | ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | economic UIP 后续 |
 | ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
+| ECO-013 | P1 | Todo | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md`, 后续 fee split / bootstrap UIP |
 
 ## 6. 详细条目
 
@@ -258,6 +259,7 @@
 - 当前现状：
   - 目标经济模型已经写出方向，但大量参数和证明格式仍是 `<TODO>`。
   - 当前代码侧尚未完整实现这些机制。
+  - 当前 go-ethereum / docker 原型已有 fee split、SourceDAO / Dividend bootstrap 的开发期链路，但尚未标准化为协议。
 - 目标：
   - 将发行、分账、价格、辅助算力池拆成独立 UIP。
   - 每个 UIP 必须有确定性输入、整数公式、验证路径和 reorg 语义。
@@ -312,6 +314,25 @@
   - 在 UIP inscription schema 中补齐解析与 canonicalization 章节。
 - 验收：
   - ord source、bitcoind source、fixture source 对同一铭文给出一致分类。
+
+### ECO-013. 标准化 SourceDAO / Dividend / fee split 冷启动流程
+
+- 优先级：`P1`
+- 状态：`Todo`
+- 当前现状：
+  - 当前 docker bootstrap 已有开发期流程：复制 canonical ETHW genesis artifact，执行 `geth init`，启动 ETHW 节点，再由 `sourcedao-bootstrap` 调用 SourceDAO 工作区脚本完成 Dao / Dividend 初始化。
+  - go-ethereum 原型已有 `USDBBootstrapGenesisConfig`、`DividendAddress`、`DividendFeeSplitBlock` 等实现入口。
+  - 该流程目前依赖本地 SourceDAO workspace、外部 bootstrap config 和开发期 manifest，还不是正式协议标准。
+- 目标：
+  - 单独起草 UIP，定义固定系统地址、SourceDAO / Dividend runtime code 来源、bootstrap admin、初始化交易顺序、fee split activation height 和 release artifact。
+  - 明确后续 joiner 如何验证 canonical genesis、SourceDAO bootstrap 状态和 fee split 激活状态。
+  - 明确 UIP-0009 只负责 chain config / genesis 边界，不直接定义 SourceDAO 业务初始化细节。
+- 下一步：
+  - 基于 `/home/bucky/work/go-ethereum/docs/usdb/usdb-dividend-bootstrap-cold-start.md` 和 docker bootstrap 脚本整理正式 UIP 草案。
+  - 确认该 UIP 是否作为 UIP-0010 的一部分，还是在 CoinBase / reward split 前单独编号。
+- 验收：
+  - 有独立协议文档覆盖 genesis predeploy、post-start bootstrap tx、activation height 和 joiner audit。
+  - docker 本地 bootstrap 流程能映射到协议中的每个 artifact 和状态 marker。
 
 ## 7. 新问题登记模板
 

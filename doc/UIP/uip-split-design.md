@@ -465,6 +465,8 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `reward_rule_version` 与 UIP-0007 `payload_version` 的边界。
 - expected `difficulty_policy_version` 的 chain config 表达和激活高度。
 - public network 最终 ChainID、NetworkId、genesis difficulty 和 bootnodes。
+- `MaximumExtraDataSize = 160` 已作为 UIP-0009 v1 固定上限。
+- SourceDAO / Dividend / fee split 冷启动应拆到后续独立 UIP；UIP-0009 只保留 chain config hook 和 genesis/bootstrap 边界。
 
 实现影响：
 
@@ -486,6 +488,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 定义 CoinBase 释放公式。
 - 定义矿工、辅助算力池、DAO 分红池、手续费分配。
 - 定义叔块奖励兼容边界。
+- 定义 SourceDAO / Dividend 系统地址、bootstrap 初始化、fee split activation height 与 reward/fee split 的关系，或明确该部分拆到单独 UIP。
 
 需要解决：
 
@@ -494,6 +497,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `K` 函数。
 - 叔块奖励采用哪一版规则。
 - 收入合约是否进入共识验证。
+- SourceDAO / Dividend 是否使用固定系统地址、genesis predeploy runtime code、启动后 bootstrap 交易和指定高度激活。
 
 建议延后原因：
 
