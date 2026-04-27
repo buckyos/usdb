@@ -27,7 +27,14 @@ struct BlockTxIndex {
 
 struct VOutUtxoInfo {
     item: UTXOEntryRef,
+    block_height: u32,
     spend: bool, // Whether this UTXO is spent in the batch
+}
+
+impl VOutUtxoInfo {
+    fn created_before(&self, spending_block_height: u32) -> bool {
+        self.block_height < spending_block_height
+    }
 }
 
 pub struct PreloadVIn {
@@ -437,6 +444,7 @@ impl BatchBlockPreloader {
                     vout.outpoint.clone(),
                     VOutUtxoInfo {
                         item: vout.cache_tx_out.clone(),
+                        block_height,
                         spend: false,
                     },
                 );
@@ -469,7 +477,10 @@ impl BatchBlockPreloader {
                         vout_utxo_info.spend = true;
 
                         vin.cache_tx_out.replace(vout_utxo_info.item.clone());
-                        vin.need_flush = false; // No need to flush UTXO created in the same batch
+                        // Same-block spends never existed before the rollback boundary, but
+                        // earlier-block spends inside this batch must be restorable if a later
+                        // block is rolled back.
+                        vin.need_flush = vout_utxo_info.created_before(preload_block.height);
 
                         continue;
                     }
