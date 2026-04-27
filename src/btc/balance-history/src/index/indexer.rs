@@ -244,6 +244,60 @@ impl BalanceHistoryIndexer {
         })
     }
 
+    /// Builds an indexer around an already constructed BTC client.
+    ///
+    /// This is the embedding/test entry point used by integration tests and
+    /// alternate runtimes that need deterministic chain data without creating
+    /// a Bitcoin Core RPC client inside `BalanceHistoryIndexer::new`.
+    pub fn new_with_btc_client(
+        config: BalanceHistoryConfigRef,
+        output: IndexOutputRef,
+        btc_client: BTCClientRef,
+    ) -> Result<Self, String> {
+        output.println("Initializing database in normal mode... this may take a while.");
+        let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal) {
+            Ok(database) => Arc::new(database),
+            Err(e) => {
+                let msg = format!("Failed to initialize database: {}", e);
+                error!("{}", msg);
+                output.println(&msg);
+                return Err(msg);
+            }
+        };
+        output.println("Database initialized.");
+
+        let cache_strategy = match btc_client.get_type() {
+            BTCClientType::LocalLoader => crate::cache::CacheStrategy::BestEffort,
+            BTCClientType::RPC => crate::cache::CacheStrategy::Normal,
+        };
+        let utxo_cache = Arc::new(UTXOCache::new(config.clone(), cache_strategy));
+        let balance_cache = Arc::new(AddressBalanceCache::new(config.clone(), cache_strategy));
+        let cache_monitor = Arc::new(MemoryCacheMonitor::new(
+            config.clone(),
+            utxo_cache.clone(),
+            balance_cache.clone(),
+        ));
+        let batch_block_processor = BatchBlockProcessor::new(
+            btc_client.clone(),
+            db.clone(),
+            utxo_cache.clone(),
+            balance_cache.clone(),
+        );
+
+        Ok(Self {
+            config,
+            btc_client,
+            utxo_cache,
+            balance_cache,
+            cache_monitor,
+            db,
+            batch_block_processor,
+            output,
+            shutdown_tx: Arc::new(Mutex::new(None)),
+            shutdown_rx: Arc::new(Mutex::new(None)),
+        })
+    }
+
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
         let rpc_latest_block_height = self
             .btc_client
@@ -549,7 +603,8 @@ impl BalanceHistoryIndexer {
     }
 
     // Return the last synced block height
-    fn sync_once(&self) -> Result<u32, String> {
+    /// Runs one bounded sync iteration against the configured BTC client.
+    pub fn sync_once(&self) -> Result<u32, String> {
         // Check and resume pending rollback if needed before getting latest block height, to ensure we are checking the reorg against the correct local state
         self.resume_pending_rollback_if_needed()?;
 
@@ -623,7 +678,8 @@ impl BalanceHistoryIndexer {
 
     // Process a batch of blocks from height_range.start() to height_range.end() (not included)
     // Return the last processed block height
-    fn process_block_batch(
+    /// Processes a contiguous block-height range and persists the resulting state atomically.
+    pub fn process_block_batch(
         &self,
         height_range: std::ops::Range<u32>,
         latest_btc_height: u32,
