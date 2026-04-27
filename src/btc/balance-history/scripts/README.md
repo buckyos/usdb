@@ -2,7 +2,7 @@
 
 本目录包含 `balance-history` 的 shell 级端到端测试。每个场景会启动隔离的 Bitcoin Core regtest 节点，启动一个或多个 `balance-history` 服务实例，构造链上交易/区块，并通过 JSON-RPC 验证结果。
 
-当前这些脚本还是手工入口，后续计划补一个统一的 `run_regtest_suite.sh` runner。
+当前已有最小版 `run_regtest_suite.sh` runner，先收敛 smoke 子集；更大的 reorg/snapshot 套件仍保留为手工入口。
 
 ## 前置依赖
 
@@ -34,6 +34,12 @@ bash src/btc/balance-history/scripts/regtest_smoke.sh
 bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
 ```
 
+也可以直接运行当前推荐 smoke 子集：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
+```
+
 脚本默认在 `/tmp` 下创建临时工作目录，并在退出时清理。失败时会自动打印 bitcoind 和 balance-history 日志尾部。
 
 ## 常用环境变量
@@ -56,6 +62,7 @@ bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
 
 | 脚本 | 分层 | 默认端口 `btc-rpc/p2p/bh-rpc` | 目标 |
 | --- | --- | --- | --- |
+| `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke` |
 | `regtest_smoke.sh` | Smoke | `28132/28133/28110` | 基础同步、网络类型、地址余额查询 |
 | `regtest_rpc_semantics.sh` | Smoke/query | `29032/29033/29010` | latest/exact/range balance、delta、batch 顺序、live UTXO 语义 |
 | `regtest_reorg_smoke.sh` | Reorg | `28232/28233/28210` | 基础 reorg rollback 和 block commit 恢复 |
@@ -85,8 +92,21 @@ bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
 ### Smoke
 
 ```bash
-bash src/btc/balance-history/scripts/regtest_smoke.sh
-bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
+bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
+```
+
+当前 runner 的 `smoke` 子集包含：
+
+- `regtest_smoke.sh`
+- `regtest_rpc_semantics.sh`
+- `regtest_reorg_smoke.sh`
+- `regtest_snapshot_install_repeat.sh`
+- `regtest_history_balance_oracle.sh`
+
+可用以下命令查看实际脚本列表：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke --list
 ```
 
 ### Core
@@ -153,7 +173,7 @@ $BITCOIN_DIR/regtest/debug.log
 
 ## 已知缺口
 
-- 还没有统一 suite runner。
+- `run_regtest_suite.sh` 当前只支持 `smoke`，还未扩展 `core`、`reorg-full`、`snapshot-full`。
 - 聚合 RPC `get_address_balance_summary`、`get_address_balance_timeseries`、`get_address_flow_buckets` 已有 Rust unit 覆盖，但还没有 regtest 脚本覆盖。
 - `resolve_script_hashes` 已有 Rust unit 覆盖，但还没有基于完整 indexed data 的 regtest 覆盖。
 - 多个脚本仍有本地 JSON assertion helper，后续应收敛到 `regtest_lib.sh`。

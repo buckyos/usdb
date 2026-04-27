@@ -6,10 +6,12 @@
 
 - 测试分层与推荐执行矩阵：[balance-history-test-matrix.md](./balance-history-test-matrix.md)
 - 脚本目录执行说明：[src/btc/balance-history/scripts/README.md](../../src/btc/balance-history/scripts/README.md)
+- 最小 suite runner：[src/btc/balance-history/scripts/run_regtest_suite.sh](../../src/btc/balance-history/scripts/run_regtest_suite.sh)
 
 ## 入口文件
 
 - 共享库：[src/btc/balance-history/scripts/regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
+- Suite runner：[src/btc/balance-history/scripts/run_regtest_suite.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/run_regtest_suite.sh)
 - 基础 smoke 场景：[src/btc/balance-history/scripts/regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
 - stable lag smoke 场景：[src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh)
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)

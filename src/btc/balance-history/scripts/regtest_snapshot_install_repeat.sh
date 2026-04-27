@@ -84,8 +84,6 @@ main() {
   regtest_require_cmd cargo
   regtest_require_cmd curl
   regtest_require_cmd python3
-  regtest_require_cmd sha256sum
-
   regtest_ensure_workspace_dirs
   mkdir -p "$TARGET_BALANCE_HISTORY_ROOT"
 
@@ -95,7 +93,7 @@ main() {
   local txid_a txid_b txid_c
   local vout_a vout_b vout_c
   local snapshot_height post_snapshot_height
-  local snapshot_file snapshot_hash snapshot_block_hash snapshot_commit
+  local snapshot_file snapshot_block_hash snapshot_commit
   local outpoint_a outpoint_b outpoint_c resp
 
   source_root="$BALANCE_HISTORY_ROOT"
@@ -139,7 +137,6 @@ main() {
   regtest_run_balance_history_cli "$source_root" create-snapshot --block-height "$snapshot_height"
 
   snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}.db"
-  snapshot_hash="$(sha256sum "$snapshot_file" | awk '{print $1}')"
   outpoint_a="${txid_a}:${vout_a}"
   outpoint_b="${txid_b}:${vout_b}"
 
@@ -153,7 +150,7 @@ main() {
   regtest_wait_until_synced_height "$snapshot_height"
   regtest_stop_balance_history
 
-  regtest_run_balance_history_cli "$target_root" install-snapshot --file "$snapshot_file" --hash "$snapshot_hash"
+  regtest_run_balance_history_cli "$target_root" install-snapshot --file "$snapshot_file"
   regtest_assert_artifact_counts "$target_root" "0" "1"
 
   regtest_start_balance_history
@@ -166,7 +163,7 @@ main() {
 
   regtest_stop_balance_history
 
-  regtest_run_balance_history_cli "$target_root" install-snapshot --file "$snapshot_file" --hash "$snapshot_hash"
+  regtest_run_balance_history_cli "$target_root" install-snapshot --file "$snapshot_file"
   regtest_assert_artifact_counts "$target_root" "0" "2"
 
   regtest_start_balance_history

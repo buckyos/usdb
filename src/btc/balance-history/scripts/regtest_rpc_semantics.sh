@@ -114,8 +114,10 @@ main() {
   regtest_assert_json_expr "$resp" "data['result'][0]['block_height']" "$height_3"
 
   resp="$(regtest_rpc_call_balance_history "get_address_balance" "[{\"script_hash\":\"${script_hash_a}\",\"block_height\":${future_height},\"block_range\":null}]")"
-  regtest_assert_json_expr "$resp" "data['result'][0]['balance']" "$expected_a_h3_sat"
-  regtest_assert_json_expr "$resp" "data['result'][0]['block_height']" "$height_3"
+  regtest_assert_json_expr "$resp" "data['error']['code']" "-32040"
+  regtest_assert_json_expr "$resp" "data['error']['message']" "HEIGHT_NOT_SYNCED"
+  regtest_assert_json_expr "$resp" "data['error']['data']['requested_height']" "$future_height"
+  regtest_assert_json_expr "$resp" "data['error']['data']['upstream_stable_height']" "$height_5"
 
   resp="$(regtest_rpc_call_balance_history "get_address_balance_delta" "[{\"script_hash\":\"${script_hash_a}\",\"block_height\":${height_3},\"block_range\":null}]")"
   regtest_assert_json_expr "$resp" "data['result'][0]['delta']" "25000000"

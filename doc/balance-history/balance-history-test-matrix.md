@@ -44,8 +44,7 @@ cargo clippy -p balance-history --all-targets
 
 ```bash
 cd /home/bucky/work/usdb
-bash src/btc/balance-history/scripts/regtest_smoke.sh
-bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
+bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 ```
 
 修改 reorg、rollback、snapshot 或 local-loader 行为时执行：
@@ -70,17 +69,16 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 | Oracle | 用独立 oracle 对拍生成的 regtest block 历史余额 | `regtest_history_balance_oracle.sh` |
 | Loader threshold | RPC/local-loader 切换行为 | `regtest_loader_switch.sh` |
 
-## 推荐手工套件
+## 推荐套件
 
-在统一 runner 落地前，按下面的手工套件执行。
+当前已有最小版 `run_regtest_suite.sh`，先收敛 `smoke` 子集。其它更大套件仍按下面的手工命令执行。
 
 ### `smoke`
 
-用于普通 RPC、UI 可见接口或非 reorg 服务改动：
+用于普通 RPC、UI 可见接口、基础 reorg、snapshot repeat install 和 oracle balance 对拍：
 
 ```bash
-bash src/btc/balance-history/scripts/regtest_smoke.sh
-bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
+bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 ```
 
 ### `core`
@@ -149,7 +147,7 @@ cargo test -p balance-history -- --ignored
 
 | 缺口 | 风险 | 建议修复 |
 | --- | --- | --- |
-| 没有统一 regtest runner | 脚本已存在，但不容易作为稳定套件执行 | 增加 `scripts/run_regtest_suite.sh`，支持 `smoke`、`core`、`reorg-full`、`snapshot-full` |
+| 统一 regtest runner 仍不完整 | 当前只收敛了 `smoke` 子集，更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
 | `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |
@@ -160,7 +158,7 @@ cargo test -p balance-history -- --ignored
 ## 建议落地顺序
 
 1. 整理当前脚本和测试分层文档。
-2. 增加最小版 `run_regtest_suite.sh`，先执行现有脚本，不改内部实现。
+2. 增加最小版 `run_regtest_suite.sh`，先收敛 `smoke` 子集，不改现有脚本内部实现。
 3. 把通用 shell assertion helper 移入 `regtest_lib.sh`。
 4. 重构 crate export，让 integration tests 可以调用核心模块，而不是依赖 `main.rs` 承载模块。
 5. 增加生成式小链 Rust integration tests：same-block spends、multi-input spends、OP_RETURN output ignore、block commit continuity、reorg rollback。
@@ -172,7 +170,7 @@ cargo test -p balance-history -- --ignored
 第一个稳定测试里程碑应满足：
 
 - `cargo test -p balance-history` 仍然是默认快速检查。
-- `scripts/run_regtest_suite.sh smoke` 可以无手工端口编辑地执行文档化子集。
+- `scripts/run_regtest_suite.sh smoke` 可以无手工端口编辑地执行文档化子集：`regtest_smoke.sh`、`regtest_rpc_semantics.sh`、`regtest_reorg_smoke.sh`、`regtest_snapshot_install_repeat.sh`、`regtest_history_balance_oracle.sh`。
 - `scripts/run_regtest_suite.sh core` 覆盖普通同步、RPC 语义、一次 reorg、一次 snapshot install 和 oracle balance comparison。
 - 每个新增 balance-history RPC 至少有一个 unit test 和一个 regtest-level consumer test。
 - 真实 BTC 数据测试必须显式 opt-in，不能意外依赖开发者默认配置。
