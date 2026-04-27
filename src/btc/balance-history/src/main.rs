@@ -1,26 +1,14 @@
 #![allow(dead_code)]
 
-mod bench;
-mod btc;
-mod cache;
-mod config;
-mod db;
-mod index;
-mod output;
-mod service;
-mod snapshot_provenance;
-mod status;
-mod tool;
-mod web_server;
-
 #[macro_use]
 extern crate log;
 
-use crate::config::BalanceHistoryConfig;
-use crate::db::BalanceHistoryDB;
-use crate::index::BalanceHistoryIndexer;
-use crate::output::IndexOutput;
-use crate::service::BalanceHistoryRpcServer;
+use balance_history::config::BalanceHistoryConfig;
+use balance_history::db::{self, BalanceHistoryDB};
+use balance_history::index;
+use balance_history::output::IndexOutput;
+use balance_history::runtime::run_service;
+use balance_history::{status, tool, web_server};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -151,147 +139,6 @@ enum BalanceHistoryCommands {
     },
 }
 
-async fn main_run(root_dir: PathBuf, max_block_height: Option<u32>, skip_process_lock: bool) {
-    let _lock_guard = if skip_process_lock {
-        None
-    } else {
-        Some(usdb_util::init_process_lock(
-            usdb_util::BALANCE_HISTORY_SERVICE_NAME,
-        ))
-    };
-
-    std::fs::create_dir_all(&root_dir).unwrap_or_else(|e| {
-        println!(
-            "Failed to create balance-history root directory {}: {}",
-            root_dir.display(),
-            e
-        );
-        std::process::exit(1);
-    });
-
-    // Init console output
-    let status = status::SyncStatusManager::new();
-    let status = Arc::new(status);
-    let output = IndexOutput::new(status);
-    let output = Arc::new(output);
-
-    // Init file logging
-    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-        .with_service_root_dir(root_dir.clone())
-        .enable_console(false);
-    usdb_util::init_log(config);
-
-    output.println(&format!("Using service directory: {}", root_dir.display()));
-
-    // Load configuration
-    let mut config = match BalanceHistoryConfig::load(&root_dir) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            error!("Failed to load config: {}", e);
-            output.eprintln(&format!("Failed to load config: {}", e));
-            std::process::exit(1);
-        }
-    };
-
-    if let Some(max_height) = max_block_height {
-        config.sync.max_sync_block_height = max_height;
-        output.println(&format!(
-            "Indexing balance history up to block height: {}",
-            max_height
-        ));
-    } else {
-        output.println("Indexing balance history up to the latest block height.");
-    }
-
-    let config = Arc::new(config);
-
-    // Start the indexer
-    let indexer = match BalanceHistoryIndexer::new(config.clone(), output.clone()) {
-        Ok(idx) => idx,
-        Err(e) => {
-            output.eprintln(&format!("Failed to initialize indexer: {}", e));
-            std::process::exit(1);
-        }
-    };
-    output.println("Starting indexer...");
-
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
-
-    // Start the RPC server
-    let ret = BalanceHistoryRpcServer::start(
-        config.clone(),
-        output.status().clone(),
-        indexer.db().clone(),
-        shutdown_tx,
-    );
-    if let Err(e) = &ret {
-        output.eprintln(&format!("Failed to start RPC server: {}", e));
-        std::process::exit(1);
-    }
-    let rpc_server = ret.unwrap();
-
-    output.println(&format!(
-        "RPC server started at {}",
-        rpc_server.get_listen_url()
-    ));
-
-    // Create a Future to wait for Ctrl+C (SIGINT) signal
-    use tokio::signal;
-    let sigint = signal::ctrl_c();
-
-    // Create a Future to wait for SIGTERM signal (sent by kill command by default)
-    #[cfg(unix)]
-    let sigterm = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("Failed to create SIGTERM signal handler")
-            .recv()
-            .await;
-    };
-
-    // On non-Unix systems, we only rely on Ctrl+C
-    #[cfg(not(unix))]
-    let sigterm = std::future::pending();
-
-    tokio::select! {
-        _ = sigint => {
-            output.status().set_shutdown_requested(true);
-            output.println("Received Ctrl+C, shutting down...");
-        }
-        _ = sigterm => {
-            output.status().set_shutdown_requested(true);
-            output.println("Received SIGTERM, shutting down...");
-        }
-        _ = shutdown_rx.changed() => {
-            output.status().set_shutdown_requested(true);
-            output.println("Shutdown signal received from RPC, shutting down...");
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
-        result = indexer.run() => {
-            output.println("Indexer run loop exited.");
-            if let Err(e) = result {
-                output.eprintln(&format!("Indexer encountered an error: {}", e));
-                std::process::exit(1);
-            }
-        }
-    }
-
-    // Cleanup on shutdown
-    output.println("Shutting down indexer...");
-    indexer.shutdown().await;
-    output.println("Shutdown indexer complete.");
-
-    indexer.db().flush_all().unwrap_or_else(|e| {
-        error!("Failed to flush database on shutdown: {}", e);
-    });
-
-    rpc_server.close().await;
-
-    println!("Shutdown complete.");
-
-    // Sleep a moment to ensure all logs are flushed
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-}
-
 #[tokio::main]
 async fn main() {
     let cli = BalanceHistoryCli::parse();
@@ -320,7 +167,7 @@ async fn main() {
                 }
             };
 
-            if let Err(e) = crate::tool::clear_db_files(&config.db_dir()) {
+            if let Err(e) = tool::clear_db_files(&config.db_dir()) {
                 error!("Failed to clear database files: {}", e);
                 std::process::exit(1);
             }
@@ -353,8 +200,7 @@ async fn main() {
             let output = Arc::new(output);
 
             let address_index =
-                crate::index::AddressIndexer::new(&root_dir, config.clone(), output.clone())
-                    .unwrap();
+                index::AddressIndexer::new(&root_dir, config.clone(), output.clone()).unwrap();
             if let Err(e) = address_index.build_index() {
                 output.eprintln(&format!("Failed to build address index: {}", e));
                 std::process::exit(1);
@@ -404,7 +250,7 @@ async fn main() {
             let db = Arc::new(db);
 
             let snapshot_indexer =
-                crate::index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
+                index::SnapshotIndexer::new(config.clone(), db.clone(), output.clone());
             if let Err(e) = snapshot_indexer.run(block_height, with_utxo) {
                 error!("Failed to generate snapshot: {}", e);
                 output.println(&format!("Failed to generate snapshot: {}", e));
@@ -466,7 +312,7 @@ async fn main() {
                 }
                 Some(path)
             } else {
-                let auto_manifest = crate::index::manifest_path_for_snapshot_file(&file_path);
+                let auto_manifest = index::manifest_path_for_snapshot_file(&file_path);
                 if auto_manifest.exists() {
                     println!(
                         "Using snapshot manifest discovered next to snapshot file: {:?}",
@@ -512,12 +358,12 @@ async fn main() {
             };
             let db = Arc::new(db);
 
-            let data = crate::index::SnapshotData {
+            let data = index::SnapshotData {
                 file: file_path.clone(),
                 manifest_file: manifest_path,
             };
             let snapshot_installer =
-                crate::index::SnapshotInstaller::new(config.clone(), db, output.clone());
+                index::SnapshotInstaller::new(config.clone(), db, output.clone());
             if let Err(e) = snapshot_installer.install(data) {
                 output.eprintln(&format!("Failed to install snapshot: {}", e));
                 std::process::exit(1);
@@ -547,13 +393,12 @@ async fn main() {
                 root_dir.clone()
             };
 
-            let output =
-                crate::tool::generate_snapshot_key_files(&out_dir, &args.key_id, args.force)
-                    .unwrap_or_else(|e| {
-                        error!("Failed to generate snapshot signing key files: {}", e);
-                        println!("Failed to generate snapshot signing key files: {}", e);
-                        std::process::exit(1);
-                    });
+            let output = tool::generate_snapshot_key_files(&out_dir, &args.key_id, args.force)
+                .unwrap_or_else(|e| {
+                    error!("Failed to generate snapshot signing key files: {}", e);
+                    println!("Failed to generate snapshot signing key files: {}", e);
+                    std::process::exit(1);
+                });
 
             println!("Snapshot signing key generated successfully.");
             println!("signing_key_file={}", output.signing_key_file.display());
@@ -589,7 +434,7 @@ async fn main() {
             let output = Arc::new(output);
 
             // Load Address DB
-            let db = match crate::db::AddressDB::new(&root_dir) {
+            let db = match db::AddressDB::new(&root_dir) {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to open address database: {}", e));
@@ -599,7 +444,7 @@ async fn main() {
             let address_db = Arc::new(db);
 
             let block_height = 400_000; // Example block height
-            let db = match crate::db::SnapshotDB::open_by_height(&root_dir, block_height, false) {
+            let db = match db::SnapshotDB::open_by_height(&root_dir, block_height, false) {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to open snapshot database: {}", e));
@@ -617,7 +462,7 @@ async fn main() {
             };
             let electrs_client = Arc::new(electrs_client);
 
-            let verifier = crate::index::SnapshotVerifier::new(
+            let verifier = index::SnapshotVerifier::new(
                 config.clone(),
                 electrs_client,
                 address_db,
@@ -682,7 +527,7 @@ async fn main() {
             };
             let electrs_client = Arc::new(electrs_client);
 
-            let verifier = crate::index::BalanceHistoryVerifier::new(
+            let verifier = index::BalanceHistoryVerifier::new(
                 config.clone(),
                 electrs_client,
                 db,
@@ -789,7 +634,7 @@ async fn main() {
             usdb_util::init_log(config);
 
             let web_root = std::path::PathBuf::from(web_root);
-            if let Err(e) = crate::web_server::serve_static_files(port, &web_root) {
+            if let Err(e) = web_server::serve_static_files(port, &web_root) {
                 error!("Failed to start web server: {}", e);
                 println!("Failed to start web server: {}", e);
                 std::process::exit(1);
@@ -802,9 +647,9 @@ async fn main() {
 
     if cli.daemon {
         // Proceed to daemonize and run the main process
-        crate::tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
+        tool::daemonize_process(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
     }
 
-    main_run(root_dir, cli.max_block_height, cli.skip_process_lock).await;
+    run_service(root_dir, cli.max_block_height, cli.skip_process_lock).await;
     println!("Balance History service exited.");
 }

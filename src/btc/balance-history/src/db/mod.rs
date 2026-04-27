@@ -3,6 +3,6 @@ mod db;
 mod helper;
 mod snapshot;
 
-pub use address::*;
+pub use address::{AddressDB, AddressDBRef};
 pub use db::*;
 pub use snapshot::*;
