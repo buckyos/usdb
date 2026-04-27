@@ -71,7 +71,7 @@ Activation: <height/governance/TODO>
 | 6 | `UIP-0006` | USDB Economic State View | Standards Track | P1 | Draft |
 | 7 | `UIP-0007` | ETHW Consensus Profile Selector | Standards Track | P1 | Draft |
 | 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Draft |
-| 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Planned |
+| 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
 | 10 | `UIP-0010` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
 | 11 | `UIP-0011` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
 | 12 | `UIP-0012` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
@@ -446,12 +446,17 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 ## 16. UIP-0009: ETHW Chain Config and USDB Bootstrap
 
+当前草案：
+
+- `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md`
+
 目标：
 
 - 定义 USDB ETHW 链的 chain config 扩展字段。
 - 定义 ChainID、NetworkId、genesis、PoW 基础参数和 USDB reward 开关。
 - 定义 active payload version、reward rule version 和 expected difficulty policy version。
 - 定义这些版本从 genesis 生效还是在后续 fork 高度生效。
+- 明确 USDB 新链不复用 ETHW / Merge 迁移语义。
 
 需要解决：
 
@@ -459,6 +464,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `ProfileSelectorPayload` version 如何进入 chain config。
 - `reward_rule_version` 与 UIP-0007 `payload_version` 的边界。
 - expected `difficulty_policy_version` 的 chain config 表达和激活高度。
+- public network 最终 ChainID、NetworkId、genesis difficulty 和 bootnodes。
 
 实现影响：
 

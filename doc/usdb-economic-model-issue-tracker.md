@@ -281,6 +281,7 @@
   - 已确认 `ProfileSelectorPayload` 是正式 payload 命名；当前 go-ethereum 原型中的 `RewardPayloadV1` 应在正式实现前重命名。
   - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 ETHW chain config / fork policy 的 expected version。
   - 已确认 collab bonus 不在 header 中携带全量 `collab_pass_id`。
+  - `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` 已进入 Draft，用于承接 ETHW chain config、genesis 和 USDB consensus version 激活。
 - 目标：
   - 明确 USDB indexer 可以提供的完整经济状态 / 审计视图。
   - 明确 ETHW `header.Extra` 只携带最小历史 selector。
@@ -289,7 +290,7 @@
 - 下一步：
   - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。
   - Review UIP-0007 中 profile selector 二进制布局和 validator replay 流程。
-  - 在 UIP-0009 中定义 ETHW chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
+  - Review UIP-0009 中 ETHW chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
   - 在实现阶段基于数据库索引和性能测试确定 `get_collab_breakdown` 排序策略、分页 cursor 和最大 `limit`。
 - 验收：
   - USDB state view 可在历史 context 下重放。
