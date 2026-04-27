@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS meta (
     balance_history_count INTEGER NOT NULL,
     utxo_count      INTEGER NOT NULL,
     block_commit_count INTEGER NOT NULL,
+    script_registry_count INTEGER NOT NULL DEFAULT 0,
     generated_at    INTEGER NOT NULL,
     version         INTEGER NOT NULL DEFAULT 1
 );
@@ -26,4 +27,9 @@ CREATE TABLE IF NOT EXISTS block_commits (
     btc_block_hash     BLOB    NOT NULL,          -- 32 bytes
     balance_delta_root BLOB    NOT NULL,          -- 32 bytes
     block_commit       BLOB    NOT NULL           -- 32 bytes
+);
+
+CREATE TABLE IF NOT EXISTS script_registry (
+    script_hash     BLOB    NOT NULL PRIMARY KEY, -- 32 bytes
+    script_pubkey   BLOB    NOT NULL              -- raw BTC locking script
 );

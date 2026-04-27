@@ -1,7 +1,8 @@
 use crate::config::{BalanceHistoryConfigRef, SnapshotTrustMode};
 use crate::db::{
     BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry,
-    BlockCommitEntry, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
+    BlockCommitEntry, ScriptRegistryEntry, SnapshotCallback, SnapshotDB, SnapshotHash,
+    SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use crate::service::{HistoricalSnapshotStateRef, build_historical_state_ref_at_height};
@@ -162,6 +163,31 @@ impl SnapshotIndexer {
             self.output.println(&msg);
         }
 
+        // Script registry is an auxiliary seen-script cache without per-height state. It is
+        // exported in full so snapshot-installed nodes can resolve script_hash values to the
+        // original scriptPubKey for address display, without changing consensus state_ref.
+        {
+            let total = self.db.get_script_registry_count()?;
+            self.output.update_load_total_count(total);
+            self.output.println(&format!(
+                "Will generate script registry snapshot with {} entries",
+                total
+            ));
+
+            let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
+            let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
+            self.db.generate_script_registry_snapshot_parallel(cb)?;
+
+            let total_count = generator.script_registry_count.load(Ordering::SeqCst);
+            snapshot_meta.script_registry_count = total_count;
+
+            let msg = format!(
+                "Completed script registry snapshot generation, total entries: {}",
+                total_count
+            );
+            self.output.println(&msg);
+        }
+
         // Finally, update snapshot meta with counts
         snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
         let snapshot_db = Arc::try_unwrap(snapshot_db).map_err(|_| {
@@ -270,6 +296,7 @@ struct SnapshotGenerator {
     balance_history_count: Arc<AtomicU64>,
     utxo_count: Arc<AtomicU64>,
     block_commit_count: Arc<AtomicU64>,
+    script_registry_count: Arc<AtomicU64>,
     output: IndexOutputRef,
 }
 
@@ -281,6 +308,7 @@ impl SnapshotGenerator {
             balance_history_count: Arc::new(AtomicU64::new(0)),
             utxo_count: Arc::new(AtomicU64::new(0)),
             block_commit_count: Arc::new(AtomicU64::new(0)),
+            script_registry_count: Arc::new(AtomicU64::new(0)),
             output,
         }
     }
@@ -354,6 +382,30 @@ impl SnapshotCallback for SnapshotGenerator {
                 "block_commit@{} {:x}",
                 last_entry.block_height, last_entry.btc_block_hash
             ));
+        }
+
+        Ok(())
+    }
+
+    fn on_script_registry_entries(
+        &self,
+        entries: &[ScriptRegistryEntry],
+        entries_processed: u64,
+    ) -> Result<(), String> {
+        self.db
+            .lock()
+            .unwrap()
+            .put_script_registry_entries(entries)?;
+
+        let count = self.count.fetch_add(entries_processed, Ordering::SeqCst) + entries_processed;
+        self.output.update_load_current_count(count);
+
+        self.script_registry_count
+            .fetch_add(entries.len() as u64, Ordering::SeqCst);
+
+        if let Some(last_entry) = entries.last() {
+            self.output
+                .set_load_message(&format!("script_registry: {}", last_entry.script_hash));
         }
 
         Ok(())
@@ -888,8 +940,12 @@ impl SnapshotInstaller {
 
         info!("Snapshot metadata: {:?}", meta);
         self.output.println(&format!(
-            "Snapshot generated at block height {}, balance history entries: {}, UTXO entries: {}, block commits: {}",
-            meta.block_height, meta.balance_history_count, meta.utxo_count, meta.block_commit_count
+            "Snapshot generated at block height {}, balance history entries: {}, UTXO entries: {}, block commits: {}, script registry entries: {}",
+            meta.block_height,
+            meta.balance_history_count,
+            meta.utxo_count,
+            meta.block_commit_count,
+            meta.script_registry_count
         ));
 
         let staging_root = self.prepare_staging_root()?;
@@ -905,6 +961,7 @@ impl SnapshotInstaller {
         self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
         self.install_utxo_snapshot(&staging_db, &snapshot_db, &meta)?;
         self.install_block_commit_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_script_registry_snapshot(&staging_db, &snapshot_db, &meta)?;
 
         staging_db
             .put_btc_block_height(meta.block_height)
@@ -1223,6 +1280,79 @@ impl SnapshotInstaller {
         Ok(())
     }
 
+    fn install_script_registry_snapshot(
+        &self,
+        target_db: &BalanceHistoryDB,
+        snapshot_db: &SnapshotDB,
+        meta: &SnapshotMeta,
+    ) -> Result<(), String> {
+        let total = meta.script_registry_count;
+        if total == 0 {
+            self.output
+                .println("No script registry entries in snapshot, skipping installation");
+            return Ok(());
+        }
+
+        self.output.update_load_total_count(total);
+        self.output.println(&format!(
+            "Installing script registry snapshot with {} entries",
+            total
+        ));
+
+        let page_size = 1024 * 256;
+        let mut last_script_hash = None;
+        let mut installed_total = 0u64;
+        loop {
+            let entries = snapshot_db
+                .get_script_registry_entries(page_size, last_script_hash.as_ref())
+                .map_err(|e| {
+                    let msg = format!("Failed to read snapshot script registry entries: {}", e);
+                    self.output.println(&msg);
+                    msg
+                })?;
+
+            target_db
+                .put_script_registry_entries(&entries)
+                .map_err(|e| {
+                    let msg = format!(
+                        "Failed to write snapshot script registry to database: {}",
+                        e
+                    );
+                    self.output.println(&msg);
+                    msg
+                })?;
+            installed_total += entries.len() as u64;
+
+            if let Some(last_entry) = entries.last() {
+                last_script_hash = Some(last_entry.script_hash);
+            }
+
+            self.output.update_load_current_count(installed_total);
+
+            if entries.len() < page_size as usize {
+                break;
+            }
+        }
+
+        assert!(
+            installed_total == total,
+            "Installed script registry total {} does not match expected total {}",
+            installed_total,
+            total
+        );
+
+        target_db.flush_all().map_err(|e| {
+            let msg = format!("Failed to flush database: {}", e);
+            self.output.println(&msg);
+            msg
+        })?;
+
+        self.output
+            .println("Script registry snapshot installation completed");
+
+        Ok(())
+    }
+
     fn prepare_staging_root(&self) -> Result<PathBuf, String> {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1484,6 +1614,12 @@ mod tests {
             .put_utxo(&old_outpoint, &old_script_hash, 50)
             .unwrap();
         live_db.put_block_commits_async(&[old_commit]).unwrap();
+        live_db
+            .put_script_registry_entries(&[ScriptRegistryEntry {
+                script_hash: old_script_hash,
+                script_pubkey: old_script,
+            }])
+            .unwrap();
         live_db.put_btc_block_height(3).unwrap();
         let live_db = Arc::new(live_db);
 
@@ -1521,11 +1657,18 @@ mod tests {
             snapshot_db
                 .put_block_commit_entries(std::slice::from_ref(&new_commit))
                 .unwrap();
+            snapshot_db
+                .put_script_registry_entries(&[ScriptRegistryEntry {
+                    script_hash: new_script_hash,
+                    script_pubkey: new_script.clone(),
+                }])
+                .unwrap();
 
             let mut meta = SnapshotMeta::new(10);
             meta.balance_history_count = 1;
             meta.utxo_count = 1;
             meta.block_commit_count = 1;
+            meta.script_registry_count = 1;
             snapshot_db.update_meta(&meta).unwrap();
         }
 
@@ -1559,6 +1702,13 @@ mod tests {
         );
         assert!(reopened_db.get_utxo(&old_outpoint).unwrap().is_none());
         assert!(reopened_db.get_block_commit(3).unwrap().is_none());
+        assert!(
+            reopened_db
+                .get_script_registry_entry(&old_script_hash)
+                .unwrap()
+                .is_none(),
+            "old live DB script registry entry should be replaced by snapshot"
+        );
 
         let new_balance = reopened_db
             .get_balance_delta_at_block_height(&new_script_hash, 10)
@@ -1573,6 +1723,12 @@ mod tests {
 
         let installed_commit = reopened_db.get_block_commit(10).unwrap().unwrap();
         assert_eq!(installed_commit, new_commit);
+        assert_eq!(
+            reopened_db
+                .get_script_registry_entry(&new_script_hash)
+                .unwrap(),
+            Some(new_script)
+        );
 
         let status = Arc::new(SyncStatusManager::new());
         let (shutdown_tx, _) = watch::channel(());

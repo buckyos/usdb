@@ -42,6 +42,7 @@ pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provena
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
+pub const SCRIPT_REGISTRY_KEY_LEN: usize = USDBScriptHash::LEN;
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
 // Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
@@ -2765,6 +2766,87 @@ impl BalanceHistoryDB {
         Ok(())
     }
 
+    fn generate_script_registry_snapshot_sharded(
+        &self,
+        shard_index: u8,
+        batch_size: usize,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut seek_key = vec![shard_index];
+        seek_key.resize(SCRIPT_REGISTRY_KEY_LEN, 0xFF);
+
+        let mut iter = self
+            .db
+            .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
+
+        let mut snapshot = Vec::with_capacity(batch_size);
+        let mut entries_processed = 0u64;
+
+        while let Some(Ok((key, value))) = iter.next() {
+            if key.len() != SCRIPT_REGISTRY_KEY_LEN {
+                continue;
+            }
+
+            if key[0] != shard_index {
+                break;
+            }
+
+            entries_processed += 1;
+            let script_hash = USDBScriptHash::from_slice(&key).map_err(|e| {
+                let msg = format!("Failed to parse script registry key: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            snapshot.push(ScriptRegistryEntry {
+                script_hash,
+                script_pubkey: ScriptBuf::from(value.to_vec()),
+            });
+
+            if snapshot.len() >= batch_size {
+                cb.on_script_registry_entries(&snapshot, entries_processed)?;
+                snapshot.clear();
+                entries_processed = 0;
+            }
+        }
+
+        if !snapshot.is_empty() {
+            cb.on_script_registry_entries(&snapshot, entries_processed)?;
+        }
+
+        info!(
+            "Script registry shard {:0x} processed complete",
+            shard_index
+        );
+
+        Ok(())
+    }
+
+    pub fn generate_script_registry_snapshot_parallel(
+        &self,
+        cb: SnapshotCallbackRef,
+    ) -> Result<(), String> {
+        use rayon::prelude::*;
+
+        const SHARD_COUNT: u8 = 255;
+        const BATCH_SIZE: usize = 1024 * 64;
+
+        (0u8..=SHARD_COUNT)
+            .into_par_iter()
+            .try_for_each(|shard_index| {
+                self.generate_script_registry_snapshot_sharded(shard_index, BATCH_SIZE, cb.clone())
+            })?;
+
+        info!("Script registry snapshot generation complete");
+
+        Ok(())
+    }
+
     pub fn generate_block_commit_snapshot(
         &self,
         target_block_height: u32,
@@ -3275,6 +3357,14 @@ pub trait SnapshotCallback: Send + Sync {
         entries: &[BlockCommitEntry],
         entries_processed: u64,
     ) -> Result<(), String>;
+
+    fn on_script_registry_entries(
+        &self,
+        _entries: &[ScriptRegistryEntry],
+        _entries_processed: u64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
@@ -3510,6 +3600,82 @@ mod tests {
             .unwrap();
         assert_eq!(entries, vec![Some(script_b), None, Some(script_a)]);
         assert!(db.get_script_registry_count().unwrap() >= 2);
+    }
+
+    #[test]
+    fn test_generate_script_registry_snapshot() {
+        #[derive(Clone)]
+        struct ScriptRegistryCollector {
+            entries: Arc<Mutex<Vec<ScriptRegistryEntry>>>,
+        }
+
+        impl SnapshotCallback for ScriptRegistryCollector {
+            fn on_balance_history_entries(
+                &self,
+                _entries: &[BalanceHistoryEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn on_utxo_entries(
+                &self,
+                _entries: &[UTXOEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn on_block_commit_entries(
+                &self,
+                _entries: &[BlockCommitEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+
+            fn on_script_registry_entries(
+                &self,
+                entries: &[ScriptRegistryEntry],
+                _entries_processed: u64,
+            ) -> Result<(), String> {
+                self.entries.lock().unwrap().extend_from_slice(entries);
+                Ok(())
+            }
+        }
+
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_generate_script_registry");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+
+        let config = std::sync::Arc::new(config);
+        let db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        let first_script = ScriptBuf::from(vec![1u8; 32]);
+        let second_script = ScriptBuf::from(vec![2u8; 32]);
+        let mut expected = vec![
+            ScriptRegistryEntry {
+                script_hash: first_script.to_usdb_script_hash(),
+                script_pubkey: first_script,
+            },
+            ScriptRegistryEntry {
+                script_hash: second_script.to_usdb_script_hash(),
+                script_pubkey: second_script,
+            },
+        ];
+        expected.sort_by(|left, right| left.script_hash.cmp(&right.script_hash));
+        db.put_script_registry_entries(&expected).unwrap();
+
+        let collected = Arc::new(Mutex::new(Vec::new()));
+        let cb: SnapshotCallbackRef = Arc::new(Box::new(ScriptRegistryCollector {
+            entries: collected.clone(),
+        }));
+        db.generate_script_registry_snapshot_parallel(cb).unwrap();
+
+        let mut actual = collected.lock().unwrap().clone();
+        actual.sort_by(|left, right| left.script_hash.cmp(&right.script_hash));
+        assert_eq!(actual, expected);
     }
 
     #[test]

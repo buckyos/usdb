@@ -1,13 +1,13 @@
-use super::db::{BalanceHistoryEntry, BlockCommitEntry};
+use super::db::{BalanceHistoryEntry, BlockCommitEntry, ScriptRegistryEntry};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint};
+use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{OutPointCodec, USDBScriptHash, UTXOEntry};
 
-// The version of the snapshot database schema
-pub const SNAPSHOT_DB_VERSION: u32 = 1;
+// The version of the snapshot database schema.
+pub const SNAPSHOT_DB_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct SnapshotMeta {
@@ -15,6 +15,7 @@ pub struct SnapshotMeta {
     pub balance_history_count: u64,
     pub utxo_count: u64,
     pub block_commit_count: u64,
+    pub script_registry_count: u64,
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
 }
@@ -31,6 +32,7 @@ impl SnapshotMeta {
             balance_history_count: 0,
             utxo_count: 0,
             block_commit_count: 0,
+            script_registry_count: 0,
             generated_at: since_the_epoch.as_secs(),
             version: SNAPSHOT_DB_VERSION,
         }
@@ -95,6 +97,8 @@ impl SnapshotDB {
                 msg
             })?;
 
+        Self::ensure_schema_migrations(&conn)?;
+
         conn.execute_batch(
             r#"
                 PRAGMA journal_mode = WAL;
@@ -112,6 +116,57 @@ impl SnapshotDB {
             path: path.to_path_buf(),
             conn,
         })
+    }
+
+    fn ensure_schema_migrations(conn: &Connection) -> Result<(), String> {
+        if !Self::table_has_column(conn, "meta", "script_registry_count")? {
+            conn.execute(
+                "ALTER TABLE meta ADD COLUMN script_registry_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to add script_registry_count column to snapshot meta: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| {
+                let msg = format!("Failed to inspect {} schema: {}", table, e);
+                error!("{}", msg);
+                msg
+            })?;
+        let mut rows = stmt.query([]).map_err(|e| {
+            let msg = format!("Failed to query {} schema: {}", table, e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to read {} schema row: {}", table, e);
+            error!("{}", msg);
+            msg
+        })? {
+            let name: String = row.get(1).map_err(|e| {
+                let msg = format!("Failed to read {} schema column name: {}", table, e);
+                error!("{}", msg);
+                msg
+            })?;
+            if name == column {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     pub fn open_by_height(
@@ -221,12 +276,13 @@ impl SnapshotDB {
     pub fn update_meta(&self, meta: &SnapshotMeta) -> Result<(), String> {
         self.conn
             .execute(
-                "INSERT INTO meta (block_height, balance_history_count, utxo_count, block_commit_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO meta (block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 (
                     meta.block_height as i64,
                     meta.balance_history_count as i64,
                     meta.utxo_count as i64,
                     meta.block_commit_count as i64,
+                    meta.script_registry_count as i64,
                     meta.generated_at as i64,
                     meta.version as i64,
                 ),
@@ -244,7 +300,7 @@ impl SnapshotDB {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT block_height, balance_history_count, utxo_count, block_commit_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
+                "SELECT block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
@@ -259,8 +315,9 @@ impl SnapshotDB {
                     balance_history_count: row.get::<_, i64>(1).map(|v| v as u64)?,
                     utxo_count: row.get::<_, i64>(2).map(|v| v as u64)?,
                     block_commit_count: row.get::<_, i64>(3).map(|v| v as u64)?,
-                    generated_at: row.get::<_, i64>(4).map(|v| v as u64)?,
-                    version: row.get::<_, i64>(5).map(|v| v as u32)?,
+                    script_registry_count: row.get::<_, i64>(4).map(|v| v as u64)?,
+                    generated_at: row.get::<_, i64>(5).map(|v| v as u64)?,
+                    version: row.get::<_, i64>(6).map(|v| v as u32)?,
                 })
             })
             .map_err(|e| {
@@ -381,6 +438,49 @@ impl SnapshotDB {
                 ))
                 .map_err(|e| {
                     let msg = format!("Failed to insert block commit entry: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+            }
+        }
+
+        tx.commit().map_err(|e| {
+            let msg = format!("Failed to commit transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(())
+    }
+
+    pub fn put_script_registry_entries(
+        &mut self,
+        entries: &[ScriptRegistryEntry],
+    ) -> Result<(), String> {
+        let tx = self.conn.transaction().map_err(|e| {
+            let msg = format!("Failed to start transaction: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO script_registry (script_hash, script_pubkey) VALUES (?1, ?2)",
+                )
+                .map_err(|e| {
+                    let msg = format!("Failed to prepare statement: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+            for entry in entries {
+                stmt.execute((
+                    entry.script_hash.as_ref() as &[u8],
+                    entry.script_pubkey.as_bytes(),
+                ))
+                .map_err(|e| {
+                    let msg = format!("Failed to insert script registry entry: {}", e);
                     error!("{}", msg);
                     msg
                 })?;
@@ -674,6 +774,27 @@ impl SnapshotDB {
         Ok(count)
     }
 
+    pub fn stat_script_registry_entries_count(&self) -> Result<u64, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT COUNT(*) FROM script_registry")
+            .map_err(|e| {
+                let msg = format!("Failed to prepare statement: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        let count: u64 = stmt
+            .query_row([], |row| row.get::<_, i64>(0).map(|v| v as u64))
+            .map_err(|e| {
+                let msg = format!("Failed to query row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(count)
+    }
+
     pub fn get_block_commit_entries(
         &self,
         page_size: u32,
@@ -879,6 +1000,87 @@ impl SnapshotDB {
 
         Ok(entries)
     }
+
+    pub fn get_script_registry_entries(
+        &self,
+        page_size: u32,
+        last_script_hash: Option<&USDBScriptHash>,
+    ) -> Result<Vec<ScriptRegistryEntry>, String> {
+        let sql = match last_script_hash {
+            Some(_) => {
+                "
+                SELECT script_hash, script_pubkey
+                FROM script_registry
+                WHERE script_hash > ?1
+                ORDER BY script_hash ASC
+                LIMIT ?2
+                "
+            }
+            None => {
+                "
+                SELECT script_hash, script_pubkey
+                FROM script_registry
+                ORDER BY script_hash ASC
+                LIMIT ?1
+                "
+            }
+        };
+
+        let params = match last_script_hash {
+            Some(last_script_hash) => {
+                rusqlite::params![last_script_hash.as_ref() as &[u8], page_size as i64]
+            }
+            None => rusqlite::params![page_size as i64],
+        };
+
+        let mut stmt = self.conn.prepare(sql).map_err(|e| {
+            let msg = format!("Failed to prepare statement: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut entries_iter = stmt.query(params).map_err(|e| {
+            let msg = format!("Failed to query map: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut entries = Vec::with_capacity(page_size as usize);
+        while let Some(row) = entries_iter.next().map_err(|e| {
+            let msg = format!("Failed to get next row: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            let script_hash = {
+                let blob: Vec<u8> = row.get(0).map_err(|e| {
+                    let msg = format!("Failed to get script_hash blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                USDBScriptHash::from_slice(&blob).map_err(|e| {
+                    let msg = format!("Failed to convert script_hash blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?
+            };
+            let script_pubkey = {
+                let blob: Vec<u8> = row.get(1).map_err(|e| {
+                    let msg = format!("Failed to get script_pubkey blob: {}", e);
+                    error!("{}", msg);
+                    msg
+                })?;
+
+                ScriptBuf::from(blob)
+            };
+
+            entries.push(ScriptRegistryEntry {
+                script_hash,
+                script_pubkey,
+            });
+        }
+
+        Ok(entries)
+    }
 }
 
 pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
@@ -887,7 +1089,8 @@ pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use bitcoincore_rpc::bitcoin::BlockHash;
+    use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
+    use usdb_util::ToUSDBScriptHash;
 
     #[test]
     fn test_snapshot_db_creation() {
@@ -905,6 +1108,7 @@ mod tests {
         let retrieved_meta = snapshot_db.get_meta().unwrap();
         assert_eq!(retrieved_meta.block_height, 100);
         assert_eq!(retrieved_meta.block_commit_count, 0);
+        assert_eq!(retrieved_meta.script_registry_count, 0);
         assert_eq!(retrieved_meta.version, SNAPSHOT_DB_VERSION);
     }
 
@@ -940,6 +1144,43 @@ mod tests {
         let loaded = snapshot_db.get_block_commit_entries(10, None).unwrap();
         assert_eq!(loaded, entries);
         assert_eq!(snapshot_db.stat_block_commit_entries_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_script_registry_round_trip() {
+        let dir = std::env::temp_dir()
+            .join("usdb")
+            .join("test_snapshot_script_registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("snapshot_script_registry_test.db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path).unwrap();
+        }
+
+        let mut snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        let first_script = ScriptBuf::from(vec![1u8; 32]);
+        let second_script = ScriptBuf::from(vec![2u8; 32]);
+        let mut entries = vec![
+            ScriptRegistryEntry {
+                script_hash: first_script.to_usdb_script_hash(),
+                script_pubkey: first_script,
+            },
+            ScriptRegistryEntry {
+                script_hash: second_script.to_usdb_script_hash(),
+                script_pubkey: second_script,
+            },
+        ];
+        entries.sort_by(|left, right| left.script_hash.cmp(&right.script_hash));
+
+        snapshot_db.put_script_registry_entries(&entries).unwrap();
+
+        let first_page = snapshot_db.get_script_registry_entries(1, None).unwrap();
+        assert_eq!(first_page, vec![entries[0].clone()]);
+        let second_page = snapshot_db
+            .get_script_registry_entries(10, Some(&first_page[0].script_hash))
+            .unwrap();
+        assert_eq!(second_page, vec![entries[1].clone()]);
+        assert_eq!(snapshot_db.stat_script_registry_entries_count().unwrap(), 2);
     }
 
     #[test]
