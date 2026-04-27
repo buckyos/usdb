@@ -31,6 +31,7 @@
 - 链上可验证原始材料使用 `script_pubkey`。
 - 用户展示和前端输入优先使用 BTC address。
 - `script_registry` 作为辅助解析索引，不影响 USDB 共识状态。
+- `script_registry` 是 `balance-history` 主索引流程的原子副产物，不是独立索引。
 - snapshot 需要携带 `script_registry`，保证从 snapshot 恢复后的节点仍然具备
   address 展示能力。
 
@@ -39,6 +40,7 @@
 第一阶段目标：
 
 - 在 `balance-history` indexing 过程中收集所有已见过的 output script。
+- 在主 block batch flush 时和 UTXO、balance history、block commit 一起原子写入。
 - 提供 `script_hash -> scriptPubKey -> address?` 的批量解析能力。
 - 在 snapshot export/import 中包含 `script_registry`。
 - 让 `usdb-indexer` 和 web browser 的 overview、owner、排行榜等页面可以优先展示
@@ -49,17 +51,17 @@
 - 不改变现有 balance/history/UTXO 的主索引 key。
 - 不把 address 文本纳入共识 commit。
 - 不要求所有 script 都能解析成 address。
+- 不维护 per-script `first_seen_height` / `last_seen_height`。
+- 不维护独立的 `script_registry_indexed_height`。
 - 不在第一阶段实现严格 reorg 删除语义。
 
 ## 4. 数据模型
 
-建议在 `balance-history` 的本地 DB 中新增 `script_registry` 表。
+建议在 `balance-history` 主 RocksDB 中新增 `script_registry` column family。
 
 ```text
-script_hash        BLOB/TEXT PRIMARY KEY
-script_pubkey      BLOB NOT NULL
-first_seen_height  INTEGER NOT NULL
-last_seen_height   INTEGER NOT NULL
+script_hash    BLOB PRIMARY KEY
+script_pubkey  BLOB NOT NULL
 ```
 
 字段说明：
@@ -68,8 +70,6 @@ last_seen_height   INTEGER NOT NULL
 | --- | --- |
 | `script_hash` | 当前系统使用的 canonical script hash。 |
 | `script_pubkey` | BTC tx output 中的原始 locking script。 |
-| `first_seen_height` | 该 script 首次在 canonical indexing 输入中出现的高度。 |
-| `last_seen_height` | 该 script 最近一次被观察到的高度。 |
 
 不建议持久化 `address` 字符串作为主字段：
 
@@ -80,26 +80,61 @@ last_seen_height   INTEGER NOT NULL
 后续如有性能需要，可以增加可清理的 address display cache，但不作为协议或 snapshot
 的权威字段。
 
+也不建议在第一阶段维护 per-script height：
+
+- `first_seen_height` 需要保留旧值，写入时会引入 read-modify-write。
+- `last_seen_height` 会让热 script 频繁重写 registry。
+- 并行批处理内需要额外聚合 min/max height。
+- 在第一阶段 append-like auxiliary cache 语义下，reorg 后这些 height 也不是严格
+  canonical 值。
+- address 解析只需要 `script_hash + script_pubkey + network`。
+
+`script_registry` 也不需要独立 indexed height。它跟随 `balance-history` 主索引
+一起写入，状态边界由现有 `META_KEY_BTC_BLOCK_HEIGHT`、block commit 和 readiness
+表达。
+
+### 4.1 与现有 AddressIndexer 的关系
+
+当前代码里已有独立的 `AddressIndexer` 工具项：
+
+- `index/address.rs`
+- `db/address.rs`
+- `balance-history index-address`
+
+这个工具可以由使用者主动运行，也可以拥有自己的状态和进度管理。它更适合作为
+离线 rebuild / verify / debug 工具。
+
+本方案中的 `script_registry` 不复用该独立状态模型。正式 registry 应该是
+`balance-history` 主索引的副产物：
+
+- 不需要单独启动。
+- 不需要单独进度。
+- 不需要独立 indexed height。
+- snapshot 跟随主 snapshot 导出和导入。
+- crash consistency 跟随主 block batch `WriteBatch`。
+
 ## 5. 索引写入流程
 
-在 `balance-history` index block / tx output 时同步执行：
+在 `balance-history` index block / tx output 时同步收集：
 
 1. 读取每个 tx output 的 `script_pubkey`。
 2. 计算现有规则下的 `script_hash`。
-3. upsert `script_registry`：
-   - 新 script：插入 `script_hash`, `script_pubkey`, `first_seen_height`,
-     `last_seen_height`。
-   - 已存在 script：更新 `last_seen_height`。
+3. 将 `(script_hash, script_pubkey)` 加入当前 block batch 的 registry collection。
+4. flush 前按 `script_hash` 批内去重。
+5. 在 `BalanceHistoryDB::update_block_state_with_undo_async` 的同一个 RocksDB
+   `WriteBatch` 中写入 registry。
 
 写入语义建议：
 
 ```text
-INSERT OR IGNORE(script_hash, script_pubkey, first_seen_height, last_seen_height)
-UPDATE last_seen_height = max(existing.last_seen_height, current_height)
+batch.put_cf(SCRIPT_REGISTRY_CF, script_hash, script_pubkey)
 ```
 
-如果发现相同 `script_hash` 对应不同 `script_pubkey`，应记录 error 并中止或进入
-故障状态。虽然真实 sha256 碰撞不可预期，但这属于 DB/编码不变量，不能静默覆盖。
+重复写入相同 key 是可接受的。为减少写放大，建议批内先去重，但第一阶段不需要
+为了判断 key 是否已存在而额外读 DB。
+
+如果在同一批内发现相同 `script_hash` 对应不同 `script_pubkey`，应记录 error 并
+中止。这属于编码不变量错误或理论 hash 碰撞，不应静默覆盖。
 
 ## 6. Reorg 策略
 
@@ -121,7 +156,7 @@ UPDATE last_seen_height = max(existing.last_seen_height, current_height)
 后续如果需要更严格语义，可以增加：
 
 - `script_registry_history` 或 per-height reference count。
-- reorg rollback 时回滚 `first_seen_height/last_seen_height`。
+- reorg rollback 时回滚只在孤块中出现的 script。
 - snapshot manifest 标记 registry policy。
 
 但这不建议作为第一阶段需求。
@@ -146,8 +181,7 @@ script_registry
 导出规则：
 
 - 按 `script_hash` 字典序分页导出。
-- 每条记录包含 `script_hash`, `script_pubkey`, `first_seen_height`,
-  `last_seen_height`。
+- 每条记录包含 `script_hash`, `script_pubkey`。
 - manifest 增加 registry 元数据。
 
 manifest 建议字段：
@@ -199,18 +233,14 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
       "script_pubkey": "5120...",
       "address": "bcrt1p...",
       "address_type": "p2tr",
-      "standard": true,
-      "first_seen_height": 100,
-      "last_seen_height": 2088
+      "standard": true
     },
     {
       "script_hash": "...",
       "script_pubkey": "6a...",
       "address": null,
       "address_type": "non_standard",
-      "standard": false,
-      "first_seen_height": 101,
-      "last_seen_height": 101
+      "standard": false
     }
   ],
   "missing": ["..."]
@@ -278,7 +308,6 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
 | --- | ---: |
 | `script_hash` | 32 bytes |
 | 常见 `script_pubkey` | 22-34 bytes，Taproot 34 bytes |
-| height 字段 | 8-16 bytes |
 | DB/index overhead | 可能大于原始字段本身 |
 
 在 mainnet 上，如果唯一 script 数达到千万到上亿级，实际占用可能达到数 GB 到数十 GB。
@@ -293,8 +322,10 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
 
 ### Phase 1: balance-history 本地 registry
 
-- 新增 `script_registry` 表。
-- indexing output 时写入 registry。
+- 新增 `SCRIPT_REGISTRY_CF`。
+- 在 `index/block.rs` 的 batch data 中收集 `(script_hash, script_pubkey)`。
+- 在 block batch flush 时把 registry 和 UTXO、balance history、block commit 放进同一个
+  RocksDB `WriteBatch`。
 - 新增 storage 查询接口：
   - `resolve_script_hashes`
   - `get_script_registry_entries`
@@ -302,7 +333,8 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
 - 增加单元测试：
   - 标准 P2TR/P2WPKH/P2SH script 可解析 address。
   - non-standard script 返回 `address=null`。
-  - 重复 script 更新 `last_seen_height`。
+  - 重复 script 批内去重。
+  - 同一批内 script hash 对应不同 script pubkey 时返回错误。
 
 ### Phase 2: snapshot export/import
 
@@ -340,6 +372,7 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
 | address 被误当成共识字段 | address 仅展示，commit 和协议状态仍使用 script hash/scriptPubKey。 |
 | snapshot 兼容性 | manifest 标记 `script_registry.included`，旧 snapshot 可安装但显示 partial。 |
 | reorg 严格性争议 | 第一阶段声明为 auxiliary seen-script cache，不参与 canonical state。 |
+| 独立索引状态造成不一致 | registry 跟随主 balance index 原子写入，不保存独立 indexed height。 |
 | 非标准 script | `address=null`，前端显示 script hash only。 |
 | 网络不匹配 | address 派生必须使用当前 BTC network。 |
 
