@@ -304,10 +304,11 @@ mod real_btc_tests {
         config
     }
 
-    fn env_usize(name: &str, default: usize) -> usize {
-        std::env::var(name)
-            .ok()
-            .map(|value| {
+    fn env_usize(names: &[&str], default: usize) -> usize {
+        names
+            .iter()
+            .find_map(|name| std::env::var(name).ok().map(|value| (*name, value)))
+            .map(|(name, value)| {
                 value
                     .parse()
                     .unwrap_or_else(|_| panic!("{} must be a usize", name))
@@ -323,9 +324,21 @@ mod real_btc_tests {
         let reader = Arc::new(reader);
 
         let cache = BlockFileCache::new(reader.clone()).unwrap();
-        let start = env_usize("USDB_BH_REAL_BTC_CACHE_START_FILE", 0);
-        let count = env_usize("USDB_BH_REAL_BTC_CACHE_FILE_COUNT", 4);
-        let sleep_ms = env_usize("USDB_BH_REAL_BTC_CACHE_SLEEP_MS", 0) as u64;
+        let start = env_usize(
+            &[
+                "USDB_BH_REAL_BTC_PROFILE_START_FILE",
+                "USDB_BH_REAL_BTC_CACHE_START_FILE",
+            ],
+            0,
+        );
+        let count = env_usize(
+            &[
+                "USDB_BH_REAL_BTC_PROFILE_FILE_COUNT",
+                "USDB_BH_REAL_BTC_CACHE_FILE_COUNT",
+            ],
+            4,
+        );
+        let sleep_ms = env_usize(&["USDB_BH_REAL_BTC_CACHE_SLEEP_MS"], 0) as u64;
         for i in start..start + count {
             let block = cache.get_block_by_file_index(i, 0).unwrap();
             println!(

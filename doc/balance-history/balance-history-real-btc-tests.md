@@ -6,7 +6,7 @@
 
 默认 `cargo test -p balance-history` 不会编译这些测试。只有显式设置 `USDB_BH_REAL_BTC=1` 时，`balance-history/build.rs` 才会打开 `cfg(usdb_bh_real_btc)`。
 
-正确性测试：
+小切片正确性测试：
 
 ```bash
 cd /home/bucky/work/usdb
@@ -14,10 +14,10 @@ USDB_BH_REAL_BTC=1 \
 BTC_DATA_DIR=/home/bucky/.bitcoin \
 BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
-bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness --size tiny
 ```
 
-性能/手工 profile：
+小切片性能/profile：
 
 ```bash
 cd /home/bucky/work/usdb
@@ -25,9 +25,7 @@ USDB_BH_REAL_BTC=1 \
 BTC_DATA_DIR=/home/bucky/.bitcoin \
 BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
-USDB_BH_REAL_BTC_CACHE_START_FILE=0 \
-USDB_BH_REAL_BTC_CACHE_FILE_COUNT=4 \
-bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile --size tiny
 ```
 
 可选环境变量：
@@ -38,9 +36,55 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
 | `BTC_RPC_USER` / `BTC_RPC_PASSWORD` | 使用 user/pass auth 时替代 cookie |
 | `BTC_NETWORK` | `bitcoin`、`testnet`、`regtest`、`signet`、`testnet4`，默认 `bitcoin` |
 | `BTC_BLOCK_MAGIC` | 覆盖 blk 文件 magic，例如 `0xD9B4BEF9` |
-| `USDB_BH_REAL_BTC_CACHE_START_FILE` | profile cache 起始 blk 文件编号 |
-| `USDB_BH_REAL_BTC_CACHE_FILE_COUNT` | profile cache 读取的 blk 文件数量 |
+| `USDB_BH_REAL_BTC_SUBSET_FILE_COUNT` | correctness local-loader 子集 blk 文件数量。必须从 `blk00000.dat` 开始，保证链连续 |
+| `USDB_BH_REAL_BTC_PROFILE_START_FILE` | profile 起始 blk 文件编号，可用于横向抽样最新或中间文件 |
+| `USDB_BH_REAL_BTC_PROFILE_FILE_COUNT` | profile 读取的 blk 文件数量 |
 | `USDB_BH_REAL_BTC_CACHE_SLEEP_MS` | profile cache 每次读取后的等待时间，用于观察 prefetch |
+
+## Suite 与 Size
+
+runner 支持两种切片维度：
+
+- 横向 suite：只跑某一类能力，例如 `loader-index`、`loader-restore`、`blk-reader`、`block-cache`、`latest-rpc`、`profile-reader`、`profile-cache`。
+- 纵向 size：控制真实数据规模，例如 `tiny`、`small`、`medium`、`large`、`full`。
+
+| Size | correctness subset | profile 文件数 | 典型用途 |
+| --- | --- | --- | --- |
+| `tiny` | 2 个从 genesis 开始的 blk 文件 | 1 个 blk 文件 | 日常快速冒烟。local-loader 会排除最后一个可能仍在写入的 blk 文件，所以 correctness 最小为 2 |
+| `small` | 4 个从 genesis 开始的 blk 文件 | 4 个 blk 文件 | 默认人工检查 |
+| `medium` | 8 个从 genesis 开始的 blk 文件 | 16 个 blk 文件 | 局部性能观察 |
+| `large` | 16 个从 genesis 开始的 blk 文件 | 64 个 blk 文件 | 长一些的性能/兼容性检查 |
+| `full` | 32 个从 genesis 开始的 blk 文件 | 256 个 blk 文件 | 手工长跑，不建议日常默认使用 |
+
+查看某个 suite 会执行哪些 test filter：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-restore --size tiny --list
+```
+
+推荐日常命令：
+
+```bash
+USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.1:8332 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny
+
+USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.1:8332 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny
+```
+
+抽样最新附近 blk 文件做 profile：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+USDB_BH_REAL_BTC_PROFILE_START_FILE=3600 \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size small
+```
 
 ## 当前覆盖
 

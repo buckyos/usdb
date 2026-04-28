@@ -752,9 +752,6 @@ mod tests {
     #[cfg(usdb_bh_real_btc)]
     use usdb_util::{BTCAuth, BTCRpcClient};
 
-    #[cfg(usdb_bh_real_btc)]
-    const TEST_SUBSET_BLK_FILE_COUNT: usize = 4;
-
     struct MockBTCClient {
         hashes: BTreeMap<u32, BlockHash>,
     }
@@ -954,6 +951,43 @@ mod tests {
     }
 
     #[cfg(usdb_bh_real_btc)]
+    fn real_btc_env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name)
+            .ok()
+            .map(|value| {
+                value
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{} must be a usize", name))
+            })
+            .unwrap_or(default)
+    }
+
+    #[cfg(usdb_bh_real_btc)]
+    fn real_btc_subset_file_count() -> usize {
+        let count = real_btc_env_usize("USDB_BH_REAL_BTC_SUBSET_FILE_COUNT", 4);
+        assert!(
+            count > 0,
+            "USDB_BH_REAL_BTC_SUBSET_FILE_COUNT must be greater than zero"
+        );
+        count
+    }
+
+    #[cfg(usdb_bh_real_btc)]
+    fn real_btc_profile_start_file() -> usize {
+        real_btc_env_usize("USDB_BH_REAL_BTC_PROFILE_START_FILE", 0)
+    }
+
+    #[cfg(usdb_bh_real_btc)]
+    fn real_btc_profile_file_count() -> usize {
+        let count = real_btc_env_usize("USDB_BH_REAL_BTC_PROFILE_FILE_COUNT", 4);
+        assert!(
+            count > 0,
+            "USDB_BH_REAL_BTC_PROFILE_FILE_COUNT must be greater than zero"
+        );
+        count
+    }
+
+    #[cfg(usdb_bh_real_btc)]
     fn parse_real_btc_network() -> Network {
         match std::env::var("BTC_NETWORK")
             .unwrap_or_else(|_| "bitcoin".to_string())
@@ -1051,7 +1085,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root_dir);
         std::fs::create_dir_all(&root_dir).unwrap();
         config.root_dir = root_dir;
-        let subset_data_dir = prepare_subset_block_data_dir(tag, TEST_SUBSET_BLK_FILE_COUNT);
+        let subset_data_dir = prepare_subset_block_data_dir(tag, real_btc_subset_file_count());
         config.btc.data_dir = Some(subset_data_dir);
         let config = Arc::new(config);
 
@@ -1129,7 +1163,7 @@ mod tests {
 
     #[cfg(usdb_bh_real_btc)]
     fn make_default_subset_reader(tag: &str) -> (Arc<BalanceHistoryConfig>, Arc<BlockFileReader>) {
-        make_subset_reader(tag, TEST_SUBSET_BLK_FILE_COUNT)
+        make_subset_reader(tag, real_btc_subset_file_count())
     }
 
     #[cfg(usdb_bh_real_btc)]
@@ -1160,13 +1194,16 @@ mod tests {
     }
 
     #[cfg(usdb_bh_real_btc)]
-    fn assert_subset_latest_blk_file(reader: &BlockFileReader) -> usize {
+    fn assert_subset_latest_blk_file(
+        reader: &BlockFileReader,
+        expected_file_count: usize,
+    ) -> usize {
         let latest_index = reader.find_latest_blk_file().unwrap();
         assert_eq!(
             latest_index,
-            TEST_SUBSET_BLK_FILE_COUNT - 1,
+            expected_file_count - 1,
             "expected subset blk dir to contain exactly {} blk files",
-            TEST_SUBSET_BLK_FILE_COUNT
+            expected_file_count
         );
         latest_index
     }
@@ -1197,7 +1234,8 @@ mod tests {
         assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        let subset_latest = assert_subset_latest_blk_file(&subset_reader);
+        let subset_latest =
+            assert_subset_latest_blk_file(&subset_reader, real_btc_subset_file_count());
         println!("subset data dir: {}", config.btc.data_dir().display());
         println!("subset latest blk file index: {}", subset_latest);
 
@@ -1240,7 +1278,7 @@ mod tests {
         assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        assert_subset_latest_blk_file(&subset_reader);
+        assert_subset_latest_blk_file(&subset_reader, real_btc_subset_file_count());
         let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
         loader.build_index().unwrap();
 
@@ -1279,7 +1317,7 @@ mod tests {
         assert_real_rpc_available(&client);
         let subset_reader =
             BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
-        assert_subset_latest_blk_file(&subset_reader);
+        assert_subset_latest_blk_file(&subset_reader, real_btc_subset_file_count());
         let loader = build_real_loader(config.clone(), client.clone(), db.clone(), output.clone());
         loader.build_index().unwrap();
 
@@ -1341,7 +1379,7 @@ mod tests {
     #[test]
     fn real_btc_correctness_read_blk_blocks_matches_direct_reader_on_subset_files() {
         let (_config, reader) = make_default_subset_reader("read_blk_blocks");
-        let latest_index = assert_subset_latest_blk_file(&reader);
+        let latest_index = assert_subset_latest_blk_file(&reader, real_btc_subset_file_count());
 
         let non_empty_files = non_empty_file_indices(&reader, latest_index);
         assert!(
@@ -1424,9 +1462,12 @@ mod tests {
     #[cfg(usdb_bh_real_btc)]
     #[test]
     fn real_btc_profile_blk_file_reader_memory_usage() {
-        let (_config, reader) = make_default_subset_reader("memory_profile");
-        let (loaded_file_count, used_memory) =
-            measure_blk_file_memory_usage(&reader, 0, TEST_SUBSET_BLK_FILE_COUNT);
+        let (_config, _client, reader) = make_live_reader_and_client();
+        let (loaded_file_count, used_memory) = measure_blk_file_memory_usage(
+            &reader,
+            real_btc_profile_start_file(),
+            real_btc_profile_file_count(),
+        );
         assert!(
             loaded_file_count > 0,
             "expected memory profiling to load at least one blk file"
@@ -1496,8 +1537,10 @@ mod tests {
     fn real_btc_correctness_block_file_cache_matches_reader_across_multiple_files() {
         let (_config, reader) = make_default_subset_reader("cache_multiple_files");
         let cache = BlockFileCache::new(reader.clone()).unwrap();
-        let non_empty_files =
-            non_empty_file_indices(&reader, assert_subset_latest_blk_file(&reader));
+        let non_empty_files = non_empty_file_indices(
+            &reader,
+            assert_subset_latest_blk_file(&reader, real_btc_subset_file_count()),
+        );
 
         assert!(
             !non_empty_files.is_empty(),

@@ -25,10 +25,10 @@
 | 分层 | 当前入口 | 默认执行 | 外部服务 | 主要覆盖 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
 | Rust unit tests | `cargo test -p balance-history` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、readiness、script registry unit paths | 本地可运行并已通过 |
-| Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，不进入默认 `ignored` unit tests |
+| Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，支持 suite/size 切片 |
 | Regtest scripts | `bash src/btc/balance-history/scripts/regtest_*.sh` | 否 | 本机 bitcoind binary | 端到端 smoke、reorg、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已存在，但还没有统一 runner |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
-| Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用 |
+| Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用，支持横向抽样 |
 
 ## 基线命令
 
@@ -134,29 +134,27 @@ bash src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh
 | Latest complete blk RPC parity | `real_btc_correctness_latest_complete_blk_file_blocks_are_available_via_rpc` | 本机 bitcoind RPC + 本机 blk 文件 |
 | Manual profiling | `real_btc_profile_blk_file_reader_memory_usage`, `real_btc_profile_block_file_cache_prefetch_sample_range` | 本机 blk 文件 + 手工解读 |
 
-固定 correctness 命令：
+快速 correctness 命令：
 
 ```bash
 USDB_BH_REAL_BTC=1 \
 BTC_DATA_DIR=/home/bucky/.bitcoin \
 BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
-bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny
 ```
 
-固定 profile 命令：
+快速 profile 命令：
 
 ```bash
 USDB_BH_REAL_BTC=1 \
 BTC_DATA_DIR=/home/bucky/.bitcoin \
 BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
-USDB_BH_REAL_BTC_CACHE_START_FILE=0 \
-USDB_BH_REAL_BTC_CACHE_FILE_COUNT=4 \
-bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny
 ```
 
-这些命令要求显式传入 `BTC_DATA_DIR` 和 `BTC_RPC_URL`，避免静默读取开发者默认配置。`BTC_COOKIE_FILE` 可替换为 `BTC_RPC_USER` / `BTC_RPC_PASSWORD`。
+这些命令要求显式传入 `BTC_DATA_DIR` 和 `BTC_RPC_URL`，避免静默读取开发者默认配置。`BTC_COOKIE_FILE` 可替换为 `BTC_RPC_USER` / `BTC_RPC_PASSWORD`。`run_real_btc_tests.sh` 支持 `--size tiny|small|medium|large|full`，其中 correctness 子集始终从 `blk00000.dat` 开始以保证链连续；profile 可通过 `USDB_BH_REAL_BTC_PROFILE_START_FILE` 横向抽样任意 blk 文件段。
 
 ## 当前覆盖缺口
 

@@ -134,6 +134,22 @@ BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
 bash src/btc/balance-history/scripts/run_real_btc_tests.sh correctness
 ```
 
+横向/纵向切片示例：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny
+
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh block-cache --size small
+```
+
 性能/profile 入口：
 
 ```bash
@@ -141,7 +157,7 @@ USDB_BH_REAL_BTC=1 \
 BTC_DATA_DIR=/home/bucky/.bitcoin \
 BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
-bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny
 ```
 
 详细说明见 [balance-history-real-btc-tests.md](/home/bucky/work/usdb/doc/balance-history/balance-history-real-btc-tests.md)。
