@@ -122,7 +122,15 @@ DaoAddress      = 0x0000000000000000000000000000000000001001
 DividendAddress = 0x0000000000000000000000000000000000001002
 ```
 
-这些值只作为当前开发和测试基线。public testnet / mainnet 前必须重新确认。
+这些值作为当前开发和测试基线，也可以作为 public testnet / mainnet 的候选预留地址。
+
+public network 最终采用前必须完成一次 release preflight：
+
+- 确认 `DaoAddress` / `DividendAddress` 不与其他 genesis alloc 地址冲突。
+- 确认这两个地址只作为 system predeploy 地址使用，不分配给普通用户或 bootstrap 账户。
+- 确认 canonical genesis 中这两个地址的 runtime code 非空。
+- 确认 release manifest、ETHW chain config、SourceDAO bootstrap config 中的地址完全一致。
+- 如果 public release 决定继续使用当前 `0x...1001` / `0x...1002`，这些地址必须进入 release manifest 并在该网络生命周期内视为固定。
 
 # Genesis Predeploy
 
@@ -150,6 +158,8 @@ public network release 必须能审计以下 artifact：
 | `USDBGenesisHash` | 必须 | 由 canonical genesis 生成。 |
 | `genesis_sha256` | 应该 | 用于文件完整性校验，不替代 `USDBGenesisHash`。 |
 | `genesis_manifest` | 必须 | 描述 genesis、chain config、system addresses、code hash。 |
+| `release_manifest_signature` | public network 必须 | 证明 release manifest 来自指定发布方。 |
+| `trusted_release_signing_keys` | public network 应该 | joiner 用于验证 release manifest signature 的可信公钥集合。 |
 | `Dao runtime code hash` | 必须 | 从 SourceDAO artifact 的 deployed bytecode 计算。 |
 | `Dividend runtime code hash` | 必须 | 从 SourceDAO artifact 的 deployed bytecode 计算。 |
 | `source_dao_bootstrap_config` | 必须 | 启动后初始化参数。 |
@@ -157,6 +167,57 @@ public network release 必须能审计以下 artifact：
 | `bootstrap_marker` | 必须 | bootstrap 完成的最小状态标记。 |
 
 建议 code hash 使用 `keccak256(runtime_code)`，manifest 文件完整性使用 `sha256(file)`。具体 canonical encoding 可以在实现阶段固定，稳定后回写本 UIP。
+
+v1 建议的实现方向：
+
+- `runtime_code` 来自 SourceDAO artifact 的 deployed bytecode，而不是 creation bytecode。
+- `runtime_code_hash = keccak256(runtime_code_bytes)`，用于证明 genesis predeploy 的 EVM code identity。
+- `artifact_file_sha256 = sha256(artifact_file_bytes)`，用于证明 release artifact 文件完整性。
+- JSON artifact canonical encoding、字段排序、hex 大小写和 `0x` 前缀规范先保留为 `TODO`，待实现稳定后再固定。
+
+# Release Manifest Signature
+
+UIP-0010 将可信性分为两层：
+
+1. 共识可信：由 canonical genesis、`USDBGenesisHash`、ETHW chain config、链上交易历史和本地状态校验保证。
+2. 发布物可信：由 release manifest signature 保证，用于证明下载到的关键文件来自指定发布方。
+
+release manifest signature 类似安装包、Docker image 或 Linux package repository 的数字签名。它不改变 ETHW 共识规则，也不能替代节点本地的 genesis / chain / contract state 校验。
+
+public network release manifest 应至少承诺以下内容的 hash 或明确值：
+
+```text
+network_name
+chain_id
+network_id
+USDBGenesisHash
+genesis_file_sha256
+activation_matrix_id
+DaoAddress
+DividendAddress
+Dao runtime code hash
+Dividend runtime code hash
+SourceDAO bootstrap config hash
+bootstrap_state hash
+bootnodes / discovery config hash
+```
+
+推荐 joiner 校验流程：
+
+```text
+verify release manifest signature
+    -> verify release manifest 中记录的文件 hash
+    -> init / start with canonical genesis
+    -> sync ETHW chain
+    -> verify on-chain SourceDAO / Dividend bootstrap state
+```
+
+规则：
+
+- local dev / CI 可以跳过 release manifest signature。
+- public testnet 应支持 release manifest signature，可以通过启动参数、安装包配置或配置文件提供 trusted key。
+- mainnet 应提供明确的 release signing key 分发和轮换机制。
+- `trusted_release_signing_keys` 是供应链安全机制，不是共识规则；不同节点只要使用相同 genesis 和 chain config，最终仍由链同步和状态校验判断是否在同一网络。
 
 # Chain Config Fields
 
@@ -208,6 +269,33 @@ public network 配置必须与开发期配置分离：
 - `genesisDifficulty`、`minimumDifficulty` 与 UIP-0009 的 final 参数必须一致。
 - `dividendFeeSplitBlock` 必须大于预计 bootstrap 完成高度，并留出审计和恢复窗口。
 
+# Bootstrap Admin 管理
+
+`bootstrapAdmin` 是冷启动阶段的临时权限主体，用于发送 SourceDAO / Dividend 初始化交易。
+
+当前 SourceDAO 原型具备以下约束：
+
+- `Dao.initialize()` 将 `bootstrapAdmin` 设置为初始化交易发送者。
+- SourceDAO 模块地址 setter 由 `onlyBootstrapAdmin` 控制。
+- 模块地址 setter 使用 `onlySetOnce` 语义，已配置模块不能被覆盖。
+- 当前原型提供 `transferBootstrapAdmin(address)`，但没有协议级 `finalizeBootstrap()` / revoke 语义。
+
+因此，public network 不应把单一开发 EOA 作为长期 `bootstrapAdmin`。推荐策略：
+
+| 网络类型 | 推荐 `bootstrapAdmin` |
+| --- | --- |
+| local dev / CI | 临时 EOA，可以由配置文件生成或注入。 |
+| public testnet | 多签账户或 threshold signer。 |
+| mainnet | 多签账户、治理合约或经组委会确认的 threshold custody。 |
+
+public network bootstrap 完成后，必须明确长期权限归属：
+
+- 可以把 `bootstrapAdmin` 转移给治理多签或治理合约。
+- 如果 SourceDAO 最终实现 `finalizeBootstrap()` / `bootstrapFinalized`，可以在 full bootstrap 完成后关闭 bootstrap 权限。
+- 在未实现显式 finalization 前，release manifest 必须记录 bootstrap 完成后的 `bootstrapAdmin` 最终地址和管理策略。
+
+是否新增独立 `Bootstrap Admin Governance` UIP 暂不强制。若后续需要定义 key ceremony、签名门限、撤权流程、事故恢复和治理交接，则应该拆成独立 Process / Operational UIP；当前 UIP-0010 只要求 public release 不得依赖未托管的单一私钥长期持有权限。
+
 # Bootstrap Transaction Sequence
 
 v1 最小初始化顺序：
@@ -235,6 +323,19 @@ code(DaoAddress) != empty
 code(DividendAddress) != empty
 ```
 
+public network 如果把 SourceDAO 作为首个 release 的完整治理系统，则 `scope = full` 应成为 release 完成条件，而不是只完成 dao-dividend-only。
+
+`scope = full` 的强制状态应至少包括：
+
+- `DaoAddress` 和 `DividendAddress` runtime code 非空。
+- `Dao.initialize()` 已成功。
+- `Dividend.initialize(cycleMinLength, DaoAddress)` 已成功。
+- `Dao.setTokenDividendAddress(DividendAddress)` 已成功。
+- committee、dev token、normal token、token lockup、project、acquired 等 release manifest 声明的 SourceDAO 模块已经完成部署和 wiring。
+- `bootstrap_state.final_wiring` 中所有必填模块地址非零，且与链上状态一致。
+
+后续 SourceDAO 模块升级不属于本 UIP 冷启动范围，应走 SourceDAO / proxy / governance 自身升级流程。
+
 # Fee Split Activation
 
 `DividendFeeSplitBlock` 是 fee split 的共识激活高度。
@@ -253,6 +354,15 @@ DividendFeeSplitBlock = 16
 ```
 
 该值只用于本地测试，不是 public network final 参数。
+
+public network 的 `DividendFeeSplitBlock` 不需要是一个精确的“最小间隔”。它是 release 计划中的 fee split 生效高度，可以设置在网络启动后数天或一周，以便完成：
+
+- SourceDAO full bootstrap。
+- release artifact、bootstrap state 和链上状态复核。
+- explorer / monitor / joiner 同步验证。
+- 必要时的节点重启或配置修正。
+
+当前 docker 冷启动流程会在 ETHW RPC ready 后紧跟执行 SourceDAO bootstrap，因此 local dev / CI 可以使用很短的激活窗口。public network 应由 activation matrix 固定最终高度。
 
 # Bootstrap State and Marker
 
@@ -289,19 +399,52 @@ bootstrap job 必须输出可审计状态。
   - `dividend = DividendAddress`。
   - 其他 SourceDAO 模块地址，如果 scope 为 `full`。
 
+`bootstrap_state` / `bootstrap_marker` 本身不是共识输入，不应被视为替代链上状态或 genesis hash 的安全来源。
+
+签名策略：
+
+- local dev / CI 可以不签名。
+- public release 应该签名 release manifest，manifest 中引用 canonical genesis、system contract code hash、bootstrap config 和 bootstrap state。
+- `bootstrap_marker` 可以不单独签名；如果需要发布给 joiner 或运维系统，应通过已签名 manifest 间接承诺其 hash。
+- 签名主体应该是 release operator、组委会多签或后续治理确认的 release signing key。
+
+签名的安全目标是 release artifact provenance 和供应链完整性，不是改变 ETHW 共识。共识仍由 canonical genesis、chain config 和链上交易历史决定。
+
 # Joiner Validation
 
 后续加入网络的节点必须验证：
 
-1. 使用同一份 canonical genesis。
-2. `USDBGenesisHash` 与 release manifest 一致。
-3. system contract runtime code hash 与 manifest 一致。
-4. `ChainConfig.DividendAddress` 与 `DividendAddress` 一致。
-5. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
-6. 链上 bootstrap 交易已执行并成功。
-7. 当前链上状态满足最小完成条件。
+1. release manifest signature 有效，或者当前网络明确处于 unsigned dev mode。
+2. release manifest 中引用的文件 hash 与本地文件一致。
+3. 使用同一份 canonical genesis。
+4. `USDBGenesisHash` 与 release manifest 一致。
+5. system contract runtime code hash 与 manifest 一致。
+6. `ChainConfig.DividendAddress` 与 `DividendAddress` 一致。
+7. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
+8. 链上 bootstrap 交易已执行并成功。
+9. 当前链上状态满足最小完成条件。
 
 joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史并审计最终状态。
+
+# Trusted Bootstrap Manifest Key
+
+public joiner 可以内置或配置 trusted bootstrap manifest key，用于验证下载到的 release artifact：
+
+- canonical genesis。
+- genesis manifest。
+- SourceDAO bootstrap config。
+- bootstrap state / marker。
+- bootnodes / discovery hints。
+
+trusted key 的价值是降低 joiner 对下载渠道、镜像站或手工复制文件的信任要求。它不替代链同步和链上状态校验，也不应成为共识规则的一部分。
+
+v1 建议：
+
+- local dev / CI 不要求 trusted key。
+- public network release tooling 应支持 signed manifest 验证。
+- public testnet 可以通过启动参数、安装包配置或 release bundle 提供 trusted key。
+- mainnet 应考虑把 official release signing key 或 trusted key registry 随客户端 / 安装包分发，并支持 key rotation。
+- 是否把 trusted key 编译进客户端、写入安装包配置，还是由 joiner 启动参数提供，留给后续冷启动 / joiner 流程文档确定。
 
 # 与 UIP-0009 的关系
 
@@ -375,11 +518,13 @@ USDB docker:
 
 # 待审计问题
 
-1. public testnet / mainnet 的最终 `DaoAddress` 和 `DividendAddress`。
-2. SourceDAO artifact / runtime code hash 的 canonical encoding。
-3. `bootstrapAdmin` 是否使用单一临时账户、多签账户或治理合约。
-4. `bootstrapAdmin` 权限是否需要在 bootstrap 后显式 finalization 或撤权。
-5. `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的最小安全间隔。
-6. SourceDAO full bootstrap 的其他模块是否进入 public network 首次 release 的强制状态。
-7. `bootstrap_state` / `bootstrap_marker` 是否需要签名，签名主体是谁。
-8. public joiner 是否需要内置 trusted bootstrap manifest key。
+| 问题 | 当前结论 | 后续动作 |
+| --- | --- | --- |
+| public testnet / mainnet 的最终 `DaoAddress` 和 `DividendAddress` | 当前 `0x...1001` / `0x...1002` 可以作为候选预留地址。 | public release 前做 address conflict preflight 并写入 release manifest。 |
+| SourceDAO artifact / runtime code hash canonical encoding | 方向是 `keccak256(deployedBytecode)`，artifact 文件用 `sha256(file)`。 | JSON / hex canonical encoding 等实现稳定后回写本 UIP。 |
+| `bootstrapAdmin` 使用单一临时账户、多签账户或治理合约 | local dev 可用临时 EOA；public network 不应长期依赖单一私钥。 | 讨论多签 / threshold / governance handoff，并决定是否拆独立 UIP。 |
+| `bootstrapAdmin` 权限是否需要 finalization 或撤权 | 当前 SourceDAO 有 `onlySetOnce` 和 `transferBootstrapAdmin`，但无协议级 finalize。 | 评估是否为 SourceDAO 增加 `finalizeBootstrap()`。 |
+| `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |
+| SourceDAO full bootstrap 是否进入 public network 首次 release 强制状态 | 若首个 release 需要完整 SourceDAO 治理系统，则 `scope = full` 应成为完成条件。 | 确认 public testnet / mainnet 的 required module set。 |
+| `bootstrap_state` / `bootstrap_marker` 是否需要签名 | marker 本身不是共识输入；public release 应签 manifest，并由 manifest 引用 state/marker hash。 | 设计 release signing key / signer set。 |
+| public joiner 是否需要内置 trusted bootstrap manifest key | trusted key 是 artifact provenance 机制，不是共识规则。 | 放到后续 cold-start / joiner 流程中确定嵌入方式和轮换策略。 |
