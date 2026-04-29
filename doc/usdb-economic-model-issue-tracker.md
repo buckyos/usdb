@@ -63,7 +63,7 @@
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
 | ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
 | ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
-| ECO-010 | P2 | In Progress | CoinBase、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
+| ECO-010 | P2 | In Progress | CoinBase、K、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
 | ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
 | ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` |
@@ -252,7 +252,7 @@
   - 同一节点能对不同历史高度按对应公式版本查询。
   - validator payload version mismatch 路径可覆盖经济公式版本。
 
-### ECO-010. CoinBase、分账、price / real_price、辅助算力池拆分
+### ECO-010. CoinBase、K、分账、price / real_price、辅助算力池拆分
 
 - 优先级：`P2`
 - 状态：`In Progress`
@@ -262,13 +262,15 @@
   - SourceDAO / Dividend bootstrap 已拆到 `UIP-0010` 优先处理。
   - CoinBase emission 与 reward / fee split 公式后移到 `UIP-0011` 及后续 economic UIP。
   - `doc/UIP/UIP-0011-coinbase-emission-and-reward-split.md` 已进入 Draft。
+  - 动态 `K` 已拆到 `doc/UIP/UIP-0012-collaboration-efficiency-coefficient.md`。
 - 目标：
   - 将发行、分账、价格、辅助算力池拆成独立 UIP。
   - 每个 UIP 必须有确定性输入、整数公式、验证路径和 reorg 语义。
 - 下一步：
   - Review UIP-0011 中 `total_miner_btc_sats`、`issued_usdb_atoms`、`K`、fee split、aux pool 和 uncle reward 边界。
-  - 继续起草 UIP-0012，固定 `price` / `real_price`，为 UIP-0011 提供 `price_atoms_per_btc` 输入。
-  - 继续起草 UIP-0013，固定辅助算力池证明和 75% / 25% CoinBase split 的激活条件。
+  - Review UIP-0012 中 `compute_k_bps`、warmup activation delay 和 `K_LAST_*` 审计 slots。
+  - 继续起草 UIP-0013，固定 `price` / `real_price`，为 UIP-0011 提供 `price_atoms_per_btc` 输入。
+  - 继续起草 UIP-0014，固定辅助算力池证明和 75% / 25% CoinBase split 的激活条件。
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 

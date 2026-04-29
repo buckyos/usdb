@@ -74,8 +74,9 @@ Activation: <height/governance/TODO>
 | 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
 | 10 | `UIP-0010` | SourceDAO and Dividend Bootstrap | Standards Track | P1 | Draft |
 | 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Draft |
-| 12 | `UIP-0012` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
-| 13 | `UIP-0013` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
+| 12 | `UIP-0012` | Collaboration Efficiency Coefficient K | Standards Track | P2 | Draft |
+| 13 | `UIP-0013` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
+| 14 | `UIP-0014` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
 ## 7. UIP-0000: UIP Process and Governance
 
@@ -545,8 +546,8 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `reward_recipient` 来自 standard pass 的 `eth_main`，且必须等于 `header.Coinbase`。
 - `CoinBase` 使用 `target_supply_atoms - issued_usdb_atoms` 的剩余目标供应量计算。
 - fee split 激活后手续费按 `miner=60%`、`DAO/Dividend=40%` 分配，整除余数归矿工。
-- 在 UIP-0013 Final 前不启用 aux pool split。
-- 动态 `K` 未审计完成前，`k_bps = 10000` 可作为最小 v1 fallback。
+- 动态 `K` 已拆到 `UIP-0012`，UIP-0011 只消费 `k_bps`。
+- 在 UIP-0014 Final 前不启用 aux pool split。
 - uncle / ommer reward 在规则未固定前建议禁用或置 `0`。
 
 建议延后原因：
@@ -554,7 +555,34 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 依赖 pass / energy / leader / validator payload 稳定。
 - 依赖 UIP-0010 先确定分红池地址、bootstrap 状态和 fee split activation 边界。
 
-## 19. UIP-0012: Price and Real Price Update Rules
+## 19. UIP-0012: Collaboration Efficiency Coefficient K
+
+目标：
+
+- 定义 CoinBase 公式中的协作效率系数 `K`。
+- 定义 `CE_N`、`AE_N`、rolling window 和 warmup 规则。
+- 定义 `K` state 如何存入 ETHW reserved system storage 并由 `stateRoot` 承诺。
+- 固定 v1 `CE_N = collab_contribution` 的样本口径。
+
+需要解决：
+
+- `compute_k_bps` 整数公式。
+- warmup 阶段是否需要 activation delay。
+- optional `K_LAST_*` 审计 slots 是否进入 v1。
+
+当前草案：
+
+- `doc/UIP/UIP-0012-collaboration-efficiency-coefficient.md`
+
+当前草案倾向：
+
+- v1 使用 UIP-0006 的 `collab_contribution` 作为 `CE_N`。
+- `AE_N` 使用过去固定 ETHW block 数量的 rolling window，不使用 wall-clock。
+- `K_WINDOW_BLOCKS = 50400`，按 12 秒平均出块间隔对应 1 周。
+- 窗口未填满或 `AE_N == 0` 时，`k_bps = 10000`。
+- rolling window 使用 reserved system storage ring buffer，并随 `stateRoot` / reorg 自动回滚。
+
+## 20. UIP-0013: Price and Real Price Update Rules
 
 目标：
 
@@ -574,7 +602,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 依赖发行和交易/挂单证明机制。
 
-## 20. UIP-0013: Auxiliary Hashpower Pool
+## 21. UIP-0014: Auxiliary Hashpower Pool
 
 目标：
 
@@ -593,7 +621,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 独立性较强，但实现和验证成本高，应在核心经济模型稳定后推进。
 
-## 20. 推荐实施顺序
+## 22. 推荐实施顺序
 
 第一阶段：协议骨架
 
@@ -622,8 +650,9 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 2. `UIP-0011`
 3. `UIP-0012`
 4. `UIP-0013`
+5. `UIP-0014`
 
-## 21. 与当前文档的关系
+## 23. 与当前文档的关系
 
 - `doc/usdb-economic-model-design.md`：目标经济模型总览和讨论稿。
 - `doc/usdb-economic-model-issue-tracker.md`：问题、修复状态和下一步工作跟踪。
