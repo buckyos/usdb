@@ -316,6 +316,23 @@ mod real_btc_tests {
             .unwrap_or(default)
     }
 
+    fn append_real_btc_metric(metric: serde_json::Value) {
+        let Ok(path) = std::env::var("USDB_BH_REAL_BTC_METRICS_FILE") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write as _;
+        writeln!(file, "{}", metric).unwrap();
+    }
+
     #[test]
     fn real_btc_profile_block_file_cache_prefetch_sample_range() {
         let config = real_btc_config();
@@ -339,6 +356,8 @@ mod real_btc_tests {
             4,
         );
         let sleep_ms = env_usize(&["USDB_BH_REAL_BTC_CACHE_SLEEP_MS"], 0) as u64;
+        let started = std::time::Instant::now();
+        let mut successful_reads = 0usize;
         for i in start..start + count {
             let block = cache.get_block_by_file_index(i, 0).unwrap();
             println!(
@@ -346,10 +365,23 @@ mod real_btc_tests {
                 i,
                 block.block_hash()
             );
+            successful_reads += 1;
 
             if sleep_ms > 0 {
                 std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
             }
         }
+        append_real_btc_metric(serde_json::json!({
+            "component": "balance-history-real-btc-test",
+                "metric_type": "block_file_cache_prefetch",
+                "test": "real_btc_profile_block_file_cache_prefetch_sample_range",
+                "btc_data_dir": config.btc.data_dir().display().to_string(),
+                "profile_segment": std::env::var("USDB_BH_REAL_BTC_PROFILE_SEGMENT").unwrap_or_else(|_| "custom".to_string()),
+                "start_file": start,
+            "requested_file_count": count,
+            "successful_reads": successful_reads,
+            "sleep_ms": sleep_ms,
+            "duration_ms": started.elapsed().as_millis(),
+        }));
     }
 }

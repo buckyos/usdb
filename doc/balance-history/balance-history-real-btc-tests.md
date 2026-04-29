@@ -36,6 +36,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile --size tiny
 | `BTC_RPC_USER` / `BTC_RPC_PASSWORD` | 使用 user/pass auth 时替代 cookie |
 | `BTC_NETWORK` | `bitcoin`、`testnet`、`regtest`、`signet`、`testnet4`，默认 `bitcoin` |
 | `BTC_BLOCK_MAGIC` | 覆盖 blk 文件 magic，例如 `0xD9B4BEF9` |
+| `USDB_BH_REAL_BTC_METRICS_FILE` | JSONL 指标输出文件，默认 `target/balance-history-real-btc/metrics.jsonl` |
 | `USDB_BH_REAL_BTC_SUBSET_FILE_COUNT` | correctness local-loader 子集 blk 文件数量。必须从 `blk00000.dat` 开始，保证链连续 |
 | `USDB_BH_REAL_BTC_PROFILE_START_FILE` | profile 起始 blk 文件编号，可用于横向抽样最新或中间文件 |
 | `USDB_BH_REAL_BTC_PROFILE_FILE_COUNT` | profile 读取的 blk 文件数量 |
@@ -46,6 +47,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile --size tiny
 runner 支持两种切片维度：
 
 - 横向 suite：只跑某一类能力，例如 `loader-index`、`loader-restore`、`blk-reader`、`block-cache`、`latest-rpc`、`profile-reader`、`profile-cache`。
+- 预设 profile 数据段：`profile-early` 从早期 blk 文件开始，`profile-mid` 自动选中间完整 blk 文件段，`profile-recent` 自动选最新完整 blk 文件段。
 - 纵向 size：控制真实数据规模，例如 `tiny`、`small`、`medium`、`large`、`full`。
 
 | Size | correctness subset | profile 文件数 | 典型用途 |
@@ -75,6 +77,19 @@ USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.
 bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny
 ```
 
+预设数据段 profile：
+
+```bash
+USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.1:8332 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-early --size tiny
+
+USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.1:8332 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-mid --size small
+
+USDB_BH_REAL_BTC=1 BTC_DATA_DIR=/home/bucky/.bitcoin BTC_RPC_URL=http://127.0.0.1:8332 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-recent --size small
+```
+
 抽样最新附近 blk 文件做 profile：
 
 ```bash
@@ -84,6 +99,40 @@ BTC_RPC_URL=http://127.0.0.1:8332 \
 BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
 USDB_BH_REAL_BTC_PROFILE_START_FILE=3600 \
 bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size small
+```
+
+## 指标输出
+
+runner 默认会追加 JSONL 指标到：
+
+```bash
+target/balance-history-real-btc/metrics.jsonl
+```
+
+可通过 `USDB_BH_REAL_BTC_METRICS_FILE` 覆盖：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+USDB_BH_REAL_BTC_METRICS_FILE=/tmp/usdb-bh-real-btc.jsonl \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile --size tiny
+```
+
+当前会写三类记录：
+
+| `component` | `metric_type` / `event` | 用途 |
+| --- | --- | --- |
+| `balance-history-real-btc-runner` | `cargo_filter_completed` | 每个 cargo filter 的 suite、size、耗时、退出码和数据规模 |
+| `balance-history-real-btc-test` | `blk_reader_memory` | blk reader profile 的文件数、block 数、内存估算和耗时 |
+| `balance-history-real-btc-test` | `block_file_cache_prefetch` | block file cache profile 的读取文件区间、成功读取数和耗时 |
+
+使用 summary 脚本查看汇总：
+
+```bash
+python3 src/btc/balance-history/scripts/summarize_real_btc_metrics.py
+python3 src/btc/balance-history/scripts/summarize_real_btc_metrics.py /tmp/usdb-bh-real-btc.jsonl --last 20
 ```
 
 ## 当前覆盖

@@ -963,6 +963,24 @@ mod tests {
     }
 
     #[cfg(usdb_bh_real_btc)]
+    fn append_real_btc_metric(metric: serde_json::Value) {
+        let Ok(path) = std::env::var("USDB_BH_REAL_BTC_METRICS_FILE") else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write as _;
+        writeln!(file, "{}", metric).unwrap();
+    }
+
+    #[cfg(usdb_bh_real_btc)]
     fn real_btc_subset_file_count() -> usize {
         let count = real_btc_env_usize("USDB_BH_REAL_BTC_SUBSET_FILE_COUNT", 4);
         assert!(
@@ -1413,17 +1431,29 @@ mod tests {
     }
 
     #[cfg(usdb_bh_real_btc)]
+    struct RealBtcBlkReaderProfile {
+        start_file: usize,
+        requested_file_count: usize,
+        loaded_file_count: usize,
+        loaded_block_count: usize,
+        used_memory_bytes: u64,
+        duration_ms: u128,
+    }
+
+    #[cfg(usdb_bh_real_btc)]
     fn measure_blk_file_memory_usage(
         reader: &BlockFileReader,
         start_index: usize,
         count: usize,
-    ) -> (usize, u64) {
+    ) -> RealBtcBlkReaderProfile {
+        let started = std::time::Instant::now();
         let mut sys = sysinfo::System::new_all();
         sys.refresh_memory();
         let available_memory = sys.available_memory();
 
         let mut file_index = start_index;
         let mut result = Vec::new();
+        let mut loaded_block_count = 0usize;
         loop {
             let file = reader.get_blk_file_path(file_index);
             if !file.exists() {
@@ -1438,6 +1468,7 @@ mod tests {
                 blocks.len(),
                 file_index
             );
+            loaded_block_count += blocks.len();
             result.push(blocks);
 
             file_index += 1;
@@ -1448,7 +1479,7 @@ mod tests {
 
         sys.refresh_memory();
         let available_memory_after = sys.available_memory();
-        let used_memory = available_memory - available_memory_after;
+        let used_memory = available_memory.saturating_sub(available_memory_after);
         let item_memory = used_memory / count as u64;
         println!(
             "Used memory after loading {} blk files: {} bytes",
@@ -1456,26 +1487,46 @@ mod tests {
         );
         println!("Estimated memory per item: {} bytes", item_memory);
 
-        (result.len(), used_memory)
+        RealBtcBlkReaderProfile {
+            start_file: start_index,
+            requested_file_count: count,
+            loaded_file_count: result.len(),
+            loaded_block_count,
+            used_memory_bytes: used_memory,
+            duration_ms: started.elapsed().as_millis(),
+        }
     }
 
     #[cfg(usdb_bh_real_btc)]
     #[test]
     fn real_btc_profile_blk_file_reader_memory_usage() {
-        let (_config, _client, reader) = make_live_reader_and_client();
-        let (loaded_file_count, used_memory) = measure_blk_file_memory_usage(
+        let (config, _client, reader) = make_live_reader_and_client();
+        let profile = measure_blk_file_memory_usage(
             &reader,
             real_btc_profile_start_file(),
             real_btc_profile_file_count(),
         );
         assert!(
-            loaded_file_count > 0,
+            profile.loaded_file_count > 0,
             "expected memory profiling to load at least one blk file"
         );
         println!(
             "profiled blk reader memory usage: loaded_files={}, used_memory={} bytes",
-            loaded_file_count, used_memory
+            profile.loaded_file_count, profile.used_memory_bytes
         );
+        append_real_btc_metric(serde_json::json!({
+            "component": "balance-history-real-btc-test",
+                "metric_type": "blk_reader_memory",
+                "test": "real_btc_profile_blk_file_reader_memory_usage",
+                "btc_data_dir": config.btc.data_dir().display().to_string(),
+                "profile_segment": std::env::var("USDB_BH_REAL_BTC_PROFILE_SEGMENT").unwrap_or_else(|_| "custom".to_string()),
+                "start_file": profile.start_file,
+            "requested_file_count": profile.requested_file_count,
+            "loaded_file_count": profile.loaded_file_count,
+            "loaded_block_count": profile.loaded_block_count,
+            "used_memory_bytes": profile.used_memory_bytes,
+            "duration_ms": profile.duration_ms,
+        }));
     }
 
     #[cfg(usdb_bh_real_btc)]

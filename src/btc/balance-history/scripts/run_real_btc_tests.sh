@@ -8,6 +8,7 @@ LOG_PREFIX="[balance-history-real-btc]"
 SUITE="${1:-correctness}"
 SIZE="small"
 LIST_ONLY=0
+PROFILE_SEGMENT=""
 
 declare -a SUITE_FILTERS=()
 
@@ -27,6 +28,9 @@ Suites:
   profile          Runs manual local blk reader/cache profile checks.
   profile-reader   Runs blk reader memory profile only.
   profile-cache    Runs block file cache prefetch profile only.
+  profile-early    Runs profile on the earliest blk files.
+  profile-mid      Runs profile around the middle complete blk files.
+  profile-recent   Runs profile on the latest complete blk files.
   all              Runs correctness and profile.
 
 Options:
@@ -52,6 +56,7 @@ Optional env:
   BTC_RPC_PASSWORD=password
   BTC_NETWORK=bitcoin|testnet|regtest|signet|testnet4
   BTC_BLOCK_MAGIC=0xD9B4BEF9
+  USDB_BH_REAL_BTC_METRICS_FILE=/path/to/metrics.jsonl
 
 Profile-only env:
   USDB_BH_REAL_BTC_PROFILE_START_FILE=0
@@ -64,6 +69,37 @@ log() {
   echo "${LOG_PREFIX} $*"
 }
 
+find_latest_blk_file_index() {
+  local blocks_dir="${BTC_DATA_DIR%/}/blocks"
+  local path base number max_index=-1
+
+  if [[ ! -d "$blocks_dir" ]]; then
+    echo "Missing BTC blocks dir: ${blocks_dir}" >&2
+    exit 2
+  fi
+
+  shopt -s nullglob
+  for path in "$blocks_dir"/blk*.dat; do
+    base="$(basename "$path")"
+    number="${base#blk}"
+    number="${number%.dat}"
+    if [[ "$number" =~ ^[0-9]+$ ]]; then
+      number=$((10#$number))
+      if (( number > max_index )); then
+        max_index="$number"
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  if (( max_index < 0 )); then
+    echo "No blk*.dat files found under ${blocks_dir}" >&2
+    exit 2
+  fi
+
+  echo "$max_index"
+}
+
 require_env() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
@@ -73,13 +109,110 @@ require_env() {
   fi
 }
 
+compute_profile_start_file() {
+  local count="$1"
+  local latest latest_complete start
+
+  if [[ -n "${USDB_BH_REAL_BTC_PROFILE_START_FILE+x}" ]]; then
+    echo "$USDB_BH_REAL_BTC_PROFILE_START_FILE"
+    return 0
+  fi
+
+  case "$PROFILE_SEGMENT" in
+    ""|early)
+      echo 0
+      ;;
+    mid)
+      latest="$(find_latest_blk_file_index)"
+      latest_complete="$latest"
+      if (( latest_complete > 0 )); then
+        latest_complete=$((latest_complete - 1))
+      fi
+      start=$((latest_complete / 2 - count / 2))
+      if (( start < 0 )); then
+        start=0
+      fi
+      echo "$start"
+      ;;
+    recent)
+      latest="$(find_latest_blk_file_index)"
+      latest_complete="$latest"
+      if (( latest_complete > 0 )); then
+        latest_complete=$((latest_complete - 1))
+      fi
+      start=$((latest_complete - count + 1))
+      if (( start < 0 )); then
+        start=0
+      fi
+      echo "$start"
+      ;;
+    *)
+      echo "Unknown profile segment: ${PROFILE_SEGMENT}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+append_runner_metric() {
+  local event="$1"
+  local filter="$2"
+  local exit_code="$3"
+  local started="$4"
+  local ended="$5"
+
+  if [[ -z "${USDB_BH_REAL_BTC_METRICS_FILE:-}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$USDB_BH_REAL_BTC_METRICS_FILE")"
+  python3 - "$USDB_BH_REAL_BTC_METRICS_FILE" "$event" "$filter" "$exit_code" "$started" "$ended" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+path, event, filter_name, exit_code, started, ended = sys.argv[1:]
+started_i = int(started)
+ended_i = int(ended)
+record = {
+    "component": "balance-history-real-btc-runner",
+    "event": event,
+    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    "suite": os.environ.get("USDB_BH_REAL_BTC_SUITE"),
+    "size": os.environ.get("USDB_BH_REAL_BTC_SIZE"),
+    "profile_segment": os.environ.get("USDB_BH_REAL_BTC_PROFILE_SEGMENT"),
+    "filter": filter_name,
+    "exit_code": int(exit_code),
+    "started_unix_sec": started_i,
+    "ended_unix_sec": ended_i,
+    "duration_sec": ended_i - started_i,
+    "subset_file_count": int(os.environ.get("USDB_BH_REAL_BTC_SUBSET_FILE_COUNT", "0")),
+    "profile_start_file": int(os.environ.get("USDB_BH_REAL_BTC_PROFILE_START_FILE", "0")),
+    "profile_file_count": int(os.environ.get("USDB_BH_REAL_BTC_PROFILE_FILE_COUNT", "0")),
+    "btc_data_dir": os.environ.get("BTC_DATA_DIR"),
+    "btc_rpc_url": os.environ.get("BTC_RPC_URL"),
+}
+with open(path, "a", encoding="utf-8") as f:
+    f.write(json.dumps(record, sort_keys=True) + "\n")
+PY
+}
+
 run_cargo_filter() {
   local filter="$1"
+  local started ended exit_code
   log "Running cargo test filter '${filter}'"
+
+  started="$(date +%s)"
+  set +e
   (
     cd "$REPO_ROOT/src/btc"
-    cargo test -p balance-history --lib "$filter" -- --nocapture
+    cargo test -p balance-history --lib "$filter" -- --nocapture --test-threads=1
   )
+  exit_code=$?
+  set -e
+  ended="$(date +%s)"
+  append_runner_metric "cargo_filter_completed" "$filter" "$exit_code" "$started" "$ended"
+  return "$exit_code"
 }
 
 apply_size_defaults() {
@@ -110,15 +243,20 @@ apply_size_defaults() {
       exit 2
       ;;
   esac
-  : "${USDB_BH_REAL_BTC_PROFILE_START_FILE:=0}"
+  USDB_BH_REAL_BTC_PROFILE_START_FILE="$(compute_profile_start_file "$USDB_BH_REAL_BTC_PROFILE_FILE_COUNT")"
 
   export USDB_BH_REAL_BTC_SUBSET_FILE_COUNT
   export USDB_BH_REAL_BTC_PROFILE_START_FILE
   export USDB_BH_REAL_BTC_PROFILE_FILE_COUNT
   export USDB_BH_REAL_BTC_CACHE_FILE_COUNT="${USDB_BH_REAL_BTC_PROFILE_FILE_COUNT}"
   export USDB_BH_REAL_BTC_CACHE_START_FILE="${USDB_BH_REAL_BTC_PROFILE_START_FILE}"
+  export USDB_BH_REAL_BTC_PROFILE_SEGMENT="${PROFILE_SEGMENT:-custom}"
+  export USDB_BH_REAL_BTC_SUITE="$SUITE"
+  export USDB_BH_REAL_BTC_SIZE="$SIZE"
+  : "${USDB_BH_REAL_BTC_METRICS_FILE:=${REPO_ROOT}/target/balance-history-real-btc/metrics.jsonl}"
+  export USDB_BH_REAL_BTC_METRICS_FILE
 
-  log "size=${SIZE}, subset_files=${USDB_BH_REAL_BTC_SUBSET_FILE_COUNT}, profile_start_file=${USDB_BH_REAL_BTC_PROFILE_START_FILE}, profile_files=${USDB_BH_REAL_BTC_PROFILE_FILE_COUNT}"
+  log "size=${SIZE}, subset_files=${USDB_BH_REAL_BTC_SUBSET_FILE_COUNT}, profile_segment=${USDB_BH_REAL_BTC_PROFILE_SEGMENT}, profile_start_file=${USDB_BH_REAL_BTC_PROFILE_START_FILE}, profile_files=${USDB_BH_REAL_BTC_PROFILE_FILE_COUNT}, metrics_file=${USDB_BH_REAL_BTC_METRICS_FILE}"
 }
 
 select_suite() {
@@ -152,6 +290,18 @@ select_suite() {
       ;;
     profile-cache)
       SUITE_FILTERS=(real_btc_profile_block_file_cache_prefetch_sample_range)
+      ;;
+    profile-early)
+      PROFILE_SEGMENT="early"
+      SUITE_FILTERS=(real_btc_profile)
+      ;;
+    profile-mid)
+      PROFILE_SEGMENT="mid"
+      SUITE_FILTERS=(real_btc_profile)
+      ;;
+    profile-recent)
+      PROFILE_SEGMENT="recent"
+      SUITE_FILTERS=(real_btc_profile)
       ;;
     all)
       SUITE_FILTERS=(real_btc_correctness real_btc_profile)
@@ -225,8 +375,8 @@ fi
 require_env BTC_DATA_DIR
 require_env BTC_RPC_URL
 
-apply_size_defaults
 select_suite
+apply_size_defaults
 
 if [[ "$LIST_ONLY" == "1" ]]; then
   print_selected_filters

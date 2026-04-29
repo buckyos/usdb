@@ -160,6 +160,46 @@ BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
 bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny
 ```
 
+预设数据段 profile：
+
+```bash
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-early --size tiny
+
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-mid --size small
+
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-recent --size small
+```
+
+runner 默认会把每个 filter 的耗时和 profile 指标追加到 `target/balance-history-real-btc/metrics.jsonl`。如需写到固定文件：
+
+```bash
+USDB_BH_REAL_BTC_METRICS_FILE=/tmp/usdb-bh-real-btc.jsonl \
+USDB_BH_REAL_BTC=1 \
+BTC_DATA_DIR=/home/bucky/.bitcoin \
+BTC_RPC_URL=http://127.0.0.1:8332 \
+BTC_COOKIE_FILE=/home/bucky/.bitcoin/.cookie \
+bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile --size tiny
+```
+
+查看指标汇总：
+
+```bash
+python3 src/btc/balance-history/scripts/summarize_real_btc_metrics.py
+python3 src/btc/balance-history/scripts/summarize_real_btc_metrics.py /tmp/usdb-bh-real-btc.jsonl --last 20
+```
+
 详细说明见 [balance-history-real-btc-tests.md](/home/bucky/work/usdb/doc/balance-history/balance-history-real-btc-tests.md)。
 
 ### Snapshot Full
