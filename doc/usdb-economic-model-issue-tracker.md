@@ -63,7 +63,7 @@
 | ECO-007 | P1 | In Progress | 定义 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
 | ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
 | ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
-| ECO-010 | P2 | Todo | CoinBase、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
+| ECO-010 | P2 | In Progress | CoinBase、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
 | ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
 | ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` |
@@ -255,17 +255,20 @@
 ### ECO-010. CoinBase、分账、price / real_price、辅助算力池拆分
 
 - 优先级：`P2`
-- 状态：`Todo`
+- 状态：`In Progress`
 - 当前现状：
   - 目标经济模型已经写出方向，但大量参数和证明格式仍是 `<TODO>`。
   - 当前代码侧尚未完整实现这些机制。
   - SourceDAO / Dividend bootstrap 已拆到 `UIP-0010` 优先处理。
   - CoinBase emission 与 reward / fee split 公式后移到 `UIP-0011` 及后续 economic UIP。
+  - `doc/UIP/UIP-0011-coinbase-emission-and-reward-split.md` 已进入 Draft。
 - 目标：
   - 将发行、分账、价格、辅助算力池拆成独立 UIP。
   - 每个 UIP 必须有确定性输入、整数公式、验证路径和 reorg 语义。
 - 下一步：
-  - 等 pass / energy / validator 基础协议稳定后推进。
+  - Review UIP-0011 中 `total_miner_btc_sats`、`issued_usdb_atoms`、`K`、fee split、aux pool 和 uncle reward 边界。
+  - 继续起草 UIP-0012，固定 `price` / `real_price`，为 UIP-0011 提供 `price_atoms_per_btc` 输入。
+  - 继续起草 UIP-0013，固定辅助算力池证明和 75% / 25% CoinBase split 的激活条件。
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 

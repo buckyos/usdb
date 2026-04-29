@@ -73,7 +73,7 @@ Activation: <height/governance/TODO>
 | 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Draft |
 | 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
 | 10 | `UIP-0010` | SourceDAO and Dividend Bootstrap | Standards Track | P1 | Draft |
-| 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Planned |
+| 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Draft |
 | 12 | `UIP-0012` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
 | 13 | `UIP-0013` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
@@ -534,6 +534,20 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `K` 函数。
 - 叔块奖励采用哪一版规则。
 - 收入合约是否进入共识验证。
+
+当前草案：
+
+- `doc/UIP/UIP-0011-coinbase-emission-and-reward-split.md`
+
+当前草案倾向：
+
+- 使用整数 `atoms` / `sats` 公式，不使用浮点数。
+- `reward_recipient` 来自 standard pass 的 `eth_main`，且必须等于 `header.Coinbase`。
+- `CoinBase` 使用 `target_supply_atoms - issued_usdb_atoms` 的剩余目标供应量计算。
+- fee split 激活后手续费按 `miner=60%`、`DAO/Dividend=40%` 分配，整除余数归矿工。
+- 在 UIP-0013 Final 前不启用 aux pool split。
+- 动态 `K` 未审计完成前，`k_bps = 10000` 可作为最小 v1 fallback。
+- uncle / ommer reward 在规则未固定前建议禁用或置 `0`。
 
 建议延后原因：
 
