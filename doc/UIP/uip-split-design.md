@@ -75,7 +75,7 @@ Activation: <height/governance/TODO>
 | 10 | `UIP-0010` | SourceDAO and Dividend Bootstrap | Standards Track | P1 | Draft |
 | 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Draft |
 | 12 | `UIP-0012` | Collaboration Efficiency Coefficient K | Standards Track | P2 | Draft |
-| 13 | `UIP-0013` | Price and Real Price Update Rules | Standards Track | P2 | Planned |
+| 13 | `UIP-0013` | Price and Real Price Update Rules | Standards Track | P2 | Draft |
 | 14 | `UIP-0014` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
 ## 7. UIP-0000: UIP Process and Governance
@@ -587,20 +587,29 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 目标：
 
 - 定义 `price` 与 `real_price`。
-- 定义出块者更新 `real_price` 的挂单证明。
-- 定义 `price` 向 `real_price` 收敛。
+- 定义 `price_atoms_per_btc` 的本链 stateRoot 承诺边界。
+- 定义按高度生效的 price policy range。
+- 固定启动期 `FixedPrice` 策略。
+- 预留外部以太坊 DeFi 和 USDB 自有 DeFi 两类后续 price source policy。
 
 需要解决：
 
-- 初始值。
-- 更新时机。
-- 双边挂单证明格式。
-- `miner_btc_balance` 统计口径。
-- DeFi 合约和 BTC/ETHW 验证边界。
+- dynamic price source 的独立 UIP 拆分。
+- `PRICE_POLICY_RANGE_ID_SLOT` canonical encoding。
+- parent state price 与 activation 边界块的精确执行顺序。
+- 固定价格升级的治理/公告窗口。
 
-建议延后原因：
+当前草案：
 
-- 依赖发行和交易/挂单证明机制。
+- `doc/UIP/UIP-0013-price-and-real-price-update-rules.md`
+
+当前草案倾向：
+
+- v1 使用 `FixedPrice`，从 genesis 固定 `100_000 USDB / BTC`。
+- 不预设 `PRICE_REPORT_START_HEIGHT`，后续由 activation range 决定。
+- 必要时可以通过新增 `FixedPrice` range 调整启动期固定价格。
+- 外部以太坊 DeFi 和 USDB 自有 DeFi 都是可选后续 policy，不强制按阶段顺序启用。
+- UIP-0011 reward 只读取 parent state 中已经承诺的 `price_atoms_per_btc`。
 
 ## 21. UIP-0014: Auxiliary Hashpower Pool
 
