@@ -264,6 +264,7 @@
   - `doc/UIP/UIP-0011-coinbase-emission-and-reward-split.md` 已进入 Draft。
   - 动态 `K` 已拆到 `doc/UIP/UIP-0012-collaboration-efficiency-coefficient.md`。
   - `price` / `real_price` 顶层状态与 fixed price 启动策略已拆到 `doc/UIP/UIP-0013-price-and-real-price-update-rules.md`。
+  - Leader 主动报价活跃窗口和 candidate energy 策略已拆到 `doc/UIP/UIP-0014-leader-quote-activity-and-candidate-energy.md`。
 - 目标：
   - 将发行、分账、价格、辅助算力池拆成独立 UIP。
   - 每个 UIP 必须有确定性输入、整数公式、验证路径和 reorg 语义。
@@ -271,7 +272,8 @@
   - Review UIP-0011 中 `total_miner_btc_sats`、`issued_usdb_atoms`、`K`、fee split、aux pool 和 uncle reward 边界。
   - Review UIP-0012 中 `compute_k_bps`、warmup activation delay 和 `K_LAST_*` 审计 slots。
   - Review UIP-0013 中 price policy range、fixed price 升级、parent state price 和 dynamic source policy 边界。
-  - 继续起草 UIP-0014，固定辅助算力池证明和 75% / 25% CoinBase split 的激活条件。
+  - Review UIP-0014 中 quote window、quote subject、candidate energy 和 quote payload encoding。
+  - 继续起草 UIP-0015，固定辅助算力池证明和 75% / 25% CoinBase split 的激活条件。
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 

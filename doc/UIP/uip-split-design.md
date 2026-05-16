@@ -76,7 +76,8 @@ Activation: <height/governance/TODO>
 | 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Draft |
 | 12 | `UIP-0012` | Collaboration Efficiency Coefficient K | Standards Track | P2 | Draft |
 | 13 | `UIP-0013` | Price and Real Price Update Rules | Standards Track | P2 | Draft |
-| 14 | `UIP-0014` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
+| 14 | `UIP-0014` | Leader Quote Activity and Candidate Energy Policy | Standards Track | P1 | Draft |
+| 15 | `UIP-0015` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
 
 ## 7. UIP-0000: UIP Process and Governance
 
@@ -547,7 +548,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `CoinBase` 使用 `target_supply_atoms - issued_usdb_atoms` 的剩余目标供应量计算。
 - fee split 激活后手续费按 `miner=60%`、`DAO/Dividend=40%` 分配，整除余数归矿工。
 - 动态 `K` 已拆到 `UIP-0012`，UIP-0011 只消费 `k_bps`。
-- 在 UIP-0014 Final 前不启用 aux pool split。
+- 在 UIP-0015 Final 前不启用 aux pool split。
 - uncle / ommer reward 在规则未固定前建议禁用或置 `0`。
 
 建议延后原因：
@@ -611,7 +612,36 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 外部以太坊 DeFi 和 USDB 自有 DeFi 都是可选后续 policy，不强制按阶段顺序启用。
 - UIP-0011 reward 只读取 parent state 中已经承诺的 `price_atoms_per_btc`。
 
-## 21. UIP-0014: Auxiliary Hashpower Pool
+## 21. UIP-0014: Leader Quote Activity and Candidate Energy Policy
+
+目标：
+
+- 定义 Leader 主动报价活跃窗口。
+- 定义 stale Leader 如何从 `effective_energy` 回落到 `raw_energy`。
+- 定义 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。
+- 明确 FixedPrice v1 下 quote 只是 heartbeat，不更新 price。
+- 明确 quote activity 是 ETHW 侧 state，不反向写入 USDB indexer。
+
+需要解决：
+
+- quote payload canonical encoding。
+- quote subject 使用 pass id 还是 owner / BTC address。
+- stale 后是否仅失去 collab energy，还是完全失去 Leader 资格。
+- quote activity state 的 reserved storage key encoding。
+
+当前草案：
+
+- `doc/UIP/UIP-0014-leader-quote-activity-and-candidate-energy.md`
+
+当前草案倾向：
+
+- `LEADER_QUOTE_WINDOW_BLOCKS = 50400`，按 12 秒平均出块间隔对应 1 周。
+- `candidate_energy = effective_energy` if leader quote active，否则 `candidate_energy = raw_energy`。
+- `candidate_level` 从 `candidate_energy` 派生，ETHW difficulty policy 使用 `candidate_level`。
+- block `N` 的有效 quote 最早影响 block `N+1`。
+- FixedPrice v1 中 quote 必须等于 parent price，仅作为 heartbeat。
+
+## 22. UIP-0015: Auxiliary Hashpower Pool
 
 目标：
 
@@ -630,7 +660,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 独立性较强，但实现和验证成本高，应在核心经济模型稳定后推进。
 
-## 22. 推荐实施顺序
+## 23. 推荐实施顺序
 
 第一阶段：协议骨架
 
@@ -660,8 +690,9 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 3. `UIP-0012`
 4. `UIP-0013`
 5. `UIP-0014`
+6. `UIP-0015`
 
-## 23. 与当前文档的关系
+## 24. 与当前文档的关系
 
 - `doc/usdb-economic-model-design.md`：目标经济模型总览和讨论稿。
 - `doc/usdb-economic-model-issue-tracker.md`：问题、修复状态和下一步工作跟踪。
