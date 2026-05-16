@@ -77,7 +77,7 @@ Activation: <height/governance/TODO>
 | 12 | `UIP-0012` | Collaboration Efficiency Coefficient K | Standards Track | P2 | Draft |
 | 13 | `UIP-0013` | Price and Real Price Update Rules | Standards Track | P2 | Draft |
 | 14 | `UIP-0014` | Leader Quote Activity and Candidate Energy Policy | Standards Track | P1 | Draft |
-| 15 | `UIP-0015` | Auxiliary Hashpower Pool | Standards Track | P2 | Planned |
+| 15 | `UIP-0015` | Auxiliary Hashpower Pool | Standards Track | P2 | Draft |
 
 ## 7. UIP-0000: UIP Process and Governance
 
@@ -640,6 +640,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - `candidate_level` 从 `candidate_energy` 派生，ETHW difficulty policy 使用 `candidate_level`。
 - block `N` 的有效 quote 最早影响 block `N+1`。
 - FixedPrice v1 中 quote 必须等于 parent price，仅作为 heartbeat。
+- v1 使用 active standard pass `pass_id` 作为 quote subject，不按 BTC owner / address 继承 quote activity。
 
 ## 22. UIP-0015: Auxiliary Hashpower Pool
 
@@ -655,6 +656,22 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 有效算力大于 BTC 出块难度 75% 的证明格式。
 - 多提交者竞争同一奖励如何处理。
 - 算力证明和矿工证 owner 如何绑定。
+
+当前草案：
+
+- `doc/UIP/UIP-0015-auxiliary-hashpower-pool.md`
+
+当前草案倾向：
+
+- v1 public network 不默认启用辅助算力池，初始 `aux_pool_policy_version = 0`。
+- 后续启用必须通过 UIP-0008 activation matrix 在指定 ETHW block height 激活 `aux_pool_policy_version > 0`。
+- aux pool 不使用独立本地 `enabled` boolean；是否 active 由 policy version、recipient 和 verifier code hash 共同派生。
+- UIP-0015 Final 前，UIP-0011 必须保持 `aux_pool_coinbase_atoms = 0`，CoinBase 100% 归 miner。
+- 辅助算力证明不进入 UIP-0007 `header.Extra`，而是通过 system transaction / system contract 进入 ETHW state。
+- accepted submissions 必须由 `stateRoot` 承诺，并支持 reorg 回滚。
+- BTC reference validation 不得依赖 live BTC RPC，必须选择可历史重放的 BTC header / state commitment / proof segment 方案。
+- 当前倾向使用 active miner pass `pass_id` 作为辅助算力提交绑定 subject。
+- 75% 门槛、最近 2 个 BTC 高度窗口、多提交者竞争和无有效提交时 aux share 处理仍是待审计问题。
 
 建议延后原因：
 

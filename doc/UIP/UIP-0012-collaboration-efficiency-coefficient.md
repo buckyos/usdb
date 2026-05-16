@@ -46,7 +46,7 @@ AE = 过去 1 周有效 Leader 出块时的协作矿工能量平均值
 
 - CoinBase emission 公式，见 UIP-0011。
 - `price` / `real_price` 更新规则，见 UIP-0013。
-- 辅助算力池提交和奖励规则，见 UIP-0014。
+- 辅助算力池提交和奖励规则，见 UIP-0015。
 - collab pass schema、Leader 解析或 `collab_contribution` 计算公式，见 UIP-0001 / UIP-0004 / UIP-0006。
 - SourceDAO / Dividend fee split 冷启动，见 UIP-0010。
 

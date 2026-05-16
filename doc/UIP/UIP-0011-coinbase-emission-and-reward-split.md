@@ -424,7 +424,7 @@ USDB indexer / state view:
 | `issued_usdb_atoms` 是否包含 genesis alloc | 包含 genesis alloc 和 prior CoinBase，不扣除 burn。 | 固定 reserved system account address / storage slot，并在 genesis 中初始化。 |
 | `price_atoms_per_btc` 来源和 scale | 由 UIP-0013 定义；本文只消费 price state。 | UIP-0013 必须固定初始值、更新顺序和 decimal encoding。 |
 | 动态 `K` 是否进入首个 public network | 已拆分到 UIP-0012；v1 使用 `collab_contribution` 作为 `CE_N`。 | Review UIP-0012 rolling window、warmup 和整数 `compute_k_bps`。 |
-| aux pool split 是否从 genesis 启用 | 当前建议 UIP-0015 Final 前不启用。 | UIP-0015 定义证明格式和 recipient 后再激活。 |
+| aux pool split 如何激活 | 初始 `aux_pool_policy_version = 0`，UIP-0015 Final 前不启用。 | UIP-0015 定义证明格式、recipient、verifier code hash 后，通过 activation matrix 在指定高度激活。 |
 | uncle / ommer reward | 当前建议禁用或置 0，直到完整规则确定。 | 决定 USDB ETHW v1 是否保留 uncle 机制。 |
 | miner income contract | 当前 v1 使用 `eth_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
 | fee accounting 与 EVM fork 语义 | 本文只消费 `tx_fees_atoms`。 | 需要在 go-ethereum 实现中确认 EIP-1559 burn、tips、base fee 的具体路径。 |
