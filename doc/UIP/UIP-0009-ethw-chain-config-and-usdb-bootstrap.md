@@ -53,7 +53,12 @@ USDB 目标是一条新的链：
 | `payload_version` | UIP-0007 `ProfileSelectorPayload` 二进制布局版本。 |
 | `difficulty_policy_version` | `level -> real difficulty` ETHW 共识算法版本。 |
 | `reward_rule_version` | ETHW reward 计算规则版本。 |
+| `coinbase_emission_policy_version` | UIP-0011 CoinBase emission 公式版本。 |
 | `fee_split_policy_version` | ETHW fee split / dividend pool 规则版本。 |
+| `collaboration_efficiency_policy_version` | UIP-0012 协作效率系数 `K` 规则版本。 |
+| `price_policy_version` | UIP-0013 price state 和 price source 规则版本。 |
+| `quote_policy_version` | UIP-0014 Leader quote activity 和 candidate energy 规则版本。 |
+| `aux_pool_policy_version` | UIP-0015 辅助算力池规则版本；`0` 表示 disabled。 |
 | `genesis_activation` | 某规则从 genesis / block 0 起生效。 |
 | `legacy_ethw_migration_fields` | ETHW fork 旧链迁移字段，例如 `EthPoWForkBlock`、`ChainID_ALT`、`TerminalTotalDifficulty`。 |
 
@@ -313,15 +318,24 @@ USDB chain config 必须显式包含或可确定以下版本：
 | `payload_version` | uint8 | `1` | genesis |
 | `difficulty_policy_version` | uint16 | `1` | genesis |
 | `reward_rule_version` | uint16 | `1` | genesis |
-| `fee_split_policy_version` | uint16 / optional | `TBD` | genesis 或后续 UIP |
-| `coinbase_emission_policy_version` | uint16 / optional | `TBD` | genesis 或后续 UIP |
+| `coinbase_emission_policy_version` | uint16 | `1` | genesis |
+| `fee_split_policy_version` | uint16 | `1` | `DividendFeeSplitBlock` |
+| `collaboration_efficiency_policy_version` | uint16 | `1` | genesis |
+| `price_policy_version` | uint32 | `1` | genesis |
+| `quote_policy_version` | uint16 | `1` | genesis |
+| `aux_pool_policy_version` | uint16 | `0` | genesis disabled；future activation |
 
 边界：
 
 - `payload_version` 只描述 `header.Extra` payload 编码。
 - `difficulty_policy_version` 描述 ETHW 如何把 UIP-0005 的 `difficulty_factor_bps` 应用到 PoW difficulty。
-- `reward_rule_version` 描述 ETHW reward 规则。
-- fee split 和 CoinBase emission 由后续 UIP 定义，本文只保留 chain config hook。
+- `reward_rule_version` 描述 ETHW reward 输入校验、recipient 校验和最终 state transition。
+- `coinbase_emission_policy_version` 描述 UIP-0011 CoinBase emission 公式。
+- `fee_split_policy_version` 描述 UIP-0011 / UIP-0010 fee split 公式；是否生效还必须满足 `DividendFeeSplitBlock` 和 Dividend bootstrap 条件。
+- `collaboration_efficiency_policy_version` 描述 UIP-0012 的 `K` rolling window 和 state update。
+- `price_policy_version` 描述 UIP-0013 price state transition；v1 为 FixedPrice。
+- `quote_policy_version` 描述 UIP-0014 Leader quote activity 和 candidate energy。
+- `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过 activation registry 激活正整数版本。
 
 首个正式 ETHW 网络必须从 genesis 启用 `difficulty_policy_version = 1`，不得使用 `0` 表示未启用。
 
@@ -352,8 +366,13 @@ USDB ETHW miner 和 validator 都依赖本地 USDB companion service。
 推荐边界：
 
 - `difficulty_policy_version = 1`：由 ETHW 使用 UIP-0005 的 `difficulty_factor_bps` 折算 block difficulty。
-- `reward_rule_version = 1`：由后续 reward / CoinBase UIP 定义。
-- `fee_split_policy_version`：由后续 fee split / dividend UIP 定义。
+- `reward_rule_version = 1`：由 UIP-0011 定义 reward 输入校验和 state transition。
+- `coinbase_emission_policy_version = 1`：由 UIP-0011 定义 CoinBase emission。
+- `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / activation registry 固定。
+- `collaboration_efficiency_policy_version = 1`：由 UIP-0012 定义 `K`。
+- `price_policy_version = 1`：由 UIP-0013 定义 FixedPrice v1。
+- `quote_policy_version = 1`：由 UIP-0014 定义 quote activity v1。
+- `aux_pool_policy_version = 0`：由 UIP-0015 定义 disabled 初始状态。
 
 旧 go-ethereum 备忘中的 reward-only、mock level、`0.5..2.0` multiplier 等设计，只能作为实现历史参考。正式规则以后续 UIP 为准。
 
@@ -425,7 +444,7 @@ UIP-0008 定义 activation registry 的通用机制。UIP-0009 定义 ETHW chain
 
 建议：
 
-- `payload_version`、`difficulty_policy_version`、`reward_rule_version` 必须进入 ETHW chain config 或 activation registry。
+- `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 ETHW chain config 或 activation registry。
 - `activation_registry_id` 可以先作为审计字段暴露。
 - 当 activation registry canonical encoding 固定后，ETHW 节点启动时应校验 expected registry id。
 

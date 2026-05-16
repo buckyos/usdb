@@ -98,6 +98,8 @@ active_version_set:
 
 不同版本字段有不同职责。实现不得把所有变更合并成一个全局版本号。
 
+本文维护 version family registry 的通用字段名和激活语义。每个 version family 的业务含义、输入输出、fail-closed 条件和可选 disabled 状态由对应 UIP 定义。
+
 | Version Family | 类型 | 主要链路 | 说明 |
 | --- | --- | --- | --- |
 | `inscription_schema_version` | string | BTC | pass 铭文 JSON schema 和字段解释。 |
@@ -109,7 +111,13 @@ active_version_set:
 | `state_view_version` | string | RPC / validator replay | UIP-0006 state view JSON 结构版本。 |
 | `payload_version` | uint8 | ETHW header | UIP-0007 `ProfileSelectorPayload` binary layout。 |
 | `difficulty_policy_version` | uint16 | ETHW header / chain config | `level -> real difficulty` 共识算法版本。 |
-| `reward_rule_version` | uint16 | ETHW chain config | reward、bonus、fee split 或发放规则版本。 |
+| `reward_rule_version` | uint16 | ETHW reward / execution | reward 输入校验、reward recipient 校验和最终 reward state transition。 |
+| `coinbase_emission_policy_version` | uint16 | ETHW reward / execution | UIP-0011 CoinBase emission 公式版本。 |
+| `fee_split_policy_version` | uint16 | ETHW reward / execution | UIP-0011 / UIP-0010 交易手续费分账公式和 Dividend activation 版本。 |
+| `collaboration_efficiency_policy_version` | uint16 | ETHW reward / reserved storage | UIP-0012 协作效率系数 `K`、rolling window、warmup 和 state update 规则版本。 |
+| `price_policy_version` | uint32 | ETHW price state / reward | UIP-0013 `price_atoms_per_btc` 状态转换、source kind 和 range 规则版本。 |
+| `quote_policy_version` | uint16 | ETHW validator / reward | UIP-0014 Leader quote activity、candidate energy 和 candidate level 规则版本。 |
+| `aux_pool_policy_version` | uint16 | ETHW reward / system contract | UIP-0015 辅助算力池证明、分配和状态转换规则版本；`0` 可表示 disabled，但只能由 UIP-0015 明确定义。 |
 | `commit_protocol_version` | string | USDB local state | `local_state_commit` / `system_state_id` 输入与编码规则。 |
 | `balance_history_semantics_version` | string | balance-history | upstream balance snapshot / UTXO query 语义。 |
 
@@ -121,9 +129,11 @@ uip-0004-collab-leader-effective-energy:v1
 uip-0006-usdb-economic-state-view:v1
 ```
 
-进入 ETHW block header 或 chain config 的版本字段应该使用固定宽度整数。首个正式版本必须使用正整数版本号，例如 `payload_version = 1`、`difficulty_policy_version = 1`。
+进入 ETHW block header、chain config、activation matrix 或 reserved system state 的版本字段应该使用固定宽度整数。首个启用版本必须使用正整数版本号，例如 `payload_version = 1`、`difficulty_policy_version = 1`。
 
 USDB 首个正式 ETHW 网络必须启用 level-based difficulty policy，不定义 `difficulty_policy_version = 0` 作为“未启用”保留值。若未来某个独立测试网络确实需要无 difficulty policy 模式，必须由后续 UIP 单独定义，不得复用正式网络语义。
+
+可选经济组件如果需要 disabled 状态，必须由对应 UIP 明确允许 `0` 的含义。例如 UIP-0015 当前草案允许 `aux_pool_policy_version = 0` 表示辅助算力池未启用；这不代表其他 version family 自动允许 `0`。
 
 # 激活记录
 
@@ -204,6 +214,12 @@ active_version_set =
     payload_version?
     difficulty_policy_version?
     reward_rule_version?
+    coinbase_emission_policy_version?
+    fee_split_policy_version?
+    collaboration_efficiency_policy_version?
+    price_policy_version?
+    quote_policy_version?
+    aux_pool_policy_version?
     commit_protocol_version?
     balance_history_semantics_version?
 ```
@@ -232,7 +248,7 @@ active_if =
 
 这意味着：
 
-- ETHW block 的 `payload_version`、`difficulty_policy_version`、`reward_rule_version` 由 ETHW chain config / activation matrix 决定。
+- ETHW block 的 `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 由 ETHW chain config / activation matrix 决定。
 - payload 指向的 BTC / USDB state 由 `btc_height` 对应的 BTC-side activation matrix 决定。
 - 两者都必须可重放，且不得互相覆盖。
 
@@ -367,6 +383,13 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 | UIP-0006 | `state_view_version` | `uip-0006-usdb-economic-state-view:v1` | BTC | regtest | btc-regtest | btc_height | 0 | Planned | economic state view v1。 |
 | UIP-0007 | `payload_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | ProfileSelectorPayload 107 bytes。 |
 | UIP-0007 | `difficulty_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | 首个正式 USDB level-based difficulty policy 版本。 |
+| UIP-0011 | `reward_rule_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | reward 输入校验、recipient 校验和 state transition v1。 |
+| UIP-0011 | `coinbase_emission_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | CoinBase emission v1。 |
+| UIP-0011 | `fee_split_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | DividendFeeSplitBlock-TODO | Planned | fee split v1；实际高度必须晚于 SourceDAO / Dividend bootstrap 完成。 |
+| UIP-0012 | `collaboration_efficiency_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | `K` rolling window v1。 |
+| UIP-0013 | `price_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | FixedPrice v1。 |
+| UIP-0014 | `quote_policy_version` | `1` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | Leader quote activity v1。 |
+| UIP-0015 | `aux_pool_policy_version` | `0` | ETHW | devnet | ethw-devnet-TODO | ethw_block | 0 | Planned | auxiliary hashpower pool disabled from genesis；后续启用必须新增 `version_value = 1` 的 activation record。 |
 
 public testnet / mainnet 激活高度必须在进入 Review / Last Call 前补充。
 
@@ -389,3 +412,4 @@ doc/UIP/activation-matrix.yaml
 
 1. `activation_registry_id` 和 `active_version_set_id` 的 canonical encoding 是否在实现 UIP 中固定，还是新增专门 UIP 固定。
 2. 机器可读 activation registry 是否先作为纯文档资产落地，还是等实现层开始消费后再落地。
+3. 对允许 disabled 状态的可选 version family，例如 `aux_pool_policy_version = 0`，是否要求在 activation matrix 中显式记录 disabled row，还是允许 lookup fallback 到 `0`。
