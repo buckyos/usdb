@@ -61,6 +61,8 @@ candidate_energy
 | 术语 | 含义 |
 | --- | --- |
 | `leader_quote` | Leader 在 ETHW 区块中提交的主动报价 heartbeat。 |
+| `quote_source_update` | 建立或更新一个可验证报价来源状态的操作。 |
+| `block_quote_reference` | 出块时引用某个已存在、可验证、未过期报价来源状态的 payload。 |
 | `leader_quote_active` | Leader 在最近窗口内存在有效 quote 的状态。 |
 | `last_valid_quote_block` | ETHW state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
 | `self_energy` | standard pass 自身的 `raw_energy`。 |
@@ -95,7 +97,7 @@ v1 固定：
 
 # Leader Quote Subject
 
-v1 建议以 active standard pass 的 `pass_id` 作为 quote subject：
+v1 固定以 active standard pass 的 `pass_id` 作为 quote subject：
 
 ```text
 leader_quote_subject = resolved_profile.pass_id
@@ -104,10 +106,77 @@ leader_quote_subject = resolved_profile.pass_id
 原因：
 
 - UIP-0007 payload 已显式选择出块 pass。
+- USDB 的能量、继承和 remint 语义都围绕 pass 生命周期定义，quote activity 使用同一主键最直接。
 - pass remint 后，新 pass 必须重新建立 quote activity，避免旧 pass quote 自动继承到新 pass。
+- quote 频率应显著高于 pass remint / pass 更新频率。矿工 remint 出新 pass 后，可以在下一次出块时提交新的 `block_quote_reference`。
 - 协作者通过 `leader_btc_addr` 自动跟随新 active pass 时，collab contribution 仍会进入该新 pass 的 `nominal_effective_energy`，但该新 pass 必须先完成有效 quote，才能把 collab contribution 用于 `candidate_energy`。
 
-如果未来希望 quote activity 按 `owner_script_hash` 或 BTC 地址继承，必须升级 quote policy version，并审计 remint、转移和多 active pass 异常路径。
+v1 不支持按 `owner_script_hash`、BTC address 或 ETH address 继承 quote activity。
+
+如果未来希望 quote activity 按 owner / address 继承，必须升级 quote policy version，并审计 remint、转移和多 active pass 异常路径。
+
+# Quote Source 与 Block Reference
+
+本文把主动报价拆成两段：
+
+```text
+1. quote_source_update
+   建立或更新一个可验证的报价来源状态
+
+2. block_quote_reference
+   出块时引用某个已存在、可验证、未过期的报价来源状态
+```
+
+规则：
+
+- `quote_source_update` 可以与出块解耦。
+- `block_quote_reference` 必须进入 ETHW 共识可见数据。
+- 只有成功出块并携带有效 `block_quote_reference`，才更新 `last_valid_quote_block`。
+- 仅完成 `quote_source_update` 不会刷新 Leader quote activity。
+- `block_quote_reference` 必须绑定当前 UIP-0007 payload 选择的 standard pass。
+
+不同 source kind 的解释：
+
+| Source kind | `quote_source_update` | `block_quote_reference` |
+| --- | --- | --- |
+| `FixedPriceHeartbeat` | 省略；报价来源就是 parent `PRICE_ATOMS_PER_BTC_SLOT`。 | 出块时声明当前 Leader 接受 parent fixed price。 |
+| `ExternalEthereumDefiReference` | 后续 UIP 定义，例如外部链 proof / header registry / price source state。 | 出块时引用对应 proof / source ref。 |
+| `UsdbNativeDefiOrderBacked` | 后续 UIP 定义，例如 Leader 在本链 DeFi 合约中挂单或更新 quote。 | 出块时引用对应 quote id / order id / contract state。 |
+
+因此，FixedPrice v1 并不是省略主动报价，而是省略外部报价来源更新，只保留出块时的 quote reference / heartbeat。
+
+# Quote Authorization
+
+quote authorization 可以由 quote source 自身证明，也可以由 ETHW payload / 系统交易额外证明。
+
+通用规则：
+
+```text
+quote_owner == selected_pass.eth_main or selected_pass.quote_key
+```
+
+如果某个 future quote source 已经能在自身状态中证明 `quote_owner` 与当前 selected Leader 绑定，则 ETHW payload 不需要重复携带签名。
+
+如果某个 future quote source 不能证明 quote owner 绑定，则该 policy 必须在 ETHW payload 或系统交易中提供额外签名 / 授权证明，否则不得启用。
+
+FixedPrice v1 的授权边界：
+
+```text
+payload.pass_id = selected standard pass
+header.Coinbase = selected_pass.eth_main
+quote_source_kind = FixedPriceHeartbeat
+quoted price = parent PRICE_ATOMS_PER_BTC_SLOT
+```
+
+FixedPrice v1 不要求额外 quote signature。该 unsigned heartbeat 不严格证明 Leader 私钥主动签名，只证明该区块以该 Leader pass 出块，且 reward recipient 是该 Leader 的 `eth_main`。
+
+该取舍基于：
+
+- fixed price quote 不改变价格。
+- 模拟他人 Leader 出块时，reward 也必须发给该 Leader 的 `eth_main`。
+- 当前 UIP-0009 固定 `MaximumExtraDataSize = 160`，而 UIP-0007 `ProfileSelectorPayload` v1 已占 `107 bytes`，剩余空间不足以舒适容纳 64/65 bytes 签名。
+
+如果委员会要求 FixedPrice v1 也必须证明 Leader 私钥主动签名，则必须升级 payload 容量、改用系统交易，或重新设计更紧凑的 payload 编码。
 
 # 能量视图
 
@@ -219,7 +288,7 @@ leader_quote {
     quote_policy_version = 1
     price_policy_version = active UIP-0013 price policy version
     price_source_kind = FixedPrice
-    quoted_price_atoms_per_btc = parent PRICE_ATOMS_PER_BTC_SLOT
+    quoted_price_atoms_per_btc = parent PRICE_ATOMS_PER_BTC_SLOT  // logical value; may be derived instead of encoded
 }
 ```
 
@@ -232,6 +301,7 @@ leader_quote {
 - `price_source_kind == FixedPrice`。
 - `quoted_price_atoms_per_btc` 等于 parent state 中的 `PRICE_ATOMS_PER_BTC_SLOT`。
 - 当前 active `PricePolicyRange` 允许 `FixedPriceHeartbeat` quote。
+- 不要求额外 quote signature。
 
 如果 quote payload 缺失：
 
@@ -246,6 +316,16 @@ block invalid
 ```
 
 该规则避免 miner 提交看似报价但不可验证的 payload。
+
+为了适配 UIP-0009 的 `MaximumExtraDataSize = 160`，FixedPrice v1 的链上编码应该尽量小。实现可以只编码：
+
+```text
+quote_present
+quote_policy_version
+quote_source_kind = FixedPriceHeartbeat
+```
+
+并从 parent state 推导 `quoted_price_atoms_per_btc`。
 
 # Parent State 语义
 
@@ -342,6 +422,7 @@ if block contains valid leader_quote:
 - UIP-0006 在对应历史 context 下返回的 USDB economic profile。
 - parent ETHW state 中的 quote activity storage。
 - 当前区块中携带的 quote payload。
+- quote source 自身或 payload 提供的授权证明。
 - 当时 active 的 quote policy version / activation matrix。
 
 禁止通过 RPC 查询当前 head 的 Leader 报价状态来验证历史区块。
@@ -392,6 +473,8 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 未来 dynamic price source UIP 可以把 leader quote 与真实价格更新合并，但必须显式定义：
 
 - price update 是否也是 activity quote。
+- quote source update 和 block quote reference 是否分离。
+- quote source 如何证明 quote owner 绑定 selected Leader。
 - price update 和 activity quote 的失败语义是否一致。
 - price update 是否仍采用 parent state / one-block delay。
 
@@ -405,8 +488,10 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 - `LEADER_QUOTE_WINDOW_BLOCKS = 50400` 边界高度。
 - block `N` 的有效 quote 只影响 block `N+1`。
 - FixedPrice v1 中 quoted price 必须等于 parent `PRICE_ATOMS_PER_BTC_SLOT`。
+- FixedPrice v1 不要求额外 quote signature。
 - quote payload 缺失时不更新 activity state。
 - quote payload 存在但无效时区块无效。
+- 仅完成 future `quote_source_update` 不刷新 `last_valid_quote_block`；必须被成功出块引用后才刷新。
 - pass remint 后，新 pass 不继承旧 pass 的 quote activity。
 - reorg 后 `last_valid_quote_block` 回滚，candidate level 重算。
 
@@ -415,8 +500,11 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 | 问题 | 当前草案结论 | 后续动作 |
 | --- | --- | --- |
 | quote window 长度 | v1 使用 `50400` ETHW blocks，约 1 周。 | 与 public network block time 一起复核。 |
-| quote subject | v1 建议使用 active standard pass `pass_id`。 | 审计是否需要按 BTC owner / address 继承。 |
+| quote subject | v1 固定使用 active standard pass `pass_id`，不支持 owner / address 继承。 | future owner / address 继承必须升级 quote policy version。 |
 | quote payload 编码位置 | 必须进入共识可见数据。 | 在 UIP-0007 payload 扩展或系统交易中固定 canonical encoding。 |
+| FixedPrice quote 是否需要签名 | 当前草案不要求额外签名。 | 委员会确认 unsigned heartbeat 是否可接受；若不可接受，需要扩容或改系统交易。 |
+| future quote source 授权 | 可由 quote source 自身证明，也可由 ETHW payload 证明。 | 后续 dynamic price source UIP 必须固定 owner binding / signature 规则。 |
+| quote source update 与 block reference | 当前草案采用两段模型，只有 block reference 刷新 activity。 | 后续 DeFi price source UIP 定义 source update 细节。 |
 | quote 是否每块必填 | 不强制；缺失则不更新 activity。 | 评估是否对 public network 强制每个 standard block 携带 quote。 |
 | stale 后是否完全失去 Leader 资格 | 当前草案为仅失去 collab energy，仍可按 self energy 出块。 | 委员会确认是否需要更严厉处罚。 |
 | quote update 激励 | v1 没有额外奖励。 | 如果活跃性不足，考虑后续奖励或义务机制。 |
