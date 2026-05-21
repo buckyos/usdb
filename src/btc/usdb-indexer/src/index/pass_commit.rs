@@ -22,8 +22,12 @@ pub enum PassBlockMutation {
         inscription_number: i32,
         mint_owner: String,
         satpoint: String,
+        mint_version: u32,
+        pass_kind: String,
         eth_main: String,
         eth_collab: Option<String>,
+        leader_pass_id: Option<String>,
+        leader_btc_addr: Option<String>,
         prev: Vec<String>,
     },
     InvalidMint {
@@ -196,8 +200,12 @@ mod tests {
             inscription_number: 1,
             mint_owner: "owner".to_string(),
             satpoint: "satpoint".to_string(),
+            mint_version: 1,
+            pass_kind: "standard".to_string(),
             eth_main: "0x1".to_string(),
             eth_collab: None,
+            leader_pass_id: None,
+            leader_btc_addr: None,
             prev: Vec::new(),
         });
 

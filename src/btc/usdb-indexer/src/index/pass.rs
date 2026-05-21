@@ -1,4 +1,4 @@
-use super::content::MinerPassState;
+use super::content::{MinerPassKind, MinerPassState};
 use super::energy::PassEnergyManagerRef;
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
@@ -21,8 +21,12 @@ pub struct PassMintInscriptionInfo {
     pub satpoint: SatPoint,
 
     // The inscription content
+    pub mint_version: u32,
+    pub pass_kind: MinerPassKind,
     pub eth_main: String,
     pub eth_collab: Option<String>,
+    pub leader_pass_id: Option<InscriptionId>,
+    pub leader_btc_addr: Option<String>,
     pub prev: Vec<InscriptionId>,
 }
 
@@ -136,8 +140,12 @@ impl MinerPassManager {
 
             satpoint: mint_info.satpoint.clone(),
 
+            mint_version: mint_info.mint_version,
+            pass_kind: mint_info.pass_kind,
             eth_main: mint_info.eth_main.clone(),
             eth_collab: mint_info.eth_collab.clone(),
+            leader_pass_id: mint_info.leader_pass_id.clone(),
+            leader_btc_addr: mint_info.leader_btc_addr.clone(),
             prev: mint_info.prev.clone(),
             invalid_code: None,
             invalid_reason: None,
@@ -153,8 +161,12 @@ impl MinerPassManager {
             inscription_number: info.inscription_number,
             mint_owner: info.mint_owner.to_string(),
             satpoint: info.satpoint.to_string(),
+            mint_version: info.mint_version,
+            pass_kind: info.pass_kind.as_str().to_string(),
             eth_main: info.eth_main.clone(),
             eth_collab: info.eth_collab.clone(),
+            leader_pass_id: info.leader_pass_id.as_ref().map(|v| v.to_string()),
+            leader_btc_addr: info.leader_btc_addr.clone(),
             prev: info.prev.iter().map(|v| v.to_string()).collect(),
         });
 
@@ -236,8 +248,12 @@ impl MinerPassManager {
             mint_block_height: invalid_info.mint_block_height,
             mint_owner: invalid_info.mint_owner,
             satpoint: invalid_info.satpoint,
+            mint_version: 0,
+            pass_kind: MinerPassKind::Standard,
             eth_main: "".to_string(),
             eth_collab: None,
+            leader_pass_id: None,
+            leader_btc_addr: None,
             prev: Vec::new(),
             invalid_code: Some(invalid_info.error_code.clone()),
             invalid_reason: Some(invalid_info.error_reason.clone()),
@@ -614,8 +630,12 @@ mod tests {
             mint_block_height: 100,
             mint_owner: owner,
             satpoint: satpoint.clone(),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Standard,
             eth_main: "0x1111111111111111111111111111111111111111".to_string(),
             eth_collab: None,
+            leader_pass_id: None,
+            leader_btc_addr: None,
             prev: Vec::new(),
             invalid_code: None,
             invalid_reason: None,

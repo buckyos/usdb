@@ -253,12 +253,11 @@ mod tests {
                 offset: 0,
             },
             value: Amount::from_sat(10_000),
-            content_string: "{\"p\":\"usdb\",\"op\":\"mint\"}".to_string(),
-            content: USDBInscription::Mint(USDBMint {
-                eth_main: "0x1111111111111111111111111111111111111111".to_string(),
-                eth_collab: None,
-                prev: Vec::new(),
-            }),
+            content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"v\":1,\"eth_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
+            content: USDBInscription::Mint(USDBMint::standard(
+                "0x1111111111111111111111111111111111111111".to_string(),
+                Vec::new(),
+            )),
             op: crate::inscription::InscriptionOperation::Inscribe,
             commit_txid: Txid::from_slice(&[owner_tag; 32]).unwrap(),
         }

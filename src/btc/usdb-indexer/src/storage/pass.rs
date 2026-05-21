@@ -1,4 +1,4 @@
-use crate::index::{MinerPassState, PassBlockCommitEntry};
+use crate::index::{MinerPassKind, MinerPassState, PassBlockCommitEntry};
 use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
@@ -42,8 +42,12 @@ pub struct MinerPassInfo {
     pub satpoint: SatPoint, // The satpoint of the inscription, maybe changed after transfer
 
     // The content fields of the pass
+    pub mint_version: u32,
+    pub pass_kind: MinerPassKind,
     pub eth_main: String,
     pub eth_collab: Option<String>,
+    pub leader_pass_id: Option<InscriptionId>,
+    pub leader_btc_addr: Option<String>,
     pub prev: Vec<InscriptionId>,
     pub invalid_code: Option<String>,
     pub invalid_reason: Option<String>,
@@ -190,6 +194,10 @@ impl MinerPassStorage {
                 state TEXT NOT NULL,
                 invalid_code TEXT,
                 invalid_reason TEXT,
+                mint_version INTEGER NOT NULL DEFAULT 0,
+                pass_kind TEXT NOT NULL DEFAULT 'standard',
+                leader_pass_id TEXT,
+                leader_btc_addr TEXT,
 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -257,7 +265,6 @@ impl MinerPassStorage {
 
         Self::ensure_column_exists(&conn, "miner_passes", "invalid_code", "TEXT")?;
         Self::ensure_column_exists(&conn, "miner_passes", "invalid_reason", "TEXT")?;
-
         let mut stmt = conn
             .prepare(
                 "
@@ -900,6 +907,10 @@ impl MinerPassStorage {
                     h.new_state AS state,
                     m.invalid_code,
                     m.invalid_reason,
+                    m.mint_version,
+                    m.pass_kind,
+                    m.leader_pass_id,
+                    m.leader_btc_addr,
                     m.created_at
                 FROM miner_passes m
                 INNER JOIN latest l ON l.inscription_id = m.inscription_id
@@ -1017,6 +1028,10 @@ impl MinerPassStorage {
                     state,
                     invalid_code,
                     invalid_reason,
+                    mint_version,
+                    pass_kind,
+                    leader_pass_id,
+                    leader_btc_addr,
                     created_at
                 )
                 SELECT
@@ -1033,6 +1048,10 @@ impl MinerPassStorage {
                     state,
                     invalid_code,
                     invalid_reason,
+                    mint_version,
+                    pass_kind,
+                    leader_pass_id,
+                    leader_btc_addr,
                     created_at
                 FROM rollback_surviving_passes
                 ORDER BY mint_block_height ASC, inscription_id ASC;
@@ -2144,8 +2163,12 @@ impl MinerPassStorage {
                 owner,
                 state,
                 invalid_code,
-                invalid_reason
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);
+                invalid_reason,
+                mint_version,
+                pass_kind,
+                leader_pass_id,
+                leader_btc_addr
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);
             ",
             rusqlite::params![
                 pass_info.inscription_id.to_string(),
@@ -2161,6 +2184,10 @@ impl MinerPassStorage {
                 pass_info.state.as_str(),
                 pass_info.invalid_code,
                 pass_info.invalid_reason,
+                pass_info.mint_version as i64,
+                pass_info.pass_kind.as_str(),
+                pass_info.leader_pass_id.as_ref().map(|id| id.to_string()),
+                pass_info.leader_btc_addr.as_deref(),
             ],
         )
         .map_err(|e| {
@@ -2606,6 +2633,71 @@ impl MinerPassStorage {
                 })?
         };
 
+        let mint_version = {
+            let value = row.get::<_, i64>("mint_version").map_err(|e| {
+                let msg = format!(
+                    "Failed to get mint_version field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            if value < 0 {
+                let msg = format!("Invalid negative mint_version in miner pass row: {}", value);
+                error!("{}", msg);
+                return Err(msg);
+            }
+            value as u32
+        };
+
+        let pass_kind = {
+            let value = row.get::<_, String>("pass_kind").map_err(|e| {
+                let msg = format!("Failed to get pass_kind field from miner pass row: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+            MinerPassKind::from_str(&value).map_err(|e| {
+                let msg = format!(
+                    "Failed to parse pass_kind field from miner pass row {}: {}",
+                    value, e
+                );
+                error!("{}", msg);
+                msg
+            })?
+        };
+
+        let leader_pass_id = match row.get::<_, Option<String>>("leader_pass_id") {
+            Ok(Some(value)) if value.is_empty() => None,
+            Ok(Some(value)) => Some(value.parse::<InscriptionId>().map_err(|e| {
+                let msg = format!(
+                    "Failed to parse leader_pass_id field from miner pass row {}: {}",
+                    value, e
+                );
+                error!("{}", msg);
+                msg
+            })?),
+            Ok(None) => None,
+            Err(e) => {
+                let msg = format!(
+                    "Failed to get leader_pass_id field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+
+        let leader_btc_addr = row
+            .get::<_, Option<String>>("leader_btc_addr")
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to get leader_btc_addr field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
         Ok(MinerPassInfo {
             inscription_id: row
                 .get::<_, String>(0)
@@ -2681,6 +2773,8 @@ impl MinerPassStorage {
                     msg
                 })?,
 
+            mint_version,
+            pass_kind,
             eth_main: row.get(6).map_err(|e| {
                 let msg = format!("Failed to get eth_main field from miner pass row: {}", e);
                 error!("{}", msg);
@@ -2691,6 +2785,8 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 msg
             })?,
+            leader_pass_id,
+            leader_btc_addr,
 
             prev: prev_ids,
             invalid_code: row.get(11).map_err(|e| {
@@ -3800,6 +3896,10 @@ impl MinerPassStorage {
                 h.new_state AS state,
                 m.invalid_code,
                 m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.max_id
@@ -3851,7 +3951,7 @@ impl MinerPassStorage {
             msg
         })? {
             let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(13).map_err(|e| {
+            let latest_event_height = row.get::<_, i64>(17).map_err(|e| {
                 let msg = format!(
                     "Failed to get latest_event_height from owner pass snapshot row: {}",
                     e
@@ -3985,6 +4085,10 @@ impl MinerPassStorage {
                 h.new_state AS state,
                 m.invalid_code,
                 m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.max_id
@@ -4034,7 +4138,7 @@ impl MinerPassStorage {
             msg
         })? {
             let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(13).map_err(|e| {
+            let latest_event_height = row.get::<_, i64>(17).map_err(|e| {
                 let msg = format!(
                     "Failed to get latest_event_height from recent pass snapshot row: {}",
                     e
@@ -4439,8 +4543,12 @@ mod tests {
             mint_block_height: height,
             mint_owner: owner,
             satpoint: satpoint(ins_tag, index, 0),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Standard,
             eth_main: "0x1111111111111111111111111111111111111111".to_string(),
             eth_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
+            leader_pass_id: None,
+            leader_btc_addr: None,
             prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
             invalid_code: None,
             invalid_reason: None,
@@ -4530,6 +4638,49 @@ mod tests {
         let vout = (lcg_next(seed) % 4) as u32;
         let offset = lcg_next(seed) % 10_000;
         satpoint(tag, vout, offset)
+    }
+
+    #[test]
+    fn test_pass_storage_persists_uip0001_collab_fields() {
+        let dir = test_data_dir("uip0001_collab_fields");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let owner = script_hash(30);
+        let leader_pass_id = inscription_id(31, 0);
+        let mut pass = make_pass(30, 0, owner, MinerPassState::Active, 100);
+        pass.mint_version = 1;
+        pass.pass_kind = MinerPassKind::Collab;
+        pass.eth_main = String::new();
+        pass.eth_collab = None;
+        pass.leader_pass_id = Some(leader_pass_id);
+        pass.leader_btc_addr = None;
+
+        let pass_id = pass.inscription_id;
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+
+        let loaded = storage
+            .get_pass_by_inscription_id(&pass_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.mint_version, 1);
+        assert_eq!(loaded.pass_kind, MinerPassKind::Collab);
+        assert_eq!(loaded.eth_main, "");
+        assert_eq!(loaded.eth_collab, None);
+        assert_eq!(loaded.leader_pass_id, Some(leader_pass_id));
+        assert_eq!(loaded.leader_btc_addr, None);
+
+        let history_rows = storage
+            .get_owner_passes_by_page_from_history_at_height_by_states(
+                &owner,
+                100,
+                &[MinerPassState::Active],
+                0,
+                10,
+                true,
+            )
+            .unwrap();
+        assert_eq!(history_rows.len(), 1);
+        assert_eq!(history_rows[0].pass.pass_kind, MinerPassKind::Collab);
+        assert_eq!(history_rows[0].pass.leader_pass_id, Some(leader_pass_id));
     }
 
     #[test]

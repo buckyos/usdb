@@ -1,4 +1,4 @@
-use crate::index::MinerPassState;
+use crate::index::{MinerPassKind, MinerPassState};
 use crate::storage::MinerPassInfo;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
@@ -58,8 +58,12 @@ pub(super) fn make_pass(
         mint_block_height,
         mint_owner: owner,
         satpoint: satpoint(tag, index, 0),
+        mint_version: 1,
+        pass_kind: MinerPassKind::Standard,
         eth_main: "0x1111111111111111111111111111111111111111".to_string(),
         eth_collab: None,
+        leader_pass_id: None,
+        leader_btc_addr: None,
         prev: Vec::new(),
         invalid_code: None,
         invalid_reason: None,

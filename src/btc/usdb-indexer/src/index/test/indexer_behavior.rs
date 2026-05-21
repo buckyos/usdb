@@ -5,7 +5,7 @@ use super::common::{
 use crate::balance::{BalanceMonitor, MockBalanceBackend, MockResponse, SerialBalanceLoader};
 use crate::config::{ConfigManager, IndexerConfig};
 use crate::index::MintValidationErrorCode;
-use crate::index::content::{MinerPassState, USDBInscription, USDBMint};
+use crate::index::content::{MinerPassKind, MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
 use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::index::pass::MinerPassManager;
@@ -497,8 +497,12 @@ fn make_active_pass(
         mint_block_height: mint_height,
         mint_owner: owner,
         satpoint: test_satpoint(7, 0, 0),
+        mint_version: 1,
+        pass_kind: MinerPassKind::Standard,
         eth_main: "0x1111111111111111111111111111111111111111".to_string(),
         eth_collab: None,
+        leader_pass_id: None,
+        leader_btc_addr: None,
         prev: Vec::new(),
         invalid_code: None,
         invalid_reason: None,
@@ -513,11 +517,10 @@ fn make_discovered_mint(
     prev: Vec<InscriptionId>,
 ) -> DiscoveredMint {
     let prev_strings = prev.iter().map(|id| id.to_string()).collect::<Vec<_>>();
-    let content = USDBInscription::Mint(USDBMint {
-        eth_main: "0x1111111111111111111111111111111111111111".to_string(),
-        eth_collab: None,
-        prev: prev_strings,
-    });
+    let content = USDBInscription::Mint(USDBMint::standard(
+        "0x1111111111111111111111111111111111111111".to_string(),
+        prev_strings,
+    ));
 
     DiscoveredMint {
         inscription_id,
@@ -525,7 +528,7 @@ fn make_discovered_mint(
         block_height,
         timestamp: 0,
         satpoint: Some(test_satpoint(8, 0, 0)),
-        content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"eth_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
+        content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"v\":1,\"eth_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
         content,
     }
 }

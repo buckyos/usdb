@@ -491,10 +491,18 @@ pub struct PassSnapshot {
     pub mint_block_height: u32,
     /// Mint owner script hash.
     pub mint_owner: String,
+    /// Mint schema version parsed from the inscription payload.
+    pub mint_version: u32,
+    /// Pass kind parsed from UIP-0001 v1 fields.
+    pub pass_kind: String,
     /// Primary ETH address declared in mint content.
     pub eth_main: String,
     /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Fixed Leader pass binding for collab passes.
+    pub leader_pass_id: Option<String>,
+    /// Leader BTC address binding for collab passes.
+    pub leader_btc_addr: Option<String>,
     /// Previous pass references used for inheritance.
     pub prev: Vec<String>,
     /// Invalid error code when pass is marked invalid.
@@ -660,10 +668,18 @@ pub struct OwnerPassItem {
     pub state: String,
     /// Latest event height that produced this state snapshot.
     pub latest_event_height: u32,
+    /// Mint schema version parsed from the inscription payload.
+    pub mint_version: u32,
+    /// Pass kind parsed from UIP-0001 v1 fields.
+    pub pass_kind: String,
     /// Primary ETH address declared by the pass mint content.
     pub eth_main: String,
     /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Fixed Leader pass binding for collab passes.
+    pub leader_pass_id: Option<String>,
+    /// Leader BTC address binding for collab passes.
+    pub leader_btc_addr: Option<String>,
     /// Current satpoint at the resolved height.
     pub satpoint: String,
 }
@@ -711,10 +727,18 @@ pub struct RecentPassItem {
     pub state: String,
     /// Latest event height that produced this state snapshot.
     pub latest_event_height: u32,
+    /// Mint schema version parsed from the inscription payload.
+    pub mint_version: u32,
+    /// Pass kind parsed from UIP-0001 v1 fields.
+    pub pass_kind: String,
     /// Primary ETH address declared by the pass mint content.
     pub eth_main: String,
     /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Fixed Leader pass binding for collab passes.
+    pub leader_pass_id: Option<String>,
+    /// Leader BTC address binding for collab passes.
+    pub leader_btc_addr: Option<String>,
     /// Current satpoint at the resolved height.
     pub satpoint: String,
 }
@@ -913,10 +937,18 @@ pub struct InvalidPassItem {
     pub mint_block_height: u32,
     /// Mint owner script hash.
     pub mint_owner: String,
+    /// Mint schema version parsed from the inscription payload.
+    pub mint_version: u32,
+    /// Pass kind parsed from UIP-0001 v1 fields.
+    pub pass_kind: String,
     /// Primary ETH address in mint content.
     pub eth_main: String,
     /// Optional collaborator ETH address.
     pub eth_collab: Option<String>,
+    /// Fixed Leader pass binding for collab passes.
+    pub leader_pass_id: Option<String>,
+    /// Leader BTC address binding for collab passes.
+    pub leader_btc_addr: Option<String>,
     /// Previous pass references from mint content.
     pub prev: Vec<String>,
     /// Invalid error code.

@@ -3,10 +3,10 @@ use super::common::{
     test_script_hash,
 };
 use crate::config::ConfigManager;
-use crate::index::MinerPassState;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::index::pass::{MinerPassManager, PassMintInscriptionInfo};
+use crate::index::{MinerPassKind, MinerPassState};
 use crate::storage::{MinerPassStorage, MinerPassStorageRef, PassEnergyStorage};
 use balance_history::AddressBalance;
 use bitcoincore_rpc::bitcoin::Txid;
@@ -53,8 +53,12 @@ impl ScenarioRunner {
                         mint_block_height: height,
                         mint_owner: owner,
                         satpoint: test_satpoint(self.tx_seed, 0, 0),
+                        mint_version: 1,
+                        pass_kind: MinerPassKind::Standard,
                         eth_main: "0x1111111111111111111111111111111111111111".to_string(),
                         eth_collab: None,
+                        leader_pass_id: None,
+                        leader_btc_addr: None,
                         prev,
                         inscription_id,
                     };

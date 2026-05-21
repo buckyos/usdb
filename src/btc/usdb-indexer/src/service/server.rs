@@ -1258,8 +1258,12 @@ impl UsdbIndexerRpcServer {
             mint_txid: pass.mint_txid.to_string(),
             mint_block_height: pass.mint_block_height,
             mint_owner: pass.mint_owner.to_string(),
+            mint_version: pass.mint_version,
+            pass_kind: pass.pass_kind.as_str().to_string(),
             eth_main: pass.eth_main,
             eth_collab: pass.eth_collab,
+            leader_pass_id: pass.leader_pass_id.map(|id| id.to_string()),
+            leader_btc_addr: pass.leader_btc_addr,
             prev: pass.prev.into_iter().map(|v| v.to_string()).collect(),
             invalid_code: pass.invalid_code,
             invalid_reason: pass.invalid_reason,
@@ -1788,8 +1792,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     owner: row.pass.owner.to_string(),
                     state: row.pass.state.as_str().to_string(),
                     latest_event_height: row.latest_event_height,
+                    mint_version: row.pass.mint_version,
+                    pass_kind: row.pass.pass_kind.as_str().to_string(),
                     eth_main: row.pass.eth_main,
                     eth_collab: row.pass.eth_collab,
+                    leader_pass_id: row.pass.leader_pass_id.map(|id| id.to_string()),
+                    leader_btc_addr: row.pass.leader_btc_addr,
                     satpoint: row.pass.satpoint.to_string(),
                 })
                 .collect(),
@@ -1828,8 +1836,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     owner: row.pass.owner.to_string(),
                     state: row.pass.state.as_str().to_string(),
                     latest_event_height: row.latest_event_height,
+                    mint_version: row.pass.mint_version,
+                    pass_kind: row.pass.pass_kind.as_str().to_string(),
                     eth_main: row.pass.eth_main,
                     eth_collab: row.pass.eth_collab,
+                    leader_pass_id: row.pass.leader_pass_id.map(|id| id.to_string()),
+                    leader_btc_addr: row.pass.leader_btc_addr,
                     satpoint: row.pass.satpoint.to_string(),
                 })
                 .collect(),
@@ -2123,8 +2135,12 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     mint_txid: item.mint_txid.to_string(),
                     mint_block_height: item.mint_block_height,
                     mint_owner: item.mint_owner.to_string(),
+                    mint_version: item.mint_version,
+                    pass_kind: item.pass_kind.as_str().to_string(),
                     eth_main: item.eth_main,
                     eth_collab: item.eth_collab,
+                    leader_pass_id: item.leader_pass_id.map(|id| id.to_string()),
+                    leader_btc_addr: item.leader_btc_addr,
                     prev: item.prev.into_iter().map(|v| v.to_string()).collect(),
                     invalid_code: item.invalid_code,
                     invalid_reason: item.invalid_reason,
@@ -2219,7 +2235,7 @@ mod tests {
     use super::*;
     use crate::config::{ConfigManager, IndexerConfig};
     use crate::index::energy_formula::calc_growth_delta;
-    use crate::index::{InscriptionIndexer, MinerPassState, PassBlockCommitEntry};
+    use crate::index::{InscriptionIndexer, MinerPassKind, MinerPassState, PassBlockCommitEntry};
     use crate::output::IndexOutput;
     use crate::status::StatusManager;
     use crate::storage::{MinerPassInfo, PassEnergyRecord};
@@ -2278,8 +2294,12 @@ mod tests {
             mint_block_height: mint_height,
             mint_owner: owner,
             satpoint: test_satpoint(ins_tag, 0, 0),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Standard,
             eth_main: "0x1111111111111111111111111111111111111111".to_string(),
             eth_collab: None,
+            leader_pass_id: None,
+            leader_btc_addr: None,
             prev: Vec::new(),
             invalid_code: None,
             invalid_reason: None,
@@ -2431,6 +2451,11 @@ mod tests {
             snapshot_origin: None,
             snapshot_verification_state: None,
             snapshot_signing_key_id: None,
+            script_registry: balance_history::ScriptRegistryStatus {
+                available: true,
+                count: Some(0),
+                policy: "auxiliary_seen_scripts_non_consensus_v1".to_string(),
+            },
             blockers: Vec::new(),
         }
     }

@@ -1724,8 +1724,19 @@ impl InscriptionIndexer {
             mint_block_height: item.block_height,
             mint_owner: item.address.clone(),
             satpoint: item.satpoint.clone(),
+            mint_version: mint_content.version,
+            pass_kind: mint_content.pass_kind,
             eth_main: mint_content.eth_main.clone(),
             eth_collab: mint_content.eth_collab.clone(),
+            leader_pass_id: mint_content.leader_pass_inscription_id().map_err(|e| {
+                let msg = format!(
+                    "Failed to parse leader_pass_id for inscription {}: {}",
+                    item.inscription_id, e
+                );
+                error!("{}", msg);
+                msg
+            })?,
+            leader_btc_addr: mint_content.leader_btc_addr.clone(),
             prev: mint_content.prev_inscription_ids().map_err(|e| {
                 let msg = format!(
                     "Failed to parse prev inscription ids for inscription {}: {}",
