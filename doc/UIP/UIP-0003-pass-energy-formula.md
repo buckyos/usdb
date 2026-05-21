@@ -53,7 +53,7 @@ Activation: BTC network activation matrix; development networks activate from he
 | `owner_balance_sats` | pass 当前 owner 在 BTC 侧的可计入余额，单位 sat。 |
 | `balance_units` | 将 owner BTC 余额按 `UNIT_SATS` 向下取整后的离散余额单位。 |
 | `last_settlement_height` | 最近一条 energy checkpoint 的高度，即 `latest_energy_record.block_height`。 |
-| `active_block_height` | 用于 penalty 的余额年龄起点，只由 mint 或余额减少规则调整。 |
+| `active_block_height` | 用于 penalty 的余额年龄起点；部分减仓不得折算，只有新建余额年龄区间或余额 unit 清零时调整。 |
 | `energy_uint` | 无符号 128 位整数能量值。 |
 
 # 规范关键词
@@ -207,7 +207,11 @@ record.raw_energy = settled_raw_energy_h
 record.active_block_height = active_block_height_before
 ```
 
-正向增资禁止重置或折算 `active_block_height`。
+正向增资禁止重置或折算 `active_block_height`。唯一例外是 `units_before = 0` 且 `units_after > 0`：该增长代表新的可计入余额区间开始，必须设置：
+
+```text
+record.active_block_height = h
+```
 
 后续增长从新的 `record.block_height` 开始，并使用新的 `balance_units(balance_after)` 作为增长斜率。
 
@@ -253,25 +257,28 @@ raw_energy_after_penalty
 penalty = floor(lost_units * age_before * 3 / 2)
 ```
 
-## 余额年龄折旧
+## 余额年龄起点
 
-余额减少后，剩余余额只保留按比例折算后的年龄：
+余额减少后禁止按比例折算剩余余额年龄。只要 `units_after > 0`，剩余余额继续沿用减少前的 `active_block_height`：
 
 ```text
-remaining_age_after_loss
-    = floor(age_before * units_after / units_before)
-
-active_block_height_after
-    = h - remaining_age_after_loss
+active_block_height_after = active_block_height_before
 ```
 
-如果 `lost_units > 0` 且 `units_after = 0`，则：
+如果 `lost_units > 0` 且 `units_after = 0`，则余额 unit 已清零，必须开启新的余额年龄区间：
 
 ```text
 active_block_height_after = h
 ```
 
-使用 `floor(age_before * units_after / units_before)` 是有意选择：剩余 unit 的保留年龄不会超过精确比例值，从而避免少扣年龄。对应的损失年龄会向上取整。
+该规则保证在同一高度内，多次小额减少与一次性减少具有相同 penalty：
+
+```text
+sum(lost_units_i * age_before * lambda)
+    = total_lost_units * age_before * lambda
+```
+
+因此实现不得通过按比例折算 `active_block_height` 的方式降低后续 penalty age。
 
 余额减少后的 settlement record：
 
@@ -466,8 +473,8 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 - 低于 `UNIT_SATS` 不增长。
 - 达到 `UNIT_SATS` 后按离散 `balance_units` 增长。
 - unit 边界附近的增减仓计算，例如 `100_001 -> 99_999` 和 `199_999 -> 100_000`。
-- 正向增资只写入新的 settlement record，不重置或折算 `active_block_height`。
-- 部分减仓 penalty 和 age 折算。
+- 正向增资只写入新的 settlement record，不重置或折算 `active_block_height`；但 `0 unit -> positive units` 必须开启新的余额年龄区间。
+- 部分减仓 penalty 和 `active_block_height` 保留。
 - 全部减仓后 `active_block_height = h`。
 - 单 `prev` 继承折损和 rounding。
 - 多 `prev` 逐项折损后求和。
@@ -480,7 +487,7 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 
 1. 增长口径采用离散 `0.001 BTC` unit 模型。
 2. unit delta 必须通过 `units_before` / `units_after` 快照计算，不得通过 sat delta 直接取整。
-3. 正向增资只更新 settlement height 和 owner balance，不重置、不折算 `active_block_height`。
+3. 正向增资只更新 settlement height 和 owner balance，不重置、不折算 `active_block_height`；`0 unit -> positive units` 作为新的余额年龄区间处理。
 4. 首版参数固定为 `PENALTY_LAMBDA = 1.5`、`INHERIT_DISCOUNT_BPS = 500`。
 5. `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 unit-block 能量量纲保持一致。
 6. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
