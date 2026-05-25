@@ -116,7 +116,7 @@ UIP-0002 的公开协议查询粒度是 BTC block。history query 默认返回�
 | none | invalid mint | `Invalid` | mint schema 或状态前置条件失败。 |
 | `Active` | valid mint by same owner | `Dormant` | 旧 active pass 被新 pass supersede。 |
 | `Active` | transfer to same owner | `Active` | 仅更新 satpoint。 |
-| `Active` | transfer to different owner | `Dormant` | 先冻结 energy，再更新 owner/satpoint。 |
+| `Active` | transfer to different owner | `Dormant` | 先完成 old owner 的 energy settlement，再冻结并更新 owner/satpoint。 |
 | `Active` | burn | `Burned` | energy 同步归零。 |
 | `Dormant` | transfer | `Dormant` | 更新 owner/satpoint，不恢复增长。 |
 | `Dormant` | valid `prev` consumption | `Consumed` | energy 被新 pass 继承后归零。 |
@@ -227,14 +227,18 @@ transfer 指 pass 所在 inscription UTXO 转移到新的 BTC owner。
 
 如果 transfer 后 owner 与 transfer 前 owner 不同：
 
-- 若 pass 为 `Active`，必须先在 event height 结算 raw energy。
+- different-owner transfer 本身不产生 transfer-specific penalty。
+- 若 pass 为 `Active`，必须先在 event height 按 UIP-0003 结算 old owner 的 raw energy。
+- 若 old owner 在同一 BTC height 存在可计入余额减少，该余额减少引发的 UIP-0003 penalty 必须先进入 settlement 结果，然后才能冻结为 `Dormant`。
 - 若 pass 为 `Active`，必须转为 `Dormant`。
 - 必须更新 owner 与 satpoint。
-- 若 pass 为 `Dormant`，保持 `Dormant` 并更新 owner/satpoint。
+- 若 pass 为 `Dormant`，保持 `Dormant` 并更新 owner/satpoint，不得扣除 energy 或恢复增长。
 - 若 pass 为 `Consumed` 或 `Burned`，协议不要求继续追踪 owner/satpoint；实现可以保留非共识审计记录，但不得恢复任何经济能力。
 - 若 pass 为 `Invalid`，不得进入 active owner set。
 
-new owner 若希望继续使用该 pass 的 raw energy，必须通过新 mint + `prev` 继承流程显式激活。
+different-owner transfer 后，冻结的 `raw_energy` 是该 pass 的可转让历史收益凭证。old owner 后续 BTC 余额变化不得影响该 `Dormant` pass；new owner 的 BTC 余额也不得让该 `Dormant` pass 继续增长。
+
+new owner 若希望继续使用该 pass 的 raw energy，必须通过新 mint + `prev` 继承流程显式激活，并接受 UIP-0003 定义的通用继承折损。协议不得定义额外 transfer penalty 或绕过继承折损的直接激活路径。
 
 # Burn
 
@@ -343,7 +347,9 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 - already consumed `prev` makes entire mint `Invalid`。
 - burned `prev` makes entire mint `Invalid`。
 - transfer to same owner updates satpoint only。
-- transfer to different owner turns active pass into `Dormant`。
+- transfer to different owner turns active pass into `Dormant` without transfer-specific penalty。
+- transfer to different owner after same-height old owner balance decrease applies UIP-0003 balance penalty before freezing。
+- dormant transfer keeps frozen raw energy unchanged。
 - transfer then remint in same block succeeds only when event ordering puts transfer first。
 - burn active pass writes pass state and energy state as `Burned`。
 - burn dormant pass returns zero energy after burn height。
@@ -364,6 +370,14 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 ## 防历史 replay 分叉
 
 同一 block 的事件排序必须固定。尤其是 transfer + mint + prev 的组合，如果不同节点排序不同，会导致 owner 校验和 pass 状态不同。
+
+## 防转让绕过余额减少 penalty
+
+different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益凭证转让，但不得让 `Active -> Dormant` 转让绕过 old owner 在同一高度已经发生的余额减少 penalty。
+
+实现必须保证 Active pass 在转为 `Dormant` 前，已经按 UIP-0003 使用 canonical balance snapshot 完成 old owner 在 event height 的余额 settlement。若该 settlement 包含余额减少 penalty，冻结后的 `raw_energy` 必须是扣除 penalty 后的值。
+
+转让完成后，old owner 后续余额变化与该 `Dormant` pass 解耦；new owner 只能通过 `prev` remint 继承折损后的 raw energy。
 
 ## Burn 终态
 
