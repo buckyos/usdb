@@ -212,7 +212,7 @@ async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions)
                 .unwrap_or_else(|e| panic!("Compare failed at block {}: {}", height, e))
                 .len(),
             CompareTarget::UsdbMint => compare_source
-                .load_block_mints(height, Some(block))
+                .load_block_mints(height, Some(block), config.config().bitcoin.network())
                 .await
                 .unwrap_or_else(|e| panic!("Compare failed at block {}: {}", height, e))
                 .len(),

@@ -2,7 +2,7 @@ use crate::index::{
     InscriptionContentLoader, MintValidationError, MintValidationErrorCode, ParsedMintContent,
     USDBInscription,
 };
-use bitcoincore_rpc::bitcoin::Block;
+use bitcoincore_rpc::bitcoin::{Block, Network};
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::future::Future;
@@ -64,12 +64,13 @@ pub trait InscriptionSource: Send + Sync {
         &'a self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        network: Network,
     ) -> InscriptionSourceFuture<'a, Result<DiscoveredMintBatch, String>> {
         Box::pin(async move {
             let inscriptions = self
                 .load_block_inscriptions(block_height, block_hint)
                 .await?;
-            classify_usdb_mints_from_inscriptions(inscriptions)
+            classify_usdb_mints_from_inscriptions(inscriptions, network)
         })
     }
 
@@ -77,9 +78,12 @@ pub trait InscriptionSource: Send + Sync {
         &'a self,
         block_height: u32,
         block_hint: Option<Arc<Block>>,
+        network: Network,
     ) -> InscriptionSourceFuture<'a, Result<Vec<DiscoveredMint>, String>> {
         Box::pin(async move {
-            let batch = self.load_block_mint_batch(block_height, block_hint).await?;
+            let batch = self
+                .load_block_mint_batch(block_height, block_hint, network)
+                .await?;
             Ok(batch.valid_mints)
         })
     }
@@ -87,8 +91,9 @@ pub trait InscriptionSource: Send + Sync {
 
 pub fn map_usdb_mints_from_inscriptions(
     inscriptions: Vec<DiscoveredInscription>,
+    network: Network,
 ) -> Result<Vec<DiscoveredMint>, String> {
-    let batch = classify_usdb_mints_from_inscriptions(inscriptions)?;
+    let batch = classify_usdb_mints_from_inscriptions(inscriptions, network)?;
     Ok(batch.valid_mints)
 }
 
@@ -111,6 +116,7 @@ fn to_invalid_mint(
 
 pub fn classify_usdb_mints_from_inscriptions(
     inscriptions: Vec<DiscoveredInscription>,
+    network: Network,
 ) -> Result<DiscoveredMintBatch, String> {
     let mut batch = DiscoveredMintBatch::default();
     for inscription in inscriptions {
@@ -119,9 +125,10 @@ pub fn classify_usdb_mints_from_inscriptions(
             None => continue,
         };
 
-        match InscriptionContentLoader::classify_mint_content_str(
+        match InscriptionContentLoader::classify_mint_content_str_with_network(
             &inscription.inscription_id,
             &content_string,
+            network,
         )? {
             ParsedMintContent::NotUsdbMint => {}
             ParsedMintContent::Valid(content) => {
@@ -144,4 +151,57 @@ pub fn classify_usdb_mints_from_inscriptions(
     }
 
     Ok(batch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use bitcoincore_rpc::bitcoin::{Address, PublicKey, Txid};
+
+    fn test_inscription_id(tag: u8) -> InscriptionId {
+        InscriptionId {
+            txid: Txid::from_slice(&[tag; 32]).unwrap(),
+            index: 0,
+        }
+    }
+
+    fn regtest_address() -> String {
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[1; 32]).unwrap();
+        let public_key = PublicKey::new(
+            bitcoincore_rpc::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret),
+        );
+        Address::p2pkh(&public_key, Network::Regtest).to_string()
+    }
+
+    #[test]
+    fn classify_usdb_mints_uses_supplied_network_for_leader_btc_addr() {
+        let leader_btc_addr = regtest_address();
+        let inscription_id = test_inscription_id(1);
+        let content_string = format!(
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_btc_addr":"{}","prev":[]}}"#,
+            leader_btc_addr
+        );
+        let inscriptions = vec![DiscoveredInscription {
+            inscription_id,
+            inscription_number: 1,
+            block_height: 10,
+            timestamp: 100,
+            satpoint: None,
+            content_type: Some("application/json".to_string()),
+            content_string: Some(content_string),
+        }];
+
+        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+
+        assert_eq!(batch.valid_mints.len(), 1);
+        assert!(batch.invalid_mints.is_empty());
+        match &batch.valid_mints[0].content {
+            USDBInscription::Mint(mint) => {
+                assert_eq!(mint.leader_btc_addr, Some(leader_btc_addr));
+            }
+        }
+    }
 }

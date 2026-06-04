@@ -21,6 +21,7 @@
   - content-type 接受 `application/json;charset=utf-8`，并保留 text/plain UTF-8 兼容。
 - `src/btc/usdb-indexer/src/index/indexer.rs`
   - 将 `mint_version`、`pass_kind`、`leader_pass_id`、`leader_btc_addr` 从解析结果传递到 pass manager。
+  - `inscription_source.load_block_mint_batch` 调用传入当前 BTC network，保证 `leader_btc_addr` 按配置网络校验。
 - `src/btc/usdb-indexer/src/index/pass.rs`
   - `PassMintInscriptionInfo` 与 mint mutation 记录新增 UIP-0001 字段。
 - `src/btc/usdb-indexer/src/storage/pass.rs`
@@ -46,13 +47,16 @@
 - v1 unknown field invalid。
 - v1 duplicate key invalid。
 - pre-standard payload 不作为正式 v1 解析。
+- source 层分类使用传入的 BTC network 校验 `leader_btc_addr`，覆盖 regtest 地址路径。
 - collab pass 的新增字段可写入并从 storage/history 查询读回。
 
 ### 已验证
 
 - `cargo test -p usdb-indexer content`
 - `cargo test -p usdb-indexer pass_storage_persists_uip0001_collab_fields`
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer classify_usdb_mints_uses_supplied_network_for_leader_btc_addr -- --nocapture`
 - `cargo test -p usdb-indexer`
+- `cargo check --manifest-path src/btc/Cargo.toml --workspace`
 
 ### 暂缓事项
 

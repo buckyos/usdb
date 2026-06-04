@@ -1568,7 +1568,11 @@ impl InscriptionIndexer {
     ) -> Result<CollectedMintItems, String> {
         let discovered_batch = self
             .inscription_source
-            .load_block_mint_batch(block_height, block_hint)
+            .load_block_mint_batch(
+                block_height,
+                block_hint,
+                self.config.config().bitcoin.network(),
+            )
             .await?;
         if discovered_batch.valid_mints.is_empty() && discovered_batch.invalid_mints.is_empty() {
             info!("No inscriptions found at block height {}", block_height);

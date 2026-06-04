@@ -453,6 +453,7 @@ impl InscriptionSource for MockInscriptionSource {
         &'a self,
         block_height: u32,
         _block_hint: Option<Arc<Block>>,
+        _network: Network,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<DiscoveredMint>, String>> + Send + 'a>> {
         Box::pin(async move {
             Ok(self
@@ -467,6 +468,7 @@ impl InscriptionSource for MockInscriptionSource {
         &'a self,
         block_height: u32,
         _block_hint: Option<Arc<Block>>,
+        _network: Network,
     ) -> Pin<Box<dyn Future<Output = Result<DiscoveredMintBatch, String>> + Send + 'a>> {
         Box::pin(async move {
             Ok(DiscoveredMintBatch {
