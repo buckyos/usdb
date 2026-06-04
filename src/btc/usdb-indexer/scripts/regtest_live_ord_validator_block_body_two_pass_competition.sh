@@ -86,10 +86,10 @@ main() {
   mint_a_file="$WORK_DIR/usdb_validator_two_pass_mint_a.json"
   mint_b_file="$WORK_DIR/usdb_validator_two_pass_mint_b.json"
   cat >"$mint_a_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
 EOF
   cat >"$mint_b_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
 EOF
 
   regtest_log "Minting first candidate pass and aging it before second candidate appears"

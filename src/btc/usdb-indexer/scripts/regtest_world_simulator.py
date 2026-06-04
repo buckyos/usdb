@@ -28,7 +28,7 @@ class Agent:
     agent_id: int
     wallet_name: str
     receive_address: str
-    eth_main_address: str
+    usdb_main_address: str
     owner_script_hash: str
     persona: str
     owned_passes: set[str] = field(default_factory=set)
@@ -421,7 +421,7 @@ class RegtestWorldSimulator:
             "agent_id": agent.agent_id,
             "wallet_name": agent.wallet_name,
             "receive_address": agent.receive_address,
-            "eth_main_address": agent.eth_main_address,
+            "usdb_main_address": agent.usdb_main_address,
             "owner_script_hash": agent.owner_script_hash,
             "persona": agent.persona,
             "owned_passes": sorted(agent.owned_passes),
@@ -440,8 +440,8 @@ class RegtestWorldSimulator:
 
     @staticmethod
     def apply_agent_state(agent: Agent, payload: dict[str, Any]) -> None:
-        agent.eth_main_address = str(
-            payload.get("eth_main_address", agent.eth_main_address)
+        agent.usdb_main_address = str(
+            payload.get("usdb_main_address", agent.usdb_main_address)
         )
         agent.owned_passes = set(payload.get("owned_passes") or [])
         agent.active_pass_id = payload.get("active_pass_id")
@@ -1181,10 +1181,10 @@ class RegtestWorldSimulator:
                 prev = [prev_id]
             inscription_id = self.extract_inscription_id(raw_output)
             pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
-            invalid_eth = plan.action == "invalid_mint"
+            invalid_usdb_main = plan.action == "invalid_mint"
             detail = (
                 f"invalid_mint:{inscription_id}:owner={actor.wallet_name}"
-                if invalid_eth
+                if invalid_usdb_main
                 else (
                     f"remint:prev={prev[0]}:remint_like_mint:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}"
                     if prev
@@ -1196,10 +1196,10 @@ class RegtestWorldSimulator:
                 actor_id=actor.agent_id,
                 inscription_id=inscription_id,
                 prev_inscription_id=prev[0] if prev else None,
-                expect_invalid=invalid_eth,
+                expect_invalid=invalid_usdb_main,
                 actor_pre_balance=pre_balance,
             )
-            metric_key = "invalid_mint_ok" if invalid_eth else ("remint_ok" if prev else "mint_ok")
+            metric_key = "invalid_mint_ok" if invalid_usdb_main else ("remint_ok" if prev else "mint_ok")
             return ActionReceipt(
                 action_id=plan.action_id,
                 action=plan.action,
@@ -1212,7 +1212,7 @@ class RegtestWorldSimulator:
                     "kind": "mint_like",
                     "inscription_id": inscription_id,
                     "owner_agent_id": actor.agent_id,
-                    "invalid": invalid_eth,
+                    "invalid": invalid_usdb_main,
                 },
             )
 
@@ -1335,11 +1335,11 @@ class RegtestWorldSimulator:
             return self.args.identity_seed
         return f"sim-seed:{self.args.seed}"
 
-    def derived_eth_address(self, namespace: str, *components: Any) -> str:
+    def derived_evm_address(self, namespace: str, *components: Any) -> str:
         digest = hashlib.sha256(
             "::".join(
                 [
-                    "usdb-world-sim-eth-main-v1",
+                    "usdb-world-sim-usdb-main-v1",
                     namespace,
                     self.default_identity_seed(),
                     *(
@@ -1356,17 +1356,17 @@ class RegtestWorldSimulator:
             zip(self.args.agent_wallets, self.args.agent_addresses)
         ):
             script_hash = self.address_to_script_hash(address)
-            eth_main_address = self.derived_eth_address("agent", idx, wallet, address)
+            usdb_main_address = self.derived_evm_address("agent", idx, wallet, address)
             if (
                 self.args.ethw_miner_address
                 and idx == self.args.ethw_miner_agent_id
             ):
-                eth_main_address = self.args.ethw_miner_address
+                usdb_main_address = self.args.ethw_miner_address
             agent = Agent(
                 agent_id=idx,
                 wallet_name=wallet,
                 receive_address=address,
-                eth_main_address=eth_main_address,
+                usdb_main_address=usdb_main_address,
                 owner_script_hash=script_hash,
                 persona=self._persona_for_agent(idx),
             )
@@ -2235,12 +2235,12 @@ class RegtestWorldSimulator:
         return f"{amount:.8f}"
 
     def write_mint_content(
-        self, eth_main: str, prev: list[str], invalid_eth: bool = False
+        self, usdb_main: str, prev: list[str], invalid_usdb_main: bool = False
     ) -> Path:
         payload = {
             "p": "usdb",
             "op": "mint",
-            "eth_main": "0x123" if invalid_eth else eth_main,
+            "usdb_main": "0x123" if invalid_usdb_main else usdb_main,
             "prev": prev,
         }
         fd, path = tempfile.mkstemp(
@@ -2460,15 +2460,15 @@ class RegtestWorldSimulator:
         actor: Agent,
         action_id: str,
         pre_height: int,
-        invalid_eth: bool,
+        invalid_usdb_main: bool,
         prev: list[str] | None,
         rng: random.Random,
         count_as_mint: bool = True,
     ) -> tuple[str, ActionExpectation]:
         content_path = self.write_mint_content(
-            eth_main=actor.eth_main_address,
+            usdb_main=actor.usdb_main_address,
             prev=prev or [],
-            invalid_eth=invalid_eth,
+            invalid_usdb_main=invalid_usdb_main,
         )
         output = self.run_ord_wallet(
             actor.wallet_name,
@@ -2484,13 +2484,13 @@ class RegtestWorldSimulator:
         )
         self.write_external_action_result(
             action_id=action_id,
-            action="invalid_mint" if invalid_eth else ("remint" if prev else "mint"),
+            action="invalid_mint" if invalid_usdb_main else ("remint" if prev else "mint"),
             raw_output=output,
         )
         inscription_id = self.extract_inscription_id(output)
         self.pass_owner_by_id[inscription_id] = actor.agent_id
         actor.owned_passes.add(inscription_id)
-        if invalid_eth:
+        if invalid_usdb_main:
             actor.invalid_passes.add(inscription_id)
             self.metrics["invalid_mint_ok"] += 1
             pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
@@ -2707,7 +2707,7 @@ class RegtestWorldSimulator:
                 actor=actor,
                 action_id=action_id,
                 pre_height=pre_height,
-                invalid_eth=False,
+                invalid_usdb_main=False,
                 prev=None,
                 rng=rng,
             )
@@ -2718,7 +2718,7 @@ class RegtestWorldSimulator:
                 actor=actor,
                 action_id=action_id,
                 pre_height=pre_height,
-                invalid_eth=True,
+                invalid_usdb_main=True,
                 prev=None,
                 rng=rng,
             )
@@ -2736,7 +2736,7 @@ class RegtestWorldSimulator:
                 actor=actor,
                 action_id=action_id,
                 pre_height=pre_height,
-                invalid_eth=False,
+                invalid_usdb_main=False,
                 prev=[prev],
                 rng=rng,
                 count_as_mint=False,

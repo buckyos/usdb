@@ -2,7 +2,7 @@ UIP: UIP-0004
 Title: Collab Leader and Effective Energy
 Status: Draft
 Type: Standards Track
-Layer: BTC Application / ETHW Validator Input
+Layer: BTC Application / USDB Validator Input
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003
 Supersedes: doc/usdb-economic-model-design.md collab and effective energy sections after activation
@@ -48,7 +48,7 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 - level 和 real difficulty 的具体公式。
 - ETHW 侧 Leader eligibility、出块历史窗口、报价有效性和最终挖矿准入策略。
 - reward split 和协作者收益分配。
-- ETHW validator payload 的完整字段集合。
+- USDB validator payload 的完整字段集合。
 
 # 术语
 
@@ -195,7 +195,7 @@ effective_energy(pass, h) = 0, if pass.state(h) != Active
 
 # Leader Eligibility Is ETHW Policy
 
-UIP-0004 不把 ETHW 出块历史或报价窗口反向写入 USDB indexer。
+UIP-0004 不把 USDB 链出块历史或报价窗口反向写入 USDB indexer。
 
 USDB indexer 的职责是按 BTC 高度产出可重放的派生能量：
 
@@ -205,7 +205,7 @@ collab_contribution(pass, h)
 effective_energy(pass, h)
 ```
 
-ETHW validator 或 mining policy 可以在查询 USDB indexer 后，再结合 ETHW 侧本地可验证数据判断该 Leader 的 `effective_energy` 是否可用于出块选择。例如：
+USDB validator 或 mining policy 可以在查询 USDB indexer 后，再结合 ETHW 侧本地可验证数据判断该 Leader 的 `effective_energy` 是否可用于出块选择。例如：
 
 ```text
 leader_eligible(leader, ethw_context)
@@ -286,7 +286,7 @@ old_collab --prev--> new_pass
 
 其中 `new_pass` 的类型完全由新 mint 的 UIP-0001 schema 决定：
 
-- 如果新 mint 包含 `eth_main`，则为 standard pass。
+- 如果新 mint 包含 `usdb_main`，则为 standard pass。
 - 如果新 mint 包含 `leader_pass_id` 或 `leader_btc_addr`，则为 collab pass。
 
 能量继承只使用 UIP-0003 的通用 `prev` 继承折损：
@@ -379,7 +379,7 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 选择 `leader_btc_addr` 的协作者显式接受该地址后续 active standard pass 的变化，包括：
 
 - Leader remint。
-- Leader `eth_main` 变化。
+- Leader `usdb_main` 变化。
 - Leader 自身 raw energy 变化。
 
 如果协作者不希望自动跟随，应使用 `leader_pass_id`。
@@ -407,7 +407,7 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 本轮审计已确认：
 
 1. `COLLAB_WEIGHT_BPS = 5000` 作为首版正式参数。
-2. ETHW Leader eligibility 不进入 USDB indexer 派生能量公式，由 ETHW validator / mining policy 自行判断。
+2. USDB Leader eligibility 不进入 USDB indexer 派生能量公式，由 USDB validator / mining policy 自行判断。
 3. 所有 valid Dormant pass 都按一致规则支持 remint，不区分旧 pass 是 standard 还是 collab。
 4. collab 退出统一使用 remint + `prev`，不定义单独转换交易。
 5. UIP-0004 不定义 `COLLAB_EXIT_PENALTY_BPS`；退出成本来自 UIP-0003 的通用继承折损。

@@ -84,8 +84,8 @@ interface PersistedBtcSessionState {
   manualAddress?: string
   selectedWorldSimWalletName?: string
   selectedWorldSimOwnerAddress?: string
-  mintEthMain?: string
-  mintEthCollab?: string
+  mintUsdbMain?: string
+  mintUsdbCollab?: string
   mintPrev?: string
   mintStep?: BtcMintFlowStep
   mintPrepareResult?: BtcMintPrepareResponse | null
@@ -157,8 +157,8 @@ function loadPersistedBtcSessionState(): PersistedBtcSessionState {
         typeof parsed.selectedWorldSimOwnerAddress === 'string'
           ? parsed.selectedWorldSimOwnerAddress
           : undefined,
-      mintEthMain: typeof parsed.mintEthMain === 'string' ? parsed.mintEthMain : undefined,
-      mintEthCollab: typeof parsed.mintEthCollab === 'string' ? parsed.mintEthCollab : undefined,
+      mintUsdbMain: typeof parsed.mintUsdbMain === 'string' ? parsed.mintUsdbMain : undefined,
+      mintUsdbCollab: typeof parsed.mintUsdbCollab === 'string' ? parsed.mintUsdbCollab : undefined,
       mintPrev: typeof parsed.mintPrev === 'string' ? parsed.mintPrev : undefined,
       mintStep,
       mintPrepareResult: parsed.mintPrepareResult ?? null,
@@ -423,8 +423,8 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [btcRecognizedPasses, setBtcRecognizedPasses] = useState<WalletPassRecognition[]>([])
   const [btcRecognizedPassesLoading, setBtcRecognizedPassesLoading] = useState(false)
   const [btcRecognizedPassesError, setBtcRecognizedPassesError] = useState<string | null>(null)
-  const [btcMintEthMain, setBtcMintEthMain] = useState(btcSessionBoot.mintEthMain ?? '')
-  const [btcMintEthCollab, setBtcMintEthCollab] = useState(btcSessionBoot.mintEthCollab ?? '')
+  const [btcMintUsdbMain, setBtcMintUsdbMain] = useState(btcSessionBoot.mintUsdbMain ?? '')
+  const [btcMintUsdbCollab, setBtcMintUsdbCollab] = useState(btcSessionBoot.mintUsdbCollab ?? '')
   const [btcMintPrev, setBtcMintPrev] = useState(btcSessionBoot.mintPrev ?? '')
   const [btcMintPrepareLoading, setBtcMintPrepareLoading] = useState(false)
   const [btcMintPrepareError, setBtcMintPrepareError] = useState<string | null>(null)
@@ -619,7 +619,7 @@ export function MePage({ data, locale, t }: MePageProps) {
   )
   const btcMintPrepareClientBlockers = [
     !btcLookupAddress ? t('me.btc.mintOwnerRequired') : null,
-    btcMintEthMain.trim() === '' ? t('me.btc.mintEthMainRequired') : null,
+    btcMintUsdbMain.trim() === '' ? t('me.btc.mintUsdbMainRequired') : null,
     btcLookupNetworkMismatchMessage,
     btcMintSignerBlocker,
   ].filter((item): item is string => Boolean(item))
@@ -728,18 +728,18 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.passOwner'),
     },
     {
-      label: t('me.fields.passEthMain'),
+      label: t('me.fields.passUsdbMain'),
       value: btcProtocolLoading
         ? t('actions.reloading')
-        : displayText(btcDisplayActivePass?.eth_main, t),
-      helpText: t('me.help.passEthMain'),
+        : displayText(btcDisplayActivePass?.usdb_main, t),
+      helpText: t('me.help.passUsdbMain'),
     },
     {
-      label: t('me.fields.passEthCollab'),
+      label: t('me.fields.passUsdbCollab'),
       value: btcProtocolLoading
         ? t('actions.reloading')
-        : displayText(btcDisplayActivePass?.eth_collab, t),
-      helpText: t('me.help.passEthCollab'),
+        : displayText(btcDisplayActivePass?.usdb_collab, t),
+      helpText: t('me.help.passUsdbCollab'),
     },
     {
       label: t('me.fields.passEnergy'),
@@ -1382,8 +1382,8 @@ export function MePage({ data, locale, t }: MePageProps) {
         selectedWorldSimWalletName: btcSelectedWorldSimWalletName,
         selectedWorldSimOwnerAddress:
           btcSelectedWorldSimIdentity?.owner_address ?? btcSelectedWorldSimOwnerAddressHint,
-        mintEthMain: btcMintEthMain,
-        mintEthCollab: btcMintEthCollab,
+        mintUsdbMain: btcMintUsdbMain,
+        mintUsdbCollab: btcMintUsdbCollab,
         mintPrev: btcMintPrev,
         mintStep: btcMintStep,
         mintPrepareResult: btcMintPrepareResult,
@@ -1400,8 +1400,8 @@ export function MePage({ data, locale, t }: MePageProps) {
     btcAddress,
     btcDevToolsOpen,
     btcIdentitySource,
-    btcMintEthCollab,
-    btcMintEthMain,
+    btcMintUsdbCollab,
+    btcMintUsdbMain,
     btcMintExecutionError,
     btcMintExecutionPass,
     btcMintExecutionResult,
@@ -1620,7 +1620,7 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintExecutionResult(null)
     setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
-  }, [btcLookupAddress, btcLookupNetworkMismatchMessage, btcMintEthMain, btcMintEthCollab, btcMintPrev])
+  }, [btcLookupAddress, btcLookupNetworkMismatchMessage, btcMintUsdbMain, btcMintUsdbCollab, btcMintPrev])
 
   useEffect(() => {
     if (btcRuntimeProfile !== 'development') return
@@ -2019,8 +2019,8 @@ export function MePage({ data, locale, t }: MePageProps) {
     try {
       const result = await prepareBtcMintDraft({
         owner_address: btcLookupAddress,
-        eth_main: btcMintEthMain,
-        eth_collab: btcMintEthCollab.trim() || null,
+        usdb_main: btcMintUsdbMain,
+        usdb_collab: btcMintUsdbCollab.trim() || null,
         prev,
       })
       setBtcMintPrepareResult(result)
@@ -2058,8 +2058,8 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
     if (!clearInputs) return
-    setBtcMintEthMain('')
-    setBtcMintEthCollab('')
+    setBtcMintUsdbMain('')
+    setBtcMintUsdbCollab('')
     setBtcMintPrev('')
   }
 
@@ -2128,8 +2128,8 @@ export function MePage({ data, locale, t }: MePageProps) {
       const executionResult = await executeBtcMint({
         wallet_name: btcSelectedWorldSimIdentity.wallet_name,
         owner_address: btcMintPrepareResult?.owner_address ?? btcLookupAddress ?? '',
-        eth_main: btcMintPrepareResult?.eth_main ?? btcMintEthMain.trim(),
-        eth_collab: (btcMintPrepareResult?.eth_collab ?? btcMintEthCollab.trim()) || null,
+        usdb_main: btcMintPrepareResult?.usdb_main ?? btcMintUsdbMain.trim(),
+        usdb_collab: (btcMintPrepareResult?.usdb_collab ?? btcMintUsdbCollab.trim()) || null,
         prev: btcMintPrepareResult?.prev ?? btcMintParsedPrev,
       })
       setBtcMintExecutionResult(executionResult)
@@ -2847,21 +2847,21 @@ export function MePage({ data, locale, t }: MePageProps) {
                       ]}
                     />
                     <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.mintEthMainLabel')}</span>
+                      <span>{t('me.btc.mintUsdbMainLabel')}</span>
                       <input
                         className="console-input"
-                        value={btcMintEthMain}
-                        onChange={(event) => setBtcMintEthMain(event.target.value)}
-                        placeholder={t('me.btc.mintEthMainPlaceholder')}
+                        value={btcMintUsdbMain}
+                        onChange={(event) => setBtcMintUsdbMain(event.target.value)}
+                        placeholder={t('me.btc.mintUsdbMainPlaceholder')}
                       />
                     </label>
                     <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.mintEthCollabLabel')}</span>
+                      <span>{t('me.btc.mintUsdbCollabLabel')}</span>
                       <input
                         className="console-input"
-                        value={btcMintEthCollab}
-                        onChange={(event) => setBtcMintEthCollab(event.target.value)}
-                        placeholder={t('me.btc.mintEthCollabPlaceholder')}
+                        value={btcMintUsdbCollab}
+                        onChange={(event) => setBtcMintUsdbCollab(event.target.value)}
+                        placeholder={t('me.btc.mintUsdbCollabPlaceholder')}
                       />
                     </label>
                     <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
@@ -2903,7 +2903,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                       >
                         {btcMintPrepareLoading ? t('actions.reloading') : t('me.btc.prepareMintDraft')}
                       </button>
-                      {(btcMintEthMain || btcMintEthCollab || btcMintPrev) && !btcMintPrepareLoading ? (
+                      {(btcMintUsdbMain || btcMintUsdbCollab || btcMintPrev) && !btcMintPrepareLoading ? (
                         <button
                           type="button"
                           className="console-secondary-button"
@@ -3308,7 +3308,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                         <th>{t('me.fields.walletInscriptionNumber')}</th>
                         <th>{t('me.fields.passState')}</th>
                         <th>{t('me.fields.passOwner')}</th>
-                        <th>{t('me.fields.passEthMain')}</th>
+                        <th>{t('me.fields.passUsdbMain')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3318,7 +3318,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                           <td>{displayText(item.walletInscriptionNumber, t)}</td>
                           <td>{item.pass.state}</td>
                           <td>{item.pass.owner}</td>
-                          <td>{item.pass.eth_main}</td>
+                          <td>{item.pass.usdb_main}</td>
                         </tr>
                       ))}
                     </tbody>

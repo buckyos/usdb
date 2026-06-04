@@ -12,9 +12,9 @@
   - 增加 v1 strict schema 解析。
   - 要求 `p == "usdb"`、`op == "mint"`、`v == 1`。
   - 增加 `standard` / `collab` 两类 pass 推导。
-  - `standard` 要求 `eth_main`，禁止 leader 绑定字段。
-  - `collab` 要求 `leader_pass_id` / `leader_btc_addr` 二选一，禁止 `eth_main`。
-  - v1 禁止 `eth_collab`。
+  - `standard` 要求 `usdb_main`，禁止 leader 绑定字段。
+  - `collab` 要求 `leader_pass_id` / `leader_btc_addr` 二选一，禁止 `usdb_main`。
+  - v1 禁止 `usdb_collab`。
   - `prev` 缺省等价于空数组，并校验 inscription id 与重复项。
   - unknown field 判 invalid。
   - string parser 增加 top-level duplicate JSON key 检测。
@@ -36,13 +36,13 @@
 - v1 collab mint with `leader_pass_id` valid。
 - v1 collab mint with `leader_btc_addr` valid。
 - v1 missing `prev` 等价于空数组。
-- v1 invalid `eth_main`。
+- v1 invalid `usdb_main`。
 - v1 invalid `leader_pass_id`。
 - v1 invalid `leader_btc_addr` for active BTC network。
-- v1 同时包含 `eth_main` 和 leader 绑定字段 invalid。
+- v1 同时包含 `usdb_main` 和 leader 绑定字段 invalid。
 - v1 同时包含 `leader_pass_id` 和 `leader_btc_addr` invalid。
-- v1 同时缺失 `eth_main`、`leader_pass_id` 和 `leader_btc_addr` invalid。
-- v1 包含 `eth_collab` invalid。
+- v1 同时缺失 `usdb_main`、`leader_pass_id` 和 `leader_btc_addr` invalid。
+- v1 包含 `usdb_collab` invalid。
 - v1 unknown field invalid。
 - v1 duplicate key invalid。
 - pre-standard payload 不作为正式 v1 解析。

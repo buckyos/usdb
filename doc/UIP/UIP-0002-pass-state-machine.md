@@ -52,7 +52,7 @@ UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式
 | 术语 | 含义 |
 | --- | --- |
 | pass | 符合 UIP-0001 v1 schema 的矿工证铭文。 |
-| standard pass | 包含 `eth_main` 的 pass，可独立参与挖矿候选集合。 |
+| standard pass | 包含 `usdb_main` 的 pass，可独立参与挖矿候选集合。 |
 | collab pass | 包含 `leader_pass_id` 或 `leader_btc_addr` 的 pass，不可独立参与挖矿候选集合。 |
 | owner | 当前持有 pass 所在 UTXO 的 BTC 地址语义，规范化后以 script hash 或等价确定性 ID 表达。 |
 | state | pass 在指定 BTC 高度下的协议状态。 |
@@ -259,7 +259,7 @@ new_mint -----------------------------------------------> Active
 
 ## 所有权一致性
 
-UIP-0002 采用 BTC owner 一致性，而不是 ETH 地址、Leader 地址或 lineage 一致性。
+UIP-0002 采用 BTC owner 一致性，而不是 USDB/EVM 地址、Leader 地址或 lineage 一致性。
 
 即：
 

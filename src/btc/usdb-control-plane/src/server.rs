@@ -584,8 +584,8 @@ async fn post_execute_btc_mint(
 ) -> Result<Json<BtcMintExecuteResponse>, (StatusCode, Json<ApiError>)> {
     let prepare_request = BtcMintPrepareRequest {
         owner_address: request.owner_address.clone(),
-        eth_main: request.eth_main.clone(),
-        eth_collab: request.eth_collab.clone(),
+        usdb_main: request.usdb_main.clone(),
+        usdb_collab: request.usdb_collab.clone(),
         prev: request.prev.clone(),
     };
     let prepared = prepare_btc_mint_context(&state, &prepare_request).await?;
@@ -710,9 +710,9 @@ async fn prepare_btc_mint_context(
     let owner_script_hash = address_string_to_script_hash(&owner_address, &btc_network)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?
         .to_string();
-    let eth_main = normalize_evm_address("eth_main", &request.eth_main)
+    let usdb_main = normalize_evm_address("usdb_main", &request.usdb_main)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
-    let eth_collab = normalize_optional_evm_address("eth_collab", request.eth_collab.as_deref())
+    let usdb_collab = normalize_optional_evm_address("usdb_collab", request.usdb_collab.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
     let prev = normalize_prev_list(&request.prev)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
@@ -801,9 +801,9 @@ async fn prepare_btc_mint_context(
     let mut inscription_map = serde_json::Map::new();
     inscription_map.insert("p".to_string(), Value::String("usdb".to_string()));
     inscription_map.insert("op".to_string(), Value::String("mint".to_string()));
-    inscription_map.insert("eth_main".to_string(), Value::String(eth_main.clone()));
-    if let Some(value) = eth_collab.as_ref() {
-        inscription_map.insert("eth_collab".to_string(), Value::String(value.clone()));
+    inscription_map.insert("usdb_main".to_string(), Value::String(usdb_main.clone()));
+    if let Some(value) = usdb_collab.as_ref() {
+        inscription_map.insert("usdb_collab".to_string(), Value::String(value.clone()));
     }
     if !prev.is_empty() {
         inscription_map.insert(
@@ -865,8 +865,8 @@ async fn prepare_btc_mint_context(
             },
             owner_address,
             owner_script_hash,
-            eth_main,
-            eth_collab,
+            usdb_main,
+            usdb_collab,
             prev,
             suggested_prev,
             active_pass,
@@ -2449,7 +2449,7 @@ mod tests {
     #[test]
     fn normalize_evm_address_accepts_lowercase_hex() {
         let value = "0x1111111111111111111111111111111111111111";
-        assert_eq!(normalize_evm_address("eth_main", value).unwrap(), value);
+        assert_eq!(normalize_evm_address("usdb_main", value).unwrap(), value);
     }
 
     #[test]

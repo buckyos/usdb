@@ -7,7 +7,7 @@
 
 - Use one `mint` inscription for miner certificate creation, activation, and energy inheritance.
 - Support transferable certificates under the BTC UTXO model while preventing dust attacks and energy double spending.
-- Bind a primary ETH address and an optional collaborator ETH address for future reward/collaboration extensions.
+- Bind a primary USDB address and an optional collaborator USDB address for future reward/collaboration extensions.
 
 ## 2. Inscription Data Format
 
@@ -19,8 +19,8 @@ All miner-certificate operations are represented by JSON inscriptions with `op` 
 | -- | -- | -- | -- | -- |
 | `p` | string | Yes | Protocol identifier | Must be `"usdb"` |
 | `op` | string | Yes | Operation type | Must be `"mint"` |
-| `eth_main` | string | Yes | Main ETH address for rewards | Must be a valid EVM address |
-| `eth_collab` | string | No | Collaborator ETH address for collaboration/reward split extensions | Empty or valid EVM address |
+| `usdb_main` | string | Yes | Main USDB address for rewards | Must be a valid EVM address |
+| `usdb_collab` | string | No | Collaborator USDB address for collaboration/reward split extensions | Empty or valid EVM address |
 | `prev` | string[] | No | Parent inscriptions for inheritance | Each item must be a valid inscription ID |
 
 ### 2.2 Example
@@ -29,8 +29,8 @@ All miner-certificate operations are represented by JSON inscriptions with `op` 
 {
   "p": "usdb",
   "op": "mint",
-  "eth_main": "0x1234...NewEthAddr...",
-  "eth_collab": "0x5678...CollabAddr...",
+  "usdb_main": "0x1234...NewUsdbAddr...",
+  "usdb_collab": "0x5678...UsdbCollabAddr...",
   "prev": [
     "old_inscription_id_a",
     "old_inscription_id_b"
@@ -80,7 +80,7 @@ Security impact: prevents energy double spending.
 
 ### 5.1 First Activation / ETH Address Update
 
-1. User mints a new `mint` inscription `I_new` with updated `eth_main` / `eth_collab`.
+1. User mints a new `mint` inscription `I_new` with updated `usdb_main` / `usdb_collab`.
 2. If inheritance is needed, set `prev` to old inscription IDs.
 3. `I_new` becomes the current `Active` inscription; referenced old inscriptions become `Consumed` according to rules.
 
@@ -88,7 +88,7 @@ Security impact: prevents energy double spending.
 
 1. Address `A` transfers old inscription `I_old` to `B`; `I_old` turns `Dormant` immediately.
 2. `B` mints `I_new` on `B`'s own address with `prev = [I_old]`.
-3. `I_new` becomes `Active`, inherits energy, and binds `B`'s ETH addresses.
+3. `I_new` becomes `Active`, inherits energy, and binds `B`'s USDB addresses.
 
 ## 6. Energy Calculation and Inheritance Recommendations
 
@@ -101,13 +101,13 @@ Security impact: prevents energy double spending.
 ## 7. Minimum Indexer Validation Requirements
 
 - Process only inscriptions matching `p == "usdb" && op == "mint"`.
-- `eth_main` is mandatory and must be valid; `eth_collab` must be valid when present.
+- `usdb_main` is mandatory and must be valid; `usdb_collab` must be valid when present.
 - Every `prev` reference must exist, be accessible, and not be previously consumed.
 - Inheritance over a referenced inscription must be transactional or equivalently atomic.
 - State transitions (`Active -> Dormant -> Consumed`) must include full-context logs for traceability.
 
 ## 8. Open Items
 
-- Detailed algorithm for `eth_collab` reward split and energy boost behavior.
+- Detailed algorithm for `usdb_collab` reward split and energy boost behavior.
 - Exact energy growth formula (BTC balance, holding duration, sampling period).
 - Whether to add a protocol version field (for example `v`) for forward compatibility.

@@ -163,7 +163,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_hist_validation_gap_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
 
   pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_content_file")"

@@ -11,7 +11,7 @@ smaller and more useful:
 - keep BTC-side `world-sim` unchanged as the main source of protocol activity
 - allow `run_local_world_sim_ethw.sh up` to start a real `ethw-node`
 - give that ETHW node a deterministic miner identity
-- make the ETHW miner address align with the future miner-pass `eth_main`
+- make the ETHW miner address align with the future miner-pass `usdb_main`
   binding model
 
 ## 2. Two Different Identity Layers
@@ -23,7 +23,7 @@ ETHW integration has two separate identity concepts:
    - configured through `--miner.etherbase` / `--etherbase`
 
 2. **Protocol miner identity**
-   - the `eth_main` field recorded in BTC miner-pass inscriptions
+   - the `usdb_main` field recorded in BTC miner-pass inscriptions
    - defined by the miner-certificate inscription protocol
 
 These are different concepts, but for a protocol-consistent full-sim they
@@ -127,7 +127,7 @@ world-sim mint flow.
 The key rule is:
 
 - when `run_local_world_sim_ethw.sh up` is used, the simulator should treat one
-  configured world-sim agent as the protocol miner whose `eth_main` must match
+  configured world-sim agent as the protocol miner whose `usdb_main` must match
   the ETHW miner address
 
 The runtime contract is:
@@ -142,13 +142,13 @@ The runtime contract is:
    - the ETHW identity marker
 5. the simulator assigns that address to one stable agent:
    - `ETHW_MINER_AGENT_ID`
-6. that agent's `mint` / `remint` actions use the aligned `eth_main`
+6. that agent's `mint` / `remint` actions use the aligned `usdb_main`
 
 This keeps the first ETHW full-sim milestone small:
 
 - ETHW still remains a single-node local miner
 - BTC world-sim remains the only source of protocol traffic
-- but miner-pass `eth_main` stops drifting away from the ETHW mining identity
+- but miner-pass `usdb_main` stops drifting away from the ETHW mining identity
 
 ## 9. Future Phases
 

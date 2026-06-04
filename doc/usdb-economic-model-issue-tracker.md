@@ -64,7 +64,7 @@
 | ECO-008 | P1 | In Progress | 定义并实现 effective_energy / level / real_difficulty | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
 | ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
 | ECO-010 | P2 | In Progress | CoinBase、K、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
-| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 ETHW 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
+| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 USDB 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Todo | 明确 canonical JSON、content-type 和未知字段策略 | inscription source/content parser |
 | ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` |
 
@@ -97,10 +97,10 @@
   - `doc/矿工证铭文协议.md` 说明 `prev` 是可选字段。
   - 当前 `USDBMint` 中 `prev` 是必填 `Vec<String>`，缺失会被 serde 判为 schema invalid。
   - 当前协议没有明确 `v` / `protocol_version` 字段，也没有 `leader_pass_id` / `leader_btc_addr`。
-  - `eth_collab` 目前只进行 EVM 地址格式校验，尚不能表达协作矿工证绑定哪个 leader。
+  - `usdb_collab` 目前只进行 EVM 地址格式校验，尚不能表达协作矿工证绑定哪个 leader。
 - 目标：
   - 明确必填字段、可选字段、默认值和兼容策略。
-  - 明确以 `leader_pass_id` / `leader_btc_addr` 二选一作为 leader 引用，并移除新协议中的 `eth_collab`。
+  - 明确以 `leader_pass_id` / `leader_btc_addr` 二选一作为 leader 引用，并移除新协议中的 `usdb_collab`。
   - 明确开发期旧格式不作为正式协议版本进入 UIP 版本序列。
 - 下一步：
   - Review `doc/UIP/UIP-0001-miner-pass-inscription.md` 中的 v1 schema。
@@ -191,11 +191,11 @@
 - 优先级：`P1`
 - 状态：`In Progress`
 - 当前现状：
-  - `eth_collab` 目前只是可选 EVM 地址字段。
+  - `usdb_collab` 目前只是可选 EVM 地址字段。
   - 目标模型要求 collab pass 创建时绑定 Leader 引用。
 - 目标：
   - 明确 collab pass 如何通过 `leader_pass_id` / `leader_btc_addr` 二选一表达 leader 引用。
-  - 明确 ETHW Leader eligibility 不反向进入 USDB indexer 派生能量。
+  - 明确 USDB Leader eligibility 不反向进入 USDB indexer 派生能量。
   - 明确 collab 退出和 collab 转普通 pass 统一走 remint + `prev`。
   - 明确 collab pass 自身是否可独立参与 candidate set。
 - 下一步：
@@ -278,7 +278,7 @@
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 
-### ECO-011. 拆分 USDB 经济状态视图与 ETHW 链上 payload
+### ECO-011. 拆分 USDB 经济状态视图与 USDB 链上 payload
 
 - 优先级：`P1`
 - 状态：`In Progress`
@@ -297,7 +297,7 @@
 - 目标：
   - 明确 USDB indexer 可以提供的完整经济状态 / 审计视图。
   - 明确 ETHW `header.Extra` 只携带最小历史 selector。
-  - 明确哪些字段由 validator 通过 UIP-0006 本地重算，不需要进入 ETHW 链上 payload。
+  - 明确哪些字段由 validator 通过 UIP-0006 本地重算，不需要进入 USDB 链上 payload。
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
   - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。

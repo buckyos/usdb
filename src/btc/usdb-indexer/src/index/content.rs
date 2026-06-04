@@ -18,7 +18,7 @@ const USDB_MINT_SCHEMA_FIELDS: [&str; 7] = [
     "p",
     "op",
     "v",
-    "eth_main",
+    "usdb_main",
     "leader_pass_id",
     "leader_btc_addr",
     "prev",
@@ -28,8 +28,8 @@ const USDB_MINT_SCHEMA_FIELDS: [&str; 7] = [
 {
   "p": "usdb",
   "op": "mint",
-  "eth_main": "0x1234...NewEthAddr...",
-  "eth_collab": "0x5678...CollabAddr...",
+  "usdb_main": "0x1234...NewUsdbAddr...",
+  "usdb_collab": "0x5678...UsdbCollabAddr...",
   "prev": [
     "old_inscription_id_a",
     "old_inscription_id_b"
@@ -101,8 +101,8 @@ impl TryFrom<u32> for MinerPassState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MintValidationErrorCode {
     InvalidSchema,
-    InvalidEthMain,
-    InvalidEthCollab,
+    InvalidUsdbMain,
+    InvalidUsdbCollab,
     InvalidLeaderPassId,
     InvalidLeaderBtcAddr,
     InvalidPrevId,
@@ -113,8 +113,8 @@ impl MintValidationErrorCode {
     pub fn as_str(&self) -> &'static str {
         match self {
             MintValidationErrorCode::InvalidSchema => "INVALID_SCHEMA",
-            MintValidationErrorCode::InvalidEthMain => "INVALID_ETH_MAIN",
-            MintValidationErrorCode::InvalidEthCollab => "INVALID_ETH_COLLAB",
+            MintValidationErrorCode::InvalidUsdbMain => "INVALID_USDB_MAIN",
+            MintValidationErrorCode::InvalidUsdbCollab => "INVALID_USDB_COLLAB",
             MintValidationErrorCode::InvalidLeaderPassId => "INVALID_LEADER_PASS_ID",
             MintValidationErrorCode::InvalidLeaderBtcAddr => "INVALID_LEADER_BTC_ADDR",
             MintValidationErrorCode::InvalidPrevId => "INVALID_PREV_ID",
@@ -176,20 +176,20 @@ pub struct USDBMint {
     pub version: u32,
     #[serde(skip)]
     pub pass_kind: MinerPassKind,
-    pub eth_main: String,
-    pub eth_collab: Option<String>,
+    pub usdb_main: String,
+    pub usdb_collab: Option<String>,
     pub leader_pass_id: Option<String>,
     pub leader_btc_addr: Option<String>,
     pub prev: Vec<String>,
 }
 
 impl USDBMint {
-    pub fn standard(eth_main: String, prev: Vec<String>) -> Self {
+    pub fn standard(usdb_main: String, prev: Vec<String>) -> Self {
         Self {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Standard,
-            eth_main,
-            eth_collab: None,
+            usdb_main,
+            usdb_collab: None,
             leader_pass_id: None,
             leader_btc_addr: None,
             prev,
@@ -200,8 +200,8 @@ impl USDBMint {
         Self {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Collab,
-            eth_main: String::new(),
-            eth_collab: None,
+            usdb_main: String::new(),
+            usdb_collab: None,
             leader_pass_id: Some(leader_pass_id),
             leader_btc_addr: None,
             prev,
@@ -212,8 +212,8 @@ impl USDBMint {
         Self {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Collab,
-            eth_main: String::new(),
-            eth_collab: None,
+            usdb_main: String::new(),
+            usdb_collab: None,
             leader_pass_id: None,
             leader_btc_addr: Some(leader_btc_addr),
             prev,
@@ -271,7 +271,7 @@ impl USDBInscription {
 pub struct InscriptionContentLoader {}
 
 impl InscriptionContentLoader {
-    fn is_valid_eth_address(value: &str) -> bool {
+    fn is_valid_evm_address(value: &str) -> bool {
         if value.len() != 42 {
             return false;
         }
@@ -488,11 +488,11 @@ impl InscriptionContentLoader {
         network: Network,
     ) -> Result<ParsedMintContent, String> {
         for key in content.keys() {
-            if key == "eth_collab" {
+            if key == "usdb_collab" {
                 return Ok(ParsedMintContent::Invalid(MintValidationError {
-                    code: MintValidationErrorCode::InvalidEthCollab,
+                    code: MintValidationErrorCode::InvalidUsdbCollab,
                     reason: format!(
-                        "eth_collab is prohibited in USDB mint v1 for inscription {}",
+                        "usdb_collab is prohibited in USDB mint v1 for inscription {}",
                         inscription_id
                     ),
                 }));
@@ -531,41 +531,41 @@ impl InscriptionContentLoader {
             }
         };
 
-        let has_eth_main = content.contains_key("eth_main");
+        let has_usdb_main = content.contains_key("usdb_main");
         let has_leader_pass_id = content.contains_key("leader_pass_id");
         let has_leader_btc_addr = content.contains_key("leader_btc_addr");
 
-        let pass_kind = match (has_eth_main, has_leader_pass_id, has_leader_btc_addr) {
+        let pass_kind = match (has_usdb_main, has_leader_pass_id, has_leader_btc_addr) {
             (true, false, false) => MinerPassKind::Standard,
             (false, true, false) | (false, false, true) => MinerPassKind::Collab,
             _ => {
                 return Ok(ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidSchema,
                     reason: format!(
-                        "USDB mint v1 must contain either eth_main or exactly one leader binding field for inscription {}",
+                        "USDB mint v1 must contain either usdb_main or exactly one leader binding field for inscription {}",
                         inscription_id
                     ),
                 }));
             }
         };
 
-        let eth_main = if pass_kind == MinerPassKind::Standard {
-            match content.get("eth_main").and_then(|value| value.as_str()) {
-                Some(eth_main) if Self::is_valid_eth_address(eth_main) => eth_main.to_string(),
-                Some(eth_main) => {
+        let usdb_main = if pass_kind == MinerPassKind::Standard {
+            match content.get("usdb_main").and_then(|value| value.as_str()) {
+                Some(usdb_main) if Self::is_valid_evm_address(usdb_main) => usdb_main.to_string(),
+                Some(usdb_main) => {
                     return Ok(ParsedMintContent::Invalid(MintValidationError {
-                        code: MintValidationErrorCode::InvalidEthMain,
+                        code: MintValidationErrorCode::InvalidUsdbMain,
                         reason: format!(
-                            "Invalid eth_main format for inscription {}: {}",
-                            inscription_id, eth_main
+                            "Invalid usdb_main format for inscription {}: {}",
+                            inscription_id, usdb_main
                         ),
                     }));
                 }
                 None => {
                     return Ok(ParsedMintContent::Invalid(MintValidationError {
-                        code: MintValidationErrorCode::InvalidEthMain,
+                        code: MintValidationErrorCode::InvalidUsdbMain,
                         reason: format!(
-                            "Missing or non-string eth_main for inscription {}",
+                            "Missing or non-string usdb_main for inscription {}",
                             inscription_id
                         ),
                     }));
@@ -645,8 +645,8 @@ impl InscriptionContentLoader {
         let mint_inscription = USDBMint {
             version,
             pass_kind,
-            eth_main,
-            eth_collab: None,
+            usdb_main,
+            usdb_collab: None,
             leader_pass_id,
             leader_btc_addr,
             prev,
@@ -797,7 +797,7 @@ mod tests {
     fn test_classify_mint_content_str_standard_valid() {
         let inscription_id = test_inscription_id(1, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
             VALID_LEADER_PASS_ID
         );
 
@@ -807,7 +807,7 @@ mod tests {
             ParsedMintContent::Valid(USDBInscription::Mint(mint)) => {
                 assert_eq!(mint.version, 1);
                 assert_eq!(mint.pass_kind, MinerPassKind::Standard);
-                assert_eq!(mint.eth_main, "0x1111111111111111111111111111111111111111");
+                assert_eq!(mint.usdb_main, "0x1111111111111111111111111111111111111111");
                 assert_eq!(mint.prev, vec![VALID_LEADER_PASS_ID.to_string()]);
                 assert!(mint.leader_pass_id.is_none());
                 assert!(mint.leader_btc_addr.is_none());
@@ -830,7 +830,7 @@ mod tests {
             ParsedMintContent::Valid(USDBInscription::Mint(mint)) => {
                 assert_eq!(mint.version, 1);
                 assert_eq!(mint.pass_kind, MinerPassKind::Collab);
-                assert_eq!(mint.eth_main, "");
+                assert_eq!(mint.usdb_main, "");
                 assert_eq!(mint.leader_pass_id, Some(VALID_LEADER_PASS_ID.to_string()));
                 assert!(mint.leader_btc_addr.is_none());
             }
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_missing_prev_defaults_empty() {
         let inscription_id = test_inscription_id(4, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111"}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111"}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -881,15 +881,15 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_mint_content_str_invalid_eth_main() {
+    fn test_classify_mint_content_str_invalid_usdb_main() {
         let inscription_id = test_inscription_id(5, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x123","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x123","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
         match result {
             ParsedMintContent::Invalid(err) => {
-                assert_eq!(err.code, MintValidationErrorCode::InvalidEthMain)
+                assert_eq!(err.code, MintValidationErrorCode::InvalidUsdbMain)
             }
             _ => panic!("expected invalid mint content"),
         }
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_invalid_prev_id() {
         let inscription_id = test_inscription_id(8, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","prev":["bad-prev-id"]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["bad-prev-id"]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -951,7 +951,7 @@ mod tests {
     fn test_classify_mint_content_str_duplicate_prev_invalid() {
         let inscription_id = test_inscription_id(9, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","prev":["{}","{}"]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}","{}"]}}"#,
             VALID_LEADER_PASS_ID, VALID_LEADER_PASS_ID
         );
 
@@ -966,10 +966,10 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_mint_content_str_eth_main_with_leader_invalid() {
+    fn test_classify_mint_content_str_usdb_main_with_leader_invalid() {
         let inscription_id = test_inscription_id(10, 0);
         let content = format!(
-            r#"{{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","leader_pass_id":"{}","prev":[]}}"#,
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","leader_pass_id":"{}","prev":[]}}"#,
             VALID_LEADER_PASS_ID
         );
 
@@ -1017,15 +1017,15 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_mint_content_str_eth_collab_invalid() {
+    fn test_classify_mint_content_str_usdb_collab_invalid() {
         let inscription_id = test_inscription_id(13, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","eth_collab":"0x2222222222222222222222222222222222222222","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_collab":"0x2222222222222222222222222222222222222222","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
         match result {
             ParsedMintContent::Invalid(err) => {
-                assert_eq!(err.code, MintValidationErrorCode::InvalidEthCollab)
+                assert_eq!(err.code, MintValidationErrorCode::InvalidUsdbCollab)
             }
             _ => panic!("expected invalid mint content"),
         }
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_unknown_field_invalid() {
         let inscription_id = test_inscription_id(14, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","unexpected":true,"prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","unexpected":true,"prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_duplicate_key_invalid() {
         let inscription_id = test_inscription_id(15, 0);
-        let content = r#"{"p":"usdb","op":"mint","v":1,"eth_main":"0x1111111111111111111111111111111111111111","eth_main":"0x2222222222222222222222222222222222222222","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
     #[test]
     fn test_classify_mint_content_str_pre_standard_payload_invalid() {
         let inscription_id = test_inscription_id(16, 0);
-        let content = r#"{"p":"usdb","op":"mint","eth_main":"0x1111111111111111111111111111111111111111","prev":[]}"#;
+        let content = r#"{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#;
 
         let result =
             InscriptionContentLoader::classify_mint_content_str(&inscription_id, content).unwrap();

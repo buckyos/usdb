@@ -140,19 +140,19 @@ USDB 的核心资产对象是矿工证。矿工证由 BTC 铭文表达，当前�
 
 当前实现已经识别的字段包括：
 
-- `eth_main`
-- `eth_collab`
+- `usdb_main`
+- `usdb_collab`
 - `prev`
 
 目标模型中：
 
-- `eth_main` 必须存在，并且必须是合法 EVM 地址。
-- `eth_collab` 协作矿工证必须存在，指向其Leader矿工的eth_main地址
+- `usdb_main` 必须存在，并且必须是合法 EVM 地址。
+- `usdb_collab` 协作矿工证必须存在，指向其Leader矿工的usdb_main地址
 - `prev` 是被继承矿工证列表，用于 remint 与能量继承。
 
 ### 2.3 协作关系字段
 
-当前实现只保留了 `eth_collab` 地址校验，但这不足以唯一表达“协作矿工证绑定哪个 Leader 矿工证”。
+当前实现只保留了 `usdb_collab` 地址校验，但这不足以唯一表达“协作矿工证绑定哪个 Leader 矿工证”。
 
 因此，目标协议必须增加或明确以下之一：
 
@@ -516,7 +516,7 @@ difficulty_factor_bps = max(5000, 10000 - level * 100)
 
 `MAX_LEVEL = 50`，因此矿工证最多将 ETHW 侧基础难度降低到 50%。
 
-ETHW validator / mining policy 使用当前 `base_difficulty` 计算实际难度：
+USDB validator / mining policy 使用当前 `base_difficulty` 计算实际难度：
 
 ```text
 real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
@@ -892,7 +892,7 @@ else:
 # 待定问题
 
 1. `leader_ref` 的协议字段如何表达。`<TODO>`
-2. `eth_collab` 在目标协议中的最终语义。`<TODO>`
+2. `usdb_collab` 在目标协议中的最终语义。`<TODO>`
 3. `prev` 的所有权一致性应如何精确定义。`<TODO>`
 4. 协作矿工退出普通矿工时的附加损失参数。`<TODO>`
 5. “带报价的 B 出块” 的共识字段与验证方式。`<TODO>`

@@ -2,7 +2,7 @@ UIP: UIP-0005
 Title: Level and Real Difficulty
 Status: Draft
 Type: Standards Track
-Layer: BTC Application / ETHW Validator Input
+Layer: BTC Application / USDB Validator Input
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0003, UIP-0004
 Supersedes: doc/usdb-economic-model-design.md level and difficulty sections after activation
@@ -19,7 +19,7 @@ Activation: BTC and ETHW network activation matrix; development networks activat
 - `level` 只由 `effective_energy` 和 UIP-0005 参数决定。
 - `level` 使用整数阈值表计算，禁止运行时使用浮点数、`log` 或平台相关数学库。
 - `difficulty_factor_bps` 只由 `level` 和 UIP-0005 参数决定。
-- `real_difficulty` 由 ETHW validator / mining policy 使用当前 `base_difficulty` 计算。
+- `real_difficulty` 由 USDB validator / mining policy 使用当前 `base_difficulty` 计算。
 - `level`、`difficulty_factor_bps` 和 `real_difficulty` 都是派生值，不可继承、不可写回 raw energy ledger，也不得写入 USDB raw energy 状态。
 - collab pass 自身不直接参与 validator candidate set，因此其 `effective_energy = 0`，`level = 0`。
 
@@ -48,7 +48,7 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 - raw energy 增长、惩罚和继承。
 - collab pass 的 Leader 解析和 `effective_energy` 聚合。
 - ETHW 侧 Leader eligibility、出块报价窗口或 candidate policy。
-- base difficulty 的来源、ETHW 出块算法或 PoW target 编码。
+- base difficulty 的来源、USDB 链出块算法或 PoW target 编码。
 - USDB indexer 查询、持久化或反向依赖 ETHW `base_difficulty`。
 - reward split、CoinBase 释放和价格规则。
 
@@ -59,7 +59,7 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 | `effective_energy` | UIP-0004 派生出的有效能量，是 level 的唯一能量输入。 |
 | `level_threshold[L]` | 达到等级 `L` 所需的最小 `effective_energy`。 |
 | `level` | 由 `effective_energy` 映射出的非负整数等级。 |
-| `base_difficulty` | ETHW validator / mining policy 输入的基础挖矿难度，不是 USDB indexer 输入。 |
+| `base_difficulty` | USDB validator / mining policy 输入的基础挖矿难度，不是 USDB indexer 输入。 |
 | `difficulty_factor_bps` | `level` 对难度产生的折算系数，单位 bps。 |
 | `real_difficulty` | ETHW 侧应用 `difficulty_factor_bps` 后的实际难度。 |
 
@@ -76,7 +76,7 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 - USDB indexer 查询接口应该基于 `effective_energy` 动态计算 `level` 和 `difficulty_factor_bps`。
 - USDB indexer 不需要持久化 `level` 或 `difficulty_factor_bps`。
 - USDB indexer 不计算、不持久化、不查询 ETHW `base_difficulty` 或 `real_difficulty`。
-- ETHW validator / mining policy 使用 `difficulty_factor_bps` 和自己的当前 `base_difficulty` 计算 `real_difficulty`。
+- USDB validator / mining policy 使用 `difficulty_factor_bps` 和自己的当前 `base_difficulty` 计算 `real_difficulty`。
 
 # 输入语义
 
@@ -127,7 +127,7 @@ level(pass, h) = 0
 2. 最大 difficulty discount 固定为 50%，即 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
 3. `level` 和 `difficulty_factor_bps` 是查询时派生值，不需要在 usdb-indexer 中持久化。
 4. `base_difficulty` 由 ETHW 提供，USDB indexer 不依赖该值。
-5. `real_difficulty` 在 ETHW validator / mining policy 中计算，不写回 USDB indexer。
+5. `real_difficulty` 在 USDB validator / mining policy 中计算，不写回 USDB indexer。
 6. 公开 ETHW 测试网和正式网应使用同一套 level 参数；local / regtest 可以为测试临时 override，但不得影响公开网络 activation matrix。
 
 ## `LEVEL_E0` 量纲确认
@@ -348,7 +348,7 @@ ETHW block、mining proof 或 validator 逻辑若使用以下 ETHW-side 字段�
 | `base_difficulty` | decimal string | ETHW 当前基础难度。 |
 | `real_difficulty` | decimal string | ETHW 侧折算后的实际难度。 |
 
-如果后续 ETHW policy 显式携带或承诺 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，ETHW validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该区块或将其标记为 invalid。
+如果后续 ETHW policy 显式携带或承诺 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，USDB validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该区块或将其标记为 invalid。
 
 # 历史查询与 Reorg 语义
 

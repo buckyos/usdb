@@ -13,7 +13,7 @@ Activation: ETHW network activation matrix; first official networks define rewar
 
 UIP-0011 解决的问题是：
 
-- ETHW validator 如何根据 UIP-0007 `ProfileSelectorPayload` 和 UIP-0006 `resolved_profile` 重算区块奖励。
+- USDB validator 如何根据 UIP-0007 `ProfileSelectorPayload` 和 UIP-0006 `resolved_profile` 重算区块奖励。
 - CoinBase emission 如何绑定矿工 BTC 资产总量、`price` 和已发行 USDB。
 - 交易手续费如何在矿工和 SourceDAO / Dividend 分红池之间分配。
 - 辅助算力池、协作效率系数 `K`、叔块奖励和收益合约在 v1 中如何留出版本边界。
@@ -51,7 +51,7 @@ USDB 的发行目标是让 ETHW 区块奖励与 BTC 侧矿工资产和价格状�
 | `CoinBase` | ETHW 区块新发行的 USDB native token 数量。本文用 `coinbase_emission_atoms` 表示最小单位。 |
 | `USDB atom` | USDB native token 最小单位。若执行层继承 EVM `wei` 语义，`1 USDB = 10^18 atoms`。 |
 | `tx_fees_atoms` | 一个 ETHW 区块中可分配的交易手续费总额，单位为 USDB atoms。 |
-| `reward_recipient` | 当前区块 miner reward 的接收地址，v1 来自 standard pass 的 `eth_main`。 |
+| `reward_recipient` | 当前区块 miner reward 的接收地址，v1 来自 standard pass 的 `usdb_main`。 |
 | `dao_fee_recipient` | DAO / Dividend 分红池手续费接收地址，来自 UIP-0010 `DividendAddress`。 |
 | `total_miner_btc_sats` | 参与发行目标计算的矿工 BTC 资产总量，单位为 sat。 |
 | `issued_usdb_atoms` | 当前区块执行前已经发行的 USDB native token 总量，单位为 atoms。 |
@@ -106,7 +106,7 @@ fee_split_policy_version = 1
 
 # Reward 输入
 
-ETHW validator 计算区块 `B` 的 reward 时，必须取得以下输入：
+USDB validator 计算区块 `B` 的 reward 时，必须取得以下输入：
 
 | 输入 | 来源 | 说明 |
 | --- | --- | --- |
@@ -124,15 +124,15 @@ ETHW validator 计算区块 `B` 的 reward 时，必须取得以下输入：
 
 ## Reward Recipient
 
-v1 的 `reward_recipient` 来自 standard pass 的 `eth_main`。
+v1 的 `reward_recipient` 来自 standard pass 的 `usdb_main`。
 
 验证规则：
 
 - `resolved_profile.pass.state` 必须是 `active`。
 - `resolved_profile.pass.pass_kind` 必须是 `standard`。
-- validator 必须能从该 pass 的铭文 schema 或 UIP-0006 扩展字段解析出 `eth_main`。
-- `header.Coinbase` 必须等于该 `eth_main`。
-- 如果 `header.Coinbase` 与 `eth_main` 不一致，区块必须无效。
+- validator 必须能从该 pass 的铭文 schema 或 UIP-0006 扩展字段解析出 `usdb_main`。
+- `header.Coinbase` 必须等于该 `usdb_main`。
+- 如果 `header.Coinbase` 与 `usdb_main` 不一致，区块必须无效。
 
 原因：
 
@@ -255,7 +255,7 @@ coinbase_emission_atoms
 
 v1 要求：
 
-- `k_bps` 必须由 ETHW validator 在执行区块时本地重算。
+- `k_bps` 必须由 USDB validator 在执行区块时本地重算。
 - `k_bps` 必须由 reserved system storage 中的 UIP-0012 rolling window 状态和当前区块的 UIP-0006 `collab_contribution` 决定。
 - `k_bps` 不得由 miner 在区块头或交易中直接声明。
 - UIP-0012 warmup 阶段输出 `k_bps = 10000`。
@@ -346,7 +346,7 @@ distributed_fee_atoms == tx_fees_atoms
 
 其中：
 
-- `miner_reward_atoms` 发给 `header.Coinbase`，且 `header.Coinbase == resolved_profile.eth_main`。
+- `miner_reward_atoms` 发给 `header.Coinbase`，且 `header.Coinbase == resolved_profile.usdb_main`。
 - `dao_reward_atoms` 发给 `DividendAddress`。
 - `aux_pool_reward_atoms` 发给 UIP-0015 定义的 aux pool recipient。
 
@@ -372,7 +372,7 @@ ETHW reorg 时：
 - fee split、DAO reward、aux pool reward 必须随 ETHW state 回滚。
 - 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 USDB state。
 
-BTC / USDB 侧 reorg 已由 UIP-0006 / UIP-0008 的历史 state selector 和 activation matrix 处理。ETHW validator 不得用 USDB current head 替换旧块 payload 中的历史 state。
+BTC / USDB 侧 reorg 已由 UIP-0006 / UIP-0008 的历史 state selector 和 activation matrix 处理。USDB validator 不得用 USDB current head 替换旧块 payload 中的历史 state。
 
 # 实现影响
 
@@ -392,7 +392,7 @@ USDB indexer / state view:
 
 需要确认 UIP-0006 是否要在 `pass_economic_profile` 中显式返回：
 
-- `eth_main` / `reward_recipient`。
+- `usdb_main` / `reward_recipient`。
 - `total_miner_btc_sats` 或可审计的 aggregate view。
 - `price_state_id` 或与 UIP-0013 绑定的 price state reference。
 
@@ -400,8 +400,8 @@ USDB indexer / state view:
 
 至少需要覆盖：
 
-- reward payload selector 指向 active standard pass，`header.Coinbase == eth_main` 时区块有效。
-- `header.Coinbase != eth_main` 时区块无效。
+- reward payload selector 指向 active standard pass，`header.Coinbase == usdb_main` 时区块有效。
+- `header.Coinbase != usdb_main` 时区块无效。
 - collab pass 不能直接作为 reward pass。
 - missing / stale / current-head USDB state query 必须 fail closed。
 - `target_supply_atoms <= issued_usdb_atoms` 时 CoinBase 为 0。
@@ -426,6 +426,6 @@ USDB indexer / state view:
 | 动态 `K` 是否进入首个 public network | 已拆分到 UIP-0012；v1 使用 `collab_contribution` 作为 `CE_N`。 | Review UIP-0012 rolling window、warmup 和整数 `compute_k_bps`。 |
 | aux pool split 如何激活 | 初始 `aux_pool_policy_version = 0`，UIP-0015 Final 前不启用。 | UIP-0015 定义证明格式、recipient、verifier code hash 后，通过 activation matrix 在指定高度激活。 |
 | uncle / ommer reward | 当前建议禁用或置 0，直到完整规则确定。 | 决定 USDB ETHW v1 是否保留 uncle 机制。 |
-| miner income contract | 当前 v1 使用 `eth_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
+| miner income contract | 当前 v1 使用 `usdb_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
 | fee accounting 与 EVM fork 语义 | 本文只消费 `tx_fees_atoms`。 | 需要在 go-ethereum 实现中确认 EIP-1559 burn、tips、base fee 的具体路径。 |
-| UIP-0006 是否需要新增 reward fields | 当前需要 `eth_main`、aggregate supply inputs 或可审计查询。 | 后续 review UIP-0006 state view 是否扩展。 |
+| UIP-0006 是否需要新增 reward fields | 当前需要 `usdb_main`、aggregate supply inputs 或可审计查询。 | 后续 review UIP-0006 state view 是否扩展。 |

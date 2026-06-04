@@ -290,5 +290,5 @@ The second ETHW batch extends this by aligning protocol identity:
 
 - `run_local_world_sim_ethw.sh up` enables ETHW protocol alignment by default
 - one stable world-sim agent is assigned to the ETHW miner address
-- that agent writes miner-pass `eth_main` using the same ETH address as the
+- that agent writes miner-pass `usdb_main` using the same ETH address as the
   ETHW node mining identity

@@ -1260,8 +1260,8 @@ impl UsdbIndexerRpcServer {
             mint_owner: pass.mint_owner.to_string(),
             mint_version: pass.mint_version,
             pass_kind: pass.pass_kind.as_str().to_string(),
-            eth_main: pass.eth_main,
-            eth_collab: pass.eth_collab,
+            usdb_main: pass.usdb_main,
+            usdb_collab: pass.usdb_collab,
             leader_pass_id: pass.leader_pass_id.map(|id| id.to_string()),
             leader_btc_addr: pass.leader_btc_addr,
             prev: pass.prev.into_iter().map(|v| v.to_string()).collect(),
@@ -1794,8 +1794,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     latest_event_height: row.latest_event_height,
                     mint_version: row.pass.mint_version,
                     pass_kind: row.pass.pass_kind.as_str().to_string(),
-                    eth_main: row.pass.eth_main,
-                    eth_collab: row.pass.eth_collab,
+                    usdb_main: row.pass.usdb_main,
+                    usdb_collab: row.pass.usdb_collab,
                     leader_pass_id: row.pass.leader_pass_id.map(|id| id.to_string()),
                     leader_btc_addr: row.pass.leader_btc_addr,
                     satpoint: row.pass.satpoint.to_string(),
@@ -1838,8 +1838,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     latest_event_height: row.latest_event_height,
                     mint_version: row.pass.mint_version,
                     pass_kind: row.pass.pass_kind.as_str().to_string(),
-                    eth_main: row.pass.eth_main,
-                    eth_collab: row.pass.eth_collab,
+                    usdb_main: row.pass.usdb_main,
+                    usdb_collab: row.pass.usdb_collab,
                     leader_pass_id: row.pass.leader_pass_id.map(|id| id.to_string()),
                     leader_btc_addr: row.pass.leader_btc_addr,
                     satpoint: row.pass.satpoint.to_string(),
@@ -2137,8 +2137,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     mint_owner: item.mint_owner.to_string(),
                     mint_version: item.mint_version,
                     pass_kind: item.pass_kind.as_str().to_string(),
-                    eth_main: item.eth_main,
-                    eth_collab: item.eth_collab,
+                    usdb_main: item.usdb_main,
+                    usdb_collab: item.usdb_collab,
                     leader_pass_id: item.leader_pass_id.map(|id| id.to_string()),
                     leader_btc_addr: item.leader_btc_addr,
                     prev: item.prev.into_iter().map(|v| v.to_string()).collect(),
@@ -2296,8 +2296,8 @@ mod tests {
             satpoint: test_satpoint(ins_tag, 0, 0),
             mint_version: 1,
             pass_kind: MinerPassKind::Standard,
-            eth_main: "0x1111111111111111111111111111111111111111".to_string(),
-            eth_collab: None,
+            usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+            usdb_collab: None,
             leader_pass_id: None,
             leader_btc_addr: None,
             prev: Vec::new(),
@@ -3905,7 +3905,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut invalid = make_invalid_pass(43, 77, 102, "INVALID_ETH_MAIN");
+        let mut invalid = make_invalid_pass(43, 77, 102, "INVALID_USDB_MAIN");
         invalid.owner = owner;
         invalid.mint_owner = owner;
         storage
@@ -4095,14 +4095,14 @@ mod tests {
         let (server, root_dir) = build_server("invalid_passes", 150);
         let storage = server.indexer.miner_pass_storage();
 
-        let invalid = make_invalid_pass(4, 44, 110, "INVALID_ETH_MAIN");
+        let invalid = make_invalid_pass(4, 44, 110, "INVALID_USDB_MAIN");
         storage
             .add_invalid_mint_pass_at_height(&invalid, 110)
             .unwrap();
 
         let page = server
             .get_invalid_passes(GetInvalidPassesParams {
-                error_code: Some("INVALID_ETH_MAIN".to_string()),
+                error_code: Some("INVALID_USDB_MAIN".to_string()),
                 from_height: 100,
                 to_height: 120,
                 page: 0,
@@ -4119,7 +4119,7 @@ mod tests {
         );
         assert_eq!(
             page.items[0].invalid_code.as_deref(),
-            Some("INVALID_ETH_MAIN")
+            Some("INVALID_USDB_MAIN")
         );
 
         drop(server);
@@ -4145,7 +4145,7 @@ mod tests {
             )
             .unwrap();
 
-        let invalid = make_invalid_pass(7, 70, 110, "INVALID_ETH_MAIN");
+        let invalid = make_invalid_pass(7, 70, 110, "INVALID_USDB_MAIN");
         storage
             .add_invalid_mint_pass_at_height(&invalid, 110)
             .unwrap();
@@ -4678,7 +4678,7 @@ mod tests {
             .unwrap();
         seed_energy_record_with_state(&server, &dormant, 110, MinerPassState::Dormant, 800);
 
-        let invalid = make_invalid_pass(53, 63, 100, "INVALID_ETH_MAIN");
+        let invalid = make_invalid_pass(53, 63, 100, "INVALID_USDB_MAIN");
         storage
             .add_invalid_mint_pass_at_height(&invalid, 100)
             .unwrap();

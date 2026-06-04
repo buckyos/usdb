@@ -2,14 +2,14 @@ UIP: UIP-0014
 Title: Leader Quote Activity and Candidate Energy Policy
 Status: Draft
 Type: Standards Track
-Layer: ETHW Validator / Economic Policy
+Layer: USDB Validator / Economic Policy
 Created: 2026-05-08
 Requires: UIP-0000, UIP-0004, UIP-0005, UIP-0006, UIP-0007, UIP-0008, UIP-0013
 Activation: ETHW network activation matrix; first official networks enable v1 quote activity policy from genesis
 
 # 摘要
 
-本文定义 Leader 主动报价活跃性如何影响 ETHW 出块候选能量。
+本文定义 Leader 主动报价活跃性如何影响 USDB 链出块候选能量。
 
 核心规则：
 
@@ -24,7 +24,7 @@ Activation: ETHW network activation matrix; first official networks enable v1 qu
 
 经济模型设计要求 Leader 持续参与报价。如果一个 Leader 长期不主动报价，却仍能长期使用协作者能量降低出块难度，会削弱协作机制对 Leader 行为的约束。
 
-同时，USDB indexer 不应反向依赖 ETHW 出块历史。UIP-0004 已明确：
+同时，USDB indexer 不应反向依赖 USDB 链出块历史。UIP-0004 已明确：
 
 ```text
 raw_energy(pass, h)
@@ -67,7 +67,7 @@ candidate_energy
 | `last_valid_quote_block` | ETHW state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
 | `self_energy` | standard pass 自身的 `raw_energy`。 |
 | `nominal_effective_energy` | UIP-0004 的 `raw_energy + collab_contribution`。 |
-| `candidate_energy` | ETHW 出块候选、level 和 difficulty 实际使用的能量。 |
+| `candidate_energy` | USDB 链出块候选、level 和 difficulty 实际使用的能量。 |
 | `self_level` | `level(self_energy)`。 |
 | `nominal_leader_level` | `level(nominal_effective_energy)`。 |
 | `candidate_level` | `level(candidate_energy)`。 |
@@ -111,7 +111,7 @@ leader_quote_subject = resolved_profile.pass_id
 - quote 频率应显著高于 pass remint / pass 更新频率。矿工 remint 出新 pass 后，可以在下一次出块时提交新的 `block_quote_reference`。
 - 协作者通过 `leader_btc_addr` 自动跟随新 active pass 时，collab contribution 仍会进入该新 pass 的 `nominal_effective_energy`，但该新 pass 必须先完成有效 quote，才能把 collab contribution 用于 `candidate_energy`。
 
-v1 不支持按 `owner_script_hash`、BTC address 或 ETH address 继承 quote activity。
+v1 不支持按 `owner_script_hash`、BTC address 或 USDB/EVM address 继承 quote activity。
 
 如果未来希望 quote activity 按 owner / address 继承，必须升级 quote policy version，并审计 remint、转移和多 active pass 异常路径。
 
@@ -152,7 +152,7 @@ quote authorization 可以由 quote source 自身证明，也可以由 ETHW payl
 通用规则：
 
 ```text
-quote_owner == selected_pass.eth_main or selected_pass.quote_key
+quote_owner == selected_pass.usdb_main or selected_pass.quote_key
 ```
 
 如果某个 future quote source 已经能在自身状态中证明 `quote_owner` 与当前 selected Leader 绑定，则 ETHW payload 不需要重复携带签名。
@@ -163,17 +163,17 @@ FixedPrice v1 的授权边界：
 
 ```text
 payload.pass_id = selected standard pass
-header.Coinbase = selected_pass.eth_main
+header.Coinbase = selected_pass.usdb_main
 quote_source_kind = FixedPriceHeartbeat
 quoted price = parent PRICE_ATOMS_PER_BTC_SLOT
 ```
 
-FixedPrice v1 不要求额外 quote signature。该 unsigned heartbeat 不严格证明 Leader 私钥主动签名，只证明该区块以该 Leader pass 出块，且 reward recipient 是该 Leader 的 `eth_main`。
+FixedPrice v1 不要求额外 quote signature。该 unsigned heartbeat 不严格证明 Leader 私钥主动签名，只证明该区块以该 Leader pass 出块，且 reward recipient 是该 Leader 的 `usdb_main`。
 
 该取舍基于：
 
 - fixed price quote 不改变价格。
-- 模拟他人 Leader 出块时，reward 也必须发给该 Leader 的 `eth_main`。
+- 模拟他人 Leader 出块时，reward 也必须发给该 Leader 的 `usdb_main`。
 - 当前 UIP-0009 固定 `MaximumExtraDataSize = 160`，而 UIP-0007 `ProfileSelectorPayload` v1 已占 `107 bytes`，剩余空间不足以舒适容纳 64/65 bytes 签名。
 
 如果委员会要求 FixedPrice v1 也必须证明 Leader 私钥主动签名，则必须升级 payload 容量、改用系统交易，或重新设计更紧凑的 payload 编码。
@@ -204,7 +204,7 @@ nominal_effective_energy(leader, h)
 candidate_energy(collab, h) = 0
 ```
 
-collab pass 不直接进入 ETHW validator candidate set。
+collab pass 不直接进入 USDB validator candidate set。
 
 # Quote Active 规则
 
@@ -275,7 +275,7 @@ candidate_difficulty_factor_bps
 
 而不是无条件使用 `nominal_leader_level`。
 
-USDB indexer 可以继续返回 `raw_energy`、`collab_contribution`、`effective_energy` 和按 `effective_energy` 派生的 `level` 作为审计视图。ETHW validator 必须按本文规则自行计算 `candidate_energy` 和 `candidate_level`。
+USDB indexer 可以继续返回 `raw_energy`、`collab_contribution`、`effective_energy` 和按 `effective_energy` 派生的 `level` 作为审计视图。USDB validator 必须按本文规则自行计算 `candidate_energy` 和 `candidate_level`。
 
 # FixedPrice V1 Quote
 
@@ -443,7 +443,7 @@ effective_energy = raw_energy + collab_contribution
 
 本文不修改该定义。
 
-本文只规定 ETHW 出块时何时允许使用 `collab_contribution`：
+本文只规定 USDB 链出块时何时允许使用 `collab_contribution`：
 
 ```text
 candidate_energy = effective_energy, if leader_quote_active
@@ -462,7 +462,7 @@ UIP-0005 的 level 阈值表和 difficulty 折算公式保持不变。
 candidate_level = level(candidate_energy)
 ```
 
-ETHW 出块难度必须使用 `candidate_level`，而不是直接使用 USDB indexer 返回的 nominal effective level。
+USDB 链出块难度必须使用 `candidate_level`，而不是直接使用 USDB indexer 返回的 nominal effective level。
 
 # 与 UIP-0013 的关系
 

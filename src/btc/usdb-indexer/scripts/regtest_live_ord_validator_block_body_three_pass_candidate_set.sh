@@ -75,13 +75,13 @@ main() {
   mint2_file="$WORK_DIR/usdb_validator_three_pass_mint_2.json"
   mint3_file="$WORK_DIR/usdb_validator_three_pass_mint_3.json"
   cat >"$mint1_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
   cat >"$mint2_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0x2222222222222222222222222222222222222222","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0x2222222222222222222222222222222222222222","prev":[]}
 EOF
   cat >"$mint3_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0x3333333333333333333333333333333333333333","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
 EOF
 
   regtest_log "Minting three candidate passes across different historical heights"

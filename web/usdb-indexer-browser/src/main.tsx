@@ -67,8 +67,8 @@ interface PassSnapshot {
   inscription_number: number
   mint_block_height: number
   mint_owner: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
   invalid_code?: string | null
   invalid_reason?: string | null
@@ -87,8 +87,8 @@ interface OwnerPassItem {
   owner: string
   state: string
   latest_event_height: number
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   satpoint: string
 }
 
@@ -1114,12 +1114,12 @@ function App() {
                   <button className="ghost" disabled={ownerPassesPage + 1 >= ownerPassesTotalPages} onClick={() => void queryOwnerPasses(undefined, ownerPassesPage + 1)}>{dict.next}</button>
                 </div>
               </div>
-              <DataTable headers={['inscription_id', 'state', 'latest_event_height', 'mint_height', 'eth_main', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
+              <DataTable headers={['inscription_id', 'state', 'latest_event_height', 'mint_height', 'usdb_main', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
                 <IdButton value={item.inscription_id} onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)} />,
                 item.state,
                 nf.format(item.latest_event_height),
                 nf.format(item.mint_block_height),
-                shortText(item.eth_main, 12, 10),
+                shortText(item.usdb_main, 12, 10),
                 shortText(item.satpoint, 16, 12),
                 <button className="link-button" onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)}>{dict.openDetail}</button>,
               ])} />
@@ -1296,8 +1296,8 @@ function passEntries(
     ['owner', renderOwner(pass.owner)],
     ['mint_block_height', nf.format(pass.mint_block_height)],
     ['mint_owner', renderOwner(pass.mint_owner)],
-    ['eth_main', pass.eth_main],
-    ['eth_collab', pass.eth_collab || '-'],
+    ['usdb_main', pass.usdb_main],
+    ['usdb_collab', pass.usdb_collab || '-'],
     ['prev', pass.prev.join(', ') || '-'],
     ['invalid_code', pass.invalid_code || '-'],
     ['invalid_reason', pass.invalid_reason || '-'],

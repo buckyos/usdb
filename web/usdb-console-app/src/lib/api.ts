@@ -202,8 +202,8 @@ export function fetchUsdbPassEnergyLeaderboard(
 
 export async function prepareBtcMintDraft(request: {
   owner_address: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
 }): Promise<BtcMintPrepareResponse> {
   const response = await fetch('/api/btc/mint/prepare', {
@@ -226,8 +226,8 @@ export async function prepareBtcMintDraft(request: {
 export async function executeBtcMint(request: {
   wallet_name: string
   owner_address: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
 }): Promise<BtcMintExecuteResponse> {
   const response = await fetch('/api/btc/mint/execute', {

@@ -31,14 +31,14 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 - collab contribution 和 effective energy。
 - level 和 difficulty factor。
 
-这些值需要通过 `usdb-indexer` 形成统一的历史查询口径。否则 ETHW validator、测试脚本、浏览器和审计工具会各自拼接 RPC 字段，容易产生以下问题：
+这些值需要通过 `usdb-indexer` 形成统一的历史查询口径。否则 USDB validator、测试脚本、浏览器和审计工具会各自拼接 RPC 字段，容易产生以下问题：
 
 - current head 查询被误用于历史块验证。
 - raw energy、collab contribution、effective energy 混用。
 - ETHW policy 字段反向污染 BTC-side 派生状态。
 - 链上 payload 字段和审计明细字段边界不清。
 
-本文把 USDB-side 能提供的完整经济状态视图单独协议化。ETHW 链上 payload 只需要引用其中的最小状态选择器，并在验证时按本文规则重算或查询。
+本文把 USDB-side 能提供的完整经济状态视图单独协议化。USDB 链上 payload 只需要引用其中的最小状态选择器，并在验证时按本文规则重算或查询。
 
 # 非目标
 
@@ -49,7 +49,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 - ETHW `base_difficulty` 来源、PoW target 编码或 chain weight 规则。
 - ETHW block reward、fee split、uncle reward、CoinBase 或分红池规则。
 - pass 铭文 schema、pass 状态机、energy 公式本身。
-- Leader eligibility 的报价窗口和 ETHW 出块历史策略。
+- Leader eligibility 的报价窗口和 USDB 链出块历史策略。
 
 # 术语
 
@@ -58,7 +58,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 | `external_state` | 绑定一次历史查询的 BTC / USDB 状态选择器。 |
 | `economic_state_view` | `usdb-indexer` 在一个 `external_state` 下返回的经济状态视图。 |
 | `pass_economic_profile` | 某张 pass 在指定历史 context 下的 pass snapshot + energy profile。 |
-| `candidate_set_view` | 多张 candidate pass 的排序/审计查询结果；不等同于 ETHW 链上 payload。 |
+| `candidate_set_view` | 多张 candidate pass 的排序/审计查询结果；不等同于 USDB 链上 payload。 |
 | `resolved_profile` | 下游 validator 根据链上 payload 反查本文 state view 后得到的重算结果。 |
 
 # 规范关键词
@@ -190,7 +190,7 @@ collab pass:
 
 # Collab Breakdown
 
-`collab_breakdown` 不要求内联在主 profile 中。原因是一个 Leader 可能拥有大量 collab pass，直接在主 profile 中返回完整数组会影响浏览器 overview、ETHW validator replay 和普通单 pass 查询的响应大小。
+`collab_breakdown` 不要求内联在主 profile 中。原因是一个 Leader 可能拥有大量 collab pass，直接在主 profile 中返回完整数组会影响浏览器 overview、USDB validator replay 和普通单 pass 查询的响应大小。
 
 实现必须提供确定历史状态下的额外 list 查询，例如：
 
@@ -248,7 +248,7 @@ winner = max(candidate_set.items, by effective_energy)
 tie_break = smallest pass_id lexical order
 ```
 
-该规则只定义 USDB-side audit view 的确定性排序。ETHW 链上 payload 是否携带 candidate set、是否只携带 selected `pass_id`、是否使用 PoW threshold 验证，由 ETHW-side UIP 定义。
+该规则只定义 USDB-side audit view 的确定性排序。USDB 链上 payload 是否携带 candidate set、是否只携带 selected `pass_id`、是否使用 PoW threshold 验证，由 ETHW-side UIP 定义。
 
 Candidate set view 是一等查询，不要求下游先逐个读取所有 pass profile 后自行排序。实现可以按分页返回：
 
@@ -310,7 +310,7 @@ cursor 的具体 canonical encoding 和 `max_limit` 属于实现层性能参数�
 
 # 与 ETHW 链上 Payload 的关系
 
-ETHW 链上 payload 应只携带验证旧块所需的最小 selector。validator 再使用这些 selector 调用本文定义的 USDB-side state view。
+USDB 链上 payload 应只携带验证旧块所需的最小 selector。validator 再使用这些 selector 调用本文定义的 USDB-side state view。
 
 当前关系：
 
@@ -332,7 +332,7 @@ USDB Economic State View
     -> collab_breakdown_count / collab_breakdown query
 ```
 
-因此，本文字段集合是 ETHW 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。
+因此，本文字段集合是 USDB 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。
 
 # 测试要求
 

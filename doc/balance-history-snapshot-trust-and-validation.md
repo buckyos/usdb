@@ -162,7 +162,7 @@
 
 1. 节点对下游返回错误的历史查询结果
 2. 节点生成与 honest world 不一致的历史 `state ref`
-3. 节点给 ETHW miner / validator 提供错误的历史输入
+3. 节点给 USDB miner / validator 提供错误的历史输入
 4. 节点无法正确出块
 5. 节点无法正确验证某些块或某些历史状态
 

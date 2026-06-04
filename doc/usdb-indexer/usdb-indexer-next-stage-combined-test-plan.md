@@ -187,7 +187,7 @@
 1. `world-sim × candidate-set` 更深组合
    - 更大规模 `candidate_set sampled soak`
    - 更复杂 winner 选择逻辑
-   - 更贴近真实 ETHW validator 的 sampled payload 结构
+   - 更贴近真实 USDB validator 的 sampled payload 结构
 2. 更贴近最终 ETHW block body 的选择证明
    - 不只是明文 `winner + candidate_passes`
    - 而是更接近 `candidate_set_commit / selection proof` 一类结构

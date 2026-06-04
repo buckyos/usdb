@@ -103,14 +103,14 @@ Activation: <height/governance/TODO>
 目标：
 
 - 定义矿工证铭文 JSON schema。
-- 固定 `p`、`op`、`v`、`eth_main`、`leader_pass_id`、`leader_btc_addr`、`prev` 等字段语义。
+- 固定 `p`、`op`、`v`、`usdb_main`、`leader_pass_id`、`leader_btc_addr`、`prev` 等字段语义。
 - 明确可选字段默认值、未知字段策略、重复字段策略和 content-type。
 
 需要解决：
 
 - `prev` 在文档中可选，但当前实现中缺失会 invalid。
-- `eth_collab` 当前只是地址字段，无法表达 leader 绑定。
-- 当前草案已采用 `leader_pass_id` / `leader_btc_addr` 二选一作为协作绑定字段，并在激活后禁止新 `eth_collab`。
+- `usdb_collab` 当前只是地址字段，无法表达 leader 绑定。
+- 当前草案已采用 `leader_pass_id` / `leader_btc_addr` 二选一作为协作绑定字段，并在激活后禁止新 `usdb_collab`。
 - 当前草案已将开发期旧格式排除在正式协议版本序列之外。
 
 当前草案：
@@ -127,7 +127,7 @@ Activation: <height/governance/TODO>
 
 - valid schema。
 - missing optional fields。
-- invalid ETH address。
+- invalid USDB/EVM address。
 - invalid `prev` inscription id。
 - unknown fields。
 - version mismatch。
@@ -237,7 +237,7 @@ inherit(prev_i) = floor(raw_energy(prev_i) * 9500 / 10000)
 - 定义 collab pass 创建时如何绑定 leader。
 - 定义 `collab_contribution` 与 `effective_energy`。
 - 明确 `effective_energy` 是派生值，不可继承，不得进入 raw energy ledger。
-- 明确 ETHW Leader eligibility 不反向进入 USDB indexer 派生能量。
+- 明确 USDB Leader eligibility 不反向进入 USDB indexer 派生能量。
 
 候选规则：
 
@@ -304,7 +304,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 当前草案已确认采用 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
 - UIP-0003 已采用 `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 `E0 = 1_000_000` 量纲匹配。
 - usdb-indexer 只动态派生 `level` 和 `difficulty_factor_bps`，不持久化，也不读取 ETHW `base_difficulty`。
-- `real_difficulty` 由 ETHW validator / mining policy 基于当前 `base_difficulty` 计算。
+- `real_difficulty` 由 USDB validator / mining policy 基于当前 `base_difficulty` 计算。
 - ETHW `base_difficulty` / `real_difficulty` 的来源、编码和是否显式承诺留给 UIP-0009 或后续 ETHW difficulty policy UIP。
 
 实现影响：
@@ -331,7 +331,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 定义 `usdb-indexer` 对外提供的经济状态视图。
 - 明确 USDB-side 能查询和审计的字段集合。
 - 明确 historical context、version mismatch、history unavailable 的错误行为。
-- 避免把 USDB-side 审计视图与 ETHW 链上 payload 混为一体。
+- 避免把 USDB-side 审计视图与 USDB 链上 payload 混为一体。
 
 需要纳入的字段：
 
@@ -544,7 +544,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 当前草案倾向：
 
 - 使用整数 `atoms` / `sats` 公式，不使用浮点数。
-- `reward_recipient` 来自 standard pass 的 `eth_main`，且必须等于 `header.Coinbase`。
+- `reward_recipient` 来自 standard pass 的 `usdb_main`，且必须等于 `header.Coinbase`。
 - `CoinBase` 使用 `target_supply_atoms - issued_usdb_atoms` 的剩余目标供应量计算。
 - fee split 激活后手续费按 `miner=60%`、`DAO/Dividend=40%` 分配，整除余数归矿工。
 - 动态 `K` 已拆到 `UIP-0012`，UIP-0011 只消费 `k_bps`。

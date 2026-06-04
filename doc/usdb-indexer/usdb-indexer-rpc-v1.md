@@ -38,7 +38,7 @@
 ### 3.2 历史视图优先
 
 - v1 对矿工证状态类查询默认基于 `miner_pass_state_history` 计算快照，不直接依赖 `miner_passes` 当前状态。
-- `miner_passes` 仅用于返回静态元数据（如 `mint_owner/eth_main/prev/invalid_code`）。
+- `miner_passes` 仅用于返回静态元数据（如 `mint_owner/usdb_main/prev/invalid_code`）。
 
 ### 3.3 查询高度合法性
 
@@ -107,11 +107,11 @@
   "mint_txid": "txid",
   "mint_block_height": 900123,
   "mint_owner": "<USDBScriptHash>",
-  "eth_main": "0x...",
-  "eth_collab": "0x... or null",
+  "usdb_main": "0x...",
+  "usdb_collab": "0x... or null",
   "prev": ["txidi0"],
-  "invalid_code": "INVALID_ETH_MAIN",
-  "invalid_reason": "Invalid eth_main format",
+  "invalid_code": "INVALID_USDB_MAIN",
+  "invalid_reason": "Invalid usdb_main format",
   "owner": "<USDBScriptHash>",
   "state": "active",
   "satpoint": "txid:vout:offset",
@@ -365,7 +365,7 @@
 语义：
 
 - 使用 `history <= at_height` 解析动态状态（`state/owner/satpoint`）。
-- 静态字段来自 `miner_passes`（`mint_owner/eth_main/prev/invalid_*`）。
+- 静态字段来自 `miner_passes`（`mint_owner/usdb_main/prev/invalid_*`）。
 - 若 `at_height` 为空，则自动使用 `synced_block_height` 并返回 `resolved_height`。
 - `context` 可选；若传入，服务会先校验该高度的历史 state ref 是否满足 `expected_state`。
 - 若 `at_height` 和 `context.requested_height` 同时出现但不一致，返回 `InvalidParams`。
@@ -482,7 +482,7 @@
 
 ```json
 {
-  "error_code": "INVALID_ETH_MAIN",
+  "error_code": "INVALID_USDB_MAIN",
   "from_height": 900000,
   "to_height": 900200,
   "page": 0,

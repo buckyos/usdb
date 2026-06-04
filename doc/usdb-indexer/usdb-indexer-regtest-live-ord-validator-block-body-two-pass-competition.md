@@ -85,4 +85,4 @@ payload 仍复用当前 block-body 结构：
 - 不只是“这张 pass 在 `H` 时是不是这个状态”
 - 而是“在 `H` 时为什么最后选中的是这张，而不是另一张候选 pass”
 
-这会更接近 ETHW validator 对真实 block body 的消费方式。
+这会更接近 USDB validator 对真实 block body 的消费方式。

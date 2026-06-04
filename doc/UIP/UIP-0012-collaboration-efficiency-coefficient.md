@@ -253,7 +253,7 @@ ETHW reorg 时：
 - `K_LAST_*` 审计 slot 如存在，也必须随 ETHW state 回滚。
 - 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 USDB state，并得到同一 `CE_N`。
 
-USDB / BTC 侧 reorg 由 UIP-0006 / UIP-0008 的历史 selector 和 activation matrix 处理。ETHW validator 不得使用 USDB current head 替换旧块的历史 state。
+USDB / BTC 侧 reorg 由 UIP-0006 / UIP-0008 的历史 selector 和 activation matrix 处理。USDB validator 不得使用 USDB current head 替换旧块的历史 state。
 
 # 与 UIP-0011 的关系
 

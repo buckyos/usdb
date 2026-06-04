@@ -495,10 +495,10 @@ pub struct PassSnapshot {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary ETH address declared in mint content.
-    pub eth_main: String,
-    /// Optional collaborator ETH address.
-    pub eth_collab: Option<String>,
+    /// Primary USDB address declared in mint content.
+    pub usdb_main: String,
+    /// Optional collaborator USDB address.
+    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -672,10 +672,10 @@ pub struct OwnerPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary ETH address declared by the pass mint content.
-    pub eth_main: String,
-    /// Optional collaborator ETH address.
-    pub eth_collab: Option<String>,
+    /// Primary USDB address declared by the pass mint content.
+    pub usdb_main: String,
+    /// Optional collaborator USDB address.
+    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -731,10 +731,10 @@ pub struct RecentPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary ETH address declared by the pass mint content.
-    pub eth_main: String,
-    /// Optional collaborator ETH address.
-    pub eth_collab: Option<String>,
+    /// Primary USDB address declared by the pass mint content.
+    pub usdb_main: String,
+    /// Optional collaborator USDB address.
+    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -941,10 +941,10 @@ pub struct InvalidPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary ETH address in mint content.
-    pub eth_main: String,
-    /// Optional collaborator ETH address.
-    pub eth_collab: Option<String>,
+    /// Primary USDB address in mint content.
+    pub usdb_main: String,
+    /// Optional collaborator USDB address.
+    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.

@@ -22,7 +22,7 @@ Activation: ETHW network activation matrix; USDB development chains activate fro
 
 # 动机
 
-ETHW validator 验证旧块时，不能查询 USDB current head。旧块必须携带足够信息，使 validator 能回到该块出块时引用的 BTC / USDB 历史状态。
+USDB validator 验证旧块时，不能查询 USDB current head。旧块必须携带足够信息，使 validator 能回到该块出块时引用的 BTC / USDB 历史状态。
 
 同时，链上 payload 必须尽量小：
 
@@ -153,10 +153,10 @@ validator 必须把它放入 expected state，并要求 USDB 返回同一 system
 
 `pass_id` 是本块声明使用的 miner pass。
 
-v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`eth_main` 或其它地址字段隐式反查。原因是：
+v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`usdb_main` 或其它地址字段隐式反查。原因是：
 
 - 当前 USDB 稳定查询主键是 pass id / inscription id。
-- 一个 ETH 地址不一定唯一映射到一张 pass。
+- 一个 USDB/EVM 地址不一定唯一映射到一张 pass。
 - 后续 candidate-set 或多 pass 场景需要避免隐式选择歧义。
 
 # Validator Replay

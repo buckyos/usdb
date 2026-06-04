@@ -6,7 +6,7 @@ UIP 参考 BTC BIP 和 Ethereum EIP 的组织方式，但应保持 USDB 自身�
 
 - BTC 侧矿工证铭文与索引规则。
 - USDB 经济公式、版本与激活高度。
-- USDB 经济状态视图、ETHW 链上 payload 与下游链验证接口。
+- USDB 经济状态视图、USDB 链上 payload 与下游链验证接口。
 - 发行、价格、协作矿工、辅助算力池等经济组件。
 
 当前目录中的文档分两类：

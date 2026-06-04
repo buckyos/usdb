@@ -2,7 +2,7 @@
 
 ## 目标
 
-验证更接近 ETHW validator 的完整链路：
+验证更接近 USDB validator 的完整链路：
 
 1. 出块侧先固定一份外部状态引用：
    - `height`

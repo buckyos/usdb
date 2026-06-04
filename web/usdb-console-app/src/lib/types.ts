@@ -249,8 +249,8 @@ export interface PassSnapshot {
   mint_txid: string
   mint_block_height: number
   mint_owner: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
   invalid_code?: string | null
   invalid_reason?: string | null
@@ -338,8 +338,8 @@ export interface BtcMintPrepareActivePassSummary {
   inscription_id: string
   state: string
   owner: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
 }
 
@@ -351,8 +351,8 @@ export interface BtcMintPrepareResponse {
   runtime: BtcMintPrepareRuntimeSummary
   owner_address: string
   owner_script_hash: string
-  eth_main: string
-  eth_collab?: string | null
+  usdb_main: string
+  usdb_collab?: string | null
   prev: string[]
   suggested_prev: string[]
   active_pass?: BtcMintPrepareActivePassSummary | null

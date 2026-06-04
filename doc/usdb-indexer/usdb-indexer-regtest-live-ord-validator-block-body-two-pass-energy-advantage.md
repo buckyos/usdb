@@ -53,7 +53,7 @@
 
 ## 5. 价值
 
-相比 `two-pass competition` 只覆盖 `max_energy + inscription_id` tie-break，这条场景更贴近真实 ETHW validator 选择逻辑：
+相比 `two-pass competition` 只覆盖 `max_energy + inscription_id` tie-break，这条场景更贴近真实 USDB validator 选择逻辑：
 
 - winner 由真实 `energy` 优势决定
 - winner 变化来自真实链上余额和增长块，不是手工篡改 payload

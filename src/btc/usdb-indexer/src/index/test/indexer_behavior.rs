@@ -499,8 +499,8 @@ fn make_active_pass(
         satpoint: test_satpoint(7, 0, 0),
         mint_version: 1,
         pass_kind: MinerPassKind::Standard,
-        eth_main: "0x1111111111111111111111111111111111111111".to_string(),
-        eth_collab: None,
+        usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+        usdb_collab: None,
         leader_pass_id: None,
         leader_btc_addr: None,
         prev: Vec::new(),
@@ -528,7 +528,7 @@ fn make_discovered_mint(
         block_height,
         timestamp: 0,
         satpoint: Some(test_satpoint(8, 0, 0)),
-        content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"v\":1,\"eth_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
+        content_string: "{\"p\":\"usdb\",\"op\":\"mint\",\"v\":1,\"usdb_main\":\"0x1111111111111111111111111111111111111111\",\"prev\":[]}".to_string(),
         content,
     }
 }
@@ -2673,9 +2673,9 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
     let invalid_mint = make_discovered_invalid_mint(
         invalid_id.clone(),
         block_height,
-        "{\"p\":\"usdb\",\"op\":\"mint\",\"eth_main\":\"0x123\"}",
-        MintValidationErrorCode::InvalidEthMain,
-        "Invalid eth_main format",
+        "{\"p\":\"usdb\",\"op\":\"mint\",\"usdb_main\":\"0x123\"}",
+        MintValidationErrorCode::InvalidUsdbMain,
+        "Invalid usdb_main format",
     );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default().with_invalid_mints(block_height, vec![invalid_mint]),
@@ -2724,14 +2724,14 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
     assert_eq!(stored.owner, owner);
     assert_eq!(
         stored.invalid_code.as_deref(),
-        Some(MintValidationErrorCode::InvalidEthMain.as_str())
+        Some(MintValidationErrorCode::InvalidUsdbMain.as_str())
     );
     assert!(
         stored
             .invalid_reason
             .as_deref()
             .unwrap_or_default()
-            .contains("Invalid eth_main format")
+            .contains("Invalid usdb_main format")
     );
 
     let snapshot = fixture

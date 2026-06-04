@@ -181,7 +181,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_live_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","eth_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
   remint_content_file_1="$WORK_DIR/usdb_live_remint_first.json"
   remint_content_file_2="$WORK_DIR/usdb_live_remint_second.json"
@@ -197,7 +197,7 @@ EOF
   height_transfer="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
 
   cat >"$remint_content_file_1" <<EOF
-{"p":"usdb","op":"mint","eth_main":"0x2222222222222222222222222222222222222222","prev":["${pass1}"]}
+{"p":"usdb","op":"mint","usdb_main":"0x2222222222222222222222222222222222222222","prev":["${pass1}"]}
 EOF
   pass2="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file_1" "$ord_receive_address_b")"
   regtest_mine_blocks "$REMINT_CONFIRM_BLOCKS" "$miner_address"
@@ -248,7 +248,7 @@ EOF
   height_penalty="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
 
   cat >"$remint_content_file_2" <<EOF
-{"p":"usdb","op":"mint","eth_main":"0x4444444444444444444444444444444444444444","prev":["${pass1}"]}
+{"p":"usdb","op":"mint","usdb_main":"0x4444444444444444444444444444444444444444","prev":["${pass1}"]}
 EOF
   pass3="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file_2" "$ord_receive_address_b")"
   regtest_mine_blocks "$REMINT_CONFIRM_BLOCKS" "$miner_address"

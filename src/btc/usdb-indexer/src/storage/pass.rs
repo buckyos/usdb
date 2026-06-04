@@ -44,8 +44,8 @@ pub struct MinerPassInfo {
     // The content fields of the pass
     pub mint_version: u32,
     pub pass_kind: MinerPassKind,
-    pub eth_main: String,
-    pub eth_collab: Option<String>,
+    pub usdb_main: String,
+    pub usdb_collab: Option<String>,
     pub leader_pass_id: Option<InscriptionId>,
     pub leader_btc_addr: Option<String>,
     pub prev: Vec<InscriptionId>,
@@ -186,8 +186,8 @@ impl MinerPassStorage {
 
                 satpoint TEXT NOT NULL,
 
-                eth_main TEXT NOT NULL,
-                eth_collab TEXT,
+                usdb_main TEXT NOT NULL,
+                usdb_collab TEXT,
                 prev TEXT NOT NULL,
 
                 owner TEXT NOT NULL,
@@ -205,8 +205,8 @@ impl MinerPassStorage {
             CREATE INDEX IF NOT EXISTS idx_miner_pass_owner_state
             ON miner_passes (owner, state);
 
-            CREATE INDEX IF NOT EXISTS idx_miner_pass_eth_main
-            ON miner_passes (eth_main);
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_usdb_main
+            ON miner_passes (usdb_main);
 
             CREATE TABLE IF NOT EXISTS active_balance_snapshots (
                 block_height INTEGER PRIMARY KEY,
@@ -900,8 +900,8 @@ impl MinerPassStorage {
                     m.mint_block_height,
                     m.mint_owner,
                     h.new_satpoint AS satpoint,
-                    m.eth_main,
-                    m.eth_collab,
+                    m.usdb_main,
+                    m.usdb_collab,
                     m.prev,
                     h.new_owner AS owner,
                     h.new_state AS state,
@@ -1021,8 +1021,8 @@ impl MinerPassStorage {
                     mint_block_height,
                     mint_owner,
                     satpoint,
-                    eth_main,
-                    eth_collab,
+                    usdb_main,
+                    usdb_collab,
                     prev,
                     owner,
                     state,
@@ -1041,8 +1041,8 @@ impl MinerPassStorage {
                     mint_block_height,
                     mint_owner,
                     satpoint,
-                    eth_main,
-                    eth_collab,
+                    usdb_main,
+                    usdb_collab,
                     prev,
                     owner,
                     state,
@@ -2156,8 +2156,8 @@ impl MinerPassStorage {
 
                 satpoint,
                 
-                eth_main,
-                eth_collab,
+                usdb_main,
+                usdb_collab,
                 prev,
 
                 owner,
@@ -2177,8 +2177,8 @@ impl MinerPassStorage {
                 pass_info.mint_block_height as i64,
                 pass_info.mint_owner.to_string(),
                 pass_info.satpoint.to_string(),
-                pass_info.eth_main,
-                pass_info.eth_collab,
+                pass_info.usdb_main,
+                pass_info.usdb_collab,
                 prev_serialized,
                 pass_info.owner.to_string(),
                 pass_info.state.as_str(),
@@ -2775,13 +2775,13 @@ impl MinerPassStorage {
 
             mint_version,
             pass_kind,
-            eth_main: row.get(6).map_err(|e| {
-                let msg = format!("Failed to get eth_main field from miner pass row: {}", e);
+            usdb_main: row.get(6).map_err(|e| {
+                let msg = format!("Failed to get usdb_main field from miner pass row: {}", e);
                 error!("{}", msg);
                 msg
             })?,
-            eth_collab: row.get(7).map_err(|e| {
-                let msg = format!("Failed to get eth_collab field from miner pass row: {}", e);
+            usdb_collab: row.get(7).map_err(|e| {
+                let msg = format!("Failed to get usdb_collab field from miner pass row: {}", e);
                 error!("{}", msg);
                 msg
             })?,
@@ -3889,8 +3889,8 @@ impl MinerPassStorage {
                 m.mint_block_height,
                 m.mint_owner,
                 h.new_satpoint AS satpoint,
-                m.eth_main,
-                m.eth_collab,
+                m.usdb_main,
+                m.usdb_collab,
                 m.prev,
                 h.new_owner AS owner,
                 h.new_state AS state,
@@ -4078,8 +4078,8 @@ impl MinerPassStorage {
                 m.mint_block_height,
                 m.mint_owner,
                 h.new_satpoint AS satpoint,
-                m.eth_main,
-                m.eth_collab,
+                m.usdb_main,
+                m.usdb_collab,
                 m.prev,
                 h.new_owner AS owner,
                 h.new_state AS state,
@@ -4545,8 +4545,8 @@ mod tests {
             satpoint: satpoint(ins_tag, index, 0),
             mint_version: 1,
             pass_kind: MinerPassKind::Standard,
-            eth_main: "0x1111111111111111111111111111111111111111".to_string(),
-            eth_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
+            usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+            usdb_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
             leader_pass_id: None,
             leader_btc_addr: None,
             prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
@@ -4649,8 +4649,8 @@ mod tests {
         let mut pass = make_pass(30, 0, owner, MinerPassState::Active, 100);
         pass.mint_version = 1;
         pass.pass_kind = MinerPassKind::Collab;
-        pass.eth_main = String::new();
-        pass.eth_collab = None;
+        pass.usdb_main = String::new();
+        pass.usdb_collab = None;
         pass.leader_pass_id = Some(leader_pass_id);
         pass.leader_btc_addr = None;
 
@@ -4663,8 +4663,8 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.mint_version, 1);
         assert_eq!(loaded.pass_kind, MinerPassKind::Collab);
-        assert_eq!(loaded.eth_main, "");
-        assert_eq!(loaded.eth_collab, None);
+        assert_eq!(loaded.usdb_main, "");
+        assert_eq!(loaded.usdb_collab, None);
         assert_eq!(loaded.leader_pass_id, Some(leader_pass_id));
         assert_eq!(loaded.leader_btc_addr, None);
 
@@ -4851,8 +4851,8 @@ mod tests {
 
         let mut invalid_pass = make_pass(92, 0, owner, MinerPassState::Invalid, 123);
         invalid_pass.prev = Vec::new();
-        invalid_pass.invalid_code = Some("INVALID_ETH_MAIN".to_string());
-        invalid_pass.invalid_reason = Some("Invalid eth_main format".to_string());
+        invalid_pass.invalid_code = Some("INVALID_USDB_MAIN".to_string());
+        invalid_pass.invalid_reason = Some("Invalid usdb_main format".to_string());
 
         storage.add_invalid_mint_pass(&invalid_pass).unwrap();
 
@@ -4861,10 +4861,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(loaded.state, MinerPassState::Invalid);
-        assert_eq!(loaded.invalid_code.as_deref(), Some("INVALID_ETH_MAIN"));
+        assert_eq!(loaded.invalid_code.as_deref(), Some("INVALID_USDB_MAIN"));
         assert_eq!(
             loaded.invalid_reason.as_deref(),
-            Some("Invalid eth_main format")
+            Some("Invalid usdb_main format")
         );
 
         let valid_passes = storage.get_all_valid_pass_by_page(0, 10).unwrap();
@@ -5689,8 +5689,8 @@ mod tests {
 
         let invalid_pass = make_pass(123, 0, owner3, MinerPassState::Invalid, 110);
         let mut invalid_pass = invalid_pass;
-        invalid_pass.invalid_code = Some("INVALID_ETH_MAIN".to_string());
-        invalid_pass.invalid_reason = Some("invalid eth_main in test".to_string());
+        invalid_pass.invalid_code = Some("INVALID_USDB_MAIN".to_string());
+        invalid_pass.invalid_reason = Some("invalid usdb_main in test".to_string());
         storage
             .add_invalid_mint_pass_at_height(&invalid_pass, invalid_pass.mint_block_height)
             .unwrap();
@@ -5783,7 +5783,7 @@ mod tests {
         assert_eq!(invalid_all, 1);
 
         let invalid_code = storage
-            .get_invalid_pass_count_in_height_range(100, 130, Some("INVALID_ETH_MAIN"))
+            .get_invalid_pass_count_in_height_range(100, 130, Some("INVALID_USDB_MAIN"))
             .unwrap();
         assert_eq!(invalid_code, 1);
 

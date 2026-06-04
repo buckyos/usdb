@@ -341,7 +341,7 @@ USDB chain config 必须显式包含或可确定以下版本：
 
 # USDB Companion Service 依赖
 
-USDB ETHW miner 和 validator 都依赖本地 USDB companion service。
+USDB miner 和 validator 都依赖本地 USDB companion service。
 
 要求：
 

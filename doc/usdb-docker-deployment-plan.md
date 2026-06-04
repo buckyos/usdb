@@ -611,7 +611,7 @@ usdb/docker/
 9. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
 10. 下一阶段：补 DAO / Dividend 初始化 hook
 11. 已完成：补 single-node ETHW full-sim 与 deterministic miner identity
-12. 已完成：补 ETHW miner identity 与 world-sim miner-pass `eth_main` 对齐
+12. 已完成：补 ETHW miner identity 与 world-sim miner-pass `usdb_main` 对齐
 
 原因：
 

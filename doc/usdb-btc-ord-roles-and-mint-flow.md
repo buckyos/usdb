@@ -196,7 +196,7 @@ ord wallet \
 控制台页面：
 
 - 用户选择 BTC 身份
-- 输入 `ETH main` / 可选 `ETH collab`
+- 输入 `USDB main` / 可选 `USDB collab`
 - 点击 `Continue Mint`
 
 控制平面：

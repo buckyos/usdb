@@ -27,7 +27,7 @@ UIP-0008 不直接定义新的 pass schema、energy 公式或 ETHW reward 公式
 - 新版本必须有显式版本号。
 - 新版本必须有网络化激活规则。
 - 历史高度必须按当时激活的版本重放。
-- BTC 侧状态派生、USDB state view 和 ETHW validator 校验不能各自使用不同版本。
+- BTC 侧状态派生、USDB state view 和 USDB validator 校验不能各自使用不同版本。
 
 # 非目标
 
@@ -106,7 +106,7 @@ active_version_set:
 | `pass_state_machine_version` | string | BTC | pass 状态转移、terminal state、remint / consume 语义。 |
 | `energy_formula_version` | string | BTC / USDB indexer | raw energy、penalty、inheritance、settlement 公式。 |
 | `effective_energy_formula_version` | string | BTC / USDB indexer | collab contribution、Leader effective energy 聚合规则。 |
-| `level_formula_version` | string | BTC / USDB indexer / ETHW validator | `effective_energy -> level -> difficulty_factor_bps` 规则。 |
+| `level_formula_version` | string | BTC / USDB indexer / USDB validator | `effective_energy -> level -> difficulty_factor_bps` 规则。 |
 | `query_semantics_version` | string | RPC / indexer | historical query、pagination、projection、exact / at_or_before 语义。 |
 | `state_view_version` | string | RPC / validator replay | UIP-0006 state view JSON 结构版本。 |
 | `payload_version` | uint8 | ETHW header | UIP-0007 `ProfileSelectorPayload` binary layout。 |
@@ -116,7 +116,7 @@ active_version_set:
 | `fee_split_policy_version` | uint16 | ETHW reward / execution | UIP-0011 / UIP-0010 交易手续费分账公式和 Dividend activation 版本。 |
 | `collaboration_efficiency_policy_version` | uint16 | ETHW reward / reserved storage | UIP-0012 协作效率系数 `K`、rolling window、warmup 和 state update 规则版本。 |
 | `price_policy_version` | uint32 | ETHW price state / reward | UIP-0013 `price_atoms_per_btc` 状态转换、source kind 和 range 规则版本。 |
-| `quote_policy_version` | uint16 | ETHW validator / reward | UIP-0014 Leader quote activity、candidate energy 和 candidate level 规则版本。 |
+| `quote_policy_version` | uint16 | USDB validator / reward | UIP-0014 Leader quote activity、candidate energy 和 candidate level 规则版本。 |
 | `aux_pool_policy_version` | uint16 | ETHW reward / system contract | UIP-0015 辅助算力池证明、分配和状态转换规则版本；`0` 可表示 disabled，但只能由 UIP-0015 明确定义。 |
 | `commit_protocol_version` | string | USDB local state | `local_state_commit` / `system_state_id` 输入与编码规则。 |
 | `balance_history_semantics_version` | string | balance-history | upstream balance snapshot / UTXO query 语义。 |
@@ -227,7 +227,7 @@ active_version_set =
 规则：
 
 - BTC-side pass、balance、state 和 energy 派生必须使用 `btc_height` 选择版本。
-- ETHW-side payload、difficulty、reward 和执行规则必须使用 `ethw_block` 或 governance state 选择版本。
+- USDB-chain payload、difficulty、reward 和执行规则必须使用 `ethw_block` 或 governance state 选择版本。
 - CrossChain 规则必须明确主锚点和辅助条件。
 - 查询历史 BTC 高度时，禁止用当前 BTC head 的版本解释旧高度。
 - 校验历史 ETHW block 时，禁止用当前 ETHW head 的版本解释旧块。

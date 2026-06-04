@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-这份设计把现有的 historical-context 校验脚本进一步收敛成更贴近 ETHW validator 真实消费方式的测试模型。
+这份设计把现有的 historical-context 校验脚本进一步收敛成更贴近 USDB validator 真实消费方式的测试模型。
 
 目标不是立刻模拟整条 ETHW 链，而是先固定一份更像真实 block body 的外部状态 payload，并验证：
 
@@ -382,7 +382,7 @@ validator 风格脚本应始终分两步：
 
 - 不模拟完整 ETHW block header / parent hash / tx list
 - 不把 leaderboard 或多 pass 选择逻辑塞进第一版 validator payload
-- 不直接引入完整 ETHW validator 实现
+- 不直接引入完整 USDB validator 实现
 
 先把“单个 miner pass + 外部状态引用”的 block-body 校验链做扎实，收益最高，也更容易稳定回归。
 

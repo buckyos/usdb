@@ -15,9 +15,9 @@ pub struct ServiceRpcRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BtcMintPrepareRequest {
     pub owner_address: String,
-    pub eth_main: String,
+    pub usdb_main: String,
     #[serde(default)]
-    pub eth_collab: Option<String>,
+    pub usdb_collab: Option<String>,
     #[serde(default)]
     pub prev: Vec<String>,
 }
@@ -26,9 +26,9 @@ pub struct BtcMintPrepareRequest {
 pub struct BtcMintExecuteRequest {
     pub wallet_name: String,
     pub owner_address: String,
-    pub eth_main: String,
+    pub usdb_main: String,
     #[serde(default)]
-    pub eth_collab: Option<String>,
+    pub usdb_collab: Option<String>,
     #[serde(default)]
     pub prev: Vec<String>,
 }
@@ -52,8 +52,8 @@ pub struct BtcMintPrepareActivePassSummary {
     pub inscription_id: String,
     pub state: String,
     pub owner: String,
-    pub eth_main: String,
-    pub eth_collab: Option<String>,
+    pub usdb_main: String,
+    pub usdb_collab: Option<String>,
     pub prev: Vec<String>,
 }
 
@@ -66,8 +66,8 @@ pub struct BtcMintPrepareResponse {
     pub runtime: BtcMintPrepareRuntimeSummary,
     pub owner_address: String,
     pub owner_script_hash: String,
-    pub eth_main: String,
-    pub eth_collab: Option<String>,
+    pub usdb_main: String,
+    pub usdb_collab: Option<String>,
     pub prev: Vec<String>,
     pub suggested_prev: Vec<String>,
     pub active_pass: Option<BtcMintPrepareActivePassSummary>,

@@ -677,8 +677,8 @@ export function UsdbIndexerExplorerPage({
                           value: displayNumber(locale, passSnapshot.resolved_height, t),
                         },
                         {
-                          label: t('services.usdbIndexer.ethMain'),
-                          value: displayText(passSnapshot.eth_main, t),
+                          label: t('services.usdbIndexer.usdbMain'),
+                          value: displayText(passSnapshot.usdb_main, t),
                         },
                       ]}
                     />
