@@ -96,7 +96,7 @@ behave differently.
 | --- | --- | --- | --- | --- | --- |
 | `ETHW_COMMAND` | present in env, but service not started | local dev `geth` launch command | only used by `run_local_world_sim_ethw.sh` | bootstrap-target ETHW command | bootstrap-target ETHW command |
 | `ETHW_IDENTITY_MODE` | n/a | n/a | `deterministic-seed` | n/a | `deterministic-seed` |
-| `ETHW_SIM_PROTOCOL_ALIGNMENT` | n/a | n/a | auto-set by helper: `run_local_world_sim.sh=0`, `run_local_world_sim_ethw.sh=1` | n/a | forced to `1` |
+| `USDB_SIM_PROTOCOL_ALIGNMENT` | n/a | n/a | auto-set by helper: `run_local_world_sim.sh=0`, `run_local_world_sim_ethw.sh=1` | n/a | forced to `1` |
 | `WORLD_SIM_STATE_MODE` | n/a | n/a | `persistent` / `reset` / `seeded-reset` | n/a | `persistent` / `reset` / `seeded-reset` |
 | `WORLD_SIM_IDENTITY_SEED` | n/a | n/a | optional but required for deterministic seeded reset | n/a | expected for deterministic world-sim and ETHW alignment |
 | `SOURCE_DAO_BOOTSTRAP_MODE` / `SCOPE` / `PREPARE` | n/a | n/a | n/a | defaults to `dev-workspace / full / auto` | defaults to `dev-workspace / full / auto` |

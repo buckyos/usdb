@@ -35,7 +35,7 @@ struct WorldSimBootstrapMarker {
     agent_wallets: Vec<String>,
     agent_addresses: Vec<String>,
     #[serde(default)]
-    ethw_miner_agent_id: Option<usize>,
+    usdb_miner_agent_id: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,7 +50,7 @@ struct EthwAddressStatusQuery {
 
 #[derive(Debug, Deserialize)]
 struct EthwDevIdentityMarker {
-    ethw_miner_address: String,
+    usdb_miner_address: String,
     #[serde(default)]
     identity_mode: Option<String>,
     #[serde(default)]
@@ -494,7 +494,7 @@ async fn get_ethw_dev_identity(
             ethw_runtime_profile: runtime_profile,
             available: true,
             marker_path: marker.path,
-            address: Some(identity.ethw_miner_address),
+            address: Some(identity.usdb_miner_address),
             identity_mode: identity.identity_mode,
             identity_scheme: identity.identity_scheme,
             identity_fingerprint: identity.identity_fingerprint,
@@ -1335,7 +1335,7 @@ fn classify_ethw_runtime_profile(chain_id: Option<&str>, network_id: Option<&str
 fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIdentity>, String> {
     let marker: WorldSimBootstrapMarker = serde_json::from_value(marker_data)
         .map_err(|error| format!("Failed to decode world-sim bootstrap marker: {}", error))?;
-    let ethw_miner_agent_id = marker.ethw_miner_agent_id;
+    let usdb_miner_agent_id = marker.usdb_miner_agent_id;
 
     if marker.agent_wallets.len() != marker.agent_addresses.len() {
         return Err(format!(
@@ -1347,11 +1347,11 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
     if marker.agent_wallets.is_empty() {
         return Err("World-sim bootstrap marker does not contain any agent identities".to_string());
     }
-    if let Some(agent_id) = ethw_miner_agent_id
+    if let Some(agent_id) = usdb_miner_agent_id
         && agent_id >= marker.agent_wallets.len()
     {
         return Err(format!(
-            "World-sim bootstrap marker has out-of-range ethw_miner_agent_id {} for {} identities",
+            "World-sim bootstrap marker has out-of-range usdb_miner_agent_id {} for {} identities",
             agent_id,
             marker.agent_wallets.len()
         ));
@@ -1383,7 +1383,7 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
                 agent_id,
                 wallet_name: wallet_name.to_string(),
                 owner_address: owner_address.to_string(),
-                is_ethw_aligned: ethw_miner_agent_id == Some(agent_id),
+                is_usdb_miner_aligned: usdb_miner_agent_id == Some(agent_id),
             })
         })
         .collect()
@@ -2492,7 +2492,7 @@ mod tests {
         let identities = decode_world_sim_identities(json!({
             "agent_wallets": ["usdb-world-agent-1", "usdb-world-agent-2"],
             "agent_addresses": ["bcrt1qa", "bcrt1qb"],
-            "ethw_miner_agent_id": 1
+            "usdb_miner_agent_id": 1
         }))
         .unwrap();
 
@@ -2500,9 +2500,9 @@ mod tests {
         assert_eq!(identities[0].agent_id, 0);
         assert_eq!(identities[0].wallet_name, "usdb-world-agent-1");
         assert_eq!(identities[0].owner_address, "bcrt1qa");
-        assert!(!identities[0].is_ethw_aligned);
+        assert!(!identities[0].is_usdb_miner_aligned);
         assert_eq!(identities[1].agent_id, 1);
-        assert!(identities[1].is_ethw_aligned);
+        assert!(identities[1].is_usdb_miner_aligned);
     }
 
     #[test]

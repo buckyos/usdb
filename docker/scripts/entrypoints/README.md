@@ -20,7 +20,7 @@ services and Docker images.
 - [start_control_plane.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_control_plane.sh)
   - renders control-plane config and starts `usdb-control-plane`
 - [start_ethw_full_sim.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_ethw_full_sim.sh)
-  - derives or restores the ETHW miner identity used by `run_local_full_sim.sh`
+  - derives or restores the USDB miner identity used by `run_local_full_sim.sh`
   - note: the final `geth` command is `exec`'d so Docker stop signals reach it directly
 - [start_ethw_node.sh](/home/bucky/work/usdb/docker/scripts/entrypoints/start_ethw_node.sh)
   - validates ETHW init state and launches the runtime ETHW node

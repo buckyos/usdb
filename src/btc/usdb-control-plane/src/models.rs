@@ -121,7 +121,7 @@ pub struct BtcWorldSimIdentity {
     pub agent_id: usize,
     pub wallet_name: String,
     pub owner_address: String,
-    pub is_ethw_aligned: bool,
+    pub is_usdb_miner_aligned: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -63,7 +63,7 @@ export USDB_DOCKER_NETWORK="${USDB_DOCKER_NETWORK:-${project_name}-net}"
 export SOURCE_DAO_BOOTSTRAP_MODE="${SOURCE_DAO_BOOTSTRAP_MODE:-dev-workspace}"
 export SOURCE_DAO_BOOTSTRAP_SCOPE="${SOURCE_DAO_BOOTSTRAP_SCOPE:-full}"
 export SOURCE_DAO_BOOTSTRAP_PREPARE="${SOURCE_DAO_BOOTSTRAP_PREPARE:-auto}"
-export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
+export USDB_SIM_PROTOCOL_ALIGNMENT="${USDB_SIM_PROTOCOL_ALIGNMENT:-1}"
 
 action="${1:-up}"
 shift || true
@@ -166,7 +166,7 @@ prepare_state_mode() {
         exit 1
       fi
       echo "WORLD_SIM_STATE_MODE=seeded-reset -> clearing Docker volumes before startup"
-      echo "Current implementation will deterministically recreate ord wallet identities and ETHW miner identity from WORLD_SIM_IDENTITY_SEED."
+      echo "Current implementation will deterministically recreate ord wallet identities and USDB miner identity from WORLD_SIM_IDENTITY_SEED."
       compose down -v --remove-orphans >/dev/null 2>&1 || true
       ;;
     *)

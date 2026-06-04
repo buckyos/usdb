@@ -376,7 +376,7 @@ export interface BtcWorldSimIdentity {
   agent_id: number
   wallet_name: string
   owner_address: string
-  is_ethw_aligned: boolean
+  is_usdb_miner_aligned: boolean
 }
 
 export interface BtcWorldSimIdentitiesResponse {

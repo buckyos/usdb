@@ -385,10 +385,10 @@ start_stack() {
 
   if [[ "${include_ethw}" == "1" ]]; then
     ensure_ethw_identity_defaults
-    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-1}"
+    export USDB_SIM_PROTOCOL_ALIGNMENT="${USDB_SIM_PROTOCOL_ALIGNMENT:-1}"
     compose up --build --detach "${up_args[@]}"
   else
-    export ETHW_SIM_PROTOCOL_ALIGNMENT="${ETHW_SIM_PROTOCOL_ALIGNMENT:-0}"
+    export USDB_SIM_PROTOCOL_ALIGNMENT="${USDB_SIM_PROTOCOL_ALIGNMENT:-0}"
     compose up --build --detach btc-node snapshot-loader balance-history usdb-indexer usdb-control-plane ord-server world-sim-runner "${up_args[@]}"
   fi
 

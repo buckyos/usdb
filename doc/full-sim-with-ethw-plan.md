@@ -11,7 +11,7 @@ smaller and more useful:
 - keep BTC-side `world-sim` unchanged as the main source of protocol activity
 - allow `run_local_world_sim_ethw.sh up` to start a real `ethw-node`
 - give that ETHW node a deterministic miner identity
-- make the ETHW miner address align with the future miner-pass `usdb_main`
+- make the USDB miner address align with the future miner-pass `usdb_main`
   binding model
 
 ## 2. Two Different Identity Layers
@@ -45,11 +45,11 @@ This means:
 
 The first batch intentionally stays small:
 
-1. introduce a deterministic ETHW miner identity for `run_local_world_sim_ethw.sh up`
+1. introduce a deterministic USDB miner identity for `run_local_world_sim_ethw.sh up`
 2. derive that identity from `WORLD_SIM_IDENTITY_SEED` unless explicitly
    overridden
 3. persist a small local identity marker under the ETHW data directory
-4. export `ETHW_MINER_ADDRESS` into the runtime shell used to launch `geth`
+4. export `USDB_MINER_ADDRESS` into the runtime shell used to launch `geth`
 5. keep bootstrap/canonical-genesis flows unchanged
 
 This first batch does **not** yet:
@@ -85,13 +85,13 @@ So the correct first milestone is a **single-node ETHW full-sim**.
 
 ## 6. Identity Strategy
 
-For the first batch, the ETHW miner identity uses this precedence:
+For the first batch, the USDB miner identity uses this precedence:
 
-1. `ETHW_MINER_PRIVATE_KEY_HEX`
+1. `USDB_MINER_PRIVATE_KEY_HEX`
 2. `ETHW_IDENTITY_MODE=deterministic-seed` with:
    - `ETHW_IDENTITY_SEED`, or
    - fallback to `WORLD_SIM_IDENTITY_SEED`
-3. `ETHW_MINER_ADDRESS` only
+3. `USDB_MINER_ADDRESS` only
 4. no identity wiring
 
 When a private key is available, the runtime should:
@@ -104,16 +104,16 @@ When only an address is available, the runtime should:
 
 - skip keystore import
 - still write an identity marker
-- expose the address as `ETHW_MINER_ADDRESS`
+- expose the address as `USDB_MINER_ADDRESS`
 
 ## 7. Runtime Behavior
 
 The full-sim ETHW wrapper should:
 
-1. prepare or load ETHW miner identity
+1. prepare or load USDB miner identity
 2. fail closed if a persisted identity marker conflicts with the current inputs
-3. export `ETHW_MINER_ADDRESS`
-4. optionally append `--miner.etherbase ${ETHW_MINER_ADDRESS}` when the command
+3. export `USDB_MINER_ADDRESS`
+4. optionally append `--miner.etherbase ${USDB_MINER_ADDRESS}` when the command
    does not already specify one
 5. finally execute the provided `ETHW_COMMAND`
 
@@ -121,27 +121,27 @@ This keeps the runtime explicit while avoiding silent identity drift.
 
 ## 8. Second Batch: Protocol Identity Alignment
 
-The second batch connects the deterministic ETHW miner identity to the BTC
+The second batch connects the deterministic USDB miner identity to the BTC
 world-sim mint flow.
 
 The key rule is:
 
 - when `run_local_world_sim_ethw.sh up` is used, the simulator should treat one
   configured world-sim agent as the protocol miner whose `usdb_main` must match
-  the ETHW miner address
+  the USDB miner address
 
 The runtime contract is:
 
-1. `run_local_world_sim_ethw.sh up` enables `ETHW_SIM_PROTOCOL_ALIGNMENT=1` by default
-2. `start_ethw_full_sim.sh` writes the resolved ETHW miner identity to:
+1. `run_local_world_sim_ethw.sh up` enables `USDB_SIM_PROTOCOL_ALIGNMENT=1` by default
+2. `start_ethw_full_sim.sh` writes the resolved USDB miner identity to:
    - `${ETHW_DATA_DIR}/bootstrap/ethw-sim-identity.json`
 3. `world-sim-bootstrap` and `world-sim-runner` mount the ETHW data volume
    read-only
-4. `start_world_sim.sh` resolves `ETHW_MINER_ADDRESS` from:
-   - explicit `ETHW_MINER_ADDRESS`, or
+4. `start_world_sim.sh` resolves `USDB_MINER_ADDRESS` from:
+   - explicit `USDB_MINER_ADDRESS`, or
    - the ETHW identity marker
 5. the simulator assigns that address to one stable agent:
-   - `ETHW_MINER_AGENT_ID`
+   - `USDB_MINER_AGENT_ID`
 6. that agent's `mint` / `remint` actions use the aligned `usdb_main`
 
 This keeps the first ETHW full-sim milestone small:

@@ -129,8 +129,8 @@ class Args:
     agent_wallets: list[str]
     agent_addresses: list[str]
     identity_seed: str | None
-    ethw_miner_address: str | None
-    ethw_miner_agent_id: int
+    usdb_miner_address: str | None
+    usdb_miner_agent_id: int
     balance_history_rpc_url: str
     usdb_rpc_url: str
     sync_timeout_sec: int
@@ -242,12 +242,12 @@ class RegtestWorldSimulator:
         self.agents: list[Agent] = []
         self._init_agents()
         self.total_agents = len(self.agents)
-        if self.args.ethw_miner_address and not (
-            0 <= self.args.ethw_miner_agent_id < self.total_agents
+        if self.args.usdb_miner_address and not (
+            0 <= self.args.usdb_miner_agent_id < self.total_agents
         ):
             raise WorldSimError(
-                "ethw_miner_agent_id is out of range for configured agents: "
-                f"{self.args.ethw_miner_agent_id} not in [0, {self.total_agents - 1}]"
+                "usdb_miner_agent_id is out of range for configured agents: "
+                f"{self.args.usdb_miner_agent_id} not in [0, {self.total_agents - 1}]"
             )
         self.active_agent_count = min(
             self.total_agents, max(1, self.args.initial_active_agents)
@@ -360,8 +360,8 @@ class RegtestWorldSimulator:
                 "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
                 "identity_seed": self.args.identity_seed,
-                "ethw_miner_address": self.args.ethw_miner_address,
-                "ethw_miner_agent_id": self.args.ethw_miner_agent_id,
+                "usdb_miner_address": self.args.usdb_miner_address,
+                "usdb_miner_agent_id": self.args.usdb_miner_agent_id,
                 "total_agents": self.total_agents,
                 "initial_active_agents": self.active_agent_count,
                 "policy_mode": self.args.policy_mode,
@@ -1358,10 +1358,10 @@ class RegtestWorldSimulator:
             script_hash = self.address_to_script_hash(address)
             usdb_main_address = self.derived_evm_address("agent", idx, wallet, address)
             if (
-                self.args.ethw_miner_address
-                and idx == self.args.ethw_miner_agent_id
+                self.args.usdb_miner_address
+                and idx == self.args.usdb_miner_agent_id
             ):
-                usdb_main_address = self.args.ethw_miner_address
+                usdb_main_address = self.args.usdb_miner_address
             agent = Agent(
                 agent_id=idx,
                 wallet_name=wallet,
@@ -4318,8 +4318,8 @@ def parse_args() -> Args:
     parser.add_argument("--agent-wallets", required=True)
     parser.add_argument("--agent-addresses", required=True)
     parser.add_argument("--identity-seed")
-    parser.add_argument("--ethw-miner-address")
-    parser.add_argument("--ethw-miner-agent-id", type=int, default=0)
+    parser.add_argument("--usdb-miner-address")
+    parser.add_argument("--usdb-miner-agent-id", type=int, default=0)
     parser.add_argument("--balance-history-rpc-url", required=True)
     parser.add_argument("--usdb-rpc-url", required=True)
     parser.add_argument("--sync-timeout-sec", type=int, default=300)
@@ -4462,8 +4462,8 @@ def parse_args() -> Args:
         agent_wallets=agent_wallets,
         agent_addresses=agent_addresses,
         identity_seed=parsed.identity_seed,
-        ethw_miner_address=parsed.ethw_miner_address,
-        ethw_miner_agent_id=parsed.ethw_miner_agent_id,
+        usdb_miner_address=parsed.usdb_miner_address,
+        usdb_miner_agent_id=parsed.usdb_miner_agent_id,
         balance_history_rpc_url=parsed.balance_history_rpc_url,
         usdb_rpc_url=parsed.usdb_rpc_url,
         sync_timeout_sec=parsed.sync_timeout_sec,
