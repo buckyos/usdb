@@ -1,5 +1,6 @@
 use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use super::energy::PassEnergyManagerRef;
+use super::energy_formula::{calc_inheritable_energy, saturating_energy_to_u64};
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
 use crate::storage::{MinerPassInfo, MinerPassStorageRef};
@@ -509,7 +510,7 @@ impl MinerPassManager {
         Ok(())
     }
 
-    // Consume the pass at the given block height, return the last energy balance
+    // Consume the pass at the given block height, returning its UIP-0003 inheritable raw energy.
     async fn consume_pass(
         &self,
         inscription_id: &InscriptionId,
@@ -574,15 +575,18 @@ impl MinerPassManager {
             energy.state
         );
 
+        let inheritable_energy =
+            saturating_energy_to_u64(calc_inheritable_energy(energy.energy as u128));
+
         self.energy_manager
             .on_pass_consumed(inscription_id, &pass.owner, block_height)?;
 
         info!(
-            "Miner Pass {} consumed at block height {}, energy balance {}",
-            inscription_id, block_height, energy.energy
+            "Miner Pass {} consumed at block height {}, raw energy {}, inheritable energy {}",
+            inscription_id, block_height, energy.energy, inheritable_energy
         );
 
-        Ok(energy.energy)
+        Ok(inheritable_energy)
     }
 
     pub async fn on_pass_transfer(

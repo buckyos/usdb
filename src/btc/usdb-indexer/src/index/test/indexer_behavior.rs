@@ -8,7 +8,8 @@ use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassKind, MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
 use crate::index::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, saturating_energy_to_u64,
+    calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
+    saturating_energy_to_u64,
 };
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
@@ -53,6 +54,10 @@ fn expected_balance_penalty(
         active_block_height,
         event_block_height,
     ))
+}
+
+fn expected_inheritable_energy(raw_energy: u64) -> u64 {
+    saturating_energy_to_u64(calc_inheritable_energy(raw_energy as u128))
 }
 
 #[derive(Default)]
@@ -3037,9 +3042,11 @@ async fn test_sync_block_same_owner_remint_applies_negative_delta_before_inherit
     assert_eq!(new_pass.owner, owner);
     assert_eq!(new_pass.state, MinerPassState::Active);
 
-    let expected_inherited = calc_growth_delta(400_000, block_height - base_height).saturating_sub(
-        expected_balance_penalty(400_000, 399_500, base_height, block_height),
-    );
+    let expected_prev_raw_energy =
+        calc_growth_delta(400_000, block_height - base_height).saturating_sub(
+            expected_balance_penalty(400_000, 399_500, base_height, block_height),
+        );
+    let expected_inherited = expected_inheritable_energy(expected_prev_raw_energy);
     let prev_consumed = fixture
         .pass_energy_manager
         .get_pass_energy(&prev_id, block_height)
@@ -4228,7 +4235,7 @@ async fn test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active() {
 }
 
 #[tokio::test]
-async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev() {
+async fn test_sync_blocks_multi_prev_inherit_sums_discounted_energy_and_consumes_all_prev() {
     // Scenario:
     // h620 mint(prev1, owner)
     // h621 mint(prev2, owner)        -> prev1 dormant
@@ -4237,7 +4244,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
     // Expected:
     // - prev1/prev2 are consumed
     // - new pass is active
-    // - inherited energy = dormant(prev1@621) + dormant(prev2@622)
+    // - inherited energy = discount(dormant(prev1@621)) + discount(dormant(prev2@622))
     let h620 = 620u32;
     let h621 = 621u32;
     let h622 = 622u32;
@@ -4359,7 +4366,7 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
     );
 
     let fixture = build_indexer_fixture_with_hint_provider(
-        "multi_prev_inherit_sums_energy",
+        "multi_prev_inherit_sums_discounted_energy",
         inscription_source,
         block_hint_provider,
         transfer_tracker,
@@ -4429,7 +4436,12 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
     // 2) energy assertion
     let expected_prev1_dormant = calc_growth_delta(220_000, 1);
     let expected_prev2_dormant = calc_growth_delta(230_000, 1);
-    let expected_inherited = expected_prev1_dormant.saturating_add(expected_prev2_dormant);
+    let expected_inherited = expected_inheritable_energy(expected_prev1_dormant)
+        .saturating_add(expected_inheritable_energy(expected_prev2_dormant));
+    assert_ne!(
+        expected_inherited,
+        expected_inheritable_energy(expected_prev1_dormant.saturating_add(expected_prev2_dormant))
+    );
 
     let prev1_energy_621 = fixture
         .pass_energy_manager
@@ -4696,8 +4708,9 @@ async fn test_sync_blocks_second_inherit_same_prev_records_invalid_mint() {
 
     // 2) energy assertion
     let expected_prev_dormant = calc_growth_delta(230_000, 1);
+    let expected_first_new_631 = expected_inheritable_energy(expected_prev_dormant);
     let expected_first_new_active =
-        expected_prev_dormant.saturating_add(calc_growth_delta(240_000, 1));
+        expected_first_new_631.saturating_add(calc_growth_delta(240_000, 1));
 
     let prev_energy_631 = fixture
         .pass_energy_manager
@@ -4715,7 +4728,7 @@ async fn test_sync_blocks_second_inherit_same_prev_records_invalid_mint() {
         .unwrap()
         .unwrap();
     assert_eq!(first_new_energy_631.state, MinerPassState::Active);
-    assert_eq!(first_new_energy_631.energy, expected_prev_dormant);
+    assert_eq!(first_new_energy_631.energy, expected_first_new_631);
 
     let first_new_energy_632 = fixture
         .pass_energy_manager

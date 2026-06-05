@@ -5,8 +5,8 @@ use super::common::{
 use crate::config::ConfigManager;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
-    saturating_energy_to_u64,
+    calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
+    calc_next_active_block_height, saturating_energy_to_u64,
 };
 use crate::index::pass::{MinerPassManager, PassMintInscriptionInfo};
 use crate::index::{MinerPassKind, MinerPassState, MintValidationErrorCode};
@@ -156,6 +156,10 @@ fn expected_energy_by_formula(
     energy
 }
 
+fn expected_inheritable_energy(raw_energy: u64) -> u64 {
+    saturating_energy_to_u64(calc_inheritable_energy(raw_energy as u128))
+}
+
 #[tokio::test]
 async fn test_scenario_transfer_then_remint_prev_inherits_and_consumes() {
     let owner_a = test_script_hash(40);
@@ -255,7 +259,10 @@ async fn test_scenario_transfer_then_remint_prev_inherits_and_consumes() {
         .unwrap()
         .unwrap();
     assert_eq!(new_energy_120.state, MinerPassState::Active);
-    assert_eq!(new_energy_120.energy, old_dormant_110.energy);
+    assert_eq!(
+        new_energy_120.energy,
+        expected_inheritable_energy(old_dormant_110.energy)
+    );
 
     cleanup_temp_dir(&root_dir);
 }
@@ -337,7 +344,7 @@ async fn test_scenario_same_owner_remint_prev_consumed_and_single_active() {
         .unwrap()
         .unwrap();
     assert_eq!(new_energy_130.state, MinerPassState::Active);
-    let expected_new_energy_130 = expected_energy_by_formula(
+    let expected_old_raw_energy_130 = expected_energy_by_formula(
         100,
         200_000,
         0,
@@ -348,6 +355,7 @@ async fn test_scenario_same_owner_remint_prev_consumed_and_single_active() {
         }],
         130,
     );
+    let expected_new_energy_130 = expected_inheritable_energy(expected_old_raw_energy_130);
     assert_eq!(new_energy_130.energy, expected_new_energy_130);
 
     cleanup_temp_dir(&root_dir);
@@ -446,7 +454,7 @@ async fn test_scenario_transfer_to_owner_with_existing_active_keeps_existing_act
 }
 
 #[tokio::test]
-async fn test_scenario_mint_with_multiple_prev_inherits_sum_and_consumes_all() {
+async fn test_scenario_mint_with_multiple_prev_inherits_discounted_sum_and_consumes_all() {
     let owner_a = test_script_hash(80);
     let owner_b = test_script_hash(81);
     let pass_prev_1 = test_inscription_id(82, 0);
@@ -585,10 +593,9 @@ async fn test_scenario_mint_with_multiple_prev_inherits_sum_and_consumes_all() {
         .unwrap()
         .unwrap();
     assert_eq!(new_energy.state, MinerPassState::Active);
-    assert_eq!(
-        new_energy.energy,
-        prev_1_dormant.energy.saturating_add(prev_2_dormant.energy)
-    );
+    let expected_inherited = expected_inheritable_energy(prev_1_dormant.energy)
+        .saturating_add(expected_inheritable_energy(prev_2_dormant.energy));
+    assert_eq!(new_energy.energy, expected_inherited);
 
     cleanup_temp_dir(&root_dir);
 }
@@ -747,7 +754,10 @@ async fn test_scenario_second_inherit_same_prev_records_invalid_mint() {
         .unwrap()
         .unwrap();
     assert_eq!(first_new_energy.state, MinerPassState::Active);
-    assert_eq!(first_new_energy.energy, prev_dormant.energy);
+    assert_eq!(
+        first_new_energy.energy,
+        expected_inheritable_energy(prev_dormant.energy)
+    );
 
     let second_new = storage
         .get_pass_by_inscription_id(&pass_new_2)
