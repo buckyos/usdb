@@ -3074,7 +3074,7 @@ impl MinerPassStorage {
                 satpoint,
                 owner
             FROM miner_passes
-            WHERE state NOT IN (?1, ?2)
+            WHERE state IN (?1, ?2)
             ORDER BY mint_block_height DESC
             LIMIT ?3 OFFSET ?4;
             ",
@@ -3090,8 +3090,8 @@ impl MinerPassStorage {
 
         let mut rows = stmt
             .query(rusqlite::params![
-                MinerPassState::Consumed.as_str(),
-                MinerPassState::Invalid.as_str(),
+                MinerPassState::Active.as_str(),
+                MinerPassState::Dormant.as_str(),
                 page_size as i64,
                 offset as i64
             ])
@@ -4714,13 +4714,16 @@ mod tests {
         let owner1 = script_hash(7);
         let owner2 = script_hash(8);
         let owner3 = script_hash(9);
+        let owner4 = script_hash(10);
 
         let p1 = make_pass(21, 0, owner1, MinerPassState::Active, 100);
         let p2 = make_pass(22, 1, owner2, MinerPassState::Active, 200);
         let p3 = make_pass(23, 2, owner3, MinerPassState::Active, 300);
+        let p4 = make_pass(24, 3, owner4, MinerPassState::Active, 400);
         storage.add_new_mint_pass(&p1).unwrap();
         storage.add_new_mint_pass(&p2).unwrap();
         storage.add_new_mint_pass(&p3).unwrap();
+        storage.add_new_mint_pass(&p4).unwrap();
 
         storage
             .update_state(
@@ -4733,6 +4736,13 @@ mod tests {
             .update_state(
                 &p2.inscription_id,
                 MinerPassState::Consumed,
+                MinerPassState::Active,
+            )
+            .unwrap();
+        storage
+            .update_state(
+                &p4.inscription_id,
+                MinerPassState::Burned,
                 MinerPassState::Active,
             )
             .unwrap();
@@ -4752,6 +4762,7 @@ mod tests {
         assert!(ids.contains(&p1.inscription_id));
         assert!(ids.contains(&p3.inscription_id));
         assert!(!ids.contains(&p2.inscription_id));
+        assert!(!ids.contains(&p4.inscription_id));
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

@@ -607,6 +607,21 @@ impl MinerPassManager {
             msg
         })?;
 
+        if matches!(
+            pass.state,
+            MinerPassState::Consumed | MinerPassState::Burned | MinerPassState::Invalid
+        ) {
+            warn!(
+                "Terminal Miner Pass {} transferred at block height {}; keep consensus owner/satpoint unchanged: state={}, owner={}, satpoint={}",
+                inscription_id,
+                block_height,
+                pass.state.as_str(),
+                pass.owner,
+                pass.satpoint
+            );
+            return Ok(());
+        }
+
         // Update energy record for the pass before transfer if the pass is active
         if pass.state == MinerPassState::Active {
             self.energy_manager
@@ -1272,6 +1287,114 @@ mod tests {
         assert_eq!(updated.state, MinerPassState::Dormant);
         assert_eq!(updated.satpoint, new_satpoint);
         assert_ne!(updated.satpoint, old_satpoint);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_transfer_consumed_keeps_consensus_owner_and_satpoint() {
+        let (root_dir, storage, manager, inscription_id, owner, old_satpoint) =
+            setup_manager("transfer_consumed_noop");
+        storage
+            .update_state(
+                &inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Dormant,
+            )
+            .unwrap();
+
+        let new_owner = test_script_hash(70);
+        let new_satpoint = test_satpoint(70, 1, 42);
+        manager
+            .on_pass_transfer(&inscription_id, &new_owner, &new_satpoint, 101)
+            .await
+            .unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Consumed);
+        assert_eq!(updated.owner, owner);
+        assert_eq!(updated.satpoint, old_satpoint);
+        assert!(
+            storage
+                .get_pass_history_by_page_in_height_range(&inscription_id, 101, 101, 0, 10, false)
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_transfer_burned_keeps_consensus_owner_and_satpoint() {
+        let (root_dir, storage, manager, inscription_id, owner, old_satpoint) =
+            setup_manager("transfer_burned_noop");
+        storage
+            .update_state(
+                &inscription_id,
+                MinerPassState::Burned,
+                MinerPassState::Dormant,
+            )
+            .unwrap();
+
+        let new_owner = test_script_hash(71);
+        let new_satpoint = test_satpoint(71, 1, 42);
+        manager
+            .on_pass_transfer(&inscription_id, &new_owner, &new_satpoint, 101)
+            .await
+            .unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Burned);
+        assert_eq!(updated.owner, owner);
+        assert_eq!(updated.satpoint, old_satpoint);
+        assert!(
+            storage
+                .get_pass_history_by_page_in_height_range(&inscription_id, 101, 101, 0, 10, false)
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_transfer_invalid_keeps_consensus_owner_and_satpoint() {
+        let (root_dir, storage, manager, inscription_id, owner, old_satpoint) =
+            setup_manager("transfer_invalid_noop");
+        storage
+            .update_state(
+                &inscription_id,
+                MinerPassState::Invalid,
+                MinerPassState::Dormant,
+            )
+            .unwrap();
+
+        let new_owner = test_script_hash(72);
+        let new_satpoint = test_satpoint(72, 1, 42);
+        manager
+            .on_pass_transfer(&inscription_id, &new_owner, &new_satpoint, 101)
+            .await
+            .unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Invalid);
+        assert_eq!(updated.owner, owner);
+        assert_eq!(updated.satpoint, old_satpoint);
+        assert!(
+            storage
+                .get_pass_history_by_page_in_height_range(&inscription_id, 101, 101, 0, 10, false)
+                .unwrap()
+                .is_empty()
+        );
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

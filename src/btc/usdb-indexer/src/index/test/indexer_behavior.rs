@@ -2560,7 +2560,7 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
 }
 
 #[tokio::test]
-async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_transfer() {
+async fn test_sync_block_same_block_mint_then_transfer_ignores_consumed_transfer() {
     let block_height = 510;
     let owner_a = test_script_hash(31);
     let owner_b = test_script_hash(32);
@@ -2666,7 +2666,9 @@ async fn test_sync_block_same_block_mint_then_transfer_keeps_mint_before_later_t
         .get_pass_by_inscription_id(&prev_pass_id)
         .unwrap()
         .unwrap();
-    assert_eq!(prev_pass.owner, owner_b);
+    // The later same-block transfer targets a pass already consumed by the mint.
+    // Terminal-pass physical transfers are non-consensus and keep consensus fields unchanged.
+    assert_eq!(prev_pass.owner, owner_a);
     assert_eq!(prev_pass.state, MinerPassState::Consumed);
 
     let new_pass = fixture

@@ -100,12 +100,14 @@
 - `src/btc/usdb-indexer/src/index/pass.rs`
   - burn 仅允许 `Active` / `Dormant` 转 `Burned`；`Consumed` / `Burned` / `Invalid` burn 保持当前经济状态。
   - 增加 active、dormant、consumed burn，以及 pass/energy 状态不一致时 fail-fast 的单元测试覆盖。
+  - `Consumed` / `Burned` / `Invalid` transfer 作为非共识 physical transfer 处理，不更新 owner/satpoint，不写 history 或 pass commit mutation。
+- `src/btc/usdb-indexer/src/storage/pass.rs`
+  - transfer-trackable pass 查询收敛为仅返回 `Active` / `Dormant`，避免 terminal pass 后续物理流转进入共识状态。
 - `doc/UIP/UIP-0002-pass-state-machine.md`
   - 将测试要求中的 missing `prev` 表述明确为 missing referenced `prev`，避免与 UIP-0001 的 `prev` 缺省等价空数组冲突。
   - 移除 `leader_pass_id` 同 block canonical ordering 未决项，当前实现按 ordered event context 校验。
-  - 去掉 burn energy 终态仍未封口的过期描述。
+  - 去掉 burn energy 终态仍未封口的过期描述；明确当前 BTC indexer 不保留 terminal pass 后续 physical transfer 审计记录。
 
 ### 待继续对齐
 
-- `Consumed` / `Burned` transfer 后是否继续更新 owner/satpoint 需要按非共识审计口径收敛。
 - active pass 离开 Active 前的 block-level balance settlement 已有实现和测试，但还需要按 UIP-0002 逐项复核幂等和同高度多事件 replay。

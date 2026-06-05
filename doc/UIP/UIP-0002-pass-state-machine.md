@@ -292,7 +292,7 @@ transfer 指 pass 所在 inscription UTXO 转移到新的 BTC owner。
 - 若 pass 为 `Active`，必须转为 `Dormant`。
 - 必须更新 owner 与 satpoint。
 - 若 pass 为 `Dormant`，保持 `Dormant` 并更新 owner/satpoint，不得扣除 energy 或恢复增长。
-- 若 pass 为 `Consumed` 或 `Burned`，协议不要求继续追踪 owner/satpoint；实现可以保留非共识审计记录，但不得恢复任何经济能力。
+- 若 pass 为 `Consumed` 或 `Burned`，协议不要求继续追踪 owner/satpoint；当前 BTC indexer 实现不保留后续 physical transfer 审计记录，也不得恢复任何经济能力。
 - 若 pass 为 `Invalid`，不得进入 active owner set。
 
 different-owner transfer 后，冻结的 `raw_energy` 是该 pass 的可转让历史收益凭证。old owner 后续 BTC 余额变化不得影响该 `Dormant` pass；new owner 的 BTC 余额也不得让该 `Dormant` pass 继续增长。
@@ -454,7 +454,6 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 # 未决问题
 
 - `leader_btc_addr` 在 mint 高度没有 active standard pass 时，是 invalid，还是允许后续高度动态生效。本文倾向后者。
-- `Consumed` 之后的非共识审计记录是否需要单独 RPC 暴露。
 - 同一 height 下是否需要非共识审计 API 暴露 event index；协议状态查询暂不需要。
 
 # 下一步
@@ -462,5 +461,5 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 1. Review 本草案中的 mint 原子提交顺序。
 2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
 3. 继续确认 `leader_btc_addr` dynamic validation 的历史高度解析入口。
-4. 继续对齐 `Consumed` / `Burned` 后续 transfer 审计口径。
+4. 继续确认同一 height 下是否需要非共识审计 API 暴露 event index。
 5. 在 UIP-0003 定义 energy 终态记录格式和继承折损，并在 UIP-0004 定义 collab derived energy。
