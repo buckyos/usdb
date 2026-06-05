@@ -1731,7 +1731,6 @@ impl InscriptionIndexer {
             mint_version: mint_content.version,
             pass_kind: mint_content.pass_kind,
             usdb_main: mint_content.usdb_main.clone(),
-            usdb_collab: mint_content.usdb_collab.clone(),
             leader_pass_id: mint_content.leader_pass_inscription_id().map_err(|e| {
                 let msg = format!(
                     "Failed to parse leader_pass_id for inscription {}: {}",

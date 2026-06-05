@@ -502,7 +502,6 @@ fn make_active_pass(
         mint_version: 1,
         pass_kind: MinerPassKind::Standard,
         usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
-        usdb_collab: None,
         leader_pass_id: None,
         leader_btc_addr: None,
         prev: Vec::new(),

@@ -45,7 +45,6 @@ pub struct MinerPassInfo {
     pub mint_version: u32,
     pub pass_kind: MinerPassKind,
     pub usdb_main: String,
-    pub usdb_collab: Option<String>,
     pub leader_pass_id: Option<InscriptionId>,
     pub leader_btc_addr: Option<String>,
     pub prev: Vec<InscriptionId>,
@@ -187,7 +186,6 @@ impl MinerPassStorage {
                 satpoint TEXT NOT NULL,
 
                 usdb_main TEXT NOT NULL,
-                usdb_collab TEXT,
                 prev TEXT NOT NULL,
 
                 owner TEXT NOT NULL,
@@ -901,7 +899,6 @@ impl MinerPassStorage {
                     m.mint_owner,
                     h.new_satpoint AS satpoint,
                     m.usdb_main,
-                    m.usdb_collab,
                     m.prev,
                     h.new_owner AS owner,
                     h.new_state AS state,
@@ -1022,7 +1019,6 @@ impl MinerPassStorage {
                     mint_owner,
                     satpoint,
                     usdb_main,
-                    usdb_collab,
                     prev,
                     owner,
                     state,
@@ -1042,7 +1038,6 @@ impl MinerPassStorage {
                     mint_owner,
                     satpoint,
                     usdb_main,
-                    usdb_collab,
                     prev,
                     owner,
                     state,
@@ -2157,7 +2152,6 @@ impl MinerPassStorage {
                 satpoint,
                 
                 usdb_main,
-                usdb_collab,
                 prev,
 
                 owner,
@@ -2168,7 +2162,7 @@ impl MinerPassStorage {
                 pass_kind,
                 leader_pass_id,
                 leader_btc_addr
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);
             ",
             rusqlite::params![
                 pass_info.inscription_id.to_string(),
@@ -2178,7 +2172,6 @@ impl MinerPassStorage {
                 pass_info.mint_owner.to_string(),
                 pass_info.satpoint.to_string(),
                 pass_info.usdb_main,
-                pass_info.usdb_collab,
                 prev_serialized,
                 pass_info.owner.to_string(),
                 pass_info.state.as_str(),
@@ -2611,7 +2604,7 @@ impl MinerPassStorage {
     }
 
     fn row_to_pass_item(row: &rusqlite::Row) -> Result<MinerPassInfo, String> {
-        let prev_serialized: String = row.get(8).map_err(|e| {
+        let prev_serialized: String = row.get(7).map_err(|e| {
             let msg = format!("Failed to get prev field from miner pass row: {}", e);
             error!("{}", msg);
             msg
@@ -2780,16 +2773,11 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 msg
             })?,
-            usdb_collab: row.get(7).map_err(|e| {
-                let msg = format!("Failed to get usdb_collab field from miner pass row: {}", e);
-                error!("{}", msg);
-                msg
-            })?,
             leader_pass_id,
             leader_btc_addr,
 
             prev: prev_ids,
-            invalid_code: row.get(11).map_err(|e| {
+            invalid_code: row.get(10).map_err(|e| {
                 let msg = format!(
                     "Failed to get invalid_code field from miner pass row: {}",
                     e
@@ -2797,7 +2785,7 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 msg
             })?,
-            invalid_reason: row.get(12).map_err(|e| {
+            invalid_reason: row.get(11).map_err(|e| {
                 let msg = format!(
                     "Failed to get invalid_reason field from miner pass row: {}",
                     e
@@ -2807,7 +2795,7 @@ impl MinerPassStorage {
             })?,
 
             owner: row
-                .get::<_, String>(9)
+                .get::<_, String>(8)
                 .map_err(|e| {
                     let msg = format!("Failed to get owner field from miner pass row: {}", e);
                     error!("{}", msg);
@@ -2820,7 +2808,7 @@ impl MinerPassStorage {
                     msg
                 })?,
             state: {
-                let state_str: String = row.get(10).map_err(|e| {
+                let state_str: String = row.get(9).map_err(|e| {
                     let msg = format!("Failed to get state field from miner pass row: {}", e);
                     error!("{}", msg);
                     msg
@@ -3890,7 +3878,6 @@ impl MinerPassStorage {
                 m.mint_owner,
                 h.new_satpoint AS satpoint,
                 m.usdb_main,
-                m.usdb_collab,
                 m.prev,
                 h.new_owner AS owner,
                 h.new_state AS state,
@@ -3951,7 +3938,7 @@ impl MinerPassStorage {
             msg
         })? {
             let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(17).map_err(|e| {
+            let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
                 let msg = format!(
                     "Failed to get latest_event_height from owner pass snapshot row: {}",
                     e
@@ -4079,7 +4066,6 @@ impl MinerPassStorage {
                 m.mint_owner,
                 h.new_satpoint AS satpoint,
                 m.usdb_main,
-                m.usdb_collab,
                 m.prev,
                 h.new_owner AS owner,
                 h.new_state AS state,
@@ -4138,7 +4124,7 @@ impl MinerPassStorage {
             msg
         })? {
             let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(17).map_err(|e| {
+            let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
                 let msg = format!(
                     "Failed to get latest_event_height from recent pass snapshot row: {}",
                     e
@@ -4546,7 +4532,6 @@ mod tests {
             mint_version: 1,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
-            usdb_collab: Some("0x2222222222222222222222222222222222222222".to_string()),
             leader_pass_id: None,
             leader_btc_addr: None,
             prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
@@ -4641,8 +4626,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pass_storage_persists_uip0001_collab_fields() {
-        let dir = test_data_dir("uip0001_collab_fields");
+    fn test_pass_storage_persists_uip0001_leader_fields() {
+        let dir = test_data_dir("uip0001_leader_fields");
         let storage = MinerPassStorage::new(&dir).unwrap();
         let owner = script_hash(30);
         let leader_pass_id = inscription_id(31, 0);
@@ -4650,7 +4635,6 @@ mod tests {
         pass.mint_version = 1;
         pass.pass_kind = MinerPassKind::Collab;
         pass.usdb_main = String::new();
-        pass.usdb_collab = None;
         pass.leader_pass_id = Some(leader_pass_id);
         pass.leader_btc_addr = None;
 
@@ -4664,7 +4648,6 @@ mod tests {
         assert_eq!(loaded.mint_version, 1);
         assert_eq!(loaded.pass_kind, MinerPassKind::Collab);
         assert_eq!(loaded.usdb_main, "");
-        assert_eq!(loaded.usdb_collab, None);
         assert_eq!(loaded.leader_pass_id, Some(leader_pass_id));
         assert_eq!(loaded.leader_btc_addr, None);
 

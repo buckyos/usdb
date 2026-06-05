@@ -108,7 +108,6 @@
   "mint_block_height": 900123,
   "mint_owner": "<USDBScriptHash>",
   "usdb_main": "0x...",
-  "usdb_collab": "0x... or null",
   "prev": ["txidi0"],
   "invalid_code": "INVALID_USDB_MAIN",
   "invalid_reason": "Invalid usdb_main format",

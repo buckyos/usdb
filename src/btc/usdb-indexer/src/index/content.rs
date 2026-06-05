@@ -28,8 +28,8 @@ const USDB_MINT_SCHEMA_FIELDS: [&str; 7] = [
 {
   "p": "usdb",
   "op": "mint",
+  "v": 1,
   "usdb_main": "0x1234...NewUsdbAddr...",
-  "usdb_collab": "0x5678...UsdbCollabAddr...",
   "prev": [
     "old_inscription_id_a",
     "old_inscription_id_b"
@@ -177,7 +177,6 @@ pub struct USDBMint {
     #[serde(skip)]
     pub pass_kind: MinerPassKind,
     pub usdb_main: String,
-    pub usdb_collab: Option<String>,
     pub leader_pass_id: Option<String>,
     pub leader_btc_addr: Option<String>,
     pub prev: Vec<String>,
@@ -189,7 +188,6 @@ impl USDBMint {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Standard,
             usdb_main,
-            usdb_collab: None,
             leader_pass_id: None,
             leader_btc_addr: None,
             prev,
@@ -201,7 +199,6 @@ impl USDBMint {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Collab,
             usdb_main: String::new(),
-            usdb_collab: None,
             leader_pass_id: Some(leader_pass_id),
             leader_btc_addr: None,
             prev,
@@ -213,7 +210,6 @@ impl USDBMint {
             version: USDB_MINT_SCHEMA_VERSION,
             pass_kind: MinerPassKind::Collab,
             usdb_main: String::new(),
-            usdb_collab: None,
             leader_pass_id: None,
             leader_btc_addr: Some(leader_btc_addr),
             prev,
@@ -646,7 +642,6 @@ impl InscriptionContentLoader {
             version,
             pass_kind,
             usdb_main,
-            usdb_collab: None,
             leader_pass_id,
             leader_btc_addr,
             prev,

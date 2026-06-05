@@ -24,12 +24,14 @@
   - `inscription_source.load_block_mint_batch` 调用传入当前 BTC network，保证 `leader_btc_addr` 按配置网络校验。
 - `src/btc/usdb-indexer/src/index/pass.rs`
   - `PassMintInscriptionInfo` 与 mint mutation 记录新增 UIP-0001 字段。
+  - 状态面不再携带 `usdb_collab`；该字段仅作为 v1 payload invalid 条件保留在 parser。
 - `src/btc/usdb-indexer/src/storage/pass.rs`
   - `MinerPassInfo` 新增 `mint_version`、`pass_kind`、`leader_pass_id`、`leader_btc_addr`。
-  - `miner_passes` 建库 schema 直接新增对应列；dev 阶段不保留旧数据库兼容迁移，测试需要时删除旧 DB 重建。
+  - `miner_passes` 建库 schema 直接使用 v1 字段并移除 `usdb_collab` 列；dev 阶段不保留旧数据库兼容迁移，测试需要时删除旧 DB 重建。
   - rollback 重建、history owner/recent 查询保留新增字段。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - pass snapshot、owner pass、recent pass、invalid pass 响应新增 UIP-0001 字段。
+  - pass 响应不再暴露 `usdb_collab`。
 
 ### 已补测试
 
@@ -52,10 +54,10 @@
 
 ### 已验证
 
-- `cargo test -p usdb-indexer content`
-- `cargo test -p usdb-indexer pass_storage_persists_uip0001_collab_fields`
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer content`
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer pass_storage_persists_uip0001_leader_fields -- --nocapture`
 - `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer classify_usdb_mints_uses_supplied_network_for_leader_btc_addr -- --nocapture`
-- `cargo test -p usdb-indexer`
+- `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer`
 - `cargo check --manifest-path src/btc/Cargo.toml --workspace`
 
 ### 暂缓事项

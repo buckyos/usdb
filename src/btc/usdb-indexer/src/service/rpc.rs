@@ -497,8 +497,6 @@ pub struct PassSnapshot {
     pub pass_kind: String,
     /// Primary USDB address declared in mint content.
     pub usdb_main: String,
-    /// Optional collaborator USDB address.
-    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -674,8 +672,6 @@ pub struct OwnerPassItem {
     pub pass_kind: String,
     /// Primary USDB address declared by the pass mint content.
     pub usdb_main: String,
-    /// Optional collaborator USDB address.
-    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -733,8 +729,6 @@ pub struct RecentPassItem {
     pub pass_kind: String,
     /// Primary USDB address declared by the pass mint content.
     pub usdb_main: String,
-    /// Optional collaborator USDB address.
-    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
@@ -943,8 +937,6 @@ pub struct InvalidPassItem {
     pub pass_kind: String,
     /// Primary USDB address in mint content.
     pub usdb_main: String,
-    /// Optional collaborator USDB address.
-    pub usdb_collab: Option<String>,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
     /// Leader BTC address binding for collab passes.
