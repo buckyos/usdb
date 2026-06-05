@@ -2429,6 +2429,97 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
 }
 
 #[tokio::test]
+async fn test_sync_block_new_mint_negative_delta_uses_initial_balance_without_penalty() {
+    let owner = test_script_hash(9);
+    let block_height = 410;
+    let mint_tx = build_test_tx(56);
+    let mint_id = InscriptionId {
+        txid: mint_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
+    );
+
+    let mint = make_discovered_mint(mint_id, block_height, vec![]);
+    let inscription_source: Arc<dyn InscriptionSource> =
+        Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
+
+    let create_info = MockCreateInfo {
+        satpoint: test_satpoint(12, 0, 0),
+        value: Amount::from_sat(10_000),
+        address: Some(owner),
+        commit_txid: Txid::from_slice(&[12u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[12u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker =
+        Arc::new(MockTransferTracker::default().with_create_info(&mint_id, create_info));
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "sync_block_new_mint_negative_delta_no_penalty",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![vec![
+            balance_history::AddressBalance {
+                block_height,
+                balance: 399_500,
+                delta: -500,
+            },
+        ]]))],
+        Arc::new(MockBalanceProvider::default().with_height(owner, block_height, 399_500, -500)),
+    );
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&mint_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pass.owner, owner);
+    assert_eq!(pass.state, MinerPassState::Active);
+
+    let energy_record = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_exact(&mint_id, block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_record.state, MinerPassState::Active);
+    assert_eq!(energy_record.active_block_height, block_height);
+    assert_eq!(energy_record.owner_balance, 399_500);
+    assert_eq!(energy_record.owner_delta, -500);
+    assert_eq!(energy_record.energy, 0);
+    assert_eq!(
+        fixture
+            .pass_energy_manager
+            .count_pass_energy_records_in_height_range(&mint_id, block_height, block_height)
+            .unwrap(),
+        1
+    );
+
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.active_address_count, 1);
+    assert_eq!(snapshot.total_balance, 399_500);
+    assert_eq!(fixture.backend.call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.commit_call_count(), 1);
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
 async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_state() {
     let block_height = 500;
     let owner_a = test_script_hash(10);

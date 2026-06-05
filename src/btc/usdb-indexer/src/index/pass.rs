@@ -1087,6 +1087,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_on_mint_pass_prev_owner_mismatch_records_invalid() {
+        let (root_dir, storage, manager) = setup_empty_manager("mint_prev_owner_mismatch");
+        let prev_owner = test_script_hash(38);
+        let mint_owner = test_script_hash(39);
+        let prev_id = test_inscription_id(38, 0);
+        let mint_id = test_inscription_id(39, 0);
+        let prev_pass = test_pass_info(
+            prev_id,
+            prev_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &prev_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                101,
+            )
+            .unwrap();
+
+        let mint_info = test_mint_info(mint_id, mint_owner, 102, vec![prev_id]);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let prev_after = storage
+            .get_pass_by_inscription_id(&prev_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prev_after.owner, prev_owner);
+        assert_eq!(prev_after.state, MinerPassState::Dormant);
+
+        let mint_after = storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mint_after.owner, mint_owner);
+        assert_eq!(mint_after.state, MinerPassState::Invalid);
+        assert_eq!(
+            mint_after.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidPrevId.as_str())
+        );
+        assert!(
+            mint_after
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not match")
+        );
+        assert!(
+            storage
+                .get_all_active_pass_by_page(0, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_duplicate_prev_records_invalid_without_consuming() {
+        let (root_dir, storage, manager) = setup_empty_manager("mint_duplicate_prev_invalid");
+        let owner = test_script_hash(40);
+        let prev_id = test_inscription_id(40, 0);
+        let mint_id = test_inscription_id(41, 0);
+        let prev_pass = test_pass_info(
+            prev_id,
+            owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &prev_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                101,
+            )
+            .unwrap();
+
+        let mint_info = test_mint_info(mint_id, owner, 102, vec![prev_id, prev_id]);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let prev_after = storage
+            .get_pass_by_inscription_id(&prev_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(prev_after.state, MinerPassState::Dormant);
+
+        let mint_after = storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mint_after.state, MinerPassState::Invalid);
+        assert_eq!(
+            mint_after.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidPrevId.as_str())
+        );
+        assert!(
+            mint_after
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Duplicate prev")
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_on_mint_pass_collab_accepts_active_standard_leader_pass() {
         let (root_dir, storage, manager) =
             setup_empty_manager("collab_active_standard_leader_valid");
