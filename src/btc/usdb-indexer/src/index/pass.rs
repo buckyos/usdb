@@ -478,7 +478,13 @@ impl MinerPassManager {
                 mint_info.mint_block_height
             );
 
-            // Mark the last pass as dormant
+            // Settle active energy before the pass leaves Active. UIP-0002 requires
+            // same-height balance penalty/growth to be materialized before the state effect.
+            self.energy_manager
+                .on_pass_dormant(&last_pass.inscription_id, mint_info.mint_block_height)
+                .await?;
+
+            // Mark the last pass as dormant.
             // Use height-aware state transition so historical active-set reconstruction stays deterministic.
             self.storage.update_state_at_height(
                 &last_pass.inscription_id,
@@ -498,11 +504,6 @@ impl MinerPassManager {
                 "Last Pass {} marked as Dormant due to new pass {} for owner {}",
                 last_pass.inscription_id, mint_info.inscription_id, mint_info.mint_owner
             );
-
-            // Update energy record for the pass
-            self.energy_manager
-                .on_pass_dormant(&last_pass.inscription_id, mint_info.mint_block_height)
-                .await?;
         }
 
         Ok(())

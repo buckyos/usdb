@@ -80,7 +80,7 @@
 
 ## UIP-0002 Miner Pass State Machine
 
-状态：第一轮 review 已开始，已先对齐 `prev` strict invalid 路径。
+状态：第一轮 review 进行中，已对齐 `prev` strict invalid、leader pass、burn 终态、terminal transfer 与 block-level balance settlement 复核项。
 
 ### 已对接内容
 
@@ -89,12 +89,15 @@
   - `prev` 缺失、owner 不一致、非 Dormant 或重复引用会将本次 mint 记录为 `Invalid`，不再 warn/skip。
   - 同 owner 当前 active pass 可在同一次 mint 中作为虚拟 Dormant `prev` 被原子消费；若同次 mint 还有其他 invalid `prev`，旧 active pass 保持原状态。
   - `leader_pass_id` collab mint 校验 Leader pass 存在、为 active standard pass，且不是本次 mint 自身；同 block 前序 canonical event 创建的 standard Leader 可被后序 collab mint 引用。
+  - same-owner mint supersede 时先完成 old active 的 event-height energy settlement，再写 pass `Active -> Dormant` 状态。
 - `src/btc/usdb-indexer/src/index/test/pass_scenario.rs`
   - 更新 missing referenced `prev` 与重复继承已 consumed `prev` 的测试期望为 invalid mint。
 - `src/btc/usdb-indexer/src/index/test/indexer_behavior.rs`
   - 更新 burned `prev` remint 和已 consumed `prev` 二次继承的 block-level 行为期望。
   - 增加同 block 前序 standard Leader mint + 后序 `leader_pass_id` collab mint 的 canonical ordering 测试。
   - 更新 mint/transfer/burn/remint timeline，断言 burn 高度及后续 energy 为 `Burned/0`。
+  - 增加 same-owner transfer exact-height active settlement 后 block-end settlement 幂等的集成测试。
+  - 增加 same-owner remint 在同高度负 delta 下先扣 penalty、再继承扣罚后 energy，且新 pass 不额外承担 pre-mint penalty 的集成测试。
 - `src/btc/usdb-indexer/src/index/energy.rs`
   - 增加 burn 终态写入：`Active` / `Dormant` burn 在 event height 写入 `Burned/0` energy record，并按 burn 前 pass state 精确校验 energy state。
 - `src/btc/usdb-indexer/src/index/pass.rs`
@@ -110,4 +113,4 @@
 
 ### 待继续对齐
 
-- active pass 离开 Active 前的 block-level balance settlement 已有实现和测试，但还需要按 UIP-0002 逐项复核幂等和同高度多事件 replay。
+- 同一 height 下是否需要非共识审计 API 暴露 event index；协议状态查询暂不需要。
