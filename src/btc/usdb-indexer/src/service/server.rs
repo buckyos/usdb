@@ -2339,6 +2339,24 @@ mod tests {
         state: MinerPassState,
         energy: Energy,
     ) {
+        seed_energy_record_with_state_and_balance(
+            server,
+            pass,
+            block_height,
+            state,
+            energy,
+            100_000,
+        );
+    }
+
+    fn seed_energy_record_with_state_and_balance(
+        server: &UsdbIndexerRpcServer,
+        pass: &MinerPassInfo,
+        block_height: u32,
+        state: MinerPassState,
+        energy: Energy,
+        owner_balance: u64,
+    ) {
         server
             .indexer
             .pass_energy_manager()
@@ -2348,7 +2366,7 @@ mod tests {
                 state,
                 active_block_height: block_height,
                 owner_address: pass.owner,
-                owner_balance: 100_000,
+                owner_balance,
                 owner_delta: 0,
                 energy,
             })
@@ -4267,6 +4285,39 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_energy_returns_decimal_string_for_u128_and_saturated_projection() {
+        let (server, root_dir) = build_server("energy_projection_u128_decimal", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(35, 135, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        seed_energy_record(&server, &pass, 120, Energy::MAX - 1);
+
+        let exact = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                mode: Some("exact".to_string()),
+            })
+            .unwrap();
+        assert_eq!(exact.energy, (Energy::MAX - 1).to_string());
+
+        let projected = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(121),
+                context: None,
+                mode: Some("at_or_before".to_string()),
+            })
+            .unwrap();
+        assert_eq!(projected.energy, Energy::MAX.to_string());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_pass_energy_rejects_mismatched_context_height() {
         let (server, root_dir) = build_server("energy_context_height_mismatch", 130);
         let storage = server.indexer.miner_pass_storage();
@@ -4476,6 +4527,46 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_energy_range_encodes_u128_decimal_strings() {
+        let (server, root_dir) = build_server("energy_range_u128_decimal", 150);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass = make_active_pass(36, 136, 100);
+        storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
+        let above_u64_max = (u64::MAX as Energy) + 1;
+        seed_energy_record(&server, &pass, 110, 9);
+        seed_energy_record(&server, &pass, 120, above_u64_max);
+        seed_energy_record(&server, &pass, 130, Energy::MAX);
+
+        let desc = server
+            .get_pass_energy_range(GetPassEnergyRangeParams {
+                inscription_id: pass.inscription_id.to_string(),
+                from_height: 100,
+                to_height: 130,
+                order: Some("desc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        let energies = desc
+            .items
+            .iter()
+            .map(|item| item.energy.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            energies,
+            vec![
+                Energy::MAX.to_string(),
+                above_u64_max.to_string(),
+                "9".to_string()
+            ]
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_pass_energy_leaderboard_explicit_height_bypass_cache() {
         let (server, root_dir) = build_server("leaderboard_no_cache", 120);
         let storage = server.indexer.miner_pass_storage();
@@ -4666,6 +4757,118 @@ mod tests {
             assert_eq!(entry.total, 4);
             assert_eq!(entry.items.len(), 4);
         }
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_sorts_by_u128_not_decimal_string() {
+        let (server, root_dir) = build_server("leaderboard_numeric_u128_sort", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass_9 = make_active_pass(41, 141, 100);
+        let pass_100 = make_active_pass(42, 142, 100);
+        let pass_10 = make_active_pass(43, 143, 100);
+        let pass_above_u64 = make_active_pass(44, 144, 100);
+        let pass_max = make_active_pass(45, 145, 100);
+        for pass in [&pass_9, &pass_100, &pass_10, &pass_above_u64, &pass_max] {
+            storage.add_new_mint_pass_at_height(pass, 100).unwrap();
+        }
+
+        let above_u64_max = (u64::MAX as Energy) + 1;
+        seed_energy_record(&server, &pass_9, 120, 9);
+        seed_energy_record(&server, &pass_100, 120, 100);
+        seed_energy_record(&server, &pass_10, 120, 10);
+        seed_energy_record(&server, &pass_above_u64, 120, above_u64_max);
+        seed_energy_record(&server, &pass_max, 120, Energy::MAX);
+
+        let page = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: Some(120),
+                scope: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        let energies = page
+            .items
+            .iter()
+            .map(|item| item.energy.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            energies,
+            vec![
+                Energy::MAX.to_string(),
+                above_u64_max.to_string(),
+                "100".to_string(),
+                "10".to_string(),
+                "9".to_string(),
+            ]
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_energy_leaderboard_tiebreakers_are_deterministic() {
+        let (server, root_dir) = build_server("leaderboard_numeric_tiebreakers", 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let pass_older = make_active_pass(46, 146, 100);
+        let pass_newer_low_id = make_active_pass(47, 147, 100);
+        let pass_newer_high_id = make_active_pass(48, 148, 100);
+        for pass in [&pass_older, &pass_newer_low_id, &pass_newer_high_id] {
+            storage.add_new_mint_pass_at_height(pass, 100).unwrap();
+        }
+
+        seed_energy_record_with_state_and_balance(
+            &server,
+            &pass_older,
+            119,
+            MinerPassState::Active,
+            500,
+            0,
+        );
+        seed_energy_record_with_state_and_balance(
+            &server,
+            &pass_newer_low_id,
+            120,
+            MinerPassState::Active,
+            500,
+            0,
+        );
+        seed_energy_record_with_state_and_balance(
+            &server,
+            &pass_newer_high_id,
+            120,
+            MinerPassState::Active,
+            500,
+            0,
+        );
+
+        let page = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: Some(120),
+                scope: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        let ids = page
+            .items
+            .iter()
+            .map(|item| item.inscription_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                pass_newer_low_id.inscription_id.to_string(),
+                pass_newer_high_id.inscription_id.to_string(),
+                pass_older.inscription_id.to_string(),
+            ]
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

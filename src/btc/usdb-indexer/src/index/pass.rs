@@ -1207,6 +1207,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_on_mint_pass_multi_prev_inherited_energy_saturates() {
+        let (root_dir, storage, manager) = setup_empty_manager("mint_multi_prev_saturates");
+        let owner = test_script_hash(74);
+        let prev_1 = test_inscription_id(75, 0);
+        let prev_2 = test_inscription_id(76, 0);
+        let new_id = test_inscription_id(77, 0);
+
+        for (prev_id, tag) in [(prev_1, 75u128), (prev_2, 76u128)] {
+            let prev_pass = test_pass_info(
+                prev_id,
+                owner,
+                100,
+                MinerPassKind::Standard,
+                MinerPassState::Active,
+            );
+            storage
+                .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
+                .unwrap();
+            storage
+                .update_state_at_height(
+                    &prev_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    100,
+                )
+                .unwrap();
+            manager
+                .energy_manager
+                .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                    inscription_id: prev_id,
+                    block_height: 100,
+                    state: MinerPassState::Dormant,
+                    active_block_height: 100,
+                    owner_address: owner,
+                    owner_balance: 0,
+                    owner_delta: 0,
+                    energy: Energy::MAX - tag,
+                })
+                .unwrap();
+        }
+
+        let mint_info = test_mint_info(new_id, owner, 101, vec![prev_1, prev_2]);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let new_energy = manager
+            .energy_manager
+            .get_pass_energy(&new_id, 101)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(new_energy.state, MinerPassState::Active);
+        assert_eq!(new_energy.energy, Energy::MAX);
+
+        for prev_id in [prev_1, prev_2] {
+            let consumed = manager
+                .energy_manager
+                .get_pass_energy(&prev_id, 101)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(consumed.state, MinerPassState::Consumed);
+            assert_eq!(consumed.energy, 0);
+        }
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn test_on_mint_pass_collab_accepts_active_standard_leader_pass() {
         let (root_dir, storage, manager) =
             setup_empty_manager("collab_active_standard_leader_valid");

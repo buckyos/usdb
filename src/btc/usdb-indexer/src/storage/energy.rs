@@ -806,6 +806,34 @@ mod tests {
     }
 
     #[test]
+    fn test_pass_energy_roundtrip_preserves_u128_edges() {
+        let dir = test_data_dir("u128_edges");
+        let storage = PassEnergyStorage::new(&dir).unwrap();
+
+        let above_u64_max = (u64::MAX as Energy) + 1;
+        let cases = [
+            (11, 100, 0),
+            (12, 110, above_u64_max),
+            (13, 120, Energy::MAX - 1),
+            (14, 130, Energy::MAX),
+        ];
+
+        for (tag, height, energy) in cases {
+            let record = make_record(tag, 0, height, tag, energy);
+            storage.insert_pass_energy_record(&record).unwrap();
+
+            let loaded = storage
+                .get_pass_energy_record(&record.inscription_id, record.block_height)
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded.energy, energy, "tag={tag}");
+        }
+
+        drop(storage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn test_find_last_pass_energy_record_returns_latest_before_height() {
         let dir = test_data_dir("last_record");
         let storage = PassEnergyStorage::new(&dir).unwrap();

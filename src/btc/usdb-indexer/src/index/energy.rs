@@ -1114,6 +1114,46 @@ mod tests {
         std::fs::remove_dir_all(root_dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn test_get_pass_energy_projection_saturates_at_energy_max() {
+        let root_dir = test_root_dir("at_or_before_project_active_saturates");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(4, 0);
+        let owner = test_script_hash(4);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: Energy::MAX - 1,
+            })
+            .unwrap();
+
+        let exact = manager
+            .get_pass_energy(&inscription_id, 100)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact.energy, Energy::MAX - 1);
+
+        let projected = manager
+            .get_pass_energy(&inscription_id, 101)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(projected.state, MinerPassState::Active);
+        assert_eq!(projected.energy, Energy::MAX);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
     #[test]
     fn test_apply_active_balance_change_zero_delta_skips_without_new_record() {
         // Zero delta should be treated as no-op and must not write a new record.

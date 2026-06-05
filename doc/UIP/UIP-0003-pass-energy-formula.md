@@ -480,6 +480,10 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 - 多 `prev` 逐项折损后求和。
 - `Consumed` / `Burned` 查询 energy 为 `0`。
 - `uint128` energy 的内部计算、saturation 和 JSON decimal string 编码。
+- RocksDB storage 必须能 roundtrip 超过 `u64::MAX` 的 `energy_uint` 和 `ENERGY_MAX`。
+- RPC snapshot / range / leaderboard 必须把 `energy_uint` 编码为 canonical decimal string。
+- leaderboard 排序必须先按内部 `uint128` 数值排序，再编码输出，不能按 decimal string 字典序排序。
+- 多 `prev` 继承求和超过 `ENERGY_MAX` 时必须 saturate 到 `ENERGY_MAX`。
 
 # 已确认规则
 
@@ -495,9 +499,9 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 
 # 后续实现风险
 
-实现层仍需专项处理：
+实现层仍需持续审计：
 
-- RocksDB `PassEnergyValue.energy` 当前为 `u64`，改为 `u128` 会改变 bincode 编码；开发期可以重建 DB，正式网络需要迁移版本。
-- RPC 结构体当前以 JSON number 返回 `energy`，必须切换为 decimal string。
-- 前端 TypeScript 类型当前使用 `number`，必须切换为 `string` 并只在展示层格式化。
+- BTC indexer 已将 RocksDB `PassEnergyValue.energy` 改为 `uint128`；开发期不做旧 DB 迁移兼容，测试需要时重建 DB。
+- BTC indexer RPC 已将 pass energy snapshot / range / leaderboard 的 `energy` 输出改为 canonical decimal string。
+- 前端、CLI、validator payload 或后续 state view 若新增或消费 energy 字段，必须继续使用 `string`，不得退回 JSON number。
 - validator payload 和 state ref 若包含 energy，也必须使用 decimal string 并按本文规则 canonicalize。

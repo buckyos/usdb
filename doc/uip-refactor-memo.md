@@ -161,8 +161,11 @@
 - inheritable energy 5% discount floor。
 - single prev remint 继承折损后的 raw energy，且 prev 同高度 query 为 `Consumed/0`。
 - multi prev remint 逐项先折损再求和，并覆盖与“先求和再折损”不同的 rounding 场景。
-- storage `u128` energy roundtrip。
-- RPC `energy` decimal string 输出与 projection/leaderboard cache 场景。
+- multi prev 继承求和超过 `ENERGY_MAX` 时 saturate 到 `u128::MAX`。
+- storage `u128` energy roundtrip，覆盖 `u64::MAX + 1`、`u128::MAX - 1`、`u128::MAX`。
+- energy manager active projection 在接近 `u128::MAX` 时 saturating 到 `ENERGY_MAX`。
+- RPC `energy` decimal string 输出覆盖 exact、projection saturation、range 和 leaderboard cache 场景。
+- leaderboard 覆盖先按 `u128` 数值排序再编码，避免 decimal string 字典序排序；并覆盖同 energy 下 `record_block_height DESC` / `inscription_id ASC` tie-breaker。
 - `u128::MAX` 继承折损不发生先乘溢出。
 - penalty 饱和到 `ENERGY_MAX`。
 
