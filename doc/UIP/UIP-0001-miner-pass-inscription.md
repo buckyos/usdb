@@ -402,7 +402,6 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 - `leader_btc_addr` 自动跟随新 active pass 时，是否需要延迟一个 BTC block 或 ETHW epoch 生效。
 - collab mint 引用 Dormant Leader 时应 invalid，还是允许暂时无效但保留绑定。
 - collab pass 转 standard pass 的退出折损率和 cooldown。
-- v1 strict parser 是否需要在 Rust 层实现 duplicate key 检测，而不是只依赖 `serde_json::Value`。
 - 主网的稳定 `network_id` 是否最终采用 `主网-mainnet`。
 
 # 下一步

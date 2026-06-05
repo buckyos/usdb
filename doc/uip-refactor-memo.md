@@ -11,9 +11,11 @@
 - `doc/UIP/UIP-0001-miner-pass-inscription.md`
   - 开发期实现策略收紧为 dev 直接使用 v1 strict schema。
   - 旧 payload、旧数据库和临时 parser 字段不作为兼容对象；测试需要时删除旧 DB 并按 v1 schema 重建。
+  - 移除 duplicate key 检测未决项；当前 schema 已要求 top-level duplicate JSON key invalid。
 - `src/btc/usdb-indexer/src/index/content.rs`
   - 增加 v1 strict schema 解析。
   - 要求 `p == "usdb"`、`op == "mint"`、`v == 1`。
+  - 顶部注释示例已对齐 v1 schema，包含 `v` 且不包含 `usdb_collab`。
   - 增加 `standard` / `collab` 两类 pass 推导。
   - `standard` 要求 `usdb_main`，禁止 leader 绑定字段。
   - `collab` 要求 `leader_pass_id` / `leader_btc_addr` 二选一，禁止 `usdb_main`。
