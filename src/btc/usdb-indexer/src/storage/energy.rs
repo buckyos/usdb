@@ -1,4 +1,4 @@
-use crate::index::MinerPassState;
+use crate::index::{Energy, MinerPassState};
 use bitcoincore_rpc::bitcoin::{Txid, hashes::Hash};
 use ord::InscriptionId;
 use rocksdb::{ColumnFamilyDescriptor, DB, Options};
@@ -20,7 +20,7 @@ pub struct PassEnergyValue {
     pub owner_address: USDBScriptHash,
     pub owner_balance: u64, // In Satoshi at block height
     pub owner_delta: i64,   // In Satoshi at block height
-    pub energy: u64,        // Energy balance associated with the pass at block height
+    pub energy: Energy,     // Raw energy associated with the pass at block height
 }
 
 #[derive(Clone, Debug)]
@@ -33,7 +33,7 @@ pub struct PassEnergyRecord {
     pub owner_address: USDBScriptHash,
     pub owner_balance: u64, // in Satoshi at block height
     pub owner_delta: i64,   // in Satoshi at block height
-    pub energy: u64,        // Energy balance associated with the pass at block height
+    pub energy: Energy,     // Raw energy associated with the pass at block height
 }
 
 // Column family name for pass energy records
@@ -763,7 +763,7 @@ mod tests {
         index: u32,
         block_height: u32,
         owner_tag: u8,
-        energy: u64,
+        energy: Energy,
     ) -> PassEnergyRecord {
         PassEnergyRecord {
             inscription_id: inscription_id(ins_tag, index),
@@ -935,7 +935,7 @@ mod tests {
                     owner_address: script_hash(8),
                     owner_balance: 1_000 + height as u64,
                     owner_delta: 1,
-                    energy: height as u64,
+                    energy: height as Energy,
                 })
                 .unwrap();
         }
@@ -997,7 +997,7 @@ mod tests {
                     owner_address: script_hash(8),
                     owner_balance: 1_000 + height as u64,
                     owner_delta: 1,
-                    energy: height as u64,
+                    energy: height as Energy,
                 })
                 .unwrap();
         }
@@ -1058,7 +1058,7 @@ mod tests {
                     owner_address: script_hash(7),
                     owner_balance: 1_000 + height as u64,
                     owner_delta: 1,
-                    energy: height as u64,
+                    energy: height as Energy,
                 })
                 .unwrap();
         }

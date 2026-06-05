@@ -5,8 +5,8 @@ use super::common::{
 use crate::config::ConfigManager;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
-    calc_next_active_block_height, saturating_energy_to_u64,
+    Energy, calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
+    calc_next_active_block_height,
 };
 use crate::index::pass::{MinerPassManager, PassMintInscriptionInfo};
 use crate::index::{MinerPassKind, MinerPassState, MintValidationErrorCode};
@@ -111,10 +111,10 @@ fn setup_manager_with_mock(
 fn expected_energy_by_formula(
     initial_block_height: u32,
     initial_balance: u64,
-    inherited_energy: u64,
+    inherited_energy: Energy,
     timeline_points: &[AddressBalance],
     target_height: u32,
-) -> u64 {
+) -> Energy {
     assert!(target_height >= initial_block_height);
     let mut energy = inherited_energy;
     let mut owner_balance = initial_balance;
@@ -131,12 +131,12 @@ fn expected_energy_by_formula(
 
         let delta = calc_growth_delta(owner_balance, point.block_height - last_materialized_height);
         energy = energy.saturating_add(delta);
-        energy = energy.saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
+        energy = energy.saturating_sub(calc_balance_penalty_energy(
             owner_balance,
             point.balance,
             active_block_height,
             point.block_height,
-        )));
+        ));
         active_block_height = calc_next_active_block_height(
             owner_balance,
             point.balance,
@@ -156,8 +156,8 @@ fn expected_energy_by_formula(
     energy
 }
 
-fn expected_inheritable_energy(raw_energy: u64) -> u64 {
-    saturating_energy_to_u64(calc_inheritable_energy(raw_energy as u128))
+fn expected_inheritable_energy(raw_energy: Energy) -> Energy {
+    calc_inheritable_energy(raw_energy)
 }
 
 #[tokio::test]

@@ -146,9 +146,11 @@
   "owner_address": "<USDBScriptHash>",
   "owner_balance": 123000000,
   "owner_delta": -10000,
-  "energy": 123456789
+  "energy": "123456789"
 }
 ```
+
+`energy` 是 pass raw energy 的 canonical decimal string 编码；内部按 `u128` 计算和存储，RPC 不使用 JSON number 表达该字段。
 
 ## 4.5 ActiveBalanceSnapshot
 
@@ -532,6 +534,7 @@
 - mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
 - 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
+- 返回的 `energy` 为 canonical decimal string。
 
 ### 15) `get_pass_energy_range`
 
@@ -557,10 +560,11 @@
 - `resolved_height`：服务端最终解析高度。
 - `total`：闭区间内总记录数（用于分页）。
 - `items`：当前页记录。
+- `items[].energy`：canonical decimal string。
 
 ### 16) `get_pass_energy_leaderboard`
 
-查询某高度 pass 的能量排行榜（按 `energy DESC`）。
+查询某高度 pass 的能量排行榜（内部按 `u128 energy DESC` 排序，RPC 输出 canonical decimal string）。
 
 参数：
 
@@ -591,7 +595,7 @@
       "owner": "<USDBScriptHash>",
       "record_block_height": 900123,
       "state": "active",
-      "energy": 123456789
+      "energy": "123456789"
     }
   ]
 }

@@ -3,8 +3,7 @@ use crate::config::ConfigManager;
 use crate::index::content::MinerPassState;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
-    saturating_energy_to_u64,
+    Energy, calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
 };
 use crate::storage::PassEnergyStorage;
 use balance_history::AddressBalance;
@@ -83,10 +82,10 @@ impl BalanceProvider for TimelineBalanceProvider {
 fn expected_energy_by_formula(
     initial_block_height: u32,
     initial_balance: u64,
-    inherited_energy: u64,
+    inherited_energy: Energy,
     timeline_points: &[AddressBalance],
     target_height: u32,
-) -> u64 {
+) -> Energy {
     assert!(target_height >= initial_block_height);
     let mut energy = inherited_energy;
     let mut owner_balance = initial_balance;
@@ -103,12 +102,12 @@ fn expected_energy_by_formula(
 
         let delta = calc_growth_delta(owner_balance, point.block_height - last_materialized_height);
         energy = energy.saturating_add(delta);
-        energy = energy.saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
+        energy = energy.saturating_sub(calc_balance_penalty_energy(
             owner_balance,
             point.balance,
             active_block_height,
             point.block_height,
-        )));
+        ));
         active_block_height = calc_next_active_block_height(
             owner_balance,
             point.balance,
@@ -133,7 +132,7 @@ async fn setup_manager_with_timeline(
     owner: USDBScriptHash,
     timeline_points: Vec<AddressBalance>,
     initial_height: u32,
-    inherited_energy: u64,
+    inherited_energy: Energy,
 ) -> (PathBuf, PassEnergyManager, InscriptionId) {
     let root_dir = test_root_dir("energy_timeline", test_name);
     let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());

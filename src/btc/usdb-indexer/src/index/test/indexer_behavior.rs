@@ -8,8 +8,7 @@ use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassKind, MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
 use crate::index::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
-    saturating_energy_to_u64,
+    Energy, calc_balance_penalty_energy, calc_growth_delta, calc_inheritable_energy,
 };
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
@@ -47,17 +46,17 @@ fn expected_balance_penalty(
     balance_after: u64,
     active_block_height: u32,
     event_block_height: u32,
-) -> u64 {
-    saturating_energy_to_u64(calc_balance_penalty_energy(
+) -> Energy {
+    calc_balance_penalty_energy(
         balance_before,
         balance_after,
         active_block_height,
         event_block_height,
-    ))
+    )
 }
 
-fn expected_inheritable_energy(raw_energy: u64) -> u64 {
-    saturating_energy_to_u64(calc_inheritable_energy(raw_energy as u128))
+fn expected_inheritable_energy(raw_energy: Energy) -> Energy {
+    calc_inheritable_energy(raw_energy)
 }
 
 #[derive(Default)]
@@ -1063,7 +1062,7 @@ async fn test_sync_block_without_events_partial_unit_loss_applies_penalty_and_ke
         .get_pass_energy_record_at_or_before(&pass_id, block_height)
         .unwrap()
         .unwrap();
-    let expected_at_120 = 10_000u64
+    let expected_at_120 = 10_000u128
         .saturating_add(calc_growth_delta(400_000, block_height - base_height))
         .saturating_sub(expected_balance_penalty(
             400_000,
@@ -1176,7 +1175,7 @@ async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projec
         .get_pass_energy_record_exact(&pass_id, h101)
         .unwrap()
         .unwrap();
-    let expected_101 = 100u64.saturating_add(calc_growth_delta(300_000, h101 - base_height));
+    let expected_101 = 100u128.saturating_add(calc_growth_delta(300_000, h101 - base_height));
     assert_eq!(record_101.energy, expected_101);
     assert_eq!(record_101.owner_balance, 320_000);
     assert_eq!(record_101.owner_delta, 20_000);
@@ -2899,7 +2898,7 @@ async fn test_sync_block_same_owner_transfer_block_end_settlement_is_idempotent(
         .get_pass_energy_record_exact(&pass_id, block_height)
         .unwrap()
         .unwrap();
-    let expected_energy = 10_000u64
+    let expected_energy = 10_000u128
         .saturating_add(calc_growth_delta(300_000, block_height - base_height))
         .saturating_sub(expected_balance_penalty(
             300_000,

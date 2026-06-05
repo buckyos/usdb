@@ -788,10 +788,10 @@ pub struct PassEnergySnapshot {
     pub owner_balance: u64,
     /// Balance delta in satoshis for this record.
     pub owner_delta: i64,
-    /// Effective energy at query height.
+    /// Effective raw energy at query height, encoded as canonical decimal string.
     /// For `mode=exact`, this equals record energy.
     /// For `mode=at_or_before`, this is projected from the latest record <= query height.
-    pub energy: u64,
+    pub energy: String,
 }
 
 /// Parameters for `get_pass_energy_range`.
@@ -828,8 +828,8 @@ pub struct PassEnergyRangeItem {
     pub owner_balance: u64,
     /// Owner balance delta in satoshis.
     pub owner_delta: i64,
-    /// Energy value for this record.
-    pub energy: u64,
+    /// Raw energy value for this record, encoded as canonical decimal string.
+    pub energy: String,
 }
 
 /// Paged pass energy range response.
@@ -870,8 +870,8 @@ pub struct PassEnergyLeaderboardItem {
     pub record_block_height: u32,
     /// Pass state in the latest energy record.
     pub state: String,
-    /// Energy value used for ranking.
-    pub energy: u64,
+    /// Raw energy value used for ranking, encoded as canonical decimal string.
+    pub energy: String,
 }
 
 /// Paged pass energy leaderboard response.

@@ -1,6 +1,6 @@
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
-use crate::index::{InscriptionIndexer, MinerPassState};
+use crate::index::{Energy, InscriptionIndexer, MinerPassState};
 use crate::status::StatusManagerRef;
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
@@ -48,6 +48,16 @@ struct PassEnergyLeaderboardCacheEntry {
 #[derive(Debug, Default)]
 struct PassEnergyLeaderboardCache {
     latest: Option<PassEnergyLeaderboardCacheEntry>,
+}
+
+#[derive(Clone, Debug)]
+struct RankedPassEnergyItem {
+    item: PassEnergyLeaderboardItem,
+    energy: Energy,
+}
+
+fn encode_energy_decimal(energy: Energy) -> String {
+    energy.to_string()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1438,21 +1448,28 @@ impl UsdbIndexerRpcServer {
                 .pass_energy_manager()
                 .project_energy_record_no_balance_change(&record, resolved_height);
 
-            ranked.push(PassEnergyLeaderboardItem {
-                inscription_id: row.inscription_id.to_string(),
-                owner: row.owner.to_string(),
-                record_block_height: record.block_height,
-                state: projected.state.as_str().to_string(),
+            ranked.push(RankedPassEnergyItem {
                 energy: projected.energy,
+                item: PassEnergyLeaderboardItem {
+                    inscription_id: row.inscription_id.to_string(),
+                    owner: row.owner.to_string(),
+                    record_block_height: record.block_height,
+                    state: projected.state.as_str().to_string(),
+                    energy: encode_energy_decimal(projected.energy),
+                },
             });
         }
 
         ranked.sort_by(|a, b| {
             b.energy
                 .cmp(&a.energy)
-                .then_with(|| b.record_block_height.cmp(&a.record_block_height))
-                .then_with(|| a.inscription_id.cmp(&b.inscription_id))
+                .then_with(|| b.item.record_block_height.cmp(&a.item.record_block_height))
+                .then_with(|| a.item.inscription_id.cmp(&b.item.inscription_id))
         });
+        let ranked = ranked
+            .into_iter()
+            .map(|ranked| ranked.item)
+            .collect::<Vec<_>>();
 
         let total = ranked.len() as u64;
         let elapsed_ms = build_start.elapsed().as_millis();
@@ -1893,7 +1910,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             owner_address: record.owner_address.to_string(),
             owner_balance: record.owner_balance,
             owner_delta: record.owner_delta,
-            energy: effective_energy,
+            energy: encode_energy_decimal(effective_energy),
         })
     }
 
@@ -1953,7 +1970,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                     owner_address: record.owner_address.to_string(),
                     owner_balance: record.owner_balance,
                     owner_delta: record.owner_delta,
-                    energy: record.energy,
+                    energy: encode_energy_decimal(record.energy),
                 })
                 .collect(),
         })
@@ -2310,7 +2327,7 @@ mod tests {
         server: &UsdbIndexerRpcServer,
         pass: &MinerPassInfo,
         block_height: u32,
-        energy: u64,
+        energy: Energy,
     ) {
         seed_energy_record_with_state(server, pass, block_height, MinerPassState::Active, energy);
     }
@@ -2320,7 +2337,7 @@ mod tests {
         pass: &MinerPassInfo,
         block_height: u32,
         state: MinerPassState,
-        energy: u64,
+        energy: Energy,
     ) {
         server
             .indexer
@@ -4174,7 +4191,7 @@ mod tests {
             page_120.items[0].inscription_id,
             pass.inscription_id.to_string()
         );
-        assert_eq!(page_120.items[0].energy, 777);
+        assert_eq!(page_120.items[0].energy, "777");
 
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
@@ -4193,11 +4210,11 @@ mod tests {
                 page_size: 10,
             })
             .unwrap();
-        let expected_energy_121 = 777u64.saturating_add(calc_growth_delta(100_000, 1));
+        let expected_energy_121 = 777u128.saturating_add(calc_growth_delta(100_000, 1));
         assert_eq!(page_121.resolved_height, 121);
         assert_eq!(page_121.total, 1);
         assert_eq!(page_121.items.len(), 1);
-        assert_eq!(page_121.items[0].energy, expected_energy_121);
+        assert_eq!(page_121.items[0].energy, expected_energy_121.to_string());
 
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
@@ -4228,10 +4245,10 @@ mod tests {
             })
             .unwrap();
 
-        let expected = 500u64.saturating_add(calc_growth_delta(100_000, 10));
+        let expected = 500u128.saturating_add(calc_growth_delta(100_000, 10));
         assert_eq!(projected.query_block_height, 130);
         assert_eq!(projected.record_block_height, 120);
-        assert_eq!(projected.energy, expected);
+        assert_eq!(projected.energy, expected.to_string());
 
         let exact = server
             .get_pass_energy(GetPassEnergyParams {
@@ -4243,7 +4260,7 @@ mod tests {
             .unwrap();
         assert_eq!(exact.query_block_height, 120);
         assert_eq!(exact.record_block_height, 120);
-        assert_eq!(exact.energy, 500);
+        assert_eq!(exact.energy, "500");
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -4478,7 +4495,7 @@ mod tests {
         assert_eq!(page.resolved_height, 120);
         assert_eq!(page.total, 1);
         assert_eq!(page.items.len(), 1);
-        assert_eq!(page.items[0].energy, 888);
+        assert_eq!(page.items[0].energy, "888");
 
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();
@@ -4553,8 +4570,8 @@ mod tests {
         assert_eq!(page0_h120.resolved_height, 120);
         assert_eq!(page0_h120.total, 4);
         assert_eq!(page0_h120.items.len(), 2);
-        assert_eq!(page0_h120.items[0].energy, 400);
-        assert_eq!(page0_h120.items[1].energy, 300);
+        assert_eq!(page0_h120.items[0].energy, "400");
+        assert_eq!(page0_h120.items[1].energy, "300");
 
         // Second page should be served from the same cache entry.
         let page1_h120 = server
@@ -4568,8 +4585,8 @@ mod tests {
         assert_eq!(page1_h120.resolved_height, 120);
         assert_eq!(page1_h120.total, 4);
         assert_eq!(page1_h120.items.len(), 2);
-        assert_eq!(page1_h120.items[0].energy, 200);
-        assert_eq!(page1_h120.items[1].energy, 100);
+        assert_eq!(page1_h120.items[0].energy, "200");
+        assert_eq!(page1_h120.items[1].energy, "100");
 
         // Explicit height bypasses cache and should still return identical pagination.
         let explicit_page1_h120 = server
@@ -4613,8 +4630,14 @@ mod tests {
         assert_eq!(page0_h121.resolved_height, 121);
         assert_eq!(page0_h121.total, 4);
         assert_eq!(page0_h121.items.len(), 2);
-        assert_eq!(page0_h121.items[0].energy, 400u64.saturating_add(growth));
-        assert_eq!(page0_h121.items[1].energy, 300u64.saturating_add(growth));
+        assert_eq!(
+            page0_h121.items[0].energy,
+            400u128.saturating_add(growth).to_string()
+        );
+        assert_eq!(
+            page0_h121.items[1].energy,
+            300u128.saturating_add(growth).to_string()
+        );
 
         let page1_h121 = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
@@ -4627,8 +4650,14 @@ mod tests {
         assert_eq!(page1_h121.resolved_height, 121);
         assert_eq!(page1_h121.total, 4);
         assert_eq!(page1_h121.items.len(), 2);
-        assert_eq!(page1_h121.items[0].energy, 200u64.saturating_add(growth));
-        assert_eq!(page1_h121.items[1].energy, 100u64.saturating_add(growth));
+        assert_eq!(
+            page1_h121.items[0].energy,
+            200u128.saturating_add(growth).to_string()
+        );
+        assert_eq!(
+            page1_h121.items[1].energy,
+            100u128.saturating_add(growth).to_string()
+        );
 
         {
             let cache = server.pass_energy_leaderboard_cache.lock().unwrap();

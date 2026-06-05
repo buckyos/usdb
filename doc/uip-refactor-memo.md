@@ -117,7 +117,7 @@
 
 ## UIP-0003 Pass Raw Energy Formula and Inheritance
 
-状态：公式层 helper、纯单元测试、energy manager settlement/projection 和 pass inheritance 已对接；storage/RPC `u128` 与 decimal string 仍待继续。
+状态：公式层 helper、纯单元测试、energy manager settlement/projection、pass inheritance、storage `u128` 与 RPC decimal string 已对接。
 
 ### 已对接内容
 
@@ -129,7 +129,7 @@
   - 新增 `calc_next_active_block_height`，封装 `0 unit -> positive units` 与 `lost_units > 0 && units_after == 0` 的 active height 更新边界。
   - 新增 `calc_inheritable_energy`，按 per-prev `floor(raw_energy * 9500 / 10000)` 计算 5% 继承折损。
   - 新增 `mul_div_floor_saturating`，避免 `u128::MAX` 参与 bps 乘除时先乘溢出。
-  - 保留 `calc_growth_delta` 的 `u64` 适配包装，供当前 storage/RPC 尚未切 `u128` 前使用。
+  - `calc_growth_delta` 统一返回 `Energy`，公式层、manager、storage 与测试侧不再把 raw energy 截断为 `u64`。
   - 删除旧 `calc_penalty_from_delta` 入口，settlement 不再按 signed satoshi delta 计算 penalty。
 - `src/btc/usdb-indexer/src/index/energy.rs`
   - projection 改为按 `last_settlement_height = record.block_height` 计算增长窗口，不再以 `active_block_height` 作为增长窗口输入。
@@ -140,13 +140,20 @@
   - `prev` consume 成功后写入同高度 `Consumed/0` energy record。
   - consume 返回值改为 `floor(raw_energy * 9500 / 10000)` 的 inheritable energy。
   - 多 `prev` mint 按每个 prev 单独折损后再求和，不再无损继承 raw energy。
+- `src/btc/usdb-indexer/src/storage/energy.rs`
+  - `PassEnergyValue` / `PassEnergyRecord` 的 `energy` 字段改为 `Energy = u128`；dev 阶段不做旧 DB 迁移兼容。
+- `src/btc/usdb-indexer/src/service/rpc.rs`
+  - `PassEnergySnapshot`、`PassEnergyRangeItem`、`PassEnergyLeaderboardItem` 的 `energy` 字段改为 canonical decimal string。
+- `src/btc/usdb-indexer/src/service/server.rs`
+  - RPC 单 pass energy 与 range 直接将 `u128` 编码为 decimal string。
+  - leaderboard 先保留 `u128` ranking key 排序，再把 item energy 编码为 decimal string，避免按字符串排序。
 
 ### 已补测试
 
 - `balance_units` threshold floor。
 - unit delta 使用 before/after 快照而非 `abs(delta)` floor。
 - below threshold / threshold / multi-unit growth。
-- `u128` 到当前 `u64` 适配饱和。
+- `u128` 饱和乘除与 transitional `u64` clamp helper。
 - penalty 使用 lost units、age 和 `3/2` lambda。
 - 非 unit loss 不触发 penalty。
 - active height 仅在 UIP-0003 指定边界更新。
@@ -154,6 +161,8 @@
 - inheritable energy 5% discount floor。
 - single prev remint 继承折损后的 raw energy，且 prev 同高度 query 为 `Consumed/0`。
 - multi prev remint 逐项先折损再求和，并覆盖与“先求和再折损”不同的 rounding 场景。
+- storage `u128` energy roundtrip。
+- RPC `energy` decimal string 输出与 projection/leaderboard cache 场景。
 - `u128::MAX` 继承折损不发生先乘溢出。
 - penalty 饱和到 `ENERGY_MAX`。
 
@@ -170,5 +179,4 @@
 
 ### 待继续对齐
 
-- `src/btc/usdb-indexer/src/storage/energy.rs` energy 字段需要从 `u64` 切到 `u128`；dev 阶段直接重建 DB，不做迁移兼容。
-- `src/btc/usdb-indexer/src/service/rpc.rs` 与相关 docs/scripts 需要把 energy JSON surface 改为 canonical decimal string。
+- 继续对照 UIP-0003 审核 collab effective energy / raw energy 聚合和后续 UIP-0004 candidate set 使用方式。

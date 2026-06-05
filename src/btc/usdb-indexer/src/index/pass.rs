@@ -1,6 +1,6 @@
 use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use super::energy::PassEnergyManagerRef;
-use super::energy_formula::{calc_inheritable_energy, saturating_energy_to_u64};
+use super::energy_formula::{Energy, calc_inheritable_energy};
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
 use crate::storage::{MinerPassInfo, MinerPassStorageRef};
@@ -186,7 +186,7 @@ impl MinerPassManager {
         );
 
         // State pre-validation above guarantees every prev is eligible before any mutation is written.
-        let mut inherited_energy = 0u64;
+        let mut inherited_energy = 0u128;
         for prev_inscription_id in &mint_info.prev {
             let prev_pass = self
                 .storage
@@ -515,7 +515,7 @@ impl MinerPassManager {
         &self,
         inscription_id: &InscriptionId,
         block_height: u32,
-    ) -> Result<u64, String> {
+    ) -> Result<Energy, String> {
         // Mark the pass as consumed
         let pass = self
             .storage
@@ -575,8 +575,7 @@ impl MinerPassManager {
             energy.state
         );
 
-        let inheritable_energy =
-            saturating_energy_to_u64(calc_inheritable_energy(energy.energy as u128));
+        let inheritable_energy = calc_inheritable_energy(energy.energy);
 
         self.energy_manager
             .on_pass_consumed(inscription_id, &pass.owner, block_height)?;

@@ -1,7 +1,6 @@
 use super::content::MinerPassState;
 use super::energy_formula::{
-    calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
-    saturating_energy_to_u64,
+    Energy, calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
 };
 use crate::config::ConfigManagerRef;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage, PassEnergyValue};
@@ -15,7 +14,7 @@ use usdb_util::USDBScriptHash;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassEnergyResult {
-    pub energy: u64,
+    pub energy: Energy,
     pub state: MinerPassState,
 }
 
@@ -81,7 +80,7 @@ fn calc_incremental_growth(
     owner_balance: u64,
     from_block_height: u32,
     to_block_height: u32,
-) -> u64 {
+) -> Energy {
     if to_block_height <= from_block_height {
         return 0;
     }
@@ -96,7 +95,7 @@ fn settle_active_balance_change(
     last_record: &PassEnergyRecord,
     event_block_height: u32,
     next_owner_balance: u64,
-) -> (u64, u32) {
+) -> (Energy, u32) {
     let growth_delta = calc_incremental_growth(
         last_record.owner_balance,
         last_record.block_height,
@@ -104,12 +103,12 @@ fn settle_active_balance_change(
     );
     let after_growth = last_record.energy.saturating_add(growth_delta);
 
-    let penalty = saturating_energy_to_u64(calc_balance_penalty_energy(
+    let penalty = calc_balance_penalty_energy(
         last_record.owner_balance,
         next_owner_balance,
         last_record.active_block_height,
         event_block_height,
-    ));
+    );
     let next_energy = after_growth.saturating_sub(penalty);
     let next_active_height = calc_next_active_block_height(
         last_record.owner_balance,
@@ -358,7 +357,7 @@ impl PassEnergyManager {
         inscription_id: &InscriptionId,
         owner_address: &USDBScriptHash,
         block_height: u32,
-        inherited_energy: u64,
+        inherited_energy: Energy,
     ) -> Result<(), String> {
         let balance = self
             .get_balance_at_height(owner_address, block_height)
@@ -1268,11 +1267,9 @@ mod tests {
             .get_pass_energy_record_exact(&inscription_id, 120)
             .unwrap()
             .unwrap();
-        let expected_energy = 10_000u64
+        let expected_energy = 10_000u128
             .saturating_add(calc_growth_delta(400_000, 20))
-            .saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
-                400_000, 350_000, 100, 120,
-            )));
+            .saturating_sub(calc_balance_penalty_energy(400_000, 350_000, 100, 120));
         assert_eq!(record.energy, expected_energy);
         assert_eq!(record.owner_balance, 350_000);
         assert_eq!(record.owner_delta, -50_000);
@@ -1313,11 +1310,9 @@ mod tests {
             .get_pass_energy_record_exact(&inscription_id, 120)
             .unwrap()
             .unwrap();
-        let expected_energy = 100u64
+        let expected_energy = 100u128
             .saturating_add(calc_growth_delta(100_001, 20))
-            .saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
-                100_001, 99_999, 100, 120,
-            )));
+            .saturating_sub(calc_balance_penalty_energy(100_001, 99_999, 100, 120));
         assert_eq!(record.energy, expected_energy);
         assert_eq!(record.owner_balance, 99_999);
         assert_eq!(record.owner_delta, -2);

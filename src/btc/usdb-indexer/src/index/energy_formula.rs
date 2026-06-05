@@ -44,7 +44,7 @@ pub fn calc_unit_delta(balance_before_sats: u64, balance_after_sats: u64) -> Uni
     }
 }
 
-/// Clamp energy_uint to the current u64 storage/RPC surface.
+/// Clamp energy_uint to a u64 value for tests or transitional local callers.
 pub fn saturating_energy_to_u64(value: Energy) -> u64 {
     value.min(u64::MAX as Energy) as u64
 }
@@ -122,11 +122,9 @@ pub fn calc_inheritable_energy(raw_energy: Energy) -> Energy {
     mul_div_floor_saturating(raw_energy, INHERIT_KEEP_BPS, BPS_DENOMINATOR)
 }
 
-// Current storage and RPC layers still use u64. Keep this adapter until the
-// UIP-0003 storage/RPC u128 step lands.
-/// Calculate raw energy growth and clamp it to the current u64 surface.
-pub fn calc_growth_delta(owner_balance_sats: u64, block_delta: u32) -> u64 {
-    saturating_energy_to_u64(calc_growth_delta_energy(owner_balance_sats, block_delta))
+/// Calculate raw energy growth.
+pub fn calc_growth_delta(owner_balance_sats: u64, block_delta: u32) -> Energy {
+    calc_growth_delta_energy(owner_balance_sats, block_delta)
 }
 
 #[cfg(test)]

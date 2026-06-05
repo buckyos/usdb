@@ -49,7 +49,7 @@
     "inscription_id": "txidi0",
     "owner": "76a914...",
     "state": "active",
-    "energy": 123456789,
+    "energy": "123456789",
     "resolved_height": 900123,
     "query_block_height": 900123
   }
@@ -80,7 +80,7 @@
 - `inscription_id`
 - `owner`
 - `state`
-- `energy`
+- `energy`：canonical decimal string
 - `resolved_height`
 - `query_block_height`
 
