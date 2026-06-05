@@ -404,7 +404,7 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 - same owner multi mint: old active becomes `Dormant`, new pass becomes `Active`。
 - same owner remint with `prev = [old_active]`: old active becomes `Consumed`, new pass becomes `Active`。
 - invalid `prev` owner mismatch makes entire mint `Invalid`。
-- missing `prev` makes entire mint `Invalid`。
+- missing referenced `prev` makes entire mint `Invalid`。
 - duplicate `prev` makes entire mint `Invalid`。
 - already consumed `prev` makes entire mint `Invalid`。
 - burned `prev` makes entire mint `Invalid`。

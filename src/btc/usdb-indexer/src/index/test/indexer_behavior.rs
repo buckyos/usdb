@@ -2859,7 +2859,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     // h101 transfer(A, owner1 -> owner1)
     // h102 transfer(A, owner1 -> owner2)
     // h103 burn(A)
-    // h104 mint(B, owner2, prev=[A])
+    // h104 mint(B, owner2, prev=[A]) -> invalid because A is burned
     let h100 = 100u32;
     let h101 = 101u32;
     let h102 = 102u32;
@@ -3083,11 +3083,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     );
     assert!(active_owner_set_at_height(&fixture.storage, h102).is_empty());
     assert!(active_owner_set_at_height(&fixture.storage, h103).is_empty());
-    let expected_active_104 = HashSet::from([owner2]);
-    assert_eq!(
-        active_owner_set_at_height(&fixture.storage, h104),
-        expected_active_104
-    );
+    assert!(active_owner_set_at_height(&fixture.storage, h104).is_empty());
 
     // Check 2: pass state timeline from history snapshots.
     let pass_a_100 = fixture
@@ -3138,7 +3134,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         .get_last_pass_history_at_or_before_height(&pass_b_id, h104)
         .unwrap()
         .unwrap();
-    assert_eq!(pass_b_104.state, MinerPassState::Active);
+    assert_eq!(pass_b_104.state, MinerPassState::Invalid);
     assert_eq!(pass_b_104.owner, owner2);
 
     // Check 3: energy snapshots at each height.
@@ -3188,16 +3184,16 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     assert_eq!(energy_a_104.state, MinerPassState::Dormant);
     assert_eq!(energy_a_104.energy, expected_a_102);
 
-    let energy_b_104 = fixture
-        .pass_energy_manager
-        .get_pass_energy(&pass_b_id, h104)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(energy_b_104.state, MinerPassState::Active);
-    assert_eq!(energy_b_104.energy, 0);
+    assert!(
+        fixture
+            .pass_energy_manager
+            .get_pass_energy(&pass_b_id, h104)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
-    // Burned prev should not be consumed/inherited by remint.
+    // Burned prev makes the remint invalid and must not be consumed/inherited.
     let current_a = fixture
         .storage
         .get_pass_by_inscription_id(&pass_a_id)
@@ -3209,7 +3205,11 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         .get_pass_by_inscription_id(&pass_b_id)
         .unwrap()
         .unwrap();
-    assert_eq!(current_b.state, MinerPassState::Active);
+    assert_eq!(current_b.state, MinerPassState::Invalid);
+    assert_eq!(
+        current_b.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::InvalidPrevId.as_str())
+    );
 
     // Balance settlement snapshots by height.
     let snap_100 = fixture
@@ -3245,8 +3245,8 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         .get_active_balance_snapshot(h104)
         .unwrap()
         .unwrap();
-    assert_eq!(snap_104.active_address_count, 1);
-    assert_eq!(snap_104.total_balance, 8_000);
+    assert_eq!(snap_104.active_address_count, 0);
+    assert_eq!(snap_104.total_balance, 0);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
@@ -3969,11 +3969,11 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
 }
 
 #[tokio::test]
-async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
+async fn test_sync_blocks_second_inherit_same_prev_records_invalid_mint() {
     // Scenario:
     // h630 mint(prev, owner)
     // h631 mint(first_new, owner, prev=[prev])   -> consume prev, inherit energy
-    // h632 mint(second_new, owner, prev=[prev])  -> prev already consumed, no inheritance
+    // h632 mint(second_new, owner, prev=[prev])  -> invalid because prev is already consumed
     let h630 = 630u32;
     let h631 = 631u32;
     let h632 = 632u32;
@@ -4155,13 +4155,17 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
         .get_pass_by_inscription_id(&first_new_id)
         .unwrap()
         .unwrap();
-    assert_eq!(first_new_pass.state, MinerPassState::Dormant);
+    assert_eq!(first_new_pass.state, MinerPassState::Active);
     let second_new_pass = fixture
         .storage
         .get_pass_by_inscription_id(&second_new_id)
         .unwrap()
         .unwrap();
-    assert_eq!(second_new_pass.state, MinerPassState::Active);
+    assert_eq!(second_new_pass.state, MinerPassState::Invalid);
+    assert_eq!(
+        second_new_pass.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::InvalidPrevId.as_str())
+    );
 
     assert_eq!(
         active_owner_set_at_height(&fixture.storage, h630),
@@ -4178,7 +4182,7 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
 
     // 2) energy assertion
     let expected_prev_dormant = calc_growth_delta(230_000, 1);
-    let expected_first_new_dormant =
+    let expected_first_new_active =
         expected_prev_dormant.saturating_add(calc_growth_delta(240_000, 1));
 
     let prev_energy_631 = fixture
@@ -4205,17 +4209,17 @@ async fn test_sync_blocks_double_inherit_same_prev_only_first_gets_energy() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first_new_energy_632.state, MinerPassState::Dormant);
-    assert_eq!(first_new_energy_632.energy, expected_first_new_dormant);
+    assert_eq!(first_new_energy_632.state, MinerPassState::Active);
+    assert_eq!(first_new_energy_632.energy, expected_first_new_active);
 
-    let second_new_energy_632 = fixture
-        .pass_energy_manager
-        .get_pass_energy(&second_new_id, h632)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(second_new_energy_632.state, MinerPassState::Active);
-    assert_eq!(second_new_energy_632.energy, 0);
+    assert!(
+        fixture
+            .pass_energy_manager
+            .get_pass_energy(&second_new_id, h632)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     // 3) active balance snapshot assertion
     let snap_630 = fixture

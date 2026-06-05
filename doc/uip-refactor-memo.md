@@ -4,7 +4,7 @@
 
 ## UIP-0001 Miner Pass Inscription Schema
 
-状态：第一轮实现已完成，待 review。
+状态：当前 dev schema/storage/RPC/test/script surface 已对齐；activation matrix 和后续 collab/effective energy 语义转入后续 UIP。
 
 ### 已对接内容
 
@@ -77,3 +77,27 @@
 - `leader_pass_id` 引用对象是否必须在 mint 时已存在，留给 UIP-0002 状态机处理。
 - `leader_btc_addr` 在历史高度解析 active standard leader 的逻辑，留给 UIP-0002 / UIP-0004。
 - collab pass 的 raw energy、effective energy、防双计数和 candidate set 过滤，留给 UIP-0003 / UIP-0004。
+
+## UIP-0002 Miner Pass State Machine
+
+状态：第一轮 review 已开始，已先对齐 `prev` strict invalid 路径。
+
+### 已对接内容
+
+- `src/btc/usdb-indexer/src/index/pass.rs`
+  - `on_mint_pass` 在写入任何状态前完整校验 `prev` 状态前置条件。
+  - `prev` 缺失、owner 不一致、非 Dormant 或重复引用会将本次 mint 记录为 `Invalid`，不再 warn/skip。
+  - 同 owner 当前 active pass 可在同一次 mint 中作为虚拟 Dormant `prev` 被原子消费；若同次 mint 还有其他 invalid `prev`，旧 active pass 保持原状态。
+- `src/btc/usdb-indexer/src/index/test/pass_scenario.rs`
+  - 更新 missing referenced `prev` 与重复继承已 consumed `prev` 的测试期望为 invalid mint。
+- `src/btc/usdb-indexer/src/index/test/indexer_behavior.rs`
+  - 更新 burned `prev` remint 和已 consumed `prev` 二次继承的 block-level 行为期望。
+- `doc/UIP/UIP-0002-pass-state-machine.md`
+  - 将测试要求中的 missing `prev` 表述明确为 missing referenced `prev`，避免与 UIP-0001 的 `prev` 缺省等价空数组冲突。
+
+### 待继续对齐
+
+- `leader_pass_id` collab mint 需要校验 Leader pass 存在、是 active standard pass，且不是本次 mint 创建的新 pass。
+- burn 需要同步写入 energy 终态；当前 pass state 会转 `Burned`，但 energy 终态仍需继续对齐 UIP-0002 / UIP-0003。
+- `Consumed` / `Burned` transfer 后是否继续更新 owner/satpoint 需要按非共识审计口径收敛。
+- active pass 离开 Active 前的 block-level balance settlement 已有实现和测试，但还需要按 UIP-0002 逐项复核幂等和同高度多事件 replay。

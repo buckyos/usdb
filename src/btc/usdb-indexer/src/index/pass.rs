@@ -1,4 +1,4 @@
-use super::content::{MinerPassKind, MinerPassState};
+use super::content::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use super::energy::PassEnergyManagerRef;
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
@@ -6,6 +6,7 @@ use crate::storage::{MinerPassInfo, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use usdb_util::USDBScriptHash;
 
@@ -38,6 +39,11 @@ pub struct InvalidPassMintInscriptionInfo {
     pub satpoint: SatPoint,
     pub error_code: String,
     pub error_reason: String,
+}
+
+struct MintStateValidationError {
+    code: MintValidationErrorCode,
+    reason: String,
 }
 
 pub struct MinerPassManager {
@@ -126,6 +132,12 @@ impl MinerPassManager {
     }
 
     pub async fn on_mint_pass(&self, mint_info: &PassMintInscriptionInfo) -> Result<(), String> {
+        if let Some(invalid) = self.validate_mint_state(mint_info)? {
+            self.record_invalid_mint_from_mint_info(mint_info, invalid)
+                .await?;
+            return Ok(());
+        }
+
         // First check if the owner already has an active pass
         self.dormant_last_pass(mint_info).await?;
 
@@ -172,53 +184,37 @@ impl MinerPassManager {
             mint_info.inscription_id, mint_info.mint_block_height, mint_info.mint_owner
         );
 
-        // Try get all prev passes and mark them as consumed if they are not already dormant or consumed and on the same owner
+        // State pre-validation above guarantees every prev is eligible before any mutation is written.
         let mut inherited_energy = 0u64;
         for prev_inscription_id in &mint_info.prev {
-            if let Some(prev_pass) = self
+            let prev_pass = self
                 .storage
                 .get_pass_by_inscription_id(prev_inscription_id)?
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "Previous miner pass {} disappeared after validation for mint {}",
+                        prev_inscription_id, mint_info.inscription_id
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+            if prev_pass.owner != mint_info.mint_owner || prev_pass.state != MinerPassState::Dormant
             {
-                // First check owner if same
-                if prev_pass.owner != mint_info.mint_owner {
-                    warn!(
-                        "Previous Miner Pass {} owner {} is different from new mint pass {} owner {}, skip consuming",
-                        prev_inscription_id,
-                        prev_pass.owner,
-                        mint_info.inscription_id,
-                        mint_info.mint_owner
-                    );
-                    continue;
-                }
-
-                // There must be no active previous pass when minting new pass
-                assert!(
-                    prev_pass.state != MinerPassState::Active,
-                    "Previous Miner Pass {} should not be active when minting new pass {}",
+                let msg = format!(
+                    "Previous miner pass {} became ineligible after validation for mint {}: owner={}, state={}",
                     prev_inscription_id,
-                    mint_info.inscription_id
+                    mint_info.inscription_id,
+                    prev_pass.owner,
+                    prev_pass.state.as_str()
                 );
-
-                // Only consume if previous pass is in active and dormant state
-                if prev_pass.state != MinerPassState::Dormant {
-                    warn!(
-                        "Previous Miner Pass {} is in state {:?}, skip consuming",
-                        prev_inscription_id, prev_pass.state
-                    );
-                    continue;
-                }
-
-                // Consume the previous pass and inherit energy
-                let energy = self
-                    .consume_pass(prev_inscription_id, mint_info.mint_block_height)
-                    .await?;
-                inherited_energy = inherited_energy.saturating_add(energy);
-            } else {
-                warn!(
-                    "Previous Miner Pass {} not found for new mint pass {}",
-                    prev_inscription_id, mint_info.inscription_id
-                );
+                error!("{}", msg);
+                return Err(msg);
             }
+
+            let energy = self
+                .consume_pass(prev_inscription_id, mint_info.mint_block_height)
+                .await?;
+            inherited_energy = inherited_energy.saturating_add(energy);
         }
 
         // Update energy record for the new pass with inherited energy
@@ -232,6 +228,115 @@ impl MinerPassManager {
             .await?;
 
         Ok(())
+    }
+
+    fn validate_mint_state(
+        &self,
+        mint_info: &PassMintInscriptionInfo,
+    ) -> Result<Option<MintStateValidationError>, String> {
+        let old_active = self
+            .storage
+            .get_last_active_mint_pass_by_owner(&mint_info.mint_owner)?;
+        let mut seen_prev = BTreeSet::new();
+
+        for prev_inscription_id in &mint_info.prev {
+            if !seen_prev.insert(prev_inscription_id.to_string()) {
+                return Ok(Some(MintStateValidationError {
+                    code: MintValidationErrorCode::InvalidPrevId,
+                    reason: format!(
+                        "Duplicate prev inscription id {} for mint {}",
+                        prev_inscription_id, mint_info.inscription_id
+                    ),
+                }));
+            }
+
+            let Some(prev_pass) = self
+                .storage
+                .get_pass_by_inscription_id(prev_inscription_id)?
+            else {
+                return Ok(Some(MintStateValidationError {
+                    code: MintValidationErrorCode::InvalidPrevId,
+                    reason: format!(
+                        "Previous miner pass {} not found for mint {}",
+                        prev_inscription_id, mint_info.inscription_id
+                    ),
+                }));
+            };
+
+            if prev_pass.owner != mint_info.mint_owner {
+                return Ok(Some(MintStateValidationError {
+                    code: MintValidationErrorCode::InvalidPrevId,
+                    reason: format!(
+                        "Previous miner pass {} owner {} does not match mint {} owner {}",
+                        prev_inscription_id,
+                        prev_pass.owner,
+                        mint_info.inscription_id,
+                        mint_info.mint_owner
+                    ),
+                }));
+            }
+
+            let is_virtual_old_active = old_active
+                .as_ref()
+                .map(|pass| pass.inscription_id == *prev_inscription_id)
+                .unwrap_or(false);
+            let eligible_state = if is_virtual_old_active {
+                prev_pass.state == MinerPassState::Active
+            } else {
+                prev_pass.state == MinerPassState::Dormant
+            };
+
+            if !eligible_state {
+                return Ok(Some(MintStateValidationError {
+                    code: MintValidationErrorCode::InvalidPrevId,
+                    reason: format!(
+                        "Previous miner pass {} is in state {}, expected Dormant{} for mint {}",
+                        prev_inscription_id,
+                        prev_pass.state.as_str(),
+                        if old_active
+                            .as_ref()
+                            .map(|pass| pass.inscription_id == *prev_inscription_id)
+                            .unwrap_or(false)
+                        {
+                            " or the same-owner active pass that this mint supersedes"
+                        } else {
+                            ""
+                        },
+                        mint_info.inscription_id
+                    ),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn record_invalid_mint_from_mint_info(
+        &self,
+        mint_info: &PassMintInscriptionInfo,
+        invalid: MintStateValidationError,
+    ) -> Result<(), String> {
+        warn!(
+            "USDB mint failed state validation: inscription_id={}, block_height={}, owner={}, error_code={}, error_reason={}",
+            mint_info.inscription_id,
+            mint_info.mint_block_height,
+            mint_info.mint_owner,
+            invalid.code.as_str(),
+            invalid.reason
+        );
+
+        let invalid_info = InvalidPassMintInscriptionInfo {
+            inscription_id: mint_info.inscription_id.clone(),
+            inscription_number: mint_info.inscription_number,
+            mint_txid: mint_info.mint_txid,
+            mint_block_height: mint_info.mint_block_height,
+            mint_owner: mint_info.mint_owner,
+            satpoint: mint_info.satpoint.clone(),
+            error_code: invalid.code.as_str().to_string(),
+            error_reason: invalid.reason,
+        };
+
+        self.on_invalid_mint_pass(&invalid_info).await
     }
 
     pub async fn on_invalid_mint_pass(
@@ -599,6 +704,38 @@ mod tests {
         }
     }
 
+    fn setup_empty_manager(test_name: &str) -> (PathBuf, MinerPassStorageRef, MinerPassManager) {
+        let root_dir = test_root_dir(test_name);
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
+        let energy_manager = Arc::new(PassEnergyManager::new(config.clone()).unwrap());
+        let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
+
+        (root_dir, storage, manager)
+    }
+
+    fn test_mint_info(
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        block_height: u32,
+        prev: Vec<InscriptionId>,
+    ) -> PassMintInscriptionInfo {
+        PassMintInscriptionInfo {
+            inscription_number: inscription_id.index as i32,
+            mint_txid: inscription_id.txid,
+            mint_block_height: block_height,
+            mint_owner: owner,
+            satpoint: test_satpoint(21, 0, 0),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Standard,
+            usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+            leader_pass_id: None,
+            leader_btc_addr: None,
+            prev,
+            inscription_id,
+        }
+    }
+
     fn setup_manager(
         test_name: &str,
     ) -> (
@@ -647,6 +784,103 @@ mod tests {
             .unwrap();
 
         (root_dir, storage, manager, inscription_id, owner, satpoint)
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_missing_prev_records_invalid() {
+        let (root_dir, storage, manager) = setup_empty_manager("mint_missing_prev_invalid");
+        let owner = test_script_hash(31);
+        let mint_id = test_inscription_id(32, 0);
+        let missing_prev = test_inscription_id(33, 0);
+        let mint_info = test_mint_info(mint_id.clone(), owner, 101, vec![missing_prev]);
+
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&mint_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Invalid);
+        assert_eq!(stored.owner, owner);
+        assert_eq!(
+            stored.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidPrevId.as_str())
+        );
+        assert!(
+            stored
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not found")
+        );
+        assert!(
+            storage
+                .get_all_active_pass_by_page(0, 10)
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_invalid_prev_keeps_old_active() {
+        let (root_dir, storage, manager) = setup_empty_manager("mint_invalid_prev_keeps_old");
+        let owner = test_script_hash(34);
+        let old_id = test_inscription_id(35, 0);
+        let new_id = test_inscription_id(36, 0);
+        let missing_prev = test_inscription_id(37, 0);
+        let old_pass = MinerPassInfo {
+            inscription_id: old_id.clone(),
+            inscription_number: 1,
+            mint_txid: old_id.txid,
+            mint_block_height: 100,
+            mint_owner: owner,
+            satpoint: test_satpoint(35, 0, 0),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Standard,
+            usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+            leader_pass_id: None,
+            leader_btc_addr: None,
+            prev: Vec::new(),
+            invalid_code: None,
+            invalid_reason: None,
+            owner,
+            state: MinerPassState::Active,
+        };
+        storage
+            .add_new_mint_pass_at_height(&old_pass, old_pass.mint_block_height)
+            .unwrap();
+
+        let mint_info = test_mint_info(
+            new_id.clone(),
+            owner,
+            101,
+            vec![old_id.clone(), missing_prev],
+        );
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let old_after = storage
+            .get_pass_by_inscription_id(&old_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_after.state, MinerPassState::Active);
+
+        let new_after = storage
+            .get_pass_by_inscription_id(&new_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(new_after.state, MinerPassState::Invalid);
+        assert_eq!(
+            new_after.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidPrevId.as_str())
+        );
+
+        let active = storage.get_all_active_pass_by_page(0, 10).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].inscription_id, old_id);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[tokio::test]

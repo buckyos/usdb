@@ -6,7 +6,7 @@ use crate::config::ConfigManager;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
 use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
 use crate::index::pass::{MinerPassManager, PassMintInscriptionInfo};
-use crate::index::{MinerPassKind, MinerPassState};
+use crate::index::{MinerPassKind, MinerPassState, MintValidationErrorCode};
 use crate::storage::{MinerPassStorage, MinerPassStorageRef, PassEnergyStorage};
 use balance_history::AddressBalance;
 use bitcoincore_rpc::bitcoin::Txid;
@@ -600,7 +600,7 @@ async fn test_scenario_mint_with_multiple_prev_inherits_sum_and_consumes_all() {
 }
 
 #[tokio::test]
-async fn test_scenario_missing_prev_is_ignored_and_new_pass_stays_active() {
+async fn test_scenario_missing_prev_records_invalid_mint() {
     let owner_a = test_script_hash(90);
     let pass_new = test_inscription_id(91, 0);
     let missing_prev = test_inscription_id(92, 0);
@@ -608,7 +608,7 @@ async fn test_scenario_missing_prev_is_ignored_and_new_pass_stays_active() {
     let mock_provider =
         Arc::new(MockBalanceProvider::default().with_height(owner_a, 100, 200_000, 100));
     let (root_dir, storage, energy_manager, manager) =
-        setup_manager_with_mock("missing_prev_ignored", mock_provider);
+        setup_manager_with_mock("missing_prev_invalid", mock_provider);
 
     let mut runner = ScenarioRunner {
         manager,
@@ -629,21 +629,30 @@ async fn test_scenario_missing_prev_is_ignored_and_new_pass_stays_active() {
         .unwrap()
         .unwrap();
     assert_eq!(new_pass.owner, owner_a);
-    assert_eq!(new_pass.state, MinerPassState::Active);
-
-    let new_energy = energy_manager
-        .get_pass_energy(&pass_new, 100)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(new_energy.state, MinerPassState::Active);
-    assert_eq!(new_energy.energy, 0);
+    assert_eq!(new_pass.state, MinerPassState::Invalid);
+    assert_eq!(
+        new_pass.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::InvalidPrevId.as_str())
+    );
+    assert!(
+        energy_manager
+            .get_pass_energy(&pass_new, 100)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        storage
+            .get_all_active_pass_by_page(0, 10)
+            .unwrap()
+            .is_empty()
+    );
 
     cleanup_temp_dir(&root_dir);
 }
 
 #[tokio::test]
-async fn test_scenario_double_inherit_same_prev_only_first_gets_energy() {
+async fn test_scenario_second_inherit_same_prev_records_invalid_mint() {
     let owner_a = test_script_hash(100);
     let owner_b = test_script_hash(101);
     let pass_prev = test_inscription_id(102, 0);
@@ -746,20 +755,30 @@ async fn test_scenario_double_inherit_same_prev_only_first_gets_energy() {
     assert_eq!(first_new_energy.state, MinerPassState::Active);
     assert_eq!(first_new_energy.energy, prev_dormant.energy);
 
-    let second_new_energy = energy_manager
-        .get_pass_energy(&pass_new_2, 130)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(second_new_energy.state, MinerPassState::Active);
-    assert_eq!(second_new_energy.energy, 0);
-
     let second_new = storage
         .get_pass_by_inscription_id(&pass_new_2)
         .unwrap()
         .unwrap();
     assert_eq!(second_new.owner, owner_b);
-    assert_eq!(second_new.state, MinerPassState::Active);
+    assert_eq!(second_new.state, MinerPassState::Invalid);
+    assert_eq!(
+        second_new.invalid_code.as_deref(),
+        Some(MintValidationErrorCode::InvalidPrevId.as_str())
+    );
+    assert!(
+        energy_manager
+            .get_pass_energy(&pass_new_2, 130)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let first_new = storage
+        .get_pass_by_inscription_id(&pass_new_1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_new.owner, owner_b);
+    assert_eq!(first_new.state, MinerPassState::Active);
 
     cleanup_temp_dir(&root_dir);
 }

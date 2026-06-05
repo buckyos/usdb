@@ -395,19 +395,15 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 
 所有 parser 行为必须按 mint 高度和网络激活状态解释，不能用未来激活规则重算历史。当前 dev 实现不保留开发期兼容逻辑；旧 dev 数据应在启用 v1 前丢弃或重建。
 
-# 未决问题
+# 后续 UIP 依赖
 
-- `leader_pass_id` 引用的 Leader 是否必须在同一 BTC 高度之前已经存在，还是允许同一 block 内按事件顺序解析。
-- `leader_btc_addr` 在 mint 高度没有 active standard pass 时，是 invalid 还是允许后续高度动态生效。
-- `leader_btc_addr` 自动跟随新 active pass 时，是否需要延迟一个 BTC block 或 ETHW epoch 生效。
-- collab mint 引用 Dormant Leader 时应 invalid，还是允许暂时无效但保留绑定。
-- collab pass 转 standard pass 的退出折损率和 cooldown。
+- `leader_pass_id` 的 mint-time Leader 有效性、同 block ordering 口径，以及 `leader_btc_addr` 的动态解析规则由 UIP-0002 定义。
+- collab pass 的 candidate 过滤、`effective_energy` 归属、防双计数和转换后的 derived energy 影响由 UIP-0004 定义。
+- collab pass 转 standard pass 的继承折损使用 UIP-0003 的通用 `prev` 继承规则，不在 UIP-0001 分配额外退出折损率。
 - 主网的稳定 `network_id` 是否最终采用 `主网-mainnet`。
 
 # 下一步
 
-1. Review 本草案中的 v1 字段互斥规则。
-2. 在实现中落地 `leader_pass_id` / `leader_btc_addr` 二选一解析与校验。
-3. 持续确认实现不为开发期格式保留兼容或迁移路径，且状态面不携带 `usdb_collab`。
-4. 在 UIP-0002 定义 standard/collab 状态机。
-5. 在 UIP-0004 定义 collab effective energy 与防双计数规则。
+1. 在 UIP-0002 继续对齐 standard/collab 状态机与 `prev` 原子校验。
+2. 在 UIP-0004 定义 collab effective energy 与防双计数规则。
+3. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
