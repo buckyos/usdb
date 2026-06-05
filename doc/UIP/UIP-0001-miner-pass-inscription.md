@@ -68,7 +68,7 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 
 UIP-0001 定义 USDB 矿工证铭文的第一个标准协议版本：v1。
 
-当前代码和早期文档中的开发期载荷不定义为正式协议版本。开发期字段、临时兼容逻辑或本地测试数据属于实现迁移问题，不进入 UIP-0001 的规范版本序列。
+当前代码和早期文档中的开发期载荷不定义为正式协议版本。开发期字段和本地测试数据不进入 UIP-0001 的规范版本序列；在当前 dev 阶段，旧载荷和旧数据库应直接删除或重建，不设计兼容解析或迁移路径。
 
 ## v1 schema
 
@@ -267,14 +267,14 @@ UIP-0001 主要影响 BTC 侧铭文解析和由 BTC 派生的 pass 状态。ETHW
 
 UIP-0001 只定义标准 v1 schema。
 
-在 UIP-0001 激活前，仓库内历史测试数据、开发期 inscription payload 或临时 parser 字段都只属于 pre-standard implementation draft，不构成需要长期兼容的协议版本。
+当前 dev 实现直接按 v1 strict schema 解析 USDB mint。仓库内历史测试数据、开发期 inscription payload、旧数据库或临时 parser 字段都只属于 pre-standard implementation draft，不构成需要兼容的协议版本。
 
-实现可以为了本地开发、regtest 或一次性迁移保留兼容开关，但这些兼容开关必须满足：
+dev 阶段实现要求：
 
-- 不得写入 UIP-0001 的标准字段语义。
-- 不得在已激活的 mainnet/testnet 上影响共识解析。
-- 不得把 `usdb_collab` 解释为 v1 collab 绑定。
-- 不得把缺失 `v` 的新 mint 解释为 v1。
+- 不为缺失 `v`、旧字段或旧互斥规则的 payload 提供兼容解析路径。
+- 不为旧 `miner_passes` schema 提供数据库迁移路径；本地开发和测试环境需要时应删除旧数据库并按 v1 schema 重建。
+- `usdb_collab` 仅作为 v1 invalid 条件保留在 parser，不进入 pass 状态、RPC 响应或 commit mutation schema。
+- regtest、live test、fixture 和 simulator 生成的新 mint payload 必须直接使用 v1 schema。
 
 ## 激活后
 
@@ -289,7 +289,7 @@ UIP-0001 只定义标准 v1 schema。
 - 同时包含 `leader_pass_id` 和 `leader_btc_addr` 的新 mint 必须判为 invalid。
 - 同时缺失 `usdb_main`、`leader_pass_id` 和 `leader_btc_addr` 的新 mint 必须判为 invalid。
 
-历史回放必须按该网络在对应高度的激活状态解释。开发期数据迁移不属于 UIP-0001 的共识规则。
+历史回放必须按该网络在对应高度的激活状态解释。旧开发期数据不参与标准历史回放；dev/test 环境需要以 v1 数据重建。
 
 # 协作矿工证的设计约束
 
@@ -393,7 +393,7 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 
 ## 历史回放
 
-所有 parser 行为必须按 mint 高度和网络激活状态解释，不能用未来激活规则重算历史。开发期兼容逻辑不得改变已激活网络的标准解析结果。
+所有 parser 行为必须按 mint 高度和网络激活状态解释，不能用未来激活规则重算历史。当前 dev 实现不保留开发期兼容逻辑；旧 dev 数据应在启用 v1 前丢弃或重建。
 
 # 未决问题
 
@@ -409,6 +409,6 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 
 1. Review 本草案中的 v1 字段互斥规则。
 2. 在实现中落地 `leader_pass_id` / `leader_btc_addr` 二选一解析与校验。
-3. 确认正式 UIP 不为开发期格式分配协议版本，并在实现中移除或隔离 `usdb_collab`。
+3. 持续确认实现不为开发期格式保留兼容或迁移路径，且状态面不携带 `usdb_collab`。
 4. 在 UIP-0002 定义 standard/collab 状态机。
 5. 在 UIP-0004 定义 collab effective energy 与防双计数规则。

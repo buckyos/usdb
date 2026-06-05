@@ -8,6 +8,9 @@
 
 ### 已对接内容
 
+- `doc/UIP/UIP-0001-miner-pass-inscription.md`
+  - 开发期实现策略收紧为 dev 直接使用 v1 strict schema。
+  - 旧 payload、旧数据库和临时 parser 字段不作为兼容对象；测试需要时删除旧 DB 并按 v1 schema 重建。
 - `src/btc/usdb-indexer/src/index/content.rs`
   - 增加 v1 strict schema 解析。
   - 要求 `p == "usdb"`、`op == "mint"`、`v == 1`。
