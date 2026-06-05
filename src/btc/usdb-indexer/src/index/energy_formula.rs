@@ -129,20 +129,6 @@ pub fn calc_growth_delta(owner_balance_sats: u64, block_delta: u32) -> u64 {
     saturating_energy_to_u64(calc_growth_delta_energy(owner_balance_sats, block_delta))
 }
 
-// Temporary adapter for current settlement code. UIP-0003 penalty depends on
-// before/after unit snapshots plus active age, so manager code must move to
-// calc_balance_penalty_energy in the next settlement refactor.
-/// Calculate a temporary one-block penalty from a signed satoshi delta.
-pub fn calc_penalty_from_delta(delta: i64) -> u64 {
-    if delta >= 0 {
-        return 0;
-    }
-
-    let loss_sats = delta.unsigned_abs();
-    let lost_units = balance_units(loss_sats);
-    saturating_energy_to_u64(calc_penalty_energy(lost_units, 1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

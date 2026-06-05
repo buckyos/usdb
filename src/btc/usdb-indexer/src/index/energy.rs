@@ -1,5 +1,8 @@
 use super::content::MinerPassState;
-use super::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
+use super::energy_formula::{
+    calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
+    saturating_energy_to_u64,
+};
 use crate::config::ConfigManagerRef;
 use crate::storage::{PassEnergyRecord, PassEnergyStorage, PassEnergyValue};
 use balance_history::{AddressBalance, RpcClient as BalanceHistoryRpcClient};
@@ -76,7 +79,6 @@ impl BalanceProvider for RpcBalanceProvider {
 
 fn calc_incremental_growth(
     owner_balance: u64,
-    active_block_height: u32,
     from_block_height: u32,
     to_block_height: u32,
 ) -> u64 {
@@ -84,15 +86,39 @@ fn calc_incremental_growth(
         return 0;
     }
 
-    let growth_at_to = calc_growth_delta(
+    calc_growth_delta(
         owner_balance,
-        to_block_height.saturating_sub(active_block_height),
+        to_block_height.saturating_sub(from_block_height),
+    )
+}
+
+fn settle_active_balance_change(
+    last_record: &PassEnergyRecord,
+    event_block_height: u32,
+    next_owner_balance: u64,
+) -> (u64, u32) {
+    let growth_delta = calc_incremental_growth(
+        last_record.owner_balance,
+        last_record.block_height,
+        event_block_height,
     );
-    let growth_at_from = calc_growth_delta(
-        owner_balance,
-        from_block_height.saturating_sub(active_block_height),
+    let after_growth = last_record.energy.saturating_add(growth_delta);
+
+    let penalty = saturating_energy_to_u64(calc_balance_penalty_energy(
+        last_record.owner_balance,
+        next_owner_balance,
+        last_record.active_block_height,
+        event_block_height,
+    ));
+    let next_energy = after_growth.saturating_sub(penalty);
+    let next_active_height = calc_next_active_block_height(
+        last_record.owner_balance,
+        next_owner_balance,
+        last_record.active_block_height,
+        event_block_height,
     );
-    growth_at_to.saturating_sub(growth_at_from)
+
+    (next_energy, next_active_height)
 }
 
 pub struct PassEnergyManager {
@@ -434,17 +460,11 @@ impl PassEnergyManager {
             };
         }
 
-        let growth_at_query = calc_growth_delta(
+        let incremental_growth = calc_incremental_growth(
             record.owner_balance,
-            query_block_height.saturating_sub(record.active_block_height),
+            record.block_height,
+            query_block_height,
         );
-        let growth_at_record = calc_growth_delta(
-            record.owner_balance,
-            record
-                .block_height
-                .saturating_sub(record.active_block_height),
-        );
-        let incremental_growth = growth_at_query.saturating_sub(growth_at_record);
 
         PassEnergyResult {
             energy: record.energy.saturating_add(incremental_growth),
@@ -556,36 +576,18 @@ impl PassEnergyManager {
 
         // For active passes, get the owner's balance records between last_record.block_height and block_height: [last_record.block_height + 1, block_height]
         let range = (last_record.block_height + 1)..(block_height + 1);
-        let balances = self
+        let mut balances = self
             .get_balance_at_range(&last_record.owner_address, range)
             .await?;
+        balances.sort_unstable_by_key(|balance| balance.block_height);
 
         // Update energy based on balance changes records
         for balance_record in balances {
-            // Calculate energy bonus between last_record.block_height and balance_record.block_height base on last_record.owner_balance
-            // The R is related to the H, H = current block height - miner certificate's activation block height. The larger the H, the larger the R, but the R has an upper limit.
-            let energy_delta = calc_incremental_growth(
-                last_record.owner_balance,
-                last_record.active_block_height,
-                last_record.block_height,
+            let (new_energy, active_block_height) = settle_active_balance_change(
+                &last_record,
                 balance_record.block_height,
+                balance_record.balance,
             );
-
-            let mut new_energy = last_record.energy.saturating_add(energy_delta);
-
-            // Keep active height for non-negative deltas.
-            // Only negative delta starts a new growth window after penalty is applied.
-            let active_block_height = if balance_record.delta < 0 {
-                balance_record.block_height
-            } else {
-                last_record.active_block_height
-            };
-
-            // Apply protocol-defined punishment on negative balance delta.
-            if balance_record.delta < 0 {
-                let energy_delta = calc_penalty_from_delta(balance_record.delta);
-                new_energy = new_energy.saturating_sub(energy_delta);
-            }
 
             let new_energy = PassEnergyRecord {
                 inscription_id: *inscription_id,
@@ -606,7 +608,6 @@ impl PassEnergyManager {
             // This record should not save to storage, as there is no balance change record at this height
             let energy_delta = calc_incremental_growth(
                 last_record.owner_balance,
-                last_record.active_block_height,
                 last_record.block_height,
                 block_height,
             );
@@ -745,23 +746,8 @@ impl PassEnergyManager {
             return Ok(false);
         }
 
-        let growth_delta = calc_incremental_growth(
-            last_record.owner_balance,
-            last_record.active_block_height,
-            last_record.block_height,
-            block_height,
-        );
-        let mut next_energy = last_record.energy.saturating_add(growth_delta);
-
-        let next_active_height = if owner_delta < 0 {
-            block_height
-        } else {
-            last_record.active_block_height
-        };
-        if owner_delta < 0 {
-            let penalty = calc_penalty_from_delta(owner_delta);
-            next_energy = next_energy.saturating_sub(penalty);
-        }
+        let (next_energy, next_active_height) =
+            settle_active_balance_change(&last_record, block_height, owner_balance);
 
         let record = PassEnergyRecord {
             inscription_id: *inscription_id,
@@ -1250,8 +1236,9 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_active_balance_change_negative_delta_resets_active_height_and_applies_penalty() {
-        // Negative delta resets active_block_height and applies protocol penalty.
+    fn test_apply_active_balance_change_partial_unit_loss_keeps_active_height_and_applies_penalty()
+    {
+        // Partial withdrawal applies penalty on lost units but keeps active height while units remain positive.
         let root_dir = test_root_dir("apply_negative_delta_penalty");
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let manager = PassEnergyManager::new(config).unwrap();
@@ -1283,10 +1270,97 @@ mod tests {
             .unwrap();
         let expected_energy = 10_000u64
             .saturating_add(calc_growth_delta(400_000, 20))
-            .saturating_sub(calc_penalty_from_delta(-50_000));
+            .saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
+                400_000, 350_000, 100, 120,
+            )));
         assert_eq!(record.energy, expected_energy);
         assert_eq!(record.owner_balance, 350_000);
         assert_eq!(record.owner_delta, -50_000);
+        assert_eq!(record.active_block_height, 100);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_full_unit_loss_resets_active_height() {
+        // Dropping from positive units to zero units starts a new active age at event height.
+        let root_dir = test_root_dir("apply_full_unit_loss_resets_active_height");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(19, 0);
+        let owner = test_script_hash(19);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 100_001,
+                owner_delta: 0,
+                energy: 100,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 99_999, -2)
+            .unwrap();
+        assert!(changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        let expected_energy = 100u64
+            .saturating_add(calc_growth_delta(100_001, 20))
+            .saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
+                100_001, 99_999, 100, 120,
+            )));
+        assert_eq!(record.energy, expected_energy);
+        assert_eq!(record.owner_balance, 99_999);
+        assert_eq!(record.owner_delta, -2);
+        assert_eq!(record.active_block_height, 120);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_apply_active_balance_change_zero_to_positive_units_resets_active_height() {
+        // A deposit crossing the zero-unit boundary starts a new active age.
+        let root_dir = test_root_dir("apply_zero_to_positive_units_resets_active_height");
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let manager = PassEnergyManager::new(config).unwrap();
+
+        let inscription_id = test_inscription_id(20, 0);
+        let owner = test_script_hash(20);
+        manager
+            .storage
+            .insert_pass_energy_record(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 90,
+                owner_address: owner,
+                owner_balance: 99_999,
+                owner_delta: 0,
+                energy: 50,
+            })
+            .unwrap();
+
+        let changed = manager
+            .apply_active_balance_change(&inscription_id, &owner, 120, 100_000, 1)
+            .unwrap();
+        assert!(changed);
+
+        let record = manager
+            .get_pass_energy_record_exact(&inscription_id, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.energy, 50);
+        assert_eq!(record.owner_balance, 100_000);
+        assert_eq!(record.owner_delta, 1);
         assert_eq!(record.active_block_height, 120);
 
         std::fs::remove_dir_all(root_dir).unwrap();

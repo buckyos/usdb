@@ -117,7 +117,7 @@
 
 ## UIP-0003 Pass Raw Energy Formula and Inheritance
 
-状态：第一步公式层 helper 与纯单元测试已对接；energy manager settlement、inheritance call site、storage/RPC `u128` 与 decimal string 仍待继续。
+状态：公式层 helper、纯单元测试和 energy manager settlement/projection 已对接；inheritance call site、storage/RPC `u128` 与 decimal string 仍待继续。
 
 ### 已对接内容
 
@@ -130,7 +130,12 @@
   - 新增 `calc_inheritable_energy`，按 per-prev `floor(raw_energy * 9500 / 10000)` 计算 5% 继承折损。
   - 新增 `mul_div_floor_saturating`，避免 `u128::MAX` 参与 bps 乘除时先乘溢出。
   - 保留 `calc_growth_delta` 的 `u64` 适配包装，供当前 storage/RPC 尚未切 `u128` 前使用。
-  - 暂保留 `calc_penalty_from_delta` 作为当前 settlement 旧调用入口；下一步 energy manager 改为 before/after/age 公式后删除。
+  - 删除旧 `calc_penalty_from_delta` 入口，settlement 不再按 signed satoshi delta 计算 penalty。
+- `src/btc/usdb-indexer/src/index/energy.rs`
+  - projection 改为按 `last_settlement_height = record.block_height` 计算增长窗口，不再以 `active_block_height` 作为增长窗口输入。
+  - range settlement 与 block-end settlement 统一使用 `last_record.owner_balance -> next_owner_balance` 的 unit delta 计算 penalty。
+  - active height 更新改为 `0 unit -> positive units` 与 `lost_units > 0 && units_after == 0` 两个边界。
+  - balance-history range 记录按 height 排序后结算，避免 provider 返回顺序影响 deterministic settlement。
 
 ### 已补测试
 
@@ -141,6 +146,7 @@
 - penalty 使用 lost units、age 和 `3/2` lambda。
 - 非 unit loss 不触发 penalty。
 - active height 仅在 UIP-0003 指定边界更新。
+- energy manager 覆盖 partial unit loss 保持 active height、full unit loss 重置 active height、`0 unit -> positive units` 重置 active height。
 - inheritable energy 5% discount floor。
 - `u128::MAX` 继承折损不发生先乘溢出。
 - penalty 饱和到 `ENERGY_MAX`。
@@ -149,14 +155,15 @@
 
 - `cargo fmt`
 - `cargo test energy_formula`
+- `cargo test energy`
 - `cargo test energy_timeline`
 - `cargo test pass_scenario`
+- `cargo test`
 - `cargo check`
 - `cargo clippy --all-targets -- -D warnings`
 
 ### 待继续对齐
 
-- `src/btc/usdb-indexer/src/index/energy.rs` settlement/projection 需要改为 last settlement height 增长窗口，且 penalty 使用 before/after units 与 active age。
 - `src/btc/usdb-indexer/src/index/pass.rs` prev inheritance 需要改为 per-prev discount 后再求和。
 - `src/btc/usdb-indexer/src/storage/energy.rs` energy 字段需要从 `u64` 切到 `u128`；dev 阶段直接重建 DB，不做迁移兼容。
 - `src/btc/usdb-indexer/src/service/rpc.rs` 与相关 docs/scripts 需要把 energy JSON surface 改为 canonical decimal string。

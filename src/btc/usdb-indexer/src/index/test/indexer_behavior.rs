@@ -7,7 +7,9 @@ use crate::config::{ConfigManager, IndexerConfig};
 use crate::index::MintValidationErrorCode;
 use crate::index::content::{MinerPassKind, MinerPassState, USDBInscription, USDBMint};
 use crate::index::energy::PassEnergyManager;
-use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
+use crate::index::energy_formula::{
+    calc_balance_penalty_energy, calc_growth_delta, saturating_energy_to_u64,
+};
 use crate::index::pass::MinerPassManager;
 use crate::index::transfer::{InscriptionCreateInfo, TransferTrackSeed};
 use crate::index::{
@@ -38,6 +40,20 @@ use std::sync::{Arc, Mutex};
 use usdb_util::USDBScriptHash;
 
 type StatusUpdateRecord = (Option<u32>, Option<u32>, Option<String>);
+
+fn expected_balance_penalty(
+    balance_before: u64,
+    balance_after: u64,
+    active_block_height: u32,
+    event_block_height: u32,
+) -> u64 {
+    saturating_energy_to_u64(calc_balance_penalty_energy(
+        balance_before,
+        balance_after,
+        active_block_height,
+        event_block_height,
+    ))
+}
 
 #[derive(Default)]
 struct MockBlockHintProvider {
@@ -984,7 +1000,8 @@ async fn test_sync_block_without_events_updates_energy_on_positive_owner_delta()
 }
 
 #[tokio::test]
-async fn test_sync_block_without_events_negative_delta_applies_penalty_and_resets_active_height() {
+async fn test_sync_block_without_events_partial_unit_loss_applies_penalty_and_keeps_active_height()
+{
     let owner = test_script_hash(22);
     let pass_id = test_inscription_id(22, 0);
     let base_height = 100u32;
@@ -1043,11 +1060,16 @@ async fn test_sync_block_without_events_negative_delta_applies_penalty_and_reset
         .unwrap();
     let expected_at_120 = 10_000u64
         .saturating_add(calc_growth_delta(400_000, block_height - base_height))
-        .saturating_sub(calc_penalty_from_delta(-50_000));
+        .saturating_sub(expected_balance_penalty(
+            400_000,
+            350_000,
+            base_height,
+            block_height,
+        ));
     assert_eq!(energy_record.block_height, block_height);
     assert_eq!(energy_record.owner_balance, 350_000);
     assert_eq!(energy_record.owner_delta, -50_000);
-    assert_eq!(energy_record.active_block_height, block_height);
+    assert_eq!(energy_record.active_block_height, base_height);
     assert_eq!(energy_record.energy, expected_at_120);
 
     let energy_125 = fixture
@@ -1067,7 +1089,7 @@ async fn test_sync_block_without_events_negative_delta_applies_penalty_and_reset
 async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projection() {
     // Numeric-assertion scenario:
     // - h101: positive delta (growth only)
-    // - h102: negative delta (growth + penalty, active_block_height reset)
+    // - h102: negative delta (growth + penalty, active_block_height remains because units stay positive)
     // - h103: zero delta (no new record, projected energy must follow formula)
     let owner = test_script_hash(23);
     let pass_id = test_inscription_id(23, 0);
@@ -1155,19 +1177,24 @@ async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projec
     assert_eq!(record_101.owner_delta, 20_000);
     assert_eq!(record_101.active_block_height, base_height);
 
-    // Negative delta at h102: growth from previous owner_balance then penalty, and reset active height.
+    // Negative delta at h102: growth from previous owner_balance then penalty.
     let record_102 = fixture
         .pass_energy_manager
         .get_pass_energy_record_exact(&pass_id, h102)
         .unwrap()
         .unwrap();
     let expected_102 = expected_101
-        .saturating_add(calc_growth_delta(320_000, h102 - base_height))
-        .saturating_sub(calc_penalty_from_delta(-50_000));
+        .saturating_add(calc_growth_delta(320_000, h102 - h101))
+        .saturating_sub(expected_balance_penalty(
+            320_000,
+            270_000,
+            base_height,
+            h102,
+        ));
     assert_eq!(record_102.energy, expected_102);
     assert_eq!(record_102.owner_balance, 270_000);
     assert_eq!(record_102.owner_delta, -50_000);
-    assert_eq!(record_102.active_block_height, h102);
+    assert_eq!(record_102.active_block_height, base_height);
 
     // Zero delta at h103 should not create a new record; get_pass_energy must return projected energy.
     assert!(
@@ -2869,9 +2896,14 @@ async fn test_sync_block_same_owner_transfer_block_end_settlement_is_idempotent(
         .unwrap();
     let expected_energy = 10_000u64
         .saturating_add(calc_growth_delta(300_000, block_height - base_height))
-        .saturating_sub(calc_penalty_from_delta(-500));
+        .saturating_sub(expected_balance_penalty(
+            300_000,
+            280_000,
+            base_height,
+            block_height,
+        ));
     assert_eq!(energy_record.state, MinerPassState::Active);
-    assert_eq!(energy_record.active_block_height, block_height);
+    assert_eq!(energy_record.active_block_height, base_height);
     assert_eq!(energy_record.owner_balance, 280_000);
     assert_eq!(energy_record.owner_delta, -500);
     assert_eq!(energy_record.energy, expected_energy);
@@ -3005,8 +3037,9 @@ async fn test_sync_block_same_owner_remint_applies_negative_delta_before_inherit
     assert_eq!(new_pass.owner, owner);
     assert_eq!(new_pass.state, MinerPassState::Active);
 
-    let expected_inherited = calc_growth_delta(400_000, block_height - base_height)
-        .saturating_sub(calc_penalty_from_delta(-500));
+    let expected_inherited = calc_growth_delta(400_000, block_height - base_height).saturating_sub(
+        expected_balance_penalty(400_000, 399_500, base_height, block_height),
+    );
     let prev_consumed = fixture
         .pass_energy_manager
         .get_pass_energy(&prev_id, block_height)
@@ -3647,8 +3680,8 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     // Check 3: energy snapshots at each height.
     let expected_a_101 = calc_growth_delta(200_000, 1);
     let expected_a_102 = expected_a_101
-        .saturating_add(calc_growth_delta(201_000, 2))
-        .saturating_sub(calc_penalty_from_delta(-21_000));
+        .saturating_add(calc_growth_delta(201_000, 1))
+        .saturating_sub(expected_balance_penalty(201_000, 180_000, h100, h102));
 
     let energy_a_100 = fixture
         .pass_energy_manager
@@ -4890,8 +4923,8 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
     assert!(active_owner_set_at_height(&fixture.storage, h643).is_empty());
 
     // 2) energy assertion
-    let expected_h641 =
-        calc_growth_delta(150_000, 1).saturating_sub(calc_penalty_from_delta(-60_000));
+    let expected_h641 = calc_growth_delta(150_000, 1)
+        .saturating_sub(expected_balance_penalty(150_000, 90_000, h640, h641));
     assert_eq!(expected_h641, 0);
     let expected_h642 = expected_h641.saturating_add(calc_growth_delta(90_000, 1));
     assert_eq!(expected_h642, 0);

@@ -2,7 +2,10 @@ use super::common::{cleanup_temp_dir, test_inscription_id, test_root_dir, test_s
 use crate::config::ConfigManager;
 use crate::index::content::MinerPassState;
 use crate::index::energy::{BalanceProvider, PassEnergyManager};
-use crate::index::energy_formula::{calc_growth_delta, calc_penalty_from_delta};
+use crate::index::energy_formula::{
+    calc_balance_penalty_energy, calc_growth_delta, calc_next_active_block_height,
+    saturating_energy_to_u64,
+};
 use crate::storage::PassEnergyStorage;
 use balance_history::AddressBalance;
 use ord::InscriptionId;
@@ -98,36 +101,27 @@ fn expected_energy_by_formula(
             break;
         }
 
-        // Match production semantics: between two persisted balance-change points,
-        // growth is added incrementally using the balance that was effective in
-        // that interval, instead of replaying the whole active window each time.
-        let growth_at_point =
-            calc_growth_delta(owner_balance, point.block_height - active_block_height);
-        let growth_at_last = calc_growth_delta(
-            owner_balance,
-            last_materialized_height - active_block_height,
-        );
-        let delta = growth_at_point.saturating_sub(growth_at_last);
+        let delta = calc_growth_delta(owner_balance, point.block_height - last_materialized_height);
         energy = energy.saturating_add(delta);
-
-        if point.delta < 0 {
-            let penalty = calc_penalty_from_delta(point.delta);
-            energy = energy.saturating_sub(penalty);
-            active_block_height = point.block_height;
-        }
+        energy = energy.saturating_sub(saturating_energy_to_u64(calc_balance_penalty_energy(
+            owner_balance,
+            point.balance,
+            active_block_height,
+            point.block_height,
+        )));
+        active_block_height = calc_next_active_block_height(
+            owner_balance,
+            point.balance,
+            active_block_height,
+            point.block_height,
+        );
 
         owner_balance = point.balance;
         last_materialized_height = point.block_height;
     }
 
     if last_materialized_height < target_height {
-        let growth_at_target =
-            calc_growth_delta(owner_balance, target_height - active_block_height);
-        let growth_at_last = calc_growth_delta(
-            owner_balance,
-            last_materialized_height - active_block_height,
-        );
-        let delta = growth_at_target.saturating_sub(growth_at_last);
+        let delta = calc_growth_delta(owner_balance, target_height - last_materialized_height);
         energy = energy.saturating_add(delta);
     }
 
