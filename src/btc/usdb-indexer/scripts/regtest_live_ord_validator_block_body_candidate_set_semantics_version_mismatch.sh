@@ -74,7 +74,7 @@ main() {
     receive_address="$(regtest_get_ord_wallet_receive_address "$wallet_name")"
     mint_file="$WORK_DIR/usdb_validator_candidate_set_semantics_mint_$((idx + 1)).json"
     cat >"$mint_file" <<EOF
-{"p":"usdb","op":"mint","usdb_main":"0x$(printf '%040x' $((idx + 51)))","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x$(printf '%040x' $((idx + 51)))","prev":[]}
 EOF
     pass_id="$(regtest_ord_inscribe_file "$wallet_name" "$mint_file" "$receive_address")"
     candidate_ids+=("$pass_id")

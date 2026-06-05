@@ -1803,11 +1803,11 @@ main() {
     ORD_CONTENT_FILE="$WORK_DIR/usdb_live_mint.json"
     if [[ "$LIVE_SCENARIO" == "invalid_mint" ]]; then
       cat >"$ORD_CONTENT_FILE" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0x123","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x123","prev":[]}
 EOF
     else
       cat >"$ORD_CONTENT_FILE" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
     fi
   fi
@@ -1868,7 +1868,7 @@ EOF
     local remint_content_file
     remint_content_file="$WORK_DIR/usdb_live_remint.json"
     cat >"$remint_content_file" <<EOF
-{"p":"usdb","op":"mint","usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
 
     log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
@@ -1899,7 +1899,7 @@ EOF
     local second_mint_content_file
     second_mint_content_file="$WORK_DIR/usdb_live_second_mint.json"
     cat >"$second_mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
 EOF
 
     log "Inscribe second mint via ord CLI: wallet=${ORD_WALLET_NAME_B}, destination=${ord_receive_address_b}"
@@ -1942,7 +1942,7 @@ EOF
     local second_mint_content_file
     second_mint_content_file="$WORK_DIR/usdb_live_second_mint_same_owner.json"
     cat >"$second_mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0x5555555555555555555555555555555555555555","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x5555555555555555555555555555555555555555","prev":[]}
 EOF
 
     log "Inscribe second mint via ord CLI with same owner wallet: wallet=${ORD_WALLET_NAME}, destination=${ord_receive_address_a}"
@@ -1985,7 +1985,7 @@ EOF
     local remint_content_file_1
     remint_content_file_1="$WORK_DIR/usdb_live_remint_first.json"
     cat >"$remint_content_file_1" <<EOF
-{"p":"usdb","op":"mint","usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
     log "Inscribe first remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
     local inscribe_output_2 inscription_id_2
@@ -2103,7 +2103,7 @@ PY
     local remint_content_file_2
     remint_content_file_2="$WORK_DIR/usdb_live_remint_second.json"
     cat >"$remint_content_file_2" <<EOF
-{"p":"usdb","op":"mint","usdb_main":"0x4444444444444444444444444444444444444444","prev":["${inscription_id_1}"]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x4444444444444444444444444444444444444444","prev":["${inscription_id_1}"]}
 EOF
     log "Inscribe duplicate remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
     local inscribe_output_3 inscription_id_3

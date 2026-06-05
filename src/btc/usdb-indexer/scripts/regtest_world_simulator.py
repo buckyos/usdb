@@ -2240,6 +2240,7 @@ class RegtestWorldSimulator:
         payload = {
             "p": "usdb",
             "op": "mint",
+            "v": 1,
             "usdb_main": "0x123" if invalid_usdb_main else usdb_main,
             "prev": prev,
         }

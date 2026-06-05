@@ -64,7 +64,7 @@ main() {
 
   mint_content_file="$WORK_DIR/usdb_validator_block_body_api_version_mismatch_mint.json"
   cat >"$mint_content_file" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0x3333333333333333333333333333333333333333","prev":[]}
 EOF
 
   pass_id="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_content_file")"

@@ -71,10 +71,10 @@ main() {
   mint_a_file="$WORK_DIR/usdb_validator_payload_version_upgrade_restart_mint_a.json"
   mint_b_file="$WORK_DIR/usdb_validator_payload_version_upgrade_restart_mint_b.json"
   cat >"$mint_a_file" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","prev":[]}
 EOF
   cat >"$mint_b_file" <<'EOF'
-{"p":"usdb","op":"mint","usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
+{"p":"usdb","op":"mint","v":1,"usdb_main":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","prev":[]}
 EOF
 
   pass1="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME" "$mint_a_file" "$ord_receive_address_a")"

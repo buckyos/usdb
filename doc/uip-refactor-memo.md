@@ -32,6 +32,8 @@
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - pass snapshot、owner pass、recent pass、invalid pass 响应新增 UIP-0001 字段。
   - pass 响应不再暴露 `usdb_collab`。
+- `src/btc/usdb-indexer/scripts`
+  - regtest/live mint payload 直接补齐 `"v": 1`，不保留缺失版本字段的开发期格式。
 
 ### 已补测试
 
@@ -50,6 +52,7 @@
 - v1 duplicate key invalid。
 - pre-standard payload 不作为正式 v1 解析。
 - source 层分类使用传入的 BTC network 校验 `leader_btc_addr`，覆盖 regtest 地址路径。
+- regtest/live 脚本中的 USDB mint payload 覆盖 v1 `v` 字段。
 - collab pass 的新增字段可写入并从 storage/history 查询读回。
 
 ### 已验证
@@ -59,6 +62,9 @@
 - `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer classify_usdb_mints_uses_supplied_network_for_leader_btc_addr -- --nocapture`
 - `cargo test --manifest-path src/btc/Cargo.toml -p usdb-indexer`
 - `cargo check --manifest-path src/btc/Cargo.toml --workspace`
+- `bash -n` for touched regtest/live shell scripts
+- `python3 -m py_compile src/btc/usdb-indexer/scripts/regtest_world_simulator.py`
+- `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh`
 
 ### 暂缓事项
 
@@ -66,4 +72,3 @@
 - `leader_pass_id` 引用对象是否必须在 mint 时已存在，留给 UIP-0002 状态机处理。
 - `leader_btc_addr` 在历史高度解析 active standard leader 的逻辑，留给 UIP-0002 / UIP-0004。
 - collab pass 的 raw energy、effective energy、防双计数和 candidate set 过滤，留给 UIP-0003 / UIP-0004。
-- 旧脚本和开发期 payload 中缺失 `v` 的 mint 需要后续按测试范围直接升级；不为旧 payload 保留兼容解析路径。
