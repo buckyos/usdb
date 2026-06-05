@@ -88,16 +88,18 @@
   - `on_mint_pass` 在写入任何状态前完整校验 `prev` 状态前置条件。
   - `prev` 缺失、owner 不一致、非 Dormant 或重复引用会将本次 mint 记录为 `Invalid`，不再 warn/skip。
   - 同 owner 当前 active pass 可在同一次 mint 中作为虚拟 Dormant `prev` 被原子消费；若同次 mint 还有其他 invalid `prev`，旧 active pass 保持原状态。
+  - `leader_pass_id` collab mint 校验 Leader pass 存在、为 active standard pass，且不是本次 mint 自身；同 block 前序 canonical event 创建的 standard Leader 可被后序 collab mint 引用。
 - `src/btc/usdb-indexer/src/index/test/pass_scenario.rs`
   - 更新 missing referenced `prev` 与重复继承已 consumed `prev` 的测试期望为 invalid mint。
 - `src/btc/usdb-indexer/src/index/test/indexer_behavior.rs`
   - 更新 burned `prev` remint 和已 consumed `prev` 二次继承的 block-level 行为期望。
+  - 增加同 block 前序 standard Leader mint + 后序 `leader_pass_id` collab mint 的 canonical ordering 测试。
 - `doc/UIP/UIP-0002-pass-state-machine.md`
   - 将测试要求中的 missing `prev` 表述明确为 missing referenced `prev`，避免与 UIP-0001 的 `prev` 缺省等价空数组冲突。
+  - 移除 `leader_pass_id` 同 block canonical ordering 未决项，当前实现按 ordered event context 校验。
 
 ### 待继续对齐
 
-- `leader_pass_id` collab mint 需要校验 Leader pass 存在、是 active standard pass，且不是本次 mint 创建的新 pass。
 - burn 需要同步写入 energy 终态；当前 pass state 会转 `Burned`，但 energy 终态仍需继续对齐 UIP-0002 / UIP-0003。
 - `Consumed` / `Burned` transfer 后是否继续更新 owner/satpoint 需要按非共识审计口径收敛。
 - active pass 离开 Active 前的 block-level balance settlement 已有实现和测试，但还需要按 UIP-0002 逐项复核幂等和同高度多事件 replay。

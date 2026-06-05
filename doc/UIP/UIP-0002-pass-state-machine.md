@@ -453,7 +453,6 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 
 # 未决问题
 
-- `leader_pass_id` 引用的 Leader 是否必须在同一 BTC 高度之前已经存在，还是允许同一 block 内按 canonical event ordering 解析。
 - `leader_btc_addr` 在 mint 高度没有 active standard pass 时，是 invalid，还是允许后续高度动态生效。本文倾向后者。
 - `Consumed` 之后的非共识审计记录是否需要单独 RPC 暴露。
 - 同一 height 下是否需要非共识审计 API 暴露 event index；协议状态查询暂不需要。
@@ -462,6 +461,6 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 
 1. Review 本草案中的 mint 原子提交顺序。
 2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
-3. 确认 `leader_pass_id` mint-time strict validation 与 `leader_btc_addr` dynamic validation 的差异。
-4. 基于 UIP-0002 修改 `MinerPassManager::on_mint_pass` 的 pre-validation 路径。
+3. 继续确认 `leader_btc_addr` dynamic validation 的历史高度解析入口。
+4. 继续对齐 burn energy 终态与 `Consumed` / `Burned` 后续 transfer 审计口径。
 5. 在 UIP-0003 定义 energy 终态记录格式和继承折损，并在 UIP-0004 定义 collab derived energy。

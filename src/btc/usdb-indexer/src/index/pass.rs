@@ -234,6 +234,10 @@ impl MinerPassManager {
         &self,
         mint_info: &PassMintInscriptionInfo,
     ) -> Result<Option<MintStateValidationError>, String> {
+        if let Some(invalid) = self.validate_leader_pass_binding(mint_info)? {
+            return Ok(Some(invalid));
+        }
+
         let old_active = self
             .storage
             .get_last_active_mint_pass_by_owner(&mint_info.mint_owner)?;
@@ -306,6 +310,65 @@ impl MinerPassManager {
                     ),
                 }));
             }
+        }
+
+        Ok(None)
+    }
+
+    fn validate_leader_pass_binding(
+        &self,
+        mint_info: &PassMintInscriptionInfo,
+    ) -> Result<Option<MintStateValidationError>, String> {
+        if mint_info.pass_kind != MinerPassKind::Collab {
+            return Ok(None);
+        }
+
+        let Some(leader_pass_id) = mint_info.leader_pass_id.as_ref() else {
+            return Ok(None);
+        };
+
+        if *leader_pass_id == mint_info.inscription_id {
+            return Ok(Some(MintStateValidationError {
+                code: MintValidationErrorCode::InvalidLeaderPassId,
+                reason: format!(
+                    "Collab mint {} cannot reference itself as leader_pass_id",
+                    mint_info.inscription_id
+                ),
+            }));
+        }
+
+        let Some(leader_pass) = self.storage.get_pass_by_inscription_id(leader_pass_id)? else {
+            return Ok(Some(MintStateValidationError {
+                code: MintValidationErrorCode::InvalidLeaderPassId,
+                reason: format!(
+                    "Leader pass {} not found for collab mint {}",
+                    leader_pass_id, mint_info.inscription_id
+                ),
+            }));
+        };
+
+        if leader_pass.pass_kind != MinerPassKind::Standard {
+            return Ok(Some(MintStateValidationError {
+                code: MintValidationErrorCode::InvalidLeaderPassId,
+                reason: format!(
+                    "Leader pass {} for collab mint {} must be standard, got {}",
+                    leader_pass_id,
+                    mint_info.inscription_id,
+                    leader_pass.pass_kind.as_str()
+                ),
+            }));
+        }
+
+        if leader_pass.state != MinerPassState::Active {
+            return Ok(Some(MintStateValidationError {
+                code: MintValidationErrorCode::InvalidLeaderPassId,
+                reason: format!(
+                    "Leader pass {} for collab mint {} must be Active, got {}",
+                    leader_pass_id,
+                    mint_info.inscription_id,
+                    leader_pass.state.as_str()
+                ),
+            }));
         }
 
         Ok(None)
@@ -667,14 +730,41 @@ pub type MinerPassManagerRef = Arc<MinerPassManager>;
 mod tests {
     use super::*;
     use crate::config::ConfigManager;
-    use crate::index::energy::PassEnergyManager;
-    use crate::storage::MinerPassStorage;
+    use crate::index::energy::{BalanceProvider, PassEnergyManager};
+    use crate::storage::{MinerPassStorage, PassEnergyStorage};
+    use balance_history::AddressBalance;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
     use std::path::PathBuf;
+    use std::pin::Pin;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::ToUSDBScriptHash;
+
+    #[derive(Default)]
+    struct NoopBalanceProvider;
+
+    impl BalanceProvider for NoopBalanceProvider {
+        fn get_balance_at_height<'a>(
+            &'a self,
+            _address: USDBScriptHash,
+            _block_height: u32,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn get_balance_at_range<'a>(
+            &'a self,
+            _address: USDBScriptHash,
+            _block_range: std::ops::Range<u32>,
+        ) -> Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
 
     fn test_root_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -708,7 +798,12 @@ mod tests {
         let root_dir = test_root_dir(test_name);
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
-        let energy_manager = Arc::new(PassEnergyManager::new(config.clone()).unwrap());
+        let energy_storage = PassEnergyStorage::new(&config.data_dir()).unwrap();
+        let energy_manager = Arc::new(PassEnergyManager::new_with_deps(
+            config.clone(),
+            energy_storage,
+            Arc::new(NoopBalanceProvider),
+        ));
         let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
 
         (root_dir, storage, manager)
@@ -736,6 +831,59 @@ mod tests {
         }
     }
 
+    fn test_collab_mint_info(
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        block_height: u32,
+        leader_pass_id: InscriptionId,
+    ) -> PassMintInscriptionInfo {
+        PassMintInscriptionInfo {
+            inscription_number: inscription_id.index as i32,
+            mint_txid: inscription_id.txid,
+            mint_block_height: block_height,
+            mint_owner: owner,
+            satpoint: test_satpoint(22, 0, 0),
+            mint_version: 1,
+            pass_kind: MinerPassKind::Collab,
+            usdb_main: String::new(),
+            leader_pass_id: Some(leader_pass_id),
+            leader_btc_addr: None,
+            prev: Vec::new(),
+            inscription_id,
+        }
+    }
+
+    fn test_pass_info(
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        block_height: u32,
+        pass_kind: MinerPassKind,
+        state: MinerPassState,
+    ) -> MinerPassInfo {
+        MinerPassInfo {
+            inscription_id,
+            inscription_number: inscription_id.index as i32,
+            mint_txid: inscription_id.txid,
+            mint_block_height: block_height,
+            mint_owner: owner,
+            satpoint: test_satpoint(23, 0, 0),
+            mint_version: 1,
+            pass_kind,
+            usdb_main: if pass_kind == MinerPassKind::Standard {
+                "0x1111111111111111111111111111111111111111".to_string()
+            } else {
+                String::new()
+            },
+            leader_pass_id: None,
+            leader_btc_addr: None,
+            prev: Vec::new(),
+            invalid_code: None,
+            invalid_reason: None,
+            owner,
+            state,
+        }
+    }
+
     fn setup_manager(
         test_name: &str,
     ) -> (
@@ -749,7 +897,12 @@ mod tests {
         let root_dir = test_root_dir(test_name);
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let storage = Arc::new(MinerPassStorage::new(&config.data_dir()).unwrap());
-        let energy_manager = Arc::new(PassEnergyManager::new(config.clone()).unwrap());
+        let energy_storage = PassEnergyStorage::new(&config.data_dir()).unwrap();
+        let energy_manager = Arc::new(PassEnergyManager::new_with_deps(
+            config.clone(),
+            energy_storage,
+            Arc::new(NoopBalanceProvider),
+        ));
         let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
 
         let inscription_id = test_inscription_id(1, 0);
@@ -879,6 +1032,184 @@ mod tests {
         let active = storage.get_all_active_pass_by_page(0, 10).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].inscription_id, old_id);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_accepts_active_standard_leader_pass() {
+        let (root_dir, storage, manager) =
+            setup_empty_manager("collab_active_standard_leader_valid");
+        let leader_owner = test_script_hash(40);
+        let collab_owner = test_script_hash(41);
+        let leader_id = test_inscription_id(42, 0);
+        let collab_id = test_inscription_id(43, 0);
+        let leader_pass = test_pass_info(
+            leader_id,
+            leader_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader_pass, leader_pass.mint_block_height)
+            .unwrap();
+
+        let mint_info = test_collab_mint_info(collab_id, collab_owner, 101, leader_id);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Active);
+        assert_eq!(stored.pass_kind, MinerPassKind::Collab);
+        assert_eq!(stored.leader_pass_id, Some(leader_id));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_missing_leader_records_invalid() {
+        let (root_dir, storage, manager) = setup_empty_manager("collab_missing_leader_invalid");
+        let collab_owner = test_script_hash(44);
+        let missing_leader_id = test_inscription_id(45, 0);
+        let collab_id = test_inscription_id(46, 0);
+        let mint_info = test_collab_mint_info(collab_id, collab_owner, 101, missing_leader_id);
+
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Invalid);
+        assert_eq!(
+            stored.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidLeaderPassId.as_str())
+        );
+        assert!(
+            stored
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not found")
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_dormant_leader_records_invalid() {
+        let (root_dir, storage, manager) = setup_empty_manager("collab_dormant_leader_invalid");
+        let leader_owner = test_script_hash(47);
+        let collab_owner = test_script_hash(48);
+        let leader_id = test_inscription_id(49, 0);
+        let collab_id = test_inscription_id(50, 0);
+        let leader_pass = test_pass_info(
+            leader_id,
+            leader_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader_pass, leader_pass.mint_block_height)
+            .unwrap();
+        storage
+            .update_state(&leader_id, MinerPassState::Dormant, MinerPassState::Active)
+            .unwrap();
+
+        let mint_info = test_collab_mint_info(collab_id, collab_owner, 101, leader_id);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Invalid);
+        assert_eq!(
+            stored.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidLeaderPassId.as_str())
+        );
+        assert!(
+            stored
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("must be Active")
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_non_standard_leader_records_invalid() {
+        let (root_dir, storage, manager) =
+            setup_empty_manager("collab_non_standard_leader_invalid");
+        let leader_owner = test_script_hash(51);
+        let collab_owner = test_script_hash(52);
+        let leader_id = test_inscription_id(53, 0);
+        let collab_id = test_inscription_id(54, 0);
+        let leader_pass = test_pass_info(
+            leader_id,
+            leader_owner,
+            100,
+            MinerPassKind::Collab,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader_pass, leader_pass.mint_block_height)
+            .unwrap();
+
+        let mint_info = test_collab_mint_info(collab_id, collab_owner, 101, leader_id);
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Invalid);
+        assert_eq!(
+            stored.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidLeaderPassId.as_str())
+        );
+        assert!(
+            stored
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("must be standard")
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_self_leader_records_invalid() {
+        let (root_dir, storage, manager) = setup_empty_manager("collab_self_leader_invalid");
+        let collab_owner = test_script_hash(55);
+        let collab_id = test_inscription_id(56, 0);
+        let mint_info = test_collab_mint_info(collab_id, collab_owner, 101, collab_id);
+
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Invalid);
+        assert_eq!(
+            stored.invalid_code.as_deref(),
+            Some(MintValidationErrorCode::InvalidLeaderPassId.as_str())
+        );
+        assert!(
+            stored
+                .invalid_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cannot reference itself")
+        );
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

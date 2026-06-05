@@ -534,6 +534,31 @@ fn make_discovered_mint(
     }
 }
 
+fn make_discovered_collab_mint_with_leader_pass(
+    inscription_id: InscriptionId,
+    block_height: u32,
+    leader_pass_id: InscriptionId,
+) -> DiscoveredMint {
+    let leader_pass_id_string = leader_pass_id.to_string();
+    let content = USDBInscription::Mint(USDBMint::collab_with_leader_pass(
+        leader_pass_id_string.clone(),
+        Vec::new(),
+    ));
+
+    DiscoveredMint {
+        inscription_id,
+        inscription_number: 1,
+        block_height,
+        timestamp: 0,
+        satpoint: Some(test_satpoint(9, 0, 0)),
+        content_string: format!(
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_pass_id":"{}","prev":[]}}"#,
+            leader_pass_id_string
+        ),
+        content,
+    }
+}
+
 fn make_discovered_invalid_mint(
     inscription_id: InscriptionId,
     block_height: u32,
@@ -2742,6 +2767,129 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
         .unwrap();
     assert_eq!(snapshot.active_address_count, 0);
     assert_eq!(snapshot.total_balance, 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
+async fn test_sync_block_same_block_collab_uses_preceding_standard_leader_mint() {
+    let block_height = 540;
+    let leader_owner = test_script_hash(53);
+    let collab_owner = test_script_hash(54);
+    let leader_tx = build_test_tx(73);
+    let collab_tx = build_test_tx(74);
+    let leader_id = InscriptionId {
+        txid: leader_tx.compute_txid(),
+        index: 0,
+    };
+    let collab_id = InscriptionId {
+        txid: collab_tx.compute_txid(),
+        index: 0,
+    };
+    let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
+        MockBlockHintProvider::default()
+            .with_block(block_height, build_test_block(vec![leader_tx, collab_tx])),
+    );
+
+    let leader_mint = make_discovered_mint(leader_id, block_height, vec![]);
+    let collab_mint =
+        make_discovered_collab_mint_with_leader_pass(collab_id, block_height, leader_id);
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default().with_mints(block_height, vec![collab_mint, leader_mint]),
+    );
+
+    let leader_create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: leader_id.txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(leader_owner),
+        commit_txid: Txid::from_slice(&[75u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[75u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let collab_create_info = MockCreateInfo {
+        satpoint: ordinals::SatPoint {
+            outpoint: OutPoint {
+                txid: collab_id.txid,
+                vout: 0,
+            },
+            offset: 0,
+        },
+        value: Amount::from_sat(10_000),
+        address: Some(collab_owner),
+        commit_txid: Txid::from_slice(&[76u8; 32]).unwrap(),
+        commit_outpoint: OutPoint {
+            txid: Txid::from_slice(&[76u8; 32]).unwrap(),
+            vout: 0,
+        },
+    };
+    let transfer_tracker = Arc::new(
+        MockTransferTracker::default()
+            .with_create_info(&leader_id, leader_create_info)
+            .with_create_info(&collab_id, collab_create_info),
+    );
+
+    let fixture = build_indexer_fixture_with_hint_provider(
+        "same_block_collab_uses_preceding_standard_leader",
+        inscription_source,
+        block_hint_provider,
+        transfer_tracker,
+        vec![MockResponse::Immediate(Ok(vec![
+            vec![balance_history::AddressBalance {
+                block_height,
+                balance: 11_000,
+                delta: 0,
+            }],
+            vec![balance_history::AddressBalance {
+                block_height,
+                balance: 7_000,
+                delta: 0,
+            }],
+        ]))],
+        Arc::new(
+            MockBalanceProvider::default()
+                .with_height(leader_owner, block_height, 220_000, 0)
+                .with_height(collab_owner, block_height, 180_000, 0),
+        ),
+    );
+
+    fixture
+        .indexer
+        .sync_block_for_test(block_height)
+        .await
+        .unwrap();
+
+    let leader_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&leader_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(leader_pass.state, MinerPassState::Active);
+    assert_eq!(leader_pass.pass_kind, MinerPassKind::Standard);
+
+    let collab_pass = fixture
+        .storage
+        .get_pass_by_inscription_id(&collab_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(collab_pass.state, MinerPassState::Active);
+    assert_eq!(collab_pass.pass_kind, MinerPassKind::Collab);
+    assert_eq!(collab_pass.leader_pass_id, Some(leader_id));
+
+    let snapshot = fixture
+        .storage
+        .get_active_balance_snapshot(block_height)
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.active_address_count, 2);
+    assert_eq!(snapshot.total_balance, 18_000);
 
     cleanup_temp_dir(&fixture.root_dir);
 }
