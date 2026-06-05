@@ -28,7 +28,7 @@ Activation: BTC network activation matrix
 当前实现已经具备可运行的 pass 状态记录和历史记录，但仍有几类规则需要标准化：
 
 - `prev` 引用不存在、owner 不一致、状态不符合要求时，当前实现会 `warn + skip`，然后继续 mint。
-- burn 当前主要关闭 pass 状态，但 energy 终态还需要同步封口。
+- burn 必须同时关闭 pass 状态和 energy 终态，避免 burn 后继续暴露可用能量。
 - 同一 block 内 transfer 与 mint 的处理顺序必须成为协议规则，否则历史重放可能分叉。
 - 同一 block 内 owner balance 变化与 pass 事件的相对顺序必须成为协议规则，否则 transfer/remint 可能绕过 UIP-0003 penalty。
 - UIP-0001 引入 standard pass / collab pass 后，状态机必须明确两类 pass 是否共享 active owner 限制。
@@ -462,5 +462,5 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 1. Review 本草案中的 mint 原子提交顺序。
 2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
 3. 继续确认 `leader_btc_addr` dynamic validation 的历史高度解析入口。
-4. 继续对齐 burn energy 终态与 `Consumed` / `Burned` 后续 transfer 审计口径。
+4. 继续对齐 `Consumed` / `Burned` 后续 transfer 审计口径。
 5. 在 UIP-0003 定义 energy 终态记录格式和继承折损，并在 UIP-0004 定义 collab derived energy。

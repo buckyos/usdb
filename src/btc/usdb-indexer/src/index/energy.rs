@@ -862,6 +862,114 @@ impl PassEnergyManager {
 
         Ok(())
     }
+
+    // Clear energy to zero on burned.
+    pub async fn on_pass_burned(
+        &self,
+        inscription_id: &InscriptionId,
+        owner_address: &USDBScriptHash,
+        expected_previous_state: MinerPassState,
+        block_height: u32,
+    ) -> Result<(), String> {
+        let mut last_record = self
+            .storage
+            .find_last_pass_energy_record(inscription_id, block_height)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "No energy record found for burned transition: inscription_id={}, block_height={}",
+                    inscription_id, block_height
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if !matches!(
+            expected_previous_state,
+            MinerPassState::Active | MinerPassState::Dormant
+        ) {
+            let msg = format!(
+                "Invalid expected energy state for burned transition: inscription_id={}, block_height={}, expected_state={}",
+                inscription_id,
+                block_height,
+                expected_previous_state.as_str()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        if last_record.state != expected_previous_state {
+            let msg = format!(
+                "Energy state mismatch before burned transition: inscription_id={}, block_height={}, expected_state={}, actual_state={}",
+                inscription_id,
+                block_height,
+                expected_previous_state.as_str(),
+                last_record.state.as_str()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        if expected_previous_state == MinerPassState::Active {
+            self.update_pass_energy(inscription_id, block_height)
+                .await?;
+            last_record = self
+                .storage
+                .find_last_pass_energy_record(inscription_id, block_height)?
+                .ok_or_else(|| {
+                    let msg = format!(
+                        "No energy record found after active burn settlement: inscription_id={}, block_height={}",
+                        inscription_id, block_height
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+        }
+
+        if last_record.state != expected_previous_state {
+            let msg = format!(
+                "Energy state mismatch after burned transition settlement: inscription_id={}, block_height={}, expected_state={}, actual_state={}",
+                inscription_id,
+                block_height,
+                expected_previous_state.as_str(),
+                last_record.state.as_str()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let record = PassEnergyRecord {
+            inscription_id: *inscription_id,
+            block_height,
+            state: MinerPassState::Burned,
+            active_block_height: block_height,
+            owner_address: *owner_address,
+            owner_balance: 0,
+            owner_delta: 0,
+            energy: 0,
+        };
+        self.storage.insert_pass_energy_record(&record)?;
+
+        let stored = self.get_pass_energy_record_exact(inscription_id, block_height)?;
+        let expected_state = MinerPassState::Burned;
+        if stored.as_ref().map(|v| (&v.state, v.energy)) != Some((&expected_state, 0)) {
+            let msg = format!(
+                "Burned energy snapshot mismatch: inscription_id={}, block_height={}, stored={:?}, expected={:?}",
+                inscription_id,
+                block_height,
+                stored,
+                (expected_state, 0)
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        info!(
+            "Miner Pass {} marked as Burned at block height {}, final energy: 0",
+            inscription_id, block_height
+        );
+
+        Ok(())
+    }
 }
 
 pub type PassEnergyManagerRef = std::sync::Arc<PassEnergyManager>;

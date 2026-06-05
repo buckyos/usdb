@@ -698,14 +698,40 @@ impl MinerPassManager {
             msg
         })?;
 
-        // Update energy record for the pass before burning if the pass is active
-        if pass.state == MinerPassState::Active {
-            self.energy_manager
-                .update_pass_energy(inscription_id, block_height)
-                .await?;
+        match pass.state {
+            MinerPassState::Active | MinerPassState::Dormant => {}
+            MinerPassState::Consumed => {
+                warn!(
+                    "Miner Pass {} was already Consumed before burn at block height {}; keep consumed economic state",
+                    inscription_id, block_height
+                );
+                return Ok(());
+            }
+            MinerPassState::Burned => {
+                warn!(
+                    "Miner Pass {} was already Burned before duplicate burn at block height {}; skip",
+                    inscription_id, block_height
+                );
+                return Ok(());
+            }
+            MinerPassState::Invalid => {
+                warn!(
+                    "Invalid Miner Pass {} burned at block height {}; no economic state transition",
+                    inscription_id, block_height
+                );
+                return Ok(());
+            }
         }
 
-        // Update the pass state to burned
+        self.energy_manager
+            .on_pass_burned(
+                inscription_id,
+                &pass.owner,
+                pass.state.clone(),
+                block_height,
+            )
+            .await?;
+
         self.storage.update_state_at_height(
             inscription_id,
             MinerPassState::Burned,
@@ -731,7 +757,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigManager;
     use crate::index::energy::{BalanceProvider, PassEnergyManager};
-    use crate::storage::{MinerPassStorage, PassEnergyStorage};
+    use crate::storage::{MinerPassStorage, PassEnergyRecord, PassEnergyStorage};
     use balance_history::AddressBalance;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
@@ -903,19 +929,20 @@ mod tests {
             energy_storage,
             Arc::new(NoopBalanceProvider),
         ));
-        let manager = MinerPassManager::new(config, storage.clone(), energy_manager).unwrap();
+        let manager =
+            MinerPassManager::new(config, storage.clone(), energy_manager.clone()).unwrap();
 
         let inscription_id = test_inscription_id(1, 0);
         let owner = test_script_hash(7);
         let satpoint = test_satpoint(2, 0, 0);
 
         let pass = MinerPassInfo {
-            inscription_id: inscription_id.clone(),
+            inscription_id,
             inscription_number: 1,
             mint_txid: Txid::from_slice(&[3; 32]).unwrap(),
             mint_block_height: 100,
             mint_owner: owner,
-            satpoint: satpoint.clone(),
+            satpoint,
             mint_version: 1,
             pass_kind: MinerPassKind::Standard,
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
@@ -934,6 +961,18 @@ mod tests {
                 MinerPassState::Dormant,
                 MinerPassState::Active,
             )
+            .unwrap();
+        energy_manager
+            .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Dormant,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: 42,
+            })
             .unwrap();
 
         (root_dir, storage, manager, inscription_id, owner, satpoint)
@@ -1249,6 +1288,166 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(updated.state, MinerPassState::Burned);
+
+        let energy_101 = manager
+            .energy_manager
+            .get_pass_energy(&inscription_id, 101)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(energy_101.state, MinerPassState::Burned);
+        assert_eq!(energy_101.energy, 0);
+
+        let energy_102 = manager
+            .energy_manager
+            .get_pass_energy(&inscription_id, 102)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(energy_102.state, MinerPassState::Burned);
+        assert_eq!(energy_102.energy, 0);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_burned_rejects_pass_energy_state_mismatch() {
+        let (root_dir, storage, manager, inscription_id, owner, _satpoint) =
+            setup_manager("burn_energy_state_mismatch");
+
+        manager
+            .energy_manager
+            .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: 42,
+            })
+            .unwrap();
+
+        let err = manager
+            .on_pass_burned(&inscription_id, 101)
+            .await
+            .unwrap_err();
+        assert!(err.contains("Energy state mismatch before burned transition"));
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Dormant);
+        assert!(
+            manager
+                .energy_manager
+                .get_pass_energy_record_exact(&inscription_id, 101)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_burned_from_active_writes_burned_energy_terminal() {
+        let (root_dir, storage, manager) = setup_empty_manager("burn_active_energy_terminal");
+        let inscription_id = test_inscription_id(61, 0);
+        let owner = test_script_hash(61);
+        let pass = test_pass_info(
+            inscription_id,
+            owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        manager
+            .energy_manager
+            .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                inscription_id,
+                block_height: 100,
+                state: MinerPassState::Active,
+                active_block_height: 100,
+                owner_address: owner,
+                owner_balance: 200_000,
+                owner_delta: 0,
+                energy: 7,
+            })
+            .unwrap();
+
+        manager.on_pass_burned(&inscription_id, 105).await.unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Burned);
+
+        let exact_105 = manager
+            .energy_manager
+            .get_pass_energy_record_exact(&inscription_id, 105)
+            .unwrap()
+            .unwrap();
+        assert_eq!(exact_105.state, MinerPassState::Burned);
+        assert_eq!(exact_105.energy, 0);
+
+        let energy_106 = manager
+            .energy_manager
+            .get_pass_energy(&inscription_id, 106)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(energy_106.state, MinerPassState::Burned);
+        assert_eq!(energy_106.energy, 0);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_pass_burned_from_consumed_keeps_consumed_state() {
+        let (root_dir, storage, manager, inscription_id, owner, _satpoint) =
+            setup_manager("burn_consumed_noop");
+
+        storage
+            .update_state(
+                &inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Dormant,
+            )
+            .unwrap();
+        manager
+            .energy_manager
+            .on_pass_consumed(&inscription_id, &owner, 101)
+            .unwrap();
+
+        manager.on_pass_burned(&inscription_id, 102).await.unwrap();
+
+        let updated = storage
+            .get_pass_by_inscription_id(&inscription_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, MinerPassState::Consumed);
+
+        let energy_102 = manager
+            .energy_manager
+            .get_pass_energy(&inscription_id, 102)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(energy_102.state, MinerPassState::Consumed);
+        assert_eq!(energy_102.energy, 0);
+        assert!(
+            manager
+                .energy_manager
+                .get_pass_energy_record_exact(&inscription_id, 102)
+                .unwrap()
+                .is_none()
+        );
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

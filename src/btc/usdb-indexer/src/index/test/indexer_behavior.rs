@@ -3321,16 +3321,23 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(energy_a_103.state, MinerPassState::Dormant);
-    assert_eq!(energy_a_103.energy, expected_a_102);
+    assert_eq!(energy_a_103.state, MinerPassState::Burned);
+    assert_eq!(energy_a_103.energy, 0);
+    let energy_a_103_exact = fixture
+        .pass_energy_manager
+        .get_pass_energy_record_exact(&pass_a_id, h103)
+        .unwrap()
+        .unwrap();
+    assert_eq!(energy_a_103_exact.state, MinerPassState::Burned);
+    assert_eq!(energy_a_103_exact.energy, 0);
     let energy_a_104 = fixture
         .pass_energy_manager
         .get_pass_energy(&pass_a_id, h104)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(energy_a_104.state, MinerPassState::Dormant);
-    assert_eq!(energy_a_104.energy, expected_a_102);
+    assert_eq!(energy_a_104.state, MinerPassState::Burned);
+    assert_eq!(energy_a_104.energy, 0);
 
     assert!(
         fixture

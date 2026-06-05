@@ -94,12 +94,18 @@
 - `src/btc/usdb-indexer/src/index/test/indexer_behavior.rs`
   - 更新 burned `prev` remint 和已 consumed `prev` 二次继承的 block-level 行为期望。
   - 增加同 block 前序 standard Leader mint + 后序 `leader_pass_id` collab mint 的 canonical ordering 测试。
+  - 更新 mint/transfer/burn/remint timeline，断言 burn 高度及后续 energy 为 `Burned/0`。
+- `src/btc/usdb-indexer/src/index/energy.rs`
+  - 增加 burn 终态写入：`Active` / `Dormant` burn 在 event height 写入 `Burned/0` energy record，并按 burn 前 pass state 精确校验 energy state。
+- `src/btc/usdb-indexer/src/index/pass.rs`
+  - burn 仅允许 `Active` / `Dormant` 转 `Burned`；`Consumed` / `Burned` / `Invalid` burn 保持当前经济状态。
+  - 增加 active、dormant、consumed burn，以及 pass/energy 状态不一致时 fail-fast 的单元测试覆盖。
 - `doc/UIP/UIP-0002-pass-state-machine.md`
   - 将测试要求中的 missing `prev` 表述明确为 missing referenced `prev`，避免与 UIP-0001 的 `prev` 缺省等价空数组冲突。
   - 移除 `leader_pass_id` 同 block canonical ordering 未决项，当前实现按 ordered event context 校验。
+  - 去掉 burn energy 终态仍未封口的过期描述。
 
 ### 待继续对齐
 
-- burn 需要同步写入 energy 终态；当前 pass state 会转 `Burned`，但 energy 终态仍需继续对齐 UIP-0002 / UIP-0003。
 - `Consumed` / `Burned` transfer 后是否继续更新 owner/satpoint 需要按非共识审计口径收敛。
 - active pass 离开 Active 前的 block-level balance settlement 已有实现和测试，但还需要按 UIP-0002 逐项复核幂等和同高度多事件 replay。
