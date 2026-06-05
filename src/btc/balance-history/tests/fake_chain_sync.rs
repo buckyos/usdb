@@ -105,8 +105,10 @@ struct Harness {
 
 impl Harness {
     fn new(name: &str, fake_chain: FakeChain, max_sync_block_height: u32) -> Self {
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = temp_root(name);
+        let mut config = BalanceHistoryConfig {
+            root_dir: temp_root(name),
+            ..BalanceHistoryConfig::default()
+        };
         config.sync.batch_size = 16;
         config.sync.max_sync_block_height = max_sync_block_height;
         config.sync.undo_retention_blocks = 16;

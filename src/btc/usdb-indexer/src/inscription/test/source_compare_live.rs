@@ -220,7 +220,7 @@ async fn run_compare_ord_and_bitcoind_with_options(options: CompareRangeOptions)
         total_items += count;
 
         scanned += 1;
-        if scanned % progress_every == 0 || scanned == total_blocks {
+        if scanned.is_multiple_of(progress_every) || scanned == total_blocks {
             println!(
                 "inscription compare progress: compare_target={}, scanned={}/{}, current_height={}, total_items={}, elapsed_ms={}",
                 compare_target.as_str(),

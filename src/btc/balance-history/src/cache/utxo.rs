@@ -159,7 +159,7 @@ mod tests {
         let txid = Txid::from_slice(&[1u8; 32]).unwrap();
         for i in 0..count {
             let outpoint = OutPoint {
-                txid: txid.clone(),
+                txid,
                 vout: i as u32,
             };
             cache.put(outpoint, value.clone());

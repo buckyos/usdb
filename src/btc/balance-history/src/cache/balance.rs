@@ -62,7 +62,7 @@ impl AddressBalanceCache {
             return;
         }
 
-        self.cache.lock().unwrap().put(script_hash.clone(), data);
+        self.cache.lock().unwrap().put(*script_hash, data);
     }
 
     pub fn get(

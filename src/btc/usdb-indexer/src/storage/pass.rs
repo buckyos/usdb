@@ -829,15 +829,15 @@ impl MinerPassStorage {
         target_anchor: Option<&BalanceHistorySnapshotInfo>,
         mark_upstream_reorg_recovery_pending: bool,
     ) -> Result<(), String> {
-        if let Some(anchor) = target_anchor {
-            if anchor.stable_height != target_height {
-                let msg = format!(
-                    "Rollback target anchor height mismatch: target_height={}, anchor_height={}",
-                    target_height, anchor.stable_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
+        if let Some(anchor) = target_anchor
+            && anchor.stable_height != target_height
+        {
+            let msg = format!(
+                "Rollback target anchor height mismatch: target_height={}, anchor_height={}",
+                target_height, anchor.stable_height
+            );
+            error!("{}", msg);
+            return Err(msg);
         }
 
         let mut conn = self.conn.lock().unwrap();
@@ -2049,7 +2049,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let item = Self::row_to_active_balance_snapshot(&row)?;
+            let item = Self::row_to_active_balance_snapshot(row)?;
             Ok(Some(item))
         } else {
             Ok(None)
@@ -2096,7 +2096,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let item = Self::row_to_active_balance_snapshot(&row)?;
+            let item = Self::row_to_active_balance_snapshot(row)?;
             Ok(Some(item))
         } else {
             Ok(None)
@@ -2197,6 +2197,7 @@ impl MinerPassStorage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_pass_history_event(
         &self,
         inscription_id: &InscriptionId,
@@ -2253,6 +2254,7 @@ impl MinerPassStorage {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn append_pass_history_event_for_test(
         &self,
         inscription_id: &InscriptionId,
@@ -2313,9 +2315,9 @@ impl MinerPassStorage {
             None,
             pass_info.state.clone(),
             None,
-            pass_info.owner.clone(),
+            pass_info.owner,
             None,
-            pass_info.satpoint.clone(),
+            pass_info.satpoint,
         )?;
         Ok(())
     }
@@ -2355,9 +2357,9 @@ impl MinerPassStorage {
             None,
             pass_info.state.clone(),
             None,
-            pass_info.owner.clone(),
+            pass_info.owner,
             None,
-            pass_info.satpoint.clone(),
+            pass_info.satpoint,
         )?;
         Ok(())
     }
@@ -2432,10 +2434,10 @@ impl MinerPassStorage {
             PASS_HISTORY_EVENT_OWNER_TRANSFER,
             Some(current.state.clone()),
             current.state,
-            Some(current.owner.clone()),
-            new_owner.clone(),
-            Some(current.satpoint.clone()),
-            new_satpoint.clone(),
+            Some(current.owner),
+            *new_owner,
+            Some(current.satpoint),
+            *new_satpoint,
         )?;
 
         Ok(())
@@ -2511,10 +2513,10 @@ impl MinerPassStorage {
             PASS_HISTORY_EVENT_SATPOINT_UPDATE,
             Some(current.state.clone()),
             current.state,
-            Some(current.owner.clone()),
-            current.owner.clone(),
-            Some(current.satpoint.clone()),
-            new_satpoint.clone(),
+            Some(current.owner),
+            current.owner,
+            Some(current.satpoint),
+            *new_satpoint,
         )?;
 
         Ok(())
@@ -2594,9 +2596,9 @@ impl MinerPassStorage {
             PASS_HISTORY_EVENT_STATE_UPDATE,
             Some(current.state.clone()),
             new_state,
-            Some(current.owner.clone()),
+            Some(current.owner),
             current.owner,
-            Some(current.satpoint.clone()),
+            Some(current.satpoint),
             current.satpoint,
         )?;
 
@@ -2992,7 +2994,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let pass_info = Self::row_to_pass_item(&row)?;
+            let pass_info = Self::row_to_pass_item(row)?;
             Ok(Some(pass_info))
         } else {
             Ok(None)
@@ -3049,7 +3051,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let pass_info = Self::row_to_pass_item(&row)?;
+            let pass_info = Self::row_to_pass_item(row)?;
             Ok(Some(pass_info))
         } else {
             Ok(None)
@@ -4967,46 +4969,44 @@ mod tests {
 
             // Prefer mint while there are still unminted passes.
             let has_unminted = minted.iter().any(|v| !*v);
-            if op_kind == 0 || (!has_unminted && current_snapshot.is_empty()) {
-                if has_unminted {
-                    let candidates: Vec<usize> = minted
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(idx, is_minted)| if !*is_minted { Some(idx) } else { None })
-                        .collect();
-                    let pick = (lcg_next(&mut seed) % candidates.len() as u64) as usize;
-                    let idx = candidates[pick];
-                    let Some(owner) =
-                        random_owner_without_active_conflict(&mut seed, &current_snapshot, None)
-                    else {
-                        continue;
-                    };
-                    let pass = make_pass(
-                        pass_specs[idx].0,
-                        pass_specs[idx].1,
-                        owner,
-                        MinerPassState::Active,
-                        current_height,
-                    );
-                    storage
-                        .add_new_mint_pass_at_height(&pass, current_height)
-                        .unwrap();
-
-                    let event = ModelPassEvent {
-                        block_height: current_height,
-                        event_type: PASS_HISTORY_EVENT_MINT,
-                        state: MinerPassState::Active,
-                        owner: pass.owner,
-                        satpoint: pass.satpoint,
-                    };
-                    minted[idx] = true;
-                    model_events
-                        .entry(pass.inscription_id)
-                        .or_default()
-                        .push(event.clone());
-                    current_snapshot.insert(pass.inscription_id, event);
+            if op_kind == 0 && has_unminted {
+                let candidates: Vec<usize> = minted
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, is_minted)| if !*is_minted { Some(idx) } else { None })
+                    .collect();
+                let pick = (lcg_next(&mut seed) % candidates.len() as u64) as usize;
+                let idx = candidates[pick];
+                let Some(owner) =
+                    random_owner_without_active_conflict(&mut seed, &current_snapshot, None)
+                else {
                     continue;
-                }
+                };
+                let pass = make_pass(
+                    pass_specs[idx].0,
+                    pass_specs[idx].1,
+                    owner,
+                    MinerPassState::Active,
+                    current_height,
+                );
+                storage
+                    .add_new_mint_pass_at_height(&pass, current_height)
+                    .unwrap();
+
+                let event = ModelPassEvent {
+                    block_height: current_height,
+                    event_type: PASS_HISTORY_EVENT_MINT,
+                    state: MinerPassState::Active,
+                    owner: pass.owner,
+                    satpoint: pass.satpoint,
+                };
+                minted[idx] = true;
+                model_events
+                    .entry(pass.inscription_id)
+                    .or_default()
+                    .push(event.clone());
+                current_snapshot.insert(pass.inscription_id, event);
+                continue;
             }
 
             if current_snapshot.is_empty() {
@@ -5176,7 +5176,7 @@ mod tests {
                         .and_then(|events| model_last_event_at_or_before(events, query_height))
                         .and_then(|event| {
                             if event.state == MinerPassState::Active {
-                                Some((pass_id.clone(), event.owner))
+                                Some((*pass_id, event.owner))
                             } else {
                                 None
                             }

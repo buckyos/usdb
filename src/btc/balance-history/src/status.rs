@@ -40,6 +40,12 @@ pub struct SyncStatusManager {
     runtime_readiness: Mutex<RuntimeReadinessStatus>,
 }
 
+impl Default for SyncStatusManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SyncStatusManager {
     pub fn new() -> Self {
         let status = SyncStatus {

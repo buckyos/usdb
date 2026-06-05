@@ -291,7 +291,7 @@ impl BalanceHistoryDB {
                 options.increase_parallelism(num_cpus::get() as i32); // Set parallelism to number of CPU cores
             }
             BalanceHistoryDBMode::Normal => {
-                options.set_bytes_per_sync(1024 * 1024 * 1); // 1MB
+                options.set_bytes_per_sync(1024 * 1024); // 1MB
             }
         }
 
@@ -556,9 +556,8 @@ impl BalanceHistoryDB {
             key.len()
         );
         let block_height_bytes = &key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4];
-        let block_height = u32::from_be_bytes(block_height_bytes.try_into().unwrap());
 
-        block_height
+        u32::from_be_bytes(block_height_bytes.try_into().unwrap())
     }
 
     // Parse balance and delta from value bytes
@@ -847,7 +846,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         let height_bytes = block_height.to_be_bytes();
-        batch.put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+        batch.put_cf(cf, META_KEY_BTC_BLOCK_HEIGHT, height_bytes);
 
         let mut write_options = WriteOptions::default();
         write_options.set_sync(false);
@@ -904,7 +903,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         let height_bytes = block_height.to_be_bytes();
-        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, height_bytes);
 
         let mut write_options = WriteOptions::default();
         write_options.set_sync(false);
@@ -1014,7 +1013,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         let height_bytes = update.block_height.to_be_bytes();
-        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes);
+        batch.put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, height_bytes);
 
         self.append_script_registry_entries_to_batch(&mut batch, update.script_registry_entries)?;
         self.append_block_undo_bundles_to_batch(&mut batch, update.undo_bundles)?;
@@ -1568,10 +1567,10 @@ impl BalanceHistoryDB {
 
         let effective_min_retained_height = min_retained_height.max(rollback_supported_from_height);
 
-        if let Some(current_retained_height) = self.get_undo_retained_from_height()? {
-            if current_retained_height >= effective_min_retained_height {
-                return Ok(0);
-            }
+        if let Some(current_retained_height) = self.get_undo_retained_from_height()?
+            && current_retained_height >= effective_min_retained_height
+        {
+            return Ok(0);
         }
 
         let meta_cf = self.db.cf_handle(BLOCK_UNDO_META_CF).ok_or_else(|| {
@@ -1670,15 +1669,15 @@ impl BalanceHistoryDB {
         }
 
         let first_required_height = target_height.saturating_add(1);
-        if let Some(supported_from_height) = self.get_rollback_supported_from_height()? {
-            if first_required_height < supported_from_height {
-                let msg = format!(
-                    "Rollback from height {} to {} requires undo from height {}, but rollback is only supported from height {}. Reset balance-history or install a matching snapshot before continuing.",
-                    current_height, target_height, first_required_height, supported_from_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
+        if let Some(supported_from_height) = self.get_rollback_supported_from_height()?
+            && first_required_height < supported_from_height
+        {
+            let msg = format!(
+                "Rollback from height {} to {} requires undo from height {}, but rollback is only supported from height {}. Reset balance-history or install a matching snapshot before continuing.",
+                current_height, target_height, first_required_height, supported_from_height
+            );
+            error!("{}", msg);
+            return Err(msg);
         }
 
         match self.get_undo_retained_from_height()? {
@@ -2186,7 +2185,7 @@ impl BalanceHistoryDB {
 
         let height_bytes = height.to_be_bytes();
         self.db
-            .put_cf_opt(cf, META_KEY_BTC_BLOCK_HEIGHT, &height_bytes, &ops)
+            .put_cf_opt(cf, META_KEY_BTC_BLOCK_HEIGHT, height_bytes, &ops)
             .map_err(|e| {
                 let msg = format!("Failed to put BTC block height: {}", e);
                 error!("{}", msg);
@@ -2356,7 +2355,7 @@ impl BalanceHistoryDB {
 
         let keys: Vec<[u8; UTXO_KEY_LEN]> = outpoints
             .iter()
-            .map(|outpoint| Self::make_utxo_key(&outpoint))
+            .map(|outpoint| Self::make_utxo_key(outpoint))
             .collect();
 
         // Convert to iterator of (cf, key)
@@ -3129,11 +3128,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         for (block_height, block_hash) in block_heights {
-            batch.put_cf(
-                cf,
-                &block_height.to_be_bytes(),
-                block_hash.as_ref() as &[u8],
-            );
+            batch.put_cf(cf, block_height.to_be_bytes(), block_hash.as_ref() as &[u8]);
         }
 
         // Put META_KEY_LAST_BLOCK_FILE_INDEX in META_CF
@@ -3145,7 +3140,7 @@ impl BalanceHistoryDB {
         batch.put_cf(
             cf,
             META_KEY_LAST_BLOCK_FILE_INDEX,
-            &last_block_file_index.to_be_bytes(),
+            last_block_file_index.to_be_bytes(),
         );
 
         let mut write_options = WriteOptions::default();
@@ -3532,8 +3527,12 @@ mod tests {
             block_commit: [5u8; 32],
         };
 
-        db.update_address_history_with_block_commits_async(&Vec::new(), 42, &[commit.clone()])
-            .unwrap();
+        db.update_address_history_with_block_commits_async(
+            &Vec::new(),
+            42,
+            std::slice::from_ref(&commit),
+        )
+        .unwrap();
 
         let loaded = db.get_block_commit(42).unwrap().unwrap();
         assert_eq!(loaded, commit);
@@ -3828,7 +3827,7 @@ mod tests {
         assert!(utxo_entry.is_none());
 
         // Consume UTXO
-        db.update_utxos_async(&vec![], &vec![Arc::new(outpoint.clone())])
+        db.update_utxos_async(&vec![], &vec![Arc::new(outpoint)])
             .unwrap();
 
         // Try to get UTXO again, should be None
@@ -3940,11 +3939,11 @@ mod tests {
         };
 
         db.update_block_state_async(
-            &[(Arc::new(new_outpoint.clone()), new_utxo.clone())],
-            &[Arc::new(spent_outpoint.clone())],
-            &[balance_entry.clone()],
+            &[(Arc::new(new_outpoint), new_utxo.clone())],
+            &[Arc::new(spent_outpoint)],
+            std::slice::from_ref(&balance_entry),
             12,
-            &[commit.clone()],
+            std::slice::from_ref(&commit),
         )
         .unwrap();
 
@@ -4003,8 +4002,15 @@ mod tests {
             touched_script_hashes: vec![touched_script_hash],
         };
 
-        db.update_block_state_with_undo_async(&[], &[], &[], 88, &[], &[bundle.clone()])
-            .unwrap();
+        db.update_block_state_with_undo_async(
+            &[],
+            &[],
+            &[],
+            88,
+            &[],
+            std::slice::from_ref(&bundle),
+        )
+        .unwrap();
 
         let loaded_meta = db.get_block_undo_meta(88).unwrap().unwrap();
         assert_eq!(loaded_meta.block_height, 88);
@@ -4094,12 +4100,12 @@ mod tests {
             block_height: 12,
             btc_block_hash: commit.btc_block_hash,
             created_utxos: vec![BlockUndoUtxoEntry {
-                outpoint: new_outpoint.clone(),
+                outpoint: new_outpoint,
                 script_hash: new_script_hash,
                 value: 900,
             }],
             spent_utxos: vec![BlockUndoUtxoEntry {
-                outpoint: existing_outpoint.clone(),
+                outpoint: existing_outpoint,
                 script_hash: existing_script_hash,
                 value: 400,
             }],
@@ -4107,11 +4113,11 @@ mod tests {
         };
 
         db.update_block_state_with_undo_async(
-            &[(Arc::new(new_outpoint.clone()), new_utxo)],
-            &[Arc::new(existing_outpoint.clone())],
+            &[(Arc::new(new_outpoint), new_utxo)],
+            &[Arc::new(existing_outpoint)],
             &[new_balance],
             12,
-            &[commit.clone()],
+            std::slice::from_ref(&commit),
             &[undo_bundle],
         )
         .unwrap();
@@ -4186,7 +4192,7 @@ mod tests {
             block_height: 12,
             btc_block_hash: commit_12.btc_block_hash,
             created_utxos: vec![BlockUndoUtxoEntry {
-                outpoint: outpoint_12.clone(),
+                outpoint: outpoint_12,
                 script_hash: script_12,
                 value: 20,
             }],
@@ -4194,7 +4200,7 @@ mod tests {
             touched_script_hashes: vec![script_12],
         };
         db.update_block_state_with_undo_async(
-            &[(Arc::new(outpoint_12.clone()), utxo_12)],
+            &[(Arc::new(outpoint_12), utxo_12)],
             &[],
             &[entry_12],
             12,
@@ -4228,7 +4234,7 @@ mod tests {
             block_height: 13,
             btc_block_hash: commit_13.btc_block_hash,
             created_utxos: vec![BlockUndoUtxoEntry {
-                outpoint: outpoint_13.clone(),
+                outpoint: outpoint_13,
                 script_hash: script_13,
                 value: 30,
             }],
@@ -4236,7 +4242,7 @@ mod tests {
             touched_script_hashes: vec![script_13],
         };
         db.update_block_state_with_undo_async(
-            &[(Arc::new(outpoint_13.clone()), utxo_13)],
+            &[(Arc::new(outpoint_13), utxo_13)],
             &[],
             &[entry_13],
             13,
@@ -4327,7 +4333,7 @@ mod tests {
                 block_height: height,
                 btc_block_hash: commit.btc_block_hash,
                 created_utxos: vec![BlockUndoUtxoEntry {
-                    outpoint: outpoint.clone(),
+                    outpoint,
                     script_hash,
                     value: height as u64,
                 }],
@@ -4336,7 +4342,7 @@ mod tests {
             };
 
             db.update_block_state_with_undo_async(
-                &[(Arc::new(outpoint.clone()), utxo)],
+                &[(Arc::new(outpoint), utxo)],
                 &[],
                 &[entry],
                 height,
@@ -4407,7 +4413,7 @@ mod tests {
                 block_height: height,
                 btc_block_hash: commit.btc_block_hash,
                 created_utxos: vec![BlockUndoUtxoEntry {
-                    outpoint: outpoint.clone(),
+                    outpoint,
                     script_hash,
                     value: height as u64,
                 }],
@@ -4483,7 +4489,7 @@ mod tests {
                 block_height: height,
                 btc_block_hash: commit.btc_block_hash,
                 created_utxos: vec![BlockUndoUtxoEntry {
-                    outpoint: outpoint.clone(),
+                    outpoint,
                     script_hash,
                     value: height as u64,
                 }],
@@ -4492,7 +4498,7 @@ mod tests {
             };
 
             db.update_block_state_with_undo_async(
-                &[(Arc::new(outpoint.clone()), utxo)],
+                &[(Arc::new(outpoint), utxo)],
                 &[],
                 &[entry],
                 height,

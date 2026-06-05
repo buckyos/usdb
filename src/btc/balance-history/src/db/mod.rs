@@ -1,4 +1,5 @@
 mod address;
+#[allow(clippy::module_inception)]
 mod db;
 mod helper;
 mod snapshot;

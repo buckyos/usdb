@@ -239,15 +239,15 @@ impl PassEnergyManager {
         }
 
         // Step 2: truncate any future energy records beyond pass synced height.
-        if let Some(max_height) = self.storage.get_max_record_block_height()? {
-            if max_height > pass_synced_height {
-                warn!(
-                    "Detected future energy records beyond pass synced height, truncating: module=energy, max_energy_height={}, pass_synced_height={}",
-                    max_height, pass_synced_height
-                );
-                self.storage
-                    .clear_records_from_height(pass_synced_height.saturating_add(1))?;
-            }
+        if let Some(max_height) = self.storage.get_max_record_block_height()?
+            && max_height > pass_synced_height
+        {
+            warn!(
+                "Detected future energy records beyond pass synced height, truncating: module=energy, max_energy_height={}, pass_synced_height={}",
+                max_height, pass_synced_height
+            );
+            self.storage
+                .clear_records_from_height(pass_synced_height.saturating_add(1))?;
         }
 
         // Step 3: reconcile synced height marker.
@@ -352,12 +352,12 @@ impl PassEnergyManager {
         }
 
         let record = PassEnergyRecord {
-            inscription_id: inscription_id.clone(),
+            inscription_id: *inscription_id,
             block_height,
 
             state: MinerPassState::Active,
             active_block_height: block_height,
-            owner_address: owner_address.clone(),
+            owner_address: *owner_address,
             owner_balance: balance.balance,
             owner_delta: balance.delta,
             energy: inherited_energy,
@@ -399,7 +399,7 @@ impl PassEnergyManager {
             .storage
             .get_pass_energy_record(inscription_id, block_height)?;
         Ok(value.map(|v: PassEnergyValue| PassEnergyRecord {
-            inscription_id: inscription_id.clone(),
+            inscription_id: *inscription_id,
             block_height,
             state: v.state,
             active_block_height: v.active_block_height,
@@ -588,11 +588,11 @@ impl PassEnergyManager {
             }
 
             let new_energy = PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id: *inscription_id,
                 block_height: balance_record.block_height,
                 state: MinerPassState::Active,
                 active_block_height,
-                owner_address: last_record.owner_address.clone(),
+                owner_address: last_record.owner_address,
                 owner_balance: balance_record.balance,
                 owner_delta: balance_record.delta,
                 energy: new_energy,
@@ -764,7 +764,7 @@ impl PassEnergyManager {
         }
 
         let record = PassEnergyRecord {
-            inscription_id: inscription_id.clone(),
+            inscription_id: *inscription_id,
             block_height,
             state: MinerPassState::Active,
             active_block_height: next_active_height,
@@ -785,7 +785,7 @@ impl PassEnergyManager {
     ) -> Result<(), String> {
         // Finalize active energy first, then persist a Dormant snapshot at block_height.
         let finalized = self
-            .update_pass_energy(&inscription_id, block_height)
+            .update_pass_energy(inscription_id, block_height)
             .await?;
 
         let last_record = self
@@ -801,11 +801,11 @@ impl PassEnergyManager {
             })?;
 
         let dormant_record = PassEnergyRecord {
-            inscription_id: inscription_id.clone(),
+            inscription_id: *inscription_id,
             block_height,
             state: MinerPassState::Dormant,
             active_block_height: last_record.active_block_height,
-            owner_address: last_record.owner_address.clone(),
+            owner_address: last_record.owner_address,
             owner_balance: last_record.owner_balance,
             owner_delta: if last_record.block_height == block_height {
                 last_record.owner_delta
@@ -849,11 +849,11 @@ impl PassEnergyManager {
     ) -> Result<(), String> {
         // Insert a new record with zero energy and state consumed
         let record = PassEnergyRecord {
-            inscription_id: inscription_id.clone(),
+            inscription_id: *inscription_id,
             block_height,
             state: MinerPassState::Consumed,
             active_block_height: block_height,
-            owner_address: owner_address.clone(),
+            owner_address: *owner_address,
             owner_balance: 0,
             owner_delta: 0,
             energy: 0,
@@ -1042,7 +1042,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Dormant,
                 active_block_height: 90,
@@ -1055,7 +1055,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 120,
                 state: MinerPassState::Dormant,
                 active_block_height: 90,
@@ -1099,7 +1099,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1141,7 +1141,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1178,7 +1178,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1219,7 +1219,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 110,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1261,7 +1261,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1304,7 +1304,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 120,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1355,7 +1355,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 110,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1398,7 +1398,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 120,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1436,7 +1436,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1511,7 +1511,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Dormant,
                 active_block_height: 100,
@@ -1543,7 +1543,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 100,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1576,7 +1576,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 130,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1609,7 +1609,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 120,
                 state: MinerPassState::Active,
                 active_block_height: 100,
@@ -1654,7 +1654,7 @@ mod tests {
         manager
             .storage
             .insert_pass_energy_record(&PassEnergyRecord {
-                inscription_id: inscription_id.clone(),
+                inscription_id,
                 block_height: 120,
                 state: MinerPassState::Active,
                 active_block_height: 120,

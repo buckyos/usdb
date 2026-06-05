@@ -143,25 +143,25 @@ impl MinerPassManager {
 
         // Insert the new pass as active
         let info = MinerPassInfo {
-            inscription_id: mint_info.inscription_id.clone(),
+            inscription_id: mint_info.inscription_id,
             inscription_number: mint_info.inscription_number,
-            mint_txid: mint_info.mint_txid.clone(),
+            mint_txid: mint_info.mint_txid,
             mint_block_height: mint_info.mint_block_height,
-            mint_owner: mint_info.mint_owner.clone(),
+            mint_owner: mint_info.mint_owner,
 
-            satpoint: mint_info.satpoint.clone(),
+            satpoint: mint_info.satpoint,
 
             mint_version: mint_info.mint_version,
             pass_kind: mint_info.pass_kind,
             usdb_main: mint_info.usdb_main.clone(),
-            leader_pass_id: mint_info.leader_pass_id.clone(),
+            leader_pass_id: mint_info.leader_pass_id,
             leader_btc_addr: mint_info.leader_btc_addr.clone(),
             prev: mint_info.prev.clone(),
             invalid_code: None,
             invalid_reason: None,
 
             state: MinerPassState::Active,
-            owner: mint_info.mint_owner.clone(),
+            owner: mint_info.mint_owner,
         };
         // Persist current snapshot and append pass history event at mint height.
         self.storage
@@ -389,12 +389,12 @@ impl MinerPassManager {
         );
 
         let invalid_info = InvalidPassMintInscriptionInfo {
-            inscription_id: mint_info.inscription_id.clone(),
+            inscription_id: mint_info.inscription_id,
             inscription_number: mint_info.inscription_number,
             mint_txid: mint_info.mint_txid,
             mint_block_height: mint_info.mint_block_height,
             mint_owner: mint_info.mint_owner,
-            satpoint: mint_info.satpoint.clone(),
+            satpoint: mint_info.satpoint,
             error_code: invalid.code.as_str().to_string(),
             error_reason: invalid.reason,
         };
@@ -407,7 +407,7 @@ impl MinerPassManager {
         invalid_info: &InvalidPassMintInscriptionInfo,
     ) -> Result<(), String> {
         let info = MinerPassInfo {
-            inscription_id: invalid_info.inscription_id.clone(),
+            inscription_id: invalid_info.inscription_id,
             inscription_number: invalid_info.inscription_number,
             mint_txid: invalid_info.mint_txid,
             mint_block_height: invalid_info.mint_block_height,
@@ -1000,7 +1000,7 @@ mod tests {
         let owner = test_script_hash(31);
         let mint_id = test_inscription_id(32, 0);
         let missing_prev = test_inscription_id(33, 0);
-        let mint_info = test_mint_info(mint_id.clone(), owner, 101, vec![missing_prev]);
+        let mint_info = test_mint_info(mint_id, owner, 101, vec![missing_prev]);
 
         manager.on_mint_pass(&mint_info).await.unwrap();
 
@@ -1039,7 +1039,7 @@ mod tests {
         let new_id = test_inscription_id(36, 0);
         let missing_prev = test_inscription_id(37, 0);
         let old_pass = MinerPassInfo {
-            inscription_id: old_id.clone(),
+            inscription_id: old_id,
             inscription_number: 1,
             mint_txid: old_id.txid,
             mint_block_height: 100,
@@ -1060,12 +1060,7 @@ mod tests {
             .add_new_mint_pass_at_height(&old_pass, old_pass.mint_block_height)
             .unwrap();
 
-        let mint_info = test_mint_info(
-            new_id.clone(),
-            owner,
-            101,
-            vec![old_id.clone(), missing_prev],
-        );
+        let mint_info = test_mint_info(new_id, owner, 101, vec![old_id, missing_prev]);
         manager.on_mint_pass(&mint_info).await.unwrap();
 
         let old_after = storage

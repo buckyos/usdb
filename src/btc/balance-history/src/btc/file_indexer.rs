@@ -28,8 +28,8 @@ impl<R: Read> XorReader<R> {
 impl<R: Read> Read for XorReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
-        for i in 0..n {
-            buf[i] ^= self.key[self.pos];
+        for item in buf.iter_mut().take(n) {
+            *item ^= self.key[self.pos];
             self.pos = (self.pos + 1) % 8;
         }
         Ok(n)
@@ -498,9 +498,7 @@ impl<UserData> BlockFileIndexer<UserData> {
             .collect();
 
         for ret in result {
-            if let Err(e) = ret {
-                return Err(e);
-            }
+            ret?
         }
 
         Ok(())
@@ -603,18 +601,6 @@ impl<UserData> BlockFileIndexer<UserData> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::last_complete_blk_file_index;
-
-    #[test]
-    fn test_last_complete_blk_file_index_excludes_single_open_file() {
-        assert_eq!(last_complete_blk_file_index(0), None);
-        assert_eq!(last_complete_blk_file_index(1), Some(0));
-        assert_eq!(last_complete_blk_file_index(3), Some(2));
-    }
-}
-
 pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
     fn on_index_begin(&self, total: usize) -> Result<(), String>;
 
@@ -642,3 +628,15 @@ pub trait BlockFileIndexerCallback<UserData>: Send + Sync {
 }
 
 pub type BlockFileIndexerCallbackRef<UserData> = Arc<Box<dyn BlockFileIndexerCallback<UserData>>>;
+
+#[cfg(test)]
+mod tests {
+    use super::last_complete_blk_file_index;
+
+    #[test]
+    fn test_last_complete_blk_file_index_excludes_single_open_file() {
+        assert_eq!(last_complete_blk_file_index(0), None);
+        assert_eq!(last_complete_blk_file_index(1), Some(0));
+        assert_eq!(last_complete_blk_file_index(3), Some(2));
+    }
+}

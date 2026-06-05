@@ -34,7 +34,7 @@ impl UTXOValueManager {
 
         // Store the result back in cache
         let mut cache = self.cache.lock().unwrap();
-        cache.insert(outpoint_str, amount.clone());
+        cache.insert(outpoint_str, amount);
 
         Ok(amount)
     }

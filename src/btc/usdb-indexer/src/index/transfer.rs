@@ -167,7 +167,7 @@ impl InscriptionTransferTracker {
             let count = passes.len();
             let mut inscriptions = self.inscriptions.lock().unwrap();
             for pass in passes {
-                inscriptions.insert(pass.satpoint.outpoint.clone(), pass);
+                inscriptions.insert(pass.satpoint.outpoint, pass);
             }
 
             if count < page_size {
@@ -212,7 +212,7 @@ impl InscriptionTransferTracker {
     ) -> Result<(), String> {
         let mut inscriptions = self.inscriptions.lock().unwrap();
         inscriptions.insert(
-            satpoint.outpoint.clone(),
+            satpoint.outpoint,
             ValidMinerPassInfo {
                 inscription_id,
                 owner,
@@ -266,7 +266,7 @@ impl InscriptionTransferTracker {
         let commit_txid = commit_outpoint.txid;
         let satpoint = SatPoint {
             outpoint: OutPoint {
-                txid: commit_txid.clone(),
+                txid: commit_txid,
                 vout: commit_outpoint.vout,
             },
             offset: 0,
@@ -342,7 +342,7 @@ impl InscriptionTransferTracker {
         // Track tentative transfer result in a working copy; commit/rollback controls visibility.
         for seed in extra_tracked_inscriptions {
             working_inscriptions.insert(
-                seed.satpoint.outpoint.clone(),
+                seed.satpoint.outpoint,
                 ValidMinerPassInfo {
                     inscription_id: seed.inscription_id,
                     owner: seed.owner,
@@ -415,9 +415,9 @@ impl InscriptionTransferTracker {
                                 &existing_item.inscription_id,
                             );
                             working_inscriptions.insert(
-                                ret.satpoint.outpoint.clone(),
+                                ret.satpoint.outpoint,
                                 ValidMinerPassInfo {
-                                    inscription_id: existing_item.inscription_id.clone(),
+                                    inscription_id: existing_item.inscription_id,
                                     owner: new_owner,
                                     satpoint: ret.satpoint,
                                 },
@@ -438,11 +438,11 @@ impl InscriptionTransferTracker {
                     }
 
                     let transfer_item = InscriptionTransferItem {
-                        inscription_id: existing_item.inscription_id.clone(),
+                        inscription_id: existing_item.inscription_id,
                         block_height,
-                        prev_satpoint: existing_item.satpoint.clone(),
+                        prev_satpoint: existing_item.satpoint,
                         satpoint: ret.satpoint,
-                        from_address: existing_item.owner.clone(),
+                        from_address: existing_item.owner,
                         to_address: ret.address,
                     };
 

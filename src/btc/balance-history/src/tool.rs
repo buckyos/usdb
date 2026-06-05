@@ -8,7 +8,7 @@ pub use snapshot_keygen::*;
 
 pub fn clear_db_files(db_dir: &Path) -> Result<(), String> {
     if db_dir.exists() {
-        std::fs::remove_dir_all(&db_dir).map_err(|e| {
+        std::fs::remove_dir_all(db_dir).map_err(|e| {
             let msg = format!(
                 "Could not delete database directory at {}: {}",
                 db_dir.display(),

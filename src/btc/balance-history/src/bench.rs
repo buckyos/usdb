@@ -34,6 +34,12 @@ pub struct BatchBlockBenchMark {
     pub batch_update_balances_duration_micros: AtomicU64,
 }
 
+impl Default for BatchBlockBenchMark {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BatchBlockBenchMark {
     pub fn new() -> Self {
         Self {

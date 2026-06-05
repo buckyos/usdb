@@ -37,6 +37,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use usdb_util::USDBScriptHash;
 
+type StatusUpdateRecord = (Option<u32>, Option<u32>, Option<String>);
+
 #[derive(Default)]
 struct MockBlockHintProvider {
     blocks_by_height: HashMap<u32, Arc<Block>>,
@@ -59,7 +61,7 @@ impl BlockHintProvider for MockBlockHintProvider {
 struct MockStatus {
     latest_height: AtomicU32,
     snapshot: Mutex<Option<BalanceHistorySnapshotInfo>>,
-    updates: Mutex<Vec<(Option<u32>, Option<u32>, Option<String>)>>,
+    updates: Mutex<Vec<StatusUpdateRecord>>,
     upstream_reorg_recovery_pending: AtomicBool,
 }
 
@@ -588,6 +590,7 @@ struct IndexerFixture {
     indexer: InscriptionIndexer,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_indexer_fixture_with_runtime_deps_at_root(
     root_dir: PathBuf,
     inscription_source: Arc<dyn InscriptionSource>,
@@ -923,7 +926,7 @@ async fn test_sync_block_without_events_updates_energy_on_positive_owner_delta()
         Arc::new(MockBalanceProvider::default()),
     );
 
-    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    let existing_pass = make_active_pass(pass_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
@@ -931,7 +934,7 @@ async fn test_sync_block_without_events_updates_energy_on_positive_owner_delta()
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: pass_id.clone(),
+            inscription_id: pass_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -1008,7 +1011,7 @@ async fn test_sync_block_without_events_negative_delta_applies_penalty_and_reset
         Arc::new(MockBalanceProvider::default()),
     );
 
-    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    let existing_pass = make_active_pass(pass_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
@@ -1016,7 +1019,7 @@ async fn test_sync_block_without_events_negative_delta_applies_penalty_and_reset
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: pass_id.clone(),
+            inscription_id: pass_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -1107,7 +1110,7 @@ async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projec
         Arc::new(MockBalanceProvider::default()),
     );
 
-    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    let existing_pass = make_active_pass(pass_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
@@ -1115,7 +1118,7 @@ async fn test_sync_blocks_energy_numeric_assertions_positive_negative_and_projec
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: pass_id.clone(),
+            inscription_id: pass_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -1212,7 +1215,7 @@ async fn test_sync_blocks_energy_projects_growth_without_intermediate_records() 
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(
             mint_height,
-            vec![make_discovered_mint(pass_id.clone(), mint_height, vec![])],
+            vec![make_discovered_mint(pass_id, mint_height, vec![])],
         ));
 
     let create_info = MockCreateInfo {
@@ -1344,7 +1347,7 @@ async fn test_sync_blocks_energy_projects_growth_over_long_window_without_new_re
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(
             mint_height,
-            vec![make_discovered_mint(pass_id.clone(), mint_height, vec![])],
+            vec![make_discovered_mint(pass_id, mint_height, vec![])],
         ));
 
     let create_info = MockCreateInfo {
@@ -1448,7 +1451,7 @@ async fn test_sync_blocks_settle_failure_rolls_back_and_synced_height_not_advanc
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
 
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
@@ -1514,7 +1517,7 @@ async fn test_sync_blocks_strict_same_height_conflict_rolls_back_atomically() {
     let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
@@ -1623,7 +1626,7 @@ async fn test_sync_blocks_strict_direction_conflict_rolls_back_atomically() {
         Arc::new(MockBalanceProvider::default()),
     );
 
-    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    let existing_pass = make_active_pass(pass_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
@@ -1631,7 +1634,7 @@ async fn test_sync_blocks_strict_direction_conflict_rolls_back_atomically() {
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: pass_id.clone(),
+            inscription_id: pass_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -1708,7 +1711,7 @@ async fn test_sync_blocks_partial_commit_then_retry_produces_consistent_result()
             .with_block(mint_block_height, build_test_block(vec![mint_tx])),
     );
 
-    let mint = make_discovered_mint(mint_id.clone(), mint_block_height, vec![]);
+    let mint = make_discovered_mint(mint_id, mint_block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(mint_block_height, vec![mint]));
 
@@ -1816,7 +1819,7 @@ async fn test_sync_blocks_retry_without_reconcile_recovers_energy_pending_failur
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
 
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
@@ -1989,11 +1992,10 @@ async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() 
 
     // First run: commit h700, fail at h701 during balance settle.
     {
-        let inscription_source: Arc<dyn InscriptionSource> =
-            Arc::new(MockInscriptionSource::default().with_mints(
-                h701,
-                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
-            ));
+        let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+            MockInscriptionSource::default()
+                .with_mints(h701, vec![make_discovered_mint(mint_id, h701, vec![])]),
+        );
         let transfer_tracker = Arc::new(
             MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
         );
@@ -2033,11 +2035,10 @@ async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() 
 
     // Restart run: rebuild indexer from same root and replay h701.
     let (restart_pass, restart_energy, restart_snap_700, restart_snap_701) = {
-        let inscription_source: Arc<dyn InscriptionSource> =
-            Arc::new(MockInscriptionSource::default().with_mints(
-                h701,
-                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
-            ));
+        let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+            MockInscriptionSource::default()
+                .with_mints(h701, vec![make_discovered_mint(mint_id, h701, vec![])]),
+        );
         let transfer_tracker = Arc::new(
             MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
         );
@@ -2099,11 +2100,10 @@ async fn test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run() 
     let baseline_energy_provider =
         Arc::new(MockBalanceProvider::default().with_height(owner, h701, 260_000, 100));
     let (baseline_pass, baseline_energy, baseline_snap_700, baseline_snap_701) = {
-        let inscription_source: Arc<dyn InscriptionSource> =
-            Arc::new(MockInscriptionSource::default().with_mints(
-                h701,
-                vec![make_discovered_mint(mint_id.clone(), h701, vec![])],
-            ));
+        let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+            MockInscriptionSource::default()
+                .with_mints(h701, vec![make_discovered_mint(mint_id, h701, vec![])]),
+        );
         let transfer_tracker = Arc::new(
             MockTransferTracker::default().with_create_info(&mint_id, create_info.clone()),
         );
@@ -2215,19 +2215,11 @@ async fn test_sync_blocks_failed_settle_keeps_pass_history_and_snapshot_atomic()
         MockInscriptionSource::default()
             .with_mints(
                 committed_height,
-                vec![make_discovered_mint(
-                    mint_id1.clone(),
-                    committed_height,
-                    vec![],
-                )],
+                vec![make_discovered_mint(mint_id1, committed_height, vec![])],
             )
             .with_mints(
                 failed_height,
-                vec![make_discovered_mint(
-                    mint_id2.clone(),
-                    failed_height,
-                    vec![],
-                )],
+                vec![make_discovered_mint(mint_id2, failed_height, vec![])],
             ),
     );
 
@@ -2358,7 +2350,7 @@ async fn test_sync_blocks_single_mint_success_updates_height_and_snapshot() {
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
 
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
@@ -2457,12 +2449,12 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
         txid: mint_txid,
         index: 0,
     };
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![prev_pass_id.clone()]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![prev_pass_id]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
     let transfer_item = InscriptionTransferItem {
-        inscription_id: prev_pass_id.clone(),
+        inscription_id: prev_pass_id,
         block_height,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_prev_outpoint,
@@ -2521,7 +2513,7 @@ async fn test_sync_block_same_block_transfer_then_mint_uses_transfered_prev_stat
         energy_provider,
     );
 
-    let prev_pass = make_active_pass(prev_pass_id.clone(), owner_a, 450);
+    let prev_pass = make_active_pass(prev_pass_id, owner_a, 450);
     fixture
         .storage
         .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
@@ -2580,12 +2572,12 @@ async fn test_sync_block_same_block_mint_then_transfer_ignores_consumed_transfer
         txid: mint_txid,
         index: 0,
     };
-    let mint = make_discovered_mint(mint_id.clone(), block_height, vec![prev_pass_id.clone()]);
+    let mint = make_discovered_mint(mint_id, block_height, vec![prev_pass_id]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
     let transfer_item = InscriptionTransferItem {
-        inscription_id: prev_pass_id.clone(),
+        inscription_id: prev_pass_id,
         block_height,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_prev_outpoint,
@@ -2644,7 +2636,7 @@ async fn test_sync_block_same_block_mint_then_transfer_ignores_consumed_transfer
         energy_provider,
     );
 
-    let prev_pass = make_active_pass(prev_pass_id.clone(), owner_a, 460);
+    let prev_pass = make_active_pass(prev_pass_id, owner_a, 460);
     fixture
         .storage
         .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
@@ -2708,7 +2700,7 @@ async fn test_sync_block_same_owner_transfer_block_end_settlement_is_idempotent(
         offset: 3,
     };
     let transfer_item = InscriptionTransferItem {
-        inscription_id: pass_id.clone(),
+        inscription_id: pass_id,
         block_height,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_prev_outpoint,
@@ -2745,7 +2737,7 @@ async fn test_sync_block_same_owner_transfer_block_end_settlement_is_idempotent(
         energy_provider,
     );
 
-    let existing_pass = make_active_pass(pass_id.clone(), owner, base_height);
+    let existing_pass = make_active_pass(pass_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&existing_pass, existing_pass.mint_block_height)
@@ -2753,7 +2745,7 @@ async fn test_sync_block_same_owner_transfer_block_end_settlement_is_idempotent(
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: pass_id.clone(),
+            inscription_id: pass_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -2830,7 +2822,7 @@ async fn test_sync_block_same_owner_remint_applies_negative_delta_before_inherit
     let block_hint_provider: Arc<dyn BlockHintProvider> = Arc::new(
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
-    let mint = make_discovered_mint(new_id.clone(), block_height, vec![prev_id.clone()]);
+    let mint = make_discovered_mint(new_id, block_height, vec![prev_id]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint]));
 
@@ -2881,7 +2873,7 @@ async fn test_sync_block_same_owner_remint_applies_negative_delta_before_inherit
         energy_provider,
     );
 
-    let prev_pass = make_active_pass(prev_id.clone(), owner, base_height);
+    let prev_pass = make_active_pass(prev_id, owner, base_height);
     fixture
         .storage
         .add_new_mint_pass_at_height(&prev_pass, prev_pass.mint_block_height)
@@ -2889,7 +2881,7 @@ async fn test_sync_block_same_owner_remint_applies_negative_delta_before_inherit
     fixture
         .pass_energy_manager
         .insert_pass_energy_record_for_test(&PassEnergyRecord {
-            inscription_id: prev_id.clone(),
+            inscription_id: prev_id,
             block_height: base_height,
             state: MinerPassState::Active,
             active_block_height: base_height,
@@ -2980,7 +2972,7 @@ async fn test_sync_block_records_invalid_mint_with_error_code() {
     );
 
     let invalid_mint = make_discovered_invalid_mint(
-        invalid_id.clone(),
+        invalid_id,
         block_height,
         "{\"p\":\"usdb\",\"op\":\"mint\",\"usdb_main\":\"0x123\"}",
         MintValidationErrorCode::InvalidUsdbMain,
@@ -3195,8 +3187,8 @@ async fn test_sync_block_marks_mints_invalid_when_reveal_input_is_ambiguous() {
         MockBlockHintProvider::default().with_block(block_height, build_test_block(vec![mint_tx])),
     );
 
-    let mint0 = make_discovered_mint(mint_id0.clone(), block_height, vec![]);
-    let mint1 = make_discovered_mint(mint_id1.clone(), block_height, vec![]);
+    let mint0 = make_discovered_mint(mint_id0, block_height, vec![]);
+    let mint1 = make_discovered_mint(mint_id1, block_height, vec![]);
     let inscription_source: Arc<dyn InscriptionSource> =
         Arc::new(MockInscriptionSource::default().with_mints(block_height, vec![mint0, mint1]));
 
@@ -3335,17 +3327,10 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
 
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default()
-            .with_mints(
-                h100,
-                vec![make_discovered_mint(pass_a_id.clone(), h100, vec![])],
-            )
+            .with_mints(h100, vec![make_discovered_mint(pass_a_id, h100, vec![])])
             .with_mints(
                 h104,
-                vec![make_discovered_mint(
-                    pass_b_id.clone(),
-                    h104,
-                    vec![pass_a_id.clone()],
-                )],
+                vec![make_discovered_mint(pass_b_id, h104, vec![pass_a_id])],
             ),
     );
 
@@ -3383,7 +3368,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
     };
 
     let transfer_same_item = InscriptionTransferItem {
-        inscription_id: pass_a_id.clone(),
+        inscription_id: pass_a_id,
         block_height: h101,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_same_prev_outpoint,
@@ -3400,7 +3385,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         to_address: Some(owner1),
     };
     let transfer_cross_item = InscriptionTransferItem {
-        inscription_id: pass_a_id.clone(),
+        inscription_id: pass_a_id,
         block_height: h102,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_cross_prev_outpoint,
@@ -3417,7 +3402,7 @@ async fn test_sync_blocks_timeline_mint_transfer_burn_remint_replay() {
         to_address: Some(owner2),
     };
     let burn_item = InscriptionTransferItem {
-        inscription_id: pass_a_id.clone(),
+        inscription_id: pass_a_id,
         block_height: h103,
         prev_satpoint: ordinals::SatPoint {
             outpoint: burn_prev_outpoint,
@@ -3731,14 +3716,8 @@ async fn test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred
     );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default()
-            .with_mints(
-                h600,
-                vec![make_discovered_mint(pass_b_id.clone(), h600, vec![])],
-            )
-            .with_mints(
-                h601,
-                vec![make_discovered_mint(pass_a_id.clone(), h601, vec![])],
-            ),
+            .with_mints(h600, vec![make_discovered_mint(pass_b_id, h600, vec![])])
+            .with_mints(h601, vec![make_discovered_mint(pass_a_id, h601, vec![])]),
     );
 
     let create_info_b = MockCreateInfo {
@@ -3774,7 +3753,7 @@ async fn test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred
         },
     };
     let transfer_item = InscriptionTransferItem {
-        inscription_id: pass_a_id.clone(),
+        inscription_id: pass_a_id,
         block_height: h602,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_prev_outpoint,
@@ -3973,14 +3952,8 @@ async fn test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active() {
     );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default()
-            .with_mints(
-                h610,
-                vec![make_discovered_mint(old_pass_id.clone(), h610, vec![])],
-            )
-            .with_mints(
-                h611,
-                vec![make_discovered_mint(new_pass_id.clone(), h611, vec![])],
-            ),
+            .with_mints(h610, vec![make_discovered_mint(old_pass_id, h610, vec![])])
+            .with_mints(h611, vec![make_discovered_mint(new_pass_id, h611, vec![])]),
     );
 
     let create_info_old = MockCreateInfo {
@@ -4173,21 +4146,11 @@ async fn test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev()
     );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default()
-            .with_mints(
-                h620,
-                vec![make_discovered_mint(prev1_id.clone(), h620, vec![])],
-            )
-            .with_mints(
-                h621,
-                vec![make_discovered_mint(prev2_id.clone(), h621, vec![])],
-            )
+            .with_mints(h620, vec![make_discovered_mint(prev1_id, h620, vec![])])
+            .with_mints(h621, vec![make_discovered_mint(prev2_id, h621, vec![])])
             .with_mints(
                 h622,
-                vec![make_discovered_mint(
-                    new_id.clone(),
-                    h622,
-                    vec![prev1_id.clone(), prev2_id.clone()],
-                )],
+                vec![make_discovered_mint(new_id, h622, vec![prev1_id, prev2_id])],
             ),
     );
 
@@ -4444,25 +4407,14 @@ async fn test_sync_blocks_second_inherit_same_prev_records_invalid_mint() {
     );
     let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
         MockInscriptionSource::default()
-            .with_mints(
-                h630,
-                vec![make_discovered_mint(prev_id.clone(), h630, vec![])],
-            )
+            .with_mints(h630, vec![make_discovered_mint(prev_id, h630, vec![])])
             .with_mints(
                 h631,
-                vec![make_discovered_mint(
-                    first_new_id.clone(),
-                    h631,
-                    vec![prev_id.clone()],
-                )],
+                vec![make_discovered_mint(first_new_id, h631, vec![prev_id])],
             )
             .with_mints(
                 h632,
-                vec![make_discovered_mint(
-                    second_new_id.clone(),
-                    h632,
-                    vec![prev_id.clone()],
-                )],
+                vec![make_discovered_mint(second_new_id, h632, vec![prev_id])],
             ),
     );
 
@@ -4719,11 +4671,10 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
             .with_block(h642, build_test_block(vec![]))
             .with_block(h643, build_test_block(vec![transfer_tx])),
     );
-    let inscription_source: Arc<dyn InscriptionSource> =
-        Arc::new(MockInscriptionSource::default().with_mints(
-            h640,
-            vec![make_discovered_mint(pass_id.clone(), h640, vec![])],
-        ));
+    let inscription_source: Arc<dyn InscriptionSource> = Arc::new(
+        MockInscriptionSource::default()
+            .with_mints(h640, vec![make_discovered_mint(pass_id, h640, vec![])]),
+    );
 
     let create_info = MockCreateInfo {
         satpoint: ordinals::SatPoint {
@@ -4742,7 +4693,7 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
         },
     };
     let transfer_item = InscriptionTransferItem {
-        inscription_id: pass_id.clone(),
+        inscription_id: pass_id,
         block_height: h643,
         prev_satpoint: ordinals::SatPoint {
             outpoint: transfer_prev_outpoint,

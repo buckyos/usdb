@@ -279,7 +279,7 @@ async fn main() {
                 if file_path.is_relative() {
                     file_path = root_dir.clone();
                     file_path.push("snapshots");
-                    file_path.push(&source.file.as_ref().unwrap());
+                    file_path.push(source.file.as_ref().unwrap());
                     println!("Resolved relative snapshot file path to: {:?}", file_path);
                 }
                 file_path
@@ -324,12 +324,12 @@ async fn main() {
                 }
             };
 
-            if let Some(ref manifest_path) = manifest_path {
-                if !manifest_path.exists() {
-                    error!("Snapshot manifest does not exist: {:?}", manifest_path);
-                    println!("Snapshot manifest does not exist: {:?}", manifest_path);
-                    std::process::exit(1);
-                }
+            if let Some(ref manifest_path) = manifest_path
+                && !manifest_path.exists()
+            {
+                error!("Snapshot manifest does not exist: {:?}", manifest_path);
+                println!("Snapshot manifest does not exist: {:?}", manifest_path);
+                std::process::exit(1);
             }
 
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -451,9 +451,10 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
+            #[allow(clippy::arc_with_non_send_sync)]
             let snapshot_db = Arc::new(db);
 
-            let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
+            let electrs_client = match usdb_util::ElectrsClient::new(config.electrs.rpc_url()) {
                 Ok(client) => client,
                 Err(e) => {
                     output.eprintln(&format!("Failed to create electrs client: {}", e));
@@ -518,7 +519,7 @@ async fn main() {
             };
             let db = Arc::new(db);
 
-            let electrs_client = match usdb_util::ElectrsClient::new(&config.electrs.rpc_url()) {
+            let electrs_client = match usdb_util::ElectrsClient::new(config.electrs.rpc_url()) {
                 Ok(client) => client,
                 Err(e) => {
                     output.eprintln(&format!("Failed to create electrs client: {}", e));
@@ -571,51 +572,50 @@ async fn main() {
             };
 
             tokio::task::spawn_blocking(move || {
-                if script_hash.is_some() {
+                if let Some(script_hash) = script_hash {
                     if let Some(height) = height {
                         output.println(&format!(
                             "Verifying balance history for script_hash {} at height {}...",
-                            script_hash.as_ref().unwrap(),
-                            height
+                            script_hash, height
                         ));
-                        if let Err(e) = verifier.verify_address_at_height(&script_hash.unwrap(), height) {
+                        if let Err(e) = verifier.verify_address_at_height(&script_hash, height) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
-                        println!("Balance history verified successfully for script_hash {} at height {}.", script_hash.as_ref().unwrap(), height);
-                        return;
+                        println!(
+                            "Balance history verified successfully for script_hash {} at height {}.",
+                            script_hash, height
+                        );
                     } else {
                         output.println(&format!(
                             "Verifying script_hash {} at current stable height...",
-                            script_hash.unwrap()
+                            script_hash
                         ));
-                        if let Err(e) = verifier.verify_address_latest(&script_hash.unwrap()) {
+                        if let Err(e) = verifier.verify_address_latest(&script_hash) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
                             std::process::exit(1);
                         }
                         println!(
                             "Balance history verified successfully for script_hash {} at current stable height.",
-                            script_hash.as_ref().unwrap()
+                            script_hash
                         );
                     }
+                } else if let Some(height) = height {
+                    output.println(&format!(
+                        "Verifying balance history at height {}...",
+                        height
+                    ));
+                    if let Err(e) = verifier.verify_at_height(height, from) {
+                        output.eprintln(&format!("Failed to verify balance history: {}", e));
+                        std::process::exit(1);
+                    }
                 } else {
-                    if height.is_some() {
-                        output.println(&format!(
-                            "Verifying balance history at height {}...",
-                            height.unwrap()
-                        ));
-                        if let Err(e) = verifier.verify_at_height(height.unwrap(), from) {
-                            output.eprintln(&format!("Failed to verify balance history: {}", e));
-                            std::process::exit(1);
-                        }
-                    } else {
-                        output.println(
-                            "Verifying entire balance history at current stable height...",
-                        );
-                        if let Err(e) = verifier.verify_latest(from) {
-                            output.eprintln(&format!("Failed to verify balance history: {}", e));
-                            std::process::exit(1);
-                        }
+                    output.println(
+                        "Verifying entire balance history at current stable height...",
+                    );
+                    if let Err(e) = verifier.verify_latest(from) {
+                        output.eprintln(&format!("Failed to verify balance history: {}", e));
+                        std::process::exit(1);
                     }
                 }
             })

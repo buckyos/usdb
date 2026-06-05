@@ -11,10 +11,11 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
+#[cfg(test)]
+use usdb_util::{CONSENSUS_SOURCE_CHAIN_BTC, build_consensus_snapshot_id};
 use usdb_util::{
-    CONSENSUS_SOURCE_CHAIN_BTC, ConsensusQueryContext, ConsensusRpcErrorCode,
-    ConsensusRpcErrorData, ConsensusStateReference, LocalStateActiveBalanceSnapshot,
-    LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME, build_consensus_snapshot_id,
+    ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusStateReference,
+    LocalStateActiveBalanceSnapshot, LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME,
 };
 use usdb_util::{USDBScriptHash, parse_script_hash_any};
 
@@ -28,6 +29,12 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 const MAX_RPC_PAGE_SIZE: usize = 1_000;
+
+type CurrentStateForErrorPayload = (
+    Option<IndexerSnapshotInfo>,
+    Option<LocalStateCommitInfo>,
+    Option<SystemStateInfo>,
+);
 
 #[derive(Clone, Debug)]
 struct PassEnergyLeaderboardCacheEntry {
@@ -159,7 +166,8 @@ impl UsdbIndexerRpcServer {
     }
 
     pub async fn close(&self) {
-        if let Some(handle) = self.server_handle.lock().unwrap().take() {
+        let handle = { self.server_handle.lock().unwrap().take() };
+        if let Some(handle) = handle {
             info!("Closing USDB indexer RPC server.");
             tokio::task::spawn_blocking(move || {
                 handle.close();
@@ -288,16 +296,7 @@ impl UsdbIndexerRpcServer {
     /// we still want `actual_state` in the error payload to describe what this
     /// node currently exposes, but that context is diagnostic only and not a
     /// precondition for resolving the historical row itself.
-    fn current_state_for_error_payload(
-        &self,
-    ) -> Result<
-        (
-            Option<IndexerSnapshotInfo>,
-            Option<LocalStateCommitInfo>,
-            Option<SystemStateInfo>,
-        ),
-        JsonError,
-    > {
+    fn current_state_for_error_payload(&self) -> Result<CurrentStateForErrorPayload, JsonError> {
         let current_snapshot = self.upstream_snapshot_info()?;
         let current_local_state = current_snapshot.as_ref().and_then(|snapshot| {
             self.build_local_state_commit_info_from_snapshot(snapshot)
@@ -375,13 +374,13 @@ impl UsdbIndexerRpcServer {
             return Ok(ConsensusStateReference::default());
         };
 
-        if let Some(requested_height) = context.requested_height {
-            if requested_height != block_height {
-                return Err(Self::to_invalid_params(format!(
-                    "ConsensusQueryContext.requested_height {} does not match block_height {}",
-                    requested_height, block_height
-                )));
-            }
+        if let Some(requested_height) = context.requested_height
+            && requested_height != block_height
+        {
+            return Err(Self::to_invalid_params(format!(
+                "ConsensusQueryContext.requested_height {} does not match block_height {}",
+                requested_height, block_height
+            )));
         }
 
         Ok(context.expected_state.clone())
@@ -538,15 +537,14 @@ impl UsdbIndexerRpcServer {
         requested_height: Option<u32>,
         context: Option<&ConsensusQueryContext>,
     ) -> Result<u32, JsonError> {
-        if let Some(context_requested_height) = context.and_then(|value| value.requested_height) {
-            if let Some(explicit_height) = requested_height {
-                if explicit_height != context_requested_height {
-                    return Err(Self::to_invalid_params(format!(
-                        "Query height {} does not match ConsensusQueryContext.requested_height {}",
-                        explicit_height, context_requested_height
-                    )));
-                }
-            }
+        if let Some(context_requested_height) = context.and_then(|value| value.requested_height)
+            && let Some(explicit_height) = requested_height
+            && explicit_height != context_requested_height
+        {
+            return Err(Self::to_invalid_params(format!(
+                "Query height {} does not match ConsensusQueryContext.requested_height {}",
+                explicit_height, context_requested_height
+            )));
         }
 
         if context.is_some() {
@@ -807,175 +805,168 @@ impl UsdbIndexerRpcServer {
         let actual_state =
             self.build_consensus_state_reference_from_historical_state_ref(state_ref);
 
-        if let Some(expected_snapshot_id) = expected_state.snapshot_id.as_ref() {
-            if expected_snapshot_id != &state_ref.snapshot_info.snapshot_id {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::SnapshotIdMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical snapshot_id {} at height {}, got {}",
-                            expected_snapshot_id, block_height, state_ref.snapshot_info.snapshot_id
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_snapshot_id) = expected_state.snapshot_id.as_ref()
+            && expected_snapshot_id != &state_ref.snapshot_info.snapshot_id
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotIdMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical snapshot_id {} at height {}, got {}",
+                        expected_snapshot_id, block_height, state_ref.snapshot_info.snapshot_id
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_stable_height) = expected_state.stable_height {
-            if expected_stable_height != state_ref.snapshot_info.balance_history_stable_height {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::SnapshotIdMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical stable height {} at height {}, got {}",
-                            expected_stable_height,
-                            block_height,
-                            state_ref.snapshot_info.balance_history_stable_height
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_stable_height) = expected_state.stable_height
+            && expected_stable_height != state_ref.snapshot_info.balance_history_stable_height
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotIdMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical stable height {} at height {}, got {}",
+                        expected_stable_height,
+                        block_height,
+                        state_ref.snapshot_info.balance_history_stable_height
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_block_hash) = expected_state.stable_block_hash.as_ref() {
-            if expected_block_hash != &state_ref.snapshot_info.stable_block_hash {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::BlockHashMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical stable block hash {} at height {}, got {}",
-                            expected_block_hash,
-                            block_height,
-                            state_ref.snapshot_info.stable_block_hash
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_block_hash) = expected_state.stable_block_hash.as_ref()
+            && expected_block_hash != &state_ref.snapshot_info.stable_block_hash
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::BlockHashMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical stable block hash {} at height {}, got {}",
+                        expected_block_hash,
+                        block_height,
+                        state_ref.snapshot_info.stable_block_hash
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_api_version) = expected_state.balance_history_api_version.as_ref() {
-            if expected_api_version
+        if let Some(expected_api_version) = expected_state.balance_history_api_version.as_ref()
+            && expected_api_version
                 != &state_ref
                     .snapshot_info
                     .consensus_identity
                     .balance_history_api_version
-            {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected balance-history API version {} at height {}, got {}",
-                            expected_api_version,
-                            block_height,
-                            state_ref
-                                .snapshot_info
-                                .consensus_identity
-                                .balance_history_api_version
-                        )),
-                    ),
-                ));
-            }
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected balance-history API version {} at height {}, got {}",
+                        expected_api_version,
+                        block_height,
+                        state_ref
+                            .snapshot_info
+                            .consensus_identity
+                            .balance_history_api_version
+                    )),
+                ),
+            ));
         }
 
         if let Some(expected_semantics_version) =
             expected_state.balance_history_semantics_version.as_ref()
-        {
-            if expected_semantics_version
+            && expected_semantics_version
                 != &state_ref
                     .snapshot_info
                     .consensus_identity
                     .balance_history_semantics_version
-            {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected balance-history semantics version {} at height {}, got {}",
-                            expected_semantics_version,
-                            block_height,
-                            state_ref
-                                .snapshot_info
-                                .consensus_identity
-                                .balance_history_semantics_version
-                        )),
-                    ),
-                ));
-            }
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected balance-history semantics version {} at height {}, got {}",
+                        expected_semantics_version,
+                        block_height,
+                        state_ref
+                            .snapshot_info
+                            .consensus_identity
+                            .balance_history_semantics_version
+                    )),
+                ),
+            ));
         }
 
         if let Some(expected_usdb_protocol_version) =
             expected_state.usdb_index_protocol_version.as_ref()
+            && expected_usdb_protocol_version != USDB_INDEX_PROTOCOL_VERSION
         {
-            if expected_usdb_protocol_version != USDB_INDEX_PROTOCOL_VERSION {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected usdb-index protocol version {} at height {}, got {}",
-                            expected_usdb_protocol_version,
-                            block_height,
-                            USDB_INDEX_PROTOCOL_VERSION
-                        )),
-                    ),
-                ));
-            }
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected usdb-index protocol version {} at height {}, got {}",
+                        expected_usdb_protocol_version, block_height, USDB_INDEX_PROTOCOL_VERSION
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_local_state_commit) = expected_state.local_state_commit.as_ref() {
-            if expected_local_state_commit != &state_ref.local_state_commit_info.local_state_commit
-            {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::LocalStateCommitMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected local_state_commit {} at height {}, got {}",
-                            expected_local_state_commit,
-                            block_height,
-                            state_ref.local_state_commit_info.local_state_commit
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_local_state_commit) = expected_state.local_state_commit.as_ref()
+            && expected_local_state_commit != &state_ref.local_state_commit_info.local_state_commit
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::LocalStateCommitMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected local_state_commit {} at height {}, got {}",
+                        expected_local_state_commit,
+                        block_height,
+                        state_ref.local_state_commit_info.local_state_commit
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_system_state_id) = expected_state.system_state_id.as_ref() {
-            if expected_system_state_id != &state_ref.system_state_info.system_state_id {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::SystemStateIdMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected system_state_id {} at height {}, got {}",
-                            expected_system_state_id,
-                            block_height,
-                            state_ref.system_state_info.system_state_id
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_system_state_id) = expected_state.system_state_id.as_ref()
+            && expected_system_state_id != &state_ref.system_state_info.system_state_id
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SystemStateIdMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected system_state_id {} at height {}, got {}",
+                        expected_system_state_id,
+                        block_height,
+                        state_ref.system_state_info.system_state_id
+                    )),
+                ),
+            ));
         }
 
         Ok(())
@@ -1057,10 +1048,9 @@ impl UsdbIndexerRpcServer {
             blockers.push(ReadinessBlocker::UpstreamSnapshotMissing);
         } else if let (Some(snapshot), Some(local_height)) =
             (upstream_snapshot.as_ref(), synced_height)
+            && snapshot.balance_history_stable_height != local_height
         {
-            if snapshot.balance_history_stable_height != local_height {
-                blockers.push(ReadinessBlocker::UpstreamSnapshotHeightMismatch);
-            }
+            blockers.push(ReadinessBlocker::UpstreamSnapshotHeightMismatch);
         }
         if reorg_recovery_pending {
             blockers.push(ReadinessBlocker::ReorgRecoveryPending);
@@ -1412,7 +1402,7 @@ impl UsdbIndexerRpcServer {
                 scope.as_str()
             ))
         })?;
-        let total_pages = (total_passes_usize + load_page_size - 1) / load_page_size;
+        let total_pages = total_passes_usize.div_ceil(load_page_size);
         let mut rows = Vec::with_capacity(total_passes_usize);
         for page in 0..total_pages {
             let page_rows = storage
@@ -1983,25 +1973,25 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         let should_use_cache = cache_enabled && params.at_height.is_none();
 
         if offset >= cache_top_k {
-            if should_use_cache {
-                if let Some(cached_page) = self.try_get_cached_leaderboard_page(
+            if should_use_cache
+                && let Some(cached_page) = self.try_get_cached_leaderboard_page(
                     resolved_height,
                     scope,
                     cache_top_k,
                     params.page,
                     params.page_size,
-                )? {
-                    info!(
-                        "Pass energy leaderboard top-k overflow served from cache metadata: module=rpc_server, scope={}, resolved_height={}, top_k={}, page={}, page_size={}, elapsed_ms={}",
-                        scope.as_str(),
-                        resolved_height,
-                        cache_top_k,
-                        params.page,
-                        params.page_size,
-                        call_start.elapsed().as_millis()
-                    );
-                    return Ok(cached_page);
-                }
+                )?
+            {
+                info!(
+                    "Pass energy leaderboard top-k overflow served from cache metadata: module=rpc_server, scope={}, resolved_height={}, top_k={}, page={}, page_size={}, elapsed_ms={}",
+                    scope.as_str(),
+                    resolved_height,
+                    cache_top_k,
+                    params.page,
+                    params.page_size,
+                    call_start.elapsed().as_millis()
+                );
+                return Ok(cached_page);
             }
 
             info!(
@@ -2021,25 +2011,25 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             });
         }
 
-        if should_use_cache {
-            if let Some(cached_page) = self.try_get_cached_leaderboard_page(
+        if should_use_cache
+            && let Some(cached_page) = self.try_get_cached_leaderboard_page(
                 resolved_height,
                 scope,
                 cache_top_k,
                 params.page,
                 params.page_size,
-            )? {
-                info!(
-                    "Pass energy leaderboard served from cache: module=rpc_server, scope={}, resolved_height={}, page={}, page_size={}, total={}, elapsed_ms={}",
-                    scope.as_str(),
-                    resolved_height,
-                    params.page,
-                    params.page_size,
-                    cached_page.total,
-                    call_start.elapsed().as_millis()
-                );
-                return Ok(cached_page);
-            }
+            )?
+        {
+            info!(
+                "Pass energy leaderboard served from cache: module=rpc_server, scope={}, resolved_height={}, page={}, page_size={}, total={}, elapsed_ms={}",
+                scope.as_str(),
+                resolved_height,
+                params.page,
+                params.page_size,
+                cached_page.total,
+                call_start.elapsed().as_millis()
+            );
+            return Ok(cached_page);
         }
 
         let (raw_total, ranked) =
@@ -2284,7 +2274,7 @@ mod tests {
         let owner = test_script_hash(owner_tag);
         let inscription_id = test_inscription_id(ins_tag, 0);
         MinerPassInfo {
-            inscription_id: inscription_id.clone(),
+            inscription_id,
             inscription_number: ins_tag as i32,
             mint_txid: inscription_id.txid,
             mint_block_height: mint_height,

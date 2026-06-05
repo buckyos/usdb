@@ -48,7 +48,7 @@ impl BalanceHistoryVerifier {
                 entries.len()
             );
 
-            script_hashes.push(entries[0].script_hash.clone());
+            script_hashes.push(entries[0].script_hash);
             balances.push(entries[0].balance);
 
             if script_hashes.len() >= BATCH_SIZE {

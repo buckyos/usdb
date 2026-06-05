@@ -193,22 +193,22 @@ async fn test_scenario_transfer_then_remint_prev_inherits_and_consumes() {
     runner
         .run(vec![
             ScenarioOp::Mint {
-                inscription_id: pass_old.clone(),
+                inscription_id: pass_old,
                 owner: owner_a,
                 height: 100,
                 prev: vec![],
             },
             ScenarioOp::Transfer {
-                inscription_id: pass_old.clone(),
+                inscription_id: pass_old,
                 new_owner: owner_b,
                 height: 110,
                 satpoint: test_satpoint(90, 1, 1),
             },
             ScenarioOp::Mint {
-                inscription_id: pass_new.clone(),
+                inscription_id: pass_new,
                 owner: owner_b,
                 height: 120,
-                prev: vec![pass_old.clone()],
+                prev: vec![pass_old],
             },
         ])
         .await
@@ -296,16 +296,16 @@ async fn test_scenario_same_owner_remint_prev_consumed_and_single_active() {
     runner
         .run(vec![
             ScenarioOp::Mint {
-                inscription_id: pass_old.clone(),
+                inscription_id: pass_old,
                 owner: owner_a,
                 height: 100,
                 prev: vec![],
             },
             ScenarioOp::Mint {
-                inscription_id: pass_new.clone(),
+                inscription_id: pass_new,
                 owner: owner_a,
                 height: 130,
-                prev: vec![pass_old.clone()],
+                prev: vec![pass_old],
             },
         ])
         .await
@@ -390,19 +390,19 @@ async fn test_scenario_transfer_to_owner_with_existing_active_keeps_existing_act
     runner
         .run(vec![
             ScenarioOp::Mint {
-                inscription_id: pass_a.clone(),
+                inscription_id: pass_a,
                 owner: owner_a,
                 height: 100,
                 prev: vec![],
             },
             ScenarioOp::Mint {
-                inscription_id: pass_b.clone(),
+                inscription_id: pass_b,
                 owner: owner_b,
                 height: 105,
                 prev: vec![],
             },
             ScenarioOp::Transfer {
-                inscription_id: pass_a.clone(),
+                inscription_id: pass_a,
                 new_owner: owner_b,
                 height: 110,
                 satpoint: test_satpoint(121, 1, 1),
@@ -493,34 +493,34 @@ async fn test_scenario_mint_with_multiple_prev_inherits_sum_and_consumes_all() {
     runner
         .run(vec![
             ScenarioOp::Mint {
-                inscription_id: pass_prev_1.clone(),
+                inscription_id: pass_prev_1,
                 owner: owner_a,
                 height: 100,
                 prev: vec![],
             },
             ScenarioOp::Transfer {
-                inscription_id: pass_prev_1.clone(),
+                inscription_id: pass_prev_1,
                 new_owner: owner_b,
                 height: 110,
                 satpoint: test_satpoint(141, 1, 1),
             },
             ScenarioOp::Mint {
-                inscription_id: pass_prev_2.clone(),
+                inscription_id: pass_prev_2,
                 owner: owner_a,
                 height: 120,
                 prev: vec![],
             },
             ScenarioOp::Transfer {
-                inscription_id: pass_prev_2.clone(),
+                inscription_id: pass_prev_2,
                 new_owner: owner_b,
                 height: 130,
                 satpoint: test_satpoint(142, 1, 1),
             },
             ScenarioOp::Mint {
-                inscription_id: pass_new.clone(),
+                inscription_id: pass_new,
                 owner: owner_b,
                 height: 140,
-                prev: vec![pass_prev_1.clone(), pass_prev_2.clone()],
+                prev: vec![pass_prev_1, pass_prev_2],
             },
         ])
         .await
@@ -616,7 +616,7 @@ async fn test_scenario_missing_prev_records_invalid_mint() {
     };
     runner
         .run(vec![ScenarioOp::Mint {
-            inscription_id: pass_new.clone(),
+            inscription_id: pass_new,
             owner: owner_a,
             height: 100,
             prev: vec![missing_prev],
@@ -693,28 +693,28 @@ async fn test_scenario_second_inherit_same_prev_records_invalid_mint() {
     runner
         .run(vec![
             ScenarioOp::Mint {
-                inscription_id: pass_prev.clone(),
+                inscription_id: pass_prev,
                 owner: owner_a,
                 height: 100,
                 prev: vec![],
             },
             ScenarioOp::Transfer {
-                inscription_id: pass_prev.clone(),
+                inscription_id: pass_prev,
                 new_owner: owner_b,
                 height: 110,
                 satpoint: test_satpoint(181, 1, 1),
             },
             ScenarioOp::Mint {
-                inscription_id: pass_new_1.clone(),
+                inscription_id: pass_new_1,
                 owner: owner_b,
                 height: 120,
-                prev: vec![pass_prev.clone()],
+                prev: vec![pass_prev],
             },
             ScenarioOp::Mint {
-                inscription_id: pass_new_2.clone(),
+                inscription_id: pass_new_2,
                 owner: owner_b,
                 height: 130,
-                prev: vec![pass_prev.clone()],
+                prev: vec![pass_prev],
             },
         ])
         .await

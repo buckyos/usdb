@@ -138,7 +138,9 @@ pub enum ParsedMintContent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum MinerPassKind {
+    #[default]
     Standard,
     Collab,
 }
@@ -161,12 +163,6 @@ impl FromStr for MinerPassKind {
             "collab" => Ok(MinerPassKind::Collab),
             _ => Err(format!("Invalid MinerPassKind string: {}", s)),
         }
-    }
-}
-
-impl Default for MinerPassKind {
-    fn default() -> Self {
-        MinerPassKind::Standard
     }
 }
 

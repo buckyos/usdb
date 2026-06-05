@@ -83,7 +83,7 @@ impl FromStr for UserId {
         // First check if it's a valid Address by trying to parse it
         // If that fails, try to parse it as a USDBScriptHash
         if let Ok(addr) = Address::<NetworkUnchecked>::from_str(s) {
-            return Ok(UserId::Address(addr));
+            Ok(UserId::Address(addr))
         } else if let Ok(script_hash) = s.parse::<USDBScriptHash>() {
             Ok(UserId::ScriptHash(script_hash))
         } else {

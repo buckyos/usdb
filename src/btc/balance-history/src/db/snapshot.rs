@@ -208,12 +208,10 @@ impl SnapshotDB {
                     msg
                 })?;
             }
-        } else {
-            if !db_path.exists() {
-                let msg = format!("Snapshot database {:?} does not exist", db_path);
-                warn!("{}", msg);
-                return Err(msg);
-            }
+        } else if !db_path.exists() {
+            let msg = format!("Snapshot database {:?} does not exist", db_path);
+            warn!("{}", msg);
+            return Err(msg);
         }
 
         Self::open(&db_path)
@@ -353,7 +351,7 @@ impl SnapshotDB {
                     entry.script_hash.as_ref() as &[u8],
                     entry.block_height as i64,
                     entry.balance as i64,
-                    entry.delta as i64,
+                    entry.delta,
                 ))
                 .map_err(|e| {
                     let msg = format!("Failed to insert entry: {}", e);

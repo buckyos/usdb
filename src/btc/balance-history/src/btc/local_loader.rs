@@ -63,7 +63,7 @@ impl BlockRecordCache {
         // Expand block_hash_cache to vec and sort
         let mut blocks = Vec::with_capacity(self.block_hash_cache.len());
         for (block_hash, entry) in self.block_hash_cache.iter() {
-            blocks.push((block_hash.clone(), entry.clone()));
+            blocks.push((*block_hash, entry.clone()));
         }
 
         use rayon::prelude::*;
@@ -186,7 +186,7 @@ impl BlockRecordCache {
             }
 
             prev_hash = block_hash;
-            blocks.push((block_height, block_hash.clone()));
+            blocks.push((block_height, block_hash));
             debug!("Loaded block {} with hash {}", block_height, block_hash);
 
             // For debug only: Verify block height by fetching block from rpc
@@ -322,9 +322,9 @@ impl BlockFileIndexerCallback<Vec<BuildRecordResult>> for BlocksIndexer {
         let item = BuildRecordResult {
             block_hash,
             prev_block_hash: block.header.prev_blockhash,
-            block_file_index: block_file_index,
+            block_file_index,
             block_file_offset: block_file_offset as u64,
-            block_record_index: block_record_index,
+            block_record_index,
         };
         user_data.push(item);
 
@@ -458,13 +458,13 @@ impl BlockLocalLoader {
             ));
         }
 
-        if let Some(max_cached_file_index) = cache.calc_latest_block_file_index() {
-            if max_cached_file_index > last_block_file_index {
-                return Err(format!(
-                    "Cached block file index {} exceeds persisted last block file index {}",
-                    max_cached_file_index, last_block_file_index
-                ));
-            }
+        if let Some(max_cached_file_index) = cache.calc_latest_block_file_index()
+            && max_cached_file_index > last_block_file_index
+        {
+            return Err(format!(
+                "Cached block file index {} exceeds persisted last block file index {}",
+                max_cached_file_index, last_block_file_index
+            ));
         }
 
         for (expected_height, (height, block_hash)) in cache.sorted_blocks.iter().enumerate() {
@@ -604,7 +604,7 @@ impl BlockLocalLoader {
     pub fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
         let cache = self.block_index_cache.lock().unwrap();
         if cache.sorted_blocks.len() > block_height as usize {
-            Ok(cache.sorted_blocks[block_height as usize].1.clone())
+            Ok(cache.sorted_blocks[block_height as usize].1)
         } else {
             warn!(
                 "Block height {} not found in local index cache, fetching from rpc",

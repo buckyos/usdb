@@ -63,14 +63,14 @@ impl BlockFileCache {
 
         if let Some(block) = blocks.get(record_index) {
             // println!("Cache hit for blk file index {}, record {}", file_index, record_index);
-            return Ok(block.clone());
+            Ok(block.clone())
         } else {
             let msg = format!(
                 "Record index {} out of bounds for file index {}",
                 record_index, file_index
             );
             error!("{}", msg);
-            return Err(msg);
+            Err(msg)
         }
     }
 
@@ -133,9 +133,11 @@ impl BlockFileCache {
 
 pub type BlockFileCacheRef = std::sync::Arc<BlockFileCache>;
 
+type PrefetchQueue = Arc<Mutex<VecDeque<(usize, Arc<Vec<Block>>)>>>;
+
 #[derive(Clone)]
 struct PrefetchManager {
-    queue: Arc<Mutex<VecDeque<(usize, Arc<Vec<Block>>)>>>,
+    queue: PrefetchQueue,
     reader: BlockFileReaderRef,
     sender: Arc<Mutex<Option<mpsc::Sender<usize>>>>,
     latest_blk_file_index: Arc<AtomicUsize>,
@@ -153,13 +155,13 @@ impl PrefetchManager {
 
     pub fn notify_prefetch(&self, file_index: usize) {
         let sender_lock = self.sender.lock().unwrap();
-        if let Some(sender) = sender_lock.as_ref() {
-            if let Err(err) = sender.send(file_index) {
-                error!(
-                    "Failed to notify prefetch for blk file index {}: {}",
-                    file_index, err
-                );
-            }
+        if let Some(sender) = sender_lock.as_ref()
+            && let Err(err) = sender.send(file_index)
+        {
+            error!(
+                "Failed to notify prefetch for blk file index {}: {}",
+                file_index, err
+            );
         }
     }
 

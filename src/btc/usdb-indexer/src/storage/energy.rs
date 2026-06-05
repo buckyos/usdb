@@ -346,14 +346,14 @@ impl PassEnergyStorage {
         })?;
 
         let max_key = Self::make_energy_key(inscription_id, from_block_height)?;
-        let mut iter = self.db.iterator_cf(
+        let iter = self.db.iterator_cf(
             cf,
             rocksdb::IteratorMode::From(&max_key, rocksdb::Direction::Reverse),
         );
 
         let mut last_record: Option<PassEnergyRecord> = None;
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, value_bytes) = item.map_err(|e| {
                 let msg = format!("Failed to iterate pass energy records: {}", e);
                 error!("{}", msg);
@@ -372,7 +372,7 @@ impl PassEnergyStorage {
                         })?;
 
                 last_record = Some(PassEnergyRecord {
-                    inscription_id: key.inscription_id.clone(),
+                    inscription_id: key.inscription_id,
                     block_height: key.block_height,
                     state: value.state,
                     active_block_height: value.active_block_height,
@@ -421,7 +421,7 @@ impl PassEnergyStorage {
         })?;
 
         let start_key = Self::make_energy_key(inscription_id, from_block_height)?;
-        let mut iter = self.db.iterator_cf(
+        let iter = self.db.iterator_cf(
             cf,
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
         );
@@ -429,7 +429,7 @@ impl PassEnergyStorage {
         let mut skipped = 0usize;
         let mut records = Vec::new();
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, value_bytes) = item.map_err(|e| {
                 let msg = format!("Failed to iterate pass energy records by range: {}", e);
                 error!("{}", msg);
@@ -462,7 +462,7 @@ impl PassEnergyStorage {
                     })?;
 
             records.push(PassEnergyRecord {
-                inscription_id: key.inscription_id.clone(),
+                inscription_id: key.inscription_id,
                 block_height: key.block_height,
                 state: value.state,
                 active_block_height: value.active_block_height,
@@ -513,7 +513,7 @@ impl PassEnergyStorage {
         })?;
 
         let start_key = Self::make_energy_key(inscription_id, to_block_height)?;
-        let mut iter = self.db.iterator_cf(
+        let iter = self.db.iterator_cf(
             cf,
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Reverse),
         );
@@ -521,7 +521,7 @@ impl PassEnergyStorage {
         let mut skipped = 0usize;
         let mut records = Vec::new();
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, value_bytes) = item.map_err(|e| {
                 let msg = format!("Failed to iterate pass energy records by range desc: {}", e);
                 error!("{}", msg);
@@ -554,7 +554,7 @@ impl PassEnergyStorage {
                     })?;
 
             records.push(PassEnergyRecord {
-                inscription_id: key.inscription_id.clone(),
+                inscription_id: key.inscription_id,
                 block_height: key.block_height,
                 state: value.state,
                 active_block_height: value.active_block_height,
@@ -594,13 +594,13 @@ impl PassEnergyStorage {
         })?;
 
         let start_key = Self::make_energy_key(inscription_id, from_block_height)?;
-        let mut iter = self.db.iterator_cf(
+        let iter = self.db.iterator_cf(
             cf,
             rocksdb::IteratorMode::From(&start_key, rocksdb::Direction::Forward),
         );
 
         let mut count: u64 = 0;
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, _value_bytes) = item.map_err(|e| {
                 let msg = format!(
                     "Failed to iterate pass energy records by range count: {}",
@@ -639,12 +639,12 @@ impl PassEnergyStorage {
             msg
         })?;
 
-        let mut iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        let iter = self.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
 
         let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
         let mut max_kept_height: Option<u32> = None;
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, _value_bytes) = item.map_err(|e| {
                 let msg = format!("Failed to iterate pass energy records: {}", e);
                 error!("{}", msg);
@@ -705,13 +705,13 @@ impl PassEnergyStorage {
             msg
         })?;
 
-        let mut iter = self
+        let iter = self
             .db
             .iterator_cf(cf, rocksdb::IteratorMode::Start)
             .peekable();
         let mut max_height: Option<u32> = None;
 
-        while let Some(item) = iter.next() {
+        for item in iter {
             let (key_bytes, _value_bytes) = item.map_err(|e| {
                 let msg = format!("Failed to iterate pass energy records: {}", e);
                 error!("{}", msg);
@@ -928,7 +928,7 @@ mod tests {
         for height in [100, 110, 120, 130] {
             storage
                 .insert_pass_energy_record(&PassEnergyRecord {
-                    inscription_id: target.clone(),
+                    inscription_id: target,
                     block_height: height,
                     state: MinerPassState::Active,
                     active_block_height: height,
@@ -990,7 +990,7 @@ mod tests {
         for height in [100, 110, 120, 130] {
             storage
                 .insert_pass_energy_record(&PassEnergyRecord {
-                    inscription_id: target.clone(),
+                    inscription_id: target,
                     block_height: height,
                     state: MinerPassState::Active,
                     active_block_height: height,
@@ -1051,7 +1051,7 @@ mod tests {
         for height in [100, 110, 120, 130] {
             storage
                 .insert_pass_energy_record(&PassEnergyRecord {
-                    inscription_id: target.clone(),
+                    inscription_id: target,
                     block_height: height,
                     state: MinerPassState::Active,
                     active_block_height: height,

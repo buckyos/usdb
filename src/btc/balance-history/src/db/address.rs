@@ -72,8 +72,7 @@ impl AddressDB {
     }
 
     pub fn get_db_dir(data_dir: &Path) -> PathBuf {
-        let db_dir = data_dir.join("db");
-        db_dir
+        data_dir.join("db")
     }
 
     pub fn set_file_indexed(&self, file_index: u32) -> Result<(), String> {

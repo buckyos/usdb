@@ -19,6 +19,8 @@ use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
 // starts from block height 0 and there is no earlier committed block.
 const EMPTY_COMMIT_HASH: [u8; 32] = [0u8; 32];
 
+type UtxoUpdateSet = (Vec<(OutPointRef, UTXOEntryRef)>, Vec<OutPointRef>);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct BlockTxIndex {
     block_height: u32,
@@ -167,7 +169,7 @@ fn build_block_commits(
         );
         commits.push(BlockCommitEntry {
             block_height: block.block_height,
-            btc_block_hash: block.block_hash.clone(),
+            btc_block_hash: block.block_hash,
             balance_delta_root,
             block_commit,
         });
@@ -382,7 +384,7 @@ impl BatchBlockPreloader {
 
                         // Here we just use None as placeholder, the real UTXO will be loaded in batch later
                         let preload_vin = PreloadVIn {
-                            outpoint: Arc::new(outpoint.clone()),
+                            outpoint: Arc::new(*outpoint),
                             cache_tx_out: None,
                             need_flush: true,
                         };
@@ -583,13 +585,10 @@ impl BatchBlockPreloader {
                 let vin_hashes = tx
                     .vin
                     .par_iter()
-                    .map(|vin| vin.cache_tx_out.as_ref().unwrap().script_hash.clone());
+                    .map(|vin| vin.cache_tx_out.as_ref().unwrap().script_hash);
 
                 // Collect vout addresses
-                let vout_hashes = tx
-                    .vout
-                    .par_iter()
-                    .map(|vout| vout.cache_tx_out.script_hash.clone());
+                let vout_hashes = tx.vout.par_iter().map(|vout| vout.cache_tx_out.script_hash);
 
                 vin_hashes.chain(vout_hashes)
             })
@@ -608,10 +607,7 @@ impl BatchBlockPreloader {
             .into_par_iter()
             .map(|script_hash| {
                 // First load from global balance cache
-                if let Some(cached) = self
-                    .balance_cache
-                    .get(&script_hash, target_block_height as u32)
-                {
+                if let Some(cached) = self.balance_cache.get(&script_hash, target_block_height) {
                     data.balances.insert(script_hash, cached.as_ref().clone());
                     return Ok(());
                 }
@@ -619,7 +615,7 @@ impl BatchBlockPreloader {
                 // Then load from db
                 let balance = self
                     .db
-                    .get_balance_at_block_height(&script_hash, target_block_height as u32)?;
+                    .get_balance_at_block_height(&script_hash, target_block_height)?;
                 data.bench_mark
                     .preload_balances_from_db_counts
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -714,7 +710,7 @@ impl BatchBlockFlusher {
             .batch_put_balance_counts
             .store(all.len() as u64, std::sync::atomic::Ordering::Relaxed);
 
-        Ok((all, block_commits, last_block_height as u32))
+        Ok((all, block_commits, last_block_height))
     }
 
     fn collect_script_registry_updates(
@@ -726,19 +722,19 @@ impl BatchBlockFlusher {
 
         let mut deduped: Vec<ScriptRegistryEntry> = Vec::with_capacity(entries.len());
         for entry in entries {
-            if let Some(last) = deduped.last() {
-                if last.script_hash == entry.script_hash {
-                    if last.script_pubkey.as_bytes() != entry.script_pubkey.as_bytes() {
-                        let msg = format!(
-                            "Conflicting script registry entries for script_hash {}",
-                            entry.script_hash
-                        );
-                        error!("{}", msg);
-                        return Err(msg);
-                    }
-
-                    continue;
+            if let Some(last) = deduped.last()
+                && last.script_hash == entry.script_hash
+            {
+                if last.script_pubkey.as_bytes() != entry.script_pubkey.as_bytes() {
+                    let msg = format!(
+                        "Conflicting script registry entries for script_hash {}",
+                        entry.script_hash
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
                 }
+
+                continue;
             }
 
             deduped.push(entry);
@@ -805,7 +801,7 @@ impl BatchBlockFlusher {
                 for vout in &tx.vout {
                     touched_script_hashes.insert(vout.cache_tx_out.script_hash);
                     created_utxos.push(BlockUndoUtxoEntry {
-                        outpoint: vout.outpoint.as_ref().clone(),
+                        outpoint: *vout.outpoint.as_ref(),
                         script_hash: vout.cache_tx_out.script_hash,
                         value: vout.cache_tx_out.value,
                     });
@@ -828,7 +824,7 @@ impl BatchBlockFlusher {
                     touched_script_hashes.insert(spent.script_hash);
 
                     spent_utxos.push(BlockUndoUtxoEntry {
-                        outpoint: vin.outpoint.as_ref().clone(),
+                        outpoint: *vin.outpoint.as_ref(),
                         script_hash: spent.script_hash,
                         value: spent.value,
                     });
@@ -843,8 +839,7 @@ impl BatchBlockFlusher {
             }
 
             let mut touched_script_hashes: Vec<_> = touched_script_hashes.into_iter().collect();
-            touched_script_hashes
-                .sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+            touched_script_hashes.sort_by_key(|left| left.to_byte_array());
 
             bundles.push(BlockUndoBundle {
                 block_height: block.height,
@@ -858,10 +853,7 @@ impl BatchBlockFlusher {
         Ok(bundles)
     }
 
-    fn collect_utxo_updates(
-        &self,
-        data: &BatchBlockDataRef,
-    ) -> Result<(Vec<(OutPointRef, UTXOEntryRef)>, Vec<OutPointRef>), String> {
+    fn collect_utxo_updates(&self, data: &BatchBlockDataRef) -> Result<UtxoUpdateSet, String> {
         // First find all unspent UTXOs to add.
         let mut utxo_list = Vec::new();
         {
@@ -1077,7 +1069,7 @@ mod block_commit_tests {
             entries: vec![make_entry(4, 11, 3, 33)],
         };
 
-        let left = build_block_commits(&[block.clone()], [1u8; 32]);
+        let left = build_block_commits(std::slice::from_ref(&block), [1u8; 32]);
         let right = build_block_commits(&[block], [2u8; 32]);
         assert_ne!(left[0].block_commit, right[0].block_commit);
     }
@@ -1320,7 +1312,7 @@ mod block_commit_tests {
         let data = Arc::new(data);
         let bundles = flusher.collect_undo_bundles(&data).unwrap();
         let mut expected = vec![script_a, script_b, script_c];
-        expected.sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+        expected.sort_by_key(|left| left.to_byte_array());
 
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].block_height, 20);
@@ -1424,7 +1416,7 @@ mod block_commit_tests {
         let data = Arc::new(data);
         processor.process(&data).unwrap();
 
-        let mut expected_entries = vec![
+        let mut expected_entries = [
             BalanceHistoryEntry {
                 script_hash: script_a,
                 block_height: 30,
@@ -1460,7 +1452,7 @@ mod block_commit_tests {
 
         let bundles = flusher.collect_undo_bundles(&data).unwrap();
         let mut expected_touched = vec![script_a, script_b, script_c];
-        expected_touched.sort_by(|left, right| left.to_byte_array().cmp(&right.to_byte_array()));
+        expected_touched.sort_by_key(|left| left.to_byte_array());
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].block_height, 30);
         assert_eq!(bundles[0].created_utxos.len(), 2);
@@ -1634,7 +1626,7 @@ impl BatchBlockBalanceProcessor {
             all.extend(entries.iter().cloned());
             block_balance_deltas.push(BlockBalanceDelta {
                 block_height: block.height,
-                block_hash: block.block_hash.clone(),
+                block_hash: block.block_hash,
                 entries,
             });
         }

@@ -172,8 +172,7 @@ impl Default for RpcServer {
 }
 
 fn get_default_root_dir() -> PathBuf {
-    let root_dir = usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-    root_dir
+    usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -209,8 +208,10 @@ impl BalanceHistoryConfig {
     pub fn load(root_dir: &Path) -> Result<Self, String> {
         let path = root_dir.join("config.toml");
         if !path.exists() {
-            let mut default_config = BalanceHistoryConfig::default();
-            default_config.root_dir = root_dir.to_path_buf();
+            let default_config = BalanceHistoryConfig {
+                root_dir: root_dir.to_path_buf(),
+                ..BalanceHistoryConfig::default()
+            };
             info!(
                 "Config file {} does not exist. Using default configuration.",
                 path.display()

@@ -299,10 +299,7 @@ impl BalanceHistoryIndexer {
     }
 
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
-        let rpc_latest_block_height = self
-            .btc_client
-            .get_latest_block_height()
-            .map(|h| h as u32)?;
+        let rpc_latest_block_height = self.btc_client.get_latest_block_height()?;
         let latest_block_height = compute_stable_sync_target_height(
             rpc_latest_block_height,
             self.config.sync.max_sync_block_height,
@@ -370,7 +367,7 @@ impl BalanceHistoryIndexer {
             ret
         });
 
-        let ret = match handle.await {
+        match handle.await {
             Ok(ret) => match ret {
                 Ok(_) => {
                     info!("Balance History Indexer thread exited successfully");
@@ -387,9 +384,7 @@ impl BalanceHistoryIndexer {
                 error!("{}", msg);
                 Err(msg)
             }
-        };
-
-        ret
+        }
     }
 
     // Gracefully shutdown the indexer and wait for the run loop to exit

@@ -337,6 +337,8 @@ impl RpcClient {
     }
 }
 
+pub type RpcClientRef = std::sync::Arc<RpcClient>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +390,3 @@ mod tests {
         assert!(msg.contains("data={\"foo\":\"bar\"}"));
     }
 }
-
-pub type RpcClientRef = std::sync::Arc<RpcClient>;

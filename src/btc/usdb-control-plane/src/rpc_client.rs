@@ -663,6 +663,18 @@ fn resolve_descriptor_child_path(
     Ok(child_path.into())
 }
 
+/// Decodes an Ethereum-style `0x` hex quantity into `u64`.
+///
+/// Empty quantities such as `0x` are treated as zero to match the semantics used
+/// by upstream JSON-RPC responses.
+pub fn decode_hex_quantity(value: &str) -> Result<u64, String> {
+    let raw = value.trim_start_matches("0x");
+    if raw.is_empty() {
+        return Ok(0);
+    }
+    u64::from_str_radix(raw, 16).map_err(|e| format!("Invalid hex quantity {}: {}", value, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -710,16 +722,4 @@ mod tests {
 
         assert_eq!(decoded, None);
     }
-}
-
-/// Decodes an Ethereum-style `0x` hex quantity into `u64`.
-///
-/// Empty quantities such as `0x` are treated as zero to match the semantics used
-/// by upstream JSON-RPC responses.
-pub fn decode_hex_quantity(value: &str) -> Result<u64, String> {
-    let raw = value.trim_start_matches("0x");
-    if raw.is_empty() {
-        return Ok(0);
-    }
-    u64::from_str_radix(raw, 16).map_err(|e| format!("Invalid hex quantity {}: {}", value, e))
 }

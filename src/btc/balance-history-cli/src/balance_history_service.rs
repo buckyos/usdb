@@ -84,7 +84,7 @@ impl BalanceHistoryService {
             } => {
                 let mut script_hashes = Vec::new();
                 for user in &users {
-                    let user_id = match UserId::from_str(&user) {
+                    let user_id = match UserId::from_str(user) {
                         Ok(id) => id,
                         Err(e) => {
                             let msg = format!("Invalid user ID '{}': {}", user, e);

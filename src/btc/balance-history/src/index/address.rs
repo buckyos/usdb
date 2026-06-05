@@ -105,7 +105,7 @@ impl AddressIndexer {
     }
 
     fn build_index_from_rpc(&self) -> Result<(), String> {
-        let latest_block_height = self.btc_client.get_latest_block_height()? as u32;
+        let latest_block_height = self.btc_client.get_latest_block_height()?;
         let current_block_height = self.db.get_indexed_block_height()?;
         if current_block_height.is_none() {
             let msg = format!(
@@ -269,7 +269,7 @@ impl BlockFileIndexerCallback<Option<Vec<(USDBScriptHash, ScriptBuf)>>> for Addr
     ) -> Result<(), String> {
         if let Some(ref records) = records {
             if !records.is_empty() {
-                self.db.put_addresses(&records)?;
+                self.db.put_addresses(records)?;
             } else {
                 // No new addresses found in this blk file or the file
             }
@@ -305,7 +305,7 @@ impl BlockFileIndexerCallback<Option<Vec<(USDBScriptHash, ScriptBuf)>>> for Addr
 
         self.block_cache.lock().unwrap().generate_sort_blocks()?;
         let latest_height = self.block_cache.lock().unwrap().get_latest_block_height();
-        self.db.set_indexed_block_height(latest_height as u32)?;
+        self.db.set_indexed_block_height(latest_height)?;
 
         self.db.set_all_file_indexed()?;
 

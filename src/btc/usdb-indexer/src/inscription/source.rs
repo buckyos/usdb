@@ -173,7 +173,7 @@ mod tests {
         let public_key = PublicKey::new(
             bitcoincore_rpc::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret),
         );
-        Address::p2pkh(&public_key, Network::Regtest).to_string()
+        Address::p2pkh(public_key, Network::Regtest).to_string()
     }
 
     #[test]

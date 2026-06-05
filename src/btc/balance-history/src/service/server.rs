@@ -105,7 +105,8 @@ impl BalanceHistoryRpcServer {
     }
 
     pub async fn close(&self) {
-        if let Some(handle) = self.server_handle.lock().unwrap().take() {
+        let handle = { self.server_handle.lock().unwrap().take() };
+        if let Some(handle) = handle {
             info!("Closing RPC server.");
             tokio::task::spawn_blocking(move || {
                 handle.close();
@@ -269,13 +270,13 @@ impl BalanceHistoryRpcServer {
             return Ok(ConsensusStateReference::default());
         };
 
-        if let Some(requested_height) = context.requested_height {
-            if requested_height != block_height {
-                return Err(Self::to_invalid_params(format!(
-                    "ConsensusQueryContext.requested_height {} does not match block_height {}",
-                    requested_height, block_height
-                )));
-            }
+        if let Some(requested_height) = context.requested_height
+            && requested_height != block_height
+        {
+            return Err(Self::to_invalid_params(format!(
+                "ConsensusQueryContext.requested_height {} does not match block_height {}",
+                requested_height, block_height
+            )));
         }
 
         Ok(context.expected_state.clone())
@@ -294,124 +295,120 @@ impl BalanceHistoryRpcServer {
         let actual_state =
             self.build_consensus_state_reference_from_historical_state_ref(state_ref);
 
-        if let Some(expected_snapshot_id) = expected_state.snapshot_id.as_ref() {
-            if expected_snapshot_id != &state_ref.snapshot_id {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::SnapshotIdMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical snapshot_id {} at height {}, got {}",
-                            expected_snapshot_id, block_height, state_ref.snapshot_id
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_snapshot_id) = expected_state.snapshot_id.as_ref()
+            && expected_snapshot_id != &state_ref.snapshot_id
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotIdMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical snapshot_id {} at height {}, got {}",
+                        expected_snapshot_id, block_height, state_ref.snapshot_id
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_stable_height) = expected_state.stable_height {
-            if expected_stable_height != state_ref.block_height {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::SnapshotIdMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical stable height {} at height {}, got {}",
-                            expected_stable_height, block_height, state_ref.block_height
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_stable_height) = expected_state.stable_height
+            && expected_stable_height != state_ref.block_height
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::SnapshotIdMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical stable height {} at height {}, got {}",
+                        expected_stable_height, block_height, state_ref.block_height
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_block_hash) = expected_state.stable_block_hash.as_ref() {
-            if expected_block_hash != &state_ref.stable_block_hash {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::BlockHashMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected historical stable block hash {} at height {}, got {}",
-                            expected_block_hash, block_height, state_ref.stable_block_hash
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_block_hash) = expected_state.stable_block_hash.as_ref()
+            && expected_block_hash != &state_ref.stable_block_hash
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::BlockHashMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected historical stable block hash {} at height {}, got {}",
+                        expected_block_hash, block_height, state_ref.stable_block_hash
+                    )),
+                ),
+            ));
         }
 
-        if let Some(expected_api_version) = expected_state.balance_history_api_version.as_ref() {
-            if expected_api_version != &state_ref.consensus_identity.balance_history_api_version {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected balance-history API version {} at height {}, got {}",
-                            expected_api_version,
-                            block_height,
-                            state_ref.consensus_identity.balance_history_api_version
-                        )),
-                    ),
-                ));
-            }
+        if let Some(expected_api_version) = expected_state.balance_history_api_version.as_ref()
+            && expected_api_version != &state_ref.consensus_identity.balance_history_api_version
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected balance-history API version {} at height {}, got {}",
+                        expected_api_version,
+                        block_height,
+                        state_ref.consensus_identity.balance_history_api_version
+                    )),
+                ),
+            ));
         }
 
         if let Some(expected_semantics_version) =
             expected_state.balance_history_semantics_version.as_ref()
-        {
-            if expected_semantics_version
+            && expected_semantics_version
                 != &state_ref
                     .consensus_identity
                     .balance_history_semantics_version
-            {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected balance-history semantics version {} at height {}, got {}",
-                            expected_semantics_version,
-                            block_height,
-                            state_ref
-                                .consensus_identity
-                                .balance_history_semantics_version
-                        )),
-                    ),
-                ));
-            }
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected balance-history semantics version {} at height {}, got {}",
+                        expected_semantics_version,
+                        block_height,
+                        state_ref
+                            .consensus_identity
+                            .balance_history_semantics_version
+                    )),
+                ),
+            ));
         }
 
         if let Some(expected_usdb_protocol_version) =
             expected_state.usdb_index_protocol_version.as_ref()
-        {
-            if expected_usdb_protocol_version
+            && expected_usdb_protocol_version
                 != &state_ref.consensus_identity.usdb_index_protocol_version
-            {
-                return Err(Self::to_consensus_error(
-                    ConsensusRpcErrorCode::VersionMismatch,
-                    self.build_consensus_error_data_for_state(
-                        Some(block_height),
-                        expected_state.clone(),
-                        actual_state,
-                        Some(format!(
-                            "Expected usdb-index protocol version {} at height {}, got {}",
-                            expected_usdb_protocol_version,
-                            block_height,
-                            state_ref.consensus_identity.usdb_index_protocol_version
-                        )),
-                    ),
-                ));
-            }
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::VersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected usdb-index protocol version {} at height {}, got {}",
+                        expected_usdb_protocol_version,
+                        block_height,
+                        state_ref.consensus_identity.usdb_index_protocol_version
+                    )),
+                ),
+            ));
         }
 
         Ok(())
@@ -506,7 +503,7 @@ impl BalanceHistoryRpcServer {
 
         let span = u64::from(range.end - range.start);
         let bucket_size = u64::from(bucket_size);
-        let bucket_count = (span + bucket_size - 1) / bucket_size;
+        let bucket_count = span.div_ceil(bucket_size);
         if bucket_count > MAX_ADDRESS_AGGREGATE_BUCKETS {
             return Err(Self::to_invalid_params(format!(
                 "Bucket count {} exceeds maximum {}; increase bucket_size or narrow block_range",
@@ -1258,9 +1255,10 @@ mod tests {
         let root_dir = std::env::temp_dir().join(format!("balance_history_rpc_{}_{}", tag, nanos));
         std::fs::create_dir_all(&root_dir).unwrap();
 
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir;
-        let config = Arc::new(config);
+        let config = Arc::new(BalanceHistoryConfig {
+            root_dir,
+            ..BalanceHistoryConfig::default()
+        });
         let db =
             Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
         let status = Arc::new(SyncStatusManager::new());
@@ -1358,7 +1356,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
 
         let snapshot = server.get_snapshot_info().unwrap();
@@ -1396,7 +1398,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
 
         let state_ref = server
@@ -1454,7 +1460,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
 
         let err = server
@@ -1638,7 +1648,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
 
         let err = server
@@ -1716,7 +1730,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
         let script_hash = make_script_hash(88);
         server
@@ -1920,7 +1938,11 @@ mod tests {
         };
         server
             .db
-            .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit.clone()])
+            .update_address_history_with_block_commits_async(
+                &Vec::new(),
+                12,
+                std::slice::from_ref(&commit),
+            )
             .unwrap();
 
         let loaded = server.get_block_commit(12).unwrap().unwrap();
@@ -2286,7 +2308,7 @@ mod tests {
         let script_hash = USDBScriptHash::from_byte_array([3u8; 32]);
         server.db.put_utxo(&outpoint, &script_hash, 12345).unwrap();
 
-        let loaded = server.get_live_utxo(outpoint.clone()).unwrap().unwrap();
+        let loaded = server.get_live_utxo(outpoint).unwrap().unwrap();
         assert_eq!(loaded.txid, outpoint.txid.to_string());
         assert_eq!(loaded.vout, outpoint.vout);
         assert_eq!(loaded.script_hash, format!("{:x}", script_hash));

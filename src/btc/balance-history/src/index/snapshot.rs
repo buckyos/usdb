@@ -902,7 +902,7 @@ impl SnapshotInstaller {
         if let Some(hash) = expected_hash {
             self.output.println("Verifying snapshot file hash...");
             let file_hash = SnapshotHash::calc_hash(&data.file)?;
-            if file_hash.to_ascii_lowercase() != hash.to_ascii_lowercase() {
+            if !file_hash.eq_ignore_ascii_case(&hash) {
                 let msg = format!(
                     "Snapshot file hash mismatch: expected {}, got {}",
                     hash, file_hash
@@ -927,15 +927,15 @@ impl SnapshotInstaller {
             msg
         })?;
 
-        if let Some(manifest) = manifest.as_ref() {
-            if manifest.state_ref.block_height != meta.block_height {
-                let msg = format!(
-                    "Snapshot manifest block height mismatch: manifest expects {}, snapshot meta reports {}",
-                    manifest.state_ref.block_height, meta.block_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
+        if let Some(manifest) = manifest.as_ref()
+            && manifest.state_ref.block_height != meta.block_height
+        {
+            let msg = format!(
+                "Snapshot manifest block height mismatch: manifest expects {}, snapshot meta reports {}",
+                manifest.state_ref.block_height, meta.block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
         }
 
         info!("Snapshot metadata: {:?}", meta);
@@ -1115,7 +1115,7 @@ impl SnapshotInstaller {
             installed_total += entries.len() as u64;
 
             if let Some(last_entry) = entries.last() {
-                last_script_hash = Some(last_entry.script_hash.clone());
+                last_script_hash = Some(last_entry.script_hash);
             }
 
             self.output.update_load_current_count(installed_total);
@@ -1512,6 +1512,13 @@ mod tests {
         root
     }
 
+    fn test_config_with_root(root_dir: &Path) -> BalanceHistoryConfig {
+        BalanceHistoryConfig {
+            root_dir: root_dir.to_path_buf(),
+            ..BalanceHistoryConfig::default()
+        }
+    }
+
     fn build_manifest_for_snapshot(
         config: &BalanceHistoryConfig,
         snapshot_path: &Path,
@@ -1584,9 +1591,7 @@ mod tests {
     #[test]
     fn test_install_replaces_live_db_with_staged_snapshot() {
         let root_dir = temp_root("install_replace");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
-        let config = Arc::new(config);
+        let config = Arc::new(test_config_with_root(&root_dir));
 
         let old_script = ScriptBuf::from(vec![1u8; 32]);
         let old_script_hash = old_script.to_usdb_script_hash();
@@ -1748,14 +1753,17 @@ mod tests {
         );
         assert_eq!(
             snapshot.latest_block_commit,
-            Some(format!("{}", {
-                let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
-                for byte in &new_commit.block_commit {
-                    use std::fmt::Write;
-                    let _ = write!(&mut output, "{:02x}", byte);
+            Some(
+                {
+                    let mut output = String::with_capacity(new_commit.block_commit.len() * 2);
+                    for byte in &new_commit.block_commit {
+                        use std::fmt::Write;
+                        let _ = write!(&mut output, "{:02x}", byte);
+                    }
+                    output
                 }
-                output
-            }))
+                .to_string()
+            )
         );
 
         let rpc_commit = rpc_server.get_block_commit(10).unwrap().unwrap();
@@ -1808,9 +1816,7 @@ mod tests {
     #[test]
     fn test_install_validates_matching_manifest_before_swap() {
         let root_dir = temp_root("install_manifest_ok");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
-        let config = Arc::new(config);
+        let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         live_db.put_btc_block_height(0).unwrap();
@@ -1889,9 +1895,7 @@ mod tests {
     #[test]
     fn test_install_rejects_manifest_state_ref_mismatch_before_swap() {
         let root_dir = temp_root("install_manifest_bad_snapshot_id");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
-        let config = Arc::new(config);
+        let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         let old_commit = BlockCommitEntry {
@@ -1956,8 +1960,7 @@ mod tests {
     #[test]
     fn test_install_accepts_signed_manifest_when_trusted() {
         let root_dir = temp_root("install_manifest_signed_ok");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
+        let mut config = test_config_with_root(&root_dir);
         config.snapshot.trust_mode = SnapshotTrustMode::Signed;
         let (_, trusted_keys_path, signing_key) =
             write_signing_material(&root_dir, "snapshot-signer-1", 42);
@@ -2034,8 +2037,7 @@ mod tests {
     #[test]
     fn test_install_rejects_signed_mode_without_signature_sidecar() {
         let root_dir = temp_root("install_manifest_signed_missing_sig");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
+        let mut config = test_config_with_root(&root_dir);
         config.snapshot.trust_mode = SnapshotTrustMode::Signed;
         let (_, trusted_keys_path, _) = write_signing_material(&root_dir, "snapshot-signer-1", 7);
         config.snapshot.trusted_keys_file = Some(trusted_keys_path);
@@ -2086,9 +2088,7 @@ mod tests {
     #[test]
     fn test_create_snapshot_rejects_historical_utxo_export() {
         let root_dir = temp_root("snapshot_historical_utxo_rejected");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
-        let config = Arc::new(config);
+        let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         live_db.put_btc_block_height(10).unwrap();
@@ -2112,9 +2112,7 @@ mod tests {
     #[test]
     fn test_create_snapshot_manifest_hash_matches_finalized_db_file() {
         let root_dir = temp_root("snapshot_manifest_hash_matches_finalized_db");
-        let mut config = BalanceHistoryConfig::default();
-        config.root_dir = root_dir.clone();
-        let config = Arc::new(config);
+        let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
         live_db.put_btc_block_height(10).unwrap();

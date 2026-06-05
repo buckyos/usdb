@@ -256,6 +256,7 @@ impl InscriptionIndexer {
     }
 
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_deps_for_test(
         config: ConfigManagerRef,
         block_hint_provider: Arc<dyn BlockHintProvider>,
@@ -499,50 +500,46 @@ impl InscriptionIndexer {
             ));
         }
 
-        if current_height == latest_height {
-            if let Some(local_anchor) = self
+        if current_height == latest_height
+            && let Some(local_anchor) = self
                 .miner_pass_storage
                 .get_balance_history_snapshot_anchor()?
+            && !Self::snapshot_anchor_matches_upstream(&local_anchor, balance_history_snapshot)?
+        {
+            drift_reasons.push(format!(
+                "upstream snapshot anchor drifted at stable height {}",
+                current_height
+            ));
+        }
+
+        if current_height >= genesis_block_height
+            && let Some(local_commit) = self
+                .miner_pass_storage
+                .get_pass_block_commit(current_height)?
+        {
+            match self
+                .balance_history_client
+                .get_block_commit(current_height)
+                .await?
             {
-                if !Self::snapshot_anchor_matches_upstream(&local_anchor, balance_history_snapshot)?
+                Some(upstream_commit)
+                    if !Self::stored_pass_commit_matches_upstream(
+                        &local_commit,
+                        &upstream_commit,
+                    ) =>
                 {
                     drift_reasons.push(format!(
-                        "upstream snapshot anchor drifted at stable height {}",
+                        "upstream block commit drifted at height {}",
                         current_height
                     ));
                 }
-            }
-        }
-
-        if current_height >= genesis_block_height {
-            if let Some(local_commit) = self
-                .miner_pass_storage
-                .get_pass_block_commit(current_height)?
-            {
-                match self
-                    .balance_history_client
-                    .get_block_commit(current_height)
-                    .await?
-                {
-                    Some(upstream_commit)
-                        if !Self::stored_pass_commit_matches_upstream(
-                            &local_commit,
-                            &upstream_commit,
-                        ) =>
-                    {
-                        drift_reasons.push(format!(
-                            "upstream block commit drifted at height {}",
-                            current_height
-                        ));
-                    }
-                    None => {
-                        drift_reasons.push(format!(
-                            "upstream block commit missing at height {}",
-                            current_height
-                        ));
-                    }
-                    Some(_) => {}
+                None => {
+                    drift_reasons.push(format!(
+                        "upstream block commit missing at height {}",
+                        current_height
+                    ));
                 }
+                Some(_) => {}
             }
         }
 
@@ -928,8 +925,8 @@ impl InscriptionIndexer {
                 return Ok(latest_height);
             }
 
-            if let Some(snapshot) = latest_snapshot {
-                if self
+            if let Some(snapshot) = latest_snapshot
+                && self
                     .detect_upstream_reorg_target(
                         last_synced_height,
                         latest_height,
@@ -938,13 +935,12 @@ impl InscriptionIndexer {
                     )
                     .await?
                     .is_some()
-                {
-                    info!(
-                        "Detected upstream anchor drift while idle: module=indexer, synced_height={}, upstream_height={}",
-                        last_synced_height, latest_height
-                    );
-                    return Ok(latest_height);
-                }
+            {
+                info!(
+                    "Detected upstream anchor drift while idle: module=indexer, synced_height={}, upstream_height={}",
+                    last_synced_height, latest_height
+                );
+                return Ok(latest_height);
             }
 
             // Sleep for a while before checking again
@@ -1554,9 +1550,9 @@ impl InscriptionIndexer {
         mint_items
             .iter()
             .map(|item| TransferTrackSeed {
-                inscription_id: item.inscription_id.clone(),
-                owner: item.address.clone(),
-                satpoint: item.satpoint.clone(),
+                inscription_id: item.inscription_id,
+                owner: item.address,
+                satpoint: item.satpoint,
             })
             .collect()
     }
@@ -1601,17 +1597,17 @@ impl InscriptionIndexer {
                 return Err(msg);
             }
 
-            if let Some(source_satpoint) = mint.satpoint {
-                if source_satpoint != create_info.satpoint {
-                    warn!(
-                        "Inscription satpoint mismatch between source and local calc: module=indexer, source={}, block_height={}, inscription_id={}, source_satpoint={}, calc_satpoint={}",
-                        self.inscription_source.source_name(),
-                        block_height,
-                        mint.inscription_id,
-                        source_satpoint,
-                        create_info.satpoint
-                    );
-                }
+            if let Some(source_satpoint) = mint.satpoint
+                && source_satpoint != create_info.satpoint
+            {
+                warn!(
+                    "Inscription satpoint mismatch between source and local calc: module=indexer, source={}, block_height={}, inscription_id={}, source_satpoint={}, calc_satpoint={}",
+                    self.inscription_source.source_name(),
+                    block_height,
+                    mint.inscription_id,
+                    source_satpoint,
+                    create_info.satpoint
+                );
             }
 
             // Index by reveal input outpoint so we can detect ambiguous mint ownership later.
@@ -1619,7 +1615,7 @@ impl InscriptionIndexer {
             reveal_input_to_inscriptions
                 .entry(create_info.commit_outpoint)
                 .or_insert_with(Vec::new)
-                .push(mint.inscription_id.clone());
+                .push(mint.inscription_id);
 
             valid_candidates.push((mint, create_info));
         }
@@ -1666,7 +1662,7 @@ impl InscriptionIndexer {
 
             let op = mint.content.op();
             let inscription_new_item = InscriptionNewItem {
-                inscription_id: mint.inscription_id.clone(),
+                inscription_id: mint.inscription_id,
                 inscription_number: mint.inscription_number,
                 block_height: mint.block_height,
                 timestamp: mint.timestamp,
@@ -1722,12 +1718,12 @@ impl InscriptionIndexer {
         // If it's a mint operation, process the pass minting
         let mint_content = item.content.as_mint().unwrap();
         let mint_info = PassMintInscriptionInfo {
-            inscription_id: item.inscription_id.clone(),
+            inscription_id: item.inscription_id,
             inscription_number: item.inscription_number,
-            mint_txid: item.txid().clone(),
+            mint_txid: *item.txid(),
             mint_block_height: item.block_height,
-            mint_owner: item.address.clone(),
-            satpoint: item.satpoint.clone(),
+            mint_owner: item.address,
+            satpoint: item.satpoint,
             mint_version: mint_content.version,
             pass_kind: mint_content.pass_kind,
             usdb_main: mint_content.usdb_main.clone(),

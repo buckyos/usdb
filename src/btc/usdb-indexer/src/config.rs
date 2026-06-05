@@ -149,7 +149,7 @@ impl Default for USDBConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct IndexerConfig {
     // Optional namespace to isolate runtime data and logs under <root>/<isolate>/.
     pub isolate: Option<String>,
@@ -165,18 +165,6 @@ pub struct IndexerConfig {
 
     // USDB indexer behavior and performance tuning settings.
     pub usdb: USDBConfig,
-}
-
-impl Default for IndexerConfig {
-    fn default() -> Self {
-        IndexerConfig {
-            isolate: None,
-            bitcoin: BTCConfig::default(),
-            ordinals: OrdConfig::default(),
-            balance_history: BalanceHistoryConfig::default(),
-            usdb: USDBConfig::default(),
-        }
-    }
 }
 
 pub struct ConfigManager {
