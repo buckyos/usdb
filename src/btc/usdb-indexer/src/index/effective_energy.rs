@@ -1,7 +1,7 @@
 use super::content::{MinerPassKind, MinerPassState};
 use super::energy::{PassEnergyManagerRef, PassEnergyResult};
 use super::energy_formula::{Energy, calc_collab_contribution, calc_standard_effective_energy};
-use super::pass::MinerPassManagerRef;
+use super::pass::{CollabLeaderRefKind, MinerPassManagerRef};
 use crate::storage::{MinerPassSnapshotInfo, MinerPassStorageRef, PassEnergyRecord};
 use ord::InscriptionId;
 use std::collections::BTreeSet;
@@ -36,6 +36,43 @@ pub struct DerivedPassEnergySnapshot {
     pub collab_contribution: Energy,
     /// UIP-0004 effective energy at the query height.
     pub effective_energy: Energy,
+}
+
+/// One audited collab contribution item resolved for a Leader at one BTC height.
+#[derive(Clone, Debug)]
+pub struct DerivedCollabBreakdownItem {
+    /// Collab pass inscription id.
+    pub collab_pass_id: InscriptionId,
+    /// Collab pass owner script hash at the query height.
+    pub collab_owner: USDBScriptHash,
+    /// Raw energy record height used for the collab pass.
+    pub record_block_height: u32,
+    /// UIP-0003 raw energy projected to the query height.
+    pub collab_raw_energy: Energy,
+    /// UIP-0004 contribution after applying collab weight.
+    pub collab_contribution: Energy,
+    /// Leader reference kind declared by the collab pass.
+    pub leader_ref_kind: String,
+    /// Original Leader reference value declared by the collab pass.
+    pub leader_ref_value: String,
+}
+
+/// Full collab breakdown for one Leader at one BTC height.
+pub struct DerivedCollabBreakdown {
+    /// Leader pass snapshot at the query height.
+    pub leader: MinerPassSnapshotInfo,
+    /// Sum of all item contributions.
+    pub aggregate_collab_contribution: Energy,
+    /// All collab items contributing to this Leader before RPC pagination.
+    pub items: Vec<DerivedCollabBreakdownItem>,
+}
+
+struct CollabBreakdownCollector<'a> {
+    leader_pass_id: &'a InscriptionId,
+    block_height: u32,
+    seen_collabs: &'a mut BTreeSet<InscriptionId>,
+    aggregate: &'a mut Energy,
+    items: &'a mut Vec<DerivedCollabBreakdownItem>,
 }
 
 /// Read-only UIP-0004 effective energy resolver.
@@ -139,6 +176,46 @@ impl EffectiveEnergyResolver {
         }))
     }
 
+    /// Resolve all active collab pass contributions for one Leader pass.
+    ///
+    /// Missing Leader history returns `Ok(None)`. A present non-active or
+    /// non-standard pass returns an empty breakdown because UIP-0004 only lets
+    /// active standard passes receive effective collab contribution.
+    pub fn resolve_collab_breakdown(
+        &self,
+        leader_pass_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<DerivedCollabBreakdown>, String> {
+        let Some(leader) = self
+            .pass_storage
+            .get_pass_snapshot_from_history_at_height(leader_pass_id, block_height)?
+        else {
+            return Ok(None);
+        };
+
+        if leader.pass.state != MinerPassState::Active
+            || leader.pass.pass_kind != MinerPassKind::Standard
+        {
+            return Ok(Some(DerivedCollabBreakdown {
+                leader,
+                aggregate_collab_contribution: 0,
+                items: Vec::new(),
+            }));
+        }
+
+        let (aggregate_collab_contribution, items) = self.resolve_standard_collab_breakdown_items(
+            leader_pass_id,
+            &leader.pass.owner,
+            block_height,
+        )?;
+
+        Ok(Some(DerivedCollabBreakdown {
+            leader,
+            aggregate_collab_contribution,
+            items,
+        }))
+    }
+
     fn resolve_target_raw_energy(
         &self,
         inscription_id: &InscriptionId,
@@ -176,10 +253,33 @@ impl EffectiveEnergyResolver {
         leader_owner: &USDBScriptHash,
         block_height: u32,
     ) -> Result<Energy, String> {
+        let (aggregate, _) = self.resolve_standard_collab_breakdown_items(
+            leader_pass_id,
+            leader_owner,
+            block_height,
+        )?;
+        Ok(aggregate)
+    }
+
+    fn resolve_standard_collab_breakdown_items(
+        &self,
+        leader_pass_id: &InscriptionId,
+        leader_owner: &USDBScriptHash,
+        block_height: u32,
+    ) -> Result<(Energy, Vec<DerivedCollabBreakdownItem>), String> {
         let mut seen_collabs = BTreeSet::new();
         let mut aggregate: Energy = 0;
+        let mut items = Vec::new();
 
-        self.accumulate_collab_contribution_pages(
+        let mut collector = CollabBreakdownCollector {
+            leader_pass_id,
+            block_height,
+            seen_collabs: &mut seen_collabs,
+            aggregate: &mut aggregate,
+            items: &mut items,
+        };
+
+        self.collect_collab_breakdown_pages(
             |page| {
                 self.pass_storage
                     .get_active_collab_passes_by_leader_pass_id_from_history_at_height(
@@ -189,14 +289,11 @@ impl EffectiveEnergyResolver {
                         leader_pass_id,
                     )
             },
-            leader_pass_id,
-            block_height,
-            &mut seen_collabs,
-            &mut aggregate,
+            &mut collector,
             "leader_pass_id",
         )?;
 
-        self.accumulate_collab_contribution_pages(
+        self.collect_collab_breakdown_pages(
             |page| {
                 self.pass_storage
                     .get_active_collab_passes_by_leader_btc_owner_from_history_at_height(
@@ -206,23 +303,17 @@ impl EffectiveEnergyResolver {
                         leader_owner,
                     )
             },
-            leader_pass_id,
-            block_height,
-            &mut seen_collabs,
-            &mut aggregate,
+            &mut collector,
             "leader_btc_owner",
         )?;
 
-        Ok(aggregate)
+        Ok((aggregate, items))
     }
 
-    fn accumulate_collab_contribution_pages<F>(
+    fn collect_collab_breakdown_pages<F>(
         &self,
         mut load_page: F,
-        leader_pass_id: &InscriptionId,
-        block_height: u32,
-        seen_collabs: &mut BTreeSet<InscriptionId>,
-        aggregate: &mut Energy,
+        collector: &mut CollabBreakdownCollector<'_>,
         source: &'static str,
     ) -> Result<(), String>
     where
@@ -237,28 +328,36 @@ impl EffectiveEnergyResolver {
             }
 
             for collab_snapshot in &collabs {
-                if !seen_collabs.insert(collab_snapshot.pass.inscription_id) {
+                if !collector
+                    .seen_collabs
+                    .insert(collab_snapshot.pass.inscription_id)
+                {
                     continue;
                 }
 
-                let Some(resolved_leader) = self
-                    .miner_pass_manager
-                    .resolve_collab_leader_at_height(&collab_snapshot.pass, block_height)?
+                let Some(resolved_leader) =
+                    self.miner_pass_manager.resolve_collab_leader_at_height(
+                        &collab_snapshot.pass,
+                        collector.block_height,
+                    )?
                 else {
                     continue;
                 };
-                if resolved_leader.leader.pass.inscription_id != *leader_pass_id {
+                if resolved_leader.leader.pass.inscription_id != *collector.leader_pass_id {
                     continue;
                 }
 
-                let Some(collab_raw) = self.resolve_raw_energy_at_or_before(
-                    &collab_snapshot.pass.inscription_id,
-                    block_height,
-                )?
+                let Some((record_block_height, collab_raw)) = self
+                    .resolve_raw_energy_record_at_or_before(
+                        &collab_snapshot.pass.inscription_id,
+                        collector.block_height,
+                    )?
                 else {
                     let msg = format!(
                         "Active collab pass missing raw energy while resolving Leader contribution: collab_inscription_id={}, leader_inscription_id={}, block_height={}",
-                        collab_snapshot.pass.inscription_id, leader_pass_id, block_height
+                        collab_snapshot.pass.inscription_id,
+                        collector.leader_pass_id,
+                        collector.block_height
                     );
                     error!("{}", msg);
                     return Err(msg);
@@ -267,16 +366,26 @@ impl EffectiveEnergyResolver {
                     let msg = format!(
                         "Active collab pass energy state mismatch while resolving Leader contribution: collab_inscription_id={}, leader_inscription_id={}, block_height={}, energy_state={}",
                         collab_snapshot.pass.inscription_id,
-                        leader_pass_id,
-                        block_height,
+                        collector.leader_pass_id,
+                        collector.block_height,
                         collab_raw.state.as_str()
                     );
                     error!("{}", msg);
                     return Err(msg);
                 }
 
-                *aggregate =
-                    (*aggregate).saturating_add(calc_collab_contribution(collab_raw.energy));
+                let collab_contribution = calc_collab_contribution(collab_raw.energy);
+                *collector.aggregate = (*collector.aggregate).saturating_add(collab_contribution);
+                collector.items.push(DerivedCollabBreakdownItem {
+                    collab_pass_id: collab_snapshot.pass.inscription_id,
+                    collab_owner: collab_snapshot.pass.owner,
+                    record_block_height,
+                    collab_raw_energy: collab_raw.energy,
+                    collab_contribution,
+                    leader_ref_kind: leader_ref_kind_as_str(&resolved_leader.leader_ref_kind)
+                        .to_string(),
+                    leader_ref_value: resolved_leader.leader_ref_value,
+                });
             }
 
             if collabs.len() < self.collab_page_size {
@@ -285,7 +394,7 @@ impl EffectiveEnergyResolver {
             page = page.checked_add(1).ok_or_else(|| {
                 let msg = format!(
                     "Collab pagination overflow while resolving effective energy: leader_inscription_id={}, block_height={}, source={}",
-                    leader_pass_id, block_height, source
+                    collector.leader_pass_id, collector.block_height, source
                 );
                 error!("{}", msg);
                 msg
@@ -295,20 +404,29 @@ impl EffectiveEnergyResolver {
         Ok(())
     }
 
-    fn resolve_raw_energy_at_or_before(
+    fn resolve_raw_energy_record_at_or_before(
         &self,
         inscription_id: &InscriptionId,
         block_height: u32,
-    ) -> Result<Option<PassEnergyResult>, String> {
+    ) -> Result<Option<(u32, PassEnergyResult)>, String> {
         let Some(record) = self
             .pass_energy_manager
             .get_pass_energy_record_at_or_before(inscription_id, block_height)?
         else {
             return Ok(None);
         };
-        Ok(Some(
+        let record_block_height = record.block_height;
+        Ok(Some((
+            record_block_height,
             self.pass_energy_manager
                 .project_energy_record_no_balance_change(&record, block_height),
-        ))
+        )))
+    }
+}
+
+fn leader_ref_kind_as_str(kind: &CollabLeaderRefKind) -> &'static str {
+    match kind {
+        CollabLeaderRefKind::LeaderPassId => "leader_pass_id",
+        CollabLeaderRefKind::LeaderBtcAddr => "leader_btc_addr",
     }
 }

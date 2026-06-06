@@ -154,7 +154,7 @@
 
 `raw_energy` 是 pass 自身 raw energy 的 canonical decimal string 编码；内部按 `u128` 计算和存储，RPC 不使用 JSON number 表达 energy 字段。
 
-`collab_contribution` 和 `effective_energy` 为后续 UIP-0004 / UIP-0006 对齐预留的统一查询面。当前 UIP-0004 尚未实现，`collab_contribution` 固定为 `"0"`，`effective_energy` 等于 `raw_energy`。
+`raw_energy` 保持 UIP-0003 raw energy 口径。`collab_contribution` 和 `effective_energy` 为 UIP-0004 / UIP-0006 派生查询面：active standard pass 返回运行时聚合的 collab contribution 与 `raw + contribution`，active collab pass 和 non-active pass 的 `effective_energy` 为 `"0"`。这些派生值不写回 raw energy ledger。
 
 ## 4.5 ActiveBalanceSnapshot
 
@@ -538,7 +538,7 @@
 - mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
 - 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
-- 返回的 `raw_energy`、`collab_contribution`、`effective_energy` 均为 canonical decimal string。当前 UIP-0004 尚未实现，`collab_contribution` 固定为 `"0"`，`effective_energy` 等于 `raw_energy`。
+- 返回的 `raw_energy`、`collab_contribution`、`effective_energy` 均为 canonical decimal string。`collab_contribution` / `effective_energy` 为运行时派生值，不写回 raw energy ledger。
 
 ### 15) `get_pass_energy_range`
 
@@ -604,6 +604,68 @@
   ]
 }
 ```
+
+### 17) `get_collab_breakdown`
+
+查询某 Leader pass 在目标高度的 collab contribution 审计明细。
+
+参数：
+
+```json
+{
+  "leader_pass_id": "txidi0",
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "system_state_id": "system-..."
+    }
+  },
+  "sort": "collab_pass_id_asc",
+  "page": 0,
+  "page_size": 100
+}
+```
+
+`sort` 可选，允许：
+
+- `collab_pass_id_asc`：按 collab pass id 升序，默认。
+- `contribution_desc_pass_id_asc`：按 contribution 降序，pass id 升序打破平局。
+
+返回：
+
+```json
+{
+  "resolved_height": 900123,
+  "leader_pass_id": "txidi0",
+  "leader_state": "active",
+  "leader_pass_kind": "standard",
+  "sort": "collab_pass_id_asc",
+  "total": 2,
+  "aggregate_collab_contribution": "500000",
+  "items": [
+    {
+      "collab_pass_id": "txidi1",
+      "collab_owner_script_hash": "<USDBScriptHash>",
+      "collab_owner_btc_addr": null,
+      "record_block_height": 900120,
+      "collab_raw_energy": "1000000",
+      "collab_weight_bps": 5000,
+      "collab_contribution": "500000",
+      "leader_ref_kind": "leader_pass_id",
+      "leader_ref_value": "txidi0"
+    }
+  ]
+}
+```
+
+补充语义：
+
+- `context` 校验语义与 `get_pass_energy` 一致。
+- `aggregate_collab_contribution` 是该高度完整 breakdown 的全量 aggregate，不只限当前页。
+- 下游可以遍历所有分页并重算 aggregate。
+- 当前实现没有 script hash -> BTC address 反查索引，因此 `collab_owner_btc_addr` 为 `null`。
 
 ---
 

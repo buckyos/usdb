@@ -1,6 +1,9 @@
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
-use crate::index::{DerivedPassEnergyMode, Energy, InscriptionIndexer, MinerPassState};
+use crate::index::{
+    COLLAB_WEIGHT_BPS, DerivedCollabBreakdownItem, DerivedPassEnergyMode, Energy,
+    InscriptionIndexer, MinerPassState,
+};
 use crate::status::StatusManagerRef;
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
@@ -65,6 +68,21 @@ enum PassEnergyLeaderboardScope {
     Active,
     ActiveDormant,
     All,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CollabBreakdownSort {
+    CollabPassIdAsc,
+    ContributionDescPassIdAsc,
+}
+
+impl CollabBreakdownSort {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::CollabPassIdAsc => "collab_pass_id_asc",
+            Self::ContributionDescPassIdAsc => "contribution_desc_pass_id_asc",
+        }
+    }
 }
 
 impl PassEnergyLeaderboardScope {
@@ -1194,6 +1212,56 @@ impl UsdbIndexerRpcServer {
         }
     }
 
+    fn parse_collab_breakdown_sort(
+        &self,
+        value: Option<&str>,
+    ) -> Result<CollabBreakdownSort, JsonError> {
+        let normalized = value
+            .unwrap_or("collab_pass_id_asc")
+            .trim()
+            .to_ascii_lowercase();
+        match normalized.as_str() {
+            "collab_pass_id_asc" => Ok(CollabBreakdownSort::CollabPassIdAsc),
+            "contribution_desc_pass_id_asc" => Ok(CollabBreakdownSort::ContributionDescPassIdAsc),
+            _ => Err(Self::to_invalid_params(format!(
+                "Invalid collab breakdown sort {}, expected collab_pass_id_asc or contribution_desc_pass_id_asc",
+                normalized
+            ))),
+        }
+    }
+
+    fn sort_collab_breakdown_items(
+        items: &mut [DerivedCollabBreakdownItem],
+        sort: CollabBreakdownSort,
+    ) {
+        match sort {
+            CollabBreakdownSort::CollabPassIdAsc => {
+                items.sort_by(|a, b| a.collab_pass_id.cmp(&b.collab_pass_id));
+            }
+            CollabBreakdownSort::ContributionDescPassIdAsc => {
+                items.sort_by(|a, b| {
+                    b.collab_contribution
+                        .cmp(&a.collab_contribution)
+                        .then_with(|| a.collab_pass_id.cmp(&b.collab_pass_id))
+                });
+            }
+        }
+    }
+
+    fn encode_collab_breakdown_item(item: DerivedCollabBreakdownItem) -> CollabBreakdownItem {
+        CollabBreakdownItem {
+            collab_pass_id: item.collab_pass_id.to_string(),
+            collab_owner_script_hash: item.collab_owner.to_string(),
+            collab_owner_btc_addr: None,
+            record_block_height: item.record_block_height,
+            collab_raw_energy: encode_energy_decimal(item.collab_raw_energy),
+            collab_weight_bps: COLLAB_WEIGHT_BPS as u64,
+            collab_contribution: encode_energy_decimal(item.collab_contribution),
+            leader_ref_kind: item.leader_ref_kind,
+            leader_ref_value: item.leader_ref_value,
+        }
+    }
+
     fn parse_optional_pass_states(
         &self,
         values: Option<Vec<String>>,
@@ -1901,6 +1969,63 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             raw_energy: encode_energy_decimal(snapshot.raw_energy),
             collab_contribution: encode_energy_decimal(snapshot.collab_contribution),
             effective_energy: encode_energy_decimal(snapshot.effective_energy),
+        })
+    }
+
+    fn get_collab_breakdown(
+        &self,
+        params: GetCollabBreakdownParams,
+    ) -> JsonResult<CollabBreakdownPage> {
+        self.validate_pagination(params.page, params.page_size)?;
+
+        let leader_pass_id = self.parse_inscription_id(&params.leader_pass_id)?;
+        let query_height =
+            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
+        self.ensure_history_height_retained(query_height, "historical state")?;
+        let sort = self.parse_collab_breakdown_sort(params.sort.as_deref())?;
+
+        let Some(mut breakdown) = self
+            .indexer
+            .effective_energy_resolver()
+            .resolve_collab_breakdown(&leader_pass_id, query_height)
+            .map_err(Self::to_internal_error)?
+        else {
+            return Err(Self::to_business_error(
+                ERR_PASS_NOT_FOUND,
+                "PASS_NOT_FOUND",
+                json!({
+                    "leader_pass_id": params.leader_pass_id,
+                    "query_block_height": query_height
+                }),
+            ));
+        };
+
+        Self::sort_collab_breakdown_items(&mut breakdown.items, sort);
+        let total = breakdown.items.len() as u64;
+        let offset = Self::pagination_offset(params.page, params.page_size)?;
+        let items = if (offset as u64) >= total {
+            Vec::new()
+        } else {
+            breakdown
+                .items
+                .into_iter()
+                .skip(offset)
+                .take(params.page_size)
+                .map(Self::encode_collab_breakdown_item)
+                .collect()
+        };
+
+        Ok(CollabBreakdownPage {
+            resolved_height: query_height,
+            leader_pass_id: leader_pass_id.to_string(),
+            leader_state: breakdown.leader.pass.state.as_str().to_string(),
+            leader_pass_kind: breakdown.leader.pass.pass_kind.as_str().to_string(),
+            sort: sort.as_str().to_string(),
+            total,
+            aggregate_collab_contribution: encode_energy_decimal(
+                breakdown.aggregate_collab_contribution,
+            ),
+            items,
         })
     }
 
@@ -4488,6 +4613,213 @@ mod tests {
         assert_eq!(snapshot.raw_energy, "700");
         assert_eq!(snapshot.collab_contribution, "0");
         assert_eq!(snapshot.effective_energy, "0");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_collab_breakdown_returns_stable_pages_and_aggregate() {
+        let (server, root_dir) = build_server("collab_breakdown_pages", 130);
+        let storage = server.indexer.miner_pass_storage();
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &server.config.config().bitcoin.network(),
+        )
+        .unwrap();
+
+        let mut leader = make_active_pass(78, 178, 100);
+        leader.owner = leader_owner;
+        leader.mint_owner = leader_owner;
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        let other_leader = make_active_pass(79, 179, 100);
+        storage
+            .add_new_mint_pass_at_height(&other_leader, other_leader.mint_block_height)
+            .unwrap();
+
+        let collab_fixed = make_collab_pass(80, 180, 101, leader.inscription_id);
+        let collab_addr =
+            make_collab_pass_with_leader_addr(81, 181, 102, leader_btc_addr, leader_owner);
+        let collab_other = make_collab_pass(82, 182, 103, other_leader.inscription_id);
+        let dormant_collab = make_collab_pass(83, 183, 104, leader.inscription_id);
+        for pass in [&collab_fixed, &collab_addr, &collab_other, &dormant_collab] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+        storage
+            .update_state_at_height(
+                &dormant_collab.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        seed_energy_record(&server, &leader, 120, 1_000);
+        seed_energy_record(&server, &collab_fixed, 120, 200);
+        seed_energy_record(&server, &collab_addr, 110, 101);
+        seed_energy_record(&server, &collab_other, 120, 900);
+        seed_energy_record_with_state(&server, &dormant_collab, 120, MinerPassState::Dormant, 700);
+
+        let collab_addr_projected_raw = 101u128.saturating_add(calc_growth_delta(100_000, 10));
+        let fixed_contribution = calc_collab_contribution(200);
+        let addr_contribution = calc_collab_contribution(collab_addr_projected_raw);
+        let expected_aggregate = fixed_contribution.saturating_add(addr_contribution);
+
+        let page0 = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                sort: Some("contribution_desc_pass_id_asc".to_string()),
+                page: 0,
+                page_size: 1,
+            })
+            .unwrap();
+        assert_eq!(page0.resolved_height, 120);
+        assert_eq!(page0.leader_pass_id, leader.inscription_id.to_string());
+        assert_eq!(page0.leader_state, MinerPassState::Active.as_str());
+        assert_eq!(page0.leader_pass_kind, MinerPassKind::Standard.as_str());
+        assert_eq!(page0.sort, "contribution_desc_pass_id_asc");
+        assert_eq!(page0.total, 2);
+        assert_eq!(
+            page0.aggregate_collab_contribution,
+            expected_aggregate.to_string()
+        );
+        assert_eq!(page0.items.len(), 1);
+        assert_eq!(
+            page0.items[0].collab_pass_id,
+            collab_fixed.inscription_id.to_string()
+        );
+        assert_eq!(page0.items[0].collab_raw_energy, "200");
+        assert_eq!(
+            page0.items[0].collab_contribution,
+            fixed_contribution.to_string()
+        );
+        assert_eq!(page0.items[0].leader_ref_kind, "leader_pass_id");
+        assert_eq!(
+            page0.items[0].leader_ref_value,
+            leader.inscription_id.to_string()
+        );
+
+        let page1 = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                sort: Some("contribution_desc_pass_id_asc".to_string()),
+                page: 1,
+                page_size: 1,
+            })
+            .unwrap();
+        assert_eq!(page1.total, 2);
+        assert_eq!(page1.items.len(), 1);
+        assert_eq!(
+            page1.items[0].collab_pass_id,
+            collab_addr.inscription_id.to_string()
+        );
+        assert_eq!(
+            page1.items[0].collab_raw_energy,
+            collab_addr_projected_raw.to_string()
+        );
+        assert_eq!(
+            page1.items[0].collab_contribution,
+            addr_contribution.to_string()
+        );
+        assert_eq!(page1.items[0].leader_ref_kind, "leader_btc_addr");
+        assert_eq!(page1.items[0].leader_ref_value, leader_btc_addr);
+
+        let energy = server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                mode: Some("exact".to_string()),
+            })
+            .unwrap();
+        assert_eq!(
+            energy.collab_contribution,
+            page0.aggregate_collab_contribution
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_collab_breakdown_collab_pass_id_sort_and_non_active_leader_empty() {
+        let (server, root_dir) = build_server("collab_breakdown_non_active", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(84, 184, 100);
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &leader.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        let collab = make_collab_pass(85, 185, 101, leader.inscription_id);
+        storage
+            .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+            .unwrap();
+        seed_energy_record_with_state(&server, &leader, 120, MinerPassState::Dormant, 1_000);
+        seed_energy_record(&server, &collab, 120, 200);
+
+        let page = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                sort: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        assert_eq!(page.sort, "collab_pass_id_asc");
+        assert_eq!(page.leader_state, MinerPassState::Dormant.as_str());
+        assert_eq!(page.total, 0);
+        assert_eq!(page.aggregate_collab_contribution, "0");
+        assert!(page.items.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_collab_breakdown_rejects_mismatched_context_height() {
+        let (server, root_dir) = build_server("collab_breakdown_context_height_mismatch", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(86, 186, 100);
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(121),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+                sort: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::InvalidParams);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

@@ -892,6 +892,72 @@ pub struct PassEnergyLeaderboardPage {
     pub items: Vec<PassEnergyLeaderboardItem>,
 }
 
+/// Parameters for `get_collab_breakdown`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetCollabBreakdownParams {
+    /// Leader standard pass inscription id.
+    pub leader_pass_id: String,
+    /// Optional query height; `None` resolves to the current local synced height.
+    pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    ///
+    /// When present, the service validates the historical state reference at
+    /// the resolved height before returning the breakdown.
+    pub context: Option<ConsensusQueryContext>,
+    /// Optional sort:
+    /// - `collab_pass_id_asc`: stable full-audit ordering.
+    /// - `contribution_desc_pass_id_asc`: largest contribution first.
+    pub sort: Option<String>,
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of rows per page.
+    pub page_size: usize,
+}
+
+/// One row in a collab contribution breakdown response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollabBreakdownItem {
+    /// Collab pass inscription id.
+    pub collab_pass_id: String,
+    /// Collab owner script hash at the resolved height.
+    pub collab_owner_script_hash: String,
+    /// Optional display BTC address when a reverse owner mapping is available.
+    pub collab_owner_btc_addr: Option<String>,
+    /// Height of the raw energy record used for this collab pass.
+    pub record_block_height: u32,
+    /// Collab raw energy at resolved height, encoded as canonical decimal string.
+    pub collab_raw_energy: String,
+    /// Collab weight in basis points.
+    pub collab_weight_bps: u64,
+    /// Collab contribution at resolved height, encoded as canonical decimal string.
+    pub collab_contribution: String,
+    /// Leader reference kind declared by the collab pass.
+    pub leader_ref_kind: String,
+    /// Original Leader reference value declared by the collab pass.
+    pub leader_ref_value: String,
+}
+
+/// Paged collab contribution breakdown for one Leader pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollabBreakdownPage {
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Leader standard pass inscription id.
+    pub leader_pass_id: String,
+    /// Leader state at resolved height.
+    pub leader_state: String,
+    /// Leader pass kind at resolved height.
+    pub leader_pass_kind: String,
+    /// Sort rule used by this response.
+    pub sort: String,
+    /// Total number of collab passes contributing at this height.
+    pub total: u64,
+    /// Full aggregate collab contribution at resolved height.
+    pub aggregate_collab_contribution: String,
+    /// Breakdown rows in requested page.
+    pub items: Vec<CollabBreakdownItem>,
+}
+
 /// Parameters for `get_active_balance_snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetActiveBalanceSnapshotParams {
@@ -1099,6 +1165,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassEnergyLeaderboardParams,
     ) -> JsonResult<PassEnergyLeaderboardPage>;
+
+    /// Returns a paged collab contribution breakdown for one Leader pass.
+    #[rpc(name = "get_collab_breakdown")]
+    fn get_collab_breakdown(
+        &self,
+        params: GetCollabBreakdownParams,
+    ) -> JsonResult<CollabBreakdownPage>;
 
     /// Returns invalid passes with optional code filter.
     #[rpc(name = "get_invalid_passes")]

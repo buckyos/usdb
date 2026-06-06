@@ -189,7 +189,7 @@
 
 ## UIP-0004 Collab Leader and Effective Energy
 
-状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver 和 `get_pass_energy` 三字段聚合已开始对接；breakdown、candidate set 和 leaderboard 待继续实现。
+状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver、`get_pass_energy` 三字段聚合和 collab breakdown 审计查询已开始对接；candidate set 和 leaderboard 待继续实现。
 
 ### 已对接内容
 
@@ -219,8 +219,13 @@
   - `raw + Σ collab_contribution` 使用 `energy_uint` 饱和加法，且不写回 raw energy DB。
 - `src/btc/usdb-indexer/src/service/server.rs`
   - `get_pass_energy` 三字段接入 UIP-0004 派生结果：`raw_energy` 保持 UIP-0003 原值，`collab_contribution` / `effective_energy` 运行时计算。
+  - 新增 `get_collab_breakdown`，按 `leader_pass_id + height/context + page/page_size + sort` 返回稳定分页审计明细，并暴露全量 `aggregate_collab_contribution`。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - 更新 `PassEnergySnapshot` 字段注释，移除 UIP-0004 未实现的旧说明。
+  - 新增 `GetCollabBreakdownParams`、`CollabBreakdownItem` 和 `CollabBreakdownPage`。
+- `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
+  - 更新 `get_pass_energy` 的 UIP0004 三字段语义。
+  - 记录 `get_collab_breakdown` 参数、返回字段、sort 规则和 aggregate 审计口径。
 
 ### 已补测试
 
@@ -237,8 +242,10 @@
 - `get_pass_energy` 覆盖 `leader_btc_addr` 动态 Leader 绑定的 collab contribution。
 - `get_pass_energy` active collab pass 的 `raw_energy` 保留、`effective_energy` 为 0。
 - `get_pass_energy` non-active standard pass 的 `raw_energy` 保留、`effective_energy` 为 0。
+- `get_collab_breakdown` 覆盖 contribution desc + pass id tie-break 的稳定分页、全量 aggregate、`leader_pass_id` 与 `leader_btc_addr` 两种 ref kind。
+- `get_collab_breakdown` 覆盖 non-active Leader 返回空 breakdown。
+- `get_collab_breakdown` 覆盖 context height mismatch。
 
 ### 待继续对齐
 
 - candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。
-- collab breakdown 审计查询与 validator payload 三字段对齐。
