@@ -29,6 +29,10 @@ pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
 pub const USDB_INDEX_FORMULA_VERSION: &str = UTIL_USDB_INDEX_FORMULA_VERSION;
 pub const USDB_INDEX_PROTOCOL_VERSION: &str = UTIL_USDB_INDEX_PROTOCOL_VERSION;
+/// USDB-side economic state view version used by UIP-0006 audit queries.
+pub const USDB_ECONOMIC_STATE_VIEW_VERSION: &str = "uip-0006-usdb-economic-state-view:v1";
+/// Deterministic candidate-set ordering rule for the first UIP-0006 view.
+pub const CANDIDATE_SET_SELECTION_RULE: &str = "uip-0006:effective-energy-desc-pass-id-asc:v1";
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
 pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
 /// Version tag of the consensus snapshot-id derivation rule exposed by the RPC layer.
@@ -892,6 +896,60 @@ pub struct PassEnergyLeaderboardPage {
     pub items: Vec<PassEnergyLeaderboardItem>,
 }
 
+/// Parameters for `get_candidate_set_view`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetCandidateSetViewParams {
+    /// Optional query height; `None` resolves to the current local synced height.
+    pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    ///
+    /// When present, the service validates the historical state reference at
+    /// the resolved height before returning the candidate set.
+    pub context: Option<ConsensusQueryContext>,
+    /// Optional selection rule. Defaults to `CANDIDATE_SET_SELECTION_RULE`.
+    pub selection_rule: Option<String>,
+    /// Zero-based page index.
+    pub page: usize,
+    /// Number of rows per page.
+    pub page_size: usize,
+}
+
+/// One row in a UIP-0006 candidate set view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateSetViewItem {
+    /// Pass inscription id, used as the pass id in UIP-0006 ordering.
+    pub pass_id: String,
+    /// Owner script hash at the resolved height.
+    pub owner_script_hash: String,
+    /// Pass state at the resolved height. Candidate rows are always `active`.
+    pub state: String,
+    /// Pass kind at the resolved height. Candidate rows are always `standard`.
+    pub pass_kind: String,
+    /// Height of the raw energy record used for this candidate.
+    pub record_block_height: u32,
+    /// UIP-0003 raw energy at resolved height, encoded as canonical decimal string.
+    pub raw_energy: String,
+    /// UIP-0004 collab contribution at resolved height, encoded as canonical decimal string.
+    pub collab_contribution: String,
+    /// UIP-0004 effective energy at resolved height, encoded as canonical decimal string.
+    pub effective_energy: String,
+}
+
+/// Paged UIP-0006 candidate set audit view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateSetViewPage {
+    /// Economic state view version used by this response.
+    pub view_version: String,
+    /// Final query height resolved by the server.
+    pub resolved_height: u32,
+    /// Selection rule used for ordering and winner derivation.
+    pub selection_rule: String,
+    /// Total number of active standard candidate passes.
+    pub total: u64,
+    /// Candidate rows in requested page.
+    pub items: Vec<CandidateSetViewItem>,
+}
+
 /// Parameters for `get_collab_breakdown`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetCollabBreakdownParams {
@@ -1165,6 +1223,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassEnergyLeaderboardParams,
     ) -> JsonResult<PassEnergyLeaderboardPage>;
+
+    /// Returns the UIP-0006 validator/audit candidate set view at a target height.
+    #[rpc(name = "get_candidate_set_view")]
+    fn get_candidate_set_view(
+        &self,
+        params: GetCandidateSetViewParams,
+    ) -> JsonResult<CandidateSetViewPage>;
 
     /// Returns a paged collab contribution breakdown for one Leader pass.
     #[rpc(name = "get_collab_breakdown")]

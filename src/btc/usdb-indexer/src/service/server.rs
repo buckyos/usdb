@@ -2,7 +2,7 @@ use super::rpc::*;
 use crate::config::ConfigManagerRef;
 use crate::index::{
     COLLAB_WEIGHT_BPS, DerivedCollabBreakdownItem, DerivedPassEnergyMode, Energy,
-    InscriptionIndexer, MinerPassState,
+    InscriptionIndexer, MinerPassKind, MinerPassState,
 };
 use crate::status::StatusManagerRef;
 use jsonrpc_core::IoHandler;
@@ -57,6 +57,12 @@ struct PassEnergyLeaderboardCache {
 struct RankedPassEnergyItem {
     item: PassEnergyLeaderboardItem,
     energy: Energy,
+}
+
+#[derive(Clone, Debug)]
+struct RankedCandidateSetItem {
+    item: CandidateSetViewItem,
+    effective_energy: Energy,
 }
 
 fn encode_energy_decimal(energy: Energy) -> String {
@@ -1212,6 +1218,21 @@ impl UsdbIndexerRpcServer {
         }
     }
 
+    fn parse_candidate_set_selection_rule(
+        &self,
+        value: Option<&str>,
+    ) -> Result<&'static str, JsonError> {
+        let normalized = value.unwrap_or(CANDIDATE_SET_SELECTION_RULE).trim();
+        if normalized == CANDIDATE_SET_SELECTION_RULE {
+            return Ok(CANDIDATE_SET_SELECTION_RULE);
+        }
+
+        Err(Self::to_invalid_params(format!(
+            "Invalid candidate set selection_rule {}, expected {}",
+            normalized, CANDIDATE_SET_SELECTION_RULE
+        )))
+    }
+
     fn parse_collab_breakdown_sort(
         &self,
         value: Option<&str>,
@@ -1373,6 +1394,21 @@ impl UsdbIndexerRpcServer {
         }
 
         if offset >= items.len() {
+            return Ok(Vec::new());
+        }
+
+        let end = offset.saturating_add(page_size).min(items.len());
+        Ok(items[offset..end].to_vec())
+    }
+
+    fn paginate_candidate_set_items(
+        items: &[CandidateSetViewItem],
+        total: u64,
+        page: usize,
+        page_size: usize,
+    ) -> Result<Vec<CandidateSetViewItem>, JsonError> {
+        let offset = Self::pagination_offset(page, page_size)?;
+        if (offset as u64) >= total || offset >= items.len() {
             return Ok(Vec::new());
         }
 
@@ -1553,6 +1589,116 @@ impl UsdbIndexerRpcServer {
 
         Ok((total, ranked))
     }
+
+    fn build_candidate_set_view_dataset(
+        &self,
+        resolved_height: u32,
+    ) -> Result<(u64, Vec<CandidateSetViewItem>), JsonError> {
+        let build_start = Instant::now();
+        let storage = self.indexer.miner_pass_storage();
+        let total_candidates = storage
+            .get_active_standard_pass_count_from_history_at_height(resolved_height)
+            .map_err(Self::to_internal_error)?;
+
+        if total_candidates == 0 {
+            return Ok((0, Vec::new()));
+        }
+
+        let load_page_size = self.config.config().usdb.active_address_page_size.max(1);
+        let total_candidates_usize = usize::try_from(total_candidates).map_err(|_| {
+            Self::to_internal_error(format!(
+                "Candidate count overflow when building candidate set view: total_candidates={}",
+                total_candidates
+            ))
+        })?;
+        let total_pages = total_candidates_usize.div_ceil(load_page_size);
+        let mut rows = Vec::with_capacity(total_candidates_usize);
+        for page in 0..total_pages {
+            let page_rows = storage
+                .get_active_standard_passes_by_page_from_history_at_height(
+                    page,
+                    load_page_size,
+                    resolved_height,
+                )
+                .map_err(Self::to_internal_error)?;
+            if page_rows.is_empty() {
+                break;
+            }
+            rows.extend(page_rows);
+        }
+
+        let mut ranked = Vec::with_capacity(rows.len());
+        for row in rows {
+            let pass_id = row.pass.inscription_id;
+            let Some(snapshot) = self
+                .indexer
+                .effective_energy_resolver()
+                .resolve_pass_energy(&pass_id, resolved_height, DerivedPassEnergyMode::AtOrBefore)
+                .map_err(Self::to_internal_error)?
+            else {
+                return Err(Self::to_business_error(
+                    ERR_INTERNAL_INVARIANT_BROKEN,
+                    "INTERNAL_INVARIANT_BROKEN",
+                    json!({
+                        "inscription_id": pass_id.to_string(),
+                        "resolved_height": resolved_height,
+                        "detail": "Active standard candidate is missing a raw energy record"
+                    }),
+                ));
+            };
+
+            if snapshot.state != MinerPassState::Active
+                || snapshot.pass_kind != MinerPassKind::Standard
+            {
+                return Err(Self::to_business_error(
+                    ERR_INTERNAL_INVARIANT_BROKEN,
+                    "INTERNAL_INVARIANT_BROKEN",
+                    json!({
+                        "inscription_id": pass_id.to_string(),
+                        "resolved_height": resolved_height,
+                        "state": snapshot.state.as_str(),
+                        "pass_kind": snapshot.pass_kind.as_str(),
+                        "detail": "Kind-aware active standard query returned a non-candidate pass"
+                    }),
+                ));
+            }
+
+            ranked.push(RankedCandidateSetItem {
+                effective_energy: snapshot.effective_energy,
+                item: CandidateSetViewItem {
+                    pass_id: pass_id.to_string(),
+                    owner_script_hash: row.pass.owner.to_string(),
+                    state: snapshot.state.as_str().to_string(),
+                    pass_kind: snapshot.pass_kind.as_str().to_string(),
+                    record_block_height: snapshot.record.block_height,
+                    raw_energy: encode_energy_decimal(snapshot.raw_energy),
+                    collab_contribution: encode_energy_decimal(snapshot.collab_contribution),
+                    effective_energy: encode_energy_decimal(snapshot.effective_energy),
+                },
+            });
+        }
+
+        ranked.sort_by(|a, b| {
+            b.effective_energy
+                .cmp(&a.effective_energy)
+                .then_with(|| a.item.pass_id.cmp(&b.item.pass_id))
+        });
+        let ranked = ranked
+            .into_iter()
+            .map(|ranked| ranked.item)
+            .collect::<Vec<_>>();
+
+        let total = ranked.len() as u64;
+        info!(
+            "Candidate set view dataset built: module=rpc_server, resolved_height={}, candidate_count={}, ranked_count={}, elapsed_ms={}",
+            resolved_height,
+            total_candidates,
+            total,
+            build_start.elapsed().as_millis()
+        );
+
+        Ok((total, ranked))
+    }
 }
 
 impl UsdbIndexerRpc for UsdbIndexerRpcServer {
@@ -1577,6 +1723,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
                 "pass_energy_leaderboard".to_string(),
+                "candidate_set_view".to_string(),
                 "invalid_passes".to_string(),
                 "active_balance_snapshot".to_string(),
                 "latest_active_balance_snapshot".to_string(),
@@ -2217,6 +2364,42 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         Ok(PassEnergyLeaderboardPage {
             resolved_height,
             total: capped_total,
+            items,
+        })
+    }
+
+    fn get_candidate_set_view(
+        &self,
+        params: GetCandidateSetViewParams,
+    ) -> JsonResult<CandidateSetViewPage> {
+        self.validate_pagination(params.page, params.page_size)?;
+
+        let query_height =
+            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
+        self.ensure_history_height_retained(query_height, "historical state")?;
+        let selection_rule =
+            self.parse_candidate_set_selection_rule(params.selection_rule.as_deref())?;
+        let call_start = Instant::now();
+
+        let (total, ranked) = self.build_candidate_set_view_dataset(query_height)?;
+        let items =
+            Self::paginate_candidate_set_items(&ranked, total, params.page, params.page_size)?;
+
+        info!(
+            "Candidate set view served: module=rpc_server, resolved_height={}, selection_rule={}, total={}, page={}, page_size={}, elapsed_ms={}",
+            query_height,
+            selection_rule,
+            total,
+            params.page,
+            params.page_size,
+            call_start.elapsed().as_millis()
+        );
+
+        Ok(CandidateSetViewPage {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            resolved_height: query_height,
+            selection_rule: selection_rule.to_string(),
+            total,
             items,
         })
     }
@@ -4820,6 +5003,196 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.code, ErrorCode::InvalidParams);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_candidate_set_view_filters_collab_and_sorts_by_effective_energy() {
+        let (server, root_dir) = build_server("candidate_set_effective_sort", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(87, 187, 100);
+        let tie_low_id = make_active_pass(88, 188, 100);
+        let tie_high_id = make_active_pass(89, 189, 100);
+        let dormant_standard = make_active_pass(90, 190, 100);
+        for pass in [&leader, &tie_low_id, &tie_high_id, &dormant_standard] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+        storage
+            .update_state_at_height(
+                &dormant_standard.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        let collab_high_raw = make_collab_pass(91, 191, 101, leader.inscription_id);
+        storage
+            .add_new_mint_pass_at_height(&collab_high_raw, collab_high_raw.mint_block_height)
+            .unwrap();
+
+        seed_energy_record(&server, &leader, 120, 100);
+        seed_energy_record(&server, &tie_low_id, 120, 500);
+        seed_energy_record(&server, &tie_high_id, 120, 500);
+        seed_energy_record_with_state(
+            &server,
+            &dormant_standard,
+            120,
+            MinerPassState::Dormant,
+            10_000,
+        );
+        seed_energy_record(&server, &collab_high_raw, 120, 1_000);
+
+        let raw_leaderboard = server
+            .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
+                at_height: Some(120),
+                scope: Some("active".to_string()),
+                page: 0,
+                page_size: 1,
+            })
+            .unwrap();
+        assert_eq!(raw_leaderboard.total, 4);
+        assert_eq!(
+            raw_leaderboard.items[0].inscription_id,
+            collab_high_raw.inscription_id.to_string(),
+            "legacy pass energy leaderboard keeps raw active collab passes visible"
+        );
+
+        let contribution = calc_collab_contribution(1_000);
+        let expected_leader_effective = 100u128.saturating_add(contribution);
+        let page0 = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                block_height: Some(120),
+                context: None,
+                selection_rule: None,
+                page: 0,
+                page_size: 2,
+            })
+            .unwrap();
+
+        assert_eq!(
+            page0.view_version,
+            USDB_ECONOMIC_STATE_VIEW_VERSION.to_string()
+        );
+        assert_eq!(page0.selection_rule, CANDIDATE_SET_SELECTION_RULE);
+        assert_eq!(page0.resolved_height, 120);
+        assert_eq!(page0.total, 3);
+        assert_eq!(page0.items.len(), 2);
+        assert_eq!(page0.items[0].pass_id, leader.inscription_id.to_string());
+        assert_eq!(page0.items[0].owner_script_hash, leader.owner.to_string());
+        assert_eq!(page0.items[0].state, MinerPassState::Active.as_str());
+        assert_eq!(page0.items[0].pass_kind, MinerPassKind::Standard.as_str());
+        assert_eq!(page0.items[0].raw_energy, "100");
+        assert_eq!(page0.items[0].collab_contribution, contribution.to_string());
+        assert_eq!(
+            page0.items[0].effective_energy,
+            expected_leader_effective.to_string()
+        );
+        assert_eq!(
+            page0.items[1].pass_id,
+            tie_low_id.inscription_id.to_string(),
+            "same effective energy must use pass id ascending as tie-breaker"
+        );
+        assert_eq!(page0.items[1].effective_energy, "500");
+
+        let page1 = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                block_height: Some(120),
+                context: None,
+                selection_rule: Some(CANDIDATE_SET_SELECTION_RULE.to_string()),
+                page: 1,
+                page_size: 2,
+            })
+            .unwrap();
+        assert_eq!(page1.total, 3);
+        assert_eq!(page1.items.len(), 1);
+        assert_eq!(
+            page1.items[0].pass_id,
+            tie_high_id.inscription_id.to_string()
+        );
+
+        let candidate_ids = page0
+            .items
+            .iter()
+            .chain(page1.items.iter())
+            .map(|item| item.pass_id.clone())
+            .collect::<Vec<_>>();
+        assert!(!candidate_ids.contains(&collab_high_raw.inscription_id.to_string()));
+        assert!(!candidate_ids.contains(&dormant_standard.inscription_id.to_string()));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_candidate_set_view_rejects_mismatched_context_height() {
+        let (server, root_dir) = build_server("candidate_set_context_height_mismatch", 130);
+        seed_state_ref_context(&server, 120);
+
+        let err = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext {
+                    requested_height: Some(121),
+                    expected_state: ConsensusStateReference::default(),
+                }),
+                selection_rule: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_candidate_set_view_invalid_selection_rule_and_missing_energy_fail_closed() {
+        let (server, root_dir) = build_server("candidate_set_invalid_rule_missing_energy", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        let candidate = make_active_pass(92, 192, 100);
+        storage
+            .add_new_mint_pass_at_height(&candidate, candidate.mint_block_height)
+            .unwrap();
+
+        let invalid_rule = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                block_height: Some(120),
+                context: None,
+                selection_rule: Some("bad-rule".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+        assert_eq!(invalid_rule.code, ErrorCode::InvalidParams);
+        assert!(
+            invalid_rule
+                .message
+                .contains("Invalid candidate set selection_rule")
+        );
+
+        let missing_energy = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                block_height: Some(120),
+                context: None,
+                selection_rule: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+        assert_eq!(
+            missing_energy.code,
+            ErrorCode::ServerError(ERR_INTERNAL_INVARIANT_BROKEN)
+        );
+        assert_eq!(missing_energy.message, "INTERNAL_INVARIANT_BROKEN");
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

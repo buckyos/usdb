@@ -189,7 +189,7 @@
 
 ## UIP-0004 Collab Leader and Effective Energy
 
-状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver、`get_pass_energy` 三字段聚合和 collab breakdown 审计查询已开始对接；candidate set 和 leaderboard 待继续实现。
+状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver、`get_pass_energy` 三字段聚合、collab breakdown 审计查询和 candidate set view 已对接；后续 quote activity / candidate energy 口径留到 UIP-0014。
 
 ### 已对接内容
 
@@ -220,11 +220,16 @@
 - `src/btc/usdb-indexer/src/service/server.rs`
   - `get_pass_energy` 三字段接入 UIP-0004 派生结果：`raw_energy` 保持 UIP-0003 原值，`collab_contribution` / `effective_energy` 运行时计算。
   - 新增 `get_collab_breakdown`，按 `leader_pass_id + height/context + page/page_size + sort` 返回稳定分页审计明细，并暴露全量 `aggregate_collab_contribution`。
+  - 新增 `get_candidate_set_view`，只枚举 active standard pass，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 返回 UIP-0006 candidate set audit view。
+  - `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不改造成 validator candidate set 口径。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - 更新 `PassEnergySnapshot` 字段注释，移除 UIP-0004 未实现的旧说明。
   - 新增 `GetCollabBreakdownParams`、`CollabBreakdownItem` 和 `CollabBreakdownPage`。
+  - 新增 `GetCandidateSetViewParams`、`CandidateSetViewItem` 和 `CandidateSetViewPage`，并声明 UIP-0006 view version / selection rule。
 - `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
   - 更新 `get_pass_energy` 的 UIP0004 三字段语义。
+  - 明确 `get_pass_energy_leaderboard` 不是 validator candidate set。
+  - 记录 `get_candidate_set_view` 参数、返回字段、selection rule 和 fail-closed 语义。
   - 记录 `get_collab_breakdown` 参数、返回字段、sort 规则和 aggregate 审计口径。
 
 ### 已补测试
@@ -245,7 +250,10 @@
 - `get_collab_breakdown` 覆盖 contribution desc + pass id tie-break 的稳定分页、全量 aggregate、`leader_pass_id` 与 `leader_btc_addr` 两种 ref kind。
 - `get_collab_breakdown` 覆盖 non-active Leader 返回空 breakdown。
 - `get_collab_breakdown` 覆盖 context height mismatch。
+- `get_candidate_set_view` 覆盖旧 raw leaderboard 仍展示 active collab，但 candidate set 排除 active collab / dormant standard。
+- `get_candidate_set_view` 覆盖按 standard `effective_energy` 排序，并在相同 effective energy 下按 pass id 升序打平。
+- `get_candidate_set_view` 覆盖 explicit selection rule、context height mismatch、invalid selection rule 和 active standard 缺 raw energy 时 fail-closed。
 
 ### 待继续对齐
 
-- candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。
+- UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。

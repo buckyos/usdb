@@ -570,6 +570,8 @@
 
 查询某高度 pass 的能量排行榜（内部按 `u128 energy DESC` 排序，RPC 输出 canonical decimal string）。
 
+该接口保留为前端/浏览器的 raw energy 展示榜单，不是 validator candidate set 口径。validator 或审计工具需要使用 `get_candidate_set_view`。
+
 参数：
 
 ```json
@@ -605,7 +607,66 @@
 }
 ```
 
-### 17) `get_collab_breakdown`
+### 17) `get_candidate_set_view`
+
+查询某高度的 UIP-0006 candidate set audit view。
+
+该接口只返回 `active standard pass`，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 稳定排序。`effective_energy` 来自 UIP-0004 运行时派生，不写回 raw energy ledger。
+
+参数：
+
+```json
+{
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "system_state_id": "system-..."
+    }
+  },
+  "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "page": 0,
+  "page_size": 100
+}
+```
+
+`selection_rule` 可选；当前仅支持：
+
+- `uip-0006:effective-energy-desc-pass-id-asc:v1`
+
+返回：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "resolved_height": 900123,
+  "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "total": 6000,
+  "items": [
+    {
+      "pass_id": "txidi0",
+      "owner_script_hash": "<USDBScriptHash>",
+      "state": "active",
+      "pass_kind": "standard",
+      "record_block_height": 900120,
+      "raw_energy": "1000000",
+      "collab_contribution": "500000",
+      "effective_energy": "1500000"
+    }
+  ]
+}
+```
+
+补充语义：
+
+- `context` 校验语义与 `get_pass_energy` 一致。
+- `total` 是该高度 active standard candidate 总数。
+- 排序使用内部 `u128 effective_energy`，RPC 只输出 canonical decimal string。
+- active collab pass 即使拥有很高 `raw_energy`，也不会直接进入 candidate set。
+- 若 active standard candidate 缺少 raw energy 记录，服务 fail closed 并返回 `INTERNAL_INVARIANT_BROKEN`。
+
+### 18) `get_collab_breakdown`
 
 查询某 Leader pass 在目标高度的 collab contribution 审计明细。
 
@@ -671,7 +732,7 @@
 
 ## 5.4 活跃地址余额快照
 
-### 17) `get_active_balance_snapshot`
+### 19) `get_active_balance_snapshot`
 
 查询指定高度快照（精确高度）。
 
@@ -690,7 +751,7 @@
 - 若 `block_height > synced_block_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`
 - 若高度合法，但该高度没有 exact active balance snapshot，返回共享共识错误 `NO_RECORD`
 
-### 18) `get_latest_active_balance_snapshot`
+### 20) `get_latest_active_balance_snapshot`
 
 查询最近一次已落库快照。
 
@@ -698,7 +759,7 @@
 
 ## 5.5 管理
 
-### 19) `stop`
+### 21) `stop`
 
 触发索引器优雅停止（建议默认仅 localhost 可访问）。
 
