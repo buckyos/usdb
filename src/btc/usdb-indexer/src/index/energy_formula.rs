@@ -3,14 +3,91 @@
 
 pub type Energy = u128;
 
+/// Satoshi amount represented by one UIP-0003 owner-balance unit.
 pub const UNIT_SATS: u64 = 100_000;
+/// Raw energy earned by one balance unit during one BTC block.
 pub const ENERGY_PER_UNIT_BLOCK: Energy = 1;
+/// Withdrawal penalty multiplier numerator for lost unit-block age.
 pub const PENALTY_LAMBDA_NUM: Energy = 3;
+/// Withdrawal penalty multiplier denominator for lost unit-block age.
 pub const PENALTY_LAMBDA_DEN: Energy = 2;
+/// Discount applied when raw energy is inherited from consumed prev passes.
 pub const INHERIT_DISCOUNT_BPS: Energy = 500;
+/// Basis-point denominator shared by UIP-0003, UIP-0004 and UIP-0005 formulae.
 pub const BPS_DENOMINATOR: Energy = 10_000;
+/// UIP-0004 weight applied to active collab raw energy when contributing to a standard leader.
 pub const COLLAB_WEIGHT_BPS: Energy = 5_000;
+/// UIP-0005 base energy parameter for generating the level threshold curve.
+pub const LEVEL_E0: Energy = 1_000_000;
+/// UIP-0005 rational growth ratio numerator for level thresholds.
+pub const LEVEL_Q_NUM: Energy = 118;
+/// UIP-0005 rational growth ratio denominator for level thresholds.
+pub const LEVEL_Q_DEN: Energy = 100;
+/// Maximum UIP-0005 level in the first formula version.
+pub const MAX_LEVEL: u8 = 50;
+/// Difficulty discount added by each UIP-0005 level, expressed in bps.
+pub const LEVEL_DISCOUNT_BPS: Energy = 100;
+/// Maximum total difficulty discount allowed by UIP-0005.
+pub const MAX_DIFFICULTY_DISCOUNT_BPS: Energy = 5_000;
+/// Lower bound for UIP-0005 difficulty factor, expressed in bps.
+pub const MIN_DIFFICULTY_FACTOR_BPS: Energy = 5_000;
+/// Saturation ceiling for all local energy_uint arithmetic.
 pub const ENERGY_MAX: Energy = Energy::MAX;
+
+/// UIP-0005 level thresholds indexed by level.
+pub const LEVEL_THRESHOLDS: [Energy; 51] = [
+    0,
+    1_000_000,
+    2_180_000,
+    3_572_400,
+    5_215_432,
+    7_154_210,
+    9_441_968,
+    12_141_522,
+    15_326_996,
+    19_085_855,
+    23_521_309,
+    28_755_145,
+    34_931_071,
+    42_218_663,
+    50_818_023,
+    60_965_267,
+    72_939_014,
+    87_068_037,
+    103_740_283,
+    123_413_534,
+    146_627_971,
+    174_021_005,
+    206_344_786,
+    244_486_847,
+    289_494_480,
+    342_603_486,
+    405_272_113,
+    479_221_094,
+    566_480_891,
+    669_447_451,
+    790_947_992,
+    934_318_630,
+    1_103_495_984,
+    1_303_125_261,
+    1_538_687_807,
+    1_816_651_613,
+    2_144_648_903,
+    2_531_685_705,
+    2_988_389_132,
+    3_527_299_176,
+    4_163_213_027,
+    4_913_591_372,
+    5_799_037_819,
+    6_843_864_626,
+    8_076_760_259,
+    9_531_577_106,
+    11_248_260_984,
+    13_273_947_962,
+    15_664_258_595,
+    18_484_825_142,
+    21_813_093_667,
+];
 
 // Compatibility alias for current call sites. New UIP-0003 logic should use
 // UNIT_SATS directly.
@@ -63,6 +140,24 @@ fn mul_div_floor_saturating(value: Energy, multiplier: Energy, denominator: Ener
     let tail = remainder
         .checked_mul(multiplier)
         .map(|value| value / denominator)
+        .unwrap_or(ENERGY_MAX);
+
+    head.saturating_add(tail)
+}
+
+fn mul_div_ceil_saturating(value: Energy, multiplier: Energy, denominator: Energy) -> Energy {
+    assert!(denominator > 0, "energy denominator must be positive");
+
+    let quotient = value / denominator;
+    let remainder = value % denominator;
+
+    let head = match quotient.checked_mul(multiplier) {
+        Some(value) => value,
+        None => return ENERGY_MAX,
+    };
+    let tail = remainder
+        .checked_mul(multiplier)
+        .map(|value| value.div_ceil(denominator))
         .unwrap_or(ENERGY_MAX);
 
     head.saturating_add(tail)
@@ -131,6 +226,55 @@ pub fn calc_collab_contribution(raw_energy: Energy) -> Energy {
 /// Calculate UIP-0004 standard-pass effective energy from raw energy and aggregate collab contribution.
 pub fn calc_standard_effective_energy(raw_energy: Energy, collab_contribution: Energy) -> Energy {
     raw_energy.saturating_add(collab_contribution)
+}
+
+/// Calculate UIP-0005 level from UIP-0004 effective energy.
+pub fn calc_level_from_effective_energy(effective_energy: Energy) -> u8 {
+    let mut level = 0u8;
+    for (candidate_level, threshold) in LEVEL_THRESHOLDS.iter().enumerate() {
+        if effective_energy < *threshold {
+            break;
+        }
+        level = candidate_level as u8;
+    }
+    level
+}
+
+/// Calculate UIP-0005 difficulty factor in bps from level.
+pub fn calc_difficulty_factor_bps(level: u8) -> Energy {
+    let clamped_level = (level as Energy).min(MAX_LEVEL as Energy);
+    let discount = clamped_level
+        .saturating_mul(LEVEL_DISCOUNT_BPS)
+        .min(MAX_DIFFICULTY_DISCOUNT_BPS);
+    BPS_DENOMINATOR
+        .saturating_sub(discount)
+        .max(MIN_DIFFICULTY_FACTOR_BPS)
+}
+
+/// Calculate UIP-0005 difficulty factor in bps from effective energy.
+pub fn calc_difficulty_factor_bps_from_effective_energy(effective_energy: Energy) -> Energy {
+    calc_difficulty_factor_bps(calc_level_from_effective_energy(effective_energy))
+}
+
+/// Calculate ETHW-side UIP-0005 real difficulty using integer ceil division.
+///
+/// This helper is pure formula code only; usdb-indexer must not persist or
+/// query ETHW base difficulty as part of its BTC-side state.
+pub fn calc_real_difficulty(
+    base_difficulty: Energy,
+    difficulty_factor_bps: Energy,
+) -> Option<Energy> {
+    if base_difficulty == 0
+        || !(MIN_DIFFICULTY_FACTOR_BPS..=BPS_DENOMINATOR).contains(&difficulty_factor_bps)
+    {
+        return None;
+    }
+
+    Some(mul_div_ceil_saturating(
+        base_difficulty,
+        difficulty_factor_bps,
+        BPS_DENOMINATOR,
+    ))
 }
 
 /// Calculate raw energy growth.
@@ -266,5 +410,97 @@ mod tests {
     #[test]
     fn test_penalty_saturates_to_energy_max() {
         assert_eq!(calc_penalty_energy(ENERGY_MAX, u32::MAX), ENERGY_MAX);
+    }
+
+    #[test]
+    fn test_level_threshold_table_shape_matches_uip0005_params() {
+        assert_eq!(LEVEL_THRESHOLDS.len(), MAX_LEVEL as usize + 1);
+        assert_eq!(LEVEL_THRESHOLDS[0], 0);
+        assert_eq!(LEVEL_THRESHOLDS[1], LEVEL_E0);
+        assert_eq!(LEVEL_Q_NUM, 118);
+        assert_eq!(LEVEL_Q_DEN, 100);
+        assert_eq!(LEVEL_THRESHOLDS[MAX_LEVEL as usize], 21_813_093_667);
+
+        for window in LEVEL_THRESHOLDS.windows(2) {
+            assert!(window[0] < window[1]);
+        }
+    }
+
+    #[test]
+    fn test_level_from_effective_energy_covers_every_threshold_boundary() {
+        assert_eq!(calc_level_from_effective_energy(0), 0);
+
+        for level in 1..=MAX_LEVEL {
+            let threshold = LEVEL_THRESHOLDS[level as usize];
+            assert_eq!(calc_level_from_effective_energy(threshold - 1), level - 1);
+            assert_eq!(calc_level_from_effective_energy(threshold), level);
+        }
+
+        assert_eq!(
+            calc_level_from_effective_energy(LEVEL_THRESHOLDS[MAX_LEVEL as usize] + 1),
+            MAX_LEVEL
+        );
+        assert_eq!(calc_level_from_effective_energy(ENERGY_MAX), MAX_LEVEL);
+    }
+
+    #[test]
+    fn test_level_from_effective_energy_matches_uip0005_samples() {
+        assert_eq!(calc_level_from_effective_energy(4_320_000), 3);
+        assert_eq!(calc_level_from_effective_energy(25_920_000), 10);
+        assert_eq!(calc_level_from_effective_energy(52_560_000), 14);
+        assert_eq!(calc_level_from_effective_energy(210_000_000), 22);
+        assert_eq!(calc_level_from_effective_energy(525_600_000), 27);
+        assert_eq!(calc_level_from_effective_energy(5_256_000_000), 41);
+    }
+
+    #[test]
+    fn test_difficulty_factor_bps_uses_level_discount_and_clamps() {
+        assert_eq!(calc_difficulty_factor_bps(0), 10_000);
+        assert_eq!(calc_difficulty_factor_bps(1), 9_900);
+        assert_eq!(calc_difficulty_factor_bps(49), 5_100);
+        assert_eq!(calc_difficulty_factor_bps(MAX_LEVEL), 5_000);
+        assert_eq!(calc_difficulty_factor_bps(MAX_LEVEL + 1), 5_000);
+        assert_eq!(calc_difficulty_factor_bps(u8::MAX), 5_000);
+    }
+
+    #[test]
+    fn test_difficulty_factor_bps_from_effective_energy_uses_threshold_level() {
+        assert_eq!(calc_difficulty_factor_bps_from_effective_energy(0), 10_000);
+        assert_eq!(
+            calc_difficulty_factor_bps_from_effective_energy(LEVEL_THRESHOLDS[10] - 1),
+            9_100
+        );
+        assert_eq!(
+            calc_difficulty_factor_bps_from_effective_energy(LEVEL_THRESHOLDS[10]),
+            9_000
+        );
+        assert_eq!(
+            calc_difficulty_factor_bps_from_effective_energy(ENERGY_MAX),
+            5_000
+        );
+    }
+
+    #[test]
+    fn test_real_difficulty_uses_ceil_and_rejects_invalid_inputs() {
+        assert_eq!(calc_real_difficulty(101, 9_900), Some(100));
+        assert_eq!(calc_real_difficulty(1, MIN_DIFFICULTY_FACTOR_BPS), Some(1));
+        assert_eq!(calc_real_difficulty(0, 9_900), None);
+        assert_eq!(
+            calc_real_difficulty(101, MIN_DIFFICULTY_FACTOR_BPS - 1),
+            None
+        );
+        assert_eq!(calc_real_difficulty(101, BPS_DENOMINATOR + 1), None);
+    }
+
+    #[test]
+    fn test_real_difficulty_handles_u128_max_without_multiply_overflow() {
+        assert_eq!(
+            calc_real_difficulty(ENERGY_MAX, BPS_DENOMINATOR),
+            Some(ENERGY_MAX)
+        );
+        assert_eq!(
+            calc_real_difficulty(ENERGY_MAX, MIN_DIFFICULTY_FACTOR_BPS),
+            Some(ENERGY_MAX.div_ceil(2))
+        );
     }
 }
