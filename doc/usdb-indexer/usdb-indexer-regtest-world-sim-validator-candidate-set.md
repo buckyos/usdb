@@ -8,7 +8,7 @@
 
 1. 同一高度 `H` 的 `external_state`
 2. 一组 sampled `candidate_passes`
-3. 按 `max_energy + inscription_id` 规则重算出来的 `winner`
+3. 按 `effective_energy DESC + inscription_id ASC` 规则重算出来的 `winner`
 
 随后等 head 前进若干块，再按同一历史 context 回查所有 candidates，并重算 winner。
 
@@ -32,8 +32,10 @@ world-sim simulator 在 `candidate_set` 模式下会：
    - `inscription_id`
    - `owner`
    - `state`
-   - `energy`
-5. 按 `max_energy + inscription_id` 规则计算 `winner_inscription_id`
+   - `raw_energy`
+   - `collab_contribution`
+   - `effective_energy`
+5. 按 `effective_energy DESC + inscription_id ASC` 规则计算 `winner_inscription_id`
 
 延迟验证时会：
 
@@ -41,7 +43,7 @@ world-sim simulator 在 `candidate_set` 模式下会：
 2. 再逐张调用：
    - `get_pass_snapshot`
    - `get_pass_energy`
-3. 要求每张 candidate 的 `owner / state / energy` 都和采样时一致
+3. 要求每张 candidate 的 `owner / state / raw_energy / collab_contribution / effective_energy` 都和采样时一致
 4. 再次本地重算 winner，要求与采样时一致
 5. 如果启用 tamper 检测，再构造一个 wrong-winner 版本的 payload，并要求 validator 本地重算能识别篡改
 

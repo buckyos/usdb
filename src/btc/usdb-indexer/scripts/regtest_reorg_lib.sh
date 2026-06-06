@@ -227,7 +227,9 @@ payload = {
         "inscription_id": pass_snapshot["inscription_id"],
         "owner": pass_snapshot["owner"],
         "state": pass_snapshot["state"],
-        "energy": pass_energy["effective_energy"],
+        "raw_energy": pass_energy["raw_energy"],
+        "collab_contribution": pass_energy["collab_contribution"],
+        "effective_energy": pass_energy["effective_energy"],
         "resolved_height": pass_snapshot["resolved_height"],
         "query_block_height": pass_energy["query_block_height"],
     },
@@ -252,7 +254,9 @@ print(json.dumps({
     "inscription_id": pass_snapshot["inscription_id"],
     "owner": pass_snapshot["owner"],
     "state": pass_snapshot["state"],
-    "energy": pass_energy["effective_energy"],
+    "raw_energy": pass_energy["raw_energy"],
+    "collab_contribution": pass_energy["collab_contribution"],
+    "effective_energy": pass_energy["effective_energy"],
     "resolved_height": pass_snapshot["resolved_height"],
     "query_block_height": pass_energy["query_block_height"],
 }))
@@ -301,14 +305,13 @@ payload = {
         "inscription_id": winner_snapshot["inscription_id"],
         "owner": winner_snapshot["owner"],
         "state": winner_snapshot["state"],
-        "energy": winner_energy["effective_energy"],
+        "raw_energy": winner_energy["raw_energy"],
+        "collab_contribution": winner_energy["collab_contribution"],
+        "effective_energy": winner_energy["effective_energy"],
         "resolved_height": winner_snapshot["resolved_height"],
         "query_block_height": winner_energy["query_block_height"],
     },
-    "selection_rule": {
-        "kind": "max_energy",
-        "tie_breaker": "inscription_id_lexicographic_asc",
-    },
+    "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
     "candidate_passes": candidates,
 }
 
@@ -339,7 +342,9 @@ payload["miner_selection"] = {
     "inscription_id": match["inscription_id"],
     "owner": match["owner"],
     "state": match["state"],
-    "energy": match["energy"],
+    "raw_energy": match["raw_energy"],
+    "collab_contribution": match["collab_contribution"],
+    "effective_energy": match["effective_energy"],
     "resolved_height": match["resolved_height"],
     "query_block_height": match["query_block_height"],
 }
@@ -408,7 +413,7 @@ import json
 import sys
 
 candidates = json.loads(sys.argv[1])
-winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+winner = min(candidates, key=lambda item: (-int(item["effective_energy"]), item["inscription_id"]))
 print(json.dumps(winner))
 PY
 }
@@ -581,7 +586,8 @@ PY
 
 regtest_validate_validator_payload_success() {
   local payload_file="$1"
-  local block_height pass_id expected_owner expected_state expected_energy
+  local block_height pass_id expected_owner expected_state
+  local expected_raw_energy expected_collab_contribution expected_effective_energy
   local expected_snapshot_id expected_system_state_id
   local state_ref_params snapshot_params energy_params resp
 
@@ -589,7 +595,9 @@ regtest_validate_validator_payload_success() {
   pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
   expected_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
   expected_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
-  expected_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['energy']")"
+  expected_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['raw_energy']")"
+  expected_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['collab_contribution']")"
+  expected_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['effective_energy']")"
   expected_snapshot_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['snapshot_id']")"
   expected_system_state_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['system_state_id']")"
 
@@ -614,30 +622,47 @@ regtest_validate_validator_payload_success() {
   regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$expected_energy"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('raw_energy')" "$expected_raw_energy"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('collab_contribution')" "$expected_collab_contribution"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$expected_effective_energy"
 }
 
 regtest_validate_validator_candidate_set_payload_success() {
   local payload_file="$1"
-  local context_json candidate_count winner_id winner_owner winner_state winner_energy
-  local computed_winner_json computed_winner_id computed_winner_owner computed_winner_state computed_winner_energy
-  local idx candidate_id candidate_owner candidate_state candidate_energy candidate_height energy_height
+  local context_json candidate_count winner_id winner_owner winner_state
+  local expected_selection_rule selection_rule
+  local winner_raw_energy winner_collab_contribution winner_effective_energy
+  local computed_winner_json computed_winner_id computed_winner_owner computed_winner_state
+  local computed_winner_raw_energy computed_winner_collab_contribution computed_winner_effective_energy
+  local idx candidate_id candidate_owner candidate_state
+  local candidate_raw_energy candidate_collab_contribution candidate_effective_energy
+  local candidate_height energy_height
   local snapshot_params energy_params resp
 
   regtest_validate_validator_payload_success "$payload_file"
 
   context_json="$(regtest_validator_payload_context_json "$payload_file")"
   candidate_count="$(regtest_validator_payload_expr "$payload_file" "((data.get('candidate_passes') or []).__len__())")"
+  expected_selection_rule="uip-0006:effective-energy-desc-pass-id-asc:v1"
+  selection_rule="$(regtest_validator_payload_expr "$payload_file" "data.get('selection_rule')")"
+  if [[ "$selection_rule" != "$expected_selection_rule" ]]; then
+    regtest_log "Unsupported candidate-set selection rule: expected=${expected_selection_rule}, got=${selection_rule}"
+    exit 1
+  fi
   winner_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
   winner_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
   winner_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
-  winner_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['energy']")"
+  winner_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['raw_energy']")"
+  winner_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['collab_contribution']")"
+  winner_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['effective_energy']")"
 
   for idx in $(seq 0 $((candidate_count - 1))); do
     candidate_id="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['inscription_id']")"
     candidate_owner="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['owner']")"
     candidate_state="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['state']")"
-    candidate_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['energy']")"
+    candidate_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['raw_energy']")"
+    candidate_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['collab_contribution']")"
+    candidate_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['effective_energy']")"
     candidate_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['resolved_height']")"
     energy_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['query_block_height']")"
 
@@ -673,7 +698,9 @@ PY
     regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
     regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
     regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$energy_height"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$candidate_energy"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('raw_energy')" "$candidate_raw_energy"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('collab_contribution')" "$candidate_collab_contribution"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$candidate_effective_energy"
   done
 
   computed_winner_json="$(python3 - "$payload_file" <<'PY'
@@ -683,16 +710,18 @@ import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
 candidates = payload.get("candidate_passes") or []
-winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+winner = min(candidates, key=lambda item: (-int(item["effective_energy"]), item["inscription_id"]))
 print(json.dumps(winner))
 PY
 )"
   computed_winner_id="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inscription_id"])')"
   computed_winner_owner="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["owner"])')"
   computed_winner_state="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
-  computed_winner_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["energy"])')"
+  computed_winner_raw_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["raw_energy"])')"
+  computed_winner_collab_contribution="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["collab_contribution"])')"
+  computed_winner_effective_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effective_energy"])')"
 
-  if [[ "$winner_id" != "$computed_winner_id" || "$winner_owner" != "$computed_winner_owner" || "$winner_state" != "$computed_winner_state" || "$winner_energy" != "$computed_winner_energy" ]]; then
+  if [[ "$winner_id" != "$computed_winner_id" || "$winner_owner" != "$computed_winner_owner" || "$winner_state" != "$computed_winner_state" || "$winner_raw_energy" != "$computed_winner_raw_energy" || "$winner_collab_contribution" != "$computed_winner_collab_contribution" || "$winner_effective_energy" != "$computed_winner_effective_energy" ]]; then
     regtest_log "Competition payload winner does not match candidate ordering: winner_id=${winner_id}, computed_winner_id=${computed_winner_id}"
     exit 1
   fi
@@ -715,7 +744,7 @@ import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
 candidates = payload.get("candidate_passes") or []
-winner = min(candidates, key=lambda item: (-int(item["energy"]), item["inscription_id"]))
+winner = min(candidates, key=lambda item: (-int(item["effective_energy"]), item["inscription_id"]))
 print(json.dumps(winner))
 PY
 )"

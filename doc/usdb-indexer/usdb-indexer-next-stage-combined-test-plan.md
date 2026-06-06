@@ -65,7 +65,7 @@
   - 默认 reorg wrapper 已收敛到稳定命中 `expected_mismatch` 的参数组合
 - `candidate-set` sampled validation 第一批已完成：
   - 同一采样点固定 `winner + candidate_passes`
-  - validator 在历史 context 下重查多张 pass，并按 `max_energy + inscription_id` 重算 winner
+  - validator 在历史 context 下重查多张 pass，并按 `effective_energy DESC + inscription_id ASC` 重算 winner
   - 已补普通 wrapper 和 `deterministic reorg` wrapper
   - 已验证 world-sim 下 `candidate_set` 样本既可正常回放，也能在 replacement 区间内稳定落到 `expected_mismatch`
   - 当前又补上：

@@ -65,7 +65,9 @@ class ValidatorSampleCandidate:
     inscription_id: str
     owner: str
     state: str
-    energy: int
+    raw_energy: int
+    collab_contribution: int
+    effective_energy: int
 
 
 @dataclass
@@ -77,7 +79,9 @@ class ValidatorSample:
     inscription_id: str
     owner: str
     state: str
-    energy: int
+    raw_energy: int
+    collab_contribution: int
+    effective_energy: int
     snapshot_id: str
     stable_block_hash: str
     local_state_commit: str
@@ -203,7 +207,7 @@ class RegtestWorldSimulator:
     ) -> ValidatorSampleCandidate:
         if not candidates:
             raise WorldSimError("candidate-set winner selection requires at least one candidate")
-        return min(candidates, key=lambda item: (-int(item.energy), item.inscription_id))
+        return min(candidates, key=lambda item: (-int(item.effective_energy), item.inscription_id))
 
     def __init__(self, args: Args) -> None:
         if len(args.agent_wallets) != len(args.agent_addresses):
@@ -496,7 +500,9 @@ class RegtestWorldSimulator:
             "inscription_id": candidate.inscription_id,
             "owner": candidate.owner,
             "state": candidate.state,
-            "energy": candidate.energy,
+            "raw_energy": candidate.raw_energy,
+            "collab_contribution": candidate.collab_contribution,
+            "effective_energy": candidate.effective_energy,
         }
 
     @staticmethod
@@ -507,7 +513,9 @@ class RegtestWorldSimulator:
             inscription_id=str(payload.get("inscription_id", "")),
             owner=str(payload.get("owner", "")),
             state=str(payload.get("state", "")),
-            energy=int(payload.get("energy", 0)),
+            raw_energy=int(payload.get("raw_energy", 0)),
+            collab_contribution=int(payload.get("collab_contribution", 0)),
+            effective_energy=int(payload.get("effective_energy", 0)),
         )
 
     def serialize_validator_sample(self, sample: ValidatorSample) -> dict[str, Any]:
@@ -519,7 +527,9 @@ class RegtestWorldSimulator:
             "inscription_id": sample.inscription_id,
             "owner": sample.owner,
             "state": sample.state,
-            "energy": sample.energy,
+            "raw_energy": sample.raw_energy,
+            "collab_contribution": sample.collab_contribution,
+            "effective_energy": sample.effective_energy,
             "snapshot_id": sample.snapshot_id,
             "stable_block_hash": sample.stable_block_hash,
             "local_state_commit": sample.local_state_commit,
@@ -566,7 +576,9 @@ class RegtestWorldSimulator:
             inscription_id=str(payload.get("inscription_id", "")),
             owner=str(payload.get("owner", "")),
             state=str(payload.get("state", "")),
-            energy=int(payload.get("energy", 0)),
+            raw_energy=int(payload.get("raw_energy", 0)),
+            collab_contribution=int(payload.get("collab_contribution", 0)),
+            effective_energy=int(payload.get("effective_energy", 0)),
             snapshot_id=str(payload.get("snapshot_id", "")),
             stable_block_hash=str(payload.get("stable_block_hash", "")),
             local_state_commit=str(payload.get("local_state_commit", "")),
@@ -1782,7 +1794,9 @@ class RegtestWorldSimulator:
             inscription_id=inscription_id,
             owner=str(snapshot.get("owner", "")),
             state=str(snapshot.get("state", "")),
-            energy=int(energy.get("effective_energy", 0)),
+            raw_energy=int(energy.get("raw_energy", 0)),
+            collab_contribution=int(energy.get("collab_contribution", 0)),
+            effective_energy=int(energy.get("effective_energy", 0)),
         )
 
     def validate_tampered_candidate_set_sample(
@@ -1875,7 +1889,9 @@ class RegtestWorldSimulator:
                 inscription_id=winner.inscription_id,
                 owner=winner.owner,
                 state=winner.state,
-                energy=winner.energy,
+                raw_energy=winner.raw_energy,
+                collab_contribution=winner.collab_contribution,
+                effective_energy=winner.effective_energy,
                 snapshot_id=str(snapshot_info.get("snapshot_id", "")),
                 stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
                 local_state_commit=str(local_state_info.get("local_state_commit", "")),
@@ -1898,7 +1914,9 @@ class RegtestWorldSimulator:
                     inscription_id=inscription_id,
                     owner=candidate.owner,
                     state=candidate.state,
-                    energy=candidate.energy,
+                    raw_energy=candidate.raw_energy,
+                    collab_contribution=candidate.collab_contribution,
+                    effective_energy=candidate.effective_energy,
                     snapshot_id=str(snapshot_info.get("snapshot_id", "")),
                     stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
                     local_state_commit=str(local_state_info.get("local_state_commit", "")),
@@ -2012,10 +2030,21 @@ class RegtestWorldSimulator:
                                 f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
                                 f"expected_state={expected.state}, got_state={actual.state}"
                             )
-                        if actual.energy != expected.energy:
+                        if actual.raw_energy != expected.raw_energy:
                             raise WorldSimError(
                                 f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                f"expected_energy={expected.energy}, got_energy={actual.energy}"
+                                f"expected_raw_energy={expected.raw_energy}, got_raw_energy={actual.raw_energy}"
+                            )
+                        if actual.collab_contribution != expected.collab_contribution:
+                            raise WorldSimError(
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
+                                "expected_collab_contribution="
+                                f"{expected.collab_contribution}, got_collab_contribution={actual.collab_contribution}"
+                            )
+                        if actual.effective_energy != expected.effective_energy:
+                            raise WorldSimError(
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
+                                f"expected_effective_energy={expected.effective_energy}, got_effective_energy={actual.effective_energy}"
                             )
 
                     actual_winner = self.choose_candidate_set_winner(actual_candidates)
@@ -2040,9 +2069,21 @@ class RegtestWorldSimulator:
                         raise WorldSimError(
                             f"sample={sample.sample_id}, expected_state={sample.state}, got_state={actual.state}"
                         )
-                    if actual.energy != sample.energy:
+                    if actual.raw_energy != sample.raw_energy:
                         raise WorldSimError(
-                            f"sample={sample.sample_id}, expected_energy={sample.energy}, got_energy={actual.energy}"
+                            f"sample={sample.sample_id}, expected_raw_energy={sample.raw_energy}, "
+                            f"got_raw_energy={actual.raw_energy}"
+                        )
+                    if actual.collab_contribution != sample.collab_contribution:
+                        raise WorldSimError(
+                            "sample="
+                            f"{sample.sample_id}, expected_collab_contribution={sample.collab_contribution}, "
+                            f"got_collab_contribution={actual.collab_contribution}"
+                        )
+                    if actual.effective_energy != sample.effective_energy:
+                        raise WorldSimError(
+                            f"sample={sample.sample_id}, expected_effective_energy={sample.effective_energy}, "
+                            f"got_effective_energy={actual.effective_energy}"
                         )
 
                 sample.validated = True

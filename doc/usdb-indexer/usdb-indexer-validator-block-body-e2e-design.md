@@ -49,7 +49,9 @@
     "inscription_id": "txidi0",
     "owner": "76a914...",
     "state": "active",
-    "energy": "123456789",
+    "raw_energy": "100000000",
+    "collab_contribution": "23456789",
+    "effective_energy": "123456789",
     "resolved_height": 900123,
     "query_block_height": 900123
   }
@@ -80,11 +82,13 @@
 - `inscription_id`
 - `owner`
 - `state`
-- `energy`：canonical decimal string
+- `raw_energy`：UIP-0003 raw energy canonical decimal string
+- `collab_contribution`：UIP-0004 collab aggregate canonical decimal string
+- `effective_energy`：UIP-0004 effective energy canonical decimal string
 - `resolved_height`
 - `query_block_height`
 
-当前阶段只固定单个 miner pass，不把排行榜、多 pass 选择逻辑、或 ETHW 链内其它字段一起引入。
+单 pass payload 固定的是出块方选中的 miner pass 的完整能量三元组；multi-pass payload 额外携带 `candidate_passes` 与 `selection_rule = uip-0006:effective-energy-desc-pass-id-asc:v1`。
 
 ## 4. 校验流程
 
@@ -109,7 +113,9 @@ validator 风格脚本应始终分两步：
 
 - `owner`
 - `state`
-- `energy`
+- `raw_energy`
+- `collab_contribution`
+- `effective_energy`
 
 这样 validator 视角会比“先查当前 state，再零散拼断言”更贴近真实实现。
 
@@ -166,8 +172,8 @@ validator 风格脚本应始终分两步：
 
 - 同一历史高度 `H` 下存在两张合法候选 pass
 - `winner` 与 `candidates` 被固定进同一份 block-body payload
-- validator 在同一历史 `external_state` 下重查两张 pass 的 `snapshot / energy / state`
-- validator 证明 `winner` 满足 `max_energy + inscription_id` tie-break 选择规则，而不是只校验单张 pass
+- validator 在同一历史 `external_state` 下重查两张 pass 的 `snapshot / raw_energy / collab_contribution / effective_energy / state`
+- validator 证明 `winner` 满足 `effective_energy DESC + inscription_id ASC` 选择规则，而不是只校验单张 pass
 - 后续块让 winner 本身发生真实状态变化后，旧 payload 仍按 `H` 通过
 
 ### 6.5 Two-Pass Real Energy Advantage

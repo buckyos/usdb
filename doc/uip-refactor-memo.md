@@ -231,6 +231,15 @@
   - 明确 `get_pass_energy_leaderboard` 不是 validator candidate set。
   - 记录 `get_candidate_set_view` 参数、返回字段、selection rule 和 fail-closed 语义。
   - 记录 `get_collab_breakdown` 参数、返回字段、sort 规则和 aggregate 审计口径。
+- `src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh`
+  - validator block-body JSON payload 删除单一 `energy` 字段，`miner_selection` / `candidate_passes` 统一携带 `raw_energy`、`collab_contribution`、`effective_energy`。
+  - candidate-set winner 选择规则收敛为 `uip-0006:effective-energy-desc-pass-id-asc:v1`，本地重算按 `effective_energy DESC, inscription_id ASC`。
+  - validator payload 校验会逐项重查并比对三字段，保证 aggregate 可审计。
+- `src/btc/usdb-indexer/scripts/regtest_world_simulator.py`
+  - validator sampled validation 的 single / candidate-set 样本改为保存并校验 `raw_energy`、`collab_contribution`、`effective_energy`。
+  - world-sim candidate-set winner 重算显式按 `effective_energy DESC, inscription_id ASC`。
+- `doc/usdb-indexer/*validator*`
+  - 更新 validator block-body 与 world-sim candidate-set 文档，移除旧 `max_energy` / 单 `energy` payload 口径。
 
 ### 已补测试
 

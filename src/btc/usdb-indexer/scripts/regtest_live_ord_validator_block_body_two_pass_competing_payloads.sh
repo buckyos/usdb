@@ -46,19 +46,19 @@ pass_energy_at_height() {
 
 choose_winner_for_candidates() {
   local first_id="$1"
-  local first_energy="$2"
+  local first_effective_energy="$2"
   local second_id="$3"
-  local second_energy="$4"
+  local second_effective_energy="$4"
 
-  python3 - "$first_id" "$first_energy" "$second_id" "$second_energy" <<'PY'
+  python3 - "$first_id" "$first_effective_energy" "$second_id" "$second_effective_energy" <<'PY'
 import sys
 
-first_id, first_energy, second_id, second_energy = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+first_id, first_effective_energy, second_id, second_effective_energy = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
 candidates = [
-    {"inscription_id": first_id, "energy": first_energy},
-    {"inscription_id": second_id, "energy": second_energy},
+    {"inscription_id": first_id, "effective_energy": first_effective_energy},
+    {"inscription_id": second_id, "effective_energy": second_effective_energy},
 ]
-winner = min(candidates, key=lambda item: (-item["energy"], item["inscription_id"]))
+winner = min(candidates, key=lambda item: (-item["effective_energy"], item["inscription_id"]))
 print(winner["inscription_id"])
 PY
 }

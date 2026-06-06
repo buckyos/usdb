@@ -65,7 +65,7 @@ main() {
   local mint_a_file mint_b_file
   local pass1 pass2 height_competition height_after_transfer
   local payload_competition
-  local pass1_energy pass2_energy continue_address
+  local pass1_effective_energy pass2_effective_energy continue_address
   local winner_id winner_wallet winner_destination loser_id
 
   miner_address="$(regtest_get_new_address)"
@@ -121,17 +121,17 @@ EOF
   regtest_assert_usdb_pass_snapshot_state "$pass1" "$height_competition" "active"
   regtest_assert_usdb_pass_snapshot_state "$pass2" "$height_competition" "active"
 
-  pass1_energy="$(pass_energy_at_height "$pass1" "$height_competition")"
-  pass2_energy="$(pass_energy_at_height "$pass2" "$height_competition")"
-  winner_id="$(python3 - "$pass1" "$pass1_energy" "$pass2" "$pass2_energy" <<'PY'
+  pass1_effective_energy="$(pass_energy_at_height "$pass1" "$height_competition")"
+  pass2_effective_energy="$(pass_energy_at_height "$pass2" "$height_competition")"
+  winner_id="$(python3 - "$pass1" "$pass1_effective_energy" "$pass2" "$pass2_effective_energy" <<'PY'
 import sys
 
-pass1, energy1, pass2, energy2 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+pass1, effective1, pass2, effective2 = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
 candidates = [
-    {"inscription_id": pass1, "energy": energy1},
-    {"inscription_id": pass2, "energy": energy2},
+    {"inscription_id": pass1, "effective_energy": effective1},
+    {"inscription_id": pass2, "effective_energy": effective2},
 ]
-winner = min(candidates, key=lambda item: (-item["energy"], item["inscription_id"]))
+winner = min(candidates, key=lambda item: (-item["effective_energy"], item["inscription_id"]))
 print(winner["inscription_id"])
 PY
 )"
@@ -144,10 +144,10 @@ PY
     winner_destination="$ord_receive_address_a"
     loser_id="$pass1"
   fi
-  regtest_log "Two-pass competition energies at H=${height_competition}: pass1=${pass1_energy}, pass2=${pass2_energy}, winner=${winner_id}"
+  regtest_log "Two-pass competition effective energies at H=${height_competition}: pass1=${pass1_effective_energy}, pass2=${pass2_effective_energy}, winner=${winner_id}"
 
   payload_competition="$WORK_DIR/validator_block_body_two_pass_competition_payload.json"
-  write_validator_competition_payload_for_passes_at_height "$payload_competition" "$height_competition" "$winner_id" "$pass1" "$pass2"
+  regtest_write_validator_competition_payload_for_passes_at_height "$payload_competition" "$height_competition" "$winner_id" "$pass1" "$pass2"
   regtest_log "Wrote two-pass competition payload at height=${height_competition}: ${payload_competition}"
 
   regtest_log "Competition payload must validate both candidates and winner relation at the original historical state"

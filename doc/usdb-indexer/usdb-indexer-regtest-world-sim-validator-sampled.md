@@ -10,11 +10,11 @@
    - 在高度 `H` 采样一张当前 active pass
    - 固定该高度的 `external_state`
    - 等 head 继续前进若干块
-   - 再按历史 context 回查该 pass 的 `state / owner / energy`
+   - 再按历史 context 回查该 pass 的 `state / owner / raw_energy / collab_contribution / effective_energy`
 2. `candidate_set` 模式
    - 在高度 `H` 采样一组 active passes
    - 固定该高度的 `external_state`
-   - 在采样时按 `max_energy + inscription_id` 重算 winner
+   - 在采样时按 `effective_energy DESC + inscription_id ASC` 重算 winner
    - 等 head 继续前进若干块
    - 再按历史 context 回查所有 candidates，并重新计算 winner
 
@@ -41,7 +41,9 @@ world-sim simulator 新增了一层低频 validator sample：
     - `inscription_id`
     - `owner`
     - `state`
-    - `energy`
+    - `raw_energy`
+    - `collab_contribution`
+    - `effective_energy`
     - `snapshot_id`
     - `stable_block_hash`
     - `local_state_commit`
@@ -49,7 +51,7 @@ world-sim simulator 新增了一层低频 validator sample：
   - `candidate_set` 模式额外记录：
     - `candidate_ids`
     - `winner_inscription_id`
-    - 每张 candidate 在 `H` 时的 `owner / state / energy`
+    - 每张 candidate 在 `H` 时的 `owner / state / raw_energy / collab_contribution / effective_energy`
 
 - `validator_sample_validation`
   - 当 head 至少前进 `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE` 块后触发
