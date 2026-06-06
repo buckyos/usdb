@@ -203,6 +203,9 @@
 - `src/btc/usdb-indexer/src/storage/pass.rs`
   - 新增按 inscription id 查询指定高度 pass snapshot 的 helper，返回历史 owner/state/satpoint 与不可变 mint 字段。
   - 新增按 owner 查询指定高度唯一 active standard pass 的 helper，用于 `leader_btc_addr` 解析。
+  - 新增按高度、state、pass kind 过滤 pass snapshot 的 count/page helper，并封装 active standard / active collab 专用查询。
+  - 新增 active standard owner 分页 helper，供后续 candidate set / leaderboard 只枚举 standard pass。
+  - 新增 `pass_kind` 与历史 owner/state/height 相关索引，支撑 UIP0004 kind-aware 查询。
 - `src/btc/usdb-indexer/src/index/pass.rs`
   - 新增 `resolve_leader_pass_id_at_height`，固定 pass 绑定只在目标高度存在 active standard snapshot 时解析成功。
   - 新增 `resolve_leader_btc_addr_at_height`，按当前 BTC network 将 Leader address 转为 owner script hash，再解析该 owner 在目标高度的 active standard pass。
@@ -216,10 +219,11 @@
 - `leader_pass_id` 只解析 active standard pass；dormant 或 collab pass 不解析。
 - `leader_btc_addr` 在无 active pass 时不解析，并在 Leader 同 owner remint 后自动跟随新 active standard pass。
 - `leader_btc_addr` 使用当前 BTC network 解析，错误网络地址会拒绝解析。
+- storage kind-aware 查询覆盖 active standard / active collab 计数、active collab 枚举和 active standard owner 分页。
 
 ### 待继续对齐
 
-- 枚举 active collab pass 并聚合到 resolved active standard leader。
+- 聚合 active collab pass 到 resolved active standard leader。
 - `get_pass_energy` 接入真实 `collab_contribution` / `effective_energy`。
 - candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。
 - collab breakdown 审计查询与 validator payload 三字段对齐。

@@ -206,6 +206,9 @@ impl MinerPassStorage {
             CREATE INDEX IF NOT EXISTS idx_miner_pass_usdb_main
             ON miner_passes (usdb_main);
 
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_pass_kind_mint_order
+            ON miner_passes (pass_kind, mint_block_height, inscription_number);
+
             CREATE TABLE IF NOT EXISTS active_balance_snapshots (
                 block_height INTEGER PRIMARY KEY,
                 total_balance INTEGER NOT NULL,
@@ -232,6 +235,12 @@ impl MinerPassStorage {
 
             CREATE INDEX IF NOT EXISTS idx_pass_history_inscription_height_id
             ON miner_pass_state_history (inscription_id, block_height, id);
+
+            CREATE INDEX IF NOT EXISTS idx_pass_history_state_height_id
+            ON miner_pass_state_history (new_state, block_height, id);
+
+            CREATE INDEX IF NOT EXISTS idx_pass_history_owner_state_height_id
+            ON miner_pass_state_history (new_owner, new_state, block_height, id);
 
             CREATE TABLE IF NOT EXISTS pass_block_commits (
                 block_height INTEGER PRIMARY KEY,
@@ -3788,6 +3797,30 @@ impl MinerPassStorage {
         )
     }
 
+    /// Count active standard pass snapshots at one historical height.
+    pub fn get_active_standard_pass_count_from_history_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<u64, String> {
+        self.get_pass_count_from_history_at_height_by_states_and_kinds(
+            block_height,
+            &[MinerPassState::Active],
+            &[MinerPassKind::Standard],
+        )
+    }
+
+    /// Count active collab pass snapshots at one historical height.
+    pub fn get_active_collab_pass_count_from_history_at_height(
+        &self,
+        block_height: u32,
+    ) -> Result<u64, String> {
+        self.get_pass_count_from_history_at_height_by_states_and_kinds(
+            block_height,
+            &[MinerPassState::Active],
+            &[MinerPassKind::Collab],
+        )
+    }
+
     pub fn get_pass_count_from_history_at_height_by_states(
         &self,
         block_height: u32,
@@ -3854,6 +3887,100 @@ impl MinerPassStorage {
         Ok(count as u64)
     }
 
+    /// Count pass snapshots at `block_height` matching both states and pass kinds.
+    ///
+    /// Both filters are explicit for UIP0004 call sites so collab passes cannot
+    /// accidentally enter standard candidate/collab aggregation paths.
+    pub fn get_pass_count_from_history_at_height_by_states_and_kinds(
+        &self,
+        block_height: u32,
+        states: &[MinerPassState],
+        pass_kinds: &[MinerPassKind],
+    ) -> Result<u64, String> {
+        if states.is_empty() || pass_kinds.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let state_placeholders = (0..states.len())
+            .map(|idx| format!("?{}", idx + 2))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let kind_start = states.len() + 2;
+        let kind_placeholders = (0..pass_kinds.len())
+            .map(|idx| format!("?{}", kind_start + idx))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT h1.id
+                FROM miner_pass_state_history h1
+                WHERE h1.block_height <= ?1
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM miner_pass_state_history h2
+                        WHERE h2.inscription_id = h1.inscription_id
+                            AND h2.block_height <= ?1
+                            AND (
+                                h2.block_height > h1.block_height
+                                OR (h2.block_height = h1.block_height AND h2.id > h1.id)
+                            )
+                    )
+            )
+            SELECT COUNT(*)
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.id
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.new_state IN ({})
+                AND m.pass_kind IN ({});
+            ",
+            state_placeholders, kind_placeholders
+        );
+
+        let mut params =
+            Vec::<rusqlite::types::Value>::with_capacity(1 + states.len() + pass_kinds.len());
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+        for pass_kind in pass_kinds {
+            params.push(rusqlite::types::Value::Text(pass_kind.as_str().to_string()));
+        }
+
+        let count: i64 = conn
+            .query_row(&sql, rusqlite::params_from_iter(params), |row| row.get(0))
+            .map_err(|e| {
+                let state_names = states
+                    .iter()
+                    .map(|s| s.as_str().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                let kind_names = pass_kinds
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                let msg = format!(
+                    "Failed to count pass snapshot from history at block height {} with states [{}] and pass kinds [{}]: {}",
+                    block_height, state_names, kind_names, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if count < 0 {
+            let msg = format!(
+                "Invalid negative kind-filtered pass count at block height {}: {}",
+                block_height, count
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(count as u64)
+    }
+
     pub fn get_all_active_pass_by_page_from_history_at_height(
         &self,
         page: usize,
@@ -3866,6 +3993,61 @@ impl MinerPassStorage {
             block_height,
             &[MinerPassState::Active],
         )
+    }
+
+    /// Return active standard pass snapshots at `block_height`.
+    pub fn get_active_standard_passes_by_page_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        self.get_passes_by_page_from_history_at_height_by_states_and_kinds(
+            page,
+            page_size,
+            block_height,
+            &[MinerPassState::Active],
+            &[MinerPassKind::Standard],
+            true,
+        )
+    }
+
+    /// Return active collab pass snapshots at `block_height`.
+    pub fn get_active_collab_passes_by_page_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        self.get_passes_by_page_from_history_at_height_by_states_and_kinds(
+            page,
+            page_size,
+            block_height,
+            &[MinerPassState::Active],
+            &[MinerPassKind::Collab],
+            true,
+        )
+    }
+
+    /// Return active standard pass ids and owners at `block_height`.
+    pub fn get_active_standard_pass_owners_by_page_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+    ) -> Result<Vec<ActiveMinerPassInfo>, String> {
+        Ok(self
+            .get_active_standard_passes_by_page_from_history_at_height(
+                page,
+                page_size,
+                block_height,
+            )?
+            .into_iter()
+            .map(|snapshot| ActiveMinerPassInfo {
+                inscription_id: snapshot.pass.inscription_id,
+                owner: snapshot.pass.owner,
+            })
+            .collect())
     }
 
     pub fn get_passes_by_page_from_history_at_height_by_states(
@@ -3980,6 +4162,148 @@ impl MinerPassStorage {
                 inscription_id,
                 owner,
             });
+        }
+
+        Ok(passes)
+    }
+
+    /// Return pass snapshots at `block_height` matching both states and pass kinds.
+    ///
+    /// The result order is deterministic across pages: latest event height,
+    /// latest event id, mint height, and inscription number all use the same
+    /// requested direction.
+    pub fn get_passes_by_page_from_history_at_height_by_states_and_kinds(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+        states: &[MinerPassState],
+        pass_kinds: &[MinerPassKind],
+        desc: bool,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        if states.is_empty() || pass_kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+        let state_placeholders = (0..states.len())
+            .map(|idx| format!("?{}", idx + 2))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let kind_start = states.len() + 2;
+        let kind_placeholders = (0..pass_kinds.len())
+            .map(|idx| format!("?{}", kind_start + idx))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let limit_placeholder = 1 + states.len() + pass_kinds.len() + 1;
+        let offset_placeholder = limit_placeholder + 1;
+        let order = if desc { "DESC" } else { "ASC" };
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT h1.id
+                FROM miner_pass_state_history h1
+                WHERE h1.block_height <= ?1
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM miner_pass_state_history h2
+                        WHERE h2.inscription_id = h1.inscription_id
+                            AND h2.block_height <= ?1
+                            AND (
+                                h2.block_height > h1.block_height
+                                OR (h2.block_height = h1.block_height AND h2.id > h1.id)
+                            )
+                    )
+            )
+            SELECT
+                m.inscription_id,
+                m.inscription_number,
+                m.mint_txid,
+                m.mint_block_height,
+                m.mint_owner,
+                h.new_satpoint AS satpoint,
+                m.usdb_main,
+                m.prev,
+                h.new_owner AS owner,
+                h.new_state AS state,
+                m.invalid_code,
+                m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
+                h.block_height AS latest_event_height
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.id
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.new_state IN ({})
+                AND m.pass_kind IN ({})
+            ORDER BY h.block_height {}, h.id {}, m.mint_block_height {}, m.inscription_number {}
+            LIMIT ?{} OFFSET ?{};
+            ",
+            state_placeholders,
+            kind_placeholders,
+            order,
+            order,
+            order,
+            order,
+            limit_placeholder,
+            offset_placeholder
+        );
+
+        let mut params =
+            Vec::<rusqlite::types::Value>::with_capacity(states.len() + pass_kinds.len() + 3);
+        params.push(rusqlite::types::Value::Integer(block_height as i64));
+        for state in states {
+            params.push(rusqlite::types::Value::Text(state.as_str().to_string()));
+        }
+        for pass_kind in pass_kinds {
+            params.push(rusqlite::types::Value::Text(pass_kind.as_str().to_string()));
+        }
+        params.push(rusqlite::types::Value::Integer(page_size as i64));
+        params.push(rusqlite::types::Value::Integer(offset as i64));
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            let msg = format!(
+                "Failed to prepare statement to get kind-filtered pass snapshots from history: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params_from_iter(params))
+            .map_err(|e| {
+                let state_names = states
+                    .iter()
+                    .map(|s| s.as_str().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                let kind_names = pass_kinds
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .collect::<Vec<String>>()
+                    .join(",");
+                let msg = format!(
+                    "Failed to query kind-filtered pass snapshots from history: block_height={}, states=[{}], pass_kinds=[{}], error={}",
+                    block_height, state_names, kind_names, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read kind-filtered pass snapshot row from history query: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            passes.push(Self::row_to_pass_snapshot_info(row, "kind-filtered")?);
         }
 
         Ok(passes)
@@ -4715,6 +5039,21 @@ mod tests {
         }
     }
 
+    fn make_collab_pass(
+        ins_tag: u8,
+        index: u32,
+        owner: USDBScriptHash,
+        state: MinerPassState,
+        height: u32,
+        leader_pass_id: InscriptionId,
+    ) -> MinerPassInfo {
+        let mut pass = make_pass(ins_tag, index, owner, state, height);
+        pass.pass_kind = MinerPassKind::Collab;
+        pass.usdb_main = String::new();
+        pass.leader_pass_id = Some(leader_pass_id);
+        pass
+    }
+
     #[derive(Clone)]
     struct ModelPassEvent {
         block_height: u32,
@@ -4837,6 +5176,168 @@ mod tests {
         assert_eq!(history_rows.len(), 1);
         assert_eq!(history_rows[0].pass.pass_kind, MinerPassKind::Collab);
         assert_eq!(history_rows[0].pass.leader_pass_id, Some(leader_pass_id));
+    }
+
+    #[test]
+    fn test_pass_history_active_kind_queries_and_standard_owner_helper() {
+        let dir = test_data_dir("history_active_kind_queries");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let standard_owner_1 = script_hash(34);
+        let standard_owner_2 = script_hash(35);
+        let collab_owner_1 = script_hash(36);
+        let collab_owner_2 = script_hash(37);
+        let collab_owner_3 = script_hash(38);
+
+        let standard_1 = make_pass(34, 0, standard_owner_1, MinerPassState::Active, 100);
+        let standard_2 = make_pass(35, 0, standard_owner_2, MinerPassState::Active, 130);
+        let collab_1 = make_collab_pass(
+            36,
+            0,
+            collab_owner_1,
+            MinerPassState::Active,
+            101,
+            standard_1.inscription_id,
+        );
+        let collab_2 = make_collab_pass(
+            37,
+            0,
+            collab_owner_2,
+            MinerPassState::Active,
+            102,
+            standard_1.inscription_id,
+        );
+        let dormant_collab = make_collab_pass(
+            38,
+            0,
+            collab_owner_3,
+            MinerPassState::Active,
+            103,
+            standard_1.inscription_id,
+        );
+
+        storage
+            .add_new_mint_pass_at_height(&standard_1, standard_1.mint_block_height)
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&collab_1, collab_1.mint_block_height)
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&collab_2, collab_2.mint_block_height)
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&dormant_collab, dormant_collab.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &dormant_collab.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&standard_2, standard_2.mint_block_height)
+            .unwrap();
+
+        assert_eq!(
+            storage
+                .get_active_standard_pass_count_from_history_at_height(99)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            storage
+                .get_active_standard_pass_count_from_history_at_height(110)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            storage
+                .get_active_collab_pass_count_from_history_at_height(110)
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            storage
+                .get_active_collab_pass_count_from_history_at_height(120)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            storage
+                .get_pass_count_from_history_at_height_by_states_and_kinds(
+                    130,
+                    &[MinerPassState::Active],
+                    &[MinerPassKind::Standard, MinerPassKind::Collab],
+                )
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            storage
+                .get_pass_count_from_history_at_height_by_states_and_kinds(
+                    130,
+                    &[],
+                    &[MinerPassKind::Standard],
+                )
+                .unwrap(),
+            0
+        );
+
+        let active_collab_110 = storage
+            .get_active_collab_passes_by_page_from_history_at_height(0, 10, 110)
+            .unwrap();
+        let collab_ids = active_collab_110
+            .iter()
+            .map(|snapshot| snapshot.pass.inscription_id)
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            collab_ids,
+            HashSet::from([
+                collab_1.inscription_id,
+                collab_2.inscription_id,
+                dormant_collab.inscription_id
+            ])
+        );
+        for snapshot in active_collab_110 {
+            assert_eq!(snapshot.pass.pass_kind, MinerPassKind::Collab);
+            assert_eq!(snapshot.pass.state, MinerPassState::Active);
+            assert_eq!(
+                snapshot.pass.leader_pass_id,
+                Some(standard_1.inscription_id)
+            );
+        }
+
+        let active_collab_120 = storage
+            .get_active_collab_passes_by_page_from_history_at_height(0, 10, 120)
+            .unwrap();
+        assert_eq!(active_collab_120.len(), 2);
+        assert!(
+            !active_collab_120
+                .iter()
+                .any(|snapshot| snapshot.pass.inscription_id == dormant_collab.inscription_id)
+        );
+
+        let standard_owners_130_page0 = storage
+            .get_active_standard_pass_owners_by_page_from_history_at_height(0, 1, 130)
+            .unwrap();
+        let standard_owners_130_page1 = storage
+            .get_active_standard_pass_owners_by_page_from_history_at_height(1, 1, 130)
+            .unwrap();
+        assert_eq!(standard_owners_130_page0.len(), 1);
+        assert_eq!(standard_owners_130_page1.len(), 1);
+        assert_eq!(
+            standard_owners_130_page0[0].inscription_id,
+            standard_2.inscription_id
+        );
+        assert_eq!(standard_owners_130_page0[0].owner, standard_owner_2);
+        assert_eq!(
+            standard_owners_130_page1[0].inscription_id,
+            standard_1.inscription_id
+        );
+        assert_eq!(standard_owners_130_page1[0].owner, standard_owner_1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
