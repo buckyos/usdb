@@ -48,7 +48,7 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 - level 和 real difficulty 的具体公式。
 - ETHW 侧 Leader eligibility、出块历史窗口、报价有效性和最终挖矿准入策略。
 - reward split 和协作者收益分配。
-- USDB validator payload 的完整字段集合。
+- ETHW 链上 payload 的完整字段集合和二进制编码。
 
 # 术语
 
@@ -71,6 +71,18 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 | --- | ---: | --- |
 | `COLLAB_WEIGHT_BPS` | `5000` | collab raw energy 按 50% 计入 Leader effective energy。 |
 | `BPS_DENOMINATOR` | `10_000` | bps 分母。 |
+
+# 当前实现状态
+
+`usdb-indexer` 已按本文完成 core 对接：
+
+- `get_pass_energy` 返回 `raw_energy`、`collab_contribution`、`effective_energy` 三字段。
+- `get_collab_breakdown` 返回某个 Leader 在指定 BTC 高度的 collab contribution 明细、稳定分页和全量 aggregate。
+- `get_candidate_set_view` 只枚举 active standard pass，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 排序。
+- validator block-body regtest JSON payload 已统一携带 `raw_energy`、`collab_contribution`、`effective_energy`，winner 重算使用 `effective_energy`。
+- `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不作为 validator candidate set 口径。
+
+本文仍保持 `Draft` 状态。后续若 UIP-0005 / UIP-0006 对经济状态 view 字段或版本字段提出新要求，应在对应 UIP 中升级 view/version 语义，而不是反向修改 UIP-0004 的 raw/effective 能量定义。
 
 # Leader 解析
 
@@ -346,6 +358,23 @@ effective_energy = 0,
 
 实现可以在轻量 snapshot 中只返回 aggregate `collab_contribution`，但 validator payload 或审计查询必须能携带或获取上述明细，以便独立重算。
 
+当前 `usdb-indexer` 实现中：
+
+- 单 pass 轻量查询使用 `get_pass_energy`，返回 aggregate `collab_contribution`。
+- 审计明细使用 `get_collab_breakdown`，返回 `aggregate_collab_contribution` 和可分页的 per-collab item。
+- candidate set 审计使用 `get_candidate_set_view`，返回 active standard candidate 的三字段能量和排序结果。
+- validator JSON payload 允许携带三字段快照；验证方仍应在同一 historical context 下重查 `get_pass_energy` / breakdown 来审计 aggregate。
+
+# 与后续 UIP 的边界
+
+UIP-0004 只定义 BTC-side `effective_energy` 派生 view。以下事项不应改变本文的 `raw_energy`、`collab_contribution` 或 `effective_energy`：
+
+- UIP-0005：从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`。
+- UIP-0006：把 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 candidate set 组织成统一 economic state view。
+- UIP-0014：ETHW / validator policy 中的 quote activity 和 candidate energy 回落规则。
+
+尤其是 UIP-0014 中 quote stale 时的 candidate energy 降级，只能影响下游 validator/mining policy，不得回写或重定义 USDB indexer 的 `effective_energy`。
+
 # 安全性
 
 ## 禁止双重计数
@@ -405,6 +434,8 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 - collab pass remint 为新 collab pass 时只继承 UIP-0003 折损后的 raw energy。
 - old collab 被 consumed 后不再向旧 Leader 贡献 `collab_contribution`。
 - payload 同时携带 `raw_energy`、`collab_contribution`、`effective_energy`，且可由 breakdown 重算。
+
+当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景。大规模 live/regtest 场景建议在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免 candidate view、level、payload 字段在中途重复调整。
 
 # 已确认规则
 

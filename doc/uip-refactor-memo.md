@@ -189,13 +189,14 @@
 
 ## UIP-0004 Collab Leader and Effective Energy
 
-状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver、`get_pass_energy` 三字段聚合、collab breakdown 审计查询和 candidate set view 已对接；后续 quote activity / candidate energy 口径留到 UIP-0014。
+状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver、`get_pass_energy` 三字段聚合、collab breakdown 审计查询、candidate set view、validator payload 三字段和核心测试覆盖已对接；UIP-0004 core 基本收尾。后续 quote activity / candidate energy 口径留到 UIP-0014。
 
 ### 已对接内容
 
 - `doc/UIP/UIP-0004-collab-leader-effective-energy.md`
   - 明确 `collab_contribution` 使用 UIP-0003 `energy_uint`，bps 乘除按整数 floor 计算并 saturate 到 `ENERGY_MAX`。
   - 明确 `raw_energy + Σ collab_contribution` 使用 `energy_uint` 饱和加法，超过 `ENERGY_MAX` 时 effective energy 固定为 `ENERGY_MAX`，且不得写回 raw energy ledger。
+  - 补充当前 `usdb-indexer` 实现接口、validator payload 三字段、后续 UIP 边界和 live/regtest 集中复核策略。
 - `src/btc/usdb-indexer/src/index/energy_formula.rs`
   - 新增 `COLLAB_WEIGHT_BPS = 5_000`。
   - 新增 `calc_collab_contribution(raw_energy)`，按 `floor(raw_energy * 5000 / 10000)` 计算单张 active collab pass 的折算贡献。
@@ -270,4 +271,7 @@
 
 ### 待继续对齐
 
+- UIP-0005：基于 `effective_energy` 派生 `level` / `difficulty_factor_bps`，并补充 RPC/view/test 对接。
+- UIP-0006：统一 economic state view、candidate set view/profile 版本字段和审计查询口径。
+- 大规模 live/regtest 场景在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免中间字段反复调整。
 - UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。
