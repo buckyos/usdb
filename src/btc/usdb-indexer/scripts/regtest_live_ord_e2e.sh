@@ -850,7 +850,7 @@ build_live_transfer_remint_scenario() {
       "type": "assert_pass_energy_eq",
       "inscription_id": "${inscription_id_2}",
       "block_height": ${height_remint},
-      "expected_energy": "\$pass1_energy_remint.energy",
+      "expected_energy": "\$pass1_energy_remint.raw_energy",
       "mode": "at_or_before",
       "expected_state": "active"
     },

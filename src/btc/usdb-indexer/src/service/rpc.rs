@@ -788,10 +788,16 @@ pub struct PassEnergySnapshot {
     pub owner_balance: u64,
     /// Balance delta in satoshis for this record.
     pub owner_delta: i64,
-    /// Effective raw energy at query height, encoded as canonical decimal string.
+    /// Raw energy at query height, encoded as canonical decimal string.
     /// For `mode=exact`, this equals record energy.
     /// For `mode=at_or_before`, this is projected from the latest record <= query height.
-    pub energy: String,
+    pub raw_energy: String,
+    /// Collab contribution at query height, encoded as canonical decimal string.
+    /// Until UIP-0004 is implemented, this is always `"0"`.
+    pub collab_contribution: String,
+    /// Effective energy at query height, encoded as canonical decimal string.
+    /// Until UIP-0004 is implemented, this equals `raw_energy`.
+    pub effective_energy: String,
 }
 
 /// Parameters for `get_pass_energy_range`.

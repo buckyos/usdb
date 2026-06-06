@@ -143,9 +143,11 @@
 - `src/btc/usdb-indexer/src/storage/energy.rs`
   - `PassEnergyValue` / `PassEnergyRecord` 的 `energy` 字段改为 `Energy = u128`；dev 阶段不做旧 DB 迁移兼容。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
-  - `PassEnergySnapshot`、`PassEnergyRangeItem`、`PassEnergyLeaderboardItem` 的 `energy` 字段改为 canonical decimal string。
+  - `PassEnergySnapshot` 删除单一 `energy` 字段，改为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string。
+  - `PassEnergyRangeItem`、`PassEnergyLeaderboardItem` 的 `energy` 字段保持 raw energy，输出 canonical decimal string。
 - `src/btc/usdb-indexer/src/service/server.rs`
-  - RPC 单 pass energy 与 range 直接将 `u128` 编码为 decimal string。
+  - RPC 单 pass energy 先按 UIP-0003 raw-only 暴露三字段：`collab_contribution = "0"`，`effective_energy = raw_energy`。
+  - range 直接将 `u128` raw energy 编码为 decimal string。
   - leaderboard 先保留 `u128` ranking key 排序，再把 item energy 编码为 decimal string，避免按字符串排序。
 
 ### 已补测试
@@ -164,7 +166,8 @@
 - multi prev 继承求和超过 `ENERGY_MAX` 时 saturate 到 `u128::MAX`。
 - storage `u128` energy roundtrip，覆盖 `u64::MAX + 1`、`u128::MAX - 1`、`u128::MAX`。
 - energy manager active projection 在接近 `u128::MAX` 时 saturating 到 `ENERGY_MAX`。
-- RPC `energy` decimal string 输出覆盖 exact、projection saturation、range 和 leaderboard cache 场景。
+- RPC `get_pass_energy` 覆盖 exact、projection saturation、三字段 decimal string 输出，并断言旧 `energy` 字段不再序列化。
+- RPC range / leaderboard 覆盖 raw `items[].energy` decimal string 输出和 cache 场景。
 - leaderboard 覆盖先按 `u128` 数值排序再编码，避免 decimal string 字典序排序；并覆盖同 energy 下 `record_block_height DESC` / `inscription_id ASC` tie-breaker。
 - `u128::MAX` 继承折损不发生先乘溢出。
 - penalty 饱和到 `ENERGY_MAX`。

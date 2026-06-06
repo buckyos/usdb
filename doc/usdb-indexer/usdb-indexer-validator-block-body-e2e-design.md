@@ -176,8 +176,8 @@ validator 风格脚本应始终分两步：
 
 覆盖：
 
-- 同一历史高度 `H` 下两张候选 pass 存在真实 `energy` 差异，而不是都落到 `0` 后只走 tie-break
-- `H` 时 `pass1.energy > pass2.energy`，payload 记录 `pass1` 为 winner
+- 同一历史高度 `H` 下两张候选 pass 存在真实 `effective_energy` 差异，而不是都落到 `0` 后只走 tie-break
+- `H` 时 `pass1.effective_energy > pass2.effective_energy`，payload 记录 `pass1` 为 winner
 - 后续块通过给 `pass2` owner 追加真实 BTC balance 并等待 energy 增长，使当前 head 上的赢家翻转为 `pass2`
 - validator 仍能按 `H` 的历史 `external_state` 证明旧 payload 合法
 - 新高度的 payload 会切换到新的 winner，从而证明“历史赢家”和“当前赢家”都能按各自上下文独立成立

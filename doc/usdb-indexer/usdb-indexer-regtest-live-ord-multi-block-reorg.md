@@ -78,5 +78,5 @@ USDB indexer live ord multi-block reorg test succeeded.
    - `pass1` 仍是 `consumed`
    - `pass2` 恢复为 `active`
    - `pass3` 在 `get_pass_snapshot` 中返回 `null`，在 `get_pass_energy` 中返回 `ENERGY_NOT_FOUND`
-3. `get_pass_energy_leaderboard(scope=active)` 的 top1 从旧链 `pass3` 切换为 replacement 链 `pass2`，并与单 pass `get_pass_energy` 返回的 energy 数值一致。
+3. `get_pass_energy_leaderboard(scope=active)` 的 top1 从旧链 `pass3` 切换为 replacement 链 `pass2`，并与单 pass `get_pass_energy` 返回的 `raw_energy` 数值一致。
 4. `get_snapshot_info.latest_block_commit` 和本地 `get_pass_block_commit(H)` anchor 已切到 replacement chain。

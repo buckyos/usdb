@@ -41,7 +41,7 @@ pass_energy_at_height() {
     regtest_log "Failed to fetch pass energy at height=${block_height}, inscription_id=${inscription_id}, response=${resp}"
     exit 1
   fi
-  regtest_json_expr "$resp" "(data.get('result') or {}).get('energy', 0)"
+  regtest_json_expr "$resp" "(data.get('result') or {}).get('effective_energy', 0)"
 }
 
 choose_winner_for_candidates() {

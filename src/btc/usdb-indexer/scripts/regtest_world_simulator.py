@@ -1782,7 +1782,7 @@ class RegtestWorldSimulator:
             inscription_id=inscription_id,
             owner=str(snapshot.get("owner", "")),
             state=str(snapshot.get("state", "")),
-            energy=int(energy.get("energy", 0)),
+            energy=int(energy.get("effective_energy", 0)),
         )
 
     def validate_tampered_candidate_set_sample(
@@ -2940,7 +2940,7 @@ class RegtestWorldSimulator:
         owner_address = str(energy_snapshot.get("owner_address", ""))
         owner_balance = int(energy_snapshot.get("owner_balance", 0))
         owner_delta = int(energy_snapshot.get("owner_delta", 0))
-        energy = int(energy_snapshot.get("energy", 0))
+        energy = int(energy_snapshot.get("raw_energy", 0))
 
         if query_height != block_height:
             raise WorldSimError(
@@ -3340,7 +3340,7 @@ class RegtestWorldSimulator:
             )
             actual_owner = str(energy_snapshot.get("owner_address", ""))
             actual_state = str(energy_snapshot.get("state", ""))
-            actual_energy = int(energy_snapshot.get("energy", 0))
+            actual_energy = int(energy_snapshot.get("raw_energy", 0))
 
             if actual_query_height != block_height:
                 raise WorldSimError(

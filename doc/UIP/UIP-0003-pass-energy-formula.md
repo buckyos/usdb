@@ -502,6 +502,7 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 实现层仍需持续审计：
 
 - BTC indexer 已将 RocksDB `PassEnergyValue.energy` 改为 `uint128`；开发期不做旧 DB 迁移兼容，测试需要时重建 DB。
-- BTC indexer RPC 已将 pass energy snapshot / range / leaderboard 的 `energy` 输出改为 canonical decimal string。
+- BTC indexer RPC 已将 pass energy snapshot 输出拆为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string；在 UIP-0004 实现前，`collab_contribution = "0"` 且 `effective_energy = raw_energy`。
+- BTC indexer RPC range / leaderboard 的 `items[].energy` 仍表示 UIP-0003 raw energy，并输出 canonical decimal string。
 - 前端、CLI、validator payload 或后续 state view 若新增或消费 energy 字段，必须继续使用 `string`，不得退回 JSON number。
 - validator payload 和 state ref 若包含 energy，也必须使用 decimal string 并按本文规则 canonicalize。

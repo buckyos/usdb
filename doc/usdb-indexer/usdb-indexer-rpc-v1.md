@@ -146,11 +146,15 @@
   "owner_address": "<USDBScriptHash>",
   "owner_balance": 123000000,
   "owner_delta": -10000,
-  "energy": "123456789"
+  "raw_energy": "123456789",
+  "collab_contribution": "0",
+  "effective_energy": "123456789"
 }
 ```
 
-`energy` 是 pass raw energy 的 canonical decimal string 编码；内部按 `u128` 计算和存储，RPC 不使用 JSON number 表达该字段。
+`raw_energy` 是 pass 自身 raw energy 的 canonical decimal string 编码；内部按 `u128` 计算和存储，RPC 不使用 JSON number 表达 energy 字段。
+
+`collab_contribution` 和 `effective_energy` 为后续 UIP-0004 / UIP-0006 对齐预留的统一查询面。当前 UIP-0004 尚未实现，`collab_contribution` 固定为 `"0"`，`effective_energy` 等于 `raw_energy`。
 
 ## 4.5 ActiveBalanceSnapshot
 
@@ -534,7 +538,7 @@
 - mismatch 校验成功后，才继续返回业务能量结果；`ENERGY_NOT_FOUND` 仍表示该 pass 在查询模式下没有对应能量记录。
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
 - 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
-- 返回的 `energy` 为 canonical decimal string。
+- 返回的 `raw_energy`、`collab_contribution`、`effective_energy` 均为 canonical decimal string。当前 UIP-0004 尚未实现，`collab_contribution` 固定为 `"0"`，`effective_energy` 等于 `raw_energy`。
 
 ### 15) `get_pass_energy_range`
 

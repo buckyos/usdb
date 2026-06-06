@@ -51,7 +51,7 @@ assert_leaderboard_top1_matches_pass_energy() {
 
   pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
   regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
-  expected_energy="$(regtest_json_expr "$pass_energy_resp" "((data.get('result') or {}).get('energy', ''))")"
+  expected_energy="$(regtest_json_expr "$pass_energy_resp" "((data.get('result') or {}).get('raw_energy', ''))")"
   regtest_assert_json_expr "$leaderboard_resp" "(((data.get('result') or {}).get('items') or [{}])[0].get('energy'))" "$expected_energy"
 }
 

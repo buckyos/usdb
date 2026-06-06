@@ -302,9 +302,16 @@ class RegtestScenarioRunner:
             raise ScenarioError(
                 f"Invalid get_pass_energy result: inscription_id={inscription_id}, block_height={block_height}, mode={mode}, result={result}"
             )
-        if "energy" not in result:
+        missing_fields = [
+            field
+            for field in ("raw_energy", "collab_contribution", "effective_energy")
+            if field not in result
+        ]
+        if missing_fields:
             raise ScenarioError(
-                f"Missing energy field in get_pass_energy result: inscription_id={inscription_id}, block_height={block_height}, mode={mode}, result={result}"
+                "Missing energy fields in get_pass_energy result: "
+                f"inscription_id={inscription_id}, block_height={block_height}, mode={mode}, "
+                f"missing_fields={missing_fields}, result={result}"
             )
         return result
 
@@ -318,7 +325,7 @@ class RegtestScenarioRunner:
         message: str | None = None,
     ) -> None:
         snapshot = self.get_pass_energy_snapshot(inscription_id, block_height, mode)
-        got_energy = int(snapshot.get("energy", -1))
+        got_energy = int(snapshot.get("raw_energy", -1))
         if got_energy != expected_energy:
             detail = (
                 "assert_pass_energy_eq failed: "
@@ -351,7 +358,7 @@ class RegtestScenarioRunner:
         message: str | None = None,
     ) -> None:
         snapshot = self.get_pass_energy_snapshot(inscription_id, block_height, mode)
-        got_energy = int(snapshot.get("energy", -1))
+        got_energy = int(snapshot.get("raw_energy", -1))
         if got_energy < expected_min_energy:
             detail = (
                 "assert_pass_energy_ge failed: "
@@ -388,8 +395,8 @@ class RegtestScenarioRunner:
         snapshot_from = self.get_pass_energy_snapshot(inscription_id, from_height, mode)
         snapshot_to = self.get_pass_energy_snapshot(inscription_id, to_height, mode)
 
-        energy_from = int(snapshot_from.get("energy", -1))
-        energy_to = int(snapshot_to.get("energy", -1))
+        energy_from = int(snapshot_from.get("raw_energy", -1))
+        energy_to = int(snapshot_to.get("raw_energy", -1))
         delta = energy_to - energy_from
 
         if expected_delta is not None and delta != expected_delta:

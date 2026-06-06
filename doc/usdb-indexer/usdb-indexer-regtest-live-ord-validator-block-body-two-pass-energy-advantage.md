@@ -20,15 +20,15 @@
 3. 给 `pass1` owner 地址追加真实 BTC balance，并等待数个增长块
 4. 稍后 mint `pass2`
 5. 在竞争高度 `H`：
-   - 读取 `pass1.energy`
-   - 读取 `pass2.energy`
-   - 断言 `pass1.energy > pass2.energy`
+   - 读取 `pass1.effective_energy`
+   - 读取 `pass2.effective_energy`
+   - 断言 `pass1.effective_energy > pass2.effective_energy`
 6. 基于高度 `H` 写出 multi-pass validator payload，winner 固定为 `pass1`
 7. 再给 `pass2` owner 地址追加更大的真实 BTC balance，并等待增长块
 8. 在新的 head：
-   - 读取 `pass1.energy`
-   - 读取 `pass2.energy`
-   - 断言 `pass2.energy > pass1.energy`
+   - 读取 `pass1.effective_energy`
+   - 读取 `pass2.effective_energy`
+   - 断言 `pass2.effective_energy > pass1.effective_energy`
 9. 再次校验：
    - 高度 `H` 的旧 payload 仍通过
    - 新高度生成的新 payload 切换到 `pass2`
@@ -39,15 +39,15 @@
 
 在高度 `H`：
 
-- `pass1.energy > 0`
-- `pass1.energy > pass2.energy`
+- `pass1.effective_energy > 0`
+- `pass1.effective_energy > pass2.effective_energy`
 - payload 里的 `miner_selection.inscription_id == pass1`
 
 ### 4.2 当前赢家翻转不影响历史 payload
 
 在更高 head：
 
-- `pass2.energy > pass1.energy`
+- `pass2.effective_energy > pass1.effective_energy`
 - 基于新 head 生成的新 payload 里的 winner 变成 `pass2`
 - 旧 payload 仍按 `H` 的 `external_state` 验证通过
 

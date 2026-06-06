@@ -1889,7 +1889,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 }),
             ));
         };
-        let (effective_state, effective_energy) = match mode.as_str() {
+        let (effective_state, raw_energy) = match mode.as_str() {
             "exact" => (record.state.clone(), record.energy),
             "at_or_before" => {
                 let projected = self
@@ -1901,6 +1901,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             _ => unreachable!(),
         };
 
+        let raw_energy_decimal = encode_energy_decimal(raw_energy);
+
         Ok(PassEnergySnapshot {
             inscription_id: record.inscription_id.to_string(),
             query_block_height: query_height,
@@ -1910,7 +1912,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             owner_address: record.owner_address.to_string(),
             owner_balance: record.owner_balance,
             owner_delta: record.owner_delta,
-            energy: encode_energy_decimal(effective_energy),
+            raw_energy: raw_energy_decimal.clone(),
+            collab_contribution: encode_energy_decimal(0),
+            effective_energy: raw_energy_decimal,
         })
     }
 
@@ -4266,7 +4270,14 @@ mod tests {
         let expected = 500u128.saturating_add(calc_growth_delta(100_000, 10));
         assert_eq!(projected.query_block_height, 130);
         assert_eq!(projected.record_block_height, 120);
-        assert_eq!(projected.energy, expected.to_string());
+        assert_eq!(projected.raw_energy, expected.to_string());
+        assert_eq!(projected.collab_contribution, "0");
+        assert_eq!(projected.effective_energy, expected.to_string());
+        let projected_json = serde_json::to_value(&projected).unwrap();
+        assert!(projected_json.get("energy").is_none());
+        assert_eq!(projected_json["raw_energy"], expected.to_string());
+        assert_eq!(projected_json["collab_contribution"], "0");
+        assert_eq!(projected_json["effective_energy"], expected.to_string());
 
         let exact = server
             .get_pass_energy(GetPassEnergyParams {
@@ -4278,7 +4289,9 @@ mod tests {
             .unwrap();
         assert_eq!(exact.query_block_height, 120);
         assert_eq!(exact.record_block_height, 120);
-        assert_eq!(exact.energy, "500");
+        assert_eq!(exact.raw_energy, "500");
+        assert_eq!(exact.collab_contribution, "0");
+        assert_eq!(exact.effective_energy, "500");
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -4301,7 +4314,9 @@ mod tests {
                 mode: Some("exact".to_string()),
             })
             .unwrap();
-        assert_eq!(exact.energy, (Energy::MAX - 1).to_string());
+        assert_eq!(exact.raw_energy, (Energy::MAX - 1).to_string());
+        assert_eq!(exact.collab_contribution, "0");
+        assert_eq!(exact.effective_energy, (Energy::MAX - 1).to_string());
 
         let projected = server
             .get_pass_energy(GetPassEnergyParams {
@@ -4311,7 +4326,9 @@ mod tests {
                 mode: Some("at_or_before".to_string()),
             })
             .unwrap();
-        assert_eq!(projected.energy, Energy::MAX.to_string());
+        assert_eq!(projected.raw_energy, Energy::MAX.to_string());
+        assert_eq!(projected.collab_contribution, "0");
+        assert_eq!(projected.effective_energy, Energy::MAX.to_string());
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

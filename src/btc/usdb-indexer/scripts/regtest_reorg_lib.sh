@@ -227,7 +227,7 @@ payload = {
         "inscription_id": pass_snapshot["inscription_id"],
         "owner": pass_snapshot["owner"],
         "state": pass_snapshot["state"],
-        "energy": pass_energy["energy"],
+        "energy": pass_energy["effective_energy"],
         "resolved_height": pass_snapshot["resolved_height"],
         "query_block_height": pass_energy["query_block_height"],
     },
@@ -252,7 +252,7 @@ print(json.dumps({
     "inscription_id": pass_snapshot["inscription_id"],
     "owner": pass_snapshot["owner"],
     "state": pass_snapshot["state"],
-    "energy": pass_energy["energy"],
+    "energy": pass_energy["effective_energy"],
     "resolved_height": pass_snapshot["resolved_height"],
     "query_block_height": pass_energy["query_block_height"],
 }))
@@ -301,7 +301,7 @@ payload = {
         "inscription_id": winner_snapshot["inscription_id"],
         "owner": winner_snapshot["owner"],
         "state": winner_snapshot["state"],
-        "energy": winner_energy["energy"],
+        "energy": winner_energy["effective_energy"],
         "resolved_height": winner_snapshot["resolved_height"],
         "query_block_height": winner_energy["query_block_height"],
     },
@@ -614,7 +614,7 @@ regtest_validate_validator_payload_success() {
   regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$expected_energy"
+  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$expected_energy"
 }
 
 regtest_validate_validator_candidate_set_payload_success() {
@@ -673,7 +673,7 @@ PY
     regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
     regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
     regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$energy_height"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('energy')" "$candidate_energy"
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$candidate_energy"
   done
 
   computed_winner_json="$(python3 - "$payload_file" <<'PY'
