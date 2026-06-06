@@ -3,13 +3,13 @@ use super::energy::PassEnergyManagerRef;
 use super::energy_formula::{Energy, calc_inheritable_energy};
 use super::pass_commit::{PassBlockMutation, PassBlockMutationCollector};
 use crate::config::ConfigManagerRef;
-use crate::storage::{MinerPassInfo, MinerPassStorageRef};
+use crate::storage::{MinerPassInfo, MinerPassSnapshotInfo, MinerPassStorageRef};
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use usdb_util::USDBScriptHash;
+use usdb_util::{USDBScriptHash, address_string_to_script_hash};
 
 pub struct PassMintInscriptionInfo {
     pub inscription_id: InscriptionId,
@@ -40,6 +40,25 @@ pub struct InvalidPassMintInscriptionInfo {
     pub satpoint: SatPoint,
     pub error_code: String,
     pub error_reason: String,
+}
+
+/// Leader reference encoding used by a collab pass mint payload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CollabLeaderRefKind {
+    /// Fixed `leader_pass_id` binding.
+    LeaderPassId,
+    /// BTC address binding that resolves to the address owner's active standard pass at query height.
+    LeaderBtcAddr,
+}
+
+/// Result of resolving a collab pass Leader reference at one BTC height.
+pub struct ResolvedCollabLeader {
+    /// Leader reference kind declared by the collab pass.
+    pub leader_ref_kind: CollabLeaderRefKind,
+    /// Original Leader reference value from the collab pass mint payload.
+    pub leader_ref_value: String,
+    /// Historical active standard Leader snapshot at the query height.
+    pub leader: MinerPassSnapshotInfo,
 }
 
 struct MintStateValidationError {
@@ -118,6 +137,98 @@ impl MinerPassManager {
 
     pub fn has_active_block_mutation_collection(&self) -> bool {
         self.current_block_collector.lock().unwrap().is_some()
+    }
+
+    /// Resolve the Leader referenced by a collab pass at a specific BTC height.
+    ///
+    /// `leader_pass_id` is a fixed binding to that pass id. `leader_btc_addr`
+    /// is resolved through the configured BTC network, then matched to the
+    /// address owner's active standard pass snapshot at `block_height`.
+    pub fn resolve_collab_leader_at_height(
+        &self,
+        collab_pass: &MinerPassInfo,
+        block_height: u32,
+    ) -> Result<Option<ResolvedCollabLeader>, String> {
+        if collab_pass.pass_kind != MinerPassKind::Collab {
+            return Ok(None);
+        }
+
+        match (
+            collab_pass.leader_pass_id.as_ref(),
+            collab_pass.leader_btc_addr.as_deref(),
+        ) {
+            (Some(leader_pass_id), None) => Ok(self
+                .resolve_leader_pass_id_at_height(leader_pass_id, block_height)?
+                .map(|leader| ResolvedCollabLeader {
+                    leader_ref_kind: CollabLeaderRefKind::LeaderPassId,
+                    leader_ref_value: leader_pass_id.to_string(),
+                    leader,
+                })),
+            (None, Some(leader_btc_addr)) => Ok(self
+                .resolve_leader_btc_addr_at_height(leader_btc_addr, block_height)?
+                .map(|leader| ResolvedCollabLeader {
+                    leader_ref_kind: CollabLeaderRefKind::LeaderBtcAddr,
+                    leader_ref_value: leader_btc_addr.to_string(),
+                    leader,
+                })),
+            (None, None) => Ok(None),
+            (Some(leader_pass_id), Some(leader_btc_addr)) => {
+                let msg = format!(
+                    "Collab pass has multiple leader refs: inscription_id={}, leader_pass_id={}, leader_btc_addr={}",
+                    collab_pass.inscription_id, leader_pass_id, leader_btc_addr
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
+    /// Resolve a fixed `leader_pass_id` binding to an active standard pass snapshot at a BTC height.
+    ///
+    /// The referenced pass must exist at `block_height`, be `Active`, and have
+    /// `Standard` pass kind. Other historical states resolve to `None`.
+    pub fn resolve_leader_pass_id_at_height(
+        &self,
+        leader_pass_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<MinerPassSnapshotInfo>, String> {
+        let Some(snapshot) = self
+            .storage
+            .get_pass_snapshot_from_history_at_height(leader_pass_id, block_height)?
+        else {
+            return Ok(None);
+        };
+
+        if snapshot.pass.pass_kind == MinerPassKind::Standard
+            && snapshot.pass.state == MinerPassState::Active
+        {
+            Ok(Some(snapshot))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Resolve a `leader_btc_addr` binding through the current BTC network to an active standard pass snapshot.
+    ///
+    /// Address parsing intentionally uses `self.config.config().bitcoin.network()`
+    /// so mainnet/testnet/regtest leader refs cannot silently cross networks.
+    pub fn resolve_leader_btc_addr_at_height(
+        &self,
+        leader_btc_addr: &str,
+        block_height: u32,
+    ) -> Result<Option<MinerPassSnapshotInfo>, String> {
+        let network = self.config.config().bitcoin.network();
+        let owner = address_string_to_script_hash(leader_btc_addr, &network).map_err(|e| {
+            let msg = format!(
+                "Failed to resolve leader_btc_addr to script hash: leader_btc_addr={}, network={}, error={}",
+                leader_btc_addr, network, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        self.storage
+            .get_owner_active_standard_pass_from_history_at_height(&owner, block_height)
     }
 
     fn push_block_mutation(&self, mutation: PassBlockMutation) {
@@ -779,7 +890,8 @@ mod tests {
     use crate::storage::{MinerPassStorage, PassEnergyRecord, PassEnergyStorage};
     use balance_history::AddressBalance;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use bitcoincore_rpc::bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use bitcoincore_rpc::bitcoin::{Address, Network, OutPoint, PublicKey, ScriptBuf, Txid};
     use std::path::PathBuf;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -927,6 +1039,40 @@ mod tests {
             owner,
             state,
         }
+    }
+
+    fn test_collab_pass_info_with_leader_pass(
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        block_height: u32,
+        leader_pass_id: InscriptionId,
+    ) -> MinerPassInfo {
+        let mut pass = test_pass_info(
+            inscription_id,
+            owner,
+            block_height,
+            MinerPassKind::Collab,
+            MinerPassState::Active,
+        );
+        pass.leader_pass_id = Some(leader_pass_id);
+        pass
+    }
+
+    fn test_collab_pass_info_with_leader_addr(
+        inscription_id: InscriptionId,
+        owner: USDBScriptHash,
+        block_height: u32,
+        leader_btc_addr: &str,
+    ) -> MinerPassInfo {
+        let mut pass = test_pass_info(
+            inscription_id,
+            owner,
+            block_height,
+            MinerPassKind::Collab,
+            MinerPassState::Active,
+        );
+        pass.leader_btc_addr = Some(leader_btc_addr.to_string());
+        pass
     }
 
     fn setup_manager(
@@ -1303,6 +1449,166 @@ mod tests {
         assert_eq!(stored.state, MinerPassState::Active);
         assert_eq!(stored.pass_kind, MinerPassKind::Collab);
         assert_eq!(stored.leader_pass_id, Some(leader_id));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_leader_pass_id_requires_active_standard_snapshot() {
+        let (root_dir, storage, manager) = setup_empty_manager("resolve_leader_pass_id");
+        let leader_owner = test_script_hash(61);
+        let collab_owner = test_script_hash(62);
+        let leader_id = test_inscription_id(63, 0);
+        let collab_id = test_inscription_id(64, 0);
+        let leader_pass = test_pass_info(
+            leader_id,
+            leader_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader_pass, 100)
+            .unwrap();
+
+        let collab_pass =
+            test_collab_pass_info_with_leader_pass(collab_id, collab_owner, 101, leader_id);
+        let resolved = manager
+            .resolve_collab_leader_at_height(&collab_pass, 101)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.leader_ref_kind, CollabLeaderRefKind::LeaderPassId);
+        assert_eq!(resolved.leader_ref_value, leader_id.to_string());
+        assert_eq!(resolved.leader.pass.inscription_id, leader_id);
+        assert_eq!(resolved.leader.pass.pass_kind, MinerPassKind::Standard);
+        assert_eq!(resolved.leader.pass.state, MinerPassState::Active);
+
+        storage
+            .update_state_at_height(
+                &leader_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                110,
+            )
+            .unwrap();
+        assert!(
+            manager
+                .resolve_collab_leader_at_height(&collab_pass, 110)
+                .unwrap()
+                .is_none()
+        );
+
+        let collab_leader_id = test_inscription_id(65, 0);
+        let collab_leader = test_pass_info(
+            collab_leader_id,
+            test_script_hash(66),
+            100,
+            MinerPassKind::Collab,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&collab_leader, 100)
+            .unwrap();
+        assert!(
+            manager
+                .resolve_leader_pass_id_at_height(&collab_leader_id, 100)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_leader_btc_addr_follows_active_standard_remint() {
+        let (root_dir, storage, manager) = setup_empty_manager("resolve_leader_btc_addr");
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &manager.config.config().bitcoin.network(),
+        )
+        .unwrap();
+        let collab_owner = test_script_hash(67);
+        let leader_1_id = test_inscription_id(68, 0);
+        let leader_2_id = test_inscription_id(69, 0);
+        let collab_id = test_inscription_id(70, 0);
+
+        let leader_1 = test_pass_info(
+            leader_1_id,
+            leader_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage.add_new_mint_pass_at_height(&leader_1, 100).unwrap();
+        let collab_pass =
+            test_collab_pass_info_with_leader_addr(collab_id, collab_owner, 101, leader_btc_addr);
+
+        assert!(
+            manager
+                .resolve_collab_leader_at_height(&collab_pass, 99)
+                .unwrap()
+                .is_none()
+        );
+        let resolved_110 = manager
+            .resolve_collab_leader_at_height(&collab_pass, 110)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved_110.leader_ref_kind,
+            CollabLeaderRefKind::LeaderBtcAddr
+        );
+        assert_eq!(resolved_110.leader_ref_value, leader_btc_addr);
+        assert_eq!(resolved_110.leader.pass.inscription_id, leader_1_id);
+
+        storage
+            .update_state_at_height(
+                &leader_1_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        let leader_2 = test_pass_info(
+            leader_2_id,
+            leader_owner,
+            120,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage.add_new_mint_pass_at_height(&leader_2, 120).unwrap();
+
+        let resolved_120 = manager
+            .resolve_collab_leader_at_height(&collab_pass, 120)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved_120.leader.pass.inscription_id, leader_2_id);
+        assert_eq!(resolved_120.leader.pass.owner, leader_owner);
+        assert_eq!(resolved_120.leader.pass.state, MinerPassState::Active);
+        assert_eq!(resolved_120.leader.pass.pass_kind, MinerPassKind::Standard);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_leader_btc_addr_rejects_wrong_network() {
+        let (root_dir, _storage, manager) =
+            setup_empty_manager("resolve_leader_btc_addr_wrong_network");
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[71; 32]).unwrap();
+        let public_key = PublicKey::new(
+            bitcoincore_rpc::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret),
+        );
+        let testnet_leader_btc_addr = Address::p2pkh(public_key, Network::Testnet).to_string();
+
+        let err = match manager.resolve_leader_btc_addr_at_height(&testnet_leader_btc_addr, 100) {
+            Ok(resolved) => panic!(
+                "Expected wrong-network leader_btc_addr to fail, resolved={}",
+                resolved.is_some()
+            ),
+            Err(err) => err,
+        };
+        assert!(err.contains("Address network mismatch"), "{err}");
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

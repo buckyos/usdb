@@ -200,16 +200,25 @@
   - 新增 `COLLAB_WEIGHT_BPS = 5_000`。
   - 新增 `calc_collab_contribution(raw_energy)`，按 `floor(raw_energy * 5000 / 10000)` 计算单张 active collab pass 的折算贡献。
   - 新增 `calc_standard_effective_energy(raw_energy, collab_contribution)`，统一封装 standard pass 的 `raw + aggregate contribution` 饱和加法。
+- `src/btc/usdb-indexer/src/storage/pass.rs`
+  - 新增按 inscription id 查询指定高度 pass snapshot 的 helper，返回历史 owner/state/satpoint 与不可变 mint 字段。
+  - 新增按 owner 查询指定高度唯一 active standard pass 的 helper，用于 `leader_btc_addr` 解析。
+- `src/btc/usdb-indexer/src/index/pass.rs`
+  - 新增 `resolve_leader_pass_id_at_height`，固定 pass 绑定只在目标高度存在 active standard snapshot 时解析成功。
+  - 新增 `resolve_leader_btc_addr_at_height`，按当前 BTC network 将 Leader address 转为 owner script hash，再解析该 owner 在目标高度的 active standard pass。
+  - 新增 `resolve_collab_leader_at_height`，按 collab mint payload 的 leader ref kind 统一返回 resolved Leader snapshot。
 
 ### 已补测试
 
 - collab contribution 50% 权重与 floor rounding。
 - `u128::MAX` collab contribution 不发生先乘溢出。
 - standard effective energy 的 raw + contribution 饱和到 `ENERGY_MAX`。
+- `leader_pass_id` 只解析 active standard pass；dormant 或 collab pass 不解析。
+- `leader_btc_addr` 在无 active pass 时不解析，并在 Leader 同 owner remint 后自动跟随新 active standard pass。
+- `leader_btc_addr` 使用当前 BTC network 解析，错误网络地址会拒绝解析。
 
 ### 待继续对齐
 
-- 按高度解析 `leader_pass_id` 与 `leader_btc_addr`。
 - 枚举 active collab pass 并聚合到 resolved active standard leader。
 - `get_pass_energy` 接入真实 `collab_contribution` / `effective_energy`。
 - candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。

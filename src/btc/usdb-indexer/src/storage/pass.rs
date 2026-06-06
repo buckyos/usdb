@@ -2827,6 +2827,34 @@ impl MinerPassStorage {
         })
     }
 
+    fn row_to_pass_snapshot_info(
+        row: &rusqlite::Row,
+        source: &str,
+    ) -> Result<MinerPassSnapshotInfo, String> {
+        let pass = Self::row_to_pass_item(row)?;
+        let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
+            let msg = format!(
+                "Failed to get latest_event_height from {} pass snapshot row: {}",
+                source, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        if latest_event_height < 0 {
+            let msg = format!(
+                "Invalid negative latest_event_height in {} pass snapshot row: {}",
+                source, latest_event_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(MinerPassSnapshotInfo {
+            pass,
+            latest_event_height: latest_event_height as u32,
+        })
+    }
+
     fn row_to_pass_history_item(row: &rusqlite::Row) -> Result<MinerPassHistoryInfo, String> {
         let event_id = row.get::<_, i64>(0).map_err(|e| {
             let msg = format!("Failed to get event_id from miner pass history row: {}", e);
@@ -3329,6 +3357,189 @@ impl MinerPassStorage {
         }
 
         Ok(None)
+    }
+
+    /// Get one pass snapshot as of `block_height` using state-history rows.
+    ///
+    /// The returned pass combines immutable mint fields from `miner_passes`
+    /// with the latest owner, state, and satpoint history row at or before the
+    /// requested height. Missing history at that height returns `Ok(None)`.
+    pub fn get_pass_snapshot_from_history_at_height(
+        &self,
+        inscription_id: &InscriptionId,
+        block_height: u32,
+    ) -> Result<Option<MinerPassSnapshotInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+            SELECT
+                m.inscription_id,
+                m.inscription_number,
+                m.mint_txid,
+                m.mint_block_height,
+                m.mint_owner,
+                h.new_satpoint AS satpoint,
+                m.usdb_main,
+                m.prev,
+                h.new_owner AS owner,
+                h.new_state AS state,
+                m.invalid_code,
+                m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
+                h.block_height AS latest_event_height
+            FROM miner_pass_state_history h
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.inscription_id = ?1 AND h.block_height <= ?2
+            ORDER BY h.block_height DESC, h.id DESC
+            LIMIT 1;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get pass snapshot from history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                inscription_id.to_string(),
+                block_height as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query pass snapshot from history: inscription_id={}, block_height={}, error={}",
+                    inscription_id, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        if let Some(row) = rows.next().map_err(|e| {
+            let msg = format!("Failed to read pass snapshot row from history query: {}", e);
+            error!("{}", msg);
+            msg
+        })? {
+            return Ok(Some(Self::row_to_pass_snapshot_info(row, "inscription")?));
+        }
+
+        Ok(None)
+    }
+
+    /// Get the unique active standard pass owned by `owner` as of `block_height`.
+    ///
+    /// This is used by UIP0004 `leader_btc_addr` resolution after the address
+    /// has already been normalized to a script hash for the configured BTC
+    /// network. More than one active standard pass for the same owner is treated
+    /// as a storage invariant violation.
+    pub fn get_owner_active_standard_pass_from_history_at_height(
+        &self,
+        owner: &USDBScriptHash,
+        block_height: u32,
+    ) -> Result<Option<MinerPassSnapshotInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+            WITH latest AS (
+                SELECT h1.id
+                FROM miner_pass_state_history h1
+                WHERE h1.block_height <= ?1
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM miner_pass_state_history h2
+                        WHERE h2.inscription_id = h1.inscription_id
+                            AND h2.block_height <= ?1
+                            AND (
+                                h2.block_height > h1.block_height
+                                OR (h2.block_height = h1.block_height AND h2.id > h1.id)
+                            )
+                    )
+            )
+            SELECT
+                m.inscription_id,
+                m.inscription_number,
+                m.mint_txid,
+                m.mint_block_height,
+                m.mint_owner,
+                h.new_satpoint AS satpoint,
+                m.usdb_main,
+                m.prev,
+                h.new_owner AS owner,
+                h.new_state AS state,
+                m.invalid_code,
+                m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
+                h.block_height AS latest_event_height
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.id
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.new_owner = ?2
+                AND h.new_state = ?3
+                AND m.pass_kind = ?4
+            ORDER BY h.block_height DESC, h.id DESC
+            LIMIT 2;
+            ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare statement to get owner active standard pass from history: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                block_height as i64,
+                owner.to_string(),
+                MinerPassState::Active.as_str(),
+                MinerPassKind::Standard.as_str(),
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query owner active standard pass from history: owner={}, block_height={}, error={}",
+                    owner, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read owner active standard pass row from history query: {}",
+                e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            results.push(Self::row_to_pass_snapshot_info(
+                row,
+                "owner active standard",
+            )?);
+        }
+
+        if results.len() > 1 {
+            let msg = format!(
+                "Duplicate active standard owner detected in history snapshot: owner={}, block_height={}",
+                owner, block_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        Ok(results.into_iter().next())
     }
 
     pub fn get_pass_history_by_page_in_height_range(
@@ -3939,27 +4150,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
-                let msg = format!(
-                    "Failed to get latest_event_height from owner pass snapshot row: {}",
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            if latest_event_height < 0 {
-                let msg = format!(
-                    "Invalid negative latest_event_height in owner pass snapshot row: {}",
-                    latest_event_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-            passes.push(MinerPassSnapshotInfo {
-                pass,
-                latest_event_height: latest_event_height as u32,
-            });
+            passes.push(Self::row_to_pass_snapshot_info(row, "owner")?);
         }
 
         Ok(passes)
@@ -4125,27 +4316,7 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })? {
-            let pass = Self::row_to_pass_item(row)?;
-            let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
-                let msg = format!(
-                    "Failed to get latest_event_height from recent pass snapshot row: {}",
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            if latest_event_height < 0 {
-                let msg = format!(
-                    "Invalid negative latest_event_height in recent pass snapshot row: {}",
-                    latest_event_height
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-            passes.push(MinerPassSnapshotInfo {
-                pass,
-                latest_event_height: latest_event_height as u32,
-            });
+            passes.push(Self::row_to_pass_snapshot_info(row, "recent")?);
         }
 
         Ok(passes)
