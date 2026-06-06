@@ -141,20 +141,24 @@
   "inscription_id": "txidi0",
   "record_block_height": 900123,
   "query_block_height": 900130,
-  "state": "dormant",
+  "state": "active",
   "active_block_height": 900100,
   "owner_address": "<USDBScriptHash>",
   "owner_balance": 123000000,
   "owner_delta": -10000,
   "raw_energy": "123456789",
   "collab_contribution": "0",
-  "effective_energy": "123456789"
+  "effective_energy": "123456789",
+  "level": 19,
+  "difficulty_factor_bps": 8100
 }
 ```
 
 `raw_energy` 是 pass 自身 raw energy 的 canonical decimal string 编码；内部按 `u128` 计算和存储，RPC 不使用 JSON number 表达 energy 字段。
 
 `raw_energy` 保持 UIP-0003 raw energy 口径。`collab_contribution` 和 `effective_energy` 为 UIP-0004 / UIP-0006 派生查询面：active standard pass 返回运行时聚合的 collab contribution 与 `raw + contribution`，active collab pass 和 non-active pass 的 `effective_energy` 为 `"0"`。这些派生值不写回 raw energy ledger。
+
+`level` 和 `difficulty_factor_bps` 按 UIP-0005 从 `effective_energy` 运行时派生，不写入 raw energy ledger，也不依赖 ETHW `base_difficulty` / `real_difficulty`。
 
 ## 4.5 ActiveBalanceSnapshot
 
@@ -539,6 +543,7 @@
 - 若高度低于统一历史保留窗口下界（当前实现为 `genesis_block_height`），会返回共享共识错误 `STATE_NOT_RETAINED`。
 - 若高度合法，但该节点当前缺少构造历史 state ref 所需的辅助数据，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`。
 - 返回的 `raw_energy`、`collab_contribution`、`effective_energy` 均为 canonical decimal string。`collab_contribution` / `effective_energy` 为运行时派生值，不写回 raw energy ledger。
+- 返回的 `level`、`difficulty_factor_bps` 按 UIP-0005 从 `effective_energy` 运行时派生，不写入 energy DB；USDB indexer 不查询、不持久化 ETHW `base_difficulty` 或 `real_difficulty`。
 
 ### 15) `get_pass_energy_range`
 

@@ -69,7 +69,7 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 
 # 当前实现状态
 
-当前代码尚未实现本 UIP 定义的 `level` 和 `difficulty_factor_bps`。
+当前代码已实现本 UIP 的公式层 helper，并已在 `get_pass_energy` 中运行时派生 `level` 和 `difficulty_factor_bps`。
 
 在本 UIP 激活前，已有 leaderboard、RPC 或 validator 样例若只使用 raw `energy`，都不应被视为最终协议行为。实现进入本 UIP 后：
 
@@ -77,6 +77,11 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 - USDB indexer 不需要持久化 `level` 或 `difficulty_factor_bps`。
 - USDB indexer 不计算、不持久化、不查询 ETHW `base_difficulty` 或 `real_difficulty`。
 - USDB validator / mining policy 使用 `difficulty_factor_bps` 和自己的当前 `base_difficulty` 计算 `real_difficulty`。
+
+仍待对齐：
+
+- candidate set view / 后续 economic state view 暴露 `level` 和 `difficulty_factor_bps`。
+- validator payload / 下游 ETHW policy 是否显式承诺 `base_difficulty` 和 `real_difficulty`。
 
 # 输入语义
 

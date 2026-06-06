@@ -2,7 +2,8 @@ use super::rpc::*;
 use crate::config::ConfigManagerRef;
 use crate::index::{
     COLLAB_WEIGHT_BPS, DerivedCollabBreakdownItem, DerivedPassEnergyMode, Energy,
-    InscriptionIndexer, MinerPassKind, MinerPassState,
+    InscriptionIndexer, MinerPassKind, MinerPassState, calc_difficulty_factor_bps,
+    calc_level_from_effective_energy,
 };
 use crate::status::StatusManagerRef;
 use jsonrpc_core::IoHandler;
@@ -2103,6 +2104,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
 
         let record = snapshot.record;
+        let level = calc_level_from_effective_energy(snapshot.effective_energy);
+        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
 
         Ok(PassEnergySnapshot {
             inscription_id: record.inscription_id.to_string(),
@@ -2116,6 +2119,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             raw_energy: encode_energy_decimal(snapshot.raw_energy),
             collab_contribution: encode_energy_decimal(snapshot.collab_contribution),
             effective_energy: encode_energy_decimal(snapshot.effective_energy),
+            level,
+            difficulty_factor_bps: difficulty_factor_bps as u64,
         })
     }
 
@@ -2535,7 +2540,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 mod tests {
     use super::*;
     use crate::config::{ConfigManager, IndexerConfig};
-    use crate::index::energy_formula::{calc_collab_contribution, calc_growth_delta};
+    use crate::index::energy_formula::{LEVEL_E0, calc_collab_contribution, calc_growth_delta};
     use crate::index::{InscriptionIndexer, MinerPassKind, MinerPassState, PassBlockCommitEntry};
     use crate::output::IndexOutput;
     use crate::status::StatusManager;
@@ -4612,7 +4617,7 @@ mod tests {
 
         let pass = make_active_pass(11, 110, 100);
         storage.add_new_mint_pass_at_height(&pass, 100).unwrap();
-        seed_energy_record(&server, &pass, 120, 500);
+        seed_energy_record(&server, &pass, 120, LEVEL_E0 - 10);
 
         let projected = server
             .get_pass_energy(GetPassEnergyParams {
@@ -4623,17 +4628,21 @@ mod tests {
             })
             .unwrap();
 
-        let expected = 500u128.saturating_add(calc_growth_delta(100_000, 10));
+        let expected = (LEVEL_E0 - 10).saturating_add(calc_growth_delta(100_000, 10));
         assert_eq!(projected.query_block_height, 130);
         assert_eq!(projected.record_block_height, 120);
         assert_eq!(projected.raw_energy, expected.to_string());
         assert_eq!(projected.collab_contribution, "0");
         assert_eq!(projected.effective_energy, expected.to_string());
+        assert_eq!(projected.level, 1);
+        assert_eq!(projected.difficulty_factor_bps, 9_900);
         let projected_json = serde_json::to_value(&projected).unwrap();
         assert!(projected_json.get("energy").is_none());
         assert_eq!(projected_json["raw_energy"], expected.to_string());
         assert_eq!(projected_json["collab_contribution"], "0");
         assert_eq!(projected_json["effective_energy"], expected.to_string());
+        assert_eq!(projected_json["level"], 1);
+        assert_eq!(projected_json["difficulty_factor_bps"], 9_900);
 
         let exact = server
             .get_pass_energy(GetPassEnergyParams {
@@ -4645,9 +4654,11 @@ mod tests {
             .unwrap();
         assert_eq!(exact.query_block_height, 120);
         assert_eq!(exact.record_block_height, 120);
-        assert_eq!(exact.raw_energy, "500");
+        assert_eq!(exact.raw_energy, (LEVEL_E0 - 10).to_string());
         assert_eq!(exact.collab_contribution, "0");
-        assert_eq!(exact.effective_energy, "500");
+        assert_eq!(exact.effective_energy, (LEVEL_E0 - 10).to_string());
+        assert_eq!(exact.level, 0);
+        assert_eq!(exact.difficulty_factor_bps, 10_000);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -4741,6 +4752,8 @@ mod tests {
         assert_eq!(snapshot.raw_energy, "500");
         assert_eq!(snapshot.collab_contribution, "0");
         assert_eq!(snapshot.effective_energy, "0");
+        assert_eq!(snapshot.level, 0);
+        assert_eq!(snapshot.difficulty_factor_bps, 10_000);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -5035,6 +5048,8 @@ mod tests {
         assert_eq!(snapshot.raw_energy, "700");
         assert_eq!(snapshot.collab_contribution, "0");
         assert_eq!(snapshot.effective_energy, "0");
+        assert_eq!(snapshot.level, 0);
+        assert_eq!(snapshot.difficulty_factor_bps, 10_000);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -5478,6 +5493,8 @@ mod tests {
         assert_eq!(exact.raw_energy, (Energy::MAX - 1).to_string());
         assert_eq!(exact.collab_contribution, "0");
         assert_eq!(exact.effective_energy, (Energy::MAX - 1).to_string());
+        assert_eq!(exact.level, 50);
+        assert_eq!(exact.difficulty_factor_bps, 5_000);
 
         let projected = server
             .get_pass_energy(GetPassEnergyParams {
@@ -5490,6 +5507,8 @@ mod tests {
         assert_eq!(projected.raw_energy, Energy::MAX.to_string());
         assert_eq!(projected.collab_contribution, "0");
         assert_eq!(projected.effective_energy, Energy::MAX.to_string());
+        assert_eq!(projected.level, 50);
+        assert_eq!(projected.difficulty_factor_bps, 5_000);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

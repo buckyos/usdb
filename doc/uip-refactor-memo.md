@@ -269,9 +269,27 @@
 - `get_candidate_set_view` 覆盖 explicit selection rule、context height mismatch、invalid selection rule 和 active standard 缺 raw energy 时 fail-closed。
 - pass manager 覆盖 old collab remint 为 standard / collab 时，new pass 只继承 UIP-0003 折损后的 raw energy，old collab 进入 Consumed 且终态 raw energy 为 0。
 
+## UIP-0005 Level and Real Difficulty
+
+状态：公式层 helper、纯单元测试和 `get_pass_energy` 查询派生字段已对接；candidate set view / 后续 economic state view 仍待继续对齐。
+
+### 已对接内容
+
+- `src/btc/usdb-indexer/src/index/energy_formula.rs`
+  - 新增 UIP-0005 level / difficulty 参数常量、整数阈值表和关键常量注释。
+  - 新增 `calc_level_from_effective_energy(effective_energy)`，按整数阈值表计算 level，运行时不使用浮点、`log` 或 `pow`。
+  - 新增 `calc_difficulty_factor_bps(level)`，按每级 100 bps 折扣计算并 clamp 到 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
+  - 新增 `calc_real_difficulty(base_difficulty, difficulty_factor_bps)` 纯公式 helper，用于 ETHW 侧 ceil 规则测试；usdb-indexer 不查询、不持久化 ETHW `base_difficulty` / `real_difficulty`。
+- `src/btc/usdb-indexer/src/service/rpc.rs`
+  - `PassEnergySnapshot` 增加 `level` 和 `difficulty_factor_bps`。
+- `src/btc/usdb-indexer/src/service/server.rs`
+  - `get_pass_energy` 从 UIP-0004 `effective_energy` 运行时派生 `level` / `difficulty_factor_bps`，不写入 energy DB。
+- `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
+  - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 ETHW difficulty。
+
 ### 待继续对齐
 
-- UIP-0005：基于 `effective_energy` 派生 `level` / `difficulty_factor_bps`，并补充 RPC/view/test 对接。
+- UIP-0005：继续将 `level` / `difficulty_factor_bps` 接入 candidate set view / 后续 economic state view，并补齐对应测试。
 - UIP-0006：统一 economic state view、candidate set view/profile 版本字段和审计查询口径。
 - 大规模 live/regtest 场景在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免中间字段反复调整。
 - UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。

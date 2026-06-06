@@ -803,6 +803,10 @@ pub struct PassEnergySnapshot {
     /// Active standard passes use `raw_energy + collab_contribution`; active collab
     /// and non-active passes resolve to `"0"`.
     pub effective_energy: String,
+    /// UIP-0005 level derived from `effective_energy` at query height.
+    pub level: u8,
+    /// UIP-0005 difficulty factor derived from `level`, expressed in bps.
+    pub difficulty_factor_bps: u64,
 }
 
 /// Parameters for `get_pass_energy_range`.
