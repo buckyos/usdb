@@ -657,7 +657,9 @@
       "record_block_height": 900120,
       "raw_energy": "1000000",
       "collab_contribution": "500000",
-      "effective_energy": "1500000"
+      "effective_energy": "1500000",
+      "level": 1,
+      "difficulty_factor_bps": 9900
     }
   ]
 }
@@ -668,6 +670,7 @@
 - `context` 校验语义与 `get_pass_energy` 一致。
 - `total` 是该高度 active standard candidate 总数。
 - 排序使用内部 `u128 effective_energy`，RPC 只输出 canonical decimal string。
+- `level` 和 `difficulty_factor_bps` 按 UIP-0005 从每个 candidate 的 `effective_energy` 运行时派生，不改变 candidate 排序口径。
 - active collab pass 即使拥有很高 `raw_energy`，也不会直接进入 candidate set。
 - 若 active standard candidate 缺少 raw energy 记录，服务 fail closed 并返回 `INTERNAL_INVARIANT_BROKEN`。
 

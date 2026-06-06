@@ -271,7 +271,7 @@
 
 ## UIP-0005 Level and Real Difficulty
 
-状态：公式层 helper、纯单元测试和 `get_pass_energy` 查询派生字段已对接；candidate set view / 后续 economic state view 仍待继续对齐。
+状态：公式层 helper、纯单元测试、`get_pass_energy` 查询派生字段和 candidate set view 派生字段已对接；后续 economic state view 仍待继续对齐。
 
 ### 已对接内容
 
@@ -282,14 +282,17 @@
   - 新增 `calc_real_difficulty(base_difficulty, difficulty_factor_bps)` 纯公式 helper，用于 ETHW 侧 ceil 规则测试；usdb-indexer 不查询、不持久化 ETHW `base_difficulty` / `real_difficulty`。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - `PassEnergySnapshot` 增加 `level` 和 `difficulty_factor_bps`。
+  - `CandidateSetViewItem` 增加 `level` 和 `difficulty_factor_bps`。
 - `src/btc/usdb-indexer/src/service/server.rs`
   - `get_pass_energy` 从 UIP-0004 `effective_energy` 运行时派生 `level` / `difficulty_factor_bps`，不写入 energy DB。
+  - `get_candidate_set_view` item 增加 `level` / `difficulty_factor_bps`，同样从每个 candidate 的 `effective_energy` 运行时派生；排序仍保持 `effective_energy DESC, pass_id ASC`。
 - `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
   - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 ETHW difficulty。
+  - 更新 `get_candidate_set_view` 返回字段说明，明确 UIP-0005 字段不改变 candidate 排序口径。
 
 ### 待继续对齐
 
-- UIP-0005：继续将 `level` / `difficulty_factor_bps` 接入 candidate set view / 后续 economic state view，并补齐对应测试。
+- UIP-0005：继续将 `level` / `difficulty_factor_bps` 接入后续 economic state view，并补齐对应测试。
 - UIP-0006：统一 economic state view、candidate set view/profile 版本字段和审计查询口径。
 - 大规模 live/regtest 场景在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免中间字段反复调整。
 - UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。

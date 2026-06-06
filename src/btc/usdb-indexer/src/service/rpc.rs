@@ -937,6 +937,10 @@ pub struct CandidateSetViewItem {
     pub collab_contribution: String,
     /// UIP-0004 effective energy at resolved height, encoded as canonical decimal string.
     pub effective_energy: String,
+    /// UIP-0005 level derived from `effective_energy` at resolved height.
+    pub level: u8,
+    /// UIP-0005 difficulty factor derived from `level`, expressed in bps.
+    pub difficulty_factor_bps: u64,
 }
 
 /// Paged UIP-0006 candidate set audit view.

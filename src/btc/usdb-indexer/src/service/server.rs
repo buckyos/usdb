@@ -1664,6 +1664,9 @@ impl UsdbIndexerRpcServer {
                 ));
             }
 
+            let level = calc_level_from_effective_energy(snapshot.effective_energy);
+            let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+
             ranked.push(RankedCandidateSetItem {
                 effective_energy: snapshot.effective_energy,
                 item: CandidateSetViewItem {
@@ -1675,6 +1678,8 @@ impl UsdbIndexerRpcServer {
                     raw_energy: encode_energy_decimal(snapshot.raw_energy),
                     collab_contribution: encode_energy_decimal(snapshot.collab_contribution),
                     effective_energy: encode_energy_decimal(snapshot.effective_energy),
+                    level,
+                    difficulty_factor_bps: difficulty_factor_bps as u64,
                 },
             });
         }
@@ -5321,7 +5326,7 @@ mod tests {
             MinerPassState::Dormant,
             10_000,
         );
-        seed_energy_record(&server, &collab_high_raw, 120, 1_000);
+        seed_energy_record(&server, &collab_high_raw, 120, 2_000_000);
 
         let raw_leaderboard = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
@@ -5338,7 +5343,7 @@ mod tests {
             "legacy pass energy leaderboard keeps raw active collab passes visible"
         );
 
-        let contribution = calc_collab_contribution(1_000);
+        let contribution = calc_collab_contribution(2_000_000);
         let expected_leader_effective = 100u128.saturating_add(contribution);
         let page0 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
@@ -5368,12 +5373,19 @@ mod tests {
             page0.items[0].effective_energy,
             expected_leader_effective.to_string()
         );
+        assert_eq!(page0.items[0].level, 1);
+        assert_eq!(page0.items[0].difficulty_factor_bps, 9_900);
+        let first_item_json = serde_json::to_value(&page0.items[0]).unwrap();
+        assert_eq!(first_item_json["level"], 1);
+        assert_eq!(first_item_json["difficulty_factor_bps"], 9_900);
         assert_eq!(
             page0.items[1].pass_id,
             tie_low_id.inscription_id.to_string(),
             "same effective energy must use pass id ascending as tie-breaker"
         );
         assert_eq!(page0.items[1].effective_energy, "500");
+        assert_eq!(page0.items[1].level, 0);
+        assert_eq!(page0.items[1].difficulty_factor_bps, 10_000);
 
         let page1 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
