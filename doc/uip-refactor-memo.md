@@ -254,14 +254,19 @@
 - collab mint 写入路径覆盖 `leader_btc_addr -> leader_btc_owner` 规范化落库。
 - `get_pass_energy` active standard 聚合多个 active collab contribution，并断言派生 effective 不写回 raw energy storage。
 - `get_pass_energy` 覆盖 `leader_btc_addr` 动态 Leader 绑定的 collab contribution。
+- `get_pass_energy` 覆盖 dormant / consumed / burned / invalid Leader 不接收 collab contribution，breakdown 返回空 aggregate。
+- `get_pass_energy` 覆盖 `leader_btc_addr` 在 Leader remint 后自动跟随新 active standard pass，同时 fixed `leader_pass_id` 不跟随旧 Leader remint。
+- `get_pass_energy` 覆盖 old collab consumed 后不再向旧 Leader 贡献 contribution，breakdown aggregate 归零。
 - `get_pass_energy` active collab pass 的 `raw_energy` 保留、`effective_energy` 为 0。
 - `get_pass_energy` non-active standard pass 的 `raw_energy` 保留、`effective_energy` 为 0。
 - `get_collab_breakdown` 覆盖 contribution desc + pass id tie-break 的稳定分页、全量 aggregate、`leader_pass_id` 与 `leader_btc_addr` 两种 ref kind。
+- `get_collab_breakdown` 覆盖全量明细可重算 aggregate。
 - `get_collab_breakdown` 覆盖 non-active Leader 返回空 breakdown。
 - `get_collab_breakdown` 覆盖 context height mismatch。
 - `get_candidate_set_view` 覆盖旧 raw leaderboard 仍展示 active collab，但 candidate set 排除 active collab / dormant standard。
 - `get_candidate_set_view` 覆盖按 standard `effective_energy` 排序，并在相同 effective energy 下按 pass id 升序打平。
 - `get_candidate_set_view` 覆盖 explicit selection rule、context height mismatch、invalid selection rule 和 active standard 缺 raw energy 时 fail-closed。
+- pass manager 覆盖 old collab remint 为 standard / collab 时，new pass 只继承 UIP-0003 折损后的 raw energy，old collab 进入 Consumed 且终态 raw energy 为 0。
 
 ### 待继续对齐
 

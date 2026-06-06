@@ -911,6 +911,7 @@ mod tests {
     use super::*;
     use crate::config::ConfigManager;
     use crate::index::energy::{BalanceProvider, PassEnergyManager};
+    use crate::index::energy_formula::calc_collab_contribution;
     use crate::storage::{MinerPassStorage, PassEnergyRecord, PassEnergyStorage};
     use balance_history::AddressBalance;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
@@ -1444,6 +1445,110 @@ mod tests {
                 .unwrap();
             assert_eq!(consumed.state, MinerPassState::Consumed);
             assert_eq!(consumed.energy, 0);
+        }
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_prev_remint_inherits_only_raw_energy() {
+        let (root_dir, storage, manager) = setup_empty_manager("collab_prev_remint_raw_only");
+        let leader_owner = test_script_hash(78);
+        let leader_id = test_inscription_id(78, 0);
+        let leader_pass = test_pass_info(
+            leader_id,
+            leader_owner,
+            100,
+            MinerPassKind::Standard,
+            MinerPassState::Active,
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader_pass, leader_pass.mint_block_height)
+            .unwrap();
+
+        let prev_raw_energy = 1_000u128;
+        let expected_inherited = calc_inheritable_energy(prev_raw_energy);
+        let forbidden_effective_like_inherited =
+            calc_inheritable_energy(prev_raw_energy + calc_collab_contribution(prev_raw_energy));
+        assert!(
+            forbidden_effective_like_inherited > expected_inherited,
+            "fixture must distinguish raw-only inheritance from derived effective-energy inheritance"
+        );
+
+        for (old_tag, new_tag, owner_tag, new_kind) in [
+            (79, 80, 79, MinerPassKind::Standard),
+            (81, 82, 81, MinerPassKind::Collab),
+        ] {
+            let owner = test_script_hash(owner_tag);
+            let old_collab_id = test_inscription_id(old_tag, 0);
+            let old_collab =
+                test_collab_pass_info_with_leader_pass(old_collab_id, owner, 101, leader_id);
+            storage
+                .add_new_mint_pass_at_height(&old_collab, old_collab.mint_block_height)
+                .unwrap();
+            storage
+                .update_state_at_height(
+                    &old_collab_id,
+                    MinerPassState::Dormant,
+                    MinerPassState::Active,
+                    120,
+                )
+                .unwrap();
+            manager
+                .energy_manager
+                .insert_pass_energy_record_for_test(&PassEnergyRecord {
+                    inscription_id: old_collab_id,
+                    block_height: 120,
+                    state: MinerPassState::Dormant,
+                    active_block_height: 120,
+                    owner_address: owner,
+                    owner_balance: 100_000,
+                    owner_delta: 0,
+                    energy: prev_raw_energy,
+                })
+                .unwrap();
+
+            let new_id = test_inscription_id(new_tag, 0);
+            let mut mint_info = test_mint_info(new_id, owner, 121, vec![old_collab_id]);
+            if new_kind == MinerPassKind::Collab {
+                mint_info.pass_kind = MinerPassKind::Collab;
+                mint_info.usdb_main = String::new();
+                mint_info.leader_pass_id = Some(leader_id);
+            }
+
+            manager.on_mint_pass(&mint_info).await.unwrap();
+
+            let old_after = storage
+                .get_pass_by_inscription_id(&old_collab_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(old_after.state, MinerPassState::Consumed);
+
+            let old_energy = manager
+                .energy_manager
+                .get_pass_energy(&old_collab_id, 121)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(old_energy.state, MinerPassState::Consumed);
+            assert_eq!(old_energy.energy, 0);
+
+            let new_pass = storage
+                .get_pass_by_inscription_id(&new_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(new_pass.state, MinerPassState::Active);
+            assert_eq!(new_pass.pass_kind, new_kind);
+
+            let new_energy = manager
+                .energy_manager
+                .get_pass_energy(&new_id, 121)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(new_energy.state, MinerPassState::Active);
+            assert_eq!(new_energy.energy, expected_inherited);
+            assert_ne!(new_energy.energy, forbidden_effective_like_inherited);
         }
 
         std::fs::remove_dir_all(root_dir).unwrap();

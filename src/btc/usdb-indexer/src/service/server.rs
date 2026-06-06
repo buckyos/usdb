@@ -2701,6 +2701,38 @@ mod tests {
             .unwrap();
     }
 
+    fn get_pass_energy_exact_for_test(
+        server: &UsdbIndexerRpcServer,
+        pass: &MinerPassInfo,
+        block_height: u32,
+    ) -> PassEnergySnapshot {
+        server
+            .get_pass_energy(GetPassEnergyParams {
+                inscription_id: pass.inscription_id.to_string(),
+                block_height: Some(block_height),
+                context: None,
+                mode: Some("exact".to_string()),
+            })
+            .unwrap()
+    }
+
+    fn get_collab_breakdown_for_test(
+        server: &UsdbIndexerRpcServer,
+        leader: &MinerPassInfo,
+        block_height: u32,
+    ) -> CollabBreakdownPage {
+        server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(block_height),
+                context: None,
+                sort: None,
+                page: 0,
+                page_size: 20,
+            })
+            .unwrap()
+    }
+
     fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
         let root_dir = test_root_dir(tag);
         let mut config_file = IndexerConfig::default();
@@ -4765,6 +4797,213 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_energy_non_active_and_invalid_leaders_receive_no_collab_contribution() {
+        let (server, root_dir) = build_server("energy_effective_inactive_invalid_leader", 130);
+        let storage = server.indexer.miner_pass_storage();
+
+        for (leader_tag, owner_tag, terminal_state) in [
+            (100, 200, MinerPassState::Dormant),
+            (102, 202, MinerPassState::Consumed),
+            (104, 204, MinerPassState::Burned),
+        ] {
+            let leader = make_active_pass(leader_tag, owner_tag, 100);
+            storage
+                .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+                .unwrap();
+            storage
+                .update_state_at_height(
+                    &leader.inscription_id,
+                    terminal_state.clone(),
+                    MinerPassState::Active,
+                    120,
+                )
+                .unwrap();
+            let collab =
+                make_collab_pass(leader_tag + 1, owner_tag + 1, 101, leader.inscription_id);
+            storage
+                .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+                .unwrap();
+
+            seed_energy_record_with_state(&server, &leader, 120, terminal_state.clone(), 1_000);
+            seed_energy_record(&server, &collab, 120, 400);
+
+            let snapshot = get_pass_energy_exact_for_test(&server, &leader, 120);
+            assert_eq!(snapshot.state, terminal_state.as_str());
+            assert_eq!(snapshot.raw_energy, "1000");
+            assert_eq!(snapshot.collab_contribution, "0");
+            assert_eq!(snapshot.effective_energy, "0");
+
+            let breakdown = get_collab_breakdown_for_test(&server, &leader, 120);
+            assert_eq!(breakdown.total, 0);
+            assert_eq!(breakdown.aggregate_collab_contribution, "0");
+            assert!(breakdown.items.is_empty());
+        }
+
+        let invalid_leader = make_invalid_pass(106, 206, 100, "invalid-leader");
+        storage
+            .add_invalid_mint_pass_at_height(&invalid_leader, invalid_leader.mint_block_height)
+            .unwrap();
+        let invalid_collab = make_collab_pass(107, 207, 101, invalid_leader.inscription_id);
+        storage
+            .add_new_mint_pass_at_height(&invalid_collab, invalid_collab.mint_block_height)
+            .unwrap();
+        seed_energy_record_with_state(
+            &server,
+            &invalid_leader,
+            120,
+            MinerPassState::Invalid,
+            1_000,
+        );
+        seed_energy_record(&server, &invalid_collab, 120, 400);
+
+        let invalid_snapshot = get_pass_energy_exact_for_test(&server, &invalid_leader, 120);
+        assert_eq!(invalid_snapshot.state, MinerPassState::Invalid.as_str());
+        assert_eq!(invalid_snapshot.raw_energy, "1000");
+        assert_eq!(invalid_snapshot.collab_contribution, "0");
+        assert_eq!(invalid_snapshot.effective_energy, "0");
+
+        let invalid_breakdown = get_collab_breakdown_for_test(&server, &invalid_leader, 120);
+        assert_eq!(invalid_breakdown.total, 0);
+        assert_eq!(invalid_breakdown.aggregate_collab_contribution, "0");
+        assert!(invalid_breakdown.items.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_leader_btc_addr_follows_remint_but_fixed_leader_pass_id_does_not() {
+        let (server, root_dir) = build_server("energy_effective_leader_remint_follow", 150);
+        let storage = server.indexer.miner_pass_storage();
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &server.config.config().bitcoin.network(),
+        )
+        .unwrap();
+
+        let mut leader1 = make_active_pass(108, 208, 100);
+        leader1.owner = leader_owner;
+        leader1.mint_owner = leader_owner;
+        storage
+            .add_new_mint_pass_at_height(&leader1, leader1.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &leader1.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                130,
+            )
+            .unwrap();
+
+        let mut leader2 = make_active_pass(109, 209, 130);
+        leader2.owner = leader_owner;
+        leader2.mint_owner = leader_owner;
+        storage
+            .add_new_mint_pass_at_height(&leader2, leader2.mint_block_height)
+            .unwrap();
+
+        let collab_by_addr =
+            make_collab_pass_with_leader_addr(110, 210, 101, leader_btc_addr, leader_owner);
+        let collab_fixed = make_collab_pass(111, 211, 101, leader1.inscription_id);
+        for pass in [&collab_by_addr, &collab_fixed] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+
+        seed_energy_record_with_state(&server, &leader1, 140, MinerPassState::Dormant, 1_000);
+        seed_energy_record(&server, &leader2, 140, 200);
+        seed_energy_record(&server, &collab_by_addr, 140, 300);
+        seed_energy_record(&server, &collab_fixed, 140, 500);
+
+        let leader2_snapshot = get_pass_energy_exact_for_test(&server, &leader2, 140);
+        let addr_contribution = calc_collab_contribution(300);
+        assert_eq!(leader2_snapshot.raw_energy, "200");
+        assert_eq!(
+            leader2_snapshot.collab_contribution,
+            addr_contribution.to_string()
+        );
+        assert_eq!(
+            leader2_snapshot.effective_energy,
+            200u128.saturating_add(addr_contribution).to_string()
+        );
+
+        let leader2_breakdown = get_collab_breakdown_for_test(&server, &leader2, 140);
+        assert_eq!(leader2_breakdown.total, 1);
+        assert_eq!(
+            leader2_breakdown.items[0].collab_pass_id,
+            collab_by_addr.inscription_id.to_string()
+        );
+        assert_eq!(
+            leader2_breakdown.items[0].leader_ref_kind,
+            "leader_btc_addr"
+        );
+
+        let leader1_snapshot = get_pass_energy_exact_for_test(&server, &leader1, 140);
+        assert_eq!(leader1_snapshot.state, MinerPassState::Dormant.as_str());
+        assert_eq!(leader1_snapshot.collab_contribution, "0");
+        assert_eq!(leader1_snapshot.effective_energy, "0");
+
+        let leader1_breakdown = get_collab_breakdown_for_test(&server, &leader1, 140);
+        assert_eq!(leader1_breakdown.total, 0);
+        assert_eq!(leader1_breakdown.aggregate_collab_contribution, "0");
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_consumed_collab_stops_contributing_to_old_leader() {
+        let (server, root_dir) = build_server("energy_effective_consumed_collab", 150);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(112, 212, 100);
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        let collab = make_collab_pass(113, 213, 101, leader.inscription_id);
+        storage
+            .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+            .unwrap();
+
+        seed_energy_record(&server, &leader, 120, 100);
+        seed_energy_record(&server, &collab, 120, 600);
+
+        let active_snapshot = get_pass_energy_exact_for_test(&server, &leader, 120);
+        let active_contribution = calc_collab_contribution(600);
+        assert_eq!(
+            active_snapshot.collab_contribution,
+            active_contribution.to_string()
+        );
+
+        storage
+            .update_state_at_height(
+                &collab.inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Active,
+                130,
+            )
+            .unwrap();
+        seed_energy_record(&server, &leader, 130, 150);
+        seed_energy_record_with_state(&server, &collab, 130, MinerPassState::Consumed, 0);
+
+        let after_consumed = get_pass_energy_exact_for_test(&server, &leader, 130);
+        assert_eq!(after_consumed.raw_energy, "150");
+        assert_eq!(after_consumed.collab_contribution, "0");
+        assert_eq!(after_consumed.effective_energy, "150");
+
+        let breakdown = get_collab_breakdown_for_test(&server, &leader, 130);
+        assert_eq!(breakdown.total, 0);
+        assert_eq!(breakdown.aggregate_collab_contribution, "0");
+        assert!(breakdown.items.is_empty());
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_pass_energy_non_active_standard_effective_zero() {
         let (server, root_dir) = build_server("energy_effective_non_active_zero", 130);
         let storage = server.indexer.miner_pass_storage();
@@ -4915,6 +5154,27 @@ mod tests {
         );
         assert_eq!(page1.items[0].leader_ref_kind, "leader_btc_addr");
         assert_eq!(page1.items[0].leader_ref_value, leader_btc_addr);
+
+        let full_page = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+                sort: Some("collab_pass_id_asc".to_string()),
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap();
+        let recomputed_aggregate = full_page
+            .items
+            .iter()
+            .map(|item| item.collab_contribution.parse::<Energy>().unwrap())
+            .fold(0u128, Energy::saturating_add);
+        assert_eq!(full_page.total, 2);
+        assert_eq!(
+            full_page.aggregate_collab_contribution,
+            recomputed_aggregate.to_string()
+        );
 
         let energy = server
             .get_pass_energy(GetPassEnergyParams {
