@@ -63,6 +63,7 @@ pub(super) fn make_pass(
         usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
         leader_pass_id: None,
         leader_btc_addr: None,
+        leader_btc_owner: None,
         prev: Vec::new(),
         invalid_code: None,
         invalid_reason: None,

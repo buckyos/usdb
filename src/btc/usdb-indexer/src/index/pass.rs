@@ -139,6 +139,27 @@ impl MinerPassManager {
         self.current_block_collector.lock().unwrap().is_some()
     }
 
+    fn resolve_leader_btc_owner_for_mint(
+        &self,
+        mint_info: &PassMintInscriptionInfo,
+    ) -> Result<Option<USDBScriptHash>, String> {
+        let Some(leader_btc_addr) = mint_info.leader_btc_addr.as_deref() else {
+            return Ok(None);
+        };
+
+        let network = self.config.config().bitcoin.network();
+        address_string_to_script_hash(leader_btc_addr, &network)
+            .map(Some)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to normalize collab leader_btc_addr while minting pass: inscription_id={}, leader_btc_addr={}, network={}, error={}",
+                    mint_info.inscription_id, leader_btc_addr, network, e
+                );
+                error!("{}", msg);
+                msg
+            })
+    }
+
     /// Resolve the Leader referenced by a collab pass at a specific BTC height.
     ///
     /// `leader_pass_id` is a fixed binding to that pass id. `leader_btc_addr`
@@ -254,6 +275,7 @@ impl MinerPassManager {
         self.dormant_last_pass(mint_info).await?;
 
         // Insert the new pass as active
+        let leader_btc_owner = self.resolve_leader_btc_owner_for_mint(mint_info)?;
         let info = MinerPassInfo {
             inscription_id: mint_info.inscription_id,
             inscription_number: mint_info.inscription_number,
@@ -268,6 +290,7 @@ impl MinerPassManager {
             usdb_main: mint_info.usdb_main.clone(),
             leader_pass_id: mint_info.leader_pass_id,
             leader_btc_addr: mint_info.leader_btc_addr.clone(),
+            leader_btc_owner,
             prev: mint_info.prev.clone(),
             invalid_code: None,
             invalid_reason: None,
@@ -530,6 +553,7 @@ impl MinerPassManager {
             usdb_main: "".to_string(),
             leader_pass_id: None,
             leader_btc_addr: None,
+            leader_btc_owner: None,
             prev: Vec::new(),
             invalid_code: Some(invalid_info.error_code.clone()),
             invalid_reason: Some(invalid_info.error_reason.clone()),
@@ -1033,6 +1057,7 @@ mod tests {
             },
             leader_pass_id: None,
             leader_btc_addr: None,
+            leader_btc_owner: None,
             prev: Vec::new(),
             invalid_code: None,
             invalid_reason: None,
@@ -1072,6 +1097,8 @@ mod tests {
             MinerPassState::Active,
         );
         pass.leader_btc_addr = Some(leader_btc_addr.to_string());
+        pass.leader_btc_owner =
+            Some(address_string_to_script_hash(leader_btc_addr, &Network::Bitcoin).unwrap());
         pass
     }
 
@@ -1113,6 +1140,7 @@ mod tests {
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,
             leader_btc_addr: None,
+            leader_btc_owner: None,
             prev: Vec::new(),
             invalid_code: None,
             invalid_reason: None,
@@ -1199,6 +1227,7 @@ mod tests {
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,
             leader_btc_addr: None,
+            leader_btc_owner: None,
             prev: Vec::new(),
             invalid_code: None,
             invalid_reason: None,
@@ -1449,6 +1478,37 @@ mod tests {
         assert_eq!(stored.state, MinerPassState::Active);
         assert_eq!(stored.pass_kind, MinerPassKind::Collab);
         assert_eq!(stored.leader_pass_id, Some(leader_id));
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_on_mint_pass_collab_leader_btc_addr_persists_owner() {
+        let (root_dir, storage, manager) = setup_empty_manager("collab_leader_btc_addr_owner");
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &manager.config.config().bitcoin.network(),
+        )
+        .unwrap();
+        let collab_owner = test_script_hash(44);
+        let collab_id = test_inscription_id(45, 0);
+        let mut mint_info = test_mint_info(collab_id, collab_owner, 101, Vec::new());
+        mint_info.pass_kind = MinerPassKind::Collab;
+        mint_info.usdb_main = String::new();
+        mint_info.leader_btc_addr = Some(leader_btc_addr.to_string());
+
+        manager.on_mint_pass(&mint_info).await.unwrap();
+
+        let stored = storage
+            .get_pass_by_inscription_id(&collab_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.state, MinerPassState::Active);
+        assert_eq!(stored.pass_kind, MinerPassKind::Collab);
+        assert_eq!(stored.leader_pass_id, None);
+        assert_eq!(stored.leader_btc_addr.as_deref(), Some(leader_btc_addr));
+        assert_eq!(stored.leader_btc_owner, Some(leader_owner));
 
         std::fs::remove_dir_all(root_dir).unwrap();
     }

@@ -793,10 +793,11 @@ pub struct PassEnergySnapshot {
     /// For `mode=at_or_before`, this is projected from the latest record <= query height.
     pub raw_energy: String,
     /// Collab contribution at query height, encoded as canonical decimal string.
-    /// Until UIP-0004 is implemented, this is always `"0"`.
+    /// This is derived at query time and is not stored in the raw energy ledger.
     pub collab_contribution: String,
     /// Effective energy at query height, encoded as canonical decimal string.
-    /// Until UIP-0004 is implemented, this equals `raw_energy`.
+    /// Active standard passes use `raw_energy + collab_contribution`; active collab
+    /// and non-active passes resolve to `"0"`.
     pub effective_energy: String,
 }
 

@@ -189,7 +189,7 @@
 
 ## UIP-0004 Collab Leader and Effective Energy
 
-状态：公式层 helper 和纯单元测试已开始对接；leader resolver、breakdown、RPC aggregation 和 candidate set 过滤待继续实现。
+状态：公式层 helper、leader resolver、storage 查询、只读 effective energy resolver 和 `get_pass_energy` 三字段聚合已开始对接；breakdown、candidate set 和 leaderboard 待继续实现。
 
 ### 已对接内容
 
@@ -206,10 +206,21 @@
   - 新增按高度、state、pass kind 过滤 pass snapshot 的 count/page helper，并封装 active standard / active collab 专用查询。
   - 新增 active standard owner 分页 helper，供后续 candidate set / leaderboard 只枚举 standard pass。
   - 新增 `pass_kind` 与历史 owner/state/height 相关索引，支撑 UIP0004 kind-aware 查询。
+  - 新增内部字段 `leader_btc_owner`，在写入 collab mint 时将 `leader_btc_addr` 按当前 BTC network 规范化为 script hash，用于 runtime 查询优化；该字段不作为 RPC/protocol surface 暴露。
+  - 新增 active collab by `leader_pass_id` / `leader_btc_owner` 查询和索引，避免 effective energy resolver 全量扫描 active collab。
 - `src/btc/usdb-indexer/src/index/pass.rs`
   - 新增 `resolve_leader_pass_id_at_height`，固定 pass 绑定只在目标高度存在 active standard snapshot 时解析成功。
   - 新增 `resolve_leader_btc_addr_at_height`，按当前 BTC network 将 Leader address 转为 owner script hash，再解析该 owner 在目标高度的 active standard pass。
   - 新增 `resolve_collab_leader_at_height`，按 collab mint payload 的 leader ref kind 统一返回 resolved Leader snapshot。
+- `src/btc/usdb-indexer/src/index/effective_energy.rs`
+  - 新增只读派生层，`raw_energy` 直接来自 UIP-0003 raw energy ledger/projection。
+  - active standard pass 在查询时枚举 active collab pass、解析 Leader，并聚合 `calc_collab_contribution(raw_energy)`。
+  - active collab pass 与 non-active pass 的 `effective_energy` 均派生为 0。
+  - `raw + Σ collab_contribution` 使用 `energy_uint` 饱和加法，且不写回 raw energy DB。
+- `src/btc/usdb-indexer/src/service/server.rs`
+  - `get_pass_energy` 三字段接入 UIP-0004 派生结果：`raw_energy` 保持 UIP-0003 原值，`collab_contribution` / `effective_energy` 运行时计算。
+- `src/btc/usdb-indexer/src/service/rpc.rs`
+  - 更新 `PassEnergySnapshot` 字段注释，移除 UIP-0004 未实现的旧说明。
 
 ### 已补测试
 
@@ -220,10 +231,14 @@
 - `leader_btc_addr` 在无 active pass 时不解析，并在 Leader 同 owner remint 后自动跟随新 active standard pass。
 - `leader_btc_addr` 使用当前 BTC network 解析，错误网络地址会拒绝解析。
 - storage kind-aware 查询覆盖 active standard / active collab 计数、active collab 枚举和 active standard owner 分页。
+- storage leader-ref 查询覆盖 active collab by `leader_pass_id` 和 by normalized `leader_btc_owner`，并排除非 active collab。
+- collab mint 写入路径覆盖 `leader_btc_addr -> leader_btc_owner` 规范化落库。
+- `get_pass_energy` active standard 聚合多个 active collab contribution，并断言派生 effective 不写回 raw energy storage。
+- `get_pass_energy` 覆盖 `leader_btc_addr` 动态 Leader 绑定的 collab contribution。
+- `get_pass_energy` active collab pass 的 `raw_energy` 保留、`effective_energy` 为 0。
+- `get_pass_energy` non-active standard pass 的 `raw_energy` 保留、`effective_energy` 为 0。
 
 ### 待继续对齐
 
-- 聚合 active collab pass 到 resolved active standard leader。
-- `get_pass_energy` 接入真实 `collab_contribution` / `effective_energy`。
 - candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。
 - collab breakdown 审计查询与 validator payload 三字段对齐。

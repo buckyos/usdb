@@ -1,4 +1,5 @@
 use super::MintValidationErrorCode;
+use super::effective_energy::{EffectiveEnergyResolver, EffectiveEnergyResolverRef};
 use super::energy::{PassEnergyManager, PassEnergyManagerRef};
 use super::pass::{
     InvalidPassMintInscriptionInfo, MinerPassManager, MinerPassManagerRef, PassMintInscriptionInfo,
@@ -146,6 +147,7 @@ pub struct InscriptionIndexer {
 
     pass_energy_manager: PassEnergyManagerRef,
     miner_pass_manager: MinerPassManagerRef,
+    effective_energy_resolver: EffectiveEnergyResolverRef,
     balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
 
     status: Arc<dyn IndexStatusApi>,
@@ -223,6 +225,12 @@ impl InscriptionIndexer {
             miner_pass_storage.clone(),
             pass_energy_manager.clone(),
         )?);
+        let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
+            miner_pass_storage.clone(),
+            pass_energy_manager.clone(),
+            miner_pass_manager.clone(),
+            config.config().usdb.active_address_page_size,
+        ));
 
         let transfer_tracker = InscriptionTransferTracker::new(
             config.clone(),
@@ -243,6 +251,7 @@ impl InscriptionIndexer {
 
             pass_energy_manager,
             miner_pass_manager,
+            effective_energy_resolver,
             balance_history_client,
             miner_pass_storage,
             balance_monitor,
@@ -269,6 +278,12 @@ impl InscriptionIndexer {
         balance_history_client: Arc<dyn BalanceHistoryCommitApi>,
         status: Arc<dyn IndexStatusApi>,
     ) -> Self {
+        let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
+            miner_pass_storage.clone(),
+            pass_energy_manager.clone(),
+            miner_pass_manager.clone(),
+            config.config().usdb.active_address_page_size,
+        ));
         Self {
             config,
             block_hint_provider,
@@ -278,6 +293,7 @@ impl InscriptionIndexer {
             balance_monitor,
             pass_energy_manager,
             miner_pass_manager,
+            effective_energy_resolver,
             balance_history_client,
             status,
             reorg_recovery_fault_injector: ReorgRecoveryFaultInjector::default(),
@@ -368,6 +384,11 @@ impl InscriptionIndexer {
 
     pub fn pass_energy_manager(&self) -> &PassEnergyManagerRef {
         &self.pass_energy_manager
+    }
+
+    /// Return the read-only UIP-0004 effective energy resolver.
+    pub fn effective_energy_resolver(&self) -> &EffectiveEnergyResolverRef {
+        &self.effective_energy_resolver
     }
 
     fn check_shutdown(&self) -> bool {

@@ -47,6 +47,7 @@ pub struct MinerPassInfo {
     pub usdb_main: String,
     pub leader_pass_id: Option<InscriptionId>,
     pub leader_btc_addr: Option<String>,
+    pub leader_btc_owner: Option<USDBScriptHash>,
     pub prev: Vec<InscriptionId>,
     pub invalid_code: Option<String>,
     pub invalid_reason: Option<String>,
@@ -196,6 +197,7 @@ impl MinerPassStorage {
                 pass_kind TEXT NOT NULL DEFAULT 'standard',
                 leader_pass_id TEXT,
                 leader_btc_addr TEXT,
+                leader_btc_owner TEXT,
 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -208,6 +210,12 @@ impl MinerPassStorage {
 
             CREATE INDEX IF NOT EXISTS idx_miner_pass_pass_kind_mint_order
             ON miner_passes (pass_kind, mint_block_height, inscription_number);
+
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_collab_leader_pass_id
+            ON miner_passes (pass_kind, leader_pass_id, mint_block_height, inscription_number);
+
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_collab_leader_btc_owner
+            ON miner_passes (pass_kind, leader_btc_owner, mint_block_height, inscription_number);
 
             CREATE TABLE IF NOT EXISTS active_balance_snapshots (
                 block_height INTEGER PRIMARY KEY,
@@ -917,6 +925,7 @@ impl MinerPassStorage {
                     m.pass_kind,
                     m.leader_pass_id,
                     m.leader_btc_addr,
+                    m.leader_btc_owner,
                     m.created_at
                 FROM miner_passes m
                 INNER JOIN latest l ON l.inscription_id = m.inscription_id
@@ -1037,6 +1046,7 @@ impl MinerPassStorage {
                     pass_kind,
                     leader_pass_id,
                     leader_btc_addr,
+                    leader_btc_owner,
                     created_at
                 )
                 SELECT
@@ -1056,6 +1066,7 @@ impl MinerPassStorage {
                     pass_kind,
                     leader_pass_id,
                     leader_btc_addr,
+                    leader_btc_owner,
                     created_at
                 FROM rollback_surviving_passes
                 ORDER BY mint_block_height ASC, inscription_id ASC;
@@ -2170,8 +2181,9 @@ impl MinerPassStorage {
                 mint_version,
                 pass_kind,
                 leader_pass_id,
-                leader_btc_addr
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16);
+                leader_btc_addr,
+                leader_btc_owner
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);
             ",
             rusqlite::params![
                 pass_info.inscription_id.to_string(),
@@ -2190,6 +2202,10 @@ impl MinerPassStorage {
                 pass_info.pass_kind.as_str(),
                 pass_info.leader_pass_id.as_ref().map(|id| id.to_string()),
                 pass_info.leader_btc_addr.as_deref(),
+                pass_info
+                    .leader_btc_owner
+                    .as_ref()
+                    .map(|owner| owner.to_string()),
             ],
         )
         .map_err(|e| {
@@ -2702,6 +2718,27 @@ impl MinerPassStorage {
                 msg
             })?;
 
+        let leader_btc_owner = match row.get::<_, Option<String>>("leader_btc_owner") {
+            Ok(Some(value)) if value.is_empty() => None,
+            Ok(Some(value)) => Some(value.parse::<USDBScriptHash>().map_err(|e| {
+                let msg = format!(
+                    "Failed to parse leader_btc_owner field from miner pass row {}: {}",
+                    value, e
+                );
+                error!("{}", msg);
+                msg
+            })?),
+            Ok(None) => None,
+            Err(e) => {
+                let msg = format!(
+                    "Failed to get leader_btc_owner field from miner pass row: {}",
+                    e
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+        };
+
         Ok(MinerPassInfo {
             inscription_id: row
                 .get::<_, String>(0)
@@ -2786,6 +2823,7 @@ impl MinerPassStorage {
             })?,
             leader_pass_id,
             leader_btc_addr,
+            leader_btc_owner,
 
             prev: prev_ids,
             invalid_code: row.get(10).map_err(|e| {
@@ -2841,7 +2879,7 @@ impl MinerPassStorage {
         source: &str,
     ) -> Result<MinerPassSnapshotInfo, String> {
         let pass = Self::row_to_pass_item(row)?;
-        let latest_event_height = row.get::<_, i64>(16).map_err(|e| {
+        let latest_event_height = row.get::<_, i64>(17).map_err(|e| {
             let msg = format!(
                 "Failed to get latest_event_height from {} pass snapshot row: {}",
                 source, e
@@ -3399,6 +3437,7 @@ impl MinerPassStorage {
                 m.pass_kind,
                 m.leader_pass_id,
                 m.leader_btc_addr,
+                m.leader_btc_owner,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
@@ -3488,6 +3527,7 @@ impl MinerPassStorage {
                 m.pass_kind,
                 m.leader_pass_id,
                 m.leader_btc_addr,
+                m.leader_btc_owner,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.id
@@ -4029,6 +4069,145 @@ impl MinerPassStorage {
         )
     }
 
+    /// Return active collab pass snapshots whose fixed Leader pass id matches at `block_height`.
+    pub fn get_active_collab_passes_by_leader_pass_id_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+        leader_pass_id: &InscriptionId,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        let leader_value = leader_pass_id.to_string();
+        self.get_active_collab_passes_by_leader_ref_from_history_at_height(
+            page,
+            page_size,
+            block_height,
+            "m.leader_pass_id",
+            "leader_pass_id",
+            &leader_value,
+        )
+    }
+
+    /// Return active collab pass snapshots whose Leader BTC owner matches at `block_height`.
+    pub fn get_active_collab_passes_by_leader_btc_owner_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+        leader_btc_owner: &USDBScriptHash,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        let leader_value = leader_btc_owner.to_string();
+        self.get_active_collab_passes_by_leader_ref_from_history_at_height(
+            page,
+            page_size,
+            block_height,
+            "m.leader_btc_owner",
+            "leader_btc_owner",
+            &leader_value,
+        )
+    }
+
+    fn get_active_collab_passes_by_leader_ref_from_history_at_height(
+        &self,
+        page: usize,
+        page_size: usize,
+        block_height: u32,
+        leader_column: &'static str,
+        leader_label: &'static str,
+        leader_value: &str,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let offset = page * page_size;
+        let sql = format!(
+            "
+            WITH latest AS (
+                SELECT h1.id
+                FROM miner_pass_state_history h1
+                WHERE h1.block_height <= ?1
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM miner_pass_state_history h2
+                        WHERE h2.inscription_id = h1.inscription_id
+                            AND h2.block_height <= ?1
+                            AND (
+                                h2.block_height > h1.block_height
+                                OR (h2.block_height = h1.block_height AND h2.id > h1.id)
+                            )
+                    )
+            )
+            SELECT
+                m.inscription_id,
+                m.inscription_number,
+                m.mint_txid,
+                m.mint_block_height,
+                m.mint_owner,
+                h.new_satpoint AS satpoint,
+                m.usdb_main,
+                m.prev,
+                h.new_owner AS owner,
+                h.new_state AS state,
+                m.invalid_code,
+                m.invalid_reason,
+                m.mint_version,
+                m.pass_kind,
+                m.leader_pass_id,
+                m.leader_btc_addr,
+                m.leader_btc_owner,
+                h.block_height AS latest_event_height
+            FROM miner_pass_state_history h
+            INNER JOIN latest l ON h.id = l.id
+            INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+            WHERE h.new_state = ?2
+                AND m.pass_kind = ?3
+                AND {} = ?4
+            ORDER BY h.block_height DESC, h.id DESC, m.mint_block_height DESC, m.inscription_number DESC
+            LIMIT ?5 OFFSET ?6;
+            ",
+            leader_column
+        );
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            let msg = format!(
+                "Failed to prepare statement to get active collab snapshots by {}: {}",
+                leader_label, e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                block_height as i64,
+                MinerPassState::Active.as_str(),
+                MinerPassKind::Collab.as_str(),
+                leader_value,
+                page_size as i64,
+                offset as i64
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query active collab snapshots by {} from history: block_height={}, {}={}, error={}",
+                    leader_label, block_height, leader_label, leader_value, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read active collab snapshot row by {} from history query: {}",
+                leader_label, e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            passes.push(Self::row_to_pass_snapshot_info(row, leader_label)?);
+        }
+
+        Ok(passes)
+    }
+
     /// Return active standard pass ids and owners at `block_height`.
     pub fn get_active_standard_pass_owners_by_page_from_history_at_height(
         &self,
@@ -4233,6 +4412,7 @@ impl MinerPassStorage {
                 m.pass_kind,
                 m.leader_pass_id,
                 m.leader_btc_addr,
+                m.leader_btc_owner,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.id
@@ -4424,6 +4604,7 @@ impl MinerPassStorage {
                 m.pass_kind,
                 m.leader_pass_id,
                 m.leader_btc_addr,
+                m.leader_btc_owner,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.max_id
@@ -4592,6 +4773,7 @@ impl MinerPassStorage {
                 m.pass_kind,
                 m.leader_pass_id,
                 m.leader_btc_addr,
+                m.leader_btc_owner,
                 h.block_height AS latest_event_height
             FROM miner_pass_state_history h
             INNER JOIN latest l ON h.id = l.max_id
@@ -5031,6 +5213,7 @@ mod tests {
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
             leader_pass_id: None,
             leader_btc_addr: None,
+            leader_btc_owner: None,
             prev: vec![inscription_id(ins_tag.wrapping_add(2), 0)],
             invalid_code: None,
             invalid_reason: None,
@@ -5051,6 +5234,23 @@ mod tests {
         pass.pass_kind = MinerPassKind::Collab;
         pass.usdb_main = String::new();
         pass.leader_pass_id = Some(leader_pass_id);
+        pass
+    }
+
+    fn make_collab_pass_with_leader_btc_owner(
+        ins_tag: u8,
+        index: u32,
+        owner: USDBScriptHash,
+        state: MinerPassState,
+        height: u32,
+        leader_btc_owner: USDBScriptHash,
+    ) -> MinerPassInfo {
+        let mut pass = make_pass(ins_tag, index, owner, state, height);
+        pass.pass_kind = MinerPassKind::Collab;
+        pass.usdb_main = String::new();
+        pass.leader_pass_id = None;
+        pass.leader_btc_addr = Some("bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh".to_string());
+        pass.leader_btc_owner = Some(leader_btc_owner);
         pass
     }
 
@@ -5336,6 +5536,108 @@ mod tests {
             standard_1.inscription_id
         );
         assert_eq!(standard_owners_130_page1[0].owner, standard_owner_1);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_pass_history_active_collab_leader_ref_queries() {
+        let dir = test_data_dir("history_active_collab_leader_ref_queries");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+        let standard_owner_1 = script_hash(44);
+        let standard_owner_2 = script_hash(45);
+        let collab_owner_1 = script_hash(46);
+        let collab_owner_2 = script_hash(47);
+        let collab_owner_3 = script_hash(48);
+        let collab_owner_4 = script_hash(49);
+
+        let standard_1 = make_pass(44, 0, standard_owner_1, MinerPassState::Active, 100);
+        let standard_2 = make_pass(45, 0, standard_owner_2, MinerPassState::Active, 100);
+        let collab_by_pass_id = make_collab_pass(
+            46,
+            0,
+            collab_owner_1,
+            MinerPassState::Active,
+            101,
+            standard_1.inscription_id,
+        );
+        let collab_other_pass_id = make_collab_pass(
+            47,
+            0,
+            collab_owner_2,
+            MinerPassState::Active,
+            102,
+            standard_2.inscription_id,
+        );
+        let collab_by_btc_owner = make_collab_pass_with_leader_btc_owner(
+            48,
+            0,
+            collab_owner_3,
+            MinerPassState::Active,
+            103,
+            standard_owner_1,
+        );
+        let dormant_by_btc_owner = make_collab_pass_with_leader_btc_owner(
+            49,
+            0,
+            collab_owner_4,
+            MinerPassState::Active,
+            104,
+            standard_owner_1,
+        );
+
+        for pass in [
+            &standard_1,
+            &standard_2,
+            &collab_by_pass_id,
+            &collab_other_pass_id,
+            &collab_by_btc_owner,
+            &dormant_by_btc_owner,
+        ] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+        storage
+            .update_state_at_height(
+                &dormant_by_btc_owner.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+
+        let by_pass_id = storage
+            .get_active_collab_passes_by_leader_pass_id_from_history_at_height(
+                0,
+                10,
+                130,
+                &standard_1.inscription_id,
+            )
+            .unwrap();
+        assert_eq!(by_pass_id.len(), 1);
+        assert_eq!(
+            by_pass_id[0].pass.inscription_id,
+            collab_by_pass_id.inscription_id
+        );
+
+        let by_btc_owner = storage
+            .get_active_collab_passes_by_leader_btc_owner_from_history_at_height(
+                0,
+                10,
+                130,
+                &standard_owner_1,
+            )
+            .unwrap();
+        assert_eq!(by_btc_owner.len(), 1);
+        assert_eq!(
+            by_btc_owner[0].pass.inscription_id,
+            collab_by_btc_owner.inscription_id
+        );
+        assert_eq!(
+            by_btc_owner[0].pass.leader_btc_owner,
+            Some(standard_owner_1)
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
