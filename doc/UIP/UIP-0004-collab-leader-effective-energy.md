@@ -142,6 +142,8 @@ collab_contribution(collab, h)
       )
 ```
 
+`collab_contribution` 必须使用 UIP-0003 的 `energy_uint`。bps 乘除按整数 `floor` 语义计算；如果中间乘法或最终结果超过 `ENERGY_MAX`，必须 saturate 到 `ENERGY_MAX`，不得发生整数溢出或 wrap。
+
 如果 `resolved_leader(collab, h) = none`，则：
 
 ```text
@@ -168,6 +170,8 @@ effective_energy(leader, h)
     = raw_energy(leader, h)
       + Σ collab_contribution(collab_i, h)
 ```
+
+`raw_energy + Σ collab_contribution` 必须按 `energy_uint` 饱和加法计算；如果 aggregate 超过 `ENERGY_MAX`，`effective_energy` 固定为 `ENERGY_MAX`。该饱和只影响派生 view，不得写回 UIP-0003 raw energy ledger。
 
 其中 `collab_i` 必须满足：
 

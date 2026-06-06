@@ -186,3 +186,31 @@
 ### 待继续对齐
 
 - 继续对照 UIP-0003 审核 collab effective energy / raw energy 聚合和后续 UIP-0004 candidate set 使用方式。
+
+## UIP-0004 Collab Leader and Effective Energy
+
+状态：公式层 helper 和纯单元测试已开始对接；leader resolver、breakdown、RPC aggregation 和 candidate set 过滤待继续实现。
+
+### 已对接内容
+
+- `doc/UIP/UIP-0004-collab-leader-effective-energy.md`
+  - 明确 `collab_contribution` 使用 UIP-0003 `energy_uint`，bps 乘除按整数 floor 计算并 saturate 到 `ENERGY_MAX`。
+  - 明确 `raw_energy + Σ collab_contribution` 使用 `energy_uint` 饱和加法，超过 `ENERGY_MAX` 时 effective energy 固定为 `ENERGY_MAX`，且不得写回 raw energy ledger。
+- `src/btc/usdb-indexer/src/index/energy_formula.rs`
+  - 新增 `COLLAB_WEIGHT_BPS = 5_000`。
+  - 新增 `calc_collab_contribution(raw_energy)`，按 `floor(raw_energy * 5000 / 10000)` 计算单张 active collab pass 的折算贡献。
+  - 新增 `calc_standard_effective_energy(raw_energy, collab_contribution)`，统一封装 standard pass 的 `raw + aggregate contribution` 饱和加法。
+
+### 已补测试
+
+- collab contribution 50% 权重与 floor rounding。
+- `u128::MAX` collab contribution 不发生先乘溢出。
+- standard effective energy 的 raw + contribution 饱和到 `ENERGY_MAX`。
+
+### 待继续对齐
+
+- 按高度解析 `leader_pass_id` 与 `leader_btc_addr`。
+- 枚举 active collab pass 并聚合到 resolved active standard leader。
+- `get_pass_energy` 接入真实 `collab_contribution` / `effective_energy`。
+- candidate set / leaderboard 排除 collab pass 并按 standard effective energy 排序。
+- collab breakdown 审计查询与 validator payload 三字段对齐。

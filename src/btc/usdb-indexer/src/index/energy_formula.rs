@@ -9,6 +9,7 @@ pub const PENALTY_LAMBDA_NUM: Energy = 3;
 pub const PENALTY_LAMBDA_DEN: Energy = 2;
 pub const INHERIT_DISCOUNT_BPS: Energy = 500;
 pub const BPS_DENOMINATOR: Energy = 10_000;
+pub const COLLAB_WEIGHT_BPS: Energy = 5_000;
 pub const ENERGY_MAX: Energy = Energy::MAX;
 
 // Compatibility alias for current call sites. New UIP-0003 logic should use
@@ -122,6 +123,16 @@ pub fn calc_inheritable_energy(raw_energy: Energy) -> Energy {
     mul_div_floor_saturating(raw_energy, INHERIT_KEEP_BPS, BPS_DENOMINATOR)
 }
 
+/// Calculate UIP-0004 collab contribution from one active collab pass raw energy.
+pub fn calc_collab_contribution(raw_energy: Energy) -> Energy {
+    mul_div_floor_saturating(raw_energy, COLLAB_WEIGHT_BPS, BPS_DENOMINATOR)
+}
+
+/// Calculate UIP-0004 standard-pass effective energy from raw energy and aggregate collab contribution.
+pub fn calc_standard_effective_energy(raw_energy: Energy, collab_contribution: Energy) -> Energy {
+    raw_energy.saturating_add(collab_contribution)
+}
+
 /// Calculate raw energy growth.
 pub fn calc_growth_delta(owner_balance_sats: u64, block_delta: u32) -> Energy {
     calc_growth_delta_energy(owner_balance_sats, block_delta)
@@ -221,6 +232,35 @@ mod tests {
         let expected = (ENERGY_MAX / BPS_DENOMINATOR) * INHERIT_KEEP_BPS
             + ((ENERGY_MAX % BPS_DENOMINATOR) * INHERIT_KEEP_BPS) / BPS_DENOMINATOR;
         assert_eq!(calc_inheritable_energy(ENERGY_MAX), expected);
+    }
+
+    #[test]
+    fn test_collab_contribution_applies_half_weight_floor() {
+        assert_eq!(calc_collab_contribution(0), 0);
+        assert_eq!(calc_collab_contribution(1), 0);
+        assert_eq!(calc_collab_contribution(2), 1);
+        assert_eq!(calc_collab_contribution(101), 50);
+    }
+
+    #[test]
+    fn test_collab_contribution_handles_u128_max_without_multiply_overflow() {
+        let expected = (ENERGY_MAX / BPS_DENOMINATOR) * COLLAB_WEIGHT_BPS
+            + ((ENERGY_MAX % BPS_DENOMINATOR) * COLLAB_WEIGHT_BPS) / BPS_DENOMINATOR;
+        assert_eq!(calc_collab_contribution(ENERGY_MAX), expected);
+    }
+
+    #[test]
+    fn test_standard_effective_energy_saturates_raw_plus_contribution() {
+        assert_eq!(calc_standard_effective_energy(10, 20), 30);
+        assert_eq!(
+            calc_standard_effective_energy(ENERGY_MAX - 1, 1),
+            ENERGY_MAX
+        );
+        assert_eq!(
+            calc_standard_effective_energy(ENERGY_MAX - 1, 2),
+            ENERGY_MAX
+        );
+        assert_eq!(calc_standard_effective_energy(ENERGY_MAX, 1), ENERGY_MAX);
     }
 
     #[test]
