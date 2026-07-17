@@ -4688,8 +4688,9 @@ mod tests {
             .add_new_mint_pass_at_height(&collab2, collab2.mint_block_height)
             .unwrap();
 
-        seed_energy_record(&server, &leader, 120, 1_000);
-        seed_energy_record(&server, &collab1, 110, 101);
+        let leader_raw_energy = LEVEL_E0 - 1;
+        seed_energy_record(&server, &leader, 120, leader_raw_energy);
+        seed_energy_record(&server, &collab1, 110, 2);
         seed_energy_record(&server, &collab2, 120, 200);
 
         let snapshot = server
@@ -4701,18 +4702,26 @@ mod tests {
             })
             .unwrap();
 
-        let collab1_projected_raw = 101u128.saturating_add(calc_growth_delta(100_000, 10));
+        let collab1_projected_raw = 2u128.saturating_add(calc_growth_delta(100_000, 10));
         let expected_contribution = calc_collab_contribution(collab1_projected_raw)
             .saturating_add(calc_collab_contribution(200));
-        assert_eq!(snapshot.raw_energy, "1000");
+        assert_eq!(snapshot.raw_energy, leader_raw_energy.to_string());
         assert_eq!(
             snapshot.collab_contribution,
             expected_contribution.to_string()
         );
         assert_eq!(
             snapshot.effective_energy,
-            1_000u128.saturating_add(expected_contribution).to_string()
+            leader_raw_energy
+                .saturating_add(expected_contribution)
+                .to_string()
         );
+        assert!(
+            leader_raw_energy < LEVEL_E0,
+            "raw energy alone should still be below level 1"
+        );
+        assert_eq!(snapshot.level, 1);
+        assert_eq!(snapshot.difficulty_factor_bps, 9_900);
 
         let raw_record = server
             .indexer
@@ -4721,7 +4730,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            raw_record.energy, 1_000,
+            raw_record.energy, leader_raw_energy,
             "derived effective energy must not be written back to raw energy storage"
         );
 
@@ -4850,6 +4859,8 @@ mod tests {
             assert_eq!(snapshot.raw_energy, "1000");
             assert_eq!(snapshot.collab_contribution, "0");
             assert_eq!(snapshot.effective_energy, "0");
+            assert_eq!(snapshot.level, 0);
+            assert_eq!(snapshot.difficulty_factor_bps, 10_000);
 
             let breakdown = get_collab_breakdown_for_test(&server, &leader, 120);
             assert_eq!(breakdown.total, 0);
@@ -4879,6 +4890,8 @@ mod tests {
         assert_eq!(invalid_snapshot.raw_energy, "1000");
         assert_eq!(invalid_snapshot.collab_contribution, "0");
         assert_eq!(invalid_snapshot.effective_energy, "0");
+        assert_eq!(invalid_snapshot.level, 0);
+        assert_eq!(invalid_snapshot.difficulty_factor_bps, 10_000);
 
         let invalid_breakdown = get_collab_breakdown_for_test(&server, &invalid_leader, 120);
         assert_eq!(invalid_breakdown.total, 0);
@@ -4963,6 +4976,8 @@ mod tests {
         assert_eq!(leader1_snapshot.state, MinerPassState::Dormant.as_str());
         assert_eq!(leader1_snapshot.collab_contribution, "0");
         assert_eq!(leader1_snapshot.effective_energy, "0");
+        assert_eq!(leader1_snapshot.level, 0);
+        assert_eq!(leader1_snapshot.difficulty_factor_bps, 10_000);
 
         let leader1_breakdown = get_collab_breakdown_for_test(&server, &leader1, 140);
         assert_eq!(leader1_breakdown.total, 0);
@@ -5011,6 +5026,8 @@ mod tests {
         assert_eq!(after_consumed.raw_energy, "150");
         assert_eq!(after_consumed.collab_contribution, "0");
         assert_eq!(after_consumed.effective_energy, "150");
+        assert_eq!(after_consumed.level, 0);
+        assert_eq!(after_consumed.difficulty_factor_bps, 10_000);
 
         let breakdown = get_collab_breakdown_for_test(&server, &leader, 130);
         assert_eq!(breakdown.total, 0);

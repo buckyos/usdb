@@ -286,6 +286,7 @@
 - `src/btc/usdb-indexer/src/service/server.rs`
   - `get_pass_energy` 从 UIP-0004 `effective_energy` 运行时派生 `level` / `difficulty_factor_bps`，不写入 energy DB。
   - `get_candidate_set_view` item 增加 `level` / `difficulty_factor_bps`，同样从每个 candidate 的 `effective_energy` 运行时派生；排序仍保持 `effective_energy DESC, pass_id ASC`。
+  - 补充状态边界测试：active standard 使用 collab 聚合后的 `effective_energy` 计算 level；active collab、non-active standard、dormant / consumed / burned / invalid Leader 的 `effective_energy = 0` 时均返回 `level = 0`、`difficulty_factor_bps = 10000`。
 - `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
   - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 ETHW difficulty。
   - 更新 `get_candidate_set_view` 返回字段说明，明确 UIP-0005 字段不改变 candidate 排序口径。
