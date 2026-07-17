@@ -1,3 +1,7 @@
+use super::economic_cursor::{
+    CandidateSetCursor, CollabBreakdownCursor, ECONOMIC_PAGE_MAX_LIMIT, EconomicPageCursor,
+    decode_economic_cursor, encode_economic_cursor,
+};
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
 use crate::index::{
@@ -676,6 +680,170 @@ impl UsdbIndexerRpcServer {
             )?;
         }
         Ok((resolved_height, state_ref))
+    }
+
+    /// Resolve a continuation page against the exact external state embedded in
+    /// its cursor. Explicit request selectors may repeat that state but cannot
+    /// override or weaken it.
+    fn resolve_economic_cursor_query_context(
+        &self,
+        view_version: &str,
+        requested_height: Option<u32>,
+        request_context: Option<&ConsensusQueryContext>,
+        cursor_external_state: &EconomicExternalState,
+    ) -> Result<(u32, HistoricalStateRefInfo), JsonError> {
+        Self::validate_cursor_request_context(
+            requested_height,
+            request_context,
+            cursor_external_state,
+        )?;
+        let cursor_context = ConsensusQueryContext::from(cursor_external_state);
+        self.resolve_economic_query_context(
+            view_version,
+            Some(cursor_external_state.btc_height),
+            Some(&cursor_context),
+        )
+    }
+
+    /// Rebuild the selected historical state after deriving an economic view.
+    /// A concurrent reorg must fail the request instead of pairing pre-reorg
+    /// `external_state` with post-reorg pass or energy data.
+    fn revalidate_economic_query_context(
+        &self,
+        query_height: u32,
+        initial_state_ref: &HistoricalStateRefInfo,
+    ) -> Result<HistoricalStateRefInfo, JsonError> {
+        let revalidated_state_ref = self.build_historical_state_ref_info(query_height)?;
+        let expected_state = ConsensusStateReference::from(initial_state_ref);
+        if let Err(err) = self.validate_historical_state_ref_expected_state(
+            query_height,
+            &revalidated_state_ref,
+            &expected_state,
+        ) {
+            warn!(
+                "Economic view state changed during derivation: module=rpc_server, query_height={}, error_code={:?}, error_message={}",
+                query_height, err.code, err.message
+            );
+            return Err(err);
+        }
+        Ok(revalidated_state_ref)
+    }
+
+    fn validate_economic_limit(limit: usize) -> Result<(), JsonError> {
+        if limit == 0 || limit > ECONOMIC_PAGE_MAX_LIMIT {
+            return Err(Self::invalid_economic_pagination(format!(
+                "limit must be between 1 and {} inclusive, got {}",
+                ECONOMIC_PAGE_MAX_LIMIT, limit
+            )));
+        }
+        Ok(())
+    }
+
+    fn invalid_economic_pagination(detail: impl Into<String>) -> JsonError {
+        let detail = detail.into();
+        warn!(
+            "Rejected UIP-0006 cursor pagination request: module=rpc_server, detail={}",
+            detail
+        );
+        Self::to_business_error(
+            ERR_INVALID_PAGINATION,
+            "INVALID_PAGINATION",
+            json!({
+                "detail": detail,
+                "max_limit": ECONOMIC_PAGE_MAX_LIMIT
+            }),
+        )
+    }
+
+    fn decode_candidate_set_cursor(
+        value: Option<&str>,
+    ) -> Result<Option<CandidateSetCursor>, JsonError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match decode_economic_cursor(value).map_err(Self::invalid_economic_pagination)? {
+            EconomicPageCursor::CandidateSet(cursor) => Ok(Some(cursor)),
+            EconomicPageCursor::CollabBreakdown(_) => Err(Self::invalid_economic_pagination(
+                "collab breakdown cursor cannot continue a candidate set query",
+            )),
+        }
+    }
+
+    fn decode_collab_breakdown_cursor(
+        value: Option<&str>,
+    ) -> Result<Option<CollabBreakdownCursor>, JsonError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        match decode_economic_cursor(value).map_err(Self::invalid_economic_pagination)? {
+            EconomicPageCursor::CollabBreakdown(cursor) => Ok(Some(cursor)),
+            EconomicPageCursor::CandidateSet(_) => Err(Self::invalid_economic_pagination(
+                "candidate set cursor cannot continue a collab breakdown query",
+            )),
+        }
+    }
+
+    fn encode_cursor(cursor: EconomicPageCursor) -> Result<String, JsonError> {
+        encode_economic_cursor(cursor).map_err(|e| {
+            error!(
+                "Failed to encode UIP-0006 cursor: module=rpc_server, error={}",
+                e
+            );
+            Self::to_internal_error(e)
+        })
+    }
+
+    fn validate_cursor_request_context(
+        requested_height: Option<u32>,
+        context: Option<&ConsensusQueryContext>,
+        cursor_external_state: &EconomicExternalState,
+    ) -> Result<(), JsonError> {
+        if let Some(requested_height) = requested_height
+            && requested_height != cursor_external_state.btc_height
+        {
+            return Err(Self::invalid_economic_pagination(format!(
+                "cursor btc_height {} does not match request block_height {}",
+                cursor_external_state.btc_height, requested_height
+            )));
+        }
+
+        let Some(context) = context else {
+            return Ok(());
+        };
+        if let Some(requested_height) = context.requested_height
+            && requested_height != cursor_external_state.btc_height
+        {
+            return Err(Self::invalid_economic_pagination(format!(
+                "cursor btc_height {} does not match context requested_height {}",
+                cursor_external_state.btc_height, requested_height
+            )));
+        }
+
+        let cursor_state = ConsensusStateReference::from(cursor_external_state);
+        let request_state = &context.expected_state;
+        macro_rules! require_cursor_field_match {
+            ($field:ident) => {
+                if let Some(request_value) = request_state.$field.as_ref()
+                    && cursor_state.$field.as_ref() != Some(request_value)
+                {
+                    return Err(Self::invalid_economic_pagination(format!(
+                        "cursor-bound {} does not match request context",
+                        stringify!($field)
+                    )));
+                }
+            };
+        }
+
+        require_cursor_field_match!(snapshot_id);
+        require_cursor_field_match!(stable_height);
+        require_cursor_field_match!(stable_block_hash);
+        require_cursor_field_match!(balance_history_api_version);
+        require_cursor_field_match!(balance_history_semantics_version);
+        require_cursor_field_match!(usdb_index_protocol_version);
+        require_cursor_field_match!(usdb_index_formula_version);
+        require_cursor_field_match!(local_state_commit);
+        require_cursor_field_match!(system_state_id);
+        Ok(())
     }
 
     fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
@@ -1512,19 +1680,45 @@ impl UsdbIndexerRpcServer {
         Ok(items[offset..end].to_vec())
     }
 
-    fn paginate_candidate_set_items(
+    fn candidate_cursor_start(
         items: &[CandidateSetViewItem],
-        total: u64,
-        page: usize,
-        page_size: usize,
-    ) -> Result<Vec<CandidateSetViewItem>, JsonError> {
-        let offset = Self::pagination_offset(page, page_size)?;
-        if (offset as u64) >= total || offset >= items.len() {
-            return Ok(Vec::new());
-        }
+        cursor: Option<&CandidateSetCursor>,
+    ) -> Result<usize, JsonError> {
+        let Some(cursor) = cursor else {
+            return Ok(0);
+        };
+        let position = items.iter().position(|item| {
+            item.pass_id == cursor.last_pass_id
+                && item.effective_energy == cursor.last_effective_energy
+        });
+        position
+            .and_then(|position| position.checked_add(1))
+            .ok_or_else(|| {
+                Self::invalid_economic_pagination(
+                    "candidate cursor continuation key is not present in the bound state",
+                )
+            })
+    }
 
-        let end = offset.saturating_add(page_size).min(items.len());
-        Ok(items[offset..end].to_vec())
+    fn collab_cursor_start(
+        items: &[DerivedCollabBreakdownItem],
+        cursor: Option<&CollabBreakdownCursor>,
+    ) -> Result<usize, JsonError> {
+        let Some(cursor) = cursor else {
+            return Ok(0);
+        };
+        let position = items.iter().position(|item| {
+            item.collab_pass_id.to_string() == cursor.last_collab_pass_id
+                && encode_energy_decimal(item.collab_contribution)
+                    == cursor.last_collab_contribution
+        });
+        position
+            .and_then(|position| position.checked_add(1))
+            .ok_or_else(|| {
+                Self::invalid_economic_pagination(
+                    "collab cursor continuation key is not present in the bound state",
+                )
+            })
     }
 
     fn try_get_cached_leaderboard_page(
@@ -2245,15 +2439,51 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCollabBreakdownParams,
     ) -> JsonResult<CollabBreakdownPage> {
-        let (query_height, state_ref) = self.resolve_economic_query_context(
+        self.validate_economic_view_version(
             &params.view_version,
             params.block_height,
             params.context.as_ref(),
         )?;
-        self.validate_pagination(params.page, params.page_size)?;
-
+        Self::validate_economic_limit(params.limit)?;
         let leader_pass_id = self.parse_inscription_id(&params.leader_pass_id)?;
         let sort = self.parse_collab_breakdown_sort(params.sort.as_deref())?;
+        let cursor = Self::decode_collab_breakdown_cursor(params.cursor.as_deref())?;
+        if let Some(cursor) = cursor.as_ref() {
+            if cursor.view_version != params.view_version {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor view_version does not match request view_version",
+                ));
+            }
+            if cursor.leader_pass_id != leader_pass_id.to_string() {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor leader_pass_id does not match request leader_pass_id",
+                ));
+            }
+            if cursor.sort != sort.as_str() {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor sort does not match request sort",
+                ));
+            }
+            if cursor.limit != params.limit {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor limit does not match request limit",
+                ));
+            }
+        }
+
+        let (query_height, initial_state_ref) = match cursor.as_ref() {
+            Some(cursor) => self.resolve_economic_cursor_query_context(
+                &params.view_version,
+                params.block_height,
+                params.context.as_ref(),
+                &cursor.external_state,
+            )?,
+            None => self.resolve_economic_query_context(
+                &params.view_version,
+                params.block_height,
+                params.context.as_ref(),
+            )?,
+        };
 
         let Some(mut breakdown) = self
             .indexer
@@ -2273,23 +2503,38 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Self::sort_collab_breakdown_items(&mut breakdown.items, sort);
         let total = breakdown.items.len() as u64;
-        let offset = Self::pagination_offset(params.page, params.page_size)?;
-        let items = if (offset as u64) >= total {
-            Vec::new()
+        let start = Self::collab_cursor_start(&breakdown.items, cursor.as_ref())?;
+        let end = start
+            .saturating_add(params.limit)
+            .min(breakdown.items.len());
+        let items = breakdown.items[start..end]
+            .iter()
+            .cloned()
+            .map(Self::encode_collab_breakdown_item)
+            .collect();
+
+        let state_ref = self.revalidate_economic_query_context(query_height, &initial_state_ref)?;
+        let external_state = EconomicExternalState::from(&state_ref);
+        let next_cursor = if end < breakdown.items.len() {
+            let last = &breakdown.items[end - 1];
+            Some(Self::encode_cursor(EconomicPageCursor::CollabBreakdown(
+                CollabBreakdownCursor {
+                    view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                    external_state: external_state.clone(),
+                    leader_pass_id: leader_pass_id.to_string(),
+                    sort: sort.as_str().to_string(),
+                    limit: params.limit,
+                    last_collab_contribution: encode_energy_decimal(last.collab_contribution),
+                    last_collab_pass_id: last.collab_pass_id.to_string(),
+                },
+            ))?)
         } else {
-            breakdown
-                .items
-                .into_iter()
-                .skip(offset)
-                .take(params.page_size)
-                .map(Self::encode_collab_breakdown_item)
-                .collect()
+            None
         };
 
         Ok(CollabBreakdownPage {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
-            external_state: EconomicExternalState::from(&state_ref),
-            resolved_height: query_height,
+            external_state,
             leader_pass_id: leader_pass_id.to_string(),
             leader_state: breakdown.leader.pass.state.as_str().to_string(),
             leader_pass_kind: breakdown.leader.pass.pass_kind.as_str().to_string(),
@@ -2298,6 +2543,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             aggregate_collab_contribution: encode_energy_decimal(
                 breakdown.aggregate_collab_contribution,
             ),
+            limit: params.limit,
+            max_limit: ECONOMIC_PAGE_MAX_LIMIT,
+            next_cursor,
             items,
         })
     }
@@ -2574,6 +2822,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let level = calc_level_from_effective_energy(effective_energy);
         let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        let state_ref = self.revalidate_economic_query_context(query_height, &state_ref)?;
 
         Ok(PassEconomicProfileView {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
@@ -2598,37 +2847,90 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCandidateSetViewParams,
     ) -> JsonResult<CandidateSetViewPage> {
-        let (query_height, state_ref) = self.resolve_economic_query_context(
+        self.validate_economic_view_version(
             &params.view_version,
             params.block_height,
             params.context.as_ref(),
         )?;
-        self.validate_pagination(params.page, params.page_size)?;
-
+        Self::validate_economic_limit(params.limit)?;
         let selection_rule =
             self.parse_candidate_set_selection_rule(params.selection_rule.as_deref())?;
+        let cursor = Self::decode_candidate_set_cursor(params.cursor.as_deref())?;
+        if let Some(cursor) = cursor.as_ref() {
+            if cursor.view_version != params.view_version {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor view_version does not match request view_version",
+                ));
+            }
+            if cursor.selection_rule != selection_rule {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor selection_rule does not match request selection_rule",
+                ));
+            }
+            if cursor.limit != params.limit {
+                return Err(Self::invalid_economic_pagination(
+                    "cursor limit does not match request limit",
+                ));
+            }
+        }
+
+        let (query_height, initial_state_ref) = match cursor.as_ref() {
+            Some(cursor) => self.resolve_economic_cursor_query_context(
+                &params.view_version,
+                params.block_height,
+                params.context.as_ref(),
+                &cursor.external_state,
+            )?,
+            None => self.resolve_economic_query_context(
+                &params.view_version,
+                params.block_height,
+                params.context.as_ref(),
+            )?,
+        };
         let call_start = Instant::now();
 
         let (total, ranked) = self.build_candidate_set_view_dataset(query_height)?;
-        let items =
-            Self::paginate_candidate_set_items(&ranked, total, params.page, params.page_size)?;
+        let start = Self::candidate_cursor_start(&ranked, cursor.as_ref())?;
+        let end = start.saturating_add(params.limit).min(ranked.len());
+        let items = ranked[start..end].to_vec();
+
+        let state_ref = self.revalidate_economic_query_context(query_height, &initial_state_ref)?;
+        let external_state = EconomicExternalState::from(&state_ref);
+        let next_cursor = if end < ranked.len() {
+            let last = &ranked[end - 1];
+            Some(Self::encode_cursor(EconomicPageCursor::CandidateSet(
+                CandidateSetCursor {
+                    view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                    external_state: external_state.clone(),
+                    selection_rule: selection_rule.to_string(),
+                    limit: params.limit,
+                    last_effective_energy: last.effective_energy.clone(),
+                    last_pass_id: last.pass_id.clone(),
+                },
+            ))?)
+        } else {
+            None
+        };
 
         info!(
-            "Candidate set view served: module=rpc_server, resolved_height={}, selection_rule={}, total={}, page={}, page_size={}, elapsed_ms={}",
+            "Candidate set view served: module=rpc_server, resolved_height={}, selection_rule={}, total={}, limit={}, cursor_present={}, next_cursor_present={}, elapsed_ms={}",
             query_height,
             selection_rule,
             total,
-            params.page,
-            params.page_size,
+            params.limit,
+            cursor.is_some(),
+            next_cursor.is_some(),
             call_start.elapsed().as_millis()
         );
 
         Ok(CandidateSetViewPage {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
-            external_state: EconomicExternalState::from(&state_ref),
-            resolved_height: query_height,
+            external_state,
             selection_rule: selection_rule.to_string(),
             total,
+            limit: params.limit,
+            max_limit: ECONOMIC_PAGE_MAX_LIMIT,
+            next_cursor,
             items,
         })
     }
@@ -2957,8 +3259,8 @@ mod tests {
                 block_height: Some(block_height),
                 context: None,
                 sort: None,
-                page: 0,
-                page_size: 20,
+                cursor: None,
+                limit: 20,
             })
             .unwrap()
     }
@@ -5255,6 +5557,43 @@ mod tests {
     }
 
     #[test]
+    fn test_economic_query_revalidation_rejects_state_change_during_derivation() {
+        let (server, root_dir) = build_server("economic_query_revalidation_reorg", 120);
+        seed_state_ref_context(&server, 120);
+        let (_, initial_state_ref) = server
+            .resolve_economic_query_context(USDB_ECONOMIC_STATE_VIEW_VERSION, Some(120), None)
+            .unwrap();
+
+        // Simulate a same-height reorg after the request resolved its initial
+        // state ref but before the economic response is finalized.
+        let mut replacement = ready_balance_history_snapshot(120);
+        replacement.stable_block_hash = Some("cc".repeat(32));
+        replacement.latest_block_commit = Some("dd".repeat(32));
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&replacement)
+            .unwrap();
+
+        let mismatch = server
+            .revalidate_economic_query_context(120, &initial_state_ref)
+            .unwrap_err();
+        assert_eq!(
+            mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+        );
+        assert_eq!(
+            decode_consensus_error_data(&mismatch)
+                .mismatch_field
+                .as_deref(),
+            Some("snapshot_id")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_pass_economic_profile_replays_old_external_state_after_head_advances() {
         let (server, root_dir) = build_server("economic_profile_historical_replay", 130);
         seed_state_ref_context(&server, 120);
@@ -5813,8 +6152,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 sort: Some("contribution_desc_pass_id_asc".to_string()),
-                page: 0,
-                page_size: 1,
+                cursor: None,
+                limit: 1,
             })
             .unwrap();
         assert_eq!(page0.view_version, USDB_ECONOMIC_STATE_VIEW_VERSION);
@@ -5828,7 +6167,15 @@ mod tests {
             page0.external_state.usdb_index_formula_version,
             USDB_INDEX_FORMULA_VERSION
         );
-        assert_eq!(page0.resolved_height, 120);
+        assert_eq!(page0.limit, 1);
+        assert_eq!(page0.max_limit, ECONOMIC_PAGE_MAX_LIMIT);
+        assert!(page0.next_cursor.is_some());
+        assert!(
+            serde_json::to_value(&page0)
+                .unwrap()
+                .get("resolved_height")
+                .is_none()
+        );
         assert_eq!(page0.leader_pass_id, leader.inscription_id.to_string());
         assert_eq!(page0.leader_state, MinerPassState::Active.as_str());
         assert_eq!(page0.leader_pass_kind, MinerPassKind::Standard.as_str());
@@ -5854,19 +6201,71 @@ mod tests {
             leader.inscription_id.to_string()
         );
 
+        let changed_sort = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: None,
+                context: None,
+                sort: Some("collab_pass_id_asc".to_string()),
+                cursor: page0.next_cursor.clone(),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            changed_sort.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let changed_limit = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: None,
+                context: None,
+                sort: Some("contribution_desc_pass_id_asc".to_string()),
+                cursor: page0.next_cursor.clone(),
+                limit: 2,
+            })
+            .unwrap_err();
+        assert_eq!(
+            changed_limit.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let changed_leader = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                leader_pass_id: other_leader.inscription_id.to_string(),
+                block_height: None,
+                context: None,
+                sort: Some("contribution_desc_pass_id_asc".to_string()),
+                cursor: page0.next_cursor.clone(),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            changed_leader.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        // The cursor remains pinned to height 120 after the current head moves.
+        seed_state_ref_context(&server, 130);
         let page1 = server
             .get_collab_breakdown(GetCollabBreakdownParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
-                block_height: Some(120),
+                block_height: None,
                 context: None,
                 sort: Some("contribution_desc_pass_id_asc".to_string()),
-                page: 1,
-                page_size: 1,
+                cursor: page0.next_cursor.clone(),
+                limit: 1,
             })
             .unwrap();
         assert_eq!(page1.total, 2);
+        assert_eq!(page1.external_state, page0.external_state);
         assert_eq!(page1.items.len(), 1);
+        assert!(page1.next_cursor.is_none());
         assert_eq!(
             page1.items[0].collab_pass_id,
             collab_addr.inscription_id.to_string()
@@ -5889,8 +6288,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 sort: Some("collab_pass_id_asc".to_string()),
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap();
         let recomputed_aggregate = full_page
@@ -5953,8 +6352,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 sort: None,
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap();
         assert_eq!(page.sort, "collab_pass_id_asc");
@@ -5988,8 +6387,8 @@ mod tests {
                     expected_state: ConsensusStateReference::default(),
                 }),
                 sort: None,
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap_err();
 
@@ -6080,8 +6479,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 selection_rule: None,
-                page: 0,
-                page_size: 2,
+                cursor: None,
+                limit: 2,
             })
             .unwrap();
 
@@ -6090,7 +6489,6 @@ mod tests {
             USDB_ECONOMIC_STATE_VIEW_VERSION.to_string()
         );
         assert_eq!(page0.selection_rule, CANDIDATE_SET_SELECTION_RULE);
-        assert_eq!(page0.resolved_height, 120);
         assert_eq!(page0.external_state.btc_height, 120);
         assert_eq!(page0.external_state.stable_block_hash, "aa".repeat(32));
         assert_eq!(
@@ -6110,6 +6508,9 @@ mod tests {
             USDB_INDEX_FORMULA_VERSION
         );
         assert_eq!(page0.total, 3);
+        assert_eq!(page0.limit, 2);
+        assert_eq!(page0.max_limit, ECONOMIC_PAGE_MAX_LIMIT);
+        assert!(page0.next_cursor.is_some());
         assert_eq!(page0.items.len(), 2);
         assert_eq!(page0.items[0].pass_id, leader.inscription_id.to_string());
         assert_eq!(page0.items[0].owner_script_hash, leader.owner.to_string());
@@ -6141,18 +6542,23 @@ mod tests {
         assert_eq!(page0.items[1].level, 0);
         assert_eq!(page0.items[1].difficulty_factor_bps, 10_000);
 
+        // The continuation cursor owns the historical context, so advancing
+        // the current head must not move page 1 to a different state.
+        seed_state_ref_context(&server, 130);
         let page1 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
-                block_height: Some(120),
+                block_height: None,
                 context: None,
                 selection_rule: Some(CANDIDATE_SET_SELECTION_RULE.to_string()),
-                page: 1,
-                page_size: 2,
+                cursor: page0.next_cursor.clone(),
+                limit: 2,
             })
             .unwrap();
         assert_eq!(page1.total, 3);
+        assert_eq!(page1.external_state, page0.external_state);
         assert_eq!(page1.items.len(), 1);
+        assert!(page1.next_cursor.is_none());
         assert_eq!(
             page1.items[0].pass_id,
             tie_high_id.inscription_id.to_string()
@@ -6172,6 +6578,188 @@ mod tests {
     }
 
     #[test]
+    fn test_candidate_cursor_rejects_tamper_changed_bindings_and_same_height_reorg() {
+        let (server, root_dir) = build_server("candidate_cursor_binding_guards", 120);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let candidate1 = make_active_pass(161, 241, 100);
+        let candidate2 = make_active_pass(162, 242, 100);
+        for candidate in [&candidate1, &candidate2] {
+            storage
+                .add_new_mint_pass_at_height(candidate, candidate.mint_block_height)
+                .unwrap();
+        }
+        seed_energy_record(&server, &candidate1, 120, 200);
+        seed_energy_record(&server, &candidate2, 120, 100);
+
+        let first_page = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(120),
+                context: None,
+                selection_rule: None,
+                cursor: None,
+                limit: 1,
+            })
+            .unwrap();
+        let cursor = first_page.next_cursor.clone().unwrap();
+        let page_json = serde_json::to_value(&first_page).unwrap();
+        assert!(page_json.get("resolved_height").is_none());
+        assert_eq!(page_json["limit"], 1);
+        assert_eq!(page_json["max_limit"], ECONOMIC_PAGE_MAX_LIMIT);
+
+        for invalid_limit in [0, ECONOMIC_PAGE_MAX_LIMIT + 1] {
+            let err = server
+                .get_candidate_set_view(GetCandidateSetViewParams {
+                    view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                    block_height: Some(120),
+                    context: None,
+                    selection_rule: None,
+                    cursor: None,
+                    limit: invalid_limit,
+                })
+                .unwrap_err();
+            assert_eq!(err.code, ErrorCode::ServerError(ERR_INVALID_PAGINATION));
+        }
+
+        let changed_limit = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: None,
+                cursor: Some(cursor.clone()),
+                limit: 2,
+            })
+            .unwrap_err();
+        assert_eq!(
+            changed_limit.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let changed_height = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(121),
+                context: None,
+                selection_rule: None,
+                cursor: Some(cursor.clone()),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            changed_height.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let mut tampered_bytes = cursor.as_bytes().to_vec();
+        let tampered_index = tampered_bytes.len() / 2;
+        tampered_bytes[tampered_index] = if tampered_bytes[tampered_index] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        let tampered = String::from_utf8(tampered_bytes).unwrap();
+        let tampered_err = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: None,
+                cursor: Some(tampered),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            tampered_err.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let wrong_resource_cursor = UsdbIndexerRpcServer::encode_cursor(
+            EconomicPageCursor::CollabBreakdown(CollabBreakdownCursor {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                external_state: first_page.external_state.clone(),
+                leader_pass_id: candidate1.inscription_id.to_string(),
+                sort: "collab_pass_id_asc".to_string(),
+                limit: 1,
+                last_collab_contribution: "0".to_string(),
+                last_collab_pass_id: candidate2.inscription_id.to_string(),
+            }),
+        )
+        .unwrap();
+        let wrong_resource = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: None,
+                cursor: Some(wrong_resource_cursor),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            wrong_resource.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let missing_key_cursor = UsdbIndexerRpcServer::encode_cursor(
+            EconomicPageCursor::CandidateSet(CandidateSetCursor {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                external_state: first_page.external_state.clone(),
+                selection_rule: CANDIDATE_SET_SELECTION_RULE.to_string(),
+                limit: 1,
+                last_effective_energy: "999".to_string(),
+                last_pass_id: candidate1.inscription_id.to_string(),
+            }),
+        )
+        .unwrap();
+        let missing_key = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: None,
+                cursor: Some(missing_key_cursor),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            missing_key.code,
+            ErrorCode::ServerError(ERR_INVALID_PAGINATION)
+        );
+
+        let mut replacement = ready_balance_history_snapshot(120);
+        replacement.stable_block_hash = Some("cc".repeat(32));
+        replacement.latest_block_commit = Some("dd".repeat(32));
+        storage
+            .upsert_balance_history_snapshot_anchor(&replacement)
+            .unwrap();
+        let reorg_mismatch = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: None,
+                cursor: Some(cursor),
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            reorg_mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+        );
+        assert_eq!(
+            decode_consensus_error_data(&reorg_mismatch)
+                .mismatch_field
+                .as_deref(),
+            Some("snapshot_id")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_candidate_set_view_rejects_mismatched_context_height() {
         let (server, root_dir) = build_server("candidate_set_context_height_mismatch", 130);
         seed_state_ref_context(&server, 120);
@@ -6185,8 +6773,8 @@ mod tests {
                     expected_state: ConsensusStateReference::default(),
                 }),
                 selection_rule: None,
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap_err();
 
@@ -6206,8 +6794,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 selection_rule: None,
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap_err();
 
@@ -6237,19 +6825,42 @@ mod tests {
         .unwrap_err();
         assert!(profile_err.to_string().contains("view_version"));
 
-        let candidate_err = serde_json::from_value::<GetCandidateSetViewParams>(
-            serde_json::json!({"page": 0, "page_size": 10}),
-        )
-        .unwrap_err();
+        let candidate_err =
+            serde_json::from_value::<GetCandidateSetViewParams>(serde_json::json!({"limit": 10}))
+                .unwrap_err();
         assert!(candidate_err.to_string().contains("view_version"));
 
         let breakdown_err = serde_json::from_value::<GetCollabBreakdownParams>(serde_json::json!({
             "leader_pass_id": "txidi0",
-            "page": 0,
-            "page_size": 10
+            "limit": 10
         }))
         .unwrap_err();
         assert!(breakdown_err.to_string().contains("view_version"));
+    }
+
+    #[test]
+    fn test_uip0006_cursor_queries_reject_legacy_page_fields() {
+        let candidate_err =
+            serde_json::from_value::<GetCandidateSetViewParams>(serde_json::json!({
+                "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+                "block_height": 120,
+                "page": 0,
+                "page_size": 10,
+                "limit": 10
+            }))
+            .unwrap_err();
+        assert!(candidate_err.to_string().contains("unknown field"));
+
+        let breakdown_err = serde_json::from_value::<GetCollabBreakdownParams>(serde_json::json!({
+            "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+            "leader_pass_id": "txidi0",
+            "block_height": 120,
+            "page": 0,
+            "page_size": 10,
+            "limit": 10
+        }))
+        .unwrap_err();
+        assert!(breakdown_err.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -6269,8 +6880,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 selection_rule: Some("bad-rule".to_string()),
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap_err();
         assert_eq!(invalid_rule.code, ErrorCode::InvalidParams);
@@ -6286,8 +6897,8 @@ mod tests {
                 block_height: Some(120),
                 context: None,
                 selection_rule: None,
-                page: 0,
-                page_size: 10,
+                cursor: None,
+                limit: 10,
             })
             .unwrap_err();
         assert_eq!(

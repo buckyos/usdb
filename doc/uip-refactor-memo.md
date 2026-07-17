@@ -220,7 +220,7 @@
   - `raw + Σ collab_contribution` 使用 `energy_uint` 饱和加法，且不写回 raw energy DB。
 - `src/btc/usdb-indexer/src/service/server.rs`
   - `get_pass_energy` 三字段接入 UIP-0004 派生结果：`raw_energy` 保持 UIP-0003 原值，`collab_contribution` / `effective_energy` 运行时计算。
-  - 新增 `get_collab_breakdown`，按 `leader_pass_id + height/context + page/page_size + sort` 返回稳定分页审计明细，并暴露全量 `aggregate_collab_contribution`。
+  - 新增 `get_collab_breakdown`，按 `leader_pass_id + height/context + cursor/limit + sort` 返回稳定分页审计明细，并暴露全量 `aggregate_collab_contribution`。
   - 新增 `get_candidate_set_view`，只枚举 active standard pass，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 返回 UIP-0006 candidate set audit view。
   - `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不改造成 validator candidate set 口径。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
@@ -302,7 +302,7 @@
 
 ## UIP-0006 USDB Economic State View
 
-状态：任务 1（v1 查询/响应契约收敛）、任务 2（共享历史 context / version mismatch / external state 基础）和任务 3（单 Pass economic profile）已对接。当前开发阶段不保留省略 `view_version`、缺少 formula selector 或旧 protocol mismatch 名称的兼容入口。
+状态：任务 1（v1 查询/响应契约收敛）、任务 2（共享历史 context / version mismatch / external state 基础）、任务 3（单 Pass economic profile）和任务 4（state-ref 二次复验与 cursor 稳定分页）已对接。当前开发阶段不保留省略 `view_version`、旧 `page/page_size`、缺少 formula selector 或旧 protocol mismatch 名称的兼容入口。
 
 ### 已对接内容
 
@@ -310,7 +310,7 @@
   - 固定 `view_version = uip-0006-usdb-economic-state-view:v1`，所有 UIP-0006 请求顶层必填；该字段不进入 `ConsensusStateReference`。
   - 固定 `EconomicExternalState` 的 9 个必填字段，补齐 `balance_history_api_version`，并要求 protocol/formula 来自目标高度历史 identity。
   - 固定 invalid profile 的 raw/contribution/effective canonical 零值和 `level=0 / factor=10000` 查询语义，不要求伪造 energy DB row。
-  - 固定 candidate/breakdown 的 `cursor + limit` 契约、cursor 绑定范围和错误边界；当前数字分页实现将在后续任务直接替换，不保留双栈。
+  - 固定 candidate/breakdown 的 `cursor + limit` 契约、cursor 绑定范围和错误边界；实现已直接替换数字分页，不保留双栈。
   - 明确 `ECONOMIC_FIELD_MISMATCH` 属于下游 verifier 重算结果，不是无 expected economic fields 的查询 RPC 错误；服务内部矛盾使用 `INTERNAL_INVARIANT_BROKEN`。
 - `src/btc/usdb-util/src/types.rs`
   - `ConsensusStateReference` 增加 `usdb_index_formula_version`。
@@ -323,6 +323,10 @@
   - 新增强类型 `EconomicExternalState`，支持从 `HistoricalStateRefInfo` 无损构造，并可反向生成完整 `ConsensusStateReference / ConsensusQueryContext`。
   - `get_candidate_set_view` / `get_collab_breakdown` 请求增加必填 `view_version`，响应统一增加 `view_version + external_state`。
   - 新增 `get_pass_economic_profile` 强类型请求/响应，固定 `pass_id`、owner、state/kind、三类 energy、level/factor 和 breakdown count 字段。
+  - candidate/breakdown 请求改为 `cursor + limit` 并拒绝未知字段；响应改为 `limit + max_limit + next_cursor`，不再返回裸 `resolved_height`。
+- `src/btc/usdb-indexer/src/service/economic_cursor.rs`
+  - 新增 UIP-0006 versioned opaque cursor codec；绑定 view version、完整 external state、resource/query 条件、limit 和确定性 continuation key。
+  - 使用 base64url envelope 与 domain-separated SHA-256 checksum 检测损坏/schema drift；实现级 `max_limit` 固定为 500。
 - `src/btc/usdb-indexer/src/service/server.rs`
   - 新增统一 economic query context resolver；即使调用方不传 context，也必须重建目标高度完整历史 identity。
   - historical protocol/formula 校验改为读取目标高度 identity，不再与当前进程常量比较。
@@ -331,6 +335,9 @@
   - derived energy snapshot 同步返回 `collab_breakdown_count`，profile 无需为计数重复扫描 collab 集合。
   - non-invalid pass 缺 raw energy 按内部状态损坏返回 `INTERNAL_INVARIANT_BROKEN`，不存在的 pass 返回 `PASS_NOT_FOUND`。
   - 服务层测试覆盖 active standard 多 collab 聚合与 breakdown 交叉重算、active collab/non-active/invalid 边界、view/formula mismatch、缺 pass/缺 energy、head 前进后的旧 external state 重放，以及 same-height anchor 替换后的 snapshot mismatch。
+  - profile/candidate/breakdown 在业务派生前后重建并比较完整 historical state ref；查询期间发生 reorg 时返回对应 mismatch，不组合跨状态响应。
+  - candidate/breakdown 改用 keyset cursor continuation；cursor 自带历史 context，current head 前进后续页仍固定首包 external state。
+  - 服务层测试补充非法 limit、cursor 篡改、跨资源复用、查询条件变化、same-height reorg、旧分页字段拒绝和派生期间 state-ref 变化。
 - `src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh`
   - validator payload / context 强制携带 API、semantics、protocol、formula 四类版本字段，删除 protocol fallback 和可空 `.get(...)` 兼容逻辑。
   - protocol mismatch 断言改为 `PROTOCOL_VERSION_MISMATCH(-32051)`。
@@ -349,5 +356,5 @@
 
 ### 待继续对齐
 
-- 任务 4：将 candidate/breakdown 从 `page/page_size` 直接切换到已冻结的 opaque `cursor + limit`，并把 profile/candidate/breakdown 统一到同一个 response context resolver。
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
+- 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。

@@ -42,7 +42,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 # 当前实现状态
 
-参考实现已经完成 v1 历史 context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑。
+参考实现已经完成 v1 历史 context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑，以及 candidate/breakdown 的 opaque `cursor + limit` 稳定分页。
 
 `get_pass_economic_profile` 当前已满足：
 
@@ -52,8 +52,11 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 - invalid pass 无 energy row 时的 canonical 零值合成。
 - `PASS_NOT_FOUND` 与 non-invalid 缺 raw energy 的 `INTERNAL_INVARIANT_BROKEN` 错误边界。
 - BTC head 前进后按旧 `external_state` 重放同一 profile。
+- 派生前后重建并复验完整 historical state ref，同高度 reorg 期间不返回混合状态响应。
 
-当前仍待实现的是本 UIP 已固定的 candidate/breakdown opaque `cursor + limit` 分页契约，以及 USDB indexer 全部 UIP 对齐后的集中 live/regtest 复核。
+candidate/breakdown 当前已直接使用本文固定的 `cursor + limit`，不保留旧 `page/page_size` 双栈。参考实现的 `max_limit` 为 500，cursor 绑定完整 external state、resource/query 条件、limit 和 continuation key。
+
+当前仍待进行的是 USDB indexer 全部 UIP 对齐后的集中 live/regtest 复核，以及大数据量下的查询/索引性能评估。
 
 # 非目标
 
@@ -355,6 +358,8 @@ cursor 必须完整绑定：
 
 任一绑定字段变化、cursor 无法验证或 cursor 来自另一节点不兼容实现时，服务必须返回 `INVALID_PAGINATION`，禁止退回 current head 或从第一页静默重启。cursor 的字节编码、签名方式和 `max_limit` 数值属于实现细节；调用方不得解析或构造 cursor。
 
+参考实现使用 base64url 编码的版本化 envelope，并以 domain-separated SHA-256 checksum 检测损坏、篡改和 schema drift。该编码不是协议字段，也不是授权边界；调用方只能把 cursor 当作 opaque string。参考实现固定 `max_limit = 500`。
+
 # 查询语义
 
 实现可以将本文映射为一个或多个 RPC，例如：
@@ -369,6 +374,7 @@ cursor 必须完整绑定：
 - 不得在历史查询失败时自动退回 current head。
 - BTC head 前进后，旧 `external_state` 仍按历史 context 重放。
 - same-height reorg 后，若 `external_state` 不再匹配 canonical history，必须返回 mismatch。
+- 每次查询必须在业务派生前后重建并比较同一个完整 historical state ref；若查询期间发生 reorg，必须返回对应 state mismatch，禁止把 reorg 前的 `external_state` 与 reorg 后的业务字段组合成响应。
 - history retention 不足时必须返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
 - 所有响应必须回显已验证的 `view_version` 并返回完整 `external_state`，不得只返回裸 `resolved_height`。
 
@@ -432,14 +438,16 @@ USDB Economic State View
 - valid profile 按历史 `external_state` 查询通过。
 - BTC head 前进后旧 profile 仍按历史 context 查询通过。
 - same-height reorg 后旧 `external_state` 返回 state mismatch。
+- 查询派生期间 same-height state ref 变化时，post-check 返回 state mismatch。
 - `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 可在同一 context 下重算一致。
 - collab Leader profile 可通过 breakdown 或审计查询重算 aggregate contribution。
 - collab pass 不直接进入 candidate set view。
 - `view_version` / `protocol_version` / `formula_version` mismatch。
 - history retention 不足时返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
+- cursor 正常续页在 current head 前进后仍固定原 external state。
+- 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
 # 后续实现议题
 
-1. `contribution_desc_pass_id_asc` 在 cursor 分页下的 continuation key 和数据库索引成本。
-2. 参考实现把现有数字分页替换为本文已固定的 opaque cursor 契约，并确定实现级 `max_limit`。
-3. script hash -> BTC address 反向索引是否作为后续独立能力实现。
+1. `contribution_desc_pass_id_asc` 在大数据量 cursor 分页下的数据库索引成本。
+2. script hash -> BTC address 反向索引是否作为后续独立能力实现。

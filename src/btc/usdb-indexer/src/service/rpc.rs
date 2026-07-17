@@ -1034,6 +1034,7 @@ pub struct PassEconomicProfileView {
 
 /// Parameters for `get_candidate_set_view`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GetCandidateSetViewParams {
     /// Required UIP-0006 view contract version selector.
     pub view_version: String,
@@ -1046,10 +1047,10 @@ pub struct GetCandidateSetViewParams {
     pub context: Option<ConsensusQueryContext>,
     /// Optional selection rule. Defaults to `CANDIDATE_SET_SELECTION_RULE`.
     pub selection_rule: Option<String>,
-    /// Zero-based page index.
-    pub page: usize,
-    /// Number of rows per page.
-    pub page_size: usize,
+    /// Opaque continuation returned by the preceding page.
+    pub cursor: Option<String>,
+    /// Positive page size, bound into the cursor for all subsequent pages.
+    pub limit: usize,
 }
 
 /// One row in a UIP-0006 candidate set view.
@@ -1084,18 +1085,23 @@ pub struct CandidateSetViewPage {
     pub view_version: String,
     /// Exact historical state identity used to derive every row in this page.
     pub external_state: EconomicExternalState,
-    /// Final query height resolved by the server.
-    pub resolved_height: u32,
     /// Selection rule used for ordering and winner derivation.
     pub selection_rule: String,
     /// Total number of active standard candidate passes.
     pub total: u64,
+    /// Page size bound to this query and its continuation cursor.
+    pub limit: usize,
+    /// Maximum page size accepted by this server.
+    pub max_limit: usize,
+    /// Opaque continuation cursor, or `None` when this is the final page.
+    pub next_cursor: Option<String>,
     /// Candidate rows in requested page.
     pub items: Vec<CandidateSetViewItem>,
 }
 
 /// Parameters for `get_collab_breakdown`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GetCollabBreakdownParams {
     /// Required UIP-0006 view contract version selector.
     pub view_version: String,
@@ -1112,10 +1118,10 @@ pub struct GetCollabBreakdownParams {
     /// - `collab_pass_id_asc`: stable full-audit ordering.
     /// - `contribution_desc_pass_id_asc`: largest contribution first.
     pub sort: Option<String>,
-    /// Zero-based page index.
-    pub page: usize,
-    /// Number of rows per page.
-    pub page_size: usize,
+    /// Opaque continuation returned by the preceding page.
+    pub cursor: Option<String>,
+    /// Positive page size, bound into the cursor for all subsequent pages.
+    pub limit: usize,
 }
 
 /// One row in a collab contribution breakdown response.
@@ -1148,8 +1154,6 @@ pub struct CollabBreakdownPage {
     pub view_version: String,
     /// Exact historical state identity used to derive this breakdown.
     pub external_state: EconomicExternalState,
-    /// Final query height resolved by the server.
-    pub resolved_height: u32,
     /// Leader standard pass inscription id.
     pub leader_pass_id: String,
     /// Leader state at resolved height.
@@ -1162,6 +1166,12 @@ pub struct CollabBreakdownPage {
     pub total: u64,
     /// Full aggregate collab contribution at resolved height.
     pub aggregate_collab_contribution: String,
+    /// Page size bound to this query and its continuation cursor.
+    pub limit: usize,
+    /// Maximum page size accepted by this server.
+    pub max_limit: usize,
+    /// Opaque continuation cursor, or `None` when this is the final page.
+    pub next_cursor: Option<String>,
     /// Breakdown rows in requested page.
     pub items: Vec<CollabBreakdownItem>,
 }

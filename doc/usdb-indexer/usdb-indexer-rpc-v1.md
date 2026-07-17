@@ -22,8 +22,9 @@
 ### 2.1 版本策略
 
 - 采用语义化版本：`api_version = "1.0.0"`
-- 破坏性变更仅允许通过主版本升级（`2.x`）
-- v1 内允许新增可选字段，不删除既有字段
+- 当前仍处于 dev / Draft 阶段，正式 v1 冻结前不提供旧请求或旧数据格式兼容承诺。
+- 正式 v1 冻结后，破坏性变更仅允许通过主版本升级（`2.x`）。
+- 正式 v1 内允许新增可选字段，不删除既有字段。
 
 ---
 
@@ -43,11 +44,13 @@
 ### 3.3 查询高度合法性
 
 - 若请求高度 `> synced_block_height`，返回 `HEIGHT_NOT_SYNCED` 错误。
-- 未传高度时，服务端使用当前 `synced_block_height`，并在结果中回传 `resolved_height`。
+- 普通查询未传高度时，服务端使用当前 `synced_block_height`，并在结果中回传 `resolved_height`。
+- UIP-0006 economic view 不返回裸 `resolved_height`；目标高度和完整历史 identity 统一由 `external_state` 返回。
 
 ### 3.4 分页稳定性
 
-- 分页查询必须带 `at_height`（或由首包回传 `resolved_height` 并在后续分页复用）。
+- 普通数字分页查询必须带 `at_height`（或由首包回传 `resolved_height` 并在后续分页复用）。
+- UIP-0006 candidate/breakdown 使用绑定完整 `external_state` 的 opaque cursor；后续页不得重新解析 current head。
 - 排序固定并可重放，避免跨页重复/遗漏。
 
 ### 3.5 ETHW 验块必须绑定历史 state ref，而不是当前 head
@@ -703,8 +706,8 @@
     }
   },
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
-  "page": 0,
-  "page_size": 100
+  "cursor": null,
+  "limit": 100
 }
 ```
 
@@ -712,7 +715,9 @@
 
 - `uip-0006:effective-energy-desc-pass-id-asc:v1`
 
-当前实现仍使用 `page/page_size`；UIP-0006 最终 v1 契约已固定为 opaque `cursor + limit`。后续切换时直接替换数字分页，不保留双分页兼容层。
+首次请求传 `cursor = null`。后续请求将上页返回的 `next_cursor` 原样传回；可以省略 `block_height/context`，cursor 内绑定的完整 `external_state` 是 continuation 的权威历史 context。若显式重复这些 selector，必须与 cursor 一致。
+
+旧 `page/page_size` 字段不受支持，且不会与 cursor 分页并存。
 
 返回：
 
@@ -730,9 +735,11 @@
     "usdb_index_protocol_version": "1.0.0",
     "usdb_index_formula_version": "pass-energy-formula:v1"
   },
-  "resolved_height": 900123,
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
   "total": 6000,
+  "limit": 100,
+  "max_limit": 500,
+  "next_cursor": "opaque-cursor-or-null",
   "items": [
     {
       "pass_id": "txidi0",
@@ -755,7 +762,10 @@
 - `context` 校验语义与 `get_pass_energy` 一致。
 - `view_version` 必填；字段缺失是无效参数，不保留旧请求兼容入口。不支持的值返回 `VIEW_VERSION_MISMATCH`。
 - 即使未传 `context`，服务也必须重建目标高度的完整历史 identity 并返回 `external_state`；缺失历史辅助数据返回 `HISTORY_NOT_AVAILABLE`。
+- 服务在派生 candidate 数据前后重建并比较完整 state ref；若期间发生同高度 reorg，返回对应 state mismatch，不返回混合历史状态。
 - `total` 是该高度 active standard candidate 总数。
+- `limit` 必须在 `1..=500`；非法 limit、cursor 篡改、跨资源复用或任一绑定字段变化均返回 `INVALID_PAGINATION`。
+- cursor 绑定 `view_version`、完整 `external_state`、resource、`selection_rule`、`limit` 和最后一条确定性排序 key；调用方不得解析或构造 cursor。
 - 排序使用内部 `u128 effective_energy`，RPC 只输出 canonical decimal string。
 - `level` 和 `difficulty_factor_bps` 按 UIP-0005 从每个 candidate 的 `effective_energy` 运行时派生，不改变 candidate 排序口径。
 - active collab pass 即使拥有很高 `raw_energy`，也不会直接进入 candidate set。
@@ -780,8 +790,8 @@
     }
   },
   "sort": "collab_pass_id_asc",
-  "page": 0,
-  "page_size": 100
+  "cursor": null,
+  "limit": 100
 }
 ```
 
@@ -790,7 +800,7 @@
 - `collab_pass_id_asc`：按 collab pass id 升序，默认。
 - `contribution_desc_pass_id_asc`：按 contribution 降序，pass id 升序打破平局。
 
-当前实现仍使用 `page/page_size`；后续将直接按 UIP-0006 替换为 `cursor + limit`。
+首次请求传 `cursor = null`，后续请求原样传回 `next_cursor`。旧 `page/page_size` 字段会被拒绝，不保留双分页兼容层。
 
 返回：
 
@@ -808,13 +818,15 @@
     "usdb_index_protocol_version": "1.0.0",
     "usdb_index_formula_version": "pass-energy-formula:v1"
   },
-  "resolved_height": 900123,
   "leader_pass_id": "txidi0",
   "leader_state": "active",
   "leader_pass_kind": "standard",
   "sort": "collab_pass_id_asc",
   "total": 2,
   "aggregate_collab_contribution": "500000",
+  "limit": 100,
+  "max_limit": 500,
+  "next_cursor": null,
   "items": [
     {
       "collab_pass_id": "txidi1",
@@ -836,6 +848,8 @@
 - `context` 校验语义与 `get_pass_energy` 一致。
 - `view_version` 必填，并按 UIP-0006 的 view contract 校验。
 - 响应的 `external_state` 是目标高度的完整历史 identity，不使用 current head 或当前常量覆盖历史 protocol/formula version。
+- 服务在派生 breakdown 前后重建并比较完整 state ref；若期间发生同高度 reorg，返回对应 state mismatch。
+- cursor 绑定完整 `external_state`、`leader_pass_id`、`sort`、`limit` 和最后一条确定性排序 key；非法 limit、篡改或绑定不一致返回 `INVALID_PAGINATION`。
 - `aggregate_collab_contribution` 是该高度完整 breakdown 的全量 aggregate，不只限当前页。
 - 下游可以遍历所有分页并重算 aggregate。
 - 当前实现没有 script hash -> BTC address 反查索引，因此 `collab_owner_btc_addr` 为 `null`。
@@ -975,10 +989,10 @@
 
 ## 7. 无歧义约束清单（实现必须遵守）
 
-1. 高度查询全部采用 `<= h` 的包含边界语义。  
-2. 只要请求带 `h`，返回中必须带 `resolved_height`。  
-3. 分页查询必须固定排序，且文档公开排序键。  
-4. 所有列表接口返回顺序必须稳定可重放。  
+1. 高度查询全部采用 `<= h` 的包含边界语义。
+2. 普通高度查询返回 `resolved_height`；UIP-0006 economic view 改由完整 `external_state` 承载目标高度和历史 identity。
+3. 分页查询必须固定排序，且文档公开排序键。UIP-0006 cursor 还必须绑定完整 external state 和 continuation key。
+4. 所有列表接口返回顺序必须稳定可重放。
 5. `owner_active_pass` 发现重复活跃 owner 必须报错，不可“取第一条”。  
 6. `invalid` pass 必须可查到 `invalid_code` 与 `invalid_reason`。  
 7. 业务错误码必须稳定，不得随意复用文案替代错误码。  

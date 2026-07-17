@@ -303,7 +303,7 @@
   - Review UIP-0006 中 state view 字段、collab breakdown 和错误语义。
   - Review UIP-0007 中 profile selector 二进制布局和 validator replay 流程。
   - Review UIP-0009 中 ETHW chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
-  - 在实现阶段基于数据库索引和性能测试确定 `get_collab_breakdown` 排序策略、分页 cursor 和最大 `limit`。
+  - 参考实现已确定 `get_collab_breakdown` 的两种排序、opaque cursor 和 `max_limit = 500`；后续基于大规模数据集评估 `contribution_desc_pass_id_asc` 的数据库索引成本。
 - 验收：
   - USDB state view 可在历史 context 下重放。
   - ETHW profile selector 只用最小字段即可重放 reward input，并可供 future difficulty policy 复用。

@@ -5186,6 +5186,7 @@ name = "usdb-indexer"
 version = "0.1.0"
 dependencies = [
  "balance-history",
+ "base64 0.22.1",
  "bincode",
  "bitcoincore-rpc",
  "clap",
