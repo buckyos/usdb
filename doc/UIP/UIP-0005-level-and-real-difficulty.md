@@ -71,6 +71,8 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 
 当前代码已实现本 UIP 的公式层 helper，并已在 `get_pass_energy` 和 `get_candidate_set_view` 中运行时派生 `level` 和 `difficulty_factor_bps`。
 
+usdb-indexer 侧的 UIP-0005 core 已暂时收尾：公式、查询派生、candidate view、状态边界和服务层交叉验证均已覆盖。下列版本绑定和 ETHW policy 闭环由后续 UIP 承接。
+
 在本 UIP 激活前，已有 leaderboard、RPC 或 validator 样例若只使用 raw `energy`，都不应被视为最终协议行为。实现进入本 UIP 后：
 
 - USDB indexer 查询接口应该基于 `effective_energy` 动态计算 `level` 和 `difficulty_factor_bps`。
@@ -78,10 +80,11 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 - USDB indexer 不计算、不持久化、不查询 ETHW `base_difficulty` 或 `real_difficulty`。
 - USDB validator / mining policy 使用 `difficulty_factor_bps` 和自己的当前 `base_difficulty` 计算 `real_difficulty`。
 
-仍待对齐：
+依赖后续 UIP 的事项：
 
-- 后续 economic state view 暴露 `level` 和 `difficulty_factor_bps`。
-- validator payload / 下游 ETHW policy 是否显式承诺 `base_difficulty` 和 `real_difficulty`。
+- UIP-0006 economic state view 暴露统一 profile，并由 validator 重算 `level` 和 `difficulty_factor_bps`。
+- UIP-0008 定义 formula version 与历史高度 activation matrix。
+- UIP-0009 或后续 ETHW policy 决定是否显式承诺 `base_difficulty` 和 `real_difficulty`。
 
 # 输入语义
 

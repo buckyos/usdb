@@ -5345,6 +5345,25 @@ mod tests {
         );
         seed_energy_record(&server, &collab_high_raw, 120, 2_000_000);
 
+        let contribution = calc_collab_contribution(2_000_000);
+        let expected_leader_effective = 100u128.saturating_add(contribution);
+        let leader_energy = get_pass_energy_exact_for_test(&server, &leader, 120);
+        assert_eq!(leader_energy.raw_energy, "100");
+        assert_eq!(leader_energy.collab_contribution, contribution.to_string());
+        assert_eq!(
+            leader_energy.effective_energy,
+            expected_leader_effective.to_string()
+        );
+        assert_eq!(leader_energy.level, 1);
+        assert_eq!(leader_energy.difficulty_factor_bps, 9_900);
+
+        let collab_energy = get_pass_energy_exact_for_test(&server, &collab_high_raw, 120);
+        assert_eq!(collab_energy.raw_energy, "2000000");
+        assert_eq!(collab_energy.collab_contribution, "0");
+        assert_eq!(collab_energy.effective_energy, "0");
+        assert_eq!(collab_energy.level, 0);
+        assert_eq!(collab_energy.difficulty_factor_bps, 10_000);
+
         let raw_leaderboard = server
             .get_pass_energy_leaderboard(GetPassEnergyLeaderboardParams {
                 at_height: Some(120),
@@ -5360,8 +5379,6 @@ mod tests {
             "legacy pass energy leaderboard keeps raw active collab passes visible"
         );
 
-        let contribution = calc_collab_contribution(2_000_000);
-        let expected_leader_effective = 100u128.saturating_add(contribution);
         let page0 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
                 block_height: Some(120),
@@ -5384,14 +5401,20 @@ mod tests {
         assert_eq!(page0.items[0].owner_script_hash, leader.owner.to_string());
         assert_eq!(page0.items[0].state, MinerPassState::Active.as_str());
         assert_eq!(page0.items[0].pass_kind, MinerPassKind::Standard.as_str());
-        assert_eq!(page0.items[0].raw_energy, "100");
-        assert_eq!(page0.items[0].collab_contribution, contribution.to_string());
+        assert_eq!(page0.items[0].raw_energy, leader_energy.raw_energy);
+        assert_eq!(
+            page0.items[0].collab_contribution,
+            leader_energy.collab_contribution
+        );
         assert_eq!(
             page0.items[0].effective_energy,
-            expected_leader_effective.to_string()
+            leader_energy.effective_energy
         );
-        assert_eq!(page0.items[0].level, 1);
-        assert_eq!(page0.items[0].difficulty_factor_bps, 9_900);
+        assert_eq!(page0.items[0].level, leader_energy.level);
+        assert_eq!(
+            page0.items[0].difficulty_factor_bps,
+            leader_energy.difficulty_factor_bps
+        );
         let first_item_json = serde_json::to_value(&page0.items[0]).unwrap();
         assert_eq!(first_item_json["level"], 1);
         assert_eq!(first_item_json["difficulty_factor_bps"], 9_900);
