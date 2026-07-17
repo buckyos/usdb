@@ -176,6 +176,12 @@ impl From<&IndexerSnapshotInfo> for ConsensusStateReference {
                     .usdb_index_protocol_version
                     .clone(),
             ),
+            usdb_index_formula_version: Some(
+                snapshot
+                    .consensus_identity
+                    .usdb_index_formula_version
+                    .clone(),
+            ),
             local_state_commit: None,
             system_state_id: None,
         }
@@ -280,6 +286,7 @@ impl From<&LocalStateCommitInfo> for ConsensusStateReference {
                     .usdb_index_protocol_version
                     .clone(),
             ),
+            usdb_index_formula_version: Some(USDB_INDEX_FORMULA_VERSION.to_string()),
             local_state_commit: Some(local_state.local_state_commit.clone()),
             system_state_id: None,
         }
@@ -334,6 +341,7 @@ impl From<&SystemStateInfo> for ConsensusStateReference {
             balance_history_api_version: None,
             balance_history_semantics_version: None,
             usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
+            usdb_index_formula_version: Some(USDB_INDEX_FORMULA_VERSION.to_string()),
             local_state_commit: Some(system_state.local_state_commit.clone()),
             system_state_id: Some(system_state.system_state_id.clone()),
         }
@@ -401,6 +409,76 @@ impl From<&HistoricalStateRefInfo> for ConsensusStateReference {
             Some(state_ref.local_state_commit_info.local_state_commit.clone());
         reference.system_state_id = Some(state_ref.system_state_info.system_state_id.clone());
         reference
+    }
+}
+
+/// Exact historical state identity attached to every UIP-0006 economic view.
+///
+/// All fields are required so downstream validators can reconstruct a
+/// `ConsensusQueryContext` without consulting the current service head.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EconomicExternalState {
+    /// Exact BTC height used by the economic query.
+    pub btc_height: u32,
+    /// Historical balance-history consensus snapshot id.
+    pub snapshot_id: String,
+    /// Stable BTC block hash committed by `snapshot_id`.
+    pub stable_block_hash: String,
+    /// Historical usdb-indexer local durable state commit.
+    pub local_state_commit: String,
+    /// Historical top-level system state id.
+    pub system_state_id: String,
+    /// Historical balance-history public API version.
+    pub balance_history_api_version: String,
+    /// Historical balance query semantics version.
+    pub balance_history_semantics_version: String,
+    /// Historical usdb-index public protocol version.
+    pub usdb_index_protocol_version: String,
+    /// Historical usdb-index formula version.
+    pub usdb_index_formula_version: String,
+}
+
+impl From<&HistoricalStateRefInfo> for EconomicExternalState {
+    fn from(state_ref: &HistoricalStateRefInfo) -> Self {
+        let identity = &state_ref.snapshot_info.consensus_identity;
+        Self {
+            btc_height: state_ref.block_height,
+            snapshot_id: state_ref.snapshot_info.snapshot_id.clone(),
+            stable_block_hash: state_ref.snapshot_info.stable_block_hash.clone(),
+            local_state_commit: state_ref.local_state_commit_info.local_state_commit.clone(),
+            system_state_id: state_ref.system_state_info.system_state_id.clone(),
+            balance_history_api_version: identity.balance_history_api_version.clone(),
+            balance_history_semantics_version: identity.balance_history_semantics_version.clone(),
+            usdb_index_protocol_version: identity.usdb_index_protocol_version.clone(),
+            usdb_index_formula_version: identity.usdb_index_formula_version.clone(),
+        }
+    }
+}
+
+impl From<&EconomicExternalState> for ConsensusStateReference {
+    fn from(external_state: &EconomicExternalState) -> Self {
+        Self {
+            snapshot_id: Some(external_state.snapshot_id.clone()),
+            stable_height: Some(external_state.btc_height),
+            stable_block_hash: Some(external_state.stable_block_hash.clone()),
+            balance_history_api_version: Some(external_state.balance_history_api_version.clone()),
+            balance_history_semantics_version: Some(
+                external_state.balance_history_semantics_version.clone(),
+            ),
+            usdb_index_protocol_version: Some(external_state.usdb_index_protocol_version.clone()),
+            usdb_index_formula_version: Some(external_state.usdb_index_formula_version.clone()),
+            local_state_commit: Some(external_state.local_state_commit.clone()),
+            system_state_id: Some(external_state.system_state_id.clone()),
+        }
+    }
+}
+
+impl From<&EconomicExternalState> for ConsensusQueryContext {
+    fn from(external_state: &EconomicExternalState) -> Self {
+        Self {
+            requested_height: Some(external_state.btc_height),
+            expected_state: ConsensusStateReference::from(external_state),
+        }
     }
 }
 
@@ -903,6 +981,8 @@ pub struct PassEnergyLeaderboardPage {
 /// Parameters for `get_candidate_set_view`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetCandidateSetViewParams {
+    /// Required UIP-0006 view contract version selector.
+    pub view_version: String,
     /// Optional query height; `None` resolves to the current local synced height.
     pub block_height: Option<u32>,
     /// Optional consensus selectors pinned by downstream validators.
@@ -948,6 +1028,8 @@ pub struct CandidateSetViewItem {
 pub struct CandidateSetViewPage {
     /// Economic state view version used by this response.
     pub view_version: String,
+    /// Exact historical state identity used to derive every row in this page.
+    pub external_state: EconomicExternalState,
     /// Final query height resolved by the server.
     pub resolved_height: u32,
     /// Selection rule used for ordering and winner derivation.
@@ -961,6 +1043,8 @@ pub struct CandidateSetViewPage {
 /// Parameters for `get_collab_breakdown`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetCollabBreakdownParams {
+    /// Required UIP-0006 view contract version selector.
+    pub view_version: String,
     /// Leader standard pass inscription id.
     pub leader_pass_id: String,
     /// Optional query height; `None` resolves to the current local synced height.
@@ -1006,6 +1090,10 @@ pub struct CollabBreakdownItem {
 /// Paged collab contribution breakdown for one Leader pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollabBreakdownPage {
+    /// Economic state view version used by this response.
+    pub view_version: String,
+    /// Exact historical state identity used to derive this breakdown.
+    pub external_state: EconomicExternalState,
     /// Final query height resolved by the server.
     pub resolved_height: u32,
     /// Leader standard pass inscription id.

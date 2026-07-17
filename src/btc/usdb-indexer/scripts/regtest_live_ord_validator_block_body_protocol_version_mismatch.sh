@@ -102,7 +102,7 @@ EOF
     "$tampered_payload_file" \
     "usdb_index_protocol_version" \
     "9.9.9-phase-c"
-  regtest_validate_validator_payload_consensus_error "$tampered_payload_file" "-32044" "VERSION_MISMATCH"
+  regtest_validate_validator_payload_consensus_error "$tampered_payload_file" "-32051" "PROTOCOL_VERSION_MISMATCH"
 
   regtest_log "USDB validator block-body protocol-version mismatch test succeeded."
 }

@@ -246,6 +246,7 @@ impl From<SnapshotStateReferenceSeed> for ConsensusStateReference {
                 seed.snapshot.balance_history_semantics_version,
             ),
             usdb_index_protocol_version: Some(usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string()),
+            usdb_index_formula_version: Some(usdb_util::USDB_INDEX_FORMULA_VERSION.to_string()),
             local_state_commit: None,
             system_state_id: None,
         }
@@ -291,6 +292,12 @@ impl From<&HistoricalSnapshotStateRef> for ConsensusStateReference {
                 state_ref
                     .consensus_identity
                     .usdb_index_protocol_version
+                    .clone(),
+            ),
+            usdb_index_formula_version: Some(
+                state_ref
+                    .consensus_identity
+                    .usdb_index_formula_version
                     .clone(),
             ),
             local_state_commit: None,

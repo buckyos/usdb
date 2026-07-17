@@ -43,7 +43,10 @@
     "stable_block_hash": "000000...",
     "local_state_commit": "local-...",
     "system_state_id": "system-...",
-    "usdb_index_protocol_version": "1.0.0"
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "usdb_index_protocol_version": "1.0.0",
+    "usdb_index_formula_version": "pass-energy-formula:v1"
   },
   "miner_selection": {
     "inscription_id": "txidi0",
@@ -255,7 +258,7 @@ validator 风格脚本应始终分两步：
 覆盖：
 
 - 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_protocol_version`
-- `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 都稳定返回 `VERSION_MISMATCH`
+- `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 都稳定返回 `PROTOCOL_VERSION_MISMATCH`
 
 ### 6.13 Semantics Version Mismatch
 
@@ -273,7 +276,7 @@ validator 风格脚本应始终分两步：
 覆盖：
 
 - 在 `winner + candidate_passes` payload 上篡改 `usdb_index_protocol_version`
-- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
+- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `PROTOCOL_VERSION_MISMATCH`
 
 ### 6.15 Candidate-Set Semantics Version Mismatch
 
@@ -301,7 +304,7 @@ validator 风格脚本应始终分两步：
 
 - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
 - BTC head 前进后，原 payload 继续通过
-- 三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
+- API / semantics tampered payload 返回 `VERSION_MISMATCH`，protocol tampered payload 返回 `PROTOCOL_VERSION_MISMATCH`
 
 ### 6.18 Payload-Version Upgrade
 

@@ -123,13 +123,13 @@
 目标：
 
 - 补 `snapshot_id / system_state_id / protocol_version / semantics_version` 的升级边界
-- 验证历史 payload 在版本变化后稳定落到 `VERSION_MISMATCH`
+- 验证历史 payload 在版本变化后稳定落到对应的结构化 version mismatch
 
 执行任务：
 
 1. `single-pass protocol version mismatch`
    - 篡改 validator payload 的 `usdb_index_protocol_version`
-   - `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 必须统一返回 `VERSION_MISMATCH`
+   - `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 必须统一返回 `PROTOCOL_VERSION_MISMATCH`
 2. `single-pass semantics version mismatch`
    - 篡改 validator payload 的 `balance_history_semantics_version`
    - 历史 context 路径必须稳定返回 `VERSION_MISMATCH`
@@ -144,7 +144,7 @@
    - `state ref / pass snapshot / pass energy` 必须统一返回 `VERSION_MISMATCH`
 6. `version matrix after head advance`
    - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
-   - BTC head 前进后，原 payload 仍通过，三类 tampered payload 仍稳定返回 `VERSION_MISMATCH`
+   - BTC head 前进后，原 payload 仍通过；API / semantics 返回 `VERSION_MISMATCH`，protocol 返回 `PROTOCOL_VERSION_MISMATCH`
 7. `payload-version upgrade coexistence`
    - 同一条链上先生成 `v1.0` 单 pass payload，再生成 `v1.1` candidate-set payload
    - validator 必须在同一升级窗口内接受两代 schema 的历史回放

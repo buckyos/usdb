@@ -67,7 +67,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 # View 版本
 
-首版 view 版本建议：
+首版 view 版本固定为：
 
 ```text
 view_version = "uip-0006-usdb-economic-state-view:v1"
@@ -83,28 +83,65 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 
 影响公式参数但不改变 view 结构时，应升级 `formula_version`，不一定升级 `view_version`。
 
+所有 UIP-0006 v1 查询必须在请求顶层显式携带：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1"
+}
+```
+
+`view_version` 是查询/响应结构与语义 selector，不属于历史状态 identity，因此禁止放入 `ConsensusStateReference.expected_state`。字段缺失属于无效请求；字段存在但服务不支持时必须返回 `VIEW_VERSION_MISMATCH`。当前项目尚未公开激活旧协议，参考实现不保留省略该字段的兼容入口。
+
 # External State
 
 `external_state` 必须足够构造 `ConsensusQueryContext` 并重放 BTC 历史查询。
 
-建议字段：
+v1 固定字段：
 
 | 字段 | 类型 | 必须 | 说明 |
 | --- | --- | --- | --- |
 | `btc_height` | integer | 是 | 查询对应的 BTC 高度。 |
 | `snapshot_id` | string | 是 | upstream balance-history consensus snapshot id。 |
-| `system_state_id` | string | 是 | 下游链消费的顶层 USDB system state id。 |
 | `stable_block_hash` | string | 是 | `btc_height` 对应的 stable BTC block hash。 |
 | `local_state_commit` | string | 是 | usdb-indexer local durable state commit。 |
-| `balance_history_semantics_version` | string | 建议 | balance-history 历史查询语义版本。 |
+| `system_state_id` | string | 是 | 下游链消费的顶层 USDB system state id。 |
+| `balance_history_api_version` | string | 是 | balance-history 对外 API 版本。 |
+| `balance_history_semantics_version` | string | 是 | balance-history 历史查询语义版本。 |
 | `usdb_index_protocol_version` | string | 是 | usdb-indexer 外部协议版本。 |
 | `usdb_index_formula_version` | string | 是 | energy / effective energy / level 公式版本。 |
 
-最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id。USDB-side economic profile 响应必须补齐 `stable_block_hash` 和 `local_state_commit`，便于审计和排错。只有明确声明为 selector-only 的轻量接口才可以省略这两个字段。
+`external_state` 必须由目标高度的历史 `HistoricalStateRefInfo` 构造，禁止拿当前二进制常量覆盖历史 identity 中的 protocol/formula version。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
 
 # Pass Economic Profile
 
-单张 pass 的经济状态视图建议结构：
+`get_pass_economic_profile` v1 请求字段固定为：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "pass_id": "txidi0",
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "...",
+      "stable_height": 900123,
+      "stable_block_hash": "000000...",
+      "local_state_commit": "...",
+      "system_state_id": "...",
+      "balance_history_api_version": "1.0.0",
+      "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+      "usdb_index_protocol_version": "1.0.0",
+      "usdb_index_formula_version": "pass-energy-formula:v1"
+    }
+  }
+}
+```
+
+`block_height` 与 `context.requested_height` 同时存在时必须相等。`context` 可以省略；服务仍必须把最终解析高度的完整历史 identity 返回为 `external_state`。一旦提供 `expected_state`，服务必须逐字段按目标高度的历史 identity 校验，禁止与当前二进制常量或 current head 比较。
+
+单张 pass 的经济状态视图 v1 结构：
 
 ```json
 {
@@ -115,6 +152,7 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
     "stable_block_hash": "000000...",
     "local_state_commit": "...",
     "system_state_id": "...",
+    "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
     "usdb_index_protocol_version": "1.0.0",
     "usdb_index_formula_version": "pass-energy-formula:v1"
@@ -171,6 +209,21 @@ owner 的 canonical 表示必须是 script hash 或等价确定性 owner id。�
 
 禁止使用 JSON number 表示 energy。
 
+## Invalid Pass 零值
+
+`invalid` pass 的 profile 必须可查询，并返回以下 canonical 派生值：
+
+```text
+raw_energy = "0"
+collab_contribution = "0"
+effective_energy = "0"
+level = 0
+difficulty_factor_bps = 10000
+collab_breakdown_count = 0
+```
+
+该规则是查询层语义，不要求为 invalid mint 在 energy DB 中伪造一条记录。参考实现应从 pass history 识别 `invalid`，在 profile resolver 中合成零值；不得因为底层没有 energy row 而返回 `ENERGY_NOT_FOUND`。底层 record-oriented energy RPC 不属于该 profile 规则。
+
 ## Standard 与 Collab Pass
 
 standard pass:
@@ -195,22 +248,22 @@ collab pass:
 实现必须提供确定历史状态下的额外 list 查询，例如：
 
 ```text
-get_collab_breakdown(leader_pass_id, external_state, cursor, limit, sort)
+get_collab_breakdown(view_version, leader_pass_id, context, cursor, limit, sort)
 ```
 
 该查询必须：
 
-- 使用与主 profile 相同的 `external_state`。
+- 请求 `context` 必须可由主 profile 的 `external_state` 无损构造，响应必须返回同一个 `external_state`。
 - 支持稳定分页。
 - 返回 deterministic ordering，并在请求或响应中显式声明 `sort`。
 - 允许下游通过所有分页结果重算主 profile 中的 `collab_contribution`。
 
-协议不强制唯一排序策略。实现可以根据数据库索引能力和使用场景提供多个排序策略，例如：
+v1 定义以下排序值：
 
 | sort | 语义 | 典型用途 |
 | --- | --- | --- |
-| `collab_pass_id_asc` | 按 `collab_pass_id` 升序。 | 最小实现、稳定全量审计、分页简单。 |
-| `contribution_desc_pass_id_asc` | 按 `collab_contribution` 降序，`collab_pass_id` 升序打破平局。 | 浏览器展示最大贡献者、Leader 贡献分析。 |
+| `collab_pass_id_asc` | 按 `collab_pass_id` 升序；v1 默认值，必须支持。 | 稳定全量审计、分页简单。 |
+| `contribution_desc_pass_id_asc` | 按 `collab_contribution` 降序，`collab_pass_id` 升序打破平局；可以支持。 | 浏览器展示最大贡献者、Leader 贡献分析。 |
 
 无论提供哪种排序，cursor 都必须绑定 `external_state`、`leader_pass_id`、`sort` 和分页边界，不得跨历史 context 或跨排序策略复用。
 
@@ -231,11 +284,13 @@ get_collab_breakdown(leader_pass_id, external_state, cursor, limit, sort)
 
 aggregate `collab_contribution` 不得被视为不可验证黑盒。
 
+breakdown v1 页响应必须包含 `view_version`、完整 `external_state`、`leader_pass_id`、`leader_state`、`leader_pass_kind`、`sort`、`total`、`aggregate_collab_contribution`、`limit`、`max_limit`、`next_cursor` 和 `items`。其中 aggregate 是完整结果集的总和，不是当前页小计。
+
 # Candidate Set View
 
 USDB-side 应提供 candidate set audit view，用于浏览器 overview、排行榜、测试和下游链调试。
 
-建议排序规则：
+v1 排序规则固定为：
 
 ```text
 selection_rule = "uip-0006:effective-energy-desc-pass-id-asc:v1"
@@ -257,6 +312,7 @@ Candidate set view 是一等查询，不要求下游先逐个读取所有 pass p
   "view_version": "uip-0006-usdb-economic-state-view:v1",
   "external_state": {},
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "total": 6000,
   "items": [],
   "limit": 100,
   "max_limit": 500,
@@ -264,14 +320,25 @@ Candidate set view 是一等查询，不要求下游先逐个读取所有 pass p
 }
 ```
 
-分页 cursor 必须绑定同一 `external_state`、同一 `selection_rule`、同一 filter 和同一 page size 语义，不得在分页过程中漂移到 current head。
+## v1 稳定分页契约
 
-cursor 的具体 canonical encoding 和 `max_limit` 属于实现层性能参数。协议只要求：
+`candidate_set_view` 和 `collab_breakdown` v1 使用 `cursor + limit`，不使用数字 `page/page_size`：
 
-- cursor 对调用方可以是 opaque string。
-- 服务必须能检测 cursor 与当前请求参数不匹配。
-- 服务必须限制最大 `limit`，并在响应或能力查询中暴露当前 `max_limit`。
-- `limit` 超过 `max_limit` 时必须返回明确错误或按 `max_limit` 截断，并在响应中体现实际生效值。
+- 首次请求不携带 `cursor`，必须携带正整数 `limit`。
+- 后续请求原样携带上页返回的 opaque `next_cursor`。
+- 响应必须返回实际生效的 `limit`、服务上限 `max_limit` 和可空的 `next_cursor`。
+- `next_cursor = null` 表示没有下一页。
+- `limit > max_limit` 必须返回 `INVALID_PAGINATION`，禁止静默截断。
+
+cursor 必须完整绑定：
+
+- `view_version`。
+- 完整 `external_state`，包括 protocol/formula/query semantics versions。
+- 资源 identity：candidate set 或指定 `leader_pass_id` 的 breakdown。
+- `selection_rule` 或 `sort`、全部 filter、`limit`。
+- 最后一条已返回记录的确定性排序 key。
+
+任一绑定字段变化、cursor 无法验证或 cursor 来自另一节点不兼容实现时，服务必须返回 `INVALID_PAGINATION`，禁止退回 current head 或从第一页静默重启。cursor 的字节编码、签名方式和 `max_limit` 数值属于实现细节；调用方不得解析或构造 cursor。
 
 # 查询语义
 
@@ -288,6 +355,7 @@ cursor 的具体 canonical encoding 和 `max_limit` 属于实现层性能参数�
 - BTC head 前进后，旧 `external_state` 仍按历史 context 重放。
 - same-height reorg 后，若 `external_state` 不再匹配 canonical history，必须返回 mismatch。
 - history retention 不足时必须返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
+- 所有响应必须回显已验证的 `view_version` 并返回完整 `external_state`，不得只返回裸 `resolved_height`。
 
 # 错误语义
 
@@ -298,15 +366,23 @@ cursor 的具体 canonical encoding 和 `max_limit` 属于实现层性能参数�
 | `VIEW_VERSION_MISMATCH` | 不支持的 `view_version`。 |
 | `PROTOCOL_VERSION_MISMATCH` | `usdb_index_protocol_version` 不匹配。 |
 | `FORMULA_VERSION_MISMATCH` | `usdb_index_formula_version` 不匹配。 |
-| `SNAPSHOT_ID_MISMATCH` | `external_state.snapshot_id` 与历史 state ref 不匹配。 |
+| `VERSION_MISMATCH` | balance-history API 或 query semantics version 不匹配。 |
+| `SNAPSHOT_ID_MISMATCH` | `external_state.snapshot_id` 或对应 stable height 与历史 state ref 不匹配。 |
+| `BLOCK_HASH_MISMATCH` | `external_state.stable_block_hash` 与历史 state ref 不匹配。 |
 | `LOCAL_STATE_COMMIT_MISMATCH` | `local_state_commit` 不匹配。 |
 | `SYSTEM_STATE_ID_MISMATCH` | `system_state_id` 不匹配。 |
+| `HEIGHT_NOT_SYNCED` | 目标高度高于服务可查询的 durable/stable 高度。 |
+| `SNAPSHOT_NOT_READY` | 服务当前没有可用于共识查询的完整状态锚点。 |
 | `HISTORY_NOT_AVAILABLE` | 所需历史 context 已不可用。 |
 | `STATE_NOT_RETAINED` | 本地 durable state 不再保留目标高度。 |
 | `PASS_NOT_FOUND` | 目标 pass 在该 context 下不存在。 |
-| `ECONOMIC_FIELD_MISMATCH` | 调试/审计输入中的字段与重算结果不一致。 |
+| `INVALID_PAGINATION` | `limit` 非法、cursor 无法验证或 cursor 与请求绑定字段不一致。 |
+| `INTERNAL_INVARIANT_BROKEN` | 服务内部从同一历史状态重算出的字段彼此矛盾。 |
+| `ECONOMIC_FIELD_MISMATCH` | 下游 verifier 将外部输入/承诺字段与本文 view 重算结果比较时不一致。 |
 
-错误响应应该带 structured data，至少包含 expected state、actual state、requested height 和 mismatch 字段名。
+查询 RPC 的 mismatch 错误必须带 structured data，至少包含 expected state、actual state、requested height 和 canonical `mismatch_field`。protocol/formula 必须和目标高度的历史 identity 比较；禁止和当前进程常量比较。
+
+`ECONOMIC_FIELD_MISMATCH` 不是 `get_pass_economic_profile`、`get_candidate_set_view` 或 `get_collab_breakdown` 的请求错误：这些查询没有 caller-supplied expected economic fields。它属于 ETHW validator、审计工具或其他下游 verifier 的本地校验结果，例如外部 payload 声明的 `effective_energy` 与 profile 重算值不同。若服务自己在一次查询内得到矛盾结果，应返回 `INTERNAL_INVARIANT_BROKEN`，不得冒充 caller mismatch。
 
 # 与 ETHW 链上 Payload 的关系
 
@@ -349,6 +425,6 @@ USDB Economic State View
 
 # 后续实现议题
 
-1. `get_collab_breakdown` 首批实现支持哪些 `sort`，以及对应数据库索引成本。
-2. candidate set view 的 cursor 具体编码、默认 `limit` 和 `max_limit`。
+1. `contribution_desc_pass_id_asc` 在 cursor 分页下的 continuation key 和数据库索引成本。
+2. 参考实现把现有数字分页替换为本文已固定的 opaque cursor 契约，并确定实现级 `max_limit`。
 3. script hash -> BTC address 反向索引是否作为后续独立能力实现。

@@ -230,7 +230,9 @@
       "requested_height": 812345,
       "expected_state": {
         "snapshot_id": "snapshot-expected-...",
-        "stable_block_hash": "000000..."
+        "stable_block_hash": "000000...",
+        "usdb_index_protocol_version": "1.0.0",
+        "usdb_index_formula_version": "pass-energy-formula:v1"
       }
     }
   }],
@@ -269,7 +271,8 @@
 - 这条接口回答的是“高度 `H` 的历史 state ref”，不是当前 head 的 snapshot；
 - `context` 可选；不传时只返回该高度的历史 state ref；
 - 传入 `context.expected_state` 后，服务会对该高度的历史 state ref 做严格校验；
-- 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`；
+- 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`；
+- protocol/formula selector 与目标高度记录的历史 identity 比较，不与当前进程常量比较；
 - 若高度合法，但该节点当前缺少构造该历史 state ref 所需的 block commit，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`；
 - 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
 - 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
@@ -431,6 +434,8 @@
 
 - `SNAPSHOT_NOT_READY` (`-32041`)
 - `HEIGHT_NOT_SYNCED` (`-32040`)
+- `PROTOCOL_VERSION_MISMATCH` (`-32051`)
+- `FORMULA_VERSION_MISMATCH` (`-32052`)
 
 错误示例：
 
@@ -462,6 +467,7 @@
 
 - `message` 是稳定的机器可读错误名；
 - `data.actual_state` 描述服务当时实际看到的 stable 视图；
+- mismatch 错误通过 `data.mismatch_field` 标明发生不一致的 canonical 字段；
 - 下游不应再仅靠错误字符串自由文本判断是否可重试或是否属于快照漂移。
 
 ### 9) `stop`

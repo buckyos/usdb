@@ -275,12 +275,12 @@ impl UsdbIndexerRpcServer {
             .map(ConsensusStateReference::from)
             .unwrap_or_default();
 
-        // For current-state error payloads we expose the protocol version of
-        // the currently running usdb-indexer binary, not whichever nested
-        // sub-structure happened to be present. Historical state-ref RPCs keep
-        // using the version recorded in their historical identities.
+        // Current-state errors expose the running protocol/formula pair.
+        // Historical queries instead use the versions recorded by the selected
+        // snapshot identity so replay never drifts to the current binary.
         if snapshot.is_some() || local_state.is_some() || system_state.is_some() {
             reference.usdb_index_protocol_version = Some(USDB_INDEX_PROTOCOL_VERSION.to_string());
+            reference.usdb_index_formula_version = Some(USDB_INDEX_FORMULA_VERSION.to_string());
         }
 
         if let Some(local_state) = local_state {
@@ -559,15 +559,10 @@ impl UsdbIndexerRpcServer {
         ))
     }
 
-    /// Resolve the effective query height for pass/energy RPCs while
-    /// optionally enforcing a caller-supplied consensus context.
-    ///
-    /// Compatibility rule:
-    /// - without `context`, legacy business-query behavior is preserved
-    /// - with `context`, height resolution and readiness switch to the shared
-    ///   consensus contract and the historical state ref at that height must
-    ///   match the caller's expected selectors
-    fn resolve_height_for_contextual_query(
+    /// Resolve the effective query height and readiness rules without reading
+    /// historical state. Callers can then validate and return the same state
+    /// object instead of reconstructing it twice across a reorg boundary.
+    fn resolve_contextual_query_height(
         &self,
         requested_height: Option<u32>,
         context: Option<&ConsensusQueryContext>,
@@ -591,11 +586,21 @@ impl UsdbIndexerRpcServer {
 
         let effective_requested_height =
             requested_height.or(context.and_then(|value| value.requested_height));
-        let resolved_height = if context.is_some() {
-            self.resolve_height_with_consensus_error(effective_requested_height)?
+        if context.is_some() {
+            self.resolve_height_with_consensus_error(effective_requested_height)
         } else {
-            self.resolve_height(effective_requested_height)?
-        };
+            self.resolve_height(effective_requested_height)
+        }
+    }
+
+    /// Resolve the effective query height while optionally enforcing a
+    /// caller-supplied historical state selector.
+    fn resolve_height_for_contextual_query(
+        &self,
+        requested_height: Option<u32>,
+        context: Option<&ConsensusQueryContext>,
+    ) -> Result<u32, JsonError> {
+        let resolved_height = self.resolve_contextual_query_height(requested_height, context)?;
 
         let Some(context) = context else {
             return Ok(resolved_height);
@@ -611,6 +616,66 @@ impl UsdbIndexerRpcServer {
             &context.expected_state,
         )?;
         Ok(resolved_height)
+    }
+
+    /// Reject unsupported UIP-0006 view contracts before deriving any economic
+    /// fields. The selector is mandatory because response shape and query
+    /// semantics are part of the auditable view identity.
+    fn validate_economic_view_version(
+        &self,
+        view_version: &str,
+        requested_height: Option<u32>,
+        context: Option<&ConsensusQueryContext>,
+    ) -> Result<(), JsonError> {
+        if view_version == USDB_ECONOMIC_STATE_VIEW_VERSION {
+            return Ok(());
+        }
+
+        let (current_snapshot, current_local_state, current_system_state) = self
+            .current_state_for_error_payload()
+            .unwrap_or((None, None, None));
+        let mut data = self.build_consensus_error_data(
+            requested_height.or(context.and_then(|value| value.requested_height)),
+            current_snapshot.as_ref(),
+            current_local_state.as_ref(),
+            current_system_state.as_ref(),
+            Some(format!(
+                "Unsupported economic view_version {}, expected {}",
+                view_version, USDB_ECONOMIC_STATE_VIEW_VERSION
+            )),
+        );
+        data.expected_state = context
+            .map(|value| value.expected_state.clone())
+            .unwrap_or_default();
+
+        Err(Self::to_consensus_error(
+            ConsensusRpcErrorCode::ViewVersionMismatch,
+            data.with_mismatch_field("view_version"),
+        ))
+    }
+
+    /// Resolve and validate the exact historical identity used by a UIP-0006
+    /// economic query. Responses derive their `external_state` from this value.
+    fn resolve_economic_query_context(
+        &self,
+        view_version: &str,
+        requested_height: Option<u32>,
+        context: Option<&ConsensusQueryContext>,
+    ) -> Result<(u32, HistoricalStateRefInfo), JsonError> {
+        self.validate_economic_view_version(view_version, requested_height, context)?;
+        let resolved_height = self.resolve_contextual_query_height(requested_height, context)?;
+        self.ensure_history_height_retained(resolved_height, "historical state")?;
+        let state_ref = self.build_historical_state_ref_info(resolved_height)?;
+        if let Some(context) = context
+            && !context.expected_state.is_empty()
+        {
+            self.validate_historical_state_ref_expected_state(
+                resolved_height,
+                &state_ref,
+                &context.expected_state,
+            )?;
+        }
+        Ok((resolved_height, state_ref))
     }
 
     fn upstream_snapshot_info(&self) -> Result<Option<IndexerSnapshotInfo>, JsonError> {
@@ -853,7 +918,8 @@ impl UsdbIndexerRpcServer {
                         "Expected historical snapshot_id {} at height {}, got {}",
                         expected_snapshot_id, block_height, state_ref.snapshot_info.snapshot_id
                     )),
-                ),
+                )
+                .with_mismatch_field("snapshot_id"),
             ));
         }
 
@@ -872,7 +938,8 @@ impl UsdbIndexerRpcServer {
                         block_height,
                         state_ref.snapshot_info.balance_history_stable_height
                     )),
-                ),
+                )
+                .with_mismatch_field("stable_height"),
             ));
         }
 
@@ -891,7 +958,8 @@ impl UsdbIndexerRpcServer {
                         block_height,
                         state_ref.snapshot_info.stable_block_hash
                     )),
-                ),
+                )
+                .with_mismatch_field("stable_block_hash"),
             ));
         }
 
@@ -917,7 +985,8 @@ impl UsdbIndexerRpcServer {
                             .consensus_identity
                             .balance_history_api_version
                     )),
-                ),
+                )
+                .with_mismatch_field("balance_history_api_version"),
             ));
         }
 
@@ -944,25 +1013,64 @@ impl UsdbIndexerRpcServer {
                             .consensus_identity
                             .balance_history_semantics_version
                     )),
-                ),
+                )
+                .with_mismatch_field("balance_history_semantics_version"),
             ));
         }
 
         if let Some(expected_usdb_protocol_version) =
             expected_state.usdb_index_protocol_version.as_ref()
-            && expected_usdb_protocol_version != USDB_INDEX_PROTOCOL_VERSION
+            && expected_usdb_protocol_version
+                != &state_ref
+                    .snapshot_info
+                    .consensus_identity
+                    .usdb_index_protocol_version
         {
             return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::VersionMismatch,
+                ConsensusRpcErrorCode::ProtocolVersionMismatch,
                 self.build_consensus_error_data_for_state(
                     Some(block_height),
                     expected_state.clone(),
                     actual_state,
                     Some(format!(
                         "Expected usdb-index protocol version {} at height {}, got {}",
-                        expected_usdb_protocol_version, block_height, USDB_INDEX_PROTOCOL_VERSION
+                        expected_usdb_protocol_version,
+                        block_height,
+                        state_ref
+                            .snapshot_info
+                            .consensus_identity
+                            .usdb_index_protocol_version
                     )),
-                ),
+                )
+                .with_mismatch_field("usdb_index_protocol_version"),
+            ));
+        }
+
+        if let Some(expected_usdb_formula_version) =
+            expected_state.usdb_index_formula_version.as_ref()
+            && expected_usdb_formula_version
+                != &state_ref
+                    .snapshot_info
+                    .consensus_identity
+                    .usdb_index_formula_version
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::FormulaVersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected usdb-index formula version {} at height {}, got {}",
+                        expected_usdb_formula_version,
+                        block_height,
+                        state_ref
+                            .snapshot_info
+                            .consensus_identity
+                            .usdb_index_formula_version
+                    )),
+                )
+                .with_mismatch_field("usdb_index_formula_version"),
             ));
         }
 
@@ -981,7 +1089,8 @@ impl UsdbIndexerRpcServer {
                         block_height,
                         state_ref.local_state_commit_info.local_state_commit
                     )),
-                ),
+                )
+                .with_mismatch_field("local_state_commit"),
             ));
         }
 
@@ -1000,7 +1109,8 @@ impl UsdbIndexerRpcServer {
                         block_height,
                         state_ref.system_state_info.system_state_id
                     )),
-                ),
+                )
+                .with_mismatch_field("system_state_id"),
             ));
         }
 
@@ -2133,12 +2243,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCollabBreakdownParams,
     ) -> JsonResult<CollabBreakdownPage> {
+        let (query_height, state_ref) = self.resolve_economic_query_context(
+            &params.view_version,
+            params.block_height,
+            params.context.as_ref(),
+        )?;
         self.validate_pagination(params.page, params.page_size)?;
 
         let leader_pass_id = self.parse_inscription_id(&params.leader_pass_id)?;
-        let query_height =
-            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
-        self.ensure_history_height_retained(query_height, "historical state")?;
         let sort = self.parse_collab_breakdown_sort(params.sort.as_deref())?;
 
         let Some(mut breakdown) = self
@@ -2173,6 +2285,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
 
         Ok(CollabBreakdownPage {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            external_state: EconomicExternalState::from(&state_ref),
             resolved_height: query_height,
             leader_pass_id: leader_pass_id.to_string(),
             leader_state: breakdown.leader.pass.state.as_str().to_string(),
@@ -2382,11 +2496,13 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         &self,
         params: GetCandidateSetViewParams,
     ) -> JsonResult<CandidateSetViewPage> {
+        let (query_height, state_ref) = self.resolve_economic_query_context(
+            &params.view_version,
+            params.block_height,
+            params.context.as_ref(),
+        )?;
         self.validate_pagination(params.page, params.page_size)?;
 
-        let query_height =
-            self.resolve_height_for_contextual_query(params.block_height, params.context.as_ref())?;
-        self.ensure_history_height_retained(query_height, "historical state")?;
         let selection_rule =
             self.parse_candidate_set_selection_rule(params.selection_rule.as_deref())?;
         let call_start = Instant::now();
@@ -2407,6 +2523,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         Ok(CandidateSetViewPage {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            external_state: EconomicExternalState::from(&state_ref),
             resolved_height: query_height,
             selection_rule: selection_rule.to_string(),
             total,
@@ -2733,6 +2850,7 @@ mod tests {
     ) -> CollabBreakdownPage {
         server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(block_height),
                 context: None,
@@ -3449,6 +3567,43 @@ mod tests {
             state_ref.system_state_info.system_state_id,
             build_system_state_id(&state_ref.system_state_info.system_state_identity)
         );
+        let external_state = EconomicExternalState::from(&state_ref);
+        assert_eq!(external_state.btc_height, 120);
+        assert_eq!(
+            external_state.snapshot_id,
+            state_ref.snapshot_info.snapshot_id
+        );
+        assert_eq!(external_state.stable_block_hash, "11".repeat(32));
+        assert_eq!(
+            external_state.local_state_commit,
+            state_ref.local_state_commit_info.local_state_commit
+        );
+        assert_eq!(
+            external_state.system_state_id,
+            state_ref.system_state_info.system_state_id
+        );
+        assert_eq!(
+            external_state.balance_history_api_version,
+            balance_history::BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            external_state.balance_history_semantics_version,
+            balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+        );
+        assert_eq!(
+            external_state.usdb_index_protocol_version,
+            USDB_INDEX_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            external_state.usdb_index_formula_version,
+            USDB_INDEX_FORMULA_VERSION
+        );
+        let context = ConsensusQueryContext::from(&external_state);
+        assert_eq!(context.requested_height, Some(120));
+        assert_eq!(
+            context.expected_state,
+            ConsensusStateReference::from(&state_ref)
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -3531,6 +3686,7 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.mismatch_field.as_deref(), Some("snapshot_id"));
         assert_eq!(data.expected_state.snapshot_id, Some("ff".repeat(32)));
         assert_eq!(data.actual_state.stable_height, Some(120));
         assert_eq!(data.actual_state.stable_block_hash, Some("aa".repeat(32)));
@@ -3583,6 +3739,7 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.mismatch_field.as_deref(), Some("local_state_commit"));
         assert_eq!(
             data.expected_state.local_state_commit,
             Some("ee".repeat(32))
@@ -3649,6 +3806,7 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.mismatch_field.as_deref(), Some("system_state_id"));
         assert_eq!(data.expected_state.system_state_id, Some("dd".repeat(32)));
         assert!(data.actual_state.system_state_id.is_some());
 
@@ -3702,6 +3860,10 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(
+            data.mismatch_field.as_deref(),
+            Some("balance_history_semantics_version")
+        );
+        assert_eq!(
             data.expected_state.balance_history_semantics_version,
             Some("balance-snapshot-at-or-before:v999".to_string())
         );
@@ -3709,6 +3871,77 @@ mod tests {
             data.actual_state.balance_history_semantics_version,
             Some(balance_history::BALANCE_HISTORY_SEMANTICS_VERSION.to_string())
         );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_historical_state_ref_uses_recorded_protocol_and_formula_versions() {
+        let (server, root_dir) =
+            build_server_with_genesis("historical_recorded_versions", 120, 100);
+        seed_state_ref_context(&server, 120);
+        let mut state_ref = server.build_historical_state_ref_info(120).unwrap();
+        state_ref
+            .snapshot_info
+            .consensus_identity
+            .usdb_index_protocol_version = "historical-protocol:v1".to_string();
+        state_ref
+            .snapshot_info
+            .consensus_identity
+            .usdb_index_formula_version = "historical-formula:v1".to_string();
+
+        server
+            .validate_historical_state_ref_expected_state(
+                120,
+                &state_ref,
+                &ConsensusStateReference {
+                    usdb_index_protocol_version: Some("historical-protocol:v1".to_string()),
+                    usdb_index_formula_version: Some("historical-formula:v1".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let cases = [
+            (
+                ConsensusStateReference {
+                    usdb_index_protocol_version: Some("historical-protocol:v2".to_string()),
+                    ..Default::default()
+                },
+                ConsensusRpcErrorCode::ProtocolVersionMismatch,
+                "usdb_index_protocol_version",
+            ),
+            (
+                ConsensusStateReference {
+                    usdb_index_formula_version: Some("historical-formula:v2".to_string()),
+                    ..Default::default()
+                },
+                ConsensusRpcErrorCode::FormulaVersionMismatch,
+                "usdb_index_formula_version",
+            ),
+        ];
+
+        for (expected_state, expected_code, mismatch_field) in cases {
+            let err = server
+                .validate_historical_state_ref_expected_state(120, &state_ref, &expected_state)
+                .unwrap_err();
+            match err.code {
+                ErrorCode::ServerError(code) => assert_eq!(code, expected_code.code()),
+                _ => panic!("unexpected error code: {:?}", err.code),
+            }
+            assert_eq!(err.message, expected_code.as_str());
+            let data = decode_consensus_error_data(&err);
+            assert_eq!(data.mismatch_field.as_deref(), Some(mismatch_field));
+            assert_eq!(
+                data.actual_state.usdb_index_protocol_version.as_deref(),
+                Some("historical-protocol:v1")
+            );
+            assert_eq!(
+                data.actual_state.usdb_index_formula_version.as_deref(),
+                Some("historical-formula:v1")
+            );
+        }
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -4826,6 +5059,7 @@ mod tests {
     #[test]
     fn test_get_pass_energy_non_active_and_invalid_leaders_receive_no_collab_contribution() {
         let (server, root_dir) = build_server("energy_effective_inactive_invalid_leader", 130);
+        seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
 
         for (leader_tag, owner_tag, terminal_state) in [
@@ -4905,6 +5139,7 @@ mod tests {
     #[test]
     fn test_leader_btc_addr_follows_remint_but_fixed_leader_pass_id_does_not() {
         let (server, root_dir) = build_server("energy_effective_leader_remint_follow", 150);
+        seed_state_ref_context(&server, 140);
         let storage = server.indexer.miner_pass_storage();
         let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
         let leader_owner = address_string_to_script_hash(
@@ -4990,6 +5225,7 @@ mod tests {
     #[test]
     fn test_consumed_collab_stops_contributing_to_old_leader() {
         let (server, root_dir) = build_server("energy_effective_consumed_collab", 150);
+        seed_state_ref_context(&server, 130);
         let storage = server.indexer.miner_pass_storage();
 
         let leader = make_active_pass(112, 212, 100);
@@ -5080,6 +5316,7 @@ mod tests {
     #[test]
     fn test_get_collab_breakdown_returns_stable_pages_and_aggregate() {
         let (server, root_dir) = build_server("collab_breakdown_pages", 130);
+        seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
         let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
         let leader_owner = address_string_to_script_hash(
@@ -5131,6 +5368,7 @@ mod tests {
 
         let page0 = server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(120),
                 context: None,
@@ -5139,6 +5377,17 @@ mod tests {
                 page_size: 1,
             })
             .unwrap();
+        assert_eq!(page0.view_version, USDB_ECONOMIC_STATE_VIEW_VERSION);
+        assert_eq!(page0.external_state.btc_height, 120);
+        assert_eq!(page0.external_state.stable_block_hash, "aa".repeat(32));
+        assert_eq!(
+            page0.external_state.usdb_index_protocol_version,
+            USDB_INDEX_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            page0.external_state.usdb_index_formula_version,
+            USDB_INDEX_FORMULA_VERSION
+        );
         assert_eq!(page0.resolved_height, 120);
         assert_eq!(page0.leader_pass_id, leader.inscription_id.to_string());
         assert_eq!(page0.leader_state, MinerPassState::Active.as_str());
@@ -5167,6 +5416,7 @@ mod tests {
 
         let page1 = server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(120),
                 context: None,
@@ -5194,6 +5444,7 @@ mod tests {
 
         let full_page = server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(120),
                 context: None,
@@ -5233,6 +5484,7 @@ mod tests {
     #[test]
     fn test_get_collab_breakdown_collab_pass_id_sort_and_non_active_leader_empty() {
         let (server, root_dir) = build_server("collab_breakdown_non_active", 130);
+        seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
 
         let leader = make_active_pass(84, 184, 100);
@@ -5256,6 +5508,7 @@ mod tests {
 
         let page = server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(120),
                 context: None,
@@ -5287,6 +5540,7 @@ mod tests {
 
         let err = server
             .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader.inscription_id.to_string(),
                 block_height: Some(120),
                 context: Some(ConsensusQueryContext {
@@ -5308,6 +5562,7 @@ mod tests {
     #[test]
     fn test_get_candidate_set_view_filters_collab_and_sorts_by_effective_energy() {
         let (server, root_dir) = build_server("candidate_set_effective_sort", 130);
+        seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
 
         let leader = make_active_pass(87, 187, 100);
@@ -5381,6 +5636,7 @@ mod tests {
 
         let page0 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 block_height: Some(120),
                 context: None,
                 selection_rule: None,
@@ -5395,6 +5651,24 @@ mod tests {
         );
         assert_eq!(page0.selection_rule, CANDIDATE_SET_SELECTION_RULE);
         assert_eq!(page0.resolved_height, 120);
+        assert_eq!(page0.external_state.btc_height, 120);
+        assert_eq!(page0.external_state.stable_block_hash, "aa".repeat(32));
+        assert_eq!(
+            page0.external_state.balance_history_api_version,
+            balance_history::BALANCE_HISTORY_API_VERSION
+        );
+        assert_eq!(
+            page0.external_state.balance_history_semantics_version,
+            balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
+        );
+        assert_eq!(
+            page0.external_state.usdb_index_protocol_version,
+            USDB_INDEX_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            page0.external_state.usdb_index_formula_version,
+            USDB_INDEX_FORMULA_VERSION
+        );
         assert_eq!(page0.total, 3);
         assert_eq!(page0.items.len(), 2);
         assert_eq!(page0.items[0].pass_id, leader.inscription_id.to_string());
@@ -5429,6 +5703,7 @@ mod tests {
 
         let page1 = server
             .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 block_height: Some(120),
                 context: None,
                 selection_rule: Some(CANDIDATE_SET_SELECTION_RULE.to_string()),
@@ -5463,6 +5738,7 @@ mod tests {
 
         let err = server
             .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 block_height: Some(120),
                 context: Some(ConsensusQueryContext {
                     requested_height: Some(121),
@@ -5481,8 +5757,59 @@ mod tests {
     }
 
     #[test]
+    fn test_get_candidate_set_view_rejects_unsupported_view_version() {
+        let (server, root_dir) = build_server("candidate_set_view_version_mismatch", 130);
+
+        let err = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: "uip-0006-usdb-economic-state-view:v999".to_string(),
+                block_height: Some(120),
+                context: None,
+                selection_rule: None,
+                page: 0,
+                page_size: 10,
+            })
+            .unwrap_err();
+
+        match err.code {
+            ErrorCode::ServerError(code) => {
+                assert_eq!(code, ConsensusRpcErrorCode::ViewVersionMismatch.code())
+            }
+            _ => panic!("unexpected error code: {:?}", err.code),
+        }
+        assert_eq!(
+            err.message,
+            ConsensusRpcErrorCode::ViewVersionMismatch.as_str()
+        );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.requested_height, Some(120));
+        assert_eq!(data.mismatch_field.as_deref(), Some("view_version"));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_uip0006_query_params_require_view_version() {
+        let candidate_err = serde_json::from_value::<GetCandidateSetViewParams>(
+            serde_json::json!({"page": 0, "page_size": 10}),
+        )
+        .unwrap_err();
+        assert!(candidate_err.to_string().contains("view_version"));
+
+        let breakdown_err = serde_json::from_value::<GetCollabBreakdownParams>(serde_json::json!({
+            "leader_pass_id": "txidi0",
+            "page": 0,
+            "page_size": 10
+        }))
+        .unwrap_err();
+        assert!(breakdown_err.to_string().contains("view_version"));
+    }
+
+    #[test]
     fn test_get_candidate_set_view_invalid_selection_rule_and_missing_energy_fail_closed() {
         let (server, root_dir) = build_server("candidate_set_invalid_rule_missing_energy", 130);
+        seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
 
         let candidate = make_active_pass(92, 192, 100);
@@ -5492,6 +5819,7 @@ mod tests {
 
         let invalid_rule = server
             .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 block_height: Some(120),
                 context: None,
                 selection_rule: Some("bad-rule".to_string()),
@@ -5508,6 +5836,7 @@ mod tests {
 
         let missing_energy = server
             .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 block_height: Some(120),
                 context: None,
                 selection_rule: None,

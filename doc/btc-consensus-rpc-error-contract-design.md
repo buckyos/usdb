@@ -47,6 +47,9 @@
 - `NO_RECORD`
 - `STATE_NOT_RETAINED`
 - `HISTORY_NOT_AVAILABLE`
+- `VIEW_VERSION_MISMATCH`
+- `PROTOCOL_VERSION_MISMATCH`
+- `FORMULA_VERSION_MISMATCH`
 
 其中：
 
@@ -66,7 +69,7 @@
 
 ## 3. 共享错误码区间
 
-当前统一放在 `-32040..-32049`：
+当前统一放在 `-32040..-32052`：
 
 | Name | Code | 含义 |
 | --- | ---: | --- |
@@ -74,12 +77,15 @@
 | `SNAPSHOT_NOT_READY` | `-32041` | 服务活着，但当前快照还不能用于共识 |
 | `SNAPSHOT_ID_MISMATCH` | `-32042` | 调用方预期的 snapshot id 与当前不一致 |
 | `BLOCK_HASH_MISMATCH` | `-32043` | 调用方预期的 stable BTC block hash 与当前不一致 |
-| `VERSION_MISMATCH` | `-32044` | 语义版本或协议版本与调用方预期不一致 |
+| `VERSION_MISMATCH` | `-32044` | balance-history API 或 query semantics version 与调用方预期不一致 |
 | `LOCAL_STATE_COMMIT_MISMATCH` | `-32045` | 调用方预期的 local state commit 与当前不一致 |
 | `SYSTEM_STATE_ID_MISMATCH` | `-32046` | 调用方预期的 system state id 与当前不一致 |
 | `NO_RECORD` | `-32047` | 查询合法、范围合法，但该对象/键没有记录 |
 | `STATE_NOT_RETAINED` | `-32048` | 查询高度已落到该节点明确的历史保留窗口之外 |
 | `HISTORY_NOT_AVAILABLE` | `-32049` | 查询高度合法，但该节点当前无法重建所需历史状态 |
+| `VIEW_VERSION_MISMATCH` | `-32050` | UIP economic view 请求/响应契约版本不受支持 |
+| `PROTOCOL_VERSION_MISMATCH` | `-32051` | usdb-index protocol version 与目标历史 identity 不一致 |
+| `FORMULA_VERSION_MISMATCH` | `-32052` | usdb-index formula version 与目标历史 identity 不一致 |
 
 ## 4. 共享请求上下文
 
@@ -99,6 +105,7 @@
 - `balance_history_api_version`
 - `balance_history_semantics_version`
 - `usdb_index_protocol_version`
+- `usdb_index_formula_version`
 - `local_state_commit`
 - `system_state_id`
 
@@ -119,6 +126,7 @@
 - `consensus_ready`
 - `expected_state`
 - `actual_state`
+- `mismatch_field`
 - `detail`
 
 这样做的目的：
@@ -173,7 +181,7 @@
 
 - `SNAPSHOT_NOT_READY`
   - 当前根本还不应该被下游消费
-- `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`
+- `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
   - 服务已经 ready，但和调用方 pin 的预期不一致
 
 ### 6.3 已区分“无法重建历史状态”与“历史状态不匹配”
@@ -297,10 +305,10 @@
   - `get_state_ref_at_height` 成功路径
   - future height -> `HEIGHT_NOT_SYNCED`
   - 缺 block commit -> `HISTORY_NOT_AVAILABLE`
-  - `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`
+  - `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
 - `usdb-indexer`
   - `get_state_ref_at_height` 成功路径
-  - `SNAPSHOT_ID_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH / VERSION_MISMATCH`
+  - `SNAPSHOT_ID_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
   - `get_pass_snapshot(context=...)`
   - `get_pass_energy(context=...)`
   - `STATE_NOT_RETAINED`

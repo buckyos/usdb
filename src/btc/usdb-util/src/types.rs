@@ -97,8 +97,8 @@ pub const CONSENSUS_RPC_ERR_SNAPSHOT_ID_MISMATCH: i64 = -32042;
 /// Shared JSON-RPC error code returned when the caller's expected stable BTC
 /// block hash does not match the service's current stable anchor.
 pub const CONSENSUS_RPC_ERR_BLOCK_HASH_MISMATCH: i64 = -32043;
-/// Shared JSON-RPC error code returned when a versioned protocol or semantics
-/// field required by the caller does not match the service's current value.
+/// Shared JSON-RPC error code returned when a balance-history API or query
+/// semantics version does not match the selected historical state.
 pub const CONSENSUS_RPC_ERR_VERSION_MISMATCH: i64 = -32044;
 /// Shared JSON-RPC error code returned when the caller expects a different
 /// locally durable core-state commit from the one currently exposed.
@@ -115,6 +115,15 @@ pub const CONSENSUS_RPC_ERR_STATE_NOT_RETAINED: i64 = -32048;
 /// Shared JSON-RPC error code returned when historical data should exist
 /// logically, but this node cannot currently reconstruct it.
 pub const CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE: i64 = -32049;
+/// Shared JSON-RPC error code returned when an economic-state query requests an
+/// unsupported view contract version.
+pub const CONSENSUS_RPC_ERR_VIEW_VERSION_MISMATCH: i64 = -32050;
+/// Shared JSON-RPC error code returned when the expected usdb-index protocol
+/// version differs from the version recorded by the selected historical state.
+pub const CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH: i64 = -32051;
+/// Shared JSON-RPC error code returned when the expected usdb-index formula
+/// version differs from the version recorded by the selected historical state.
+pub const CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH: i64 = -32052;
 
 /// Shared consensus-layer JSON-RPC error contract used by BTC-side services.
 ///
@@ -133,6 +142,9 @@ pub enum ConsensusRpcErrorCode {
     NoRecord,
     StateNotRetained,
     HistoryNotAvailable,
+    ViewVersionMismatch,
+    ProtocolVersionMismatch,
+    FormulaVersionMismatch,
 }
 
 impl ConsensusRpcErrorCode {
@@ -149,6 +161,9 @@ impl ConsensusRpcErrorCode {
             Self::NoRecord => CONSENSUS_RPC_ERR_NO_RECORD,
             Self::StateNotRetained => CONSENSUS_RPC_ERR_STATE_NOT_RETAINED,
             Self::HistoryNotAvailable => CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE,
+            Self::ViewVersionMismatch => CONSENSUS_RPC_ERR_VIEW_VERSION_MISMATCH,
+            Self::ProtocolVersionMismatch => CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH,
+            Self::FormulaVersionMismatch => CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH,
         }
     }
 
@@ -165,6 +180,9 @@ impl ConsensusRpcErrorCode {
             Self::NoRecord => "NO_RECORD",
             Self::StateNotRetained => "STATE_NOT_RETAINED",
             Self::HistoryNotAvailable => "HISTORY_NOT_AVAILABLE",
+            Self::ViewVersionMismatch => "VIEW_VERSION_MISMATCH",
+            Self::ProtocolVersionMismatch => "PROTOCOL_VERSION_MISMATCH",
+            Self::FormulaVersionMismatch => "FORMULA_VERSION_MISMATCH",
         }
     }
 }
@@ -188,6 +206,8 @@ pub struct ConsensusStateReference {
     pub balance_history_semantics_version: Option<String>,
     /// Expected usdb-index public protocol version.
     pub usdb_index_protocol_version: Option<String>,
+    /// Expected usdb-index formula version used for historical derived fields.
+    pub usdb_index_formula_version: Option<String>,
     /// Expected local-state commit from usdb-indexer.
     pub local_state_commit: Option<String>,
     /// Expected top-level system-state id from usdb-indexer.
@@ -203,6 +223,7 @@ impl ConsensusStateReference {
             && self.balance_history_api_version.is_none()
             && self.balance_history_semantics_version.is_none()
             && self.usdb_index_protocol_version.is_none()
+            && self.usdb_index_formula_version.is_none()
             && self.local_state_commit.is_none()
             && self.system_state_id.is_none()
     }
@@ -211,9 +232,8 @@ impl ConsensusStateReference {
 /// Shared request-side context that downstream consumers can attach to
 /// consensus-sensitive queries.
 ///
-/// Phase 1 only standardizes this structure in `usdb-util`. Individual RPC
-/// methods can adopt it incrementally without forcing every existing query to
-/// change at once.
+/// Consensus-sensitive RPC methods use this structure to pin historical state
+/// independently from their method-specific view and payload versions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ConsensusQueryContext {
     /// Optional requested logical height associated with the query.
@@ -244,6 +264,8 @@ pub struct ConsensusRpcErrorData {
     pub expected_state: ConsensusStateReference,
     /// Service-side state observed when the error was raised.
     pub actual_state: ConsensusStateReference,
+    /// Canonical field name whose value caused the mismatch, when applicable.
+    pub mismatch_field: Option<String>,
     /// Optional short detail string for operator debugging.
     pub detail: Option<String>,
 }
@@ -255,6 +277,12 @@ impl ConsensusRpcErrorData {
             service: service.into(),
             ..Default::default()
         }
+    }
+
+    /// Attaches the canonical field name responsible for a structured mismatch.
+    pub fn with_mismatch_field(mut self, field: impl Into<String>) -> Self {
+        self.mismatch_field = Some(field.into());
+        self
     }
 }
 
@@ -564,6 +592,30 @@ mod tests {
             ConsensusRpcErrorCode::HistoryNotAvailable.as_str(),
             "HISTORY_NOT_AVAILABLE"
         );
+        assert_eq!(
+            ConsensusRpcErrorCode::ViewVersionMismatch.code(),
+            CONSENSUS_RPC_ERR_VIEW_VERSION_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ViewVersionMismatch.as_str(),
+            "VIEW_VERSION_MISMATCH"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ProtocolVersionMismatch.code(),
+            CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ProtocolVersionMismatch.as_str(),
+            "PROTOCOL_VERSION_MISMATCH"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::FormulaVersionMismatch.code(),
+            CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::FormulaVersionMismatch.as_str(),
+            "FORMULA_VERSION_MISMATCH"
+        );
     }
 
     #[test]
@@ -580,9 +632,14 @@ mod tests {
 
     #[test]
     fn test_consensus_rpc_error_data_new_sets_service() {
-        let data = ConsensusRpcErrorData::new("balance-history");
+        let data = ConsensusRpcErrorData::new("balance-history")
+            .with_mismatch_field("usdb_index_formula_version");
         assert_eq!(data.service, "balance-history");
         assert!(data.expected_state.is_empty());
         assert!(data.actual_state.is_empty());
+        assert_eq!(
+            data.mismatch_field.as_deref(),
+            Some("usdb_index_formula_version")
+        );
     }
 }

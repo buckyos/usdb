@@ -209,19 +209,12 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
-        "balance_history_api_version": (
-            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_api_version")
-        ),
-        "balance_history_semantics_version": (
-            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_semantics_version")
-        ),
+        "balance_history_api_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_api_version"],
+        "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
-        "usdb_index_protocol_version": (
-            (state_ref["system_state_info"].get("system_state_identity") or {}).get("usdb_index_protocol_version")
-            or (state_ref["local_state_commit_info"].get("local_state_identity") or {}).get("usdb_index_protocol_version")
-            or (state_ref["snapshot_info"].get("consensus_identity") or {}).get("usdb_index_protocol_version")
-        ),
+        "usdb_index_protocol_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_protocol_version"],
+        "usdb_index_formula_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_formula_version"],
     },
     "miner_selection": {
         "inscription_id": pass_snapshot["inscription_id"],
@@ -287,19 +280,12 @@ payload = {
         "btc_height": state_ref["block_height"],
         "snapshot_id": state_ref["snapshot_info"]["snapshot_id"],
         "stable_block_hash": state_ref["snapshot_info"]["stable_block_hash"],
-        "balance_history_api_version": (
-            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_api_version")
-        ),
-        "balance_history_semantics_version": (
-            (state_ref["snapshot_info"].get("consensus_identity") or {}).get("balance_history_semantics_version")
-        ),
+        "balance_history_api_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_api_version"],
+        "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
-        "usdb_index_protocol_version": (
-            (state_ref["system_state_info"].get("system_state_identity") or {}).get("usdb_index_protocol_version")
-            or (state_ref["local_state_commit_info"].get("local_state_identity") or {}).get("usdb_index_protocol_version")
-            or (state_ref["snapshot_info"].get("consensus_identity") or {}).get("usdb_index_protocol_version")
-        ),
+        "usdb_index_protocol_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_protocol_version"],
+        "usdb_index_formula_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_formula_version"],
     },
     "miner_selection": {
         "inscription_id": winner_snapshot["inscription_id"],
@@ -506,12 +492,14 @@ print(json.dumps({
     "requested_height": state["btc_height"],
     "expected_state": {
         "snapshot_id": state["snapshot_id"],
+        "stable_height": state["btc_height"],
         "stable_block_hash": state["stable_block_hash"],
-        "balance_history_api_version": state.get("balance_history_api_version"),
-        "balance_history_semantics_version": state.get("balance_history_semantics_version"),
+        "balance_history_api_version": state["balance_history_api_version"],
+        "balance_history_semantics_version": state["balance_history_semantics_version"],
         "local_state_commit": state["local_state_commit"],
         "system_state_id": state["system_state_id"],
         "usdb_index_protocol_version": state["usdb_index_protocol_version"],
+        "usdb_index_formula_version": state["usdb_index_formula_version"],
     },
 }))
 PY

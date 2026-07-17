@@ -308,7 +308,8 @@ impl BalanceHistoryRpcServer {
                         "Expected historical snapshot_id {} at height {}, got {}",
                         expected_snapshot_id, block_height, state_ref.snapshot_id
                     )),
-                ),
+                )
+                .with_mismatch_field("snapshot_id"),
             ));
         }
 
@@ -325,7 +326,8 @@ impl BalanceHistoryRpcServer {
                         "Expected historical stable height {} at height {}, got {}",
                         expected_stable_height, block_height, state_ref.block_height
                     )),
-                ),
+                )
+                .with_mismatch_field("stable_height"),
             ));
         }
 
@@ -342,7 +344,8 @@ impl BalanceHistoryRpcServer {
                         "Expected historical stable block hash {} at height {}, got {}",
                         expected_block_hash, block_height, state_ref.stable_block_hash
                     )),
-                ),
+                )
+                .with_mismatch_field("stable_block_hash"),
             ));
         }
 
@@ -361,7 +364,8 @@ impl BalanceHistoryRpcServer {
                         block_height,
                         state_ref.consensus_identity.balance_history_api_version
                     )),
-                ),
+                )
+                .with_mismatch_field("balance_history_api_version"),
             ));
         }
 
@@ -386,7 +390,8 @@ impl BalanceHistoryRpcServer {
                             .consensus_identity
                             .balance_history_semantics_version
                     )),
-                ),
+                )
+                .with_mismatch_field("balance_history_semantics_version"),
             ));
         }
 
@@ -396,7 +401,7 @@ impl BalanceHistoryRpcServer {
                 != &state_ref.consensus_identity.usdb_index_protocol_version
         {
             return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::VersionMismatch,
+                ConsensusRpcErrorCode::ProtocolVersionMismatch,
                 self.build_consensus_error_data_for_state(
                     Some(block_height),
                     expected_state.clone(),
@@ -407,7 +412,30 @@ impl BalanceHistoryRpcServer {
                         block_height,
                         state_ref.consensus_identity.usdb_index_protocol_version
                     )),
-                ),
+                )
+                .with_mismatch_field("usdb_index_protocol_version"),
+            ));
+        }
+
+        if let Some(expected_usdb_formula_version) =
+            expected_state.usdb_index_formula_version.as_ref()
+            && expected_usdb_formula_version
+                != &state_ref.consensus_identity.usdb_index_formula_version
+        {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::FormulaVersionMismatch,
+                self.build_consensus_error_data_for_state(
+                    Some(block_height),
+                    expected_state.clone(),
+                    actual_state,
+                    Some(format!(
+                        "Expected usdb-index formula version {} at height {}, got {}",
+                        expected_usdb_formula_version,
+                        block_height,
+                        state_ref.consensus_identity.usdb_index_formula_version
+                    )),
+                )
+                .with_mismatch_field("usdb_index_formula_version"),
             ));
         }
 
@@ -1558,6 +1586,7 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(12));
+        assert_eq!(data.mismatch_field.as_deref(), Some("snapshot_id"));
         assert_eq!(data.expected_state.snapshot_id, Some("ff".repeat(32)));
         assert_eq!(data.actual_state.stable_height, Some(12));
         assert_eq!(
@@ -1594,6 +1623,7 @@ mod tests {
         }
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(12));
+        assert_eq!(data.mismatch_field.as_deref(), Some("stable_block_hash"));
         assert_eq!(data.expected_state.stable_block_hash, Some("aa".repeat(32)));
         assert_eq!(data.actual_state.stable_block_hash, Some("09".repeat(32)));
     }
@@ -1627,6 +1657,10 @@ mod tests {
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.requested_height, Some(12));
         assert_eq!(
+            data.mismatch_field.as_deref(),
+            Some("balance_history_semantics_version")
+        );
+        assert_eq!(
             data.expected_state.balance_history_semantics_version,
             Some("balance-semantics:v999".to_string())
         );
@@ -1634,6 +1668,59 @@ mod tests {
             data.actual_state.balance_history_semantics_version,
             Some(BALANCE_HISTORY_SEMANTICS_VERSION.to_string())
         );
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_distinguishes_protocol_and_formula_mismatch() {
+        let server = make_test_server("state_ref_at_height_usdb_version_mismatch");
+        seed_stable_commit(&server, 12, 9);
+
+        let cases = [
+            (
+                ConsensusStateReference {
+                    usdb_index_protocol_version: Some("usdb-protocol:v999".to_string()),
+                    ..Default::default()
+                },
+                ConsensusRpcErrorCode::ProtocolVersionMismatch,
+                "usdb_index_protocol_version",
+            ),
+            (
+                ConsensusStateReference {
+                    usdb_index_formula_version: Some("pass-energy-formula:v999".to_string()),
+                    ..Default::default()
+                },
+                ConsensusRpcErrorCode::FormulaVersionMismatch,
+                "usdb_index_formula_version",
+            ),
+        ];
+
+        for (expected_state, expected_code, mismatch_field) in cases {
+            let err = server
+                .get_state_ref_at_height(GetStateRefAtHeightParams {
+                    block_height: 12,
+                    context: Some(ConsensusQueryContext {
+                        requested_height: Some(12),
+                        expected_state,
+                    }),
+                })
+                .unwrap_err();
+
+            match err.code {
+                JsonErrorCode::ServerError(code) => assert_eq!(code, expected_code.code()),
+                _ => panic!("unexpected error code: {:?}", err.code),
+            }
+            assert_eq!(err.message, expected_code.as_str());
+            let data = decode_consensus_error_data(&err);
+            assert_eq!(data.mismatch_field.as_deref(), Some(mismatch_field));
+            assert_eq!(
+                data.actual_state.usdb_index_protocol_version.as_deref(),
+                Some(usdb_util::USDB_INDEX_PROTOCOL_VERSION)
+            );
+            assert_eq!(
+                data.actual_state.usdb_index_formula_version.as_deref(),
+                Some(usdb_util::USDB_INDEX_FORMULA_VERSION)
+            );
+        }
     }
 
     #[test]

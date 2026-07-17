@@ -66,15 +66,19 @@ PY
 build_payload_context_with_requested_height() {
   local payload_file="$1"
   local requested_height="$2"
-  local snapshot_id stable_block_hash local_state_commit system_state_id protocol_version
+  local snapshot_id stable_block_hash local_state_commit system_state_id
+  local api_version semantics_version protocol_version formula_version
 
   snapshot_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['snapshot_id']")"
   stable_block_hash="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['stable_block_hash']")"
   local_state_commit="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['local_state_commit']")"
   system_state_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['system_state_id']")"
+  api_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['balance_history_api_version']")"
+  semantics_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['balance_history_semantics_version']")"
   protocol_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['usdb_index_protocol_version']")"
+  formula_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['usdb_index_formula_version']")"
 
-  python3 - "$requested_height" "$snapshot_id" "$stable_block_hash" "$local_state_commit" "$system_state_id" "$protocol_version" <<'PY'
+  python3 - "$requested_height" "$snapshot_id" "$stable_block_hash" "$local_state_commit" "$system_state_id" "$api_version" "$semantics_version" "$protocol_version" "$formula_version" <<'PY'
 import json
 import sys
 
@@ -82,10 +86,14 @@ print(json.dumps({
     "requested_height": int(sys.argv[1]),
     "expected_state": {
         "snapshot_id": sys.argv[2],
+        "stable_height": int(sys.argv[1]),
         "stable_block_hash": sys.argv[3],
         "local_state_commit": sys.argv[4],
         "system_state_id": sys.argv[5],
-        "usdb_index_protocol_version": sys.argv[6],
+        "balance_history_api_version": sys.argv[6],
+        "balance_history_semantics_version": sys.argv[7],
+        "usdb_index_protocol_version": sys.argv[8],
+        "usdb_index_formula_version": sys.argv[9],
     },
 }))
 PY

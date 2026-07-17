@@ -178,7 +178,7 @@
 当前阶段的能力边界：
 
 - 已支持 exact-height 历史 state ref 查询
-- 已支持基于 `expected_state` 的 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
+- 已支持基于 `expected_state` 的 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
 - 已区分：
   - `STATE_NOT_RETAINED`：高度低于当前统一历史保留窗口下界（当前实现即 `genesis_block_height`）
   - `HISTORY_NOT_AVAILABLE`：高度仍在保留窗口内，但当前缺少构造历史 state ref 所需的辅助数据
@@ -187,6 +187,7 @@
 
 ```json
 {
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
   "block_height": 900123,
   "snapshot_info": {
     "snapshot_id": "snapshot-...",
@@ -640,11 +641,24 @@
 
 - `uip-0006:effective-energy-desc-pass-id-asc:v1`
 
+当前实现仍使用 `page/page_size`；UIP-0006 最终 v1 契约已固定为 opaque `cursor + limit`。后续切换时直接替换数字分页，不保留双分页兼容层。
+
 返回：
 
 ```json
 {
   "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "external_state": {
+    "btc_height": 900123,
+    "snapshot_id": "snapshot-...",
+    "stable_block_hash": "000000...",
+    "local_state_commit": "local-...",
+    "system_state_id": "system-...",
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "usdb_index_protocol_version": "1.0.0",
+    "usdb_index_formula_version": "pass-energy-formula:v1"
+  },
   "resolved_height": 900123,
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
   "total": 6000,
@@ -668,6 +682,8 @@
 补充语义：
 
 - `context` 校验语义与 `get_pass_energy` 一致。
+- `view_version` 必填；字段缺失是无效参数，不保留旧请求兼容入口。不支持的值返回 `VIEW_VERSION_MISMATCH`。
+- 即使未传 `context`，服务也必须重建目标高度的完整历史 identity 并返回 `external_state`；缺失历史辅助数据返回 `HISTORY_NOT_AVAILABLE`。
 - `total` 是该高度 active standard candidate 总数。
 - 排序使用内部 `u128 effective_energy`，RPC 只输出 canonical decimal string。
 - `level` 和 `difficulty_factor_bps` 按 UIP-0005 从每个 candidate 的 `effective_energy` 运行时派生，不改变 candidate 排序口径。
@@ -682,6 +698,7 @@
 
 ```json
 {
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
   "leader_pass_id": "txidi0",
   "block_height": 900123,
   "context": {
@@ -702,10 +719,24 @@
 - `collab_pass_id_asc`：按 collab pass id 升序，默认。
 - `contribution_desc_pass_id_asc`：按 contribution 降序，pass id 升序打破平局。
 
+当前实现仍使用 `page/page_size`；后续将直接按 UIP-0006 替换为 `cursor + limit`。
+
 返回：
 
 ```json
 {
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "external_state": {
+    "btc_height": 900123,
+    "snapshot_id": "snapshot-...",
+    "stable_block_hash": "000000...",
+    "local_state_commit": "local-...",
+    "system_state_id": "system-...",
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "usdb_index_protocol_version": "1.0.0",
+    "usdb_index_formula_version": "pass-energy-formula:v1"
+  },
   "resolved_height": 900123,
   "leader_pass_id": "txidi0",
   "leader_state": "active",
@@ -732,6 +763,8 @@
 补充语义：
 
 - `context` 校验语义与 `get_pass_energy` 一致。
+- `view_version` 必填，并按 UIP-0006 的 view contract 校验。
+- 响应的 `external_state` 是目标高度的完整历史 identity，不使用 current head 或当前常量覆盖历史 protocol/formula version。
 - `aggregate_collab_contribution` 是该高度完整 breakdown 的全量 aggregate，不只限当前页。
 - 下游可以遍历所有分页并重算 aggregate。
 - 当前实现没有 script hash -> BTC address 反查索引，因此 `collab_owner_btc_addr` 为 `null`。
@@ -789,6 +822,9 @@
 - `-32047 NO_RECORD`
 - `-32048 STATE_NOT_RETAINED`
 - `-32049 HISTORY_NOT_AVAILABLE`
+- `-32050 VIEW_VERSION_MISMATCH`
+- `-32051 PROTOCOL_VERSION_MISMATCH`
+- `-32052 FORMULA_VERSION_MISMATCH`
 
 这些错误会携带结构化 `data`，包含：
 
@@ -797,7 +833,9 @@
 - `local_synced_height`
 - `upstream_stable_height`
 - `consensus_ready`
+- `expected_state`
 - `actual_state`
+- `mismatch_field`
 
 示例：
 

@@ -111,7 +111,7 @@ EOF
     "$tampered_payload" \
     "usdb_index_protocol_version" \
     "9.9.9-phase-c"
-  regtest_validate_validator_candidate_set_payload_consensus_error "$tampered_payload" "-32044" "VERSION_MISMATCH"
+  regtest_validate_validator_candidate_set_payload_consensus_error "$tampered_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
 
   regtest_log "USDB validator candidate-set protocol-version mismatch test succeeded."
   regtest_log "winner=${winner_id}, candidate_count=3, competition_height=${height_competition}"

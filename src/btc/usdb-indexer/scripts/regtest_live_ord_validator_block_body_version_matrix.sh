@@ -104,7 +104,7 @@ EOF
   regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$semantics_payload" "balance_history_semantics_version" "balance-snapshot-at-or-before:v999"
   regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$api_payload" "balance_history_api_version" "9.9.9-phase-c"
 
-  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32044" "VERSION_MISMATCH"
+  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$semantics_payload" "-32044" "VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$api_payload" "-32044" "VERSION_MISMATCH"
 
@@ -117,7 +117,7 @@ EOF
   regtest_wait_usdb_consensus_ready
 
   regtest_validate_validator_payload_success "$payload_file"
-  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32044" "VERSION_MISMATCH"
+  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$semantics_payload" "-32044" "VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$api_payload" "-32044" "VERSION_MISMATCH"
 
