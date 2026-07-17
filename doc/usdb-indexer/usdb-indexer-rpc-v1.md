@@ -613,7 +613,77 @@
 }
 ```
 
-### 17) `get_candidate_set_view`
+### 17) `get_pass_economic_profile`
+
+查询单张 pass 在一个确定历史 context 下的 UIP-0006 经济画像。
+
+参数：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "pass_id": "txidi0",
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "stable_height": 900123,
+      "stable_block_hash": "000000...",
+      "local_state_commit": "local-...",
+      "system_state_id": "system-...",
+      "balance_history_api_version": "1.0.0",
+      "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+      "usdb_index_protocol_version": "1.0.0",
+      "usdb_index_formula_version": "pass-energy-formula:v1"
+    }
+  }
+}
+```
+
+返回：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "external_state": {
+    "btc_height": 900123,
+    "snapshot_id": "snapshot-...",
+    "stable_block_hash": "000000...",
+    "local_state_commit": "local-...",
+    "system_state_id": "system-...",
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "usdb_index_protocol_version": "1.0.0",
+    "usdb_index_formula_version": "pass-energy-formula:v1"
+  },
+  "pass": {
+    "pass_id": "txidi0",
+    "owner_script_hash": "<USDBScriptHash>",
+    "owner_btc_addr": null,
+    "state": "active",
+    "pass_kind": "standard",
+    "raw_energy": "1000000",
+    "collab_contribution": "500000",
+    "effective_energy": "1500000",
+    "level": 1,
+    "difficulty_factor_bps": 9900,
+    "collab_breakdown_count": 2
+  }
+}
+```
+
+补充语义：
+
+- `view_version` 必填，不支持的值返回 `VIEW_VERSION_MISMATCH`。
+- `block_height` 与 `context.requested_height` 同时存在时必须相等；未提供 `context` 时仍返回目标高度的完整 `external_state`。
+- profile 使用 `at_or_before` raw energy 记录并投影到 `external_state.btc_height`，不要求目标高度恰好存在一条 energy row。
+- active standard pass 返回 UIP-0004 聚合后的 contribution/effective energy；active collab 和所有 non-active pass 的 effective energy 为 `"0"`。
+- invalid pass 不要求 energy DB row，服务从 pass history 识别后合成 `raw/contribution/effective = "0"`、`level = 0`、`difficulty_factor_bps = 10000`、`collab_breakdown_count = 0`。
+- 目标 pass 在该历史 context 下不存在时返回 `PASS_NOT_FOUND`；non-invalid pass 存在但缺少 raw energy 时返回 `INTERNAL_INVARIANT_BROKEN`。
+- 当前实现没有 script hash -> BTC address 历史反查索引，因此 `owner_btc_addr` 为 `null`。
+
+### 18) `get_candidate_set_view`
 
 查询某高度的 UIP-0006 candidate set audit view。
 
@@ -623,6 +693,7 @@
 
 ```json
 {
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
   "block_height": 900123,
   "context": {
     "requested_height": 900123,
@@ -690,7 +761,7 @@
 - active collab pass 即使拥有很高 `raw_energy`，也不会直接进入 candidate set。
 - 若 active standard candidate 缺少 raw energy 记录，服务 fail closed 并返回 `INTERNAL_INVARIANT_BROKEN`。
 
-### 18) `get_collab_breakdown`
+### 19) `get_collab_breakdown`
 
 查询某 Leader pass 在目标高度的 collab contribution 审计明细。
 
@@ -773,7 +844,7 @@
 
 ## 5.4 活跃地址余额快照
 
-### 19) `get_active_balance_snapshot`
+### 20) `get_active_balance_snapshot`
 
 查询指定高度快照（精确高度）。
 
@@ -792,7 +863,7 @@
 - 若 `block_height > synced_block_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`
 - 若高度合法，但该高度没有 exact active balance snapshot，返回共享共识错误 `NO_RECORD`
 
-### 20) `get_latest_active_balance_snapshot`
+### 21) `get_latest_active_balance_snapshot`
 
 查询最近一次已落库快照。
 
@@ -800,7 +871,7 @@
 
 ## 5.5 管理
 
-### 21) `stop`
+### 22) `stop`
 
 触发索引器优雅停止（建议默认仅 localhost 可访问）。
 
@@ -932,6 +1003,9 @@
 - `get_active_passes_at_height`
 - `get_pass_stats_at_height`
 - `get_pass_energy`
+- `get_pass_economic_profile`
+- `get_candidate_set_view`
+- `get_collab_breakdown`
 - `get_active_balance_snapshot`
 - `get_latest_active_balance_snapshot`
 
@@ -940,6 +1014,9 @@
 - `get_state_ref_at_height`
 - `get_pass_snapshot(context=...)`
 - `get_pass_energy(context=...)`
+- `get_pass_economic_profile`
+- `get_candidate_set_view`
+- `get_collab_breakdown`
 - `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE / *_MISMATCH`
 
 ### 8.2 后续阶段

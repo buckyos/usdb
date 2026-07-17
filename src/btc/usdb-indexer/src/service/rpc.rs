@@ -978,6 +978,60 @@ pub struct PassEnergyLeaderboardPage {
     pub items: Vec<PassEnergyLeaderboardItem>,
 }
 
+/// Parameters for `get_pass_economic_profile`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPassEconomicProfileParams {
+    /// Required UIP-0006 view contract version selector.
+    pub view_version: String,
+    /// Target pass inscription id.
+    pub pass_id: String,
+    /// Optional query height; `None` resolves from context or current local synced height.
+    pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    ///
+    /// When present, the service validates the exact historical state identity
+    /// before deriving any pass or energy field.
+    pub context: Option<ConsensusQueryContext>,
+}
+
+/// One pass economic profile resolved under a UIP-0006 historical context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassEconomicProfile {
+    /// Pass inscription id.
+    pub pass_id: String,
+    /// Canonical owner script hash at the resolved height.
+    pub owner_script_hash: String,
+    /// Optional display BTC address when a reverse owner mapping is available.
+    pub owner_btc_addr: Option<String>,
+    /// Pass state at the resolved height.
+    pub state: String,
+    /// Pass kind at the resolved height.
+    pub pass_kind: String,
+    /// UIP-0003 raw energy, encoded as canonical decimal string.
+    pub raw_energy: String,
+    /// UIP-0004 collab contribution, encoded as canonical decimal string.
+    pub collab_contribution: String,
+    /// UIP-0004 effective energy, encoded as canonical decimal string.
+    pub effective_energy: String,
+    /// UIP-0005 level derived from `effective_energy`.
+    pub level: u8,
+    /// UIP-0005 difficulty factor derived from `level`, expressed in bps.
+    pub difficulty_factor_bps: u64,
+    /// Number of collab passes included in `collab_contribution`.
+    pub collab_breakdown_count: u64,
+}
+
+/// UIP-0006 economic state view for one pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassEconomicProfileView {
+    /// Economic state view version used by this response.
+    pub view_version: String,
+    /// Exact historical state identity used to derive the profile.
+    pub external_state: EconomicExternalState,
+    /// Pass snapshot and derived economic fields at `external_state.btc_height`.
+    pub pass: PassEconomicProfile,
+}
+
 /// Parameters for `get_candidate_set_view`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetCandidateSetViewParams {
@@ -1319,6 +1373,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassEnergyLeaderboardParams,
     ) -> JsonResult<PassEnergyLeaderboardPage>;
+
+    /// Returns one UIP-0006 pass economic profile at a historical context.
+    #[rpc(name = "get_pass_economic_profile")]
+    fn get_pass_economic_profile(
+        &self,
+        params: GetPassEconomicProfileParams,
+    ) -> JsonResult<PassEconomicProfileView>;
 
     /// Returns the UIP-0006 validator/audit candidate set view at a target height.
     #[rpc(name = "get_candidate_set_view")]

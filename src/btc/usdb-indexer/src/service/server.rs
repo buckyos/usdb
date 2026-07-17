@@ -1839,7 +1839,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
                 "pass_energy_leaderboard".to_string(),
+                "pass_economic_profile".to_string(),
                 "candidate_set_view".to_string(),
+                "collab_breakdown".to_string(),
                 "invalid_passes".to_string(),
                 "active_balance_snapshot".to_string(),
                 "latest_active_balance_snapshot".to_string(),
@@ -2492,6 +2494,106 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         })
     }
 
+    fn get_pass_economic_profile(
+        &self,
+        params: GetPassEconomicProfileParams,
+    ) -> JsonResult<PassEconomicProfileView> {
+        let (query_height, state_ref) = self.resolve_economic_query_context(
+            &params.view_version,
+            params.block_height,
+            params.context.as_ref(),
+        )?;
+        let pass_id = self.parse_inscription_id(&params.pass_id)?;
+        let Some(pass_snapshot) = self
+            .indexer
+            .miner_pass_storage()
+            .get_pass_snapshot_from_history_at_height(&pass_id, query_height)
+            .map_err(Self::to_internal_error)?
+        else {
+            return Err(Self::to_business_error(
+                ERR_PASS_NOT_FOUND,
+                "PASS_NOT_FOUND",
+                json!({
+                    "pass_id": params.pass_id,
+                    "query_block_height": query_height
+                }),
+            ));
+        };
+
+        let pass = pass_snapshot.pass;
+        let (raw_energy, collab_contribution, effective_energy, collab_breakdown_count) =
+            if pass.state == MinerPassState::Invalid {
+                (0, 0, 0, 0)
+            } else {
+                let Some(energy) = self
+                    .indexer
+                    .effective_energy_resolver()
+                    .resolve_pass_energy(
+                        &pass.inscription_id,
+                        query_height,
+                        DerivedPassEnergyMode::AtOrBefore,
+                    )
+                    .map_err(Self::to_internal_error)?
+                else {
+                    return Err(Self::to_business_error(
+                        ERR_INTERNAL_INVARIANT_BROKEN,
+                        "INTERNAL_INVARIANT_BROKEN",
+                        json!({
+                            "pass_id": pass.inscription_id.to_string(),
+                            "resolved_height": query_height,
+                            "state": pass.state.as_str(),
+                            "pass_kind": pass.pass_kind.as_str(),
+                            "detail": "Non-invalid pass is missing a raw energy record"
+                        }),
+                    ));
+                };
+
+                if energy.state != pass.state || energy.pass_kind != pass.pass_kind {
+                    return Err(Self::to_business_error(
+                        ERR_INTERNAL_INVARIANT_BROKEN,
+                        "INTERNAL_INVARIANT_BROKEN",
+                        json!({
+                            "pass_id": pass.inscription_id.to_string(),
+                            "resolved_height": query_height,
+                            "pass_state": pass.state.as_str(),
+                            "energy_state": energy.state.as_str(),
+                            "pass_kind": pass.pass_kind.as_str(),
+                            "energy_pass_kind": energy.pass_kind.as_str(),
+                            "detail": "Pass snapshot and derived energy snapshot disagree"
+                        }),
+                    ));
+                }
+
+                (
+                    energy.raw_energy,
+                    energy.collab_contribution,
+                    energy.effective_energy,
+                    energy.collab_breakdown_count,
+                )
+            };
+
+        let level = calc_level_from_effective_energy(effective_energy);
+        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+
+        Ok(PassEconomicProfileView {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            external_state: EconomicExternalState::from(&state_ref),
+            pass: PassEconomicProfile {
+                pass_id: pass.inscription_id.to_string(),
+                owner_script_hash: pass.owner.to_string(),
+                owner_btc_addr: None,
+                state: pass.state.as_str().to_string(),
+                pass_kind: pass.pass_kind.as_str().to_string(),
+                raw_energy: encode_energy_decimal(raw_energy),
+                collab_contribution: encode_energy_decimal(collab_contribution),
+                effective_energy: encode_energy_decimal(effective_energy),
+                level,
+                difficulty_factor_bps: difficulty_factor_bps as u64,
+                collab_breakdown_count,
+            },
+        })
+    }
+
     fn get_candidate_set_view(
         &self,
         params: GetCandidateSetViewParams,
@@ -2857,6 +2959,21 @@ mod tests {
                 sort: None,
                 page: 0,
                 page_size: 20,
+            })
+            .unwrap()
+    }
+
+    fn get_pass_economic_profile_for_test(
+        server: &UsdbIndexerRpcServer,
+        pass: &MinerPassInfo,
+        block_height: u32,
+    ) -> PassEconomicProfileView {
+        server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(block_height),
+                context: None,
             })
             .unwrap()
     }
@@ -4849,6 +4966,329 @@ mod tests {
     }
 
     #[test]
+    fn test_get_pass_economic_profile_aggregates_collabs_and_matches_breakdown() {
+        let (server, root_dir) = build_server("economic_profile_collab_aggregate", 130);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(150, 230, 100);
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        let collab1 = make_collab_pass(151, 231, 101, leader.inscription_id);
+        let collab2 = make_collab_pass(152, 232, 102, leader.inscription_id);
+        for collab in [&collab1, &collab2] {
+            storage
+                .add_new_mint_pass_at_height(collab, collab.mint_block_height)
+                .unwrap();
+        }
+
+        let raw_energy = LEVEL_E0 - 100;
+        seed_energy_record(&server, &leader, 120, raw_energy);
+        seed_energy_record(&server, &collab1, 120, 100);
+        seed_energy_record(&server, &collab2, 120, 200);
+
+        let profile = get_pass_economic_profile_for_test(&server, &leader, 120);
+        let expected_contribution =
+            calc_collab_contribution(100).saturating_add(calc_collab_contribution(200));
+        let expected_effective = raw_energy.saturating_add(expected_contribution);
+
+        assert_eq!(profile.view_version, USDB_ECONOMIC_STATE_VIEW_VERSION);
+        assert_eq!(profile.external_state.btc_height, 120);
+        assert_eq!(profile.external_state.stable_block_hash, "aa".repeat(32));
+        assert_eq!(profile.pass.pass_id, leader.inscription_id.to_string());
+        assert_eq!(profile.pass.owner_script_hash, leader.owner.to_string());
+        assert_eq!(profile.pass.owner_btc_addr, None);
+        assert_eq!(profile.pass.state, MinerPassState::Active.as_str());
+        assert_eq!(profile.pass.pass_kind, MinerPassKind::Standard.as_str());
+        assert_eq!(profile.pass.raw_energy, raw_energy.to_string());
+        assert_eq!(
+            profile.pass.collab_contribution,
+            expected_contribution.to_string()
+        );
+        assert_eq!(
+            profile.pass.effective_energy,
+            expected_effective.to_string()
+        );
+        assert_eq!(profile.pass.level, 1);
+        assert_eq!(profile.pass.difficulty_factor_bps, 9_900);
+        assert_eq!(profile.pass.collab_breakdown_count, 2);
+
+        let breakdown = get_collab_breakdown_for_test(&server, &leader, 120);
+        let recomputed_contribution = breakdown.items.iter().fold(0u128, |total, item| {
+            total.saturating_add(item.collab_contribution.parse::<u128>().unwrap())
+        });
+        assert_eq!(breakdown.external_state, profile.external_state);
+        assert_eq!(breakdown.total, profile.pass.collab_breakdown_count);
+        assert_eq!(recomputed_contribution, expected_contribution);
+        assert_eq!(
+            breakdown.aggregate_collab_contribution,
+            profile.pass.collab_contribution
+        );
+
+        let replay = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: leader.inscription_id.to_string(),
+                block_height: None,
+                context: Some(ConsensusQueryContext::from(&profile.external_state)),
+            })
+            .unwrap();
+        assert_eq!(replay.external_state, profile.external_state);
+        assert_eq!(replay.pass.effective_energy, profile.pass.effective_energy);
+        assert_eq!(replay.pass.collab_breakdown_count, 2);
+
+        let rpc_info = server.get_rpc_info().unwrap();
+        assert!(
+            rpc_info
+                .features
+                .contains(&"pass_economic_profile".to_string())
+        );
+        assert!(rpc_info.features.contains(&"collab_breakdown".to_string()));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_economic_profile_applies_state_and_invalid_zero_boundaries() {
+        let (server, root_dir) = build_server("economic_profile_state_boundaries", 130);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+
+        let leader = make_active_pass(153, 233, 100);
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        let collab = make_collab_pass(154, 234, 101, leader.inscription_id);
+        storage
+            .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &collab, 120, 500);
+
+        let dormant = make_active_pass(155, 235, 100);
+        storage
+            .add_new_mint_pass_at_height(&dormant, dormant.mint_block_height)
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &dormant.inscription_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                115,
+            )
+            .unwrap();
+        seed_energy_record_with_state(&server, &dormant, 115, MinerPassState::Dormant, 700);
+
+        let invalid = make_invalid_pass(156, 236, 100, "invalid-profile");
+        storage
+            .add_invalid_mint_pass_at_height(&invalid, invalid.mint_block_height)
+            .unwrap();
+
+        let collab_profile = get_pass_economic_profile_for_test(&server, &collab, 120);
+        assert_eq!(collab_profile.pass.raw_energy, "500");
+        assert_eq!(collab_profile.pass.collab_contribution, "0");
+        assert_eq!(collab_profile.pass.effective_energy, "0");
+        assert_eq!(collab_profile.pass.level, 0);
+        assert_eq!(collab_profile.pass.difficulty_factor_bps, 10_000);
+        assert_eq!(collab_profile.pass.collab_breakdown_count, 0);
+
+        let dormant_profile = get_pass_economic_profile_for_test(&server, &dormant, 120);
+        assert_eq!(dormant_profile.pass.state, MinerPassState::Dormant.as_str());
+        assert_eq!(dormant_profile.pass.raw_energy, "700");
+        assert_eq!(dormant_profile.pass.collab_contribution, "0");
+        assert_eq!(dormant_profile.pass.effective_energy, "0");
+        assert_eq!(dormant_profile.pass.level, 0);
+        assert_eq!(dormant_profile.pass.difficulty_factor_bps, 10_000);
+        assert_eq!(dormant_profile.pass.collab_breakdown_count, 0);
+
+        assert!(
+            server
+                .indexer
+                .pass_energy_manager()
+                .get_pass_energy_record_at_or_before(&invalid.inscription_id, 120)
+                .unwrap()
+                .is_none()
+        );
+        let invalid_profile = get_pass_economic_profile_for_test(&server, &invalid, 120);
+        assert_eq!(invalid_profile.pass.state, MinerPassState::Invalid.as_str());
+        assert_eq!(invalid_profile.pass.raw_energy, "0");
+        assert_eq!(invalid_profile.pass.collab_contribution, "0");
+        assert_eq!(invalid_profile.pass.effective_energy, "0");
+        assert_eq!(invalid_profile.pass.level, 0);
+        assert_eq!(invalid_profile.pass.difficulty_factor_bps, 10_000);
+        assert_eq!(invalid_profile.pass.collab_breakdown_count, 0);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_economic_profile_distinguishes_missing_pass_and_broken_energy_invariant() {
+        let (server, root_dir) = build_server("economic_profile_error_boundaries", 130);
+        seed_state_ref_context(&server, 120);
+
+        let missing_id = test_inscription_id(157, 0);
+        let missing = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: missing_id.to_string(),
+                block_height: Some(120),
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::ServerError(ERR_PASS_NOT_FOUND));
+        assert_eq!(missing.message, "PASS_NOT_FOUND");
+
+        let pass = make_active_pass(158, 238, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        let broken = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            broken.code,
+            ErrorCode::ServerError(ERR_INTERNAL_INVARIANT_BROKEN)
+        );
+        assert_eq!(broken.message, "INTERNAL_INVARIANT_BROKEN");
+
+        seed_energy_record(&server, &pass, 120, 100);
+        let valid_profile = get_pass_economic_profile_for_test(&server, &pass, 120);
+        let mut formula_mismatch_context =
+            ConsensusQueryContext::from(&valid_profile.external_state);
+        formula_mismatch_context
+            .expected_state
+            .usdb_index_formula_version = Some("pass-energy-formula:unexpected".to_string());
+        let formula_mismatch = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(formula_mismatch_context),
+            })
+            .unwrap_err();
+        assert_eq!(
+            formula_mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::FormulaVersionMismatch.code())
+        );
+        assert_eq!(
+            decode_consensus_error_data(&formula_mismatch)
+                .mismatch_field
+                .as_deref(),
+            Some("usdb_index_formula_version")
+        );
+
+        let unsupported = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: "uip-0006-usdb-economic-state-view:v999".to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            unsupported.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::ViewVersionMismatch.code())
+        );
+        assert_eq!(
+            decode_consensus_error_data(&unsupported)
+                .mismatch_field
+                .as_deref(),
+            Some("view_version")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_economic_profile_rejects_replaced_same_height_external_state() {
+        let (server, root_dir) = build_server("economic_profile_same_height_reorg", 120);
+        seed_state_ref_context(&server, 120);
+        let pass = make_active_pass(160, 240, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &pass, 120, 100);
+        let original = get_pass_economic_profile_for_test(&server, &pass, 120);
+
+        let mut replacement = ready_balance_history_snapshot(120);
+        replacement.stable_block_hash = Some("cc".repeat(32));
+        replacement.latest_block_commit = Some("dd".repeat(32));
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_anchor(&replacement)
+            .unwrap();
+
+        let mismatch = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&original.external_state)),
+            })
+            .unwrap_err();
+        assert_eq!(
+            mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+        );
+        assert_eq!(
+            decode_consensus_error_data(&mismatch)
+                .mismatch_field
+                .as_deref(),
+            Some("snapshot_id")
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_economic_profile_replays_old_external_state_after_head_advances() {
+        let (server, root_dir) = build_server("economic_profile_historical_replay", 130);
+        seed_state_ref_context(&server, 120);
+        let pass = make_active_pass(159, 239, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &pass, 110, 100);
+
+        let original = get_pass_economic_profile_for_test(&server, &pass, 120);
+        let expected_raw = 100u128.saturating_add(calc_growth_delta(100_000, 10));
+        assert_eq!(original.pass.raw_energy, expected_raw.to_string());
+
+        seed_state_ref_context(&server, 130);
+        let replay = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&original.external_state)),
+            })
+            .unwrap();
+
+        assert_eq!(replay.external_state, original.external_state);
+        assert_eq!(replay.pass.raw_energy, original.pass.raw_energy);
+        assert_eq!(replay.pass.effective_energy, original.pass.effective_energy);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_get_pass_energy_at_or_before_projects_to_query_height() {
         let (server, root_dir) = build_server("energy_projection", 130);
         let storage = server.indexer.miner_pass_storage();
@@ -5791,6 +6231,12 @@ mod tests {
 
     #[test]
     fn test_uip0006_query_params_require_view_version() {
+        let profile_err = serde_json::from_value::<GetPassEconomicProfileParams>(
+            serde_json::json!({"pass_id": "txidi0"}),
+        )
+        .unwrap_err();
+        assert!(profile_err.to_string().contains("view_version"));
+
         let candidate_err = serde_json::from_value::<GetCandidateSetViewParams>(
             serde_json::json!({"page": 0, "page_size": 10}),
         )

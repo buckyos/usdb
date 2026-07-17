@@ -302,7 +302,7 @@
 
 ## UIP-0006 USDB Economic State View
 
-状态：任务 1（v1 查询/响应契约收敛）和任务 2（共享历史 context / version mismatch / external state 基础）已对接。当前开发阶段不保留省略 `view_version`、缺少 formula selector 或旧 protocol mismatch 名称的兼容入口。
+状态：任务 1（v1 查询/响应契约收敛）、任务 2（共享历史 context / version mismatch / external state 基础）和任务 3（单 Pass economic profile）已对接。当前开发阶段不保留省略 `view_version`、缺少 formula selector 或旧 protocol mismatch 名称的兼容入口。
 
 ### 已对接内容
 
@@ -322,10 +322,15 @@
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - 新增强类型 `EconomicExternalState`，支持从 `HistoricalStateRefInfo` 无损构造，并可反向生成完整 `ConsensusStateReference / ConsensusQueryContext`。
   - `get_candidate_set_view` / `get_collab_breakdown` 请求增加必填 `view_version`，响应统一增加 `view_version + external_state`。
+  - 新增 `get_pass_economic_profile` 强类型请求/响应，固定 `pass_id`、owner、state/kind、三类 energy、level/factor 和 breakdown count 字段。
 - `src/btc/usdb-indexer/src/service/server.rs`
   - 新增统一 economic query context resolver；即使调用方不传 context，也必须重建目标高度完整历史 identity。
   - historical protocol/formula 校验改为读取目标高度 identity，不再与当前进程常量比较。
   - 现有 candidate/breakdown 测试补齐历史 snapshot/local/system state 夹具，并覆盖 view/protocol/formula mismatch 和 external state 字段。
+  - `get_pass_economic_profile` 对 non-invalid pass 复用 UIP-0003/0004/0005 派生层；invalid pass 从 history 合成 canonical 零值，不伪造 energy DB row。
+  - derived energy snapshot 同步返回 `collab_breakdown_count`，profile 无需为计数重复扫描 collab 集合。
+  - non-invalid pass 缺 raw energy 按内部状态损坏返回 `INTERNAL_INVARIANT_BROKEN`，不存在的 pass 返回 `PASS_NOT_FOUND`。
+  - 服务层测试覆盖 active standard 多 collab 聚合与 breakdown 交叉重算、active collab/non-active/invalid 边界、view/formula mismatch、缺 pass/缺 energy、head 前进后的旧 external state 重放，以及 same-height anchor 替换后的 snapshot mismatch。
 - `src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh`
   - validator payload / context 强制携带 API、semantics、protocol、formula 四类版本字段，删除 protocol fallback 和可空 `.get(...)` 兼容逻辑。
   - protocol mismatch 断言改为 `PROTOCOL_VERSION_MISMATCH(-32051)`。
@@ -344,6 +349,5 @@
 
 ### 待继续对齐
 
-- 任务 3：实现 `get_pass_economic_profile`，包括 invalid pass 无 energy row 时的查询层零值合成。
 - 任务 4：将 candidate/breakdown 从 `page/page_size` 直接切换到已冻结的 opaque `cursor + limit`，并把 profile/candidate/breakdown 统一到同一个 response context resolver。
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。

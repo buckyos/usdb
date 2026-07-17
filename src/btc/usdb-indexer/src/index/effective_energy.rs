@@ -36,6 +36,8 @@ pub struct DerivedPassEnergySnapshot {
     pub collab_contribution: Energy,
     /// UIP-0004 effective energy at the query height.
     pub effective_energy: Energy,
+    /// Number of active collab passes included in `collab_contribution`.
+    pub collab_breakdown_count: u64,
 }
 
 /// One audited collab contribution item resolved for a Leader at one BTC height.
@@ -151,19 +153,21 @@ impl EffectiveEnergyResolver {
         }
 
         let pass_kind = pass_snapshot.pass.pass_kind;
-        let (collab_contribution, effective_energy) =
+        let (collab_contribution, effective_energy, collab_breakdown_count) =
             if state == MinerPassState::Active && pass_kind == MinerPassKind::Standard {
-                let collab_contribution = self.resolve_standard_collab_contribution(
-                    inscription_id,
-                    &pass_snapshot.pass.owner,
-                    block_height,
-                )?;
+                let (collab_contribution, collab_breakdown_count) = self
+                    .resolve_standard_collab_summary(
+                        inscription_id,
+                        &pass_snapshot.pass.owner,
+                        block_height,
+                    )?;
                 (
                     collab_contribution,
                     calc_standard_effective_energy(raw_result.energy, collab_contribution),
+                    collab_breakdown_count,
                 )
             } else {
-                (0, 0)
+                (0, 0, 0)
             };
 
         Ok(Some(DerivedPassEnergySnapshot {
@@ -173,6 +177,7 @@ impl EffectiveEnergyResolver {
             raw_energy: raw_result.energy,
             collab_contribution,
             effective_energy,
+            collab_breakdown_count,
         }))
     }
 
@@ -247,18 +252,18 @@ impl EffectiveEnergyResolver {
         Ok(Some((record, raw_result)))
     }
 
-    fn resolve_standard_collab_contribution(
+    fn resolve_standard_collab_summary(
         &self,
         leader_pass_id: &InscriptionId,
         leader_owner: &USDBScriptHash,
         block_height: u32,
-    ) -> Result<Energy, String> {
-        let (aggregate, _) = self.resolve_standard_collab_breakdown_items(
+    ) -> Result<(Energy, u64), String> {
+        let (aggregate, items) = self.resolve_standard_collab_breakdown_items(
             leader_pass_id,
             leader_owner,
             block_height,
         )?;
-        Ok(aggregate)
+        Ok((aggregate, items.len() as u64))
     }
 
     fn resolve_standard_collab_breakdown_items(

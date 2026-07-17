@@ -40,6 +40,21 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 本文把 USDB-side 能提供的完整经济状态视图单独协议化。USDB 链上 payload 只需要引用其中的最小状态选择器，并在验证时按本文规则重算或查询。
 
+# 当前实现状态
+
+参考实现已经完成 v1 历史 context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑。
+
+`get_pass_economic_profile` 当前已满足：
+
+- 必填 `view_version`，并返回完整历史 `external_state`。
+- active standard 的 raw / collab / effective energy、level、difficulty factor 和 breakdown count 运行时派生。
+- collab 与 non-active pass 的 effective energy 状态边界。
+- invalid pass 无 energy row 时的 canonical 零值合成。
+- `PASS_NOT_FOUND` 与 non-invalid 缺 raw energy 的 `INTERNAL_INVARIANT_BROKEN` 错误边界。
+- BTC head 前进后按旧 `external_state` 重放同一 profile。
+
+当前仍待实现的是本 UIP 已固定的 candidate/breakdown opaque `cursor + limit` 分页契约，以及 USDB indexer 全部 UIP 对齐后的集中 live/regtest 复核。
+
 # 非目标
 
 本文不定义：
