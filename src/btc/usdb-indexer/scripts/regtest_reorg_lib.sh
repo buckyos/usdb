@@ -2361,6 +2361,7 @@ regtest_assert_usdb_pass_energy_state() {
   local block_height="$2"
   local mode="$3"
   local expected_state="$4"
+  local expected_raw_energy="${5:-}"
   local resp
 
   resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"${mode}\"}]")"
@@ -2368,6 +2369,9 @@ regtest_assert_usdb_pass_energy_state() {
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$inscription_id"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$expected_state"
+  if [[ -n "$expected_raw_energy" ]]; then
+    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('raw_energy')" "$expected_raw_energy"
+  fi
 }
 
 regtest_assert_usdb_pass_energy_not_found() {

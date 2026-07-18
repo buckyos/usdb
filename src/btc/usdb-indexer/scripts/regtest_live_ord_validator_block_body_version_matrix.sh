@@ -110,7 +110,7 @@ EOF
 
   continue_address="$(regtest_get_new_address)"
   regtest_mine_empty_block "$continue_address"
-  continue_height="$((historical_height + 1))"
+  continue_height="$((current_tip_height + 1))"
   regtest_wait_until_balance_history_synced_eq "$continue_height"
   regtest_wait_until_usdb_synced_eq "$continue_height"
   regtest_wait_balance_history_consensus_ready

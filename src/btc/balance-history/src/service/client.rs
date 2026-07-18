@@ -7,7 +7,7 @@ use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::SyncStatus;
 use bitcoincore_rpc::bitcoin::OutPoint;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::ops::Range;
 use usdb_util::{ConsensusQueryContext, ConsensusRpcErrorData, USDBScriptHash};
@@ -17,9 +17,24 @@ pub struct RpcClient {
     client: Client,
 }
 
+#[derive(Debug, Default)]
+enum RpcResultField {
+    #[default]
+    Missing,
+    Present(Value),
+}
+
+fn deserialize_rpc_result_field<'de, D>(deserializer: D) -> Result<RpcResultField, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(RpcResultField::Present)
+}
+
 #[derive(Debug, Deserialize)]
-struct RpcEnvelope<T> {
-    result: Option<T>,
+struct RpcEnvelope {
+    #[serde(default, deserialize_with = "deserialize_rpc_result_field")]
+    result: RpcResultField,
     error: Option<RpcErrorPayload>,
 }
 
@@ -275,7 +290,7 @@ impl RpcClient {
             "id": 1
         });
 
-        let resp: RpcEnvelope<T> = self
+        let resp: RpcEnvelope = self
             .client
             .post(url)
             .json(&request)
@@ -294,17 +309,30 @@ impl RpcClient {
                 msg
             })?;
 
+        Self::decode_rpc_envelope(method, resp)
+    }
+
+    fn decode_rpc_envelope<T: for<'de> Deserialize<'de>>(
+        method: &str,
+        resp: RpcEnvelope,
+    ) -> Result<T, String> {
         if let Some(err) = resp.error {
             let msg = Self::format_rpc_error(method, &err);
             log::error!("{}", msg);
             return Err(msg);
         }
 
-        resp.result.ok_or_else(|| {
+        let RpcResultField::Present(result) = resp.result else {
             let msg = format!(
                 "RPC response for method {} missing both result and error",
                 method
             );
+            log::error!("{}", msg);
+            return Err(msg);
+        };
+
+        serde_json::from_value(result).map_err(|e| {
+            let msg = format!("Failed to parse RPC result for method {}: {}", method, e);
             log::error!("{}", msg);
             msg
         })
@@ -388,5 +416,32 @@ mod tests {
 
         assert!(msg.contains("method=get_address_balance"));
         assert!(msg.contains("data={\"foo\":\"bar\"}"));
+    }
+
+    #[test]
+    fn test_decode_rpc_envelope_preserves_present_null_result() {
+        let envelope: RpcEnvelope = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "result": null,
+            "id": 1
+        }))
+        .unwrap();
+
+        let result = RpcClient::decode_rpc_envelope::<Option<String>>("nullable", envelope)
+            .expect("a present null result should deserialize as None");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_decode_rpc_envelope_rejects_missing_result_and_error() {
+        let envelope: RpcEnvelope = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 1
+        }))
+        .unwrap();
+
+        let err = RpcClient::decode_rpc_envelope::<Option<String>>("missing", envelope)
+            .expect_err("a missing result field must remain invalid");
+        assert!(err.contains("missing both result and error"));
     }
 }

@@ -57,8 +57,8 @@ assert_leaderboard_top1_matches_pass_energy() {
 
 assert_current_db_state_old_chain() {
   local pass_consumed="$1"
-  local pass_dormant="$2"
-  local pass_active="$3"
+  local pass_active="$2"
+  local pass_invalid="$3"
 
   regtest_assert_usdb_db_scalar \
     "SELECT COUNT(*) FROM miner_passes;" \
@@ -69,12 +69,12 @@ assert_current_db_state_old_chain() {
     "consumed" \
     "current state of original pass on old chain"
   regtest_assert_usdb_db_scalar \
-    "SELECT state FROM miner_passes WHERE inscription_id = '${pass_dormant}';" \
-    "dormant" \
-    "current state of first remint pass on old chain"
-  regtest_assert_usdb_db_scalar \
     "SELECT state FROM miner_passes WHERE inscription_id = '${pass_active}';" \
     "active" \
+    "current state of first remint pass on old chain"
+  regtest_assert_usdb_db_scalar \
+    "SELECT state FROM miner_passes WHERE inscription_id = '${pass_invalid}';" \
+    "invalid" \
     "current state of duplicate remint pass on old chain"
 }
 
@@ -108,14 +108,14 @@ assert_old_chain_state() {
   local pass3="$4"
 
   regtest_assert_usdb_pass_snapshot_state "$pass1" "$block_height" "consumed"
-  regtest_assert_usdb_pass_energy_state "$pass1" "$block_height" "at_or_before" "consumed"
-  regtest_assert_usdb_pass_snapshot_state "$pass2" "$block_height" "dormant"
-  regtest_assert_usdb_pass_energy_state "$pass2" "$block_height" "at_or_before" "dormant"
-  regtest_assert_usdb_pass_snapshot_state "$pass3" "$block_height" "active"
-  regtest_assert_usdb_pass_energy_state "$pass3" "$block_height" "at_or_before" "active"
+  regtest_assert_usdb_pass_energy_state "$pass1" "$block_height" "at_or_before" "consumed" "0"
+  regtest_assert_usdb_pass_snapshot_state "$pass2" "$block_height" "active"
+  regtest_assert_usdb_pass_energy_state "$pass2" "$block_height" "at_or_before" "active"
+  regtest_assert_usdb_pass_snapshot_state "$pass3" "$block_height" "invalid"
+  regtest_assert_usdb_pass_energy_not_found "$pass3" "$block_height" "at_or_before"
   regtest_assert_usdb_active_balance_snapshot_positive "$block_height"
-  regtest_assert_usdb_pass_stats "$block_height" "3" "1" "1" "1" "0" "0"
-  assert_leaderboard_top1_matches_pass_energy "$block_height" "active" "1" "$pass3" "active"
+  regtest_assert_usdb_pass_stats "$block_height" "3" "1" "0" "1" "0" "1"
+  assert_leaderboard_top1_matches_pass_energy "$block_height" "active" "1" "$pass2" "active"
 }
 
 assert_replacement_chain_state() {

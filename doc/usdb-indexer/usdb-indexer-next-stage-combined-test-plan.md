@@ -39,6 +39,17 @@
 3. `version mismatch / upgrade` 组合场景
 4. `restart / crash consistency` × 历史 context
 
+### 2.3 确定性矩阵执行结果
+
+UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执行：
+
+- 7 个 Rust core protocol test filter 全部通过。
+- 51 个独立 shell/live-regtest 场景全部通过，覆盖基础 smoke、真实 ord、reorg/recovery、historical validation 和 27 个 validator block-body 场景。
+- version-matrix 暴露并修正了 head advance 后仍等待旧高度的测试竞态；修正后版本组合在 head 前进前后结果一致。
+- aggregate runner 曾因残留 ord 进程占用单个测试端口中断；确认环境原因后，该场景及后续场景均使用空闲独立端口完成。
+
+本次结论不包含完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak；这些项目继续归入 Next Wave。
+
 ## 3. 分阶段计划
 
 ### Phase A: World-Sim × Validator Sampled Validation

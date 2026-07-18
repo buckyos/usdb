@@ -36,12 +36,12 @@ assert_old_chain_state() {
   local pass_old="$2"
   local pass_new="$3"
 
-  regtest_assert_usdb_pass_snapshot_state "$pass_old" "$block_height" "dormant"
-  regtest_assert_usdb_pass_energy_state "$pass_old" "$block_height" "at_or_before" "dormant"
+  regtest_assert_usdb_pass_snapshot_state "$pass_old" "$block_height" "consumed"
+  regtest_assert_usdb_pass_energy_state "$pass_old" "$block_height" "at_or_before" "consumed" "0"
   regtest_assert_usdb_pass_snapshot_state "$pass_new" "$block_height" "active"
   regtest_assert_usdb_pass_energy_state "$pass_new" "$block_height" "at_or_before" "active"
   regtest_assert_usdb_active_balance_snapshot_positive "$block_height"
-  regtest_assert_usdb_pass_stats "$block_height" "2" "1" "1" "0" "0" "0"
+  regtest_assert_usdb_pass_stats "$block_height" "2" "1" "0" "1" "0" "0"
 }
 
 assert_transfer_only_state() {
@@ -116,7 +116,7 @@ EOF
   cat >"$remint_content_file" <<EOF
 {"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${pass_old}"]}
 EOF
-  pass_new="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file")"
+  pass_new="$(regtest_ord_inscribe_file "$ORD_WALLET_NAME_B" "$remint_content_file" "$ord_receive_address_b")"
   regtest_mine_blocks "$REMINT_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
   target_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"

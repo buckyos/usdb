@@ -1405,7 +1405,7 @@ build_live_duplicate_prev_inherit_scenario() {
   local height_remint_2="$9"
   cat >"$scenario_file" <<EOF
 {
-  "name": "live-ord-duplicate-prev-inherit-assert",
+  "name": "live-ord-second-inherit-consumed-prev-invalid-assert",
   "steps": [
     {
       "type": "wait_balance_history_synced",
@@ -1527,12 +1527,19 @@ build_live_duplicate_prev_inherit_scenario() {
       "right": "active"
     },
     {
-      "type": "assert_pass_energy_delta",
-      "inscription_id": "${inscription_id_2}",
-      "from_height": ${height_penalty_baseline},
-      "to_height": ${height_penalty},
-      "max_delta": -1,
-      "mode": "at_or_before"
+      "type": "assert_eq",
+      "left": "\$pass2_energy_before_penalty.raw_energy",
+      "right": "0"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_penalty.raw_energy",
+      "right": "0"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass2_energy_penalty.owner_delta",
+      "right": -50000000
     },
     {
       "type": "rpc_call",
@@ -1568,7 +1575,7 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "assert_eq",
       "left": "\$pass2_remint2.state",
-      "right": "dormant"
+      "right": "active"
     },
     {
       "type": "rpc_call",
@@ -1586,7 +1593,12 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "assert_eq",
       "left": "\$pass3_remint2.state",
-      "right": "active"
+      "right": "invalid"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$pass3_remint2.invalid_code",
+      "right": "INVALID_PREV_ID"
     },
     {
       "type": "rpc_call",
@@ -1632,7 +1644,7 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "assert_eq",
       "left": "\$pass2_energy_remint2.state",
-      "right": "dormant"
+      "right": "active"
     },
     {
       "type": "assert_pass_energy_delta",
@@ -1643,7 +1655,7 @@ build_live_duplicate_prev_inherit_scenario() {
       "mode": "at_or_before"
     },
     {
-      "type": "rpc_call",
+      "type": "assert_rpc_error_code",
       "service": "usdb",
       "method": "get_pass_energy",
       "params": [
@@ -1653,21 +1665,8 @@ build_live_duplicate_prev_inherit_scenario() {
           "mode": "at_or_before"
         }
       ],
-      "result_only": true,
-      "var": "pass3_energy_remint2"
-    },
-    {
-      "type": "assert_eq",
-      "left": "\$pass3_energy_remint2.state",
-      "right": "active"
-    },
-    {
-      "type": "assert_pass_energy_eq",
-      "inscription_id": "${inscription_id_3}",
-      "block_height": ${height_remint_2},
-      "expected_energy": 0,
-      "mode": "at_or_before",
-      "expected_state": "active"
+      "expected_code": -32012,
+      "message_contains": "ENERGY_NOT_FOUND"
     },
     {
       "type": "rpc_call",
@@ -1709,7 +1708,27 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "assert_len",
       "value": "\$invalid_page.items",
-      "expected_len": 0
+      "expected_len": 1
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.total",
+      "right": 1
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.items.0.inscription_id",
+      "right": "${inscription_id_3}"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.items.0.state",
+      "right": "invalid"
+    },
+    {
+      "type": "assert_eq",
+      "left": "\$invalid_page.items.0.invalid_code",
+      "right": "INVALID_PREV_ID"
     }
   ]
 }
@@ -2019,14 +2038,15 @@ EOF
     height_penalty_baseline="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
     log "Chain height after penalty baseline funding confirmations: ${height_penalty_baseline}"
 
-    local penalty_fund_vout
-    penalty_fund_vout="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
-      getrawtransaction "$penalty_fund_txid" 2 | python3 - "$ord_receive_address_b" <<'PY'
+    local penalty_fund_tx_json penalty_fund_vout
+    penalty_fund_tx_json="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+      getrawtransaction "$penalty_fund_txid" 2)"
+    penalty_fund_vout="$(python3 - "$ord_receive_address_b" "$penalty_fund_tx_json" <<'PY'
 import json
 import sys
 
 target_address = sys.argv[1]
-payload = json.load(sys.stdin)
+payload = json.loads(sys.argv[2])
 for vout in payload.get("vout", []):
     output_index = vout.get("n")
     if output_index is None:
@@ -2064,20 +2084,20 @@ PY
     penalty_spend_signed="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$ORD_WALLET_NAME_B" \
       signrawtransactionwithwallet "$penalty_spend_raw")"
     local penalty_spend_hex
-    penalty_spend_hex="$(echo "$penalty_spend_signed" | python3 - <<'PY'
+    penalty_spend_hex="$(python3 - "$penalty_spend_signed" <<'PY'
 import json
 import sys
 
-payload = json.load(sys.stdin)
+payload = json.loads(sys.argv[1])
 print(payload.get("hex", ""))
 PY
 )"
     local penalty_spend_complete
-    penalty_spend_complete="$(echo "$penalty_spend_signed" | python3 - <<'PY'
+    penalty_spend_complete="$(python3 - "$penalty_spend_signed" <<'PY'
 import json
 import sys
 
-payload = json.load(sys.stdin)
+payload = json.loads(sys.argv[1])
 print("true" if payload.get("complete") else "false")
 PY
 )"

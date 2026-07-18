@@ -422,12 +422,12 @@
 - `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_three_pass_candidate_set.sh`
 - `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_three_collab_breakdown.sh`
 
-上述 targeted live smoke 均使用独立 regtest bitcoind/ord/balance-history/usdb-indexer 数据目录和端口执行成功；多候选 candidate cursor 与多 collab breakdown cursor 已获得真实链路覆盖，但尚未据此声明全量 live regression 已完成。
+上述 targeted live smoke 均使用独立 regtest bitcoind/ord/balance-history/usdb-indexer 数据目录和端口执行成功；后续完整确定性矩阵执行结果见“UIP-0001 至 UIP-0006 确定性 Live/Regtest 矩阵”。
 
 ### 待继续对齐
 
-- 执行包含新 formula-version mismatch、three-collab breakdown 和已修正 transfer/remint 断言的完整 live/regtest runner。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。
+- 执行 300-block 随机 world-sim、扩大 candidate set 规模并进行长时 soak；这些非确定性/性能项目不计入本轮协议矩阵完成结论。
 
 ## UIP-0001 至 UIP-0006 测试入口与文档状态收口
 
@@ -453,3 +453,29 @@
 - UIP-0001/UIP-0002 移除已经完成的 parser/state-machine 未决项，只保留 UIP-0008 activation 和可选审计 API。
 - UIP-0003/UIP-0004/UIP-0005/UIP-0006 移除“后续再实现 UIP-0004/0005/0006”等过期描述，明确 BTC/indexer core 已完成及 ETHW/UIP-0008/UIP-0009 边界。
 - economic issue tracker 将 ECO-002 至 ECO-007、ECO-012 标为 `Done`；ECO-008/ECO-011 保持 `In Progress`，并明确只剩 ETHW policy/payload 或集中测试与性能部分。
+
+## UIP-0001 至 UIP-0006 确定性 Live/Regtest 矩阵
+
+状态：已完成。共执行 58 个确定性入口，包括 7 个 Rust core protocol test filter 和 51 个独立 shell/live-regtest 场景；所有入口最终均通过。
+
+### 执行范围
+
+- core protocol：7 个 UIP-0001/UIP-0002/UIP-0003 parser、状态机和公式测试。
+- 基础 scenario：4 个非 ord smoke，以及 5 个真实 ord mint/transfer/remint/invalid/duplicate-prev 场景。
+- reorg/recovery：6 个 smoke reorg、3 个真实 ord reorg、2 个 pending recovery 场景。
+- historical validation：4 个 state-ref、retention floor、history gap 和 validator historical-context 场景。
+- validator block-body：27 个 happy-path、state advance、multi-pass/collab、tamper、reorg、版本矩阵、payload upgrade、restart/not-ready/crash-recovery 场景。
+
+### 矩阵发现与修正
+
+- `balance-history` JSON-RPC client 现在区分“缺少 result 字段”和合法 `result: null`；reorg 后查询已回滚 block commit 时，`Option<T>` 可正确解码为空，不再中止 indexer 扫块。新增 present-null 和 missing-result 单元测试。
+- duplicate-prev live 场景修正 JSON 断言传参方式，并按 UIP-0002 收敛预期：首次 child 保持 Active，第二次复用已 Consumed prev 的 mint 为 `Invalid / INVALID_PREV_ID`，且 invalid pass 不生成 energy row。
+- transfer/remint reorg 场景显式把 child mint 到 prev 当前 owner 的同一 script，满足 exact owner 约束；旧 prev 断言统一为 `Consumed / raw_energy=0`。
+- multi-block reorg 场景移除“重复 prev 可再次继承”的旧预期，改为校验第二 child invalid、leaderboard 仅包含有效 Active pass，并覆盖 rollback 后 invalid pass 移除。
+- energy-state helper 增加可选 raw energy 断言，用于交叉验证 Consumed 终态固定为 0。
+- validator version-matrix 在 head advance 后改为等待实际新高度 `current_tip_height + 1`；避免仍等待旧高度而提前通过，随后在 `CatchingUp` 窗口误收到 `SNAPSHOT_NOT_READY`。
+
+### 环境说明
+
+- validator aggregate runner 在 protocol-version mismatch slot 首次遇到一个残留 ord 进程占用端口；确认非协议失败后，使用空闲独立端口重跑该项，并按原顺序完成其余场景。
+- 本轮没有运行完整 300-block 随机 world-sim 或长时 soak；这两项属于后续规模/稳定性评估，不影响 UIP-0001 至 UIP-0006 确定性协议矩阵结论。
