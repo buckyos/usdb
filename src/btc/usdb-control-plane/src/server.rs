@@ -73,6 +73,43 @@ struct PreparedBtcMintContext {
     runtime_profile: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BtcMintIdentity {
+    Standard { usdb_main: String },
+    FixedLeader { leader_pass_id: String },
+    AddressLeader { leader_btc_addr: String },
+}
+
+impl BtcMintIdentity {
+    fn pass_kind(&self) -> &'static str {
+        match self {
+            Self::Standard { .. } => "standard",
+            Self::FixedLeader { .. } | Self::AddressLeader { .. } => "collab",
+        }
+    }
+
+    fn usdb_main(&self) -> Option<&str> {
+        match self {
+            Self::Standard { usdb_main } => Some(usdb_main),
+            Self::FixedLeader { .. } | Self::AddressLeader { .. } => None,
+        }
+    }
+
+    fn leader_pass_id(&self) -> Option<&str> {
+        match self {
+            Self::FixedLeader { leader_pass_id } => Some(leader_pass_id),
+            Self::Standard { .. } | Self::AddressLeader { .. } => None,
+        }
+    }
+
+    fn leader_btc_addr(&self) -> Option<&str> {
+        match self {
+            Self::AddressLeader { leader_btc_addr } => Some(leader_btc_addr),
+            Self::Standard { .. } | Self::FixedLeader { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OrdMintJsonOutput {
     #[serde(default)]
@@ -592,7 +629,8 @@ async fn post_execute_btc_mint(
     let prepare_request = BtcMintPrepareRequest {
         owner_address: request.owner_address.clone(),
         usdb_main: request.usdb_main.clone(),
-        usdb_collab: request.usdb_collab.clone(),
+        leader_pass_id: request.leader_pass_id.clone(),
+        leader_btc_addr: request.leader_btc_addr.clone(),
         prev: request.prev.clone(),
     };
     let prepared = prepare_btc_mint_context(&state, &prepare_request).await?;
@@ -717,10 +755,13 @@ async fn prepare_btc_mint_context(
     let owner_script_hash = address_string_to_script_hash(&owner_address, &btc_network)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?
         .to_string();
-    let usdb_main = normalize_evm_address("usdb_main", &request.usdb_main)
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
-    let usdb_collab = normalize_optional_evm_address("usdb_collab", request.usdb_collab.as_deref())
-        .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
+    let mint_identity = normalize_btc_mint_identity(
+        request.usdb_main.as_deref(),
+        request.leader_pass_id.as_deref(),
+        request.leader_btc_addr.as_deref(),
+        &btc_network,
+    )
+    .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
     let prev = normalize_prev_list(&request.prev)
         .map_err(|error| (StatusCode::BAD_REQUEST, Json(ApiError { error })))?;
 
@@ -805,20 +846,7 @@ async fn prepare_btc_mint_context(
         }
     }
 
-    let mut inscription_map = serde_json::Map::new();
-    inscription_map.insert("p".to_string(), Value::String("usdb".to_string()));
-    inscription_map.insert("op".to_string(), Value::String("mint".to_string()));
-    inscription_map.insert("usdb_main".to_string(), Value::String(usdb_main.clone()));
-    if let Some(value) = usdb_collab.as_ref() {
-        inscription_map.insert("usdb_collab".to_string(), Value::String(value.clone()));
-    }
-    if !prev.is_empty() {
-        inscription_map.insert(
-            "prev".to_string(),
-            Value::Array(prev.iter().cloned().map(Value::String).collect()),
-        );
-    }
-    let inscription_payload = Value::Object(inscription_map);
+    let inscription_payload = build_btc_mint_inscription_payload(&mint_identity, &prev);
     let inscription_payload_json =
         serde_json::to_string_pretty(&inscription_payload).map_err(|error| {
             (
@@ -830,7 +858,7 @@ async fn prepare_btc_mint_context(
         })?;
     let prepare_request = json!({
         "prepare_mode": "draft_only",
-        "protocol": "usdb-btc-mint-draft-v1",
+        "protocol": "usdb-btc-mint-v1",
         "wallet_signing": "psbt",
         "runtime_btc_network": btc_network_name.clone(),
         "owner_address": owner_address.clone(),
@@ -872,8 +900,10 @@ async fn prepare_btc_mint_context(
             },
             owner_address,
             owner_script_hash,
-            usdb_main,
-            usdb_collab,
+            pass_kind: mint_identity.pass_kind().to_string(),
+            usdb_main: mint_identity.usdb_main().map(str::to_string),
+            leader_pass_id: mint_identity.leader_pass_id().map(str::to_string),
+            leader_btc_addr: mint_identity.leader_btc_addr().map(str::to_string),
             prev,
             suggested_prev,
             active_pass,
@@ -1524,14 +1554,76 @@ fn normalize_evm_address(field: &str, value: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn normalize_optional_evm_address(
-    field: &str,
-    value: Option<&str>,
-) -> Result<Option<String>, String> {
-    match value {
-        Some(item) if !item.trim().is_empty() => normalize_evm_address(field, item).map(Some),
-        _ => Ok(None),
+fn normalize_btc_mint_identity(
+    usdb_main: Option<&str>,
+    leader_pass_id: Option<&str>,
+    leader_btc_addr: Option<&str>,
+    network: &Network,
+) -> Result<BtcMintIdentity, String> {
+    match (usdb_main, leader_pass_id, leader_btc_addr) {
+        (Some(value), None, None) => Ok(BtcMintIdentity::Standard {
+            usdb_main: normalize_evm_address("usdb_main", value)?,
+        }),
+        (None, Some(value), None) => {
+            let value = normalize_required_text("leader_pass_id", value)?;
+            if !is_valid_inscription_id(&value) {
+                return Err(
+                    "leader_pass_id must follow the inscription id format <txid>i<index>"
+                        .to_string(),
+                );
+            }
+            Ok(BtcMintIdentity::FixedLeader {
+                leader_pass_id: value,
+            })
+        }
+        (None, None, Some(value)) => {
+            let value = normalize_required_text("leader_btc_addr", value)?;
+            address_string_to_script_hash(&value, network).map_err(|error| {
+                format!(
+                    "leader_btc_addr must be a valid address on the active BTC network: {}",
+                    error
+                )
+            })?;
+            Ok(BtcMintIdentity::AddressLeader {
+                leader_btc_addr: value,
+            })
+        }
+        _ => Err(
+            "mint must contain exactly one identity field: usdb_main for a standard pass, or leader_pass_id/leader_btc_addr for a collab pass"
+                .to_string(),
+        ),
     }
+}
+
+fn build_btc_mint_inscription_payload(identity: &BtcMintIdentity, prev: &[String]) -> Value {
+    let mut inscription_map = serde_json::Map::new();
+    inscription_map.insert("p".to_string(), Value::String("usdb".to_string()));
+    inscription_map.insert("op".to_string(), Value::String("mint".to_string()));
+    inscription_map.insert("v".to_string(), Value::Number(1_u64.into()));
+    match identity {
+        BtcMintIdentity::Standard { usdb_main } => {
+            inscription_map.insert("usdb_main".to_string(), Value::String(usdb_main.clone()));
+        }
+        BtcMintIdentity::FixedLeader { leader_pass_id } => {
+            inscription_map.insert(
+                "leader_pass_id".to_string(),
+                Value::String(leader_pass_id.clone()),
+            );
+        }
+        BtcMintIdentity::AddressLeader { leader_btc_addr } => {
+            inscription_map.insert(
+                "leader_btc_addr".to_string(),
+                Value::String(leader_btc_addr.clone()),
+            );
+        }
+    }
+    if !prev.is_empty() {
+        inscription_map.insert(
+            "prev".to_string(),
+            Value::Array(prev.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    Value::Object(inscription_map)
 }
 
 fn normalize_prev_list(values: &[String]) -> Result<Vec<String>, String> {
@@ -2624,6 +2716,106 @@ mod tests {
     fn normalize_evm_address_accepts_lowercase_hex() {
         let value = "0x1111111111111111111111111111111111111111";
         assert_eq!(normalize_evm_address("usdb_main", value).unwrap(), value);
+    }
+
+    #[test]
+    fn normalize_btc_mint_identity_accepts_each_uip0001_pass_shape() {
+        let pass_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
+        let usdb_main = "0x1111111111111111111111111111111111111111";
+        let leader_address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+
+        assert_eq!(
+            normalize_btc_mint_identity(Some(usdb_main), None, None, &Network::Bitcoin).unwrap(),
+            BtcMintIdentity::Standard {
+                usdb_main: usdb_main.to_string(),
+            }
+        );
+        assert_eq!(
+            normalize_btc_mint_identity(None, Some(pass_id), None, &Network::Bitcoin).unwrap(),
+            BtcMintIdentity::FixedLeader {
+                leader_pass_id: pass_id.to_string(),
+            }
+        );
+        assert_eq!(
+            normalize_btc_mint_identity(None, None, Some(leader_address), &Network::Bitcoin)
+                .unwrap(),
+            BtcMintIdentity::AddressLeader {
+                leader_btc_addr: leader_address.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_btc_mint_identity_rejects_conflicts_and_wrong_network() {
+        let pass_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
+        let usdb_main = "0x1111111111111111111111111111111111111111";
+        let leader_address = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+
+        assert!(normalize_btc_mint_identity(None, None, None, &Network::Bitcoin).is_err());
+        assert!(
+            normalize_btc_mint_identity(Some(usdb_main), Some(" "), None, &Network::Bitcoin,)
+                .is_err()
+        );
+        assert!(
+            normalize_btc_mint_identity(Some(usdb_main), Some(pass_id), None, &Network::Bitcoin,)
+                .is_err()
+        );
+        assert!(
+            normalize_btc_mint_identity(
+                None,
+                Some(pass_id),
+                Some(leader_address),
+                &Network::Bitcoin,
+            )
+            .is_err()
+        );
+        assert!(
+            normalize_btc_mint_identity(None, None, Some(leader_address), &Network::Regtest)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn btc_mint_payload_uses_uip0001_v1_keys() {
+        let prev = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefi0";
+        let standard = BtcMintIdentity::Standard {
+            usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
+        };
+        assert_eq!(
+            build_btc_mint_inscription_payload(&standard, &[prev.to_string()]),
+            json!({
+                "p": "usdb",
+                "op": "mint",
+                "v": 1,
+                "usdb_main": "0x1111111111111111111111111111111111111111",
+                "prev": [prev],
+            })
+        );
+
+        let collab = BtcMintIdentity::FixedLeader {
+            leader_pass_id: prev.to_string(),
+        };
+        assert_eq!(
+            build_btc_mint_inscription_payload(&collab, &[]),
+            json!({
+                "p": "usdb",
+                "op": "mint",
+                "v": 1,
+                "leader_pass_id": prev,
+            })
+        );
+    }
+
+    #[test]
+    fn btc_mint_request_rejects_removed_usdb_collab_field() {
+        let error = serde_json::from_value::<BtcMintPrepareRequest>(json!({
+            "owner_address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            "usdb_main": "0x1111111111111111111111111111111111111111",
+            "usdb_collab": "0x2222222222222222222222222222222222222222",
+            "prev": [],
+        }))
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field `usdb_collab`"));
     }
 
     #[test]

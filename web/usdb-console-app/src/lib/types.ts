@@ -267,8 +267,11 @@ export interface PassSnapshot {
   mint_txid: string
   mint_block_height: number
   mint_owner: string
+  mint_version: number
+  pass_kind: 'standard' | 'collab'
   usdb_main: string
-  usdb_collab?: string | null
+  leader_pass_id?: string | null
+  leader_btc_addr?: string | null
   prev: string[]
   invalid_code?: string | null
   invalid_reason?: string | null
@@ -305,7 +308,11 @@ export interface PassEnergySnapshot {
   owner_address: string
   owner_balance: number
   owner_delta: number
-  energy: number
+  raw_energy: string
+  collab_contribution: string
+  effective_energy: string
+  level: number
+  difficulty_factor_bps: number
 }
 
 export interface PassEnergyRangeItem {
@@ -316,7 +323,7 @@ export interface PassEnergyRangeItem {
   owner_address: string
   owner_balance: number
   owner_delta: number
-  energy: number
+  energy: string
 }
 
 export interface PassEnergyRangePage {
@@ -330,7 +337,7 @@ export interface PassEnergyLeaderboardItem {
   owner: string
   record_block_height: number
   state: string
-  energy: number
+  energy: string
 }
 
 export interface PassEnergyLeaderboardPage {
@@ -356,9 +363,38 @@ export interface BtcMintPrepareActivePassSummary {
   inscription_id: string
   state: string
   owner: string
+  mint_version: number
+  pass_kind: 'standard' | 'collab'
   usdb_main: string
-  usdb_collab?: string | null
+  leader_pass_id?: string | null
+  leader_btc_addr?: string | null
   prev: string[]
+}
+
+export type BtcMintIdentityFields =
+  | {
+      usdb_main: string
+      leader_pass_id?: never
+      leader_btc_addr?: never
+    }
+  | {
+      usdb_main?: never
+      leader_pass_id: string
+      leader_btc_addr?: never
+    }
+  | {
+      usdb_main?: never
+      leader_pass_id?: never
+      leader_btc_addr: string
+    }
+
+export type BtcMintPrepareRequest = BtcMintIdentityFields & {
+  owner_address: string
+  prev: string[]
+}
+
+export type BtcMintExecuteRequest = BtcMintPrepareRequest & {
+  wallet_name: string
 }
 
 export interface BtcMintPrepareResponse {
@@ -369,8 +405,10 @@ export interface BtcMintPrepareResponse {
   runtime: BtcMintPrepareRuntimeSummary
   owner_address: string
   owner_script_hash: string
-  usdb_main: string
-  usdb_collab?: string | null
+  pass_kind: 'standard' | 'collab'
+  usdb_main?: string | null
+  leader_pass_id?: string | null
+  leader_btc_addr?: string | null
   prev: string[]
   suggested_prev: string[]
   active_pass?: BtcMintPrepareActivePassSummary | null

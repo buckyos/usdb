@@ -29,6 +29,22 @@ export function displayNumber(
   return new Intl.NumberFormat(locale).format(Number(value))
 }
 
+export function displayDecimalInteger(
+  locale: string,
+  value: string | number | null | undefined,
+  t: Translate,
+  emptyKey = 'common.notYetAvailable',
+) {
+  if (value === null || value === undefined) return t(emptyKey)
+  const normalized = String(value).trim()
+  if (!/^-?\d+$/.test(normalized)) return t(emptyKey)
+  try {
+    return new Intl.NumberFormat(locale).format(BigInt(normalized))
+  } catch {
+    return normalized
+  }
+}
+
 export function displayBoolean(
   value: boolean | null | undefined,
   t: Translate,

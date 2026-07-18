@@ -372,6 +372,25 @@
 - `web/usdb-console-app/src/lib/types.ts`
   - 同步 control-plane service/capability 与 indexer RpcInfo 类型字段。
 
+### 跨 UIP client surface 收口
+
+- `src/btc/usdb-control-plane/src/{models,server}.rs`
+  - mint prepare/execute 请求直接切换到 UIP-0001 v1 strict schema：standard 仅接受 `usdb_main`，collab 仅接受 `leader_pass_id` / `leader_btc_addr` 二选一，并拒绝未知字段。
+  - `leader_btc_addr` 按当前 BTC network 校验；payload 固定写入整数 `v: 1`，不再生成旧协作地址字段。
+  - prepare response 和 active-pass summary 增加 `pass_kind`、`mint_version`、Leader 绑定字段，不保留兼容响应。
+  - 纯函数测试覆盖三种合法身份形态、字段冲突、BTC network mismatch、v1 payload 键和旧字段拒绝。
+- `web/usdb-console-app/src/{lib,pages,i18n}`
+  - mint 编辑器改为 standard/collab 与 fixed-pass/BTC-address 两级模式选择，并用互斥 TypeScript union 构造请求；session storage key 直接升级，不读取旧 mint 表单状态。
+  - pass 类型同步 UIP-0001 字段；`PassEnergySnapshot` 同步 raw/collab/effective decimal string、level 和 factor。
+  - raw energy range / leaderboard 继续按 UIP-0003 RPC 的 `items[].energy` 命名，但类型改为 decimal string；所有能量使用 `BigInt` 格式化，避免 `u128` 转 JavaScript `number` 丢失精度。
+- `web/usdb-indexer-browser/src/main.tsx`
+  - pass/owner/recent 类型和详情改为 `mint_version`、`pass_kind`、Leader 绑定字段。
+  - 单 pass 能量详情改为 raw/collab/effective/level/factor，range / leaderboard 明确标注 raw energy 并按 decimal string 展示。
+- `doc/矿工证铭文协议{,_en}.md`
+  - 旧 issue 初稿不再维护第二套 schema，改为 UIP-0001 至 UIP-0006 的入口摘要，并明确 UIP 文本是唯一规范来源。
+- `doc/usdb-btc-ord-roles-and-mint-flow.md`
+  - control-plane mint 流程说明同步 standard/collab 选择和 UIP-0001 字段互斥校验。
+
 ### 本轮补充测试
 
 - CLI candidate 默认 view/rule/limit 和非法 limit 拒绝。
@@ -379,6 +398,8 @@
 - control-plane 四个 UIP-0006 RPC allowlist/params 原样转发。
 - control-plane capability 完整声明通过，缺少 feature、错误 view version 或错误 selection rule 时 fail closed。
 - indexer `RpcInfo` 的 API/view/rule/max-limit 和四个必需 feature 与 profile/breakdown 服务测试交叉验证。
+- control-plane strict mint schema / payload 定向测试和 Rust workspace 全量测试。
+- console 与独立 indexer browser 的 TypeScript check 和 production build。
 
 ### 已验证
 
@@ -391,6 +412,8 @@
 - `cargo check --workspace --all-targets`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `npm run build`（`web/usdb-console-app`）
+- `npm run check`（`web/usdb-console-app`、`web/usdb-indexer-browser`）
+- `npm run build`（`web/usdb-indexer-browser`）
 - `cargo test -p usdb-indexer test_collab_breakdown_sort_uses_canonical_pass_id_text_order -- --nocapture`
 - 全部 57 个 shell 脚本 `bash -n`
 - `git diff --check`
@@ -405,4 +428,3 @@
 
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。
-- control-plane mint prepare/execute 与现有 console/explorer 仍有旧 `usdb_collab`、旧 pass/energy response 类型；应作为独立跨 UIP client surface 清理，直接切换到 v1 strict standard/collab schema，不保留兼容双栈。

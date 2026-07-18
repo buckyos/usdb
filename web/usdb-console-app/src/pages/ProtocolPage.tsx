@@ -15,6 +15,7 @@ import {
 import {
   displayBalanceDeltaSmart,
   displayBalanceSmart,
+  displayDecimalInteger,
   displayNumber,
   displayText,
 } from '../lib/format'
@@ -454,7 +455,7 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
                     }}
                   >
                     <td>{displayNumber(locale, leaderboardPage * 20 + index + 1, t)}</td>
-                    <td>{displayNumber(locale, item.energy, t)}</td>
+                    <td>{displayDecimalInteger(locale, item.energy, t)}</td>
                     <td className="break-all">{item.inscription_id}</td>
                     <td>{item.state}</td>
                   </tr>
@@ -703,8 +704,28 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
                   <FieldValueList
                     items={[
                       {
-                        label: t('services.usdbIndexer.energy'),
-                        value: displayNumber(locale, energySnapshot.energy, t),
+                        label: t('services.usdbIndexer.rawEnergy'),
+                        value: displayDecimalInteger(locale, energySnapshot.raw_energy, t),
+                      },
+                      {
+                        label: t('services.usdbIndexer.collabContribution'),
+                        value: displayDecimalInteger(
+                          locale,
+                          energySnapshot.collab_contribution,
+                          t,
+                        ),
+                      },
+                      {
+                        label: t('services.usdbIndexer.effectiveEnergy'),
+                        value: displayDecimalInteger(locale, energySnapshot.effective_energy, t),
+                      },
+                      {
+                        label: t('services.usdbIndexer.level'),
+                        value: displayNumber(locale, energySnapshot.level, t),
+                      },
+                      {
+                        label: t('services.usdbIndexer.difficultyFactorBps'),
+                        value: displayNumber(locale, energySnapshot.difficulty_factor_bps, t),
                       },
                       {
                         label: t('services.usdbIndexer.recordHeight'),
@@ -750,7 +771,7 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
                           <td>{item.state}</td>
                           <td>{displayBalanceSmart(locale, item.owner_balance, t)}</td>
                           <td>{displayBalanceDeltaSmart(locale, item.owner_delta, t)}</td>
-                          <td>{displayNumber(locale, item.energy, t)}</td>
+                          <td>{displayDecimalInteger(locale, item.energy, t)}</td>
                         </tr>
                       ))
                     )}

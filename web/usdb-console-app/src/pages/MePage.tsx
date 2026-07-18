@@ -16,11 +16,13 @@ import {
 import {
   displayBalanceDeltaSmart,
   displayBalanceSmart,
+  displayDecimalInteger,
   displayNumber,
   displayText,
 } from '../lib/format'
 import type {
   AddressBalanceRow,
+  BtcMintIdentityFields,
   BtcMintExecuteResponse,
   BtcMintPrepareResponse,
   BtcWorldSimIdentitiesResponse,
@@ -61,6 +63,8 @@ type IdentityKind = 'eth' | 'btc'
 type EthIdentitySource = 'browser_wallet' | 'dev_sim_identity' | 'manual_address'
 type BtcIdentitySource = 'browser_wallet' | 'world_sim_agent' | 'manual_address'
 type BtcMintFlowStep = 'edit' | 'review' | 'signing' | 'submitting' | 'waiting' | 'success'
+type BtcMintPassKind = 'standard' | 'collab'
+type BtcMintLeaderBinding = 'pass_id' | 'btc_address'
 
 interface WalletPassRecognition {
   walletInscriptionId: string
@@ -70,7 +74,7 @@ interface WalletPassRecognition {
 
 type BtcRuntimeNetwork = 'mainnet' | 'testnet' | 'testnet4' | 'regtest' | 'signet'
 
-const BTC_ME_SESSION_STORAGE_KEY = 'usdb.console.me.btc.v1'
+const BTC_ME_SESSION_STORAGE_KEY = 'usdb.console.me.btc.v2'
 const ETH_ME_SESSION_STORAGE_KEY = 'usdb.console.me.eth.v1'
 
 interface PersistedEthSessionState {
@@ -84,8 +88,11 @@ interface PersistedBtcSessionState {
   manualAddress?: string
   selectedWorldSimWalletName?: string
   selectedWorldSimOwnerAddress?: string
+  mintPassKind?: BtcMintPassKind
+  mintLeaderBinding?: BtcMintLeaderBinding
   mintUsdbMain?: string
-  mintUsdbCollab?: string
+  mintLeaderPassId?: string
+  mintLeaderBtcAddr?: string
   mintPrev?: string
   mintStep?: BtcMintFlowStep
   mintPrepareResult?: BtcMintPrepareResponse | null
@@ -145,6 +152,14 @@ function loadPersistedBtcSessionState(): PersistedBtcSessionState {
       parsed.mintStep === 'success'
         ? parsed.mintStep
         : undefined
+    const mintPassKind =
+      parsed.mintPassKind === 'standard' || parsed.mintPassKind === 'collab'
+        ? parsed.mintPassKind
+        : undefined
+    const mintLeaderBinding =
+      parsed.mintLeaderBinding === 'pass_id' || parsed.mintLeaderBinding === 'btc_address'
+        ? parsed.mintLeaderBinding
+        : undefined
     const restored: PersistedBtcSessionState = {
       walletMode,
       identitySource,
@@ -157,8 +172,13 @@ function loadPersistedBtcSessionState(): PersistedBtcSessionState {
         typeof parsed.selectedWorldSimOwnerAddress === 'string'
           ? parsed.selectedWorldSimOwnerAddress
           : undefined,
+      mintPassKind,
+      mintLeaderBinding,
       mintUsdbMain: typeof parsed.mintUsdbMain === 'string' ? parsed.mintUsdbMain : undefined,
-      mintUsdbCollab: typeof parsed.mintUsdbCollab === 'string' ? parsed.mintUsdbCollab : undefined,
+      mintLeaderPassId:
+        typeof parsed.mintLeaderPassId === 'string' ? parsed.mintLeaderPassId : undefined,
+      mintLeaderBtcAddr:
+        typeof parsed.mintLeaderBtcAddr === 'string' ? parsed.mintLeaderBtcAddr : undefined,
       mintPrev: typeof parsed.mintPrev === 'string' ? parsed.mintPrev : undefined,
       mintStep,
       mintPrepareResult: parsed.mintPrepareResult ?? null,
@@ -423,8 +443,19 @@ export function MePage({ data, locale, t }: MePageProps) {
   const [btcRecognizedPasses, setBtcRecognizedPasses] = useState<WalletPassRecognition[]>([])
   const [btcRecognizedPassesLoading, setBtcRecognizedPassesLoading] = useState(false)
   const [btcRecognizedPassesError, setBtcRecognizedPassesError] = useState<string | null>(null)
+  const [btcMintPassKind, setBtcMintPassKind] = useState<BtcMintPassKind>(
+    btcSessionBoot.mintPassKind ?? 'standard',
+  )
+  const [btcMintLeaderBinding, setBtcMintLeaderBinding] = useState<BtcMintLeaderBinding>(
+    btcSessionBoot.mintLeaderBinding ?? 'pass_id',
+  )
   const [btcMintUsdbMain, setBtcMintUsdbMain] = useState(btcSessionBoot.mintUsdbMain ?? '')
-  const [btcMintUsdbCollab, setBtcMintUsdbCollab] = useState(btcSessionBoot.mintUsdbCollab ?? '')
+  const [btcMintLeaderPassId, setBtcMintLeaderPassId] = useState(
+    btcSessionBoot.mintLeaderPassId ?? '',
+  )
+  const [btcMintLeaderBtcAddr, setBtcMintLeaderBtcAddr] = useState(
+    btcSessionBoot.mintLeaderBtcAddr ?? '',
+  )
   const [btcMintPrev, setBtcMintPrev] = useState(btcSessionBoot.mintPrev ?? '')
   const [btcMintPrepareLoading, setBtcMintPrepareLoading] = useState(false)
   const [btcMintPrepareError, setBtcMintPrepareError] = useState<string | null>(null)
@@ -617,9 +648,27 @@ export function MePage({ data, locale, t }: MePageProps) {
         : null,
     [btcAddressBalanceRows],
   )
+  const btcMintIdentityFields: BtcMintIdentityFields =
+    btcMintPassKind === 'standard'
+      ? { usdb_main: btcMintUsdbMain.trim() }
+      : btcMintLeaderBinding === 'pass_id'
+        ? { leader_pass_id: btcMintLeaderPassId.trim() }
+        : { leader_btc_addr: btcMintLeaderBtcAddr.trim() }
+  const btcMintPassFieldBlocker =
+    btcMintPassKind === 'standard'
+      ? btcMintUsdbMain.trim() === ''
+        ? t('me.btc.mintUsdbMainRequired')
+        : null
+      : btcMintLeaderBinding === 'pass_id'
+        ? btcMintLeaderPassId.trim() === ''
+          ? t('me.btc.mintLeaderPassIdRequired')
+          : null
+        : btcMintLeaderBtcAddr.trim() === ''
+          ? t('me.btc.mintLeaderBtcAddrRequired')
+          : null
   const btcMintPrepareClientBlockers = [
     !btcLookupAddress ? t('me.btc.mintOwnerRequired') : null,
-    btcMintUsdbMain.trim() === '' ? t('me.btc.mintUsdbMainRequired') : null,
+    btcMintPassFieldBlocker,
     btcLookupNetworkMismatchMessage,
     btcMintSignerBlocker,
   ].filter((item): item is string => Boolean(item))
@@ -728,6 +777,13 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.passOwner'),
     },
     {
+      label: t('me.fields.passKind'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayText(btcDisplayActivePass?.pass_kind, t),
+      helpText: t('me.help.passKind'),
+    },
+    {
       label: t('me.fields.passUsdbMain'),
       value: btcProtocolLoading
         ? t('actions.reloading')
@@ -735,18 +791,53 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.passUsdbMain'),
     },
     {
-      label: t('me.fields.passUsdbCollab'),
+      label: t('me.fields.leaderPassId'),
       value: btcProtocolLoading
         ? t('actions.reloading')
-        : displayText(btcDisplayActivePass?.usdb_collab, t),
-      helpText: t('me.help.passUsdbCollab'),
+        : displayText(btcDisplayActivePass?.leader_pass_id, t),
+      helpText: t('me.help.leaderPassId'),
     },
     {
-      label: t('me.fields.passEnergy'),
+      label: t('me.fields.leaderBtcAddress'),
       value: btcProtocolLoading
         ? t('actions.reloading')
-        : displayNumber(locale, btcActivePassEnergy?.energy ?? null, t),
-      helpText: t('me.help.passEnergy'),
+        : displayText(btcDisplayActivePass?.leader_btc_addr, t),
+      helpText: t('me.help.leaderBtcAddress'),
+    },
+    {
+      label: t('me.fields.rawEnergy'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayDecimalInteger(locale, btcActivePassEnergy?.raw_energy, t),
+      helpText: t('me.help.rawEnergy'),
+    },
+    {
+      label: t('me.fields.collabContribution'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayDecimalInteger(locale, btcActivePassEnergy?.collab_contribution, t),
+      helpText: t('me.help.collabContribution'),
+    },
+    {
+      label: t('me.fields.effectiveEnergy'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayDecimalInteger(locale, btcActivePassEnergy?.effective_energy, t),
+      helpText: t('me.help.effectiveEnergy'),
+    },
+    {
+      label: t('me.fields.passLevel'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayNumber(locale, btcActivePassEnergy?.level, t),
+      helpText: t('me.help.passLevel'),
+    },
+    {
+      label: t('me.fields.difficultyFactorBps'),
+      value: btcProtocolLoading
+        ? t('actions.reloading')
+        : displayNumber(locale, btcActivePassEnergy?.difficulty_factor_bps, t),
+      helpText: t('me.help.difficultyFactorBps'),
     },
     {
       label: t('me.fields.passEnergyHeight'),
@@ -905,6 +996,26 @@ export function MePage({ data, locale, t }: MePageProps) {
           label: t('me.fields.mintIntent'),
           value: btcMintIntentLabel,
           helpText: t('me.help.mintIntent'),
+        },
+        {
+          label: t('me.fields.passKind'),
+          value: displayText(btcMintPrepareResult.pass_kind, t),
+          helpText: t('me.help.passKind'),
+        },
+        {
+          label: t('me.fields.passUsdbMain'),
+          value: displayText(btcMintPrepareResult.usdb_main, t),
+          helpText: t('me.help.passUsdbMain'),
+        },
+        {
+          label: t('me.fields.leaderPassId'),
+          value: displayText(btcMintPrepareResult.leader_pass_id, t),
+          helpText: t('me.help.leaderPassId'),
+        },
+        {
+          label: t('me.fields.leaderBtcAddress'),
+          value: displayText(btcMintPrepareResult.leader_btc_addr, t),
+          helpText: t('me.help.leaderBtcAddress'),
         },
         {
           label: t('me.fields.activeMinerPass'),
@@ -1382,8 +1493,11 @@ export function MePage({ data, locale, t }: MePageProps) {
         selectedWorldSimWalletName: btcSelectedWorldSimWalletName,
         selectedWorldSimOwnerAddress:
           btcSelectedWorldSimIdentity?.owner_address ?? btcSelectedWorldSimOwnerAddressHint,
+        mintPassKind: btcMintPassKind,
+        mintLeaderBinding: btcMintLeaderBinding,
         mintUsdbMain: btcMintUsdbMain,
-        mintUsdbCollab: btcMintUsdbCollab,
+        mintLeaderPassId: btcMintLeaderPassId,
+        mintLeaderBtcAddr: btcMintLeaderBtcAddr,
         mintPrev: btcMintPrev,
         mintStep: btcMintStep,
         mintPrepareResult: btcMintPrepareResult,
@@ -1400,7 +1514,10 @@ export function MePage({ data, locale, t }: MePageProps) {
     btcAddress,
     btcDevToolsOpen,
     btcIdentitySource,
-    btcMintUsdbCollab,
+    btcMintLeaderBinding,
+    btcMintLeaderBtcAddr,
+    btcMintLeaderPassId,
+    btcMintPassKind,
     btcMintUsdbMain,
     btcMintExecutionError,
     btcMintExecutionPass,
@@ -1620,7 +1737,16 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintExecutionResult(null)
     setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
-  }, [btcLookupAddress, btcLookupNetworkMismatchMessage, btcMintUsdbMain, btcMintUsdbCollab, btcMintPrev])
+  }, [
+    btcLookupAddress,
+    btcLookupNetworkMismatchMessage,
+    btcMintLeaderBinding,
+    btcMintLeaderBtcAddr,
+    btcMintLeaderPassId,
+    btcMintPassKind,
+    btcMintPrev,
+    btcMintUsdbMain,
+  ])
 
   useEffect(() => {
     if (btcRuntimeProfile !== 'development') return
@@ -2019,9 +2145,8 @@ export function MePage({ data, locale, t }: MePageProps) {
     try {
       const result = await prepareBtcMintDraft({
         owner_address: btcLookupAddress,
-        usdb_main: btcMintUsdbMain,
-        usdb_collab: btcMintUsdbCollab.trim() || null,
         prev,
+        ...btcMintIdentityFields,
       })
       setBtcMintPrepareResult(result)
       setBtcMintTechnicalOpen(false)
@@ -2058,8 +2183,11 @@ export function MePage({ data, locale, t }: MePageProps) {
     setBtcMintExecutionPass(null)
     setBtcMintTechnicalOpen(false)
     if (!clearInputs) return
+    setBtcMintPassKind('standard')
+    setBtcMintLeaderBinding('pass_id')
     setBtcMintUsdbMain('')
-    setBtcMintUsdbCollab('')
+    setBtcMintLeaderPassId('')
+    setBtcMintLeaderBtcAddr('')
     setBtcMintPrev('')
   }
 
@@ -2125,12 +2253,18 @@ export function MePage({ data, locale, t }: MePageProps) {
       setBtcMintSigningResult(result)
       setBtcDevWalletSignature(result.signature)
       setBtcMintStep('submitting')
+      const preparedIdentityFields: BtcMintIdentityFields = btcMintPrepareResult?.usdb_main
+        ? { usdb_main: btcMintPrepareResult.usdb_main }
+        : btcMintPrepareResult?.leader_pass_id
+          ? { leader_pass_id: btcMintPrepareResult.leader_pass_id }
+          : btcMintPrepareResult?.leader_btc_addr
+            ? { leader_btc_addr: btcMintPrepareResult.leader_btc_addr }
+            : btcMintIdentityFields
       const executionResult = await executeBtcMint({
         wallet_name: btcSelectedWorldSimIdentity.wallet_name,
         owner_address: btcMintPrepareResult?.owner_address ?? btcLookupAddress ?? '',
-        usdb_main: btcMintPrepareResult?.usdb_main ?? btcMintUsdbMain.trim(),
-        usdb_collab: (btcMintPrepareResult?.usdb_collab ?? btcMintUsdbCollab.trim()) || null,
         prev: btcMintPrepareResult?.prev ?? btcMintParsedPrev,
+        ...preparedIdentityFields,
       })
       setBtcMintExecutionResult(executionResult)
       setBtcMintStep('waiting')
@@ -2846,24 +2980,89 @@ export function MePage({ data, locale, t }: MePageProps) {
                         },
                       ]}
                     />
-                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.mintUsdbMainLabel')}</span>
-                      <input
-                        className="console-input"
-                        value={btcMintUsdbMain}
-                        onChange={(event) => setBtcMintUsdbMain(event.target.value)}
-                        placeholder={t('me.btc.mintUsdbMainPlaceholder')}
-                      />
-                    </label>
-                    <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.btc.mintUsdbCollabLabel')}</span>
-                      <input
-                        className="console-input"
-                        value={btcMintUsdbCollab}
-                        onChange={(event) => setBtcMintUsdbCollab(event.target.value)}
-                        placeholder={t('me.btc.mintUsdbCollabPlaceholder')}
-                      />
-                    </label>
+                    <div className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                      <span>{t('me.btc.mintPassKindLabel')}</span>
+                      <div
+                        className="inline-flex w-fit rounded-md border border-[color:var(--cp-border)] bg-[color:var(--cp-panel)] p-1"
+                        role="group"
+                        aria-label={t('me.btc.mintPassKindLabel')}
+                      >
+                        {(['standard', 'collab'] as const).map((kind) => (
+                          <button
+                            key={kind}
+                            type="button"
+                            className={`rounded px-3 py-2 text-sm font-semibold transition ${
+                              btcMintPassKind === kind
+                                ? 'bg-[color:var(--cp-accent)] text-white'
+                                : 'text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]'
+                            }`}
+                            aria-pressed={btcMintPassKind === kind}
+                            onClick={() => setBtcMintPassKind(kind)}
+                          >
+                            {t(`me.values.passKind.${kind}`)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {btcMintPassKind === 'standard' ? (
+                      <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                        <span>{t('me.btc.mintUsdbMainLabel')}</span>
+                        <input
+                          className="console-input"
+                          value={btcMintUsdbMain}
+                          onChange={(event) => setBtcMintUsdbMain(event.target.value)}
+                          placeholder={t('me.btc.mintUsdbMainPlaceholder')}
+                        />
+                      </label>
+                    ) : (
+                      <div className="grid gap-4">
+                        <div className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                          <span>{t('me.btc.mintLeaderBindingLabel')}</span>
+                          <div
+                            className="inline-flex w-fit rounded-md border border-[color:var(--cp-border)] bg-[color:var(--cp-panel)] p-1"
+                            role="group"
+                            aria-label={t('me.btc.mintLeaderBindingLabel')}
+                          >
+                            {(['pass_id', 'btc_address'] as const).map((binding) => (
+                              <button
+                                key={binding}
+                                type="button"
+                                className={`rounded px-3 py-2 text-sm font-semibold transition ${
+                                  btcMintLeaderBinding === binding
+                                    ? 'bg-[color:var(--cp-accent)] text-white'
+                                    : 'text-[color:var(--cp-muted)] hover:text-[color:var(--cp-text)]'
+                                }`}
+                                aria-pressed={btcMintLeaderBinding === binding}
+                                onClick={() => setBtcMintLeaderBinding(binding)}
+                              >
+                                {t(`me.values.leaderBinding.${binding}`)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {btcMintLeaderBinding === 'pass_id' ? (
+                          <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                            <span>{t('me.btc.mintLeaderPassIdLabel')}</span>
+                            <input
+                              className="console-input"
+                              value={btcMintLeaderPassId}
+                              onChange={(event) => setBtcMintLeaderPassId(event.target.value)}
+                              placeholder={t('me.btc.mintLeaderPassIdPlaceholder')}
+                            />
+                          </label>
+                        ) : (
+                          <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
+                            <span>{t('me.btc.mintLeaderBtcAddrLabel')}</span>
+                            <input
+                              className="console-input"
+                              value={btcMintLeaderBtcAddr}
+                              onChange={(event) => setBtcMintLeaderBtcAddr(event.target.value)}
+                              placeholder={t('me.btc.mintLeaderBtcAddrPlaceholder')}
+                            />
+                          </label>
+                        )}
+                      </div>
+                    )}
                     <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
                       <span>{t('me.btc.mintPrevLabel')}</span>
                       <textarea
@@ -2903,7 +3102,11 @@ export function MePage({ data, locale, t }: MePageProps) {
                       >
                         {btcMintPrepareLoading ? t('actions.reloading') : t('me.btc.prepareMintDraft')}
                       </button>
-                      {(btcMintUsdbMain || btcMintUsdbCollab || btcMintPrev) && !btcMintPrepareLoading ? (
+                      {(btcMintUsdbMain ||
+                        btcMintLeaderPassId ||
+                        btcMintLeaderBtcAddr ||
+                        btcMintPrev) &&
+                      !btcMintPrepareLoading ? (
                         <button
                           type="button"
                           className="console-secondary-button"

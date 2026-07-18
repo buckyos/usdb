@@ -196,13 +196,13 @@ ord wallet \
 控制台页面：
 
 - 用户选择 BTC 身份
-- 输入 `USDB main` / 可选 `USDB collab`
+- 选择 standard 或 collab pass；standard 输入 `usdb_main`，collab 在 `leader_pass_id` / `leader_btc_addr` 中二选一
 - 点击 `Continue Mint`
 
 控制平面：
 
 - 调用 `POST /api/btc/mint/prepare`
-- 校验 owner 地址、运行网络、runtime profile
+- 校验 owner 地址、运行网络、runtime profile 和 UIP-0001 v1 字段互斥规则
 - 查询 `balance-history` / `usdb-indexer` / active pass / readiness
 - 生成：
   - `eligible`

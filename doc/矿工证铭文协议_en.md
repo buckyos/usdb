@@ -1,113 +1,34 @@
-# Miner Certificate Inscription Protocol (Draft)
+# Miner Pass Inscription Protocol
 
-> Source: `https://github.com/buckyos/usdb/issues/5` and its discussion comments.
-> Status: Draft, intended to align indexer and product implementation behavior.
+> Status: superseded by the UIP protocol set. This document is an implementation entry point and no longer defines independent consensus rules.
 
-## 1. Protocol Goals
+The original issue draft has been split and finalized into these specifications:
 
-- Use one `mint` inscription for miner certificate creation, activation, and energy inheritance.
-- Support transferable certificates under the BTC UTXO model while preventing dust attacks and energy double spending.
-- Bind a primary USDB address and an optional collaborator USDB address for future reward/collaboration extensions.
+- [UIP-0001: Miner Pass Inscription](UIP/UIP-0001-miner-pass-inscription.md): v1 mint JSON, standard/collab kinds, Leader bindings, and `prev` semantics.
+- [UIP-0002: Miner Pass State Machine](UIP/UIP-0002-pass-state-machine.md): Active, Dormant, Consumed, Burned, and Invalid states plus block-level settlement.
+- [UIP-0003: Miner Pass Energy Formula](UIP/UIP-0003-pass-energy-formula.md): raw energy, inheritance discount, penalties, and saturating arithmetic.
+- [UIP-0004: Collab Leader Effective Energy](UIP/UIP-0004-collab-leader-effective-energy.md): Leader resolution, collab contribution, and effective energy.
+- [UIP-0005: Level and Real Difficulty](UIP/UIP-0005-level-and-real-difficulty.md): level and difficulty factor derivation.
+- [UIP-0006: USDB Economic State View](UIP/UIP-0006-usdb-economic-state-view.md): auditable and frozen external query contracts.
 
-## 2. Inscription Data Format
+## v1 Mint Entry Point
 
-All miner-certificate operations are represented by JSON inscriptions with `op` fixed to `mint`.
-
-### 2.1 Field Definitions
-
-| Field | Type | Required | Description | Constraints |
-| -- | -- | -- | -- | -- |
-| `p` | string | Yes | Protocol identifier | Must be `"usdb"` |
-| `op` | string | Yes | Operation type | Must be `"mint"` |
-| `usdb_main` | string | Yes | Main USDB address for rewards | Must be a valid EVM address |
-| `usdb_collab` | string | No | Collaborator USDB address for collaboration/reward split extensions | Empty or valid EVM address |
-| `prev` | string[] | No | Parent inscriptions for inheritance | Each item must be a valid inscription ID |
-
-### 2.2 Example
+Every mint inscription must contain:
 
 ```json
 {
   "p": "usdb",
   "op": "mint",
-  "usdb_main": "0x1234...NewUsdbAddr...",
-  "usdb_collab": "0x5678...UsdbCollabAddr...",
-  "prev": [
-    "old_inscription_id_a",
-    "old_inscription_id_b"
-  ]
+  "v": 1
 }
 ```
 
-## 3. State Model
+Identity fields must match exactly one shape:
 
-The indexer maintains the following states for miner certificates:
+- Standard pass: a valid EVM `usdb_main` and no Leader binding field.
+- Fixed-Leader collab pass: a valid `leader_pass_id` and neither `usdb_main` nor another Leader binding field.
+- Address-Leader collab pass: a valid `leader_btc_addr` on the active BTC network and neither `usdb_main` nor another Leader binding field.
 
-- `Active`: currently effective certificate used for miner identity and energy settlement.
-- `Dormant`: inactive state, for example after transfer.
-- `Consumed`: energy already inherited by a newer certificate and cannot be inherited again.
+`prev` is an optional array of inscription ids. Existence, owner, state, duplicate-reference, inheritance-discount, and atomic-consumption rules are defined by UIP-0001, UIP-0002, and UIP-0003.
 
-## 4. Core Rules
-
-### A1. Mint Right Implies Activation Right
-
-- For BTC address `A`, the active certificate can only be the latest valid `mint` inscription created by `A` itself.
-- Passively received inscriptions do not become active automatically.
-
-Security impact: prevents dust attacks from hijacking activation status.
-
-### A2. Transfer Implies Dormancy
-
-- Any `Active` inscription becomes `Dormant` immediately once its UTXO is transferred.
-- The new holder must mint a new inscription on their own address (optionally with `prev`) to reactivate.
-
-Security impact: enforces explicit ownership transition and prevents implicit state drift.
-
-### A3. Atomic Energy Consumption
-
-- When `I_new` references `I_old` via `prev`, the indexer must:
-  1. finalize the inheritable energy of `I_old` at the reference point,
-  2. attach that finalized value to `I_new` state/metadata,
-  3. mark `I_old` as `Consumed`.
-
-Security impact: prevents energy double spending.
-
-### A4. Single-Inscription Mechanism
-
-- The protocol uses a single-inscription approach (`mint` + inheritance) rather than `mint + active` dual inscriptions.
-- The indexer must distinguish self-minted activation vs passive holding and assign correct initial state.
-
-## 5. Key Flows
-
-### 5.1 First Activation / ETH Address Update
-
-1. User mints a new `mint` inscription `I_new` with updated `usdb_main` / `usdb_collab`.
-2. If inheritance is needed, set `prev` to old inscription IDs.
-3. `I_new` becomes the current `Active` inscription; referenced old inscriptions become `Consumed` according to rules.
-
-### 5.2 Transfer and Reactivation
-
-1. Address `A` transfers old inscription `I_old` to `B`; `I_old` turns `Dormant` immediately.
-2. `B` mints `I_new` on `B`'s own address with `prev = [I_old]`.
-3. `I_new` becomes `Active`, inherits energy, and binds `B`'s USDB addresses.
-
-## 6. Energy Calculation and Inheritance Recommendations
-
-> These are current discussion outcomes from the issue and should remain configurable before mainnet finalization.
-
-- Settlement path: indexer must provide miner energy at the target block height.
-- Explorer/audit path: support querying miner energy at arbitrary historical block heights.
-- Inheritance decay: recommended default decay rate is `5%` (inherited energy = inheritable energy × `0.95`).
-
-## 7. Minimum Indexer Validation Requirements
-
-- Process only inscriptions matching `p == "usdb" && op == "mint"`.
-- `usdb_main` is mandatory and must be valid; `usdb_collab` must be valid when present.
-- Every `prev` reference must exist, be accessible, and not be previously consumed.
-- Inheritance over a referenced inscription must be transactional or equivalently atomic.
-- State transitions (`Active -> Dormant -> Consumed`) must include full-context logs for traceability.
-
-## 8. Open Items
-
-- Detailed algorithm for `usdb_collab` reward split and energy boost behavior.
-- Exact energy growth formula (BTC balance, holding duration, sampling period).
-- Whether to add a protocol version field (for example `v`) for forward compatibility.
+Implementations, tests, and reviews must use the relevant UIP text as the only normative source. This document must not be treated as a compatibility protocol.

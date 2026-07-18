@@ -65,10 +65,14 @@ interface PassBlockCommitInfo {
 interface PassSnapshot {
   inscription_id: string
   inscription_number: number
+  mint_txid: string
   mint_block_height: number
   mint_owner: string
+  mint_version: number
+  pass_kind: 'standard' | 'collab'
   usdb_main: string
-  usdb_collab?: string | null
+  leader_pass_id?: string | null
+  leader_btc_addr?: string | null
   prev: string[]
   invalid_code?: string | null
   invalid_reason?: string | null
@@ -87,8 +91,11 @@ interface OwnerPassItem {
   owner: string
   state: string
   latest_event_height: number
+  mint_version: number
+  pass_kind: 'standard' | 'collab'
   usdb_main: string
-  usdb_collab?: string | null
+  leader_pass_id?: string | null
+  leader_btc_addr?: string | null
   satpoint: string
 }
 
@@ -124,7 +131,7 @@ interface PassEnergyLeaderboardItem {
   owner: string
   record_block_height: number
   state: string
-  energy: number
+  energy: string
 }
 
 interface PassEnergyLeaderboardPage {
@@ -142,7 +149,11 @@ interface PassEnergySnapshot {
   owner_address: string
   owner_balance: number
   owner_delta: number
-  energy: number
+  raw_energy: string
+  collab_contribution: string
+  effective_energy: string
+  level: number
+  difficulty_factor_bps: number
 }
 
 interface PassEnergyRangeItem {
@@ -152,7 +163,7 @@ interface PassEnergyRangeItem {
   owner_address: string
   owner_balance: number
   owner_delta: number
-  energy: number
+  energy: string
 }
 
 interface PassEnergyRangePage {
@@ -485,6 +496,20 @@ function formatDelta(value: number | null | undefined, nf: Intl.NumberFormat) {
   const sat = Number(value)
   const sign = sat >= 0 ? '+' : '-'
   return `${sign}${formatBtc(Math.abs(sat), nf)}`
+}
+
+function formatDecimalInteger(
+  value: string | number | null | undefined,
+  nf: Intl.NumberFormat,
+) {
+  if (value === null || value === undefined) return '-'
+  const normalized = String(value).trim()
+  if (!/^-?\d+$/.test(normalized)) return '-'
+  try {
+    return nf.format(BigInt(normalized))
+  } catch {
+    return normalized
+  }
 }
 
 function isLikelyBitcoindRpcUrl(rawUrl: string) {
@@ -1074,8 +1099,9 @@ function App() {
                 </div>
                 <button className="ghost" onClick={() => void refreshHome()}>{dict.refresh}</button>
               </div>
-              <DataTable headers={['inscription_id', 'state', 'mint_height', 'latest_event', 'owner', 'satpoint']} rows={(recentPasses?.items ?? []).map((item) => [
+              <DataTable headers={['inscription_id', 'kind', 'state', 'mint_height', 'latest_event', 'owner', 'satpoint']} rows={(recentPasses?.items ?? []).map((item) => [
                 <IdButton value={item.inscription_id} onClick={() => void openPassDetail(item, recentPasses?.resolved_height)} />,
+                item.pass_kind,
                 item.state,
                 nf.format(item.mint_block_height),
                 nf.format(item.latest_event_height),
@@ -1091,9 +1117,9 @@ function App() {
                 </div>
                 <button className="ghost" onClick={() => setActiveTab('energy')}>{dict.energyLeaderboard}</button>
               </div>
-              <DataTable headers={['rank', 'energy', 'inscription_id', 'owner', 'state', 'height']} rows={(overviewLeaderboard?.items ?? []).map((item, index) => [
+              <DataTable headers={['rank', 'raw_energy', 'inscription_id', 'owner', 'state', 'height']} rows={(overviewLeaderboard?.items ?? []).map((item, index) => [
                 index + 1,
-                nf.format(item.energy),
+                formatDecimalInteger(item.energy, nf),
                 <IdButton value={item.inscription_id} onClick={() => void openPassById(item.inscription_id, overviewLeaderboard?.resolved_height ?? item.record_block_height)} />,
                 renderOwner(item.owner),
                 item.state,
@@ -1114,12 +1140,13 @@ function App() {
                   <button className="ghost" disabled={ownerPassesPage + 1 >= ownerPassesTotalPages} onClick={() => void queryOwnerPasses(undefined, ownerPassesPage + 1)}>{dict.next}</button>
                 </div>
               </div>
-              <DataTable headers={['inscription_id', 'state', 'latest_event_height', 'mint_height', 'usdb_main', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
+              <DataTable headers={['inscription_id', 'kind', 'state', 'latest_event_height', 'mint_height', 'identity', 'satpoint', 'action']} rows={(ownerPasses?.items ?? []).map((item) => [
                 <IdButton value={item.inscription_id} onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)} />,
+                item.pass_kind,
                 item.state,
                 nf.format(item.latest_event_height),
                 nf.format(item.mint_block_height),
-                shortText(item.usdb_main, 12, 10),
+                shortText(item.usdb_main || item.leader_pass_id || item.leader_btc_addr, 12, 10),
                 shortText(item.satpoint, 16, 12),
                 <button className="link-button" onClick={() => void openPassDetail(item, ownerPasses?.resolved_height)}>{dict.openDetail}</button>,
               ])} />
@@ -1178,9 +1205,9 @@ function App() {
               </div>
             </div>
             {leaderboardHint ? <p className="hint negative">{leaderboardHint}</p> : null}
-            <DataTable headers={['rank', 'energy', 'inscription_id', 'owner', 'state', 'height']} rows={(leaderboard?.items ?? []).map((item, index) => [
+            <DataTable headers={['rank', 'raw_energy', 'inscription_id', 'owner', 'state', 'height']} rows={(leaderboard?.items ?? []).map((item, index) => [
               leaderboardPage * 50 + index + 1,
-              nf.format(item.energy),
+              formatDecimalInteger(item.energy, nf),
               <button className="link-button" onClick={() => { setActiveTab('energy'); void queryEnergy(undefined, item.inscription_id) }}>{shortText(item.inscription_id, 14, 14)}</button>,
               renderOwner(item.owner),
               item.state,
@@ -1209,14 +1236,14 @@ function App() {
               <button type="submit">{dict.updateRange}</button>
             </form>
             {rangeHint ? <p className="hint negative">{rangeHint}</p> : null}
-            <DataTable headers={['record_height', 'state', 'active_height', 'owner', 'owner_balance', 'owner_delta', 'energy']} rows={(energyRange?.items ?? []).map((item) => [
+            <DataTable headers={['record_height', 'state', 'active_height', 'owner', 'owner_balance', 'owner_delta', 'raw_energy']} rows={(energyRange?.items ?? []).map((item) => [
               nf.format(item.record_block_height),
               item.state,
               nf.format(item.active_block_height),
               renderOwner(item.owner_address),
               formatBtc(item.owner_balance, nf),
               formatDelta(item.owner_delta, nf),
-              nf.format(item.energy),
+              formatDecimalInteger(item.energy, nf),
             ])} />
           </article>
         </section>
@@ -1294,10 +1321,14 @@ function passEntries(
     ['resolved_height', nf.format(pass.resolved_height)],
     ['state', pass.state],
     ['owner', renderOwner(pass.owner)],
+    ['mint_version', nf.format(pass.mint_version)],
+    ['pass_kind', pass.pass_kind],
+    ['mint_txid', pass.mint_txid],
     ['mint_block_height', nf.format(pass.mint_block_height)],
     ['mint_owner', renderOwner(pass.mint_owner)],
-    ['usdb_main', pass.usdb_main],
-    ['usdb_collab', pass.usdb_collab || '-'],
+    ['usdb_main', pass.usdb_main || '-'],
+    ['leader_pass_id', pass.leader_pass_id || '-'],
+    ['leader_btc_addr', pass.leader_btc_addr || '-'],
     ['prev', pass.prev.join(', ') || '-'],
     ['invalid_code', pass.invalid_code || '-'],
     ['invalid_reason', pass.invalid_reason || '-'],
@@ -1314,10 +1345,16 @@ function energyEntries(
 ): Array<[string, React.ReactNode]> {
   return [
     ['inscription_id', snapshot.inscription_id],
-    ['current_height', nf.format(snapshot.query_block_height)],
-    ['current_state', snapshot.state],
-    ['current_energy', nf.format(snapshot.energy)],
-    ['current_owner', renderOwner(snapshot.owner_address)],
+    ['query_block_height', nf.format(snapshot.query_block_height)],
+    ['record_block_height', nf.format(snapshot.record_block_height)],
+    ['state', snapshot.state],
+    ['active_block_height', nf.format(snapshot.active_block_height)],
+    ['raw_energy', formatDecimalInteger(snapshot.raw_energy, nf)],
+    ['collab_contribution', formatDecimalInteger(snapshot.collab_contribution, nf)],
+    ['effective_energy', formatDecimalInteger(snapshot.effective_energy, nf)],
+    ['level', nf.format(snapshot.level)],
+    ['difficulty_factor_bps', nf.format(snapshot.difficulty_factor_bps)],
+    ['owner', renderOwner(snapshot.owner_address)],
     ['owner_balance', formatBtc(snapshot.owner_balance, nf)],
     ['owner_delta', formatDelta(snapshot.owner_delta, nf)],
   ]

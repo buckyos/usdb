@@ -1,7 +1,9 @@
 import type {
   AddressBalanceRow,
   BalanceHistorySyncStatus,
+  BtcMintExecuteRequest,
   BtcMintExecuteResponse,
+  BtcMintPrepareRequest,
   BtcWorldSimDevSignerResponse,
   BtcWorldSimIdentitiesResponse,
   EthwAddressStatusResponse,
@@ -200,12 +202,9 @@ export function fetchUsdbPassEnergyLeaderboard(
   ])
 }
 
-export async function prepareBtcMintDraft(request: {
-  owner_address: string
-  usdb_main: string
-  usdb_collab?: string | null
-  prev: string[]
-}): Promise<BtcMintPrepareResponse> {
+export async function prepareBtcMintDraft(
+  request: BtcMintPrepareRequest,
+): Promise<BtcMintPrepareResponse> {
   const response = await fetch('/api/btc/mint/prepare', {
     method: 'POST',
     cache: 'no-store',
@@ -223,13 +222,9 @@ export async function prepareBtcMintDraft(request: {
   return response.json() as Promise<BtcMintPrepareResponse>
 }
 
-export async function executeBtcMint(request: {
-  wallet_name: string
-  owner_address: string
-  usdb_main: string
-  usdb_collab?: string | null
-  prev: string[]
-}): Promise<BtcMintExecuteResponse> {
+export async function executeBtcMint(
+  request: BtcMintExecuteRequest,
+): Promise<BtcMintExecuteResponse> {
   const response = await fetch('/api/btc/mint/execute', {
     method: 'POST',
     cache: 'no-store',
