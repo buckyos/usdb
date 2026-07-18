@@ -114,6 +114,23 @@ pub struct CapabilitiesSummary {
     pub btc_console_mode: String,
     pub btc_runtime_profile: String,
     pub ethw_runtime_profile: String,
+    /// Versioned UIP-0006 capability discovered from `usdb-indexer`.
+    pub usdb_economic_state_view: UsdbEconomicStateViewCapabilitySummary,
+}
+
+/// Control-plane compatibility result for UIP-0006 economic state queries.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsdbEconomicStateViewCapabilitySummary {
+    /// True when all required RPC features and protocol selectors match.
+    pub available: bool,
+    /// Economic state view version advertised by the indexer.
+    pub view_version: Option<String>,
+    /// Candidate ordering rule advertised by the indexer.
+    pub candidate_set_selection_rule: Option<String>,
+    /// Maximum cursor page size advertised by the indexer.
+    pub economic_page_max_limit: Option<usize>,
+    /// Required feature names absent from the indexer declaration.
+    pub missing_features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -256,7 +273,19 @@ pub struct BalanceHistoryScriptRegistryStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UsdbIndexerServiceSummary {
+    /// Service identifier reported by `get_rpc_info`.
+    pub service: Option<String>,
     pub network: Option<String>,
+    /// Public JSON-RPC API version reported by `get_rpc_info`.
+    pub api_version: Option<String>,
+    /// Full feature list reported by `get_rpc_info`.
+    pub features: Vec<String>,
+    /// UIP-0006 economic state view version reported by `get_rpc_info`.
+    pub economic_state_view_version: Option<String>,
+    /// Candidate ordering rule reported by `get_rpc_info`.
+    pub candidate_set_selection_rule: Option<String>,
+    /// Maximum UIP-0006 cursor page size reported by `get_rpc_info`.
+    pub economic_page_max_limit: Option<usize>,
     pub rpc_alive: Option<bool>,
     pub query_ready: Option<bool>,
     pub consensus_ready: Option<bool>,
@@ -346,6 +375,25 @@ pub struct UsdbIndexerReadiness {
     pub total: u32,
     pub message: Option<String>,
     pub blockers: Vec<String>,
+}
+
+/// Machine-readable metadata returned by `usdb-indexer.get_rpc_info`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UsdbIndexerRpcInfo {
+    /// Fixed service identifier.
+    pub service: String,
+    /// Public JSON-RPC API version.
+    pub api_version: String,
+    /// Bitcoin network served by the indexer.
+    pub network: String,
+    /// Advertised method-level capabilities.
+    pub features: Vec<String>,
+    /// Supported UIP-0006 view contract.
+    pub economic_state_view_version: String,
+    /// Supported deterministic candidate ordering rule.
+    pub candidate_set_selection_rule: String,
+    /// Maximum cursor page size accepted by UIP-0006 methods.
+    pub economic_page_max_limit: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

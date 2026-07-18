@@ -6,8 +6,14 @@ use usdb_util::{
     ConsensusSnapshotIdentity, ConsensusStateReference, LOCAL_STATE_COMMIT_HASH_ALGO,
     LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
     LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO, SYSTEM_STATE_ID_VERSION,
-    SystemStateIdentity, USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
+    SystemStateIdentity, USDB_CANDIDATE_SET_SELECTION_RULE,
+    USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
     USDB_INDEX_PROTOCOL_VERSION as UTIL_USDB_INDEX_PROTOCOL_VERSION,
+};
+pub use usdb_util::{
+    USDB_ECONOMIC_PAGE_MAX_LIMIT, USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_API_VERSION,
+    USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW, USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN,
+    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF, USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -29,10 +35,8 @@ pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
 pub const USDB_INDEX_FORMULA_VERSION: &str = UTIL_USDB_INDEX_FORMULA_VERSION;
 pub const USDB_INDEX_PROTOCOL_VERSION: &str = UTIL_USDB_INDEX_PROTOCOL_VERSION;
-/// USDB-side economic state view version used by UIP-0006 audit queries.
-pub const USDB_ECONOMIC_STATE_VIEW_VERSION: &str = "uip-0006-usdb-economic-state-view:v1";
 /// Deterministic candidate-set ordering rule for the first UIP-0006 view.
-pub const CANDIDATE_SET_SELECTION_RULE: &str = "uip-0006:effective-energy-desc-pass-id-asc:v1";
+pub const CANDIDATE_SET_SELECTION_RULE: &str = USDB_CANDIDATE_SET_SELECTION_RULE;
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
 pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
 /// Version tag of the consensus snapshot-id derivation rule exposed by the RPC layer.
@@ -57,6 +61,12 @@ pub struct RpcInfo {
     pub network: String,
     /// Advertised capability list supported by this server instance.
     pub features: Vec<String>,
+    /// UIP-0006 economic state view contract accepted by this server.
+    pub economic_state_view_version: String,
+    /// Deterministic candidate ordering rule implemented by this server.
+    pub candidate_set_selection_rule: String,
+    /// Maximum `limit` accepted by UIP-0006 cursor-paged methods.
+    pub economic_page_max_limit: usize,
 }
 
 /// Runtime synchronization status of the indexer.

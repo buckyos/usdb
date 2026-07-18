@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::time::{Duration, sleep};
+use usdb_util::ConsensusQueryContext;
 
 pub struct UsdbIndexerService {
     client: RpcClient,
@@ -44,6 +45,23 @@ impl UsdbIndexerService {
                         "get_pass_block_commit",
                         json!([{
                             "block_height": block_height,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
+            Commands::StateRef {
+                block_height,
+                context,
+            } => {
+                let context = parse_consensus_context(context.as_deref())?;
+                let result = self
+                    .client
+                    .call(
+                        "get_state_ref_at_height",
+                        json!([{
+                            "block_height": block_height,
+                            "context": context,
                         }]),
                     )
                     .await?;
@@ -202,6 +220,79 @@ impl UsdbIndexerService {
                             "scope": scope,
                             "page": page,
                             "page_size": page_size,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
+            Commands::PassEconomicProfile {
+                pass_id,
+                block_height,
+                context,
+                view_version,
+            } => {
+                let context = parse_consensus_context(context.as_deref())?;
+                let result = self
+                    .client
+                    .call(
+                        "get_pass_economic_profile",
+                        json!([{
+                            "view_version": view_version,
+                            "pass_id": pass_id,
+                            "block_height": block_height,
+                            "context": context,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
+            Commands::CandidateSetView {
+                block_height,
+                context,
+                cursor,
+                limit,
+                view_version,
+                selection_rule,
+            } => {
+                let context = parse_consensus_context(context.as_deref())?;
+                let result = self
+                    .client
+                    .call(
+                        "get_candidate_set_view",
+                        json!([{
+                            "view_version": view_version,
+                            "block_height": block_height,
+                            "context": context,
+                            "selection_rule": selection_rule,
+                            "cursor": cursor,
+                            "limit": limit,
+                        }]),
+                    )
+                    .await?;
+                print_pretty_json(&result)?;
+            }
+            Commands::CollabBreakdown {
+                leader_pass_id,
+                block_height,
+                context,
+                cursor,
+                limit,
+                sort,
+                view_version,
+            } => {
+                let context = parse_consensus_context(context.as_deref())?;
+                let result = self
+                    .client
+                    .call(
+                        "get_collab_breakdown",
+                        json!([{
+                            "view_version": view_version,
+                            "leader_pass_id": leader_pass_id,
+                            "block_height": block_height,
+                            "context": context,
+                            "sort": sort,
+                            "cursor": cursor,
+                            "limit": limit,
                         }]),
                     )
                     .await?;
@@ -417,4 +508,46 @@ fn print_pretty_json(v: &Value) -> Result<(), String> {
         .map_err(|e| format!("Failed to pretty print JSON result: {}", e))?;
     println!("{}", text);
     Ok(())
+}
+
+fn parse_consensus_context(value: Option<&str>) -> Result<Option<ConsensusQueryContext>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let json_value: Value = serde_json::from_str(value)
+        .map_err(|error| format!("Invalid JSON in --context: {}", error))?;
+    if !json_value.is_object() {
+        return Err("--context must be a JSON object".to_string());
+    }
+
+    serde_json::from_value(json_value)
+        .map(Some)
+        .map_err(|error| format!("Invalid ConsensusQueryContext in --context: {}", error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_consensus_context_accepts_typed_object() {
+        let context = parse_consensus_context(Some(
+            r#"{"requested_height":120,"expected_state":{"snapshot_id":"snapshot"}}"#,
+        ))
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(context.requested_height, Some(120));
+        assert_eq!(
+            context.expected_state.snapshot_id.as_deref(),
+            Some("snapshot")
+        );
+    }
+
+    #[test]
+    fn parse_consensus_context_rejects_non_object() {
+        let error = parse_consensus_context(Some("[]")).unwrap_err();
+        assert_eq!(error, "--context must be a JSON object");
+    }
 }

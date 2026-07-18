@@ -3,9 +3,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use usdb_util::USDB_ECONOMIC_PAGE_MAX_LIMIT;
 
 /// Maximum number of rows accepted by UIP-0006 cursor-paged queries.
-pub(crate) const ECONOMIC_PAGE_MAX_LIMIT: usize = 500;
+pub(crate) const ECONOMIC_PAGE_MAX_LIMIT: usize = USDB_ECONOMIC_PAGE_MAX_LIMIT;
 
 const ECONOMIC_CURSOR_VERSION: &str = "uip-0006-economic-cursor:v1";
 const ECONOMIC_CURSOR_HASH_DOMAIN: &[u8] = b"usdb-indexer:uip-0006-economic-cursor:v1\0";

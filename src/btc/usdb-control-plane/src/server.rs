@@ -7,7 +7,7 @@ use crate::models::{
     BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary,
     EthwAddressStatusResponse, EthwDevIdentityResponse, EthwServiceSummary, ExplorerLinks,
     OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary,
-    UsdbIndexerServiceSummary,
+    UsdbEconomicStateViewCapabilitySummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
 use axum::Json;
@@ -27,7 +27,10 @@ use std::time::Instant;
 use tokio::process::Command;
 use tower_http::services::ServeDir;
 use usdb_util::{
-    USDB_CONTROL_PLANE_SERVICE_NAME, address_string_to_script_hash, parse_script_hash_any,
+    USDB_CANDIDATE_SET_SELECTION_RULE, USDB_CONTROL_PLANE_SERVICE_NAME,
+    USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_API_VERSION,
+    USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES, address_string_to_script_hash,
+    parse_script_hash_any,
 };
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +108,7 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_sync_status",
     "get_readiness",
     "get_pass_block_commit",
+    "get_state_ref_at_height",
     "get_pass_snapshot",
     "get_active_passes_at_height",
     "get_owner_active_pass_at_height",
@@ -115,6 +119,9 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_pass_energy",
     "get_pass_energy_range",
     "get_pass_energy_leaderboard",
+    "get_pass_economic_profile",
+    "get_candidate_set_view",
+    "get_collab_breakdown",
     "get_active_balance_snapshot",
     "get_latest_active_balance_snapshot",
 ];
@@ -1847,16 +1854,52 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
             .and_then(|summary| summary.network_id.as_deref()),
     )
     .to_string();
+    let usdb_economic_state_view =
+        build_usdb_economic_state_view_capability(&services.usdb_indexer);
 
     CapabilitiesSummary {
         ord_available,
         btc_runtime_profile,
         ethw_runtime_profile,
+        usdb_economic_state_view,
         btc_console_mode: if ord_available {
             "inscription_enabled".to_string()
         } else {
             "read_only".to_string()
         },
+    }
+}
+
+fn build_usdb_economic_state_view_capability(
+    indexer: &ServiceProbe<UsdbIndexerServiceSummary>,
+) -> UsdbEconomicStateViewCapabilitySummary {
+    let data = indexer.data.as_ref();
+    let features = data
+        .map(|item| item.features.as_slice())
+        .unwrap_or_default();
+    let missing_features = USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES
+        .iter()
+        .filter(|required| !features.iter().any(|actual| actual == *required))
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    let view_version = data.and_then(|item| item.economic_state_view_version.clone());
+    let candidate_set_selection_rule =
+        data.and_then(|item| item.candidate_set_selection_rule.clone());
+    let economic_page_max_limit = data.and_then(|item| item.economic_page_max_limit);
+    let available = indexer.reachable
+        && data.and_then(|item| item.service.as_deref()) == Some("usdb-indexer")
+        && data.and_then(|item| item.api_version.as_deref()) == Some(USDB_INDEXER_API_VERSION)
+        && missing_features.is_empty()
+        && view_version.as_deref() == Some(USDB_ECONOMIC_STATE_VIEW_VERSION)
+        && candidate_set_selection_rule.as_deref() == Some(USDB_CANDIDATE_SET_SELECTION_RULE)
+        && economic_page_max_limit.is_some_and(|limit| limit > 0);
+
+    UsdbEconomicStateViewCapabilitySummary {
+        available,
+        view_version,
+        candidate_set_selection_rule,
+        economic_page_max_limit,
+        missing_features,
     }
 }
 
@@ -2010,19 +2053,37 @@ async fn probe_balance_history(state: &AppState) -> ServiceProbe<BalanceHistoryS
 async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerServiceSummary> {
     let rpc_url = state.config.rpc.usdb_indexer_url.clone();
     let started = Instant::now();
-    let (network, readiness) = tokio::join!(
+    let (network, readiness, rpc_info) = tokio::join!(
         state.rpc_client.usdb_indexer_network(&rpc_url),
-        state.rpc_client.usdb_indexer_readiness(&rpc_url)
+        state.rpc_client.usdb_indexer_readiness(&rpc_url),
+        state.rpc_client.usdb_indexer_rpc_info(&rpc_url)
     );
     let latency_ms = started.elapsed().as_millis() as u64;
     let network_error = network.as_ref().err().cloned();
     let readiness_error = readiness.as_ref().err().cloned();
+    let rpc_info_error = rpc_info.as_ref().err().cloned();
 
-    let reachable = network.is_ok() || readiness.is_ok();
-    let data = if network.is_ok() || readiness.is_ok() {
+    let reachable = network.is_ok() || readiness.is_ok() || rpc_info.is_ok();
+    let data = if reachable {
         let readiness = readiness.ok();
+        let rpc_info = rpc_info.ok();
         Some(UsdbIndexerServiceSummary {
-            network: network.ok(),
+            service: rpc_info.as_ref().map(|item| item.service.clone()),
+            network: network
+                .ok()
+                .or_else(|| rpc_info.as_ref().map(|item| item.network.clone())),
+            api_version: rpc_info.as_ref().map(|item| item.api_version.clone()),
+            features: rpc_info
+                .as_ref()
+                .map(|item| item.features.clone())
+                .unwrap_or_default(),
+            economic_state_view_version: rpc_info
+                .as_ref()
+                .map(|item| item.economic_state_view_version.clone()),
+            candidate_set_selection_rule: rpc_info
+                .as_ref()
+                .map(|item| item.candidate_set_selection_rule.clone()),
+            economic_page_max_limit: rpc_info.as_ref().map(|item| item.economic_page_max_limit),
             rpc_alive: readiness.as_ref().map(|item| item.rpc_alive),
             query_ready: readiness.as_ref().map(|item| item.query_ready),
             consensus_ready: readiness.as_ref().map(|item| item.consensus_ready),
@@ -2056,7 +2117,7 @@ async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerService
         rpc_url,
         reachable,
         latency_ms: Some(latency_ms),
-        error: merge_errors(&[network_error, readiness_error]),
+        error: merge_errors(&[network_error, readiness_error, rpc_info_error]),
         data,
     }
 }
@@ -2444,6 +2505,119 @@ mod tests {
             assert_eq!(normalized[0]["owner"], expected);
             assert!(normalized[0].get("address").is_none());
         }
+    }
+
+    #[test]
+    fn uip0006_methods_are_forwarded_without_param_rewrites() {
+        for (method, params) in [
+            (
+                "get_state_ref_at_height",
+                json!([{"block_height": 120, "context": null}]),
+            ),
+            (
+                "get_pass_economic_profile",
+                json!([{
+                    "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+                    "pass_id": "passi0",
+                    "block_height": 120,
+                    "context": null
+                }]),
+            ),
+            (
+                "get_candidate_set_view",
+                json!([{
+                    "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+                    "block_height": 120,
+                    "context": null,
+                    "selection_rule": USDB_CANDIDATE_SET_SELECTION_RULE,
+                    "cursor": null,
+                    "limit": 100
+                }]),
+            ),
+            (
+                "get_collab_breakdown",
+                json!([{
+                    "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+                    "leader_pass_id": "leaderi0",
+                    "block_height": 120,
+                    "context": null,
+                    "sort": "collab_pass_id_asc",
+                    "cursor": null,
+                    "limit": 100
+                }]),
+            ),
+        ] {
+            assert!(USDB_INDEXER_PROXY_METHODS.contains(&method));
+            let normalized =
+                normalize_usdb_indexer_params(method, params.clone(), Network::Bitcoin).unwrap();
+            assert_eq!(normalized, params);
+        }
+    }
+
+    #[test]
+    fn economic_state_view_capability_requires_exact_version_rule_and_features() {
+        let mut summary = UsdbIndexerServiceSummary {
+            service: Some("usdb-indexer".to_string()),
+            network: Some("regtest".to_string()),
+            api_version: Some(USDB_INDEXER_API_VERSION.to_string()),
+            features: USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            economic_state_view_version: Some(USDB_ECONOMIC_STATE_VIEW_VERSION.to_string()),
+            candidate_set_selection_rule: Some(USDB_CANDIDATE_SET_SELECTION_RULE.to_string()),
+            economic_page_max_limit: Some(500),
+            rpc_alive: Some(true),
+            query_ready: Some(true),
+            consensus_ready: Some(true),
+            message: None,
+            current: Some(120),
+            total: Some(120),
+            synced_block_height: Some(120),
+            balance_history_stable_height: Some(120),
+            upstream_snapshot_id: Some("snapshot".to_string()),
+            local_state_commit: Some("local".to_string()),
+            system_state_id: Some("system".to_string()),
+            blockers: Vec::new(),
+        };
+        let mut probe = ServiceProbe {
+            name: "usdb-indexer".to_string(),
+            rpc_url: "http://127.0.0.1:28120".to_string(),
+            reachable: true,
+            latency_ms: Some(1),
+            error: None,
+            data: Some(summary.clone()),
+        };
+
+        let capability = build_usdb_economic_state_view_capability(&probe);
+        assert!(capability.available);
+        assert!(capability.missing_features.is_empty());
+
+        summary.features.pop();
+        probe.data = Some(summary);
+        let capability = build_usdb_economic_state_view_capability(&probe);
+        assert!(!capability.available);
+        assert_eq!(
+            capability.missing_features,
+            vec![USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES[3].to_string()]
+        );
+
+        let mut summary = probe.data.take().unwrap();
+        summary
+            .features
+            .push(USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES[3].to_string());
+        summary.economic_state_view_version = Some("unsupported-view".to_string());
+        probe.data = Some(summary.clone());
+        let capability = build_usdb_economic_state_view_capability(&probe);
+        assert!(!capability.available);
+        assert!(capability.missing_features.is_empty());
+
+        summary.economic_state_view_version = Some(USDB_ECONOMIC_STATE_VIEW_VERSION.to_string());
+        summary.candidate_set_selection_rule = Some("unsupported-rule".to_string());
+        probe.data = Some(summary);
+        let capability = build_usdb_economic_state_view_capability(&probe);
+        assert!(!capability.available);
+        assert!(capability.missing_features.is_empty());
     }
 
     #[test]

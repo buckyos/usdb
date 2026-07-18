@@ -234,10 +234,31 @@
     "pass_history",
     "active_passes_at_height",
     "energy_snapshot",
+    "historical_state_ref",
+    "pass_economic_profile",
+    "candidate_set_view",
+    "collab_breakdown",
     "active_balance_snapshot"
-  ]
+  ],
+  "economic_state_view_version": "uip-0006-usdb-economic-state-view:v1",
+  "candidate_set_selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "economic_page_max_limit": 500
 }
 ```
+
+UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 要求：
+
+- `service == "usdb-indexer"` 且 `api_version == "1.0.0"`。
+- `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`。
+- `economic_state_view_version` 与请求使用的 `view_version` 一致。
+- `candidate_set_selection_rule` 与 validator 使用的候选排序规则一致。
+- `economic_page_max_limit > 0`；client 的首包 `limit` 不得超过该声明值。
+
+参考实现中的调用入口：
+
+- Rust `service::client::RpcClient` 对四个历史/经济查询提供强类型方法。
+- `usdb-indexer-cli` 提供 `state-ref`、`pass-economic-profile`、`candidate-set-view`、`collab-breakdown` 命令；`--context` 接受 `ConsensusQueryContext` JSON。
+- control-plane 的 `/api/services/usdb-indexer/rpc` allowlist 放行这四个方法；`/api/system/overview` 同时返回 indexer 原始声明和 `capabilities.usdb_economic_state_view` 兼容性判断。
 
 ### 2) `get_network_type`
 

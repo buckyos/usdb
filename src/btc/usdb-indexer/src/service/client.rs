@@ -476,6 +476,42 @@ impl RpcClient {
         .await
     }
 
+    /// Returns one versioned UIP-0006 economic profile.
+    ///
+    /// The request carries the target pass, optional historical consensus
+    /// context, and required view version as one strongly typed contract.
+    pub async fn get_pass_economic_profile(
+        &self,
+        params: GetPassEconomicProfileParams,
+    ) -> Result<PassEconomicProfileView, String> {
+        self.rpc_call::<PassEconomicProfileView>("get_pass_economic_profile", json!([params]))
+            .await
+    }
+
+    /// Returns one cursor page of the canonical UIP-0006 candidate set.
+    ///
+    /// Callers must pass `next_cursor` back unchanged and preserve the request
+    /// limit; the server validates all cursor-bound historical selectors.
+    pub async fn get_candidate_set_view(
+        &self,
+        params: GetCandidateSetViewParams,
+    ) -> Result<CandidateSetViewPage, String> {
+        self.rpc_call::<CandidateSetViewPage>("get_candidate_set_view", json!([params]))
+            .await
+    }
+
+    /// Returns one cursor page of a Leader's auditable collab contributions.
+    ///
+    /// The response aggregate covers the complete bound result set rather than
+    /// only the current page.
+    pub async fn get_collab_breakdown(
+        &self,
+        params: GetCollabBreakdownParams,
+    ) -> Result<CollabBreakdownPage, String> {
+        self.rpc_call::<CollabBreakdownPage>("get_collab_breakdown", json!([params]))
+            .await
+    }
+
     /// Returns active-balance snapshot exactly at `block_height`.
     ///
     /// # Arguments

@@ -56,7 +56,13 @@ export interface BalanceHistoryScriptRegistryStatus {
 }
 
 export interface UsdbIndexerSummary {
+  service?: string | null
   network?: string | null
+  api_version?: string | null
+  features: string[]
+  economic_state_view_version?: string | null
+  candidate_set_selection_rule?: string | null
+  economic_page_max_limit?: number | null
   rpc_alive?: boolean | null
   query_ready?: boolean | null
   consensus_ready?: boolean | null
@@ -105,6 +111,15 @@ export interface CapabilitiesSummary {
   btc_console_mode: string
   btc_runtime_profile: string
   ethw_runtime_profile: string
+  usdb_economic_state_view: UsdbEconomicStateViewCapabilitySummary
+}
+
+export interface UsdbEconomicStateViewCapabilitySummary {
+  available: boolean
+  view_version?: string | null
+  candidate_set_selection_rule?: string | null
+  economic_page_max_limit?: number | null
+  missing_features: string[]
 }
 
 export interface BootstrapSummary {
@@ -206,6 +221,9 @@ export interface UsdbRpcInfo {
   api_version: string
   network: string
   features: string[]
+  economic_state_view_version: string
+  candidate_set_selection_rule: string
+  economic_page_max_limit: number
 }
 
 export interface UsdbIndexerSyncStatus {

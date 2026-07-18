@@ -357,14 +357,40 @@
   - 以 `limit=2` 分别遍历 `collab_pass_id_asc` 和 `contribution_desc_pass_id_asc` 两页 cursor，验证稳定排序、三项正 contribution、5000 bps 权重、集合一致和 aggregate 重算。
   - 交叉验证 Leader profile/candidate/payload 的 raw、collab contribution、effective energy、level/factor；验证 collab 自身 effective energy 为 0 且不进入 candidate set。
   - current head 前进后重放原历史 payload，验证 cursor 与完整 external state 仍冻结在原查询高度。
+- `src/btc/usdb-util/src/constants.rs`
+  - 集中定义 indexer API version、UIP-0006 view version、candidate selection rule、economic page max limit 和四个必需 feature，供 server/client/CLI/control-plane 共用，避免字符串漂移。
+- `src/btc/usdb-indexer/src/service/{rpc,client,server}.rs`
+  - `RpcInfo` 增加 `economic_state_view_version`、`candidate_set_selection_rule`、`economic_page_max_limit`，features 补齐 `historical_state_ref`。
+  - typed Rust client 增加 `get_pass_economic_profile`、`get_candidate_set_view`、`get_collab_breakdown`；历史 `get_state_ref_at_height` 入口保持可用。
+- `src/btc/usdb-indexer-cli/src/{cmd,usdb_indexer_service}.rs`
+  - 新增 `state-ref`、`pass-economic-profile`、`candidate-set-view`、`collab-breakdown` 一等命令。
+  - `--context` 按 `ConsensusQueryContext` 解析；cursor query 的 `--limit` 使用共享 `1..=max_limit` 校验，version/rule 默认值复用共享常量。
+- `src/btc/usdb-control-plane/src/{models,rpc_client,server}.rs`
+  - proxy allowlist 放行四个 historical/economic RPC，且不重写其 params。
+  - indexer probe 并行读取 network/readiness/RpcInfo，在 service summary 暴露原始 capability metadata。
+  - overview 增加 `usdb_economic_state_view` 能力判断；只有 service/API/view/rule/features/max-limit 均有效时才返回 `available=true`。
+- `web/usdb-console-app/src/lib/types.ts`
+  - 同步 control-plane service/capability 与 indexer RpcInfo 类型字段。
+
+### 本轮补充测试
+
+- CLI candidate 默认 view/rule/limit 和非法 limit 拒绝。
+- CLI `ConsensusQueryContext` JSON object 解析与非 object 拒绝。
+- control-plane 四个 UIP-0006 RPC allowlist/params 原样转发。
+- control-plane capability 完整声明通过，缺少 feature、错误 view version 或错误 selection rule 时 fail closed。
+- indexer `RpcInfo` 的 API/view/rule/max-limit 和四个必需 feature 与 profile/breakdown 服务测试交叉验证。
 
 ### 已验证
 
+- `cargo fmt --all`
+- `cargo test --workspace`
+- `cargo test -p usdb-indexer-cli -p usdb-control-plane`
 - `cargo test -p usdb-util`
 - `cargo test -p balance-history`
 - `cargo test -p usdb-indexer`
 - `cargo check --workspace --all-targets`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `npm run build`（`web/usdb-console-app`）
 - `cargo test -p usdb-indexer test_collab_breakdown_sort_uses_canonical_pass_id_text_order -- --nocapture`
 - 全部 57 个 shell 脚本 `bash -n`
 - `git diff --check`
@@ -379,3 +405,4 @@
 
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。
+- control-plane mint prepare/execute 与现有 console/explorer 仍有旧 `usdb_collab`、旧 pass/energy response 类型；应作为独立跨 UIP client surface 清理，直接切换到 v1 strict standard/collab schema，不保留兼容双栈。

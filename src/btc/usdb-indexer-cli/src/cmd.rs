@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use usdb_util::USDB_INDEXER_SERVICE_HTTP_PORT;
+use usdb_util::{
+    USDB_CANDIDATE_SET_SELECTION_RULE, USDB_ECONOMIC_PAGE_MAX_LIMIT,
+    USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_SERVICE_HTTP_PORT,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "usdb-indexer-cli")]
@@ -27,6 +30,16 @@ pub enum Commands {
     PassBlockCommit {
         #[arg(long)]
         block_height: Option<u32>,
+    },
+
+    /// Get the exact historical snapshot/local/system state reference.
+    StateRef {
+        #[arg(long)]
+        block_height: u32,
+
+        /// Optional `ConsensusQueryContext` JSON object.
+        #[arg(long, value_name = "JSON")]
+        context: Option<String>,
     },
 
     /// Get indexer sync status.
@@ -149,6 +162,69 @@ pub enum Commands {
         page_size: usize,
     },
 
+    /// Get one versioned UIP-0006 pass economic profile.
+    PassEconomicProfile {
+        #[arg(long)]
+        pass_id: String,
+
+        #[arg(long)]
+        block_height: Option<u32>,
+
+        /// Optional `ConsensusQueryContext` JSON object.
+        #[arg(long, value_name = "JSON")]
+        context: Option<String>,
+
+        #[arg(long, default_value = USDB_ECONOMIC_STATE_VIEW_VERSION)]
+        view_version: String,
+    },
+
+    /// Get one cursor page of the canonical UIP-0006 candidate set.
+    CandidateSetView {
+        #[arg(long)]
+        block_height: Option<u32>,
+
+        /// Optional `ConsensusQueryContext` JSON object.
+        #[arg(long, value_name = "JSON")]
+        context: Option<String>,
+
+        #[arg(long)]
+        cursor: Option<String>,
+
+        #[arg(long, default_value_t = 100, value_parser = parse_economic_limit)]
+        limit: usize,
+
+        #[arg(long, default_value = USDB_ECONOMIC_STATE_VIEW_VERSION)]
+        view_version: String,
+
+        #[arg(long, default_value = USDB_CANDIDATE_SET_SELECTION_RULE)]
+        selection_rule: String,
+    },
+
+    /// Get one cursor page of a Leader's UIP-0006 collab breakdown.
+    CollabBreakdown {
+        #[arg(long)]
+        leader_pass_id: String,
+
+        #[arg(long)]
+        block_height: Option<u32>,
+
+        /// Optional `ConsensusQueryContext` JSON object.
+        #[arg(long, value_name = "JSON")]
+        context: Option<String>,
+
+        #[arg(long)]
+        cursor: Option<String>,
+
+        #[arg(long, default_value_t = 100, value_parser = parse_economic_limit)]
+        limit: usize,
+
+        #[arg(long, default_value = "collab_pass_id_asc")]
+        sort: String,
+
+        #[arg(long, default_value = USDB_ECONOMIC_STATE_VIEW_VERSION)]
+        view_version: String,
+    },
+
     /// Get active balance snapshot at exact block height.
     ActiveBalanceSnapshot {
         #[arg(long)]
@@ -185,4 +261,58 @@ pub enum Commands {
         #[arg(long, default_value = "[]")]
         params: String,
     },
+}
+
+fn parse_economic_limit(value: &str) -> Result<usize, String> {
+    let limit = value
+        .parse::<usize>()
+        .map_err(|error| format!("Invalid economic page limit {}: {}", value, error))?;
+    if !(1..=USDB_ECONOMIC_PAGE_MAX_LIMIT).contains(&limit) {
+        return Err(format!(
+            "Economic page limit must be between 1 and {}",
+            USDB_ECONOMIC_PAGE_MAX_LIMIT
+        ));
+    }
+    Ok(limit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_set_view_uses_protocol_defaults() {
+        let cli = Cli::try_parse_from(["usdb-indexer-cli", "candidate-set-view"]).unwrap();
+
+        let Commands::CandidateSetView {
+            view_version,
+            selection_rule,
+            limit,
+            cursor,
+            ..
+        } = cli.command
+        else {
+            panic!("expected candidate-set-view command");
+        };
+
+        assert_eq!(view_version, USDB_ECONOMIC_STATE_VIEW_VERSION);
+        assert_eq!(selection_rule, USDB_CANDIDATE_SET_SELECTION_RULE);
+        assert_eq!(limit, 100);
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    fn collab_breakdown_rejects_out_of_range_limit() {
+        let error = Cli::try_parse_from([
+            "usdb-indexer-cli",
+            "collab-breakdown",
+            "--leader-pass-id",
+            "leaderi0",
+            "--limit",
+            "0",
+        ])
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Economic page limit"));
+    }
 }

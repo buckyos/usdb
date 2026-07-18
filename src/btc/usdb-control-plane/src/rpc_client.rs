@@ -1,7 +1,7 @@
 use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
 use crate::models::{
     BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, EthBlockHeader,
-    UsdbIndexerReadiness,
+    UsdbIndexerReadiness, UsdbIndexerRpcInfo,
 };
 use bitcoincore_rpc::bitcoin::PrivateKey;
 use bitcoincore_rpc::bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
@@ -93,6 +93,11 @@ impl RpcClient {
     /// Returns the usdb-indexer network name reported by `get_network_type`.
     pub async fn usdb_indexer_network(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "get_network_type", json!([])).await
+    }
+
+    /// Returns versioned capability metadata reported by `usdb-indexer`.
+    pub async fn usdb_indexer_rpc_info(&self, url: &str) -> Result<UsdbIndexerRpcInfo, String> {
+        self.json_rpc_call(url, "get_rpc_info", json!([])).await
     }
 
     /// Returns the readiness snapshot reported by the usdb-indexer service.

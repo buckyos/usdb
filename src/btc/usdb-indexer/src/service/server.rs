@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
 #[cfg(test)]
-use usdb_util::{CONSENSUS_SOURCE_CHAIN_BTC, build_consensus_snapshot_id};
+use usdb_util::{
+    CONSENSUS_SOURCE_CHAIN_BTC, USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES,
+    build_consensus_snapshot_id,
+};
 use usdb_util::{
     ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusStateReference,
     LocalStateActiveBalanceSnapshot, LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME,
@@ -2019,7 +2022,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
     fn get_rpc_info(&self) -> JsonResult<RpcInfo> {
         Ok(RpcInfo {
             service: "usdb-indexer".to_string(),
-            api_version: "1.0.0".to_string(),
+            api_version: USDB_INDEXER_API_VERSION.to_string(),
             network: self.config.config().bitcoin.network().to_string(),
             features: vec![
                 "snapshot_info".to_string(),
@@ -2037,14 +2040,18 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 "energy_snapshot".to_string(),
                 "energy_range".to_string(),
                 "pass_energy_leaderboard".to_string(),
-                "pass_economic_profile".to_string(),
-                "candidate_set_view".to_string(),
-                "collab_breakdown".to_string(),
+                USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF.to_string(),
+                USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE.to_string(),
+                USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW.to_string(),
+                USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN.to_string(),
                 "invalid_passes".to_string(),
                 "active_balance_snapshot".to_string(),
                 "latest_active_balance_snapshot".to_string(),
                 "stop".to_string(),
             ],
+            economic_state_view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            candidate_set_selection_rule: CANDIDATE_SET_SELECTION_RULE.to_string(),
+            economic_page_max_limit: USDB_ECONOMIC_PAGE_MAX_LIMIT,
         })
     }
 
@@ -5345,12 +5352,22 @@ mod tests {
         assert_eq!(replay.pass.collab_breakdown_count, 2);
 
         let rpc_info = server.get_rpc_info().unwrap();
-        assert!(
-            rpc_info
-                .features
-                .contains(&"pass_economic_profile".to_string())
+        assert_eq!(rpc_info.api_version, USDB_INDEXER_API_VERSION);
+        for required in USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES {
+            assert!(rpc_info.features.iter().any(|feature| feature == required));
+        }
+        assert_eq!(
+            rpc_info.economic_state_view_version,
+            USDB_ECONOMIC_STATE_VIEW_VERSION
         );
-        assert!(rpc_info.features.contains(&"collab_breakdown".to_string()));
+        assert_eq!(
+            rpc_info.candidate_set_selection_rule,
+            CANDIDATE_SET_SELECTION_RULE
+        );
+        assert_eq!(
+            rpc_info.economic_page_max_limit,
+            USDB_ECONOMIC_PAGE_MAX_LIMIT
+        );
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

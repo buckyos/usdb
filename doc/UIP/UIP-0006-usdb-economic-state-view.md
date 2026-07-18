@@ -56,7 +56,28 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 candidate/breakdown 当前已直接使用本文固定的 `cursor + limit`，不保留旧 `page/page_size` 双栈。参考实现的 `max_limit` 为 500，cursor 绑定完整 external state、resource/query 条件、limit 和 continuation key。
 
+参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref/profile/candidate/breakdown。`get_rpc_info` 现在显式声明 view version、candidate selection rule、max limit 和四个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
+
 当前仍待进行的是 USDB indexer 全部 UIP 对齐后的集中 live/regtest 复核，以及大数据量下的查询/索引性能评估。
+
+# 能力发现
+
+UIP-0006 consumer 必须通过 `get_rpc_info` 判断服务能力，不得把 RPC 可达或 `query_ready` 等价为协议兼容。
+
+当前 v1 的必需声明为：
+
+```text
+economic_state_view_version = "uip-0006-usdb-economic-state-view:v1"
+candidate_set_selection_rule = "uip-0006:effective-energy-desc-pass-id-asc:v1"
+economic_page_max_limit > 0
+features contains:
+  historical_state_ref
+  pass_economic_profile
+  candidate_set_view
+  collab_breakdown
+```
+
+`query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。consumer 需要同时满足自身所需的 readiness 与协议能力条件。
 
 # 非目标
 

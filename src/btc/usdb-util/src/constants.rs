@@ -5,6 +5,31 @@ pub const USDB_CONTROL_PLANE_SERVICE_NAME: &str = "usdb-control-plane";
 pub const USDB_INDEXER_CLI_TOOL_NAME: &str = "usdb-indexer-cli";
 pub const BALANCE_HISTORY_CLI_TOOL_NAME: &str = "balance-history-cli";
 
+/// Public JSON-RPC API version advertised by `usdb-indexer`.
+pub const USDB_INDEXER_API_VERSION: &str = "1.0.0";
+/// UIP-0006 economic state view contract accepted by the current indexer.
+pub const USDB_ECONOMIC_STATE_VIEW_VERSION: &str = "uip-0006-usdb-economic-state-view:v1";
+/// Deterministic ordering rule used by the UIP-0006 candidate set.
+pub const USDB_CANDIDATE_SET_SELECTION_RULE: &str = "uip-0006:effective-energy-desc-pass-id-asc:v1";
+/// Maximum number of rows accepted by UIP-0006 cursor-paged queries.
+pub const USDB_ECONOMIC_PAGE_MAX_LIMIT: usize = 500;
+
+/// `get_rpc_info.features` name for exact historical state references.
+pub const USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF: &str = "historical_state_ref";
+/// `get_rpc_info.features` name for single-pass UIP-0006 profiles.
+pub const USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE: &str = "pass_economic_profile";
+/// `get_rpc_info.features` name for the canonical validator candidate set.
+pub const USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW: &str = "candidate_set_view";
+/// `get_rpc_info.features` name for auditable collab contribution pages.
+pub const USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN: &str = "collab_breakdown";
+/// Complete feature set required for UIP-0006 economic state view consumers.
+pub const USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES: [&str; 4] = [
+    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF,
+    USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
+    USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW,
+    USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN,
+];
+
 // Directory constants
 pub const USDB_ROOT_DIR: &str = ".usdb";
 
