@@ -341,6 +341,14 @@
 - `src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh`
   - validator payload / context 强制携带 API、semantics、protocol、formula 四类版本字段，删除 protocol fallback 和可空 `.get(...)` 兼容逻辑。
   - protocol mismatch 断言改为 `PROTOCOL_VERSION_MISMATCH(-32051)`。
+  - 新增 UIP-0006 profile、candidate set 和 collab breakdown 请求 helper；candidate/breakdown 自动遍历 opaque cursor，并校验分页期间 `external_state`、query 条件、`limit/max_limit`、total、去重和稳定排序不变。
+  - collab breakdown 全量收集后按 `u128` 饱和规则独立重算 aggregate；candidate set 全量收集后独立检查 `effective_energy DESC, pass_id ASC`。
+  - validator payload 成功校验统一交叉检查 `get_state_ref_at_height`、`get_pass_economic_profile`、完整 `get_candidate_set_view` 和完整 `get_collab_breakdown`；same-height reorg 失败校验要求四个入口返回同一 consensus mismatch。
+  - candidate-set payload 改为直接使用 canonical candidate view 构造并强制 winner 为首项，不再逐个组合旧 snapshot/energy RPC；传入测试 pass 集合必须与服务端完整 candidate set 一致。
+- `src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_{e2e,reorg}.sh`
+  - 单 Pass validator payload 改为从 `get_pass_economic_profile` 构造，不再依赖旧 snapshot + energy 拼装路径。
+  - happy-path 在原历史高度及 current head 前进后重复交叉验证 UIP-0006 economic views。
+  - same-height reorg 在替换历史锚点后验证旧 payload 被 state-ref/profile/candidate/breakdown 四个入口统一拒绝。
 
 ### 已验证
 
@@ -349,12 +357,15 @@
 - `cargo test -p usdb-indexer`
 - `cargo check --workspace --all-targets`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- 受影响 shell 脚本 `bash -n`
+- 全部 56 个 shell 脚本 `bash -n`
 - `git diff --check`
+- `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh`
+- `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh`
 
-本轮未启动 bitcoind/ord live regtest；按既定安排在 UIP-0006 其余 RPC 完成后集中执行和重构。
+上述两条 live smoke 均使用独立 regtest bitcoind/ord/balance-history/usdb-indexer 数据目录和端口执行成功；尚未据此声明多候选、多 collab 或全量 live regression 已完成。
 
 ### 待继续对齐
 
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
+- 运行多候选与多 collab live 场景，实际覆盖 shell collector 的多页 cursor continuation 和 breakdown aggregate 重算路径。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。

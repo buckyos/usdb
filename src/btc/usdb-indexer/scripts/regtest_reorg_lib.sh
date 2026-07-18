@@ -43,6 +43,9 @@ USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 ORD_SERVER_LOG_FILE="${ORD_SERVER_LOG_FILE:-$WORK_DIR/ord-server.log}"
 INSCRIPTION_SOURCE="${INSCRIPTION_SOURCE:-bitcoind}"
 INSCRIPTION_FIXTURE_FILE="${INSCRIPTION_FIXTURE_FILE:-}"
+USDB_ECONOMIC_VIEW_VERSION="${USDB_ECONOMIC_VIEW_VERSION:-uip-0006-usdb-economic-state-view:v1}"
+USDB_CANDIDATE_SELECTION_RULE="${USDB_CANDIDATE_SELECTION_RULE:-uip-0006:effective-energy-desc-pass-id-asc:v1}"
+USDB_ECONOMIC_PAGE_LIMIT="${USDB_ECONOMIC_PAGE_LIMIT:-2}"
 
 BITCOIND_PID="${BITCOIND_PID:-}"
 BALANCE_HISTORY_PID="${BALANCE_HISTORY_PID:-}"
@@ -153,6 +156,315 @@ regtest_rpc_call_usdb_indexer() {
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
 
+regtest_build_pass_economic_profile_params() {
+  local pass_id="$1"
+  local block_height="$2"
+  local context_json="${3:-}"
+
+  python3 - "$USDB_ECONOMIC_VIEW_VERSION" "$pass_id" "$block_height" "$context_json" <<'PY'
+import json
+import sys
+
+view_version, pass_id, block_height, context_json = sys.argv[1:]
+request = {
+    "view_version": view_version,
+    "pass_id": pass_id,
+    "block_height": int(block_height),
+}
+if context_json:
+    request["context"] = json.loads(context_json)
+print(json.dumps([request]))
+PY
+}
+
+regtest_get_pass_economic_profile_response() {
+  local pass_id="$1"
+  local block_height="$2"
+  local context_json="${3:-}"
+  local params
+
+  params="$(regtest_build_pass_economic_profile_params "$pass_id" "$block_height" "$context_json")"
+  regtest_rpc_call_usdb_indexer "get_pass_economic_profile" "$params"
+}
+
+regtest_build_candidate_set_view_params() {
+  local block_height="$1"
+  local context_json="$2"
+  local cursor="$3"
+  local limit="$4"
+
+  python3 - \
+    "$USDB_ECONOMIC_VIEW_VERSION" \
+    "$USDB_CANDIDATE_SELECTION_RULE" \
+    "$block_height" \
+    "$context_json" \
+    "$cursor" \
+    "$limit" <<'PY'
+import json
+import sys
+
+view_version, selection_rule, block_height, context_json, cursor, limit = sys.argv[1:]
+request = {
+    "view_version": view_version,
+    "selection_rule": selection_rule,
+    "cursor": cursor or None,
+    "limit": int(limit),
+}
+if not cursor:
+    request["block_height"] = int(block_height)
+    if context_json:
+        request["context"] = json.loads(context_json)
+print(json.dumps([request]))
+PY
+}
+
+# Collect one immutable candidate-set view across every opaque cursor page.
+regtest_collect_candidate_set_view() {
+  local block_height="$1"
+  local context_json="${2:-}"
+  local limit="${3:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local cursor=""
+  local aggregate_json=""
+  local page_count=0
+  local params resp
+
+  while true; do
+    params="$(regtest_build_candidate_set_view_params "$block_height" "$context_json" "$cursor" "$limit")"
+    resp="$(regtest_rpc_call_usdb_indexer "get_candidate_set_view" "$params")"
+    aggregate_json="$(python3 - \
+      "$aggregate_json" \
+      "$resp" \
+      "$USDB_ECONOMIC_VIEW_VERSION" \
+      "$USDB_CANDIDATE_SELECTION_RULE" \
+      "$limit" <<'PY'
+import json
+import sys
+
+aggregate_json, response_json, expected_view, expected_rule, expected_limit = sys.argv[1:]
+response = json.loads(response_json)
+if response.get("error") is not None:
+    raise SystemExit(f"get_candidate_set_view failed: {response['error']}")
+page = response.get("result") or {}
+limit = int(expected_limit)
+if page.get("view_version") != expected_view:
+    raise SystemExit("candidate page view_version mismatch")
+if page.get("selection_rule") != expected_rule:
+    raise SystemExit("candidate page selection_rule mismatch")
+if page.get("limit") != limit or int(page.get("max_limit", 0)) < limit:
+    raise SystemExit("candidate page limit/max_limit mismatch")
+
+if aggregate_json:
+    aggregate = json.loads(aggregate_json)
+    for field in ("view_version", "external_state", "selection_rule", "total", "limit", "max_limit"):
+        if aggregate.get(field) != page.get(field):
+            raise SystemExit(f"candidate continuation changed {field}")
+else:
+    aggregate = {
+        "view_version": page["view_version"],
+        "external_state": page["external_state"],
+        "selection_rule": page["selection_rule"],
+        "total": page["total"],
+        "limit": page["limit"],
+        "max_limit": page["max_limit"],
+        "items": [],
+    }
+
+aggregate["items"].extend(page.get("items") or [])
+aggregate["next_cursor"] = page.get("next_cursor")
+if len(aggregate["items"]) > int(aggregate["total"]):
+    raise SystemExit("candidate pagination returned more rows than total")
+print(json.dumps(aggregate, separators=(",", ":")))
+PY
+)"
+
+    cursor="$(python3 - "$aggregate_json" <<'PY'
+import json
+import sys
+
+print(json.loads(sys.argv[1]).get("next_cursor") or "")
+PY
+)"
+    if [[ -z "$cursor" ]]; then
+      break
+    fi
+    page_count=$((page_count + 1))
+    if (( page_count > 10000 )); then
+      regtest_log "Candidate cursor pagination exceeded safety limit"
+      return 1
+    fi
+  done
+
+  python3 - "$aggregate_json" <<'PY'
+import json
+import sys
+
+view = json.loads(sys.argv[1])
+items = view.get("items") or []
+if len(items) != int(view["total"]):
+    raise SystemExit(f"candidate pagination incomplete: total={view['total']}, rows={len(items)}")
+ids = [item["pass_id"] for item in items]
+if len(ids) != len(set(ids)):
+    raise SystemExit("candidate pagination returned duplicate pass ids")
+expected = sorted(items, key=lambda item: (-int(item["effective_energy"]), item["pass_id"]))
+if items != expected:
+    raise SystemExit("candidate pagination violated effective_energy/pass_id ordering")
+view["next_cursor"] = None
+print(json.dumps(view, separators=(",", ":")))
+PY
+}
+
+regtest_build_collab_breakdown_params() {
+  local leader_pass_id="$1"
+  local block_height="$2"
+  local context_json="$3"
+  local sort="$4"
+  local cursor="$5"
+  local limit="$6"
+
+  python3 - \
+    "$USDB_ECONOMIC_VIEW_VERSION" \
+    "$leader_pass_id" \
+    "$block_height" \
+    "$context_json" \
+    "$sort" \
+    "$cursor" \
+    "$limit" <<'PY'
+import json
+import sys
+
+view_version, leader_pass_id, block_height, context_json, sort, cursor, limit = sys.argv[1:]
+request = {
+    "view_version": view_version,
+    "leader_pass_id": leader_pass_id,
+    "sort": sort,
+    "cursor": cursor or None,
+    "limit": int(limit),
+}
+if not cursor:
+    request["block_height"] = int(block_height)
+    if context_json:
+        request["context"] = json.loads(context_json)
+print(json.dumps([request]))
+PY
+}
+
+# Collect and independently recompute one Leader's complete collab aggregate.
+regtest_collect_collab_breakdown() {
+  local leader_pass_id="$1"
+  local block_height="$2"
+  local context_json="${3:-}"
+  local sort="${4:-collab_pass_id_asc}"
+  local limit="${5:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local cursor=""
+  local aggregate_json=""
+  local page_count=0
+  local params resp
+
+  while true; do
+    params="$(regtest_build_collab_breakdown_params \
+      "$leader_pass_id" "$block_height" "$context_json" "$sort" "$cursor" "$limit")"
+    resp="$(regtest_rpc_call_usdb_indexer "get_collab_breakdown" "$params")"
+    aggregate_json="$(python3 - \
+      "$aggregate_json" \
+      "$resp" \
+      "$USDB_ECONOMIC_VIEW_VERSION" \
+      "$leader_pass_id" \
+      "$sort" \
+      "$limit" <<'PY'
+import json
+import sys
+
+aggregate_json, response_json, expected_view, expected_leader, expected_sort, expected_limit = sys.argv[1:]
+response = json.loads(response_json)
+if response.get("error") is not None:
+    raise SystemExit(f"get_collab_breakdown failed: {response['error']}")
+page = response.get("result") or {}
+limit = int(expected_limit)
+if page.get("view_version") != expected_view:
+    raise SystemExit("breakdown page view_version mismatch")
+if page.get("leader_pass_id") != expected_leader:
+    raise SystemExit("breakdown page leader_pass_id mismatch")
+if page.get("sort") != expected_sort:
+    raise SystemExit("breakdown page sort mismatch")
+if page.get("limit") != limit or int(page.get("max_limit", 0)) < limit:
+    raise SystemExit("breakdown page limit/max_limit mismatch")
+
+if aggregate_json:
+    aggregate = json.loads(aggregate_json)
+    fields = (
+        "view_version", "external_state", "leader_pass_id", "leader_state",
+        "leader_pass_kind", "sort", "total", "aggregate_collab_contribution",
+        "limit", "max_limit",
+    )
+    for field in fields:
+        if aggregate.get(field) != page.get(field):
+            raise SystemExit(f"breakdown continuation changed {field}")
+else:
+    aggregate = {
+        "view_version": page["view_version"],
+        "external_state": page["external_state"],
+        "leader_pass_id": page["leader_pass_id"],
+        "leader_state": page["leader_state"],
+        "leader_pass_kind": page["leader_pass_kind"],
+        "sort": page["sort"],
+        "total": page["total"],
+        "aggregate_collab_contribution": page["aggregate_collab_contribution"],
+        "limit": page["limit"],
+        "max_limit": page["max_limit"],
+        "items": [],
+    }
+
+aggregate["items"].extend(page.get("items") or [])
+aggregate["next_cursor"] = page.get("next_cursor")
+if len(aggregate["items"]) > int(aggregate["total"]):
+    raise SystemExit("breakdown pagination returned more rows than total")
+print(json.dumps(aggregate, separators=(",", ":")))
+PY
+)"
+
+    cursor="$(python3 - "$aggregate_json" <<'PY'
+import json
+import sys
+
+print(json.loads(sys.argv[1]).get("next_cursor") or "")
+PY
+)"
+    if [[ -z "$cursor" ]]; then
+      break
+    fi
+    page_count=$((page_count + 1))
+    if (( page_count > 10000 )); then
+      regtest_log "Collab breakdown cursor pagination exceeded safety limit"
+      return 1
+    fi
+  done
+
+  python3 - "$aggregate_json" <<'PY'
+import json
+import sys
+
+view = json.loads(sys.argv[1])
+items = view.get("items") or []
+if len(items) != int(view["total"]):
+    raise SystemExit(f"breakdown pagination incomplete: total={view['total']}, rows={len(items)}")
+ids = [item["collab_pass_id"] for item in items]
+if len(ids) != len(set(ids)):
+    raise SystemExit("breakdown pagination returned duplicate collab pass ids")
+if view["sort"] == "collab_pass_id_asc":
+    expected = sorted(items, key=lambda item: item["collab_pass_id"])
+else:
+    expected = sorted(items, key=lambda item: (-int(item["collab_contribution"]), item["collab_pass_id"]))
+if items != expected:
+    raise SystemExit("breakdown pagination violated its declared ordering")
+energy_max = (1 << 128) - 1
+recomputed = min(sum(int(item["collab_contribution"]) for item in items), energy_max)
+if recomputed != int(view["aggregate_collab_contribution"]):
+    raise SystemExit("breakdown rows do not recompute aggregate_collab_contribution")
+view["next_cursor"] = None
+print(json.dumps(view, separators=(",", ":")))
+PY
+}
+
 regtest_get_usdb_state_ref_response() {
   local block_height="$1"
   regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "[{\"block_height\":${block_height}}]"
@@ -225,6 +537,46 @@ payload = {
         "effective_energy": pass_energy["effective_energy"],
         "resolved_height": pass_snapshot["resolved_height"],
         "query_block_height": pass_energy["query_block_height"],
+    },
+}
+
+payload_file.write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+regtest_write_validator_payload_from_profile_v1() {
+  local payload_file="$1"
+  local profile_resp="$2"
+
+  python3 - "$payload_file" "$profile_resp" "$USDB_ECONOMIC_VIEW_VERSION" <<'PY'
+import json
+import pathlib
+import sys
+
+payload_file = pathlib.Path(sys.argv[1])
+response = json.loads(sys.argv[2])
+expected_view = sys.argv[3]
+if response.get("error") is not None:
+    raise SystemExit(f"get_pass_economic_profile failed: {response['error']}")
+profile = response.get("result") or {}
+if profile.get("view_version") != expected_view:
+    raise SystemExit("profile response view_version mismatch")
+external_state = profile["external_state"]
+pass_profile = profile["pass"]
+height = external_state["btc_height"]
+
+payload = {
+    "payload_version": "1.0.0",
+    "external_state": external_state,
+    "miner_selection": {
+        "inscription_id": pass_profile["pass_id"],
+        "owner": pass_profile["owner_script_hash"],
+        "state": pass_profile["state"],
+        "raw_energy": pass_profile["raw_energy"],
+        "collab_contribution": pass_profile["collab_contribution"],
+        "effective_energy": pass_profile["effective_energy"],
+        "resolved_height": height,
+        "query_block_height": height,
     },
 }
 
@@ -366,29 +718,40 @@ regtest_build_validator_candidate_entries_for_passes_at_height() {
   shift
   local candidate_ids=("$@")
 
-  local candidate_entries_json inscription_id pass_snapshot_resp pass_energy_resp candidate_entry_json
+  local candidate_view
+  candidate_view="$(regtest_collect_candidate_set_view "$block_height" "" "$USDB_ECONOMIC_PAGE_LIMIT")"
 
-  candidate_entries_json="[]"
-  for inscription_id in "${candidate_ids[@]}"; do
-    pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
-    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True" >/dev/null
-
-    pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
-    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True" >/dev/null
-
-    candidate_entry_json="$(regtest_build_validator_candidate_entry_json "$pass_snapshot_resp" "$pass_energy_resp")"
-    candidate_entries_json="$(python3 - "$candidate_entries_json" "$candidate_entry_json" <<'PY'
+  python3 - "$candidate_view" "${candidate_ids[@]}" <<'PY'
 import json
 import sys
 
-entries = json.loads(sys.argv[1])
-entries.append(json.loads(sys.argv[2]))
-print(json.dumps(entries))
-PY
-)"
-  done
+view = json.loads(sys.argv[1])
+expected_ids = sys.argv[2:]
+items = view.get("items") or []
+actual_ids = [item["pass_id"] for item in items]
+if len(expected_ids) != len(set(expected_ids)):
+    raise SystemExit("candidate helper received duplicate pass ids")
+if set(actual_ids) != set(expected_ids) or len(actual_ids) != len(expected_ids):
+    raise SystemExit(
+        f"candidate helper ids do not match canonical view: expected={expected_ids}, actual={actual_ids}"
+    )
 
-  printf '%s' "$candidate_entries_json"
+height = view["external_state"]["btc_height"]
+entries = [
+    {
+        "inscription_id": item["pass_id"],
+        "owner": item["owner_script_hash"],
+        "state": item["state"],
+        "raw_energy": item["raw_energy"],
+        "collab_contribution": item["collab_contribution"],
+        "effective_energy": item["effective_energy"],
+        "resolved_height": height,
+        "query_block_height": height,
+    }
+    for item in items
+]
+print(json.dumps(entries, separators=(",", ":")))
+PY
 }
 
 regtest_choose_validator_candidate_set_winner_json() {
@@ -417,40 +780,59 @@ regtest_write_validator_candidate_set_payload_for_passes_at_height() {
   shift 3
   local candidate_ids=("$@")
 
-  local state_ref_resp candidate_entries_json winner_snapshot_resp winner_energy_resp
-  local inscription_id pass_snapshot_resp pass_energy_resp
+  local candidate_view
 
   regtest_wait_usdb_state_ref_available "$block_height"
-  state_ref_resp="$(regtest_get_usdb_state_ref_response "$block_height")"
-  regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
+  candidate_view="$(regtest_collect_candidate_set_view "$block_height" "" "$USDB_ECONOMIC_PAGE_LIMIT")"
 
-  candidate_entries_json="$(regtest_build_validator_candidate_entries_for_passes_at_height "$block_height" "${candidate_ids[@]}")"
-  winner_snapshot_resp=""
-  winner_energy_resp=""
-  for inscription_id in "${candidate_ids[@]}"; do
-    pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${inscription_id}\",\"at_height\":${block_height}}]")"
-    regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True"
+  python3 - "$payload_file" "$candidate_view" "$winner_id" "${candidate_ids[@]}" <<'PY'
+import json
+import pathlib
+import sys
 
-    pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${inscription_id}\",\"block_height\":${block_height},\"mode\":\"at_or_before\"}]")"
-    regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
+payload_file = pathlib.Path(sys.argv[1])
+view = json.loads(sys.argv[2])
+expected_winner = sys.argv[3]
+expected_ids = sys.argv[4:]
+items = view.get("items") or []
+actual_ids = [item["pass_id"] for item in items]
+if not items:
+    raise SystemExit("canonical candidate view is empty")
+if len(expected_ids) != len(set(expected_ids)):
+    raise SystemExit("candidate payload helper received duplicate pass ids")
+if set(actual_ids) != set(expected_ids) or len(actual_ids) != len(expected_ids):
+    raise SystemExit(
+        f"candidate payload ids do not match canonical view: expected={expected_ids}, actual={actual_ids}"
+    )
+if expected_winner != actual_ids[0]:
+    raise SystemExit(
+        f"declared winner does not match canonical view: expected={expected_winner}, actual={actual_ids[0]}"
+    )
 
-    if [[ "$inscription_id" == "$winner_id" ]]; then
-      winner_snapshot_resp="$pass_snapshot_resp"
-      winner_energy_resp="$pass_energy_resp"
-    fi
-  done
+height = view["external_state"]["btc_height"]
 
-  if [[ -z "$winner_snapshot_resp" || -z "$winner_energy_resp" ]]; then
-    regtest_log "Winner ${winner_id} not found in candidate set"
-    exit 1
-  fi
+def payload_candidate(item):
+    return {
+        "inscription_id": item["pass_id"],
+        "owner": item["owner_script_hash"],
+        "state": item["state"],
+        "raw_energy": item["raw_energy"],
+        "collab_contribution": item["collab_contribution"],
+        "effective_energy": item["effective_energy"],
+        "resolved_height": height,
+        "query_block_height": height,
+    }
 
-  regtest_write_validator_competition_payload_v1 \
-    "$payload_file" \
-    "$state_ref_resp" \
-    "$winner_snapshot_resp" \
-    "$winner_energy_resp" \
-    "$candidate_entries_json"
+candidates = [payload_candidate(item) for item in items]
+payload = {
+    "payload_version": "1.1.0",
+    "external_state": view["external_state"],
+    "miner_selection": candidates[0],
+    "selection_rule": view["selection_rule"],
+    "candidate_passes": candidates,
+}
+payload_file.write_text(json.dumps(payload, indent=2) + "\n")
+PY
 }
 
 regtest_write_validator_competition_payload_for_passes_at_height() {
@@ -525,6 +907,80 @@ print(json.dumps([{
 PY
 }
 
+regtest_build_validator_pass_economic_profile_params() {
+  local payload_file="$1"
+  local pass_id="${2:-}"
+  local block_height context_json
+
+  if [[ -z "$pass_id" ]]; then
+    pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  fi
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  regtest_build_pass_economic_profile_params "$pass_id" "$block_height" "$context_json"
+}
+
+regtest_build_validator_candidate_set_view_params() {
+  local payload_file="$1"
+  local cursor="${2:-}"
+  local limit="${3:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local block_height context_json
+
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  regtest_build_candidate_set_view_params "$block_height" "$context_json" "$cursor" "$limit"
+}
+
+regtest_build_validator_collab_breakdown_params() {
+  local payload_file="$1"
+  local leader_pass_id="${2:-}"
+  local cursor="${3:-}"
+  local limit="${4:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local block_height context_json
+
+  if [[ -z "$leader_pass_id" ]]; then
+    leader_pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  fi
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  regtest_build_collab_breakdown_params \
+    "$leader_pass_id" \
+    "$block_height" \
+    "$context_json" \
+    "collab_pass_id_asc" \
+    "$cursor" \
+    "$limit"
+}
+
+regtest_collect_candidate_set_view_for_payload() {
+  local payload_file="$1"
+  local limit="${2:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local block_height context_json
+
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  regtest_collect_candidate_set_view "$block_height" "$context_json" "$limit"
+}
+
+regtest_collect_collab_breakdown_for_payload() {
+  local payload_file="$1"
+  local leader_pass_id="${2:-}"
+  local limit="${3:-$USDB_ECONOMIC_PAGE_LIMIT}"
+  local block_height context_json
+
+  if [[ -z "$leader_pass_id" ]]; then
+    leader_pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
+  fi
+  block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
+  context_json="$(regtest_validator_payload_context_json "$payload_file")"
+  regtest_collect_collab_breakdown \
+    "$leader_pass_id" \
+    "$block_height" \
+    "$context_json" \
+    "collab_pass_id_asc" \
+    "$limit"
+}
+
 regtest_build_validator_pass_snapshot_params() {
   local payload_file="$1"
   local pass_id block_height context_json
@@ -574,24 +1030,16 @@ PY
 
 regtest_validate_validator_payload_success() {
   local payload_file="$1"
-  local block_height pass_id expected_owner expected_state
-  local expected_raw_energy expected_collab_contribution expected_effective_energy
+  local block_height
   local expected_snapshot_id expected_system_state_id
-  local state_ref_params snapshot_params energy_params resp
+  local state_ref_params profile_params resp profile_resp candidate_view breakdown_view
 
   block_height="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['btc_height']")"
-  pass_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
-  expected_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
-  expected_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
-  expected_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['raw_energy']")"
-  expected_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['collab_contribution']")"
-  expected_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['effective_energy']")"
   expected_snapshot_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['snapshot_id']")"
   expected_system_state_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['system_state_id']")"
 
   state_ref_params="$(regtest_build_validator_state_ref_params "$payload_file")"
-  snapshot_params="$(regtest_build_validator_pass_snapshot_params "$payload_file")"
-  energy_params="$(regtest_build_validator_pass_energy_params "$payload_file")"
+  profile_params="$(regtest_build_validator_pass_economic_profile_params "$payload_file")"
 
   resp="$(regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "$state_ref_params")"
   regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
@@ -599,120 +1047,157 @@ regtest_validate_validator_payload_success() {
   regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('snapshot_info') or {}).get('snapshot_id')" "$expected_snapshot_id"
   regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('system_state_info') or {}).get('system_state_id')" "$expected_system_state_id"
 
-  resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
-  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('owner')" "$expected_owner"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$expected_state"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('resolved_height')" "$block_height"
+  profile_resp="$(regtest_rpc_call_usdb_indexer "get_pass_economic_profile" "$profile_params")"
+  candidate_view="$(regtest_collect_candidate_set_view_for_payload "$payload_file")"
+  breakdown_view="$(regtest_collect_collab_breakdown_for_payload "$payload_file")"
 
-  resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
-  regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$pass_id"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$block_height"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('raw_energy')" "$expected_raw_energy"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('collab_contribution')" "$expected_collab_contribution"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$expected_effective_energy"
-}
-
-regtest_validate_validator_candidate_set_payload_success() {
-  local payload_file="$1"
-  local context_json candidate_count winner_id winner_owner winner_state
-  local expected_selection_rule selection_rule
-  local winner_raw_energy winner_collab_contribution winner_effective_energy
-  local computed_winner_json computed_winner_id computed_winner_owner computed_winner_state
-  local computed_winner_raw_energy computed_winner_collab_contribution computed_winner_effective_energy
-  local idx candidate_id candidate_owner candidate_state
-  local candidate_raw_energy candidate_collab_contribution candidate_effective_energy
-  local candidate_height energy_height
-  local snapshot_params energy_params resp
-
-  regtest_validate_validator_payload_success "$payload_file"
-
-  context_json="$(regtest_validator_payload_context_json "$payload_file")"
-  candidate_count="$(regtest_validator_payload_expr "$payload_file" "((data.get('candidate_passes') or []).__len__())")"
-  expected_selection_rule="uip-0006:effective-energy-desc-pass-id-asc:v1"
-  selection_rule="$(regtest_validator_payload_expr "$payload_file" "data.get('selection_rule')")"
-  if [[ "$selection_rule" != "$expected_selection_rule" ]]; then
-    regtest_log "Unsupported candidate-set selection rule: expected=${expected_selection_rule}, got=${selection_rule}"
-    exit 1
-  fi
-  winner_id="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['inscription_id']")"
-  winner_owner="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['owner']")"
-  winner_state="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['state']")"
-  winner_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['raw_energy']")"
-  winner_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['collab_contribution']")"
-  winner_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['miner_selection']['effective_energy']")"
-
-  for idx in $(seq 0 $((candidate_count - 1))); do
-    candidate_id="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['inscription_id']")"
-    candidate_owner="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['owner']")"
-    candidate_state="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['state']")"
-    candidate_raw_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['raw_energy']")"
-    candidate_collab_contribution="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['collab_contribution']")"
-    candidate_effective_energy="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['effective_energy']")"
-    candidate_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['resolved_height']")"
-    energy_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['query_block_height']")"
-
-    snapshot_params="$(python3 - "$candidate_id" "$candidate_height" "$context_json" <<'PY'
-import json
-import sys
-print(json.dumps([{
-    "inscription_id": sys.argv[1],
-    "at_height": int(sys.argv[2]),
-    "context": json.loads(sys.argv[3]),
-}]))
-PY
-)"
-    resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
-    regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('owner')" "$candidate_owner"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('state')" "$candidate_state"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('resolved_height')" "$candidate_height"
-
-    energy_params="$(python3 - "$candidate_id" "$energy_height" "$context_json" <<'PY'
-import json
-import sys
-print(json.dumps([{
-    "inscription_id": sys.argv[1],
-    "block_height": int(sys.argv[2]),
-    "mode": "at_or_before",
-    "context": json.loads(sys.argv[3]),
-}]))
-PY
-)"
-    resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
-    regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('inscription_id')" "$candidate_id"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('query_block_height')" "$energy_height"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('raw_energy')" "$candidate_raw_energy"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('collab_contribution')" "$candidate_collab_contribution"
-    regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('effective_energy')" "$candidate_effective_energy"
-  done
-
-  computed_winner_json="$(python3 - "$payload_file" <<'PY'
+  python3 - \
+    "$payload_file" \
+    "$profile_resp" \
+    "$candidate_view" \
+    "$breakdown_view" \
+    "$USDB_ECONOMIC_VIEW_VERSION" \
+    "$USDB_CANDIDATE_SELECTION_RULE" <<'PY'
 import json
 import pathlib
 import sys
 
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
-candidates = payload.get("candidate_passes") or []
-winner = min(candidates, key=lambda item: (-int(item["effective_energy"]), item["inscription_id"]))
-print(json.dumps(winner))
-PY
-)"
-  computed_winner_id="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["inscription_id"])')"
-  computed_winner_owner="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["owner"])')"
-  computed_winner_state="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')"
-  computed_winner_raw_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["raw_energy"])')"
-  computed_winner_collab_contribution="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["collab_contribution"])')"
-  computed_winner_effective_energy="$(printf '%s' "$computed_winner_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["effective_energy"])')"
+profile_response = json.loads(sys.argv[2])
+candidate_view = json.loads(sys.argv[3])
+breakdown = json.loads(sys.argv[4])
+expected_view = sys.argv[5]
+expected_rule = sys.argv[6]
 
-  if [[ "$winner_id" != "$computed_winner_id" || "$winner_owner" != "$computed_winner_owner" || "$winner_state" != "$computed_winner_state" || "$winner_raw_energy" != "$computed_winner_raw_energy" || "$winner_collab_contribution" != "$computed_winner_collab_contribution" || "$winner_effective_energy" != "$computed_winner_effective_energy" ]]; then
-    regtest_log "Competition payload winner does not match candidate ordering: winner_id=${winner_id}, computed_winner_id=${computed_winner_id}"
-    exit 1
-  fi
+if profile_response.get("error") is not None:
+    raise SystemExit(f"get_pass_economic_profile failed: {profile_response['error']}")
+profile = profile_response.get("result") or {}
+if profile.get("view_version") != expected_view:
+    raise SystemExit("profile view_version mismatch")
+if candidate_view.get("view_version") != expected_view or breakdown.get("view_version") != expected_view:
+    raise SystemExit("economic view version mismatch across profile/candidate/breakdown")
+if candidate_view.get("selection_rule") != expected_rule:
+    raise SystemExit("candidate selection_rule mismatch")
+
+external_state = payload["external_state"]
+for name, actual in (
+    ("profile", profile.get("external_state")),
+    ("candidate", candidate_view.get("external_state")),
+    ("breakdown", breakdown.get("external_state")),
+):
+    if actual != external_state:
+        raise SystemExit(f"{name} external_state does not match validator payload")
+
+expected = payload["miner_selection"]
+pass_profile = profile["pass"]
+field_pairs = {
+    "inscription_id": "pass_id",
+    "owner": "owner_script_hash",
+    "state": "state",
+    "raw_energy": "raw_energy",
+    "collab_contribution": "collab_contribution",
+    "effective_energy": "effective_energy",
+}
+for payload_field, profile_field in field_pairs.items():
+    if expected[payload_field] != pass_profile[profile_field]:
+        raise SystemExit(f"profile mismatch for {payload_field}")
+height = int(external_state["btc_height"])
+if int(expected["resolved_height"]) != height or int(expected["query_block_height"]) != height:
+    raise SystemExit("validator payload height fields do not match external_state")
+if not isinstance(pass_profile.get("level"), int) or not isinstance(pass_profile.get("difficulty_factor_bps"), int):
+    raise SystemExit("profile is missing UIP-0005 derived fields")
+
+candidate_matches = [
+    item for item in candidate_view.get("items") or []
+    if item.get("pass_id") == pass_profile["pass_id"]
+]
+is_candidate = pass_profile["state"] == "active" and pass_profile["pass_kind"] == "standard"
+if is_candidate:
+    if len(candidate_matches) != 1:
+        raise SystemExit("active standard profile is not represented exactly once in candidate view")
+    candidate = candidate_matches[0]
+    candidate_pairs = {
+        "owner_script_hash": "owner_script_hash",
+        "state": "state",
+        "pass_kind": "pass_kind",
+        "raw_energy": "raw_energy",
+        "collab_contribution": "collab_contribution",
+        "effective_energy": "effective_energy",
+        "level": "level",
+        "difficulty_factor_bps": "difficulty_factor_bps",
+    }
+    for candidate_field, profile_field in candidate_pairs.items():
+        if candidate[candidate_field] != pass_profile[profile_field]:
+            raise SystemExit(f"candidate/profile mismatch for {candidate_field}")
+elif candidate_matches:
+    raise SystemExit("non-candidate profile unexpectedly appears in candidate view")
+
+if breakdown["leader_pass_id"] != pass_profile["pass_id"]:
+    raise SystemExit("breakdown leader does not match profile pass")
+if breakdown["leader_state"] != pass_profile["state"] or breakdown["leader_pass_kind"] != pass_profile["pass_kind"]:
+    raise SystemExit("breakdown leader state/kind does not match profile")
+if breakdown["aggregate_collab_contribution"] != pass_profile["collab_contribution"]:
+    raise SystemExit("breakdown aggregate does not match profile collab_contribution")
+if int(breakdown["total"]) != int(pass_profile["collab_breakdown_count"]):
+    raise SystemExit("breakdown total does not match profile collab_breakdown_count")
+PY
+
+  regtest_log "UIP-0006 economic views validated: height=${block_height}, payload=${payload_file}"
+}
+
+regtest_validate_validator_candidate_set_payload_success() {
+  local payload_file="$1"
+  local candidate_view
+
+  regtest_validate_validator_payload_success "$payload_file"
+  candidate_view="$(regtest_collect_candidate_set_view_for_payload "$payload_file")"
+
+  python3 - "$payload_file" "$candidate_view" "$USDB_CANDIDATE_SELECTION_RULE" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+view = json.loads(sys.argv[2])
+expected_rule = sys.argv[3]
+if payload.get("selection_rule") != expected_rule or view.get("selection_rule") != expected_rule:
+    raise SystemExit("candidate payload/view selection_rule mismatch")
+
+payload_candidates = payload.get("candidate_passes") or []
+view_candidates = view.get("items") or []
+if len(payload_candidates) != int(view["total"]):
+    raise SystemExit("payload candidate count does not match canonical candidate view")
+payload_by_id = {item["inscription_id"]: item for item in payload_candidates}
+view_by_id = {item["pass_id"]: item for item in view_candidates}
+if len(payload_by_id) != len(payload_candidates) or set(payload_by_id) != set(view_by_id):
+    raise SystemExit("payload candidate ids do not match canonical candidate view")
+
+height = int(view["external_state"]["btc_height"])
+field_pairs = {
+    "owner": "owner_script_hash",
+    "state": "state",
+    "raw_energy": "raw_energy",
+    "collab_contribution": "collab_contribution",
+    "effective_energy": "effective_energy",
+}
+for pass_id, expected in payload_by_id.items():
+    actual = view_by_id[pass_id]
+    for payload_field, view_field in field_pairs.items():
+        if expected[payload_field] != actual[view_field]:
+            raise SystemExit(f"candidate {pass_id} mismatch for {payload_field}")
+    if int(expected["resolved_height"]) != height or int(expected["query_block_height"]) != height:
+        raise SystemExit(f"candidate {pass_id} height fields do not match external_state")
+
+if not view_candidates:
+    raise SystemExit("candidate-set payload cannot validate against an empty candidate view")
+winner = payload["miner_selection"]
+canonical_winner = view_candidates[0]
+if winner["inscription_id"] != canonical_winner["pass_id"]:
+    raise SystemExit("payload winner does not match canonical candidate view first row")
+for payload_field, view_field in field_pairs.items():
+    if winner[payload_field] != canonical_winner[view_field]:
+        raise SystemExit(f"winner mismatch for {payload_field}")
+PY
 }
 
 regtest_validate_validator_competition_payload_success() {
@@ -753,45 +1238,18 @@ regtest_validate_validator_candidate_set_payload_consensus_error() {
   local payload_file="$1"
   local expected_code="$2"
   local expected_message="$3"
-  local context_json block_height candidate_count idx candidate_id candidate_height energy_height
-  local state_ref_params snapshot_params energy_params resp
+  local candidate_count idx candidate_id profile_params resp
 
   regtest_validate_validator_payload_consensus_error "$payload_file" "$expected_code" "$expected_message"
 
-  context_json="$(regtest_validator_payload_context_json "$payload_file")"
   candidate_count="$(regtest_validator_payload_expr "$payload_file" "((data.get('candidate_passes') or []).__len__())")"
-
-  for idx in $(seq 0 $((candidate_count - 1))); do
+  idx=0
+  while (( idx < candidate_count )); do
     candidate_id="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['inscription_id']")"
-    candidate_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['resolved_height']")"
-    energy_height="$(regtest_validator_payload_expr "$payload_file" "data['candidate_passes'][$idx]['query_block_height']")"
-
-    snapshot_params="$(python3 - "$candidate_id" "$candidate_height" "$context_json" <<'PY'
-import json
-import sys
-print(json.dumps([{
-    "inscription_id": sys.argv[1],
-    "at_height": int(sys.argv[2]),
-    "context": json.loads(sys.argv[3]),
-}]))
-PY
-)"
-    resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+    profile_params="$(regtest_build_validator_pass_economic_profile_params "$payload_file" "$candidate_id")"
+    resp="$(regtest_rpc_call_usdb_indexer "get_pass_economic_profile" "$profile_params")"
     regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
-
-    energy_params="$(python3 - "$candidate_id" "$energy_height" "$context_json" <<'PY'
-import json
-import sys
-print(json.dumps([{
-    "inscription_id": sys.argv[1],
-    "block_height": int(sys.argv[2]),
-    "mode": "at_or_before",
-    "context": json.loads(sys.argv[3]),
-}]))
-PY
-)"
-    resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
-    regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+    idx=$((idx + 1))
   done
 }
 
@@ -843,19 +1301,23 @@ regtest_validate_validator_payload_consensus_error() {
   local payload_file="$1"
   local expected_code="$2"
   local expected_message="$3"
-  local state_ref_params snapshot_params energy_params resp
+  local state_ref_params profile_params candidate_params breakdown_params resp
 
   state_ref_params="$(regtest_build_validator_state_ref_params "$payload_file")"
-  snapshot_params="$(regtest_build_validator_pass_snapshot_params "$payload_file")"
-  energy_params="$(regtest_build_validator_pass_energy_params "$payload_file")"
+  profile_params="$(regtest_build_validator_pass_economic_profile_params "$payload_file")"
+  candidate_params="$(regtest_build_validator_candidate_set_view_params "$payload_file")"
+  breakdown_params="$(regtest_build_validator_collab_breakdown_params "$payload_file")"
 
   resp="$(regtest_rpc_call_usdb_indexer "get_state_ref_at_height" "$state_ref_params")"
   regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
 
-  resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "$snapshot_params")"
+  resp="$(regtest_rpc_call_usdb_indexer "get_pass_economic_profile" "$profile_params")"
   regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
 
-  resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "$energy_params")"
+  resp="$(regtest_rpc_call_usdb_indexer "get_candidate_set_view" "$candidate_params")"
+  regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
+
+  resp="$(regtest_rpc_call_usdb_indexer "get_collab_breakdown" "$breakdown_params")"
   regtest_assert_usdb_consensus_error "$resp" "$expected_code" "$expected_message"
 }
 

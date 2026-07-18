@@ -48,7 +48,7 @@ main() {
 
   local miner_address ord_receive_address mint_content_file pass_id
   local current_tip_height historical_height historical_hash
-  local replacement_address payload_file state_ref_resp pass_snapshot_resp pass_energy_resp
+  local replacement_address payload_file profile_resp
   local target_post_reorg_height
 
   miner_address="$(regtest_get_new_address)"
@@ -88,16 +88,12 @@ EOF
   regtest_wait_usdb_consensus_ready
   regtest_wait_usdb_state_ref_available "$historical_height"
 
-  state_ref_resp="$(regtest_get_usdb_state_ref_response "$historical_height")"
-  regtest_assert_json_expr "$state_ref_resp" "data.get('error') is None" "True"
-  pass_snapshot_resp="$(regtest_rpc_call_usdb_indexer "get_pass_snapshot" "[{\"inscription_id\":\"${pass_id}\",\"at_height\":${historical_height}}]")"
-  regtest_assert_json_expr "$pass_snapshot_resp" "data.get('error') is None" "True"
-  pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${pass_id}\",\"block_height\":${historical_height},\"mode\":\"at_or_before\"}]")"
-  regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
+  profile_resp="$(regtest_get_pass_economic_profile_response "$pass_id" "$historical_height")"
+  regtest_assert_json_expr "$profile_resp" "data.get('error') is None" "True"
 
   payload_file="$WORK_DIR/ethw_validator_block_body_reorg_payload.json"
-  regtest_write_validator_payload_v1 "$payload_file" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp"
-  regtest_log "Wrote validator block-body reorg payload v1: ${payload_file}"
+  regtest_write_validator_payload_from_profile_v1 "$payload_file" "$profile_resp"
+  regtest_log "Wrote validator block-body reorg payload from UIP-0006 profile: ${payload_file}"
 
   regtest_log "Validator block-body payload must validate before reorg"
   regtest_validate_validator_payload_success "$payload_file"
