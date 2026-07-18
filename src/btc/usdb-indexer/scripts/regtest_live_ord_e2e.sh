@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-indexer-live-ord-XXXXXX)}"
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
-ORD_BIN="${ORD_BIN:-ord}"
+ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 ORD_DATA_DIR="${ORD_DATA_DIR:-$WORK_DIR/ord}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
@@ -775,7 +775,7 @@ build_live_transfer_remint_scenario() {
     {
       "type": "assert_eq",
       "left": "\$pass1_remint.state",
-      "right": "dormant"
+      "right": "consumed"
     },
     {
       "type": "rpc_call",
@@ -794,15 +794,12 @@ build_live_transfer_remint_scenario() {
     {
       "type": "assert_eq",
       "left": "\$pass1_energy_remint.state",
-      "right": "dormant"
+      "right": "consumed"
     },
     {
-      "type": "assert_pass_energy_delta",
-      "inscription_id": "${inscription_id_1}",
-      "from_height": ${height_transfer},
-      "to_height": ${height_remint},
-      "expected_delta": 0,
-      "mode": "at_or_before"
+      "type": "assert_eq",
+      "left": "\$pass1_energy_remint.raw_energy",
+      "right": "0"
     },
     {
       "type": "rpc_call",
@@ -847,12 +844,12 @@ build_live_transfer_remint_scenario() {
       "right": "active"
     },
     {
-      "type": "assert_pass_energy_eq",
-      "inscription_id": "${inscription_id_2}",
-      "block_height": ${height_remint},
-      "expected_energy": "\$pass1_energy_remint.raw_energy",
-      "mode": "at_or_before",
-      "expected_state": "active"
+      "type": "assert_mul_div_floor",
+      "actual": "\$pass2_energy_remint.raw_energy",
+      "value": "\$pass1_energy_transfer.raw_energy",
+      "multiplier": 9500,
+      "divisor": 10000,
+      "message": "remint raw energy must equal floor(prev raw energy * 9500 / 10000)"
     },
     {
       "type": "rpc_call",
@@ -1871,9 +1868,12 @@ EOF
 {"p":"usdb","op":"mint","v":1,"usdb_main":"0x2222222222222222222222222222222222222222","prev":["${inscription_id_1}"]}
 EOF
 
-    log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}"
+    # The UIP0002 prev-owner check compares exact scripts. Pin the remint to the
+    # same address that received the previous inscription instead of allowing
+    # ord to allocate a fresh wallet-B destination.
+    log "Inscribe remint(prev) via ord CLI: wallet=${ORD_WALLET_NAME_B}, prev=${inscription_id_1}, destination=${ord_receive_address_b}"
     local inscribe_output_2 inscription_id_2
-    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --file "$remint_content_file" 2>&1 || true)"
+    inscribe_output_2="$(run_ord_wallet_named "$ORD_WALLET_NAME_B" inscribe --fee-rate "$ORD_FEE_RATE" --destination "$ord_receive_address_b" --file "$remint_content_file" 2>&1 || true)"
     inscription_id_2="$(extract_inscription_id "$inscribe_output_2")"
     if [[ -z "$inscription_id_2" ]]; then
       log "Failed to parse remint inscription id from ord output: ${inscribe_output_2}"

@@ -25,15 +25,28 @@ Activation: BTC network activation matrix
 
 # 动机
 
-当前实现已经具备可运行的 pass 状态记录和历史记录，但仍有几类规则需要标准化：
+早期实现已经具备可运行的 pass 状态记录和历史记录，但曾有几类规则尚未标准化：
 
-- `prev` 引用不存在、owner 不一致、状态不符合要求时，当前实现会 `warn + skip`，然后继续 mint。
+- `prev` 引用不存在、owner 不一致、状态不符合要求时，早期实现会 `warn + skip`，然后继续 mint。
 - burn 必须同时关闭 pass 状态和 energy 终态，避免 burn 后继续暴露可用能量。
 - 同一 block 内 transfer 与 mint 的处理顺序必须成为协议规则，否则历史重放可能分叉。
 - 同一 block 内 owner balance 变化与 pass 事件的相对顺序必须成为协议规则，否则 transfer/remint 可能绕过 UIP-0003 penalty。
 - UIP-0001 引入 standard pass / collab pass 后，状态机必须明确两类 pass 是否共享 active owner 限制。
 
 UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式和 UIP-0004 collab/effective energy 提供稳定输入。
+
+# 当前实现状态
+
+参考实现已完成 UIP-0002 core 对齐：
+
+- `prev` 先完整校验再原子提交；missing、owner mismatch、duplicate、非 Dormant、Consumed/Burned 引用均使新 mint 进入 `Invalid`，不会部分消费。
+- valid remint 在同一 event height 将每张 prev 写为 `Consumed`、energy 写为 `Consumed / 0`，再创建新 Active pass。
+- Active / Dormant burn 同步写入 `Burned / 0` energy 终态；Consumed burn 保持 `Consumed` 经济终态。
+- pass event 使用 canonical block ordering，Active 离开前完成 block-level balance settlement，block-end 只结算最终仍 Active 的 pass。
+- `leader_pass_id` mint-time 校验 Active standard Leader；`leader_btc_addr` 按当前 BTC network 接收并在目标高度动态解析。
+- Consumed / Burned pass 后续 transfer 不再更新 owner/satpoint，明确作为非共识审计 tradeoff。
+
+当前剩余工作是集中 live/regtest 状态矩阵复核，以及由 UIP-0008 固定公开网络 activation matrix；不需要兼容早期 warn/skip 行为或旧数据库。
 
 # 非目标
 
@@ -375,7 +388,7 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 
 # 实现影响
 
-预期需要修改：
+参考实现已对齐：
 
 - `src/btc/usdb-indexer/src/index/pass.rs`
 - `src/btc/usdb-indexer/src/index/indexer/block_events.rs`
@@ -384,7 +397,7 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 - `src/btc/usdb-indexer/src/index/energy.rs`
 - pass snapshot / history RPC。
 
-实现建议：
+当前实现不变量：
 
 - 在 `on_mint_pass` 中先做完整 pre-validation，再提交任何状态变更。
 - 将 `prev` 处理从 warn/skip 改为 strict invalid。
@@ -423,6 +436,8 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 - `leader_pass_id` collab mint requires active standard Leader。
 - `leader_btc_addr` collab mint accepts valid address and resolves Leader by height。
 
+参考实现的状态机、energy timeline、indexer behavior 和 service tests 已覆盖上述 core 场景；集中 live/regtest 阶段继续复核真实 ord event ordering、burn 和完整 prev 失败矩阵。
+
 # 安全考虑
 
 ## 防 `prev` 双花
@@ -453,13 +468,10 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 
 # 未决问题
 
-- `leader_btc_addr` 在 mint 高度没有 active standard pass 时，是 invalid，还是允许后续高度动态生效。本文倾向后者。
 - 同一 height 下是否需要非共识审计 API 暴露 event index；协议状态查询暂不需要。
 
 # 下一步
 
-1. Review 本草案中的 mint 原子提交顺序。
-2. 确认 `prev.owner_at_event_height == new_mint.mint_owner` 作为所有权一致性定义。
-3. 继续确认 `leader_btc_addr` dynamic validation 的历史高度解析入口。
-4. 继续确认同一 height 下是否需要非共识审计 API 暴露 event index。
-5. 在 UIP-0003 定义 energy 终态记录格式和继承折损，并在 UIP-0004 定义 collab derived energy。
+1. 在集中 live/regtest 中复核 burn、完整 prev invalid 矩阵和 same-block ordering。
+2. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
+3. 后续按审计需求决定是否增加不参与协议状态的 event-index API。

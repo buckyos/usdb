@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-indexer-world-sim-XXXXXX)}"
 
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
-ORD_BIN="${ORD_BIN:-ord}"
+ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 ORD_DATA_DIR="${ORD_DATA_DIR:-$WORK_DIR/ord}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
@@ -711,6 +711,7 @@ main() {
     --btc-cli "$BITCOIN_CLI_BIN" \
     --bitcoin-dir "$BITCOIN_DIR" \
     --btc-rpc-port "$BTC_RPC_PORT" \
+    --btc-cookie-file "${BITCOIN_DIR}/regtest/.cookie" \
     --ord-bin "$ORD_BIN" \
     --ord-data-dir "$ORD_DATA_DIR" \
     --ord-server-url "http://127.0.0.1:${ORD_SERVER_PORT}" \

@@ -22,30 +22,34 @@
 world-sim simulator 在 `candidate_set` 模式下会：
 
 1. 每隔 `SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS` 块触发一次采样
-2. 从当前 active pass 集合里抽样 `SIM_VALIDATOR_SAMPLE_SIZE` 张
+2. 通过 UIP-0006 `get_candidate_set_view` 读取 canonical active standard candidate，再抽样 `SIM_VALIDATOR_SAMPLE_SIZE` 张
 3. 固定该高度的：
    - `snapshot_id`
    - `stable_block_hash`
    - `local_state_commit`
    - `system_state_id`
+   - API / semantics / protocol / formula version
 4. 为每张 sampled candidate 记录：
    - `inscription_id`
    - `owner`
    - `state`
+   - `pass_kind`
    - `raw_energy`
    - `collab_contribution`
    - `effective_energy`
+   - `level`
+   - `difficulty_factor_bps`
 5. 按 `effective_energy DESC + inscription_id ASC` 规则计算 `winner_inscription_id`
 
 延迟验证时会：
 
-1. 先按历史 `context` 调 `get_state_ref_at_height`
-2. 再逐张调用：
-   - `get_pass_snapshot`
-   - `get_pass_energy`
-3. 要求每张 candidate 的 `owner / state / raw_energy / collab_contribution / effective_energy` 都和采样时一致
-4. 再次本地重算 winner，要求与采样时一致
-5. 如果启用 tamper 检测，再构造一个 wrong-winner 版本的 payload，并要求 validator 本地重算能识别篡改
+1. 先按包含完整 version identity 的历史 `context` 调 `get_state_ref_at_height`
+2. 重新分页读取 `get_candidate_set_view`，确认 sampled pass 仍属于同一 canonical candidate set
+3. 对 sampled pass 调 `get_pass_economic_profile`，交叉验证 candidate/profile 的 owner、kind、三字段能量、level 和 factor
+4. 要求重放结果与采样时一致，并再次本地重算 winner
+5. 如果启用 tamper 检测，再构造一个 wrong-winner 版本并要求本地重算识别篡改
+
+candidate 来源不再使用 `get_active_passes_at_height`，因此 active collab pass 不会进入 sampled validator candidate set。
 
 如果样本落在 deterministic reorg replacement 区间内，则期望返回：
 

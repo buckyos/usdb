@@ -25,8 +25,8 @@ run_core_protocol_tests() {
     "index::test::indexer_behavior::test_sync_blocks_timeline_mint_transfer_burn_remint_replay"
     "index::test::indexer_behavior::test_sync_blocks_passive_transfer_keeps_receiver_active_and_transferred_pass_dormant"
     "index::test::indexer_behavior::test_sync_blocks_same_owner_multiple_mints_keep_only_latest_active"
-    "index::test::indexer_behavior::test_sync_blocks_multi_prev_inherit_sums_energy_and_consumes_all_prev"
-    "index::test::indexer_behavior::test_sync_blocks_double_inherit_same_prev_only_first_gets_energy"
+    "index::test::indexer_behavior::test_sync_blocks_multi_prev_inherit_sums_discounted_energy_and_consumes_all_prev"
+    "index::test::indexer_behavior::test_sync_blocks_second_inherit_same_prev_records_invalid_mint"
     "index::test::indexer_behavior::test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_transfer"
     "index::test::indexer_behavior::test_sync_blocks_restart_after_failed_block_replay_matches_fresh_run"
   )
@@ -151,7 +151,7 @@ main() {
   fi
 
   if [[ "${RUN_REORG_REGRESSION}" == "1" ]]; then
-    run_cmd "${SCRIPT_DIR}/run_reorg_regression.sh"
+    run_cmd bash "${SCRIPT_DIR}/run_reorg_regression.sh"
   else
     log "Skipping reorg regression suite: RUN_REORG_REGRESSION=${RUN_REORG_REGRESSION}"
   fi

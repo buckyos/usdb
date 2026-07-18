@@ -16,8 +16,9 @@
 
 - `balance-history.get_state_ref_at_height`
 - `usdb-indexer.get_state_ref_at_height`
-- `usdb-indexer.get_pass_snapshot(context=...)`
-- `usdb-indexer.get_pass_energy(context=...)`
+- `usdb-indexer.get_pass_economic_profile(context=...)`
+- `usdb-indexer.get_candidate_set_view(context=..., cursor=...)`
+- `usdb-indexer.get_collab_breakdown(context=..., cursor=...)`
 - `ConsensusQueryContext`
 - `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE / *_MISMATCH`
 
@@ -70,7 +71,10 @@
 - `stable_block_hash`
 - `local_state_commit`
 - `system_state_id`
+- `balance_history_api_version`
+- `balance_history_semantics_version`
 - `usdb_index_protocol_version`
+- `usdb_index_formula_version`
 
 其中：
 
@@ -109,8 +113,9 @@ validator 风格脚本应始终分两步：
 
 复用同一份 `ConsensusQueryContext`，调用：
 
-- `get_pass_snapshot`
-- `get_pass_energy`
+- `get_pass_economic_profile`
+- `get_candidate_set_view`
+- Leader 存在 collab aggregate 时调用 `get_collab_breakdown`
 
 并比对：
 
@@ -119,6 +124,8 @@ validator 风格脚本应始终分两步：
 - `raw_energy`
 - `collab_contribution`
 - `effective_energy`
+
+candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderboard 或全部 active pass 手工拼装。profile/candidate/breakdown 必须返回同一 `external_state`，并能重算同一 winner 和 collab aggregate。
 
 这样 validator 视角会比“先查当前 state，再零散拼断言”更贴近真实实现。
 
@@ -258,9 +265,18 @@ validator 风格脚本应始终分两步：
 覆盖：
 
 - 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_protocol_version`
-- `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 都稳定返回 `PROTOCOL_VERSION_MISMATCH`
+- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `PROTOCOL_VERSION_MISMATCH`
 
-### 6.13 Semantics Version Mismatch
+### 6.13 Formula Version Mismatch
+
+- `regtest_live_ord_validator_block_body_formula_version_mismatch.sh`
+
+覆盖：
+
+- 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_formula_version`
+- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `FORMULA_VERSION_MISMATCH`
+
+### 6.14 Semantics Version Mismatch
 
 - `regtest_live_ord_validator_block_body_semantics_version_mismatch.sh`
 
@@ -269,7 +285,7 @@ validator 风格脚本应始终分两步：
 - 在不改历史高度和业务对象的前提下，篡改 payload 的 `balance_history_semantics_version`
 - 历史 context 路径稳定返回 `VERSION_MISMATCH`
 
-### 6.14 Candidate-Set Protocol Version Mismatch
+### 6.15 Candidate-Set Protocol Version Mismatch
 
 - `regtest_live_ord_validator_block_body_candidate_set_protocol_version_mismatch.sh`
 
@@ -278,7 +294,7 @@ validator 风格脚本应始终分两步：
 - 在 `winner + candidate_passes` payload 上篡改 `usdb_index_protocol_version`
 - `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `PROTOCOL_VERSION_MISMATCH`
 
-### 6.15 Candidate-Set Semantics Version Mismatch
+### 6.16 Candidate-Set Semantics Version Mismatch
 
 - `regtest_live_ord_validator_block_body_candidate_set_semantics_version_mismatch.sh`
 
@@ -287,16 +303,16 @@ validator 风格脚本应始终分两步：
 - 在 `winner + candidate_passes` payload 上篡改 `balance_history_semantics_version`
 - `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
 
-### 6.16 API Version Mismatch
+### 6.17 API Version Mismatch
 
 - `regtest_live_ord_validator_block_body_api_version_mismatch.sh`
 
 覆盖：
 
 - 在单 pass payload 上篡改 `balance_history_api_version`
-- `state ref / pass snapshot / pass energy` 都稳定返回 `VERSION_MISMATCH`
+- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `VERSION_MISMATCH`
 
-### 6.17 Version Matrix After Head Advance
+### 6.18 Version Matrix After Head Advance
 
 - `regtest_live_ord_validator_block_body_version_matrix.sh`
 
@@ -306,7 +322,7 @@ validator 风格脚本应始终分两步：
 - BTC head 前进后，原 payload 继续通过
 - API / semantics tampered payload 返回 `VERSION_MISMATCH`，protocol tampered payload 返回 `PROTOCOL_VERSION_MISMATCH`
 
-### 6.18 Payload-Version Upgrade
+### 6.19 Payload-Version Upgrade
 
 - `regtest_live_ord_validator_block_body_payload_version_upgrade.sh`
 
@@ -317,7 +333,7 @@ validator 风格脚本应始终分两步：
 - validator 在同一升级窗口内同时接受旧 schema 和新 schema 的历史回放
 - BTC head 再前进后，两代 payload 仍能按各自历史 context 独立成立
 
-### 6.19 Payload-Version Upgrade Restart
+### 6.20 Payload-Version Upgrade Restart
 
 - `regtest_live_ord_validator_block_body_payload_version_upgrade_restart.sh`
 
@@ -327,7 +343,7 @@ validator 风格脚本应始终分两步：
 - `balance-history` 与 `usdb-indexer` 重启后，历史 `state ref` 与 mixed payload replay 仍然成立
 - 证明 schema 升级窗口不依赖进程内缓存
 
-### 6.20 Payload-Version Upgrade Reorg
+### 6.21 Payload-Version Upgrade Reorg
 
 - `regtest_live_ord_validator_block_body_payload_version_upgrade_reorg.sh`
 
@@ -337,7 +353,7 @@ validator 风格脚本应始终分两步：
 - same-height replacement 只覆盖新 payload 所在高度
 - 旧 `v1.0` payload 仍成立，而新 `v1.1` payload 稳定返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.21 Reorg
+### 6.22 Reorg
 
 - `regtest_live_ord_validator_block_body_reorg.sh`
 
@@ -345,7 +361,7 @@ validator 风格脚本应始终分两步：
 
 - same-height reorg 后，旧 payload 返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.22 Retention / Missing History
+### 6.23 Retention / Missing History
 
 - `regtest_live_ord_validator_block_body_retention.sh`
 
@@ -354,7 +370,7 @@ validator 风格脚本应始终分两步：
 - retention floor 抬高后返回 `STATE_NOT_RETAINED`
 - 历史辅助数据缺失时返回 `HISTORY_NOT_AVAILABLE`
 
-### 6.23 Restart Consistency
+### 6.24 Restart Consistency
 
 - `regtest_live_ord_validator_block_body_restart_consistency.sh`
 
@@ -364,7 +380,7 @@ validator 风格脚本应始终分两步：
 - 服务离线窗口内 BTC head 前进
 - 重启追平后，旧 payload 仍按原历史 context 成立
 
-### 6.24 Not-Ready Window
+### 6.25 Not-Ready Window
 
 - `regtest_live_ord_validator_block_body_not_ready_window.sh`
 
@@ -375,7 +391,7 @@ validator 风格脚本应始终分两步：
 - `rpc_alive=true` 但 `consensus_ready=false` 窗口内，validator 回放稳定返回 `SNAPSHOT_NOT_READY`
 - 完成 catch-up 后，同一 payload 恢复可验证
 
-### 6.25 Candidate-Set Crash Recovery
+### 6.26 Candidate-Set Crash Recovery
 
 - `regtest_live_ord_validator_block_body_candidate_set_crash_recovery.sh`
 
@@ -390,7 +406,7 @@ validator 风格脚本应始终分两步：
 当前设计刻意不做这些事情：
 
 - 不模拟完整 ETHW block header / parent hash / tx list
-- 不把 leaderboard 或多 pass 选择逻辑塞进第一版 validator payload
+- 不把前端 raw leaderboard 当作 candidate set；candidate 必须来自 UIP-0006 canonical view
 - 不直接引入完整 USDB validator 实现
 
 先把“单个 miner pass + 外部状态引用”的 block-body 校验链做扎实，收益最高，也更容易稳定回归。
@@ -400,11 +416,7 @@ validator 风格脚本应始终分两步：
 当前仓库已经具备：
 
 - 历史 state ref 查询
-- `pass snapshot / energy` 的历史 context 校验
-- validator-style payload e2e 的基本链路
+- profile/candidate/breakdown 的完整 historical context 校验
+- raw/collab/effective energy、level/factor 和 formula-version mismatch 的 validator-style 测试链路
 
-下一步工作的重点是：
-
-- 把 payload 结构标准化
-- 把现有脚本中的 payload 组装和校验逻辑下沉到共享 helper
-- 再在这个基础上扩出更细分的 block-body happy-path / reorg / retention 专项场景
+下一步工作的重点是执行完整 live/reorg/restart runner，并在大数据量 candidate/collab 集合上评估 cursor 查询成本和长时间重放稳定性。

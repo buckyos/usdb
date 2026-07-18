@@ -65,7 +65,7 @@
   - 默认 reorg wrapper 已收敛到稳定命中 `expected_mismatch` 的参数组合
 - `candidate-set` sampled validation 第一批已完成：
   - 同一采样点固定 `winner + candidate_passes`
-  - validator 在历史 context 下重查多张 pass，并按 `effective_energy DESC + inscription_id ASC` 重算 winner
+  - validator 从 UIP-0006 canonical candidate view 采样，并以 economic profile 交叉验证多张 pass，再按 `effective_energy DESC + inscription_id ASC` 重算 winner
   - 已补普通 wrapper 和 `deterministic reorg` wrapper
   - 已验证 world-sim 下 `candidate_set` 样本既可正常回放，也能在 replacement 区间内稳定落到 `expected_mismatch`
   - 当前又补上：
@@ -129,7 +129,7 @@
 
 1. `single-pass protocol version mismatch`
    - 篡改 validator payload 的 `usdb_index_protocol_version`
-   - `get_state_ref_at_height / get_pass_snapshot / get_pass_energy` 必须统一返回 `PROTOCOL_VERSION_MISMATCH`
+   - `state ref / economic profile / candidate set / collab breakdown` 必须统一返回 `PROTOCOL_VERSION_MISMATCH`
 2. `single-pass semantics version mismatch`
    - 篡改 validator payload 的 `balance_history_semantics_version`
    - 历史 context 路径必须稳定返回 `VERSION_MISMATCH`
@@ -141,17 +141,20 @@
    - 验证批量历史校验路径对 `balance_history_semantics_version` 同样 fail-closed
 5. `balance-history API version mismatch`
    - 篡改 validator payload 的 `balance_history_api_version`
-   - `state ref / pass snapshot / pass energy` 必须统一返回 `VERSION_MISMATCH`
-6. `version matrix after head advance`
+   - 四个 UIP-0006 view 必须统一返回 `VERSION_MISMATCH`
+6. `formula version mismatch`
+   - 篡改 validator payload 的 `usdb_index_formula_version`
+   - 四个 UIP-0006 view 必须统一返回 `FORMULA_VERSION_MISMATCH`
+7. `version matrix after head advance`
    - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
    - BTC head 前进后，原 payload 仍通过；API / semantics 返回 `VERSION_MISMATCH`，protocol 返回 `PROTOCOL_VERSION_MISMATCH`
-7. `payload-version upgrade coexistence`
+8. `payload-version upgrade coexistence`
    - 同一条链上先生成 `v1.0` 单 pass payload，再生成 `v1.1` candidate-set payload
    - validator 必须在同一升级窗口内接受两代 schema 的历史回放
-8. `payload-version upgrade restart`
+9. `payload-version upgrade restart`
    - mixed payload 生成后重启 `balance-history / usdb-indexer`
    - 历史 `state ref` 与两代 payload replay 都必须保持成立
-9. `payload-version upgrade reorg`
+10. `payload-version upgrade reorg`
    - same-height replacement 只覆盖新 `v1.1` payload 所在高度
    - 旧 `v1.0` payload 仍通过，新 `v1.1` payload 稳定落到 `SNAPSHOT_ID_MISMATCH`
 
@@ -175,7 +178,7 @@
 
 1. 单 `pass` 与 `candidate-set` 的历史 `state ref` / validator payload 回放
 2. head 前进、same-height reorg、restart、crash、not-ready window 下的历史校验
-3. `protocol / semantics / api` 版本不匹配与 mixed payload upgrade path
+3. `protocol / formula / semantics / api` 版本不匹配与 mixed payload upgrade path
 4. world-sim 下的 sampled validator replay、`candidate-set` sampled validation、tamper 检测与 soak
 
 换句话说，当前缺的已经不再是“这一轮计划里的核心能力”，而是下一轮更大规模、更接近真实 ETHW 使用方式的增强层。

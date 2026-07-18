@@ -44,6 +44,7 @@ class Agent:
     oracle_last_energy: int | None = None
     oracle_last_owner_balance: int | None = None
     oracle_last_record_block_height: int | None = None
+    oracle_last_active_block_height: int | None = None
 
 
 @dataclass
@@ -65,9 +66,12 @@ class ValidatorSampleCandidate:
     inscription_id: str
     owner: str
     state: str
+    pass_kind: str
     raw_energy: int
     collab_contribution: int
     effective_energy: int
+    level: int
+    difficulty_factor_bps: int
 
 
 @dataclass
@@ -79,13 +83,20 @@ class ValidatorSample:
     inscription_id: str
     owner: str
     state: str
+    pass_kind: str
     raw_energy: int
     collab_contribution: int
     effective_energy: int
+    level: int
+    difficulty_factor_bps: int
     snapshot_id: str
     stable_block_hash: str
     local_state_commit: str
     system_state_id: str
+    balance_history_api_version: str
+    balance_history_semantics_version: str
+    usdb_index_protocol_version: str
+    usdb_index_formula_version: str
     candidates: list[ValidatorSampleCandidate] = field(default_factory=list)
     winner_inscription_id: str | None = None
     expected_consensus_error: str | None = None
@@ -184,10 +195,15 @@ class Args:
 class RegtestWorldSimulator:
     INSCRIPTION_ID_PATTERN = re.compile(r"([0-9a-f]{64}i\d+)")
     TXID_PATTERN = re.compile(r"\b([0-9a-f]{64})\b")
-    U64_MAX = 2**64 - 1
-    ENERGY_BALANCE_THRESHOLD = 100_000
-    ENERGY_GROWTH_MULTIPLIER = 10_000
-    ENERGY_PENALTY_MULTIPLIER = 43_200_000
+    RECOVERY_STATE_VERSION = 2
+    ENERGY_MAX = 2**128 - 1
+    UNIT_SATS = 100_000
+    ENERGY_PER_UNIT_BLOCK = 1
+    PENALTY_LAMBDA_NUM = 3
+    PENALTY_LAMBDA_DEN = 2
+    ECONOMIC_VIEW_VERSION = "uip-0006-usdb-economic-state-view:v1"
+    CANDIDATE_SELECTION_RULE = "uip-0006:effective-energy-desc-pass-id-asc:v1"
+    ECONOMIC_PAGE_LIMIT = 256
     SUPPORTED_ACTIONS = {
         "mint",
         "invalid_mint",
@@ -440,6 +456,7 @@ class RegtestWorldSimulator:
             "oracle_last_energy": agent.oracle_last_energy,
             "oracle_last_owner_balance": agent.oracle_last_owner_balance,
             "oracle_last_record_block_height": agent.oracle_last_record_block_height,
+            "oracle_last_active_block_height": agent.oracle_last_active_block_height,
         }
 
     @staticmethod
@@ -460,6 +477,9 @@ class RegtestWorldSimulator:
         agent.oracle_last_owner_balance = payload.get("oracle_last_owner_balance")
         agent.oracle_last_record_block_height = payload.get(
             "oracle_last_record_block_height"
+        )
+        agent.oracle_last_active_block_height = payload.get(
+            "oracle_last_active_block_height"
         )
 
     @staticmethod
@@ -500,9 +520,12 @@ class RegtestWorldSimulator:
             "inscription_id": candidate.inscription_id,
             "owner": candidate.owner,
             "state": candidate.state,
+            "pass_kind": candidate.pass_kind,
             "raw_energy": candidate.raw_energy,
             "collab_contribution": candidate.collab_contribution,
             "effective_energy": candidate.effective_energy,
+            "level": candidate.level,
+            "difficulty_factor_bps": candidate.difficulty_factor_bps,
         }
 
     @staticmethod
@@ -513,9 +536,12 @@ class RegtestWorldSimulator:
             inscription_id=str(payload.get("inscription_id", "")),
             owner=str(payload.get("owner", "")),
             state=str(payload.get("state", "")),
+            pass_kind=str(payload.get("pass_kind", "")),
             raw_energy=int(payload.get("raw_energy", 0)),
             collab_contribution=int(payload.get("collab_contribution", 0)),
             effective_energy=int(payload.get("effective_energy", 0)),
+            level=int(payload.get("level", 0)),
+            difficulty_factor_bps=int(payload.get("difficulty_factor_bps", 0)),
         )
 
     def serialize_validator_sample(self, sample: ValidatorSample) -> dict[str, Any]:
@@ -527,13 +553,20 @@ class RegtestWorldSimulator:
             "inscription_id": sample.inscription_id,
             "owner": sample.owner,
             "state": sample.state,
+            "pass_kind": sample.pass_kind,
             "raw_energy": sample.raw_energy,
             "collab_contribution": sample.collab_contribution,
             "effective_energy": sample.effective_energy,
+            "level": sample.level,
+            "difficulty_factor_bps": sample.difficulty_factor_bps,
             "snapshot_id": sample.snapshot_id,
             "stable_block_hash": sample.stable_block_hash,
             "local_state_commit": sample.local_state_commit,
             "system_state_id": sample.system_state_id,
+            "balance_history_api_version": sample.balance_history_api_version,
+            "balance_history_semantics_version": sample.balance_history_semantics_version,
+            "usdb_index_protocol_version": sample.usdb_index_protocol_version,
+            "usdb_index_formula_version": sample.usdb_index_formula_version,
             "candidates": [
                 self.serialize_validator_sample_candidate(candidate)
                 for candidate in sample.candidates
@@ -576,13 +609,28 @@ class RegtestWorldSimulator:
             inscription_id=str(payload.get("inscription_id", "")),
             owner=str(payload.get("owner", "")),
             state=str(payload.get("state", "")),
+            pass_kind=str(payload.get("pass_kind", "")),
             raw_energy=int(payload.get("raw_energy", 0)),
             collab_contribution=int(payload.get("collab_contribution", 0)),
             effective_energy=int(payload.get("effective_energy", 0)),
+            level=int(payload.get("level", 0)),
+            difficulty_factor_bps=int(payload.get("difficulty_factor_bps", 0)),
             snapshot_id=str(payload.get("snapshot_id", "")),
             stable_block_hash=str(payload.get("stable_block_hash", "")),
             local_state_commit=str(payload.get("local_state_commit", "")),
             system_state_id=str(payload.get("system_state_id", "")),
+            balance_history_api_version=str(
+                payload.get("balance_history_api_version", "")
+            ),
+            balance_history_semantics_version=str(
+                payload.get("balance_history_semantics_version", "")
+            ),
+            usdb_index_protocol_version=str(
+                payload.get("usdb_index_protocol_version", "")
+            ),
+            usdb_index_formula_version=str(
+                payload.get("usdb_index_formula_version", "")
+            ),
             candidates=[
                 self.deserialize_validator_sample_candidate(candidate)
                 for candidate in (payload.get("candidates") or [])
@@ -644,7 +692,7 @@ class RegtestWorldSimulator:
         action_fail_samples: list[str],
     ) -> dict[str, Any]:
         return {
-            "version": 1,
+            "version": self.RECOVERY_STATE_VERSION,
             "status": status,
             "seed": self.action_seed,
             "batch_seed": batch_seed,
@@ -998,7 +1046,7 @@ class RegtestWorldSimulator:
         if self.recovery_state_path is None or not self.recovery_state_path.exists():
             return None
         payload = json.loads(self.recovery_state_path.read_text(encoding="utf-8"))
-        if int(payload.get("version", 0)) != 1:
+        if int(payload.get("version", 0)) != self.RECOVERY_STATE_VERSION:
             raise WorldSimError(
                 f"unsupported recovery state version: {payload.get('version')}"
             )
@@ -1659,28 +1707,48 @@ class RegtestWorldSimulator:
         return int((amount * Decimal("100000000")).to_integral_value())
 
     @classmethod
-    def sat_add_u64(cls, left: int, right: int) -> int:
-        total = int(left) + int(right)
-        return total if total <= cls.U64_MAX else cls.U64_MAX
+    def saturating_energy_add(cls, left: int, right: int) -> int:
+        return min(int(left) + int(right), cls.ENERGY_MAX)
+
+    @staticmethod
+    def saturating_energy_sub(left: int, right: int) -> int:
+        return max(int(left) - int(right), 0)
 
     @classmethod
-    def sat_sub_u64(cls, left: int, right: int) -> int:
-        diff = int(left) - int(right)
-        return diff if diff > 0 else 0
+    def balance_units(cls, owner_balance: int) -> int:
+        return max(int(owner_balance), 0) // cls.UNIT_SATS
 
     @classmethod
-    def calc_growth_delta(cls, owner_balance: int, r: int) -> int:
-        if owner_balance < cls.ENERGY_BALANCE_THRESHOLD:
+    def calc_growth_delta(cls, owner_balance: int, block_delta: int) -> int:
+        raw = (
+            cls.balance_units(owner_balance)
+            * cls.ENERGY_PER_UNIT_BLOCK
+            * max(int(block_delta), 0)
+        )
+        return min(raw, cls.ENERGY_MAX)
+
+    @classmethod
+    def calc_balance_penalty(
+        cls,
+        balance_before: int,
+        balance_after: int,
+        active_block_height: int,
+        event_block_height: int,
+    ) -> int:
+        units_before = cls.balance_units(balance_before)
+        units_after = cls.balance_units(balance_after)
+        lost_units = max(units_before - units_after, 0)
+        if units_before == 0 or lost_units == 0:
             return 0
-        raw = int(owner_balance) * cls.ENERGY_GROWTH_MULTIPLIER * int(r)
-        return raw if raw <= cls.U64_MAX else cls.U64_MAX
-
-    @classmethod
-    def calc_penalty_from_delta(cls, owner_delta: int) -> int:
-        if owner_delta >= 0:
-            return 0
-        raw = abs(int(owner_delta)) * cls.ENERGY_PENALTY_MULTIPLIER
-        return raw if raw <= cls.U64_MAX else cls.U64_MAX
+        age_blocks = max(int(event_block_height) - int(active_block_height), 0)
+        base = min(
+            lost_units * age_blocks * cls.ENERGY_PER_UNIT_BLOCK,
+            cls.ENERGY_MAX,
+        )
+        return min(
+            base * cls.PENALTY_LAMBDA_NUM // cls.PENALTY_LAMBDA_DEN,
+            cls.ENERGY_MAX,
+        )
 
     def get_balance_at_height(self, script_hash: str, block_height: int) -> int:
         rows = self.rpc_balance_history(
@@ -1740,6 +1808,7 @@ class RegtestWorldSimulator:
     @staticmethod
     def build_consensus_context_from_state_ref(state_ref: dict[str, Any]) -> dict[str, Any]:
         snapshot_info = state_ref.get("snapshot_info") or {}
+        consensus_identity = snapshot_info.get("consensus_identity") or {}
         local_state_info = state_ref.get("local_state_commit_info") or {}
         system_state_info = state_ref.get("system_state_info") or {}
         return {
@@ -1749,8 +1818,163 @@ class RegtestWorldSimulator:
                 "stable_block_hash": snapshot_info.get("stable_block_hash"),
                 "local_state_commit": local_state_info.get("local_state_commit"),
                 "system_state_id": system_state_info.get("system_state_id"),
+                "balance_history_api_version": consensus_identity.get(
+                    "balance_history_api_version"
+                ),
+                "balance_history_semantics_version": consensus_identity.get(
+                    "balance_history_semantics_version"
+                ),
+                "usdb_index_protocol_version": consensus_identity.get(
+                    "usdb_index_protocol_version"
+                ),
+                "usdb_index_formula_version": consensus_identity.get(
+                    "usdb_index_formula_version"
+                ),
             },
         }
+
+    @staticmethod
+    def candidate_from_view_item(item: dict[str, Any]) -> ValidatorSampleCandidate:
+        return ValidatorSampleCandidate(
+            inscription_id=str(item.get("pass_id", "")),
+            owner=str(item.get("owner_script_hash", "")),
+            state=str(item.get("state", "")),
+            pass_kind=str(item.get("pass_kind", "")),
+            raw_energy=int(item.get("raw_energy", 0)),
+            collab_contribution=int(item.get("collab_contribution", 0)),
+            effective_energy=int(item.get("effective_energy", 0)),
+            level=int(item.get("level", 0)),
+            difficulty_factor_bps=int(item.get("difficulty_factor_bps", 0)),
+        )
+
+    def load_candidate_set_view_at_height(
+        self, block_height: int, context: dict[str, Any]
+    ) -> dict[str, Any]:
+        cursor: str | None = None
+        aggregate: dict[str, Any] | None = None
+        page_count = 0
+
+        while True:
+            params: dict[str, Any] = {
+                "view_version": self.ECONOMIC_VIEW_VERSION,
+                "selection_rule": self.CANDIDATE_SELECTION_RULE,
+                "cursor": cursor,
+                "limit": self.ECONOMIC_PAGE_LIMIT,
+            }
+            if cursor is None:
+                params["block_height"] = block_height
+                params["context"] = context
+
+            page = self.rpc_usdb("get_candidate_set_view", [params])
+            if not isinstance(page, dict):
+                raise WorldSimError(
+                    "validator sample candidate view returned non-object: "
+                    f"block_height={block_height}, page={page}"
+                )
+            if page.get("view_version") != self.ECONOMIC_VIEW_VERSION:
+                raise WorldSimError(
+                    "validator sample candidate view version mismatch: "
+                    f"expected={self.ECONOMIC_VIEW_VERSION}, got={page.get('view_version')}"
+                )
+            if page.get("selection_rule") != self.CANDIDATE_SELECTION_RULE:
+                raise WorldSimError(
+                    "validator sample candidate selection rule mismatch: "
+                    f"expected={self.CANDIDATE_SELECTION_RULE}, got={page.get('selection_rule')}"
+                )
+            if int(page.get("limit", 0)) != self.ECONOMIC_PAGE_LIMIT:
+                raise WorldSimError(
+                    "validator sample candidate page limit mismatch: "
+                    f"expected={self.ECONOMIC_PAGE_LIMIT}, got={page.get('limit')}"
+                )
+            if int(page.get("max_limit", 0)) < self.ECONOMIC_PAGE_LIMIT:
+                raise WorldSimError(
+                    "validator sample candidate max_limit is below requested limit: "
+                    f"requested={self.ECONOMIC_PAGE_LIMIT}, max_limit={page.get('max_limit')}"
+                )
+
+            external_state = page.get("external_state") or {}
+            if int(external_state.get("btc_height", -1)) != block_height:
+                raise WorldSimError(
+                    "validator sample candidate external-state height mismatch: "
+                    f"expected={block_height}, got={external_state.get('btc_height')}"
+                )
+            items = page.get("items") or []
+            if not isinstance(items, list):
+                raise WorldSimError(
+                    "validator sample candidate items must be an array: "
+                    f"block_height={block_height}, items={items}"
+                )
+
+            if aggregate is None:
+                aggregate = {
+                    "view_version": page["view_version"],
+                    "external_state": external_state,
+                    "selection_rule": page["selection_rule"],
+                    "total": int(page.get("total", 0)),
+                    "limit": int(page["limit"]),
+                    "max_limit": int(page["max_limit"]),
+                    "items": [],
+                }
+            else:
+                for field in (
+                    "view_version",
+                    "external_state",
+                    "selection_rule",
+                    "total",
+                    "limit",
+                    "max_limit",
+                ):
+                    expected = aggregate[field]
+                    actual = int(page[field]) if field in {"total", "limit", "max_limit"} else page[field]
+                    if actual != expected:
+                        raise WorldSimError(
+                            "validator sample candidate continuation changed immutable field: "
+                            f"field={field}, expected={expected}, got={actual}"
+                        )
+
+            aggregate["items"].extend(items)
+            cursor_value = page.get("next_cursor")
+            if cursor_value is None:
+                break
+            if not isinstance(cursor_value, str) or not cursor_value:
+                raise WorldSimError(
+                    "validator sample candidate continuation cursor is invalid: "
+                    f"cursor={cursor_value}"
+                )
+            cursor = cursor_value
+            page_count += 1
+            if page_count > 10_000:
+                raise WorldSimError("validator sample candidate pagination exceeded safety limit")
+
+        if aggregate is None:
+            raise WorldSimError("validator sample candidate pagination produced no page")
+        candidates = [self.candidate_from_view_item(item) for item in aggregate["items"]]
+        if len(candidates) != aggregate["total"]:
+            raise WorldSimError(
+                "validator sample candidate pagination is incomplete: "
+                f"expected_total={aggregate['total']}, rows={len(candidates)}"
+            )
+        candidate_ids = [candidate.inscription_id for candidate in candidates]
+        if any(not candidate_id for candidate_id in candidate_ids):
+            raise WorldSimError("validator sample candidate view contains an empty pass id")
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise WorldSimError("validator sample candidate view contains duplicate pass ids")
+        if any(
+            candidate.state != "active" or candidate.pass_kind != "standard"
+            for candidate in candidates
+        ):
+            raise WorldSimError(
+                "validator sample candidate view contains non-active or non-standard pass"
+            )
+        expected = sorted(
+            candidates,
+            key=lambda candidate: (-candidate.effective_energy, candidate.inscription_id),
+        )
+        if candidates != expected:
+            raise WorldSimError(
+                "validator sample candidate view violated effective-energy ordering"
+            )
+        return aggregate
 
     def should_capture_validator_sample(self, tick: int) -> bool:
         if not self.args.validator_sample_enabled:
@@ -1763,41 +1987,67 @@ class RegtestWorldSimulator:
     def build_validator_sample_candidate(
         self, inscription_id: str, block_height: int, context: dict[str, Any]
     ) -> ValidatorSampleCandidate:
-        snapshot = self.rpc_usdb(
-            "get_pass_snapshot",
+        profile_view = self.rpc_usdb(
+            "get_pass_economic_profile",
             [
                 {
-                    "inscription_id": inscription_id,
-                    "at_height": block_height,
-                    "context": context,
-                }
-            ],
-        )
-        energy = self.rpc_usdb(
-            "get_pass_energy",
-            [
-                {
-                    "inscription_id": inscription_id,
+                    "view_version": self.ECONOMIC_VIEW_VERSION,
+                    "pass_id": inscription_id,
                     "block_height": block_height,
-                    "mode": "at_or_before",
                     "context": context,
                 }
             ],
         )
-        if not isinstance(snapshot, dict) or not isinstance(energy, dict):
+        if not isinstance(profile_view, dict):
             raise WorldSimError(
-                "validator sample capture missing pass payload: "
+                "validator sample profile returned non-object: "
                 f"block_height={block_height}, inscription_id={inscription_id}, "
-                f"snapshot={snapshot}, energy={energy}"
+                f"profile_view={profile_view}"
             )
-        return ValidatorSampleCandidate(
-            inscription_id=inscription_id,
-            owner=str(snapshot.get("owner", "")),
-            state=str(snapshot.get("state", "")),
-            raw_energy=int(energy.get("raw_energy", 0)),
-            collab_contribution=int(energy.get("collab_contribution", 0)),
-            effective_energy=int(energy.get("effective_energy", 0)),
-        )
+        if profile_view.get("view_version") != self.ECONOMIC_VIEW_VERSION:
+            raise WorldSimError(
+                "validator sample profile view version mismatch: "
+                f"expected={self.ECONOMIC_VIEW_VERSION}, got={profile_view.get('view_version')}"
+            )
+        external_state = profile_view.get("external_state") or {}
+        if int(external_state.get("btc_height", -1)) != block_height:
+            raise WorldSimError(
+                "validator sample profile external-state height mismatch: "
+                f"expected={block_height}, got={external_state.get('btc_height')}"
+            )
+        profile = profile_view.get("pass") or {}
+        if not isinstance(profile, dict) or profile.get("pass_id") != inscription_id:
+            raise WorldSimError(
+                "validator sample profile is missing requested pass: "
+                f"expected={inscription_id}, profile={profile}"
+            )
+        return self.candidate_from_view_item(profile)
+
+    @staticmethod
+    def assert_validator_candidate_matches(
+        expected: ValidatorSampleCandidate,
+        actual: ValidatorSampleCandidate,
+        sample_id: str,
+    ) -> None:
+        for field_name in (
+            "inscription_id",
+            "owner",
+            "state",
+            "pass_kind",
+            "raw_energy",
+            "collab_contribution",
+            "effective_energy",
+            "level",
+            "difficulty_factor_bps",
+        ):
+            expected_value = getattr(expected, field_name)
+            actual_value = getattr(actual, field_name)
+            if actual_value != expected_value:
+                raise WorldSimError(
+                    "validator sample candidate mismatch: "
+                    f"sample={sample_id}, candidate={expected.inscription_id}, "
+                    f"field={field_name}, expected={expected_value}, got={actual_value}"
+                )
 
     def validate_tampered_candidate_set_sample(
         self, sample: ValidatorSample, actual_winner: ValidatorSampleCandidate, tick: int, block_height: int
@@ -1839,20 +2089,23 @@ class RegtestWorldSimulator:
         )
 
     def capture_validator_samples(self, block_height: int, tick: int) -> list[str]:
-        rows = self.load_all_active_passes_at_height(block_height)
-        if not rows:
+        state_ref = self.get_state_ref_at_height(block_height)
+        if state_ref is None:
+            raise WorldSimError(
+                f"validator sample capture missing state ref: tick={tick}, block_height={block_height}"
+            )
+        context = self.build_consensus_context_from_state_ref(state_ref)
+        candidate_view = self.load_candidate_set_view_at_height(block_height, context)
+        all_candidates = [
+            self.candidate_from_view_item(item) for item in candidate_view["items"]
+        ]
+        if not all_candidates:
             return []
 
-        candidate_ids = sorted(
-            {
-                str(row.get("inscription_id", ""))
-                for row in rows
-                if str(row.get("inscription_id", ""))
-            }
-        )
-        if not candidate_ids:
-            return []
-
+        candidate_by_id = {
+            candidate.inscription_id: candidate for candidate in all_candidates
+        }
+        candidate_ids = sorted(candidate_by_id)
         sample_size = self.args.validator_sample_size
         if sample_size <= 0 or sample_size >= len(candidate_ids):
             selected_ids = candidate_ids
@@ -1863,22 +2116,11 @@ class RegtestWorldSimulator:
                 ).sample(candidate_ids, sample_size)
             )
 
-        state_ref = self.get_state_ref_at_height(block_height)
-        if state_ref is None:
-            raise WorldSimError(
-                f"validator sample capture missing state ref: tick={tick}, block_height={block_height}"
-            )
-        context = self.build_consensus_context_from_state_ref(state_ref)
-        snapshot_info = state_ref.get("snapshot_info") or {}
-        local_state_info = state_ref.get("local_state_commit_info") or {}
-        system_state_info = state_ref.get("system_state_info") or {}
+        external_state = candidate_view["external_state"]
 
         captured: list[str] = []
         if self.args.validator_sample_mode == "candidate_set":
-            candidates = [
-                self.build_validator_sample_candidate(inscription_id, block_height, context)
-                for inscription_id in selected_ids
-            ]
+            candidates = [candidate_by_id[inscription_id] for inscription_id in selected_ids]
             winner = self.choose_candidate_set_winner(candidates)
             sample_hash = hashlib.sha256(",".join(selected_ids).encode("utf-8")).hexdigest()[:12]
             sample = ValidatorSample(
@@ -1889,13 +2131,28 @@ class RegtestWorldSimulator:
                 inscription_id=winner.inscription_id,
                 owner=winner.owner,
                 state=winner.state,
+                pass_kind=winner.pass_kind,
                 raw_energy=winner.raw_energy,
                 collab_contribution=winner.collab_contribution,
                 effective_energy=winner.effective_energy,
-                snapshot_id=str(snapshot_info.get("snapshot_id", "")),
-                stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
-                local_state_commit=str(local_state_info.get("local_state_commit", "")),
-                system_state_id=str(system_state_info.get("system_state_id", "")),
+                level=winner.level,
+                difficulty_factor_bps=winner.difficulty_factor_bps,
+                snapshot_id=str(external_state.get("snapshot_id", "")),
+                stable_block_hash=str(external_state.get("stable_block_hash", "")),
+                local_state_commit=str(external_state.get("local_state_commit", "")),
+                system_state_id=str(external_state.get("system_state_id", "")),
+                balance_history_api_version=str(
+                    external_state.get("balance_history_api_version", "")
+                ),
+                balance_history_semantics_version=str(
+                    external_state.get("balance_history_semantics_version", "")
+                ),
+                usdb_index_protocol_version=str(
+                    external_state.get("usdb_index_protocol_version", "")
+                ),
+                usdb_index_formula_version=str(
+                    external_state.get("usdb_index_formula_version", "")
+                ),
                 candidates=candidates,
                 winner_inscription_id=winner.inscription_id,
             )
@@ -1903,9 +2160,7 @@ class RegtestWorldSimulator:
             captured.append(sample.sample_id)
         else:
             for inscription_id in selected_ids:
-                candidate = self.build_validator_sample_candidate(
-                    inscription_id, block_height, context
-                )
+                candidate = candidate_by_id[inscription_id]
                 sample = ValidatorSample(
                     sample_id=f"h{block_height}:{inscription_id}",
                     mode="single",
@@ -1914,13 +2169,28 @@ class RegtestWorldSimulator:
                     inscription_id=inscription_id,
                     owner=candidate.owner,
                     state=candidate.state,
+                    pass_kind=candidate.pass_kind,
                     raw_energy=candidate.raw_energy,
                     collab_contribution=candidate.collab_contribution,
                     effective_energy=candidate.effective_energy,
-                    snapshot_id=str(snapshot_info.get("snapshot_id", "")),
-                    stable_block_hash=str(snapshot_info.get("stable_block_hash", "")),
-                    local_state_commit=str(local_state_info.get("local_state_commit", "")),
-                    system_state_id=str(system_state_info.get("system_state_id", "")),
+                    level=candidate.level,
+                    difficulty_factor_bps=candidate.difficulty_factor_bps,
+                    snapshot_id=str(external_state.get("snapshot_id", "")),
+                    stable_block_hash=str(external_state.get("stable_block_hash", "")),
+                    local_state_commit=str(external_state.get("local_state_commit", "")),
+                    system_state_id=str(external_state.get("system_state_id", "")),
+                    balance_history_api_version=str(
+                        external_state.get("balance_history_api_version", "")
+                    ),
+                    balance_history_semantics_version=str(
+                        external_state.get("balance_history_semantics_version", "")
+                    ),
+                    usdb_index_protocol_version=str(
+                        external_state.get("usdb_index_protocol_version", "")
+                    ),
+                    usdb_index_formula_version=str(
+                        external_state.get("usdb_index_formula_version", "")
+                    ),
                 )
                 self.validator_samples.append(sample)
                 captured.append(sample.sample_id)
@@ -1970,6 +2240,10 @@ class RegtestWorldSimulator:
                     "stable_block_hash": sample.stable_block_hash,
                     "local_state_commit": sample.local_state_commit,
                     "system_state_id": sample.system_state_id,
+                    "balance_history_api_version": sample.balance_history_api_version,
+                    "balance_history_semantics_version": sample.balance_history_semantics_version,
+                    "usdb_index_protocol_version": sample.usdb_index_protocol_version,
+                    "usdb_index_formula_version": sample.usdb_index_formula_version,
                 },
             }
             try:
@@ -2013,39 +2287,34 @@ class RegtestWorldSimulator:
                         f"missing historical state ref for sample={sample.sample_id}"
                     )
                 if sample.mode == "candidate_set":
-                    actual_candidates = [
-                        self.build_validator_sample_candidate(
-                            candidate.inscription_id, sample.block_height, context
+                    candidate_view = self.load_candidate_set_view_at_height(
+                        sample.block_height, context
+                    )
+                    canonical_candidates = {
+                        candidate.inscription_id: candidate
+                        for candidate in (
+                            self.candidate_from_view_item(item)
+                            for item in candidate_view["items"]
                         )
-                        for candidate in sample.candidates
-                    ]
-                    for expected, actual in zip(sample.candidates, actual_candidates, strict=True):
-                        if actual.owner != expected.owner:
+                    }
+                    actual_candidates: list[ValidatorSampleCandidate] = []
+                    for expected in sample.candidates:
+                        actual = canonical_candidates.get(expected.inscription_id)
+                        if actual is None:
                             raise WorldSimError(
-                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                f"expected_owner={expected.owner}, got_owner={actual.owner}"
+                                "validator sample candidate disappeared from canonical view: "
+                                f"sample={sample.sample_id}, candidate={expected.inscription_id}"
                             )
-                        if actual.state != expected.state:
-                            raise WorldSimError(
-                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                f"expected_state={expected.state}, got_state={actual.state}"
-                            )
-                        if actual.raw_energy != expected.raw_energy:
-                            raise WorldSimError(
-                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                f"expected_raw_energy={expected.raw_energy}, got_raw_energy={actual.raw_energy}"
-                            )
-                        if actual.collab_contribution != expected.collab_contribution:
-                            raise WorldSimError(
-                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                "expected_collab_contribution="
-                                f"{expected.collab_contribution}, got_collab_contribution={actual.collab_contribution}"
-                            )
-                        if actual.effective_energy != expected.effective_energy:
-                            raise WorldSimError(
-                                f"sample={sample.sample_id}, candidate={expected.inscription_id}, "
-                                f"expected_effective_energy={expected.effective_energy}, got_effective_energy={actual.effective_energy}"
-                            )
+                        profile_candidate = self.build_validator_sample_candidate(
+                            expected.inscription_id, sample.block_height, context
+                        )
+                        self.assert_validator_candidate_matches(
+                            actual, profile_candidate, sample.sample_id
+                        )
+                        self.assert_validator_candidate_matches(
+                            expected, actual, sample.sample_id
+                        )
+                        actual_candidates.append(actual)
 
                     actual_winner = self.choose_candidate_set_winner(actual_candidates)
                     if actual_winner.inscription_id != sample.winner_inscription_id:
@@ -2061,30 +2330,20 @@ class RegtestWorldSimulator:
                     actual = self.build_validator_sample_candidate(
                         sample.inscription_id, sample.block_height, context
                     )
-                    if actual.owner != sample.owner:
-                        raise WorldSimError(
-                            f"sample={sample.sample_id}, expected_owner={sample.owner}, got_owner={actual.owner}"
-                        )
-                    if actual.state != sample.state:
-                        raise WorldSimError(
-                            f"sample={sample.sample_id}, expected_state={sample.state}, got_state={actual.state}"
-                        )
-                    if actual.raw_energy != sample.raw_energy:
-                        raise WorldSimError(
-                            f"sample={sample.sample_id}, expected_raw_energy={sample.raw_energy}, "
-                            f"got_raw_energy={actual.raw_energy}"
-                        )
-                    if actual.collab_contribution != sample.collab_contribution:
-                        raise WorldSimError(
-                            "sample="
-                            f"{sample.sample_id}, expected_collab_contribution={sample.collab_contribution}, "
-                            f"got_collab_contribution={actual.collab_contribution}"
-                        )
-                    if actual.effective_energy != sample.effective_energy:
-                        raise WorldSimError(
-                            f"sample={sample.sample_id}, expected_effective_energy={sample.effective_energy}, "
-                            f"got_effective_energy={actual.effective_energy}"
-                        )
+                    expected = ValidatorSampleCandidate(
+                        inscription_id=sample.inscription_id,
+                        owner=sample.owner,
+                        state=sample.state,
+                        pass_kind=sample.pass_kind,
+                        raw_energy=sample.raw_energy,
+                        collab_contribution=sample.collab_contribution,
+                        effective_energy=sample.effective_energy,
+                        level=sample.level,
+                        difficulty_factor_bps=sample.difficulty_factor_bps,
+                    )
+                    self.assert_validator_candidate_matches(
+                        expected, actual, sample.sample_id
+                    )
 
                 sample.validated = True
                 sample.validated_tick = tick
@@ -2962,6 +3221,7 @@ class RegtestWorldSimulator:
             agent.oracle_last_energy = None
             agent.oracle_last_owner_balance = None
             agent.oracle_last_record_block_height = None
+            agent.oracle_last_active_block_height = None
             return
 
         energy_snapshot = self.get_pass_energy_snapshot(
@@ -2976,6 +3236,9 @@ class RegtestWorldSimulator:
         query_height = int(energy_snapshot.get("query_block_height", block_height))
         record_block_height = int(
             energy_snapshot.get("record_block_height", query_height)
+        )
+        active_block_height = int(
+            energy_snapshot.get("active_block_height", record_block_height)
         )
         state = str(energy_snapshot.get("state", ""))
         owner_address = str(energy_snapshot.get("owner_address", ""))
@@ -3007,6 +3270,7 @@ class RegtestWorldSimulator:
         prev_state = agent.oracle_last_state
         prev_energy = agent.oracle_last_energy
         prev_owner_balance = agent.oracle_last_owner_balance
+        prev_active_block_height = agent.oracle_last_active_block_height
 
         # Strict numeric oracle when check cadence is consecutive and active pass is stable.
         if (
@@ -3015,14 +3279,21 @@ class RegtestWorldSimulator:
             and prev_state == "active"
             and prev_energy is not None
             and prev_owner_balance is not None
+            and prev_active_block_height is not None
             and block_height == prev_height + 1
         ):
-            expected_energy = self.sat_add_u64(
+            expected_energy = self.saturating_energy_add(
                 prev_energy, self.calc_growth_delta(prev_owner_balance, 1)
             )
             if record_block_height == block_height and owner_delta < 0:
-                expected_energy = self.sat_sub_u64(
-                    expected_energy, self.calc_penalty_from_delta(owner_delta)
+                expected_energy = self.saturating_energy_sub(
+                    expected_energy,
+                    self.calc_balance_penalty(
+                        prev_owner_balance,
+                        owner_balance,
+                        prev_active_block_height,
+                        block_height,
+                    ),
                 )
 
             if energy != expected_energy:
@@ -3031,6 +3302,7 @@ class RegtestWorldSimulator:
                     f"agent={agent.wallet_name}, inscription_id={active_pass_id}, "
                     f"block_height={block_height}, prev_height={prev_height}, "
                     f"prev_energy={prev_energy}, prev_owner_balance={prev_owner_balance}, "
+                    f"prev_active_block_height={prev_active_block_height}, "
                     f"record_block_height={record_block_height}, owner_delta={owner_delta}, "
                     f"expected_energy={expected_energy}, actual_energy={energy}"
                 )
@@ -3041,6 +3313,7 @@ class RegtestWorldSimulator:
         agent.oracle_last_energy = energy
         agent.oracle_last_owner_balance = owner_balance
         agent.oracle_last_record_block_height = record_block_height
+        agent.oracle_last_active_block_height = active_block_height
 
     def should_run_global_cross_check(self, tick: int) -> bool:
         if not self.args.global_cross_check_enabled:
@@ -3151,6 +3424,7 @@ class RegtestWorldSimulator:
             agent.oracle_last_energy = None
             agent.oracle_last_owner_balance = None
             agent.oracle_last_record_block_height = None
+            agent.oracle_last_active_block_height = None
 
     def rebuild_local_chain_view_from_height(self, block_height: int) -> dict[str, int]:
         self.reset_local_chain_view()

@@ -55,7 +55,7 @@
     - 当前 world-sim 顶层摘要没有单独提升 `balance_history_stable_height`；如果需要分析上游稳定 ceiling，应查看原始 `get_sync_status` 返回值
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
-  - agent 粒度自检（默认开启）：每块对选中 agent 的 active pass 做能量数值校验（与公式推导一致）
+  - agent 粒度自检（默认开启）：按 UIP-0003 unit、age penalty 和 `u128` 饱和规则，对选中 agent 的 active pass 做独立能量数值校验
   - 全局交叉检查（低频采样，默认开启）：每 K 块对比 `leaderboard top N` 与 `get_pass_energy`，并抽样 active owner 校验 `balance-history` 与 usdb 视图一致性
   - pass 总量 / active / invalid
   - active address 总余额
@@ -70,8 +70,8 @@
   - tick 事件的 `synced_height` 也是 `get_sync_status.synced_block_height` 的摘要值，不应解读成上游稳定高度。
   - 如果启用 reorg 注入，报告中还会出现 `event = "reorg"` 的单独事件。
 - 可选启用 validator sampled historical validation：
-  - 周期性抓取当前高度的一张或多张 active pass 历史样本
-  - 在 head 继续前进后，按历史 `ConsensusQueryContext` 重新校验 `state ref / pass snapshot / pass energy`
+  - 周期性从 UIP-0006 canonical candidate view 抓取一张或多张 active standard pass 历史样本
+  - 在 head 继续前进后，按包含完整 version identity 的历史 `ConsensusQueryContext` 重新校验 `state ref / economic profile / candidate set`
   - `candidate_set` 模式下还会重算 winner，并可选执行 wrong-winner / tamper 检测
   - 报告中会出现 `event = "validator_sample_capture"` 与 `event = "validator_sample_validation"`
   - 如果打开 tamper 检测，还会出现 `event = "validator_sample_tamper_validation"`
@@ -159,7 +159,7 @@ This wrapper keeps the same long-run style, but enables periodic replacement-cha
 - `SIM_VALIDATOR_SAMPLE_MODE`：`single` 或 `candidate_set`（默认 `single`）
 - `SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED`：是否在 `candidate_set` 回放成功后追加 wrong-winner / tamper 检测（默认 `0`）
 - `SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS`：每隔多少块抓取一次历史 validator sample（默认 `0`，表示关闭）
-- `SIM_VALIDATOR_SAMPLE_SIZE`：每次抓取多少张 active pass（默认 `1`）
+- `SIM_VALIDATOR_SAMPLE_SIZE`：每次从 canonical active standard candidate 中抓取多少张（默认 `1`）
 - `SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE`：head 至少前进多少块后再回查历史 sample（默认 `2`）
 - `SIM_REORG_INTERVAL_BLOCKS`：每隔多少个 tick 注入一次 deterministic reorg（默认 `0`，表示关闭）
 - `SIM_REORG_DEPTH`：每次 reorg 替换最近多少个 canonical blocks（默认 `3`）

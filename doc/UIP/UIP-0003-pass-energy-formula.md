@@ -23,13 +23,25 @@ Activation: BTC network activation matrix; development networks activate from he
 
 # 动机
 
-当前实现已经有可运行的 raw energy 记录与懒结算逻辑，但目标经济模型还需要协议化以下内容：
+早期实现已经有可运行的 raw energy 记录与懒结算逻辑，但目标经济模型仍需要协议化以下内容：
 
 1. 增长公式必须写成确定性整数规则。
 2. 余额减少时的 penalty 应从固定窗口近似收敛为与真实持有年龄相关的公式。
 3. `prev` 继承应引入明确折损率，避免无损永续滚动。
 4. `Consumed` / `Burned` 的 energy 必须归零，并成为可重放的终态。
 5. raw energy 与 UIP-0004 的 effective energy 必须严格分离。
+
+# 当前实现状态
+
+参考实现已完成 UIP-0003 core 对齐：
+
+- 公式层使用 `UNIT_SATS = 100_000`、`ENERGY_PER_UNIT_BLOCK = 1`、unit snapshot delta、age-based penalty 和逐 prev 5% 折损。
+- settlement / projection、Active/Dormant/Consumed/Burned 状态边界和 `u128` 饱和算术已统一；Consumed/Burned energy 为 `0`。
+- RocksDB energy value 使用 `u128`；RPC、validator JSON、Rust client 和前端通过 canonical decimal string 传递 energy。
+- range / raw leaderboard 的 `items[].energy` 明确保持 UIP-0003 raw energy 口径；profile/candidate 的 derived energy 由 UIP-0004 / UIP-0006 运行时计算。
+- 公式单测、timeline、状态机、RPC 与跨组件类型测试已覆盖 unit 边界、penalty、inherit rounding、饱和和历史投影。
+
+当前剩余工作是集中 live/regtest 交叉验证和大数据运行评估；公开网络的公式版本激活由 UIP-0008 承接，不增加旧 DB 迁移逻辑。
 
 # 非目标
 
@@ -289,7 +301,7 @@ record.raw_energy = raw_energy_after_penalty
 record.active_block_height = active_block_height_after
 ```
 
-## 当前实现兼容说明
+## 开发期旧公式废止说明
 
 开发期旧实现曾采用 sat 级增长和固定窗口 penalty 近似：
 
@@ -497,12 +509,12 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 6. energy 内部类型采用 `uint128`，跨语言接口使用 canonical decimal string。
 7. 当前开发阶段按高度 `0` 激活 UIP-0003；未来正式网络升级由 UIP-0008 处理。
 
-# 后续实现风险
+# 实现状态与后续风险
 
 实现层仍需持续审计：
 
 - BTC indexer 已将 RocksDB `PassEnergyValue.energy` 改为 `uint128`；开发期不做旧 DB 迁移兼容，测试需要时重建 DB。
-- BTC indexer RPC 已将 pass energy snapshot 输出拆为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string；在 UIP-0004 实现前，`collab_contribution = "0"` 且 `effective_energy = raw_energy`。
+- BTC indexer RPC 已将 pass energy snapshot 输出拆为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string；后两者按 UIP-0004 实时派生，不写回 raw ledger。
 - BTC indexer RPC range / leaderboard 的 `items[].energy` 仍表示 UIP-0003 raw energy，并输出 canonical decimal string。
-- 前端、CLI、validator payload 或后续 state view 若新增或消费 energy 字段，必须继续使用 `string`，不得退回 JSON number。
-- validator payload 和 state ref 若包含 energy，也必须使用 decimal string 并按本文规则 canonicalize。
+- 前端、CLI、validator payload 和 UIP-0006 state view 消费 energy 字段时必须继续使用 `string`，不得退回 JSON number。
+- formula-version mismatch 与单 prev remint 折损已通过 targeted live；完整 runner 仍需继续复核 burn 终态、多 prev 边界和 reorg 重放。

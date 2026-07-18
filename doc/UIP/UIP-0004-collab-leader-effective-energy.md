@@ -81,8 +81,9 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 - `get_candidate_set_view` 只枚举 active standard pass，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 排序。
 - validator block-body regtest JSON payload 已统一携带 `raw_energy`、`collab_contribution`、`effective_energy`，winner 重算使用 `effective_energy`。
 - `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不作为 validator candidate set 口径。
+- Rust/service tests 已覆盖 fixed/address Leader、Leader remint、invalid/non-active Leader、多 collab aggregate、consume/remint 和 breakdown 重算；真实 ord three-collab targeted smoke 已通过。
 
-本文仍保持 `Draft` 状态。后续若 UIP-0005 / UIP-0006 对经济状态 view 字段或版本字段提出新要求，应在对应 UIP 中升级 view/version 语义，而不是反向修改 UIP-0004 的 raw/effective 能量定义。
+UIP-0005 / UIP-0006 已在本文三字段基础上完成 level/factor 和 economic state view 对接。本文仍保持 `Draft` 状态；后续 view/version 变化应在对应 UIP 中升级，不应反向修改 UIP-0004 的 raw/effective 能量定义。
 
 # Leader 解析
 
@@ -435,7 +436,7 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 - old collab 被 consumed 后不再向旧 Leader 贡献 `collab_contribution`。
 - payload 同时携带 `raw_energy`、`collab_contribution`、`effective_energy`，且可由 breakdown 重算。
 
-当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景。大规模 live/regtest 场景建议在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免 candidate view、level、payload 字段在中途重复调整。
+当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景，three-collab breakdown 已获得真实 ord targeted smoke 覆盖。集中 live/regtest 阶段继续补齐 `leader_btc_addr` remint 跟随、fixed binding 不跟随、old collab consumed 和大规模 collab 聚合/分页场景。
 
 # 已确认规则
 

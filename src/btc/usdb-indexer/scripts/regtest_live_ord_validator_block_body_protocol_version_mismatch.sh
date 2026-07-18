@@ -3,7 +3,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-indexer-live-ord-validator-block-body-protocol-version-mismatch-XXXXXX)}"
+MISMATCH_CASE_NAME="${MISMATCH_CASE_NAME:-protocol-version-mismatch}"
+MISMATCH_FIELD="${MISMATCH_FIELD:-usdb_index_protocol_version}"
+MISMATCH_VALUE="${MISMATCH_VALUE:-9.9.9-phase-c}"
+MISMATCH_ERROR_CODE="${MISMATCH_ERROR_CODE:--32051}"
+MISMATCH_ERROR_MESSAGE="${MISMATCH_ERROR_MESSAGE:-PROTOCOL_VERSION_MISMATCH}"
+WORK_DIR="${WORK_DIR:-$(mktemp -d "/tmp/usdb-indexer-live-ord-validator-block-body-${MISMATCH_CASE_NAME}-XXXXXX")}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 ORD_DATA_DIR="${ORD_DATA_DIR:-$WORK_DIR/ord}"
 BALANCE_HISTORY_ROOT="${BALANCE_HISTORY_ROOT:-$WORK_DIR/balance-history}"
@@ -25,7 +30,7 @@ SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 ORD_SERVER_LOG_FILE="${ORD_SERVER_LOG_FILE:-$WORK_DIR/ord-server.log}"
-REGTEST_LOG_PREFIX="[usdb-validator-block-body-protocol-version-mismatch]"
+REGTEST_LOG_PREFIX="${REGTEST_LOG_PREFIX:-[usdb-validator-block-body-${MISMATCH_CASE_NAME}]}"
 
 source "${SCRIPT_DIR}/regtest_reorg_lib.sh"
 
@@ -62,7 +67,7 @@ main() {
   regtest_mine_blocks "$FUND_CONFIRM_BLOCKS" "$miner_address"
   regtest_wait_until_ord_server_synced_to_bitcoind
 
-  mint_content_file="$WORK_DIR/usdb_validator_block_body_protocol_version_mismatch_mint.json"
+  mint_content_file="$WORK_DIR/usdb_validator_block_body_${MISMATCH_CASE_NAME}_mint.json"
   cat >"$mint_content_file" <<'EOF'
 {"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}
 EOF
@@ -92,19 +97,22 @@ EOF
   pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${pass_id}\",\"block_height\":${historical_height},\"mode\":\"at_or_before\"}]")"
   regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
 
-  payload_file="$WORK_DIR/validator_block_body_protocol_version_valid_payload.json"
+  payload_file="$WORK_DIR/validator_block_body_${MISMATCH_CASE_NAME}_valid_payload.json"
   regtest_write_validator_payload_v1 "$payload_file" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp"
   regtest_validate_validator_payload_success "$payload_file"
 
-  tampered_payload_file="$WORK_DIR/validator_block_body_protocol_version_tampered_payload.json"
+  tampered_payload_file="$WORK_DIR/validator_block_body_${MISMATCH_CASE_NAME}_tampered_payload.json"
   regtest_write_validator_payload_tampered_external_state_field \
     "$payload_file" \
     "$tampered_payload_file" \
-    "usdb_index_protocol_version" \
-    "9.9.9-phase-c"
-  regtest_validate_validator_payload_consensus_error "$tampered_payload_file" "-32051" "PROTOCOL_VERSION_MISMATCH"
+    "$MISMATCH_FIELD" \
+    "$MISMATCH_VALUE"
+  regtest_validate_validator_payload_consensus_error \
+    "$tampered_payload_file" \
+    "$MISMATCH_ERROR_CODE" \
+    "$MISMATCH_ERROR_MESSAGE"
 
-  regtest_log "USDB validator block-body protocol-version mismatch test succeeded."
+  regtest_log "USDB validator block-body ${MISMATCH_CASE_NAME} test succeeded."
 }
 
 main "$@"

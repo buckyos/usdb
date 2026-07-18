@@ -292,12 +292,12 @@
   - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 ETHW difficulty。
   - 更新 `get_candidate_set_view` 返回字段说明，明确 UIP-0005 字段不改变 candidate 排序口径。
 
-### 待继续对齐
+### 当时后续项（当前状态）
 
-- UIP-0006：统一 economic state view、candidate set view/profile 版本字段和审计查询口径。
+- UIP-0006 economic state view、candidate/profile 版本字段和审计查询口径已完成，详见后续章节。
 - UIP-0008：统一 formula version、历史高度 activation matrix 与参数版本重放。
 - UIP-0009：明确 ETHW `base_difficulty` / `real_difficulty` 类型、来源和重算 policy。
-- 大规模 live/regtest 场景在 UIP-0005 / UIP-0006 对齐后集中复核和重构，避免中间字段反复调整。
+- UIP-0005 / UIP-0006 已对齐，现进入集中 live/regtest 复核和大数据性能阶段。
 - UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。
 
 ## UIP-0006 USDB Economic State View
@@ -426,5 +426,30 @@
 
 ### 待继续对齐
 
-- 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
+- 执行包含新 formula-version mismatch、three-collab breakdown 和已修正 transfer/remint 断言的完整 live/regtest runner。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。
+
+## UIP-0001 至 UIP-0006 测试入口与文档状态收口
+
+### 测试入口
+
+- `scripts/run_regression.sh` 更新两个已改名的 UIP-0002/UIP-0003 Rust 状态机测试，避免 core protocol suite 在执行场景前因 test filter 失效。
+- `scripts/run_regression.sh` 显式通过 `bash` 调用 reorg 总入口，避免 `run_reorg_regression.sh` 的文件 mode 导致完整 suite 无法启动。
+- `regtest_live_ord_e2e.sh` 的 transfer/remint 场景改为断言旧 prev `Consumed / raw_energy = 0`，并独立验证新 pass raw energy 为 `floor(prev_raw * 9500 / 10000)`。
+- `regtest_live_ord_e2e.sh` 和 `regtest_world_sim.sh` 的默认 `ORD_BIN` 与其余 live/reorg 入口统一为当前仓库使用的 release ord 路径，避免总 runner 依赖调用者额外修改 `PATH`。
+- scenario runner 新增通用非负整数 `assert_mul_div_floor`，供 live 场景表达协议 rounding，而不使用浮点数。
+- world-sim validator sample 改从 UIP-0006 `get_candidate_set_view` 获取 canonical active standard candidate，延迟回放使用 `get_pass_economic_profile` 交叉验证，不再从全部 active pass 手工拼装 candidate。
+- `regtest_world_sim.sh` 显式向 simulator 传递临时 regtest 节点的 cookie 文件，修复 wrapper 已启用 cookie auth、Python 入口却缺少认证参数而无法启动的问题。
+- world-sim context 固定 API/semantics/protocol/formula version，并记录 `pass_kind`、level、factor；recovery state 直接升级为 v2，不兼容旧采样文件。
+- world-sim 独立 energy oracle 从旧 u64/sat 级增长切换到 UIP-0003 unit、age penalty 和 `u128` 饱和算法。
+- 新增 formula-version mismatch live wrapper，要求 state ref/profile/candidate/breakdown 统一返回 `FORMULA_VERSION_MISMATCH (-32052)`。
+- `run_reorg_regression.sh` 纳入 formula-version mismatch 和已有 three-collab breakdown 场景。
+- 修正后的 transfer/remint live smoke 已通过真实 ord 链路，验证 exact owner script、prev `Consumed / 0` 和 child 95% inherit rounding；新增 formula-version mismatch live smoke 也已验证四个 UIP-0006 view 统一返回 `FORMULA_VERSION_MISMATCH (-32052)`。
+- 缩短版 candidate-set world-sim 已通过真实服务链路：canonical candidate capture、profile 交叉验证、delayed replay、tamper detection、global cross-check 和 UIP-0003 oracle self-check 均为零失败；完整 300-block/reorg 压测仍留在集中测试阶段。
+
+### 文档状态
+
+- UIP-0001 至 UIP-0006 保持 `Draft`，但实现状态、后续依赖和测试说明已按当前代码更新。
+- UIP-0001/UIP-0002 移除已经完成的 parser/state-machine 未决项，只保留 UIP-0008 activation 和可选审计 API。
+- UIP-0003/UIP-0004/UIP-0005/UIP-0006 移除“后续再实现 UIP-0004/0005/0006”等过期描述，明确 BTC/indexer core 已完成及 ETHW/UIP-0008/UIP-0009 边界。
+- economic issue tracker 将 ECO-002 至 ECO-007、ECO-012 标为 `Done`；ECO-008/ECO-011 保持 `In Progress`，并明确只剩 ETHW policy/payload 或集中测试与性能部分。

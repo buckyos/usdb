@@ -69,7 +69,7 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 
 # 当前实现状态
 
-当前代码已实现本 UIP 的公式层 helper，并已在 `get_pass_energy` 和 `get_candidate_set_view` 中运行时派生 `level` 和 `difficulty_factor_bps`。
+当前代码已实现本 UIP 的公式层 helper，并已在 `get_pass_energy`、`get_pass_economic_profile` 和 `get_candidate_set_view` 中运行时派生 `level` 和 `difficulty_factor_bps`。
 
 usdb-indexer 侧的 UIP-0005 core 已暂时收尾：公式、查询派生、candidate view、状态边界和服务层交叉验证均已覆盖。下列版本绑定和 ETHW policy 闭环由后续 UIP 承接。
 
@@ -82,7 +82,7 @@ usdb-indexer 侧的 UIP-0005 core 已暂时收尾：公式、查询派生、cand
 
 依赖后续 UIP 的事项：
 
-- UIP-0006 economic state view 暴露统一 profile，并由 validator 重算 `level` 和 `difficulty_factor_bps`。
+- UIP-0006 economic state view 已通过统一 profile/candidate view 暴露这些字段，并支持同一 historical context 下重算。
 - UIP-0008 定义 formula version 与历史高度 activation matrix。
 - UIP-0009 或后续 ETHW policy 决定是否显式承诺 `base_difficulty` 和 `real_difficulty`。
 
@@ -343,7 +343,7 @@ USDB indexer 查询接口应该携带以下 BTC-side 派生字段：
 | `effective_energy` | decimal string | UIP-0004 输出的有效能量。 |
 | `level` | integer | 按本文阈值表计算的等级。 |
 | `difficulty_factor_bps` | integer | 难度折算系数。 |
-| `formula_version` | string | 绑定 UIP-0005 参数版本。 |
+| `usdb_index_formula_version` | string | 通过 UIP-0006 `external_state` 绑定 UIP-0005 参数版本。 |
 
 这些字段可以动态计算，不需要作为独立状态持久化。实现可以缓存查询结果，但缓存不得改变历史重放语义。
 
@@ -420,6 +420,8 @@ level(pass, h)
 - ETHW 侧 `real_difficulty` 使用向上取整，例如 `base_difficulty = 101, factor = 9900` 时结果为 `100`。
 - state view 或 future ETHW policy 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
 - 参数表变更时，历史高度按当时激活版本重算。
+
+参考实现的公式、service/profile/candidate 交叉测试已覆盖 BTC-side level/factor 和状态边界。当前未完成项只包括 UIP-0008 的历史参数激活，以及 UIP-0009 或后续 ETHW policy 对 `base_difficulty / real_difficulty` 的来源、编码和 mismatch 校验。
 
 # 待审计问题
 

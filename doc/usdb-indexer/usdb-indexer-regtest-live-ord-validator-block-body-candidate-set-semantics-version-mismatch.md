@@ -8,9 +8,10 @@
 
 - `winner + candidate_passes` payload
 - `get_state_ref_at_height`
-- `get_pass_snapshot`
-- `get_pass_energy`
-- candidate-set 批量历史 context 校验
+- `get_pass_economic_profile`
+- `get_candidate_set_view`
+- `get_collab_breakdown`
+- canonical candidate-set 及每张 candidate profile 的批量历史 context 校验
 - `VERSION_MISMATCH`
 
 ## 步骤
@@ -18,5 +19,4 @@
 1. 在同一历史高度构造 3 张候选 pass，并生成 `winner + candidate_passes` payload。
 2. 先校验原始 payload，必须通过。
 3. 仅篡改 `external_state.balance_history_semantics_version`。
-4. 再次校验，要求 `state ref / winner / candidate_passes` 都稳定返回 `VERSION_MISMATCH`。
-
+4. 再次校验，要求四个 UIP-0006 view 及每张 candidate profile 都稳定返回 `VERSION_MISMATCH`。

@@ -17,11 +17,11 @@ Activation: BTC network activation matrix
 - 标准矿工证：包含 `usdb_main`，不包含 leader 绑定字段，可以作为独立挖矿身份。
 - 协作矿工证：包含 `leader_pass_id` 或 `leader_btc_addr` 二选一，不包含 `usdb_main`，不能独立参与挖矿。
 
-本文建议在 v1 schema 中移除 `usdb_collab` 的新协议语义。协作关系不再由 Leader 主动填写协作者 USDB/EVM 地址表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
+v1 schema 移除 `usdb_collab` 的协议语义。协作关系不再由 Leader 主动填写协作者 USDB/EVM 地址表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
 
 # 动机
 
-当前 `doc/矿工证铭文协议.md` 和实现中的 `USDBMint` 仍包含：
+早期 `doc/矿工证铭文协议.md` 草案和开发期 `USDBMint` 曾包含：
 
 - `usdb_main`
 - `usdb_collab`
@@ -34,6 +34,17 @@ Activation: BTC network activation matrix
 3. 只绑定具体 pass id 虽然确定性最好，但 Leader remint 后协作者需要重新绑定；只绑定 BTC 地址虽然体验更好，但会自动跟随该地址的新 active pass。
 
 USDB 经济模型需要的是可重放、可审计、可按历史高度验证的协作绑定关系。因此，协作者必须通过自己的 BTC 铭文显式声明 Leader，并显式选择固定 pass 绑定或地址自动跟随绑定。
+
+# 当前实现状态
+
+参考实现已完成 UIP-0001 v1 core 对齐：
+
+- parser 必须接收整数 `v: 1`，`prev` 缺省为空数组，并拒绝未知字段、重复 top-level key、重复 `prev` 和开发期旧 payload。
+- standard / `leader_pass_id` collab / `leader_btc_addr` collab 三种合法形态已使用互斥字段解析；BTC 地址按当前 indexer network 校验。
+- `usdb_collab` 只作为 invalid schema 检测项存在，不进入 pass storage、RPC、commit mutation、control-plane mint 或前端类型。
+- pass storage、查询、Rust client、CLI、control-plane 和浏览器类型均暴露 `mint_version`、`pass_kind` 与 Leader 绑定字段。
+
+当前剩余工作是集中 live/regtest schema 矩阵复核，以及由 UIP-0008 固定公开网络 activation matrix；不再保留开发期兼容或迁移任务。
 
 # 非目标
 
@@ -315,38 +326,38 @@ collab_pass -> leader_pass_id | leader_btc_addr -> leader.usdb_main
 
 ## UIP-0002
 
-UIP-0002 必须定义：
+UIP-0002 定义：
 
 - standard pass 和 collab pass 的状态机差异。
-- collab pass 在 Leader 失效时的状态。
-- collab pass 是否可以通过 remint 转为 standard pass。
-- `leader_pass_id` 不存在或无效时，mint 是 invalid 还是进入 pending 状态。
-- `leader_btc_addr` 在 mint 高度没有 active standard pass 时，mint 是 invalid 还是只在解析高度不贡献有效能量。
+- Leader 失效不直接改变 collab pass 状态，只影响 UIP-0004 contribution。
+- collab pass 可以通过新 mint + `prev` remint 为 standard 或新 collab pass。
+- `leader_pass_id` 不存在、非 Active 或非 standard 时，该 collab mint 为 `Invalid`。
+- `leader_btc_addr` 在 mint 时只校验当前 BTC network；每个历史高度动态解析，没有 active standard pass 时 contribution 为 `0`。
 
-本文建议：`leader_pass_id` 引用不存在或无效 Leader 时，collab mint 应判为 invalid；`leader_btc_addr` 可以只校验地址格式，具体 Leader 在每个历史高度动态解析。
+上述规则分别由 UIP-0002 状态机和 UIP-0004 derived view 执行。
 
 ## UIP-0003
 
-UIP-0003 必须定义：
+UIP-0003 定义：
 
 - collab pass 的 raw energy 如何增长。
-- collab pass remint 或退出时 energy 是否折损。
-- collab pass 从协作关系退出后是否存在 cooldown。
+- collab pass remint 或退出使用统一 `INHERIT_DISCOUNT_BPS = 500` 折损。
+- collab pass 退出不增加额外 cooldown 或专用退出 penalty。
 
 ## UIP-0004
 
-UIP-0004 必须定义：
+UIP-0004 定义：
 
-- Leader 有效性窗口。
+- Leader 在目标历史高度必须是 Active standard pass。
 - `effective_energy` 公式。
 - collab energy 权重。
-- leader remint、transfer、burn 后 collab 绑定如何失效或迁移。
-- `leader_btc_addr` 自动跟随后，是否需要 cooldown 或延迟生效。
+- fixed pass 与 address binding 在 leader remint、transfer、burn 后的不同解析结果。
+- `leader_btc_addr` 自动跟随不增加 cooldown 或延迟生效。
 - collab energy 防双计数规则。
 
 # 实现影响
 
-预期需要修改：
+参考实现已对齐以下入口：
 
 - `src/btc/usdb-indexer/src/index/content.rs`
 - `src/btc/usdb-indexer/src/inscription/source.rs`
@@ -354,7 +365,7 @@ UIP-0004 必须定义：
 - `src/btc/usdb-indexer/src/index/pass.rs`
 - `src/btc/usdb-indexer/src/storage/pass.rs`
 
-建议实现时先只落 schema 解析与存储字段，不提前实现 effective energy。
+effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-0006 在查询时派生。
 
 # 测试要求
 
@@ -374,6 +385,8 @@ UIP-0004 必须定义：
 - v1 unknown field invalid。
 - v1 duplicate key invalid。
 - pre-standard development payload 不作为正式协议版本参与标准解析。
+
+参考实现的 parser、source comparison、indexer behavior 和 control-plane mint 测试已覆盖上述 core 规则；集中 live/regtest 阶段继续复核真实 ord body 和不同 content-type 来源的一致性。
 
 # 安全考虑
 
@@ -404,6 +417,5 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 
 # 下一步
 
-1. 在 UIP-0002 继续对齐 standard/collab 状态机与 `prev` 原子校验。
-2. 在 UIP-0004 定义 collab effective energy 与防双计数规则。
-3. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
+1. 在集中 live/regtest 中复核 v1 valid/invalid schema 矩阵及 ord/bitcoind source 一致性。
+2. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。

@@ -58,7 +58,7 @@ candidate/breakdown 当前已直接使用本文固定的 `cursor + limit`，不�
 
 参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref/profile/candidate/breakdown。`get_rpc_info` 现在显式声明 view version、candidate selection rule、max limit 和四个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
 
-当前仍待进行的是 USDB indexer 全部 UIP 对齐后的集中 live/regtest 复核，以及大数据量下的查询/索引性能评估。
+happy path、same-height reorg、three-pass candidate 和 three-collab breakdown 已通过真实 ord targeted smoke。集中回归入口现已切换到 canonical profile/candidate view，并补入 formula-version mismatch 与 three-collab 场景；完整 live/regtest 矩阵和大数据量查询/索引性能评估仍需在下一阶段执行。
 
 # 能力发现
 
@@ -468,6 +468,8 @@ USDB Economic State View
 - history retention 不足时返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
+
+参考实现的 Rust/service tests 已覆盖上述 core 规则；targeted live 已覆盖 profile/candidate/breakdown、formula-version mismatch、head advance 和 same-height reorg。完整 runner 仍需执行全场景 reorg/restart 和大数据 cursor 压测后，才能声明 UIP-0006 live regression 完成。
 
 # 后续实现议题
 

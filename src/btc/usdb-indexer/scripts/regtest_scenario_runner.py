@@ -261,6 +261,30 @@ class RegtestScenarioRunner:
         except Exception as e:  # noqa: BLE001
             raise ScenarioError(f"Invalid integer for {field}: value={value}, error={e}") from e
 
+    @staticmethod
+    def assert_mul_div_floor(
+        actual: int,
+        value: int,
+        multiplier: int,
+        divisor: int,
+        message: str | None = None,
+    ) -> None:
+        if value < 0 or multiplier < 0 or divisor <= 0:
+            raise ScenarioError(
+                "assert_mul_div_floor requires value/multiplier >= 0 and divisor > 0: "
+                f"value={value}, multiplier={multiplier}, divisor={divisor}"
+            )
+        expected = value * multiplier // divisor
+        if actual != expected:
+            raise ScenarioError(
+                message
+                or (
+                    "assert_mul_div_floor failed: "
+                    f"actual={actual}, value={value}, multiplier={multiplier}, "
+                    f"divisor={divisor}, expected={expected}"
+                )
+            )
+
     def assert_balance_history_balance(
         self, script_hash: str, height: int, expected_sat: int
     ) -> None:
@@ -968,6 +992,32 @@ class RegtestScenarioRunner:
                 )
                 self.log(f"scenario-step[{idx}] assert_ge")
                 self.assert_ge(left, right, message)
+                continue
+
+            if step_type == "assert_mul_div_floor":
+                actual = self.to_int(
+                    self.resolve_value(step.get("actual")),
+                    "assert_mul_div_floor.actual",
+                )
+                value = self.to_int(
+                    self.resolve_value(step.get("value")),
+                    "assert_mul_div_floor.value",
+                )
+                multiplier = self.to_int(
+                    self.resolve_value(step.get("multiplier")),
+                    "assert_mul_div_floor.multiplier",
+                )
+                divisor = self.to_int(
+                    self.resolve_value(step.get("divisor")),
+                    "assert_mul_div_floor.divisor",
+                )
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_mul_div_floor")
+                self.assert_mul_div_floor(actual, value, multiplier, divisor, message)
                 continue
 
             if step_type == "assert_pass_energy_eq":
