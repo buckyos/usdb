@@ -797,8 +797,10 @@
 
 `sort` 可选，允许：
 
-- `collab_pass_id_asc`：按 collab pass id 升序，默认。
-- `contribution_desc_pass_id_asc`：按 contribution 降序，pass id 升序打破平局。
+- `collab_pass_id_asc`：按 RPC 输出的 canonical collab pass id 文本逐字节升序，默认。
+- `contribution_desc_pass_id_asc`：按 contribution 降序，以 canonical pass id 文本逐字节升序打破平局。
+
+这里的 pass id 顺序以外部 inscription-id 文本为准，不使用内部 txid byte order。
 
 首次请求传 `cursor = null`，后续请求原样传回 `next_cursor`。旧 `page/page_size` 字段会被拒绝，不保留双分页兼容层。
 

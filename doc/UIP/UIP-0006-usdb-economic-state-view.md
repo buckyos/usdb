@@ -280,10 +280,11 @@ v1 定义以下排序值：
 
 | sort | 语义 | 典型用途 |
 | --- | --- | --- |
-| `collab_pass_id_asc` | 按 `collab_pass_id` 升序；v1 默认值，必须支持。 | 稳定全量审计、分页简单。 |
-| `contribution_desc_pass_id_asc` | 按 `collab_contribution` 降序，`collab_pass_id` 升序打破平局；可以支持。 | 浏览器展示最大贡献者、Leader 贡献分析。 |
+| `collab_pass_id_asc` | 按 RPC 输出的 canonical `collab_pass_id` 文本逐字节升序；v1 默认值，必须支持。 | 稳定全量审计、分页简单。 |
+| `contribution_desc_pass_id_asc` | 按 `collab_contribution` 降序，以 canonical `collab_pass_id` 文本逐字节升序打破平局；可以支持。 | 浏览器展示最大贡献者、Leader 贡献分析。 |
 
 无论提供哪种排序，cursor 都必须绑定 `external_state`、`leader_pass_id`、`sort` 和分页边界，不得跨历史 context 或跨排序策略复用。
+实现不得使用内部 txid byte order 代替 canonical inscription-id 文本顺序。
 
 建议 item：
 

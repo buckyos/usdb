@@ -1534,15 +1534,19 @@ impl UsdbIndexerRpcServer {
         items: &mut [DerivedCollabBreakdownItem],
         sort: CollabBreakdownSort,
     ) {
+        // UIP ordering is defined over the canonical RPC pass-id text. Native
+        // InscriptionId ordering follows internal txid bytes, whose display
+        // order is reversed, so it is not a valid pagination key here.
         match sort {
             CollabBreakdownSort::CollabPassIdAsc => {
-                items.sort_by(|a, b| a.collab_pass_id.cmp(&b.collab_pass_id));
+                items.sort_by_cached_key(|item| item.collab_pass_id.to_string());
             }
             CollabBreakdownSort::ContributionDescPassIdAsc => {
-                items.sort_by(|a, b| {
-                    b.collab_contribution
-                        .cmp(&a.collab_contribution)
-                        .then_with(|| a.collab_pass_id.cmp(&b.collab_pass_id))
+                items.sort_by_cached_key(|item| {
+                    (
+                        std::cmp::Reverse(item.collab_contribution),
+                        item.collab_pass_id.to_string(),
+                    )
                 });
             }
         }
@@ -6090,6 +6094,52 @@ mod tests {
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_collab_breakdown_sort_uses_canonical_pass_id_text_order() {
+        let mut text_lower_bytes = [0u8; 32];
+        text_lower_bytes[0] = 1;
+        let text_lower = InscriptionId {
+            txid: Txid::from_slice(&text_lower_bytes).unwrap(),
+            index: 0,
+        };
+
+        let mut text_higher_bytes = [0u8; 32];
+        text_higher_bytes[31] = 1;
+        let text_higher = InscriptionId {
+            txid: Txid::from_slice(&text_higher_bytes).unwrap(),
+            index: 0,
+        };
+
+        assert!(text_lower.to_string() < text_higher.to_string());
+        assert!(text_lower > text_higher);
+
+        let make_item = |collab_pass_id| DerivedCollabBreakdownItem {
+            collab_pass_id,
+            collab_owner: test_script_hash(180),
+            record_block_height: 120,
+            collab_raw_energy: 200,
+            collab_contribution: 100,
+            leader_ref_kind: "leader_pass_id".to_string(),
+            leader_ref_value: test_inscription_id(78, 0).to_string(),
+        };
+
+        let mut pass_id_items = vec![make_item(text_higher), make_item(text_lower)];
+        UsdbIndexerRpcServer::sort_collab_breakdown_items(
+            &mut pass_id_items,
+            CollabBreakdownSort::CollabPassIdAsc,
+        );
+        assert_eq!(pass_id_items[0].collab_pass_id, text_lower);
+        assert_eq!(pass_id_items[1].collab_pass_id, text_higher);
+
+        let mut contribution_items = vec![make_item(text_higher), make_item(text_lower)];
+        UsdbIndexerRpcServer::sort_collab_breakdown_items(
+            &mut contribution_items,
+            CollabBreakdownSort::ContributionDescPassIdAsc,
+        );
+        assert_eq!(contribution_items[0].collab_pass_id, text_lower);
+        assert_eq!(contribution_items[1].collab_pass_id, text_higher);
     }
 
     #[test]

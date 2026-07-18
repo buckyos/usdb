@@ -311,6 +311,7 @@
   - 固定 `EconomicExternalState` 的 9 个必填字段，补齐 `balance_history_api_version`，并要求 protocol/formula 来自目标高度历史 identity。
   - 固定 invalid profile 的 raw/contribution/effective canonical 零值和 `level=0 / factor=10000` 查询语义，不要求伪造 energy DB row。
   - 固定 candidate/breakdown 的 `cursor + limit` 契约、cursor 绑定范围和错误边界；实现已直接替换数字分页，不保留双栈。
+  - 明确 breakdown pass-id 排序以 canonical RPC inscription-id 文本为准，禁止使用内部 txid byte order。
   - 明确 `ECONOMIC_FIELD_MISMATCH` 属于下游 verifier 重算结果，不是无 expected economic fields 的查询 RPC 错误；服务内部矛盾使用 `INTERNAL_INVARIANT_BROKEN`。
 - `src/btc/usdb-util/src/types.rs`
   - `ConsensusStateReference` 增加 `usdb_index_formula_version`。
@@ -337,7 +338,9 @@
   - 服务层测试覆盖 active standard 多 collab 聚合与 breakdown 交叉重算、active collab/non-active/invalid 边界、view/formula mismatch、缺 pass/缺 energy、head 前进后的旧 external state 重放，以及 same-height anchor 替换后的 snapshot mismatch。
   - profile/candidate/breakdown 在业务派生前后重建并比较完整 historical state ref；查询期间发生 reorg 时返回对应 mismatch，不组合跨状态响应。
   - candidate/breakdown 改用 keyset cursor continuation；cursor 自带历史 context，current head 前进后续页仍固定首包 external state。
+  - collab breakdown 的 pass-id 排序改为 canonical RPC inscription-id 文本顺序，不再使用内部 txid 字节序；默认排序和 contribution tie-break 共用同一口径。
   - 服务层测试补充非法 limit、cursor 篡改、跨资源复用、查询条件变化、same-height reorg、旧分页字段拒绝和派生期间 state-ref 变化。
+  - 增加非对称 txid 回归测试，明确覆盖 native `InscriptionId` 顺序与 canonical 文本顺序相反的情况。
 - `src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh`
   - validator payload / context 强制携带 API、semantics、protocol、formula 四类版本字段，删除 protocol fallback 和可空 `.get(...)` 兼容逻辑。
   - protocol mismatch 断言改为 `PROTOCOL_VERSION_MISMATCH(-32051)`。
@@ -349,6 +352,11 @@
   - 单 Pass validator payload 改为从 `get_pass_economic_profile` 构造，不再依赖旧 snapshot + energy 拼装路径。
   - happy-path 在原历史高度及 current head 前进后重复交叉验证 UIP-0006 economic views。
   - same-height reorg 在替换历史锚点后验证旧 payload 被 state-ref/profile/candidate/breakdown 四个入口统一拒绝。
+- `src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_three_collab_breakdown.sh`
+  - 新增 1 张 active standard Leader + 3 张 `leader_pass_id` collab pass 的真实 ord/live 场景，并为四个 owner 注入余额、累积正 raw energy。
+  - 以 `limit=2` 分别遍历 `collab_pass_id_asc` 和 `contribution_desc_pass_id_asc` 两页 cursor，验证稳定排序、三项正 contribution、5000 bps 权重、集合一致和 aggregate 重算。
+  - 交叉验证 Leader profile/candidate/payload 的 raw、collab contribution、effective energy、level/factor；验证 collab 自身 effective energy 为 0 且不进入 candidate set。
+  - current head 前进后重放原历史 payload，验证 cursor 与完整 external state 仍冻结在原查询高度。
 
 ### 已验证
 
@@ -357,15 +365,17 @@
 - `cargo test -p usdb-indexer`
 - `cargo check --workspace --all-targets`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- 全部 56 个 shell 脚本 `bash -n`
+- `cargo test -p usdb-indexer test_collab_breakdown_sort_uses_canonical_pass_id_text_order -- --nocapture`
+- 全部 57 个 shell 脚本 `bash -n`
 - `git diff --check`
 - `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_e2e.sh`
 - `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_reorg.sh`
+- `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_three_pass_candidate_set.sh`
+- `bash src/btc/usdb-indexer/scripts/regtest_live_ord_validator_block_body_three_collab_breakdown.sh`
 
-上述两条 live smoke 均使用独立 regtest bitcoind/ord/balance-history/usdb-indexer 数据目录和端口执行成功；尚未据此声明多候选、多 collab 或全量 live regression 已完成。
+上述 targeted live smoke 均使用独立 regtest bitcoind/ord/balance-history/usdb-indexer 数据目录和端口执行成功；多候选 candidate cursor 与多 collab breakdown cursor 已获得真实链路覆盖，但尚未据此声明全量 live regression 已完成。
 
 ### 待继续对齐
 
 - 补 formula mismatch 的 live/regtest 场景，并在全部 USDB indexer UIP 对齐后集中复核现有 live/ord 场景。
-- 运行多候选与多 collab live 场景，实际覆盖 shell collector 的多页 cursor continuation 和 breakdown aggregate 重算路径。
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。

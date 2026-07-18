@@ -1115,8 +1115,9 @@ pub struct GetCollabBreakdownParams {
     /// the resolved height before returning the breakdown.
     pub context: Option<ConsensusQueryContext>,
     /// Optional sort:
-    /// - `collab_pass_id_asc`: stable full-audit ordering.
-    /// - `contribution_desc_pass_id_asc`: largest contribution first.
+    /// - `collab_pass_id_asc`: canonical pass-id text ascending.
+    /// - `contribution_desc_pass_id_asc`: contribution descending, then
+    ///   canonical pass-id text ascending.
     pub sort: Option<String>,
     /// Opaque continuation returned by the preceding page.
     pub cursor: Option<String>,
