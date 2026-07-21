@@ -19,7 +19,7 @@ UIP 参考 BTC BIP 和 Ethereum EIP 的组织方式，但应保持 USDB 自身�
 ## 当前文档
 
 - [UIP-0000-uip-process.md](./UIP-0000-uip-process.md)：UIP 流程、治理、网络化激活规则与模板。
-- [UIP-0001-miner-pass-inscription.md](./UIP-0001-miner-pass-inscription.md)：矿工证铭文 v1 schema、standard/collab pass 字段和兼容策略。
+- [UIP-0001-miner-pass-inscription.md](./UIP-0001-miner-pass-inscription.md)：矿工证铭文 v1 schema、standard/collab pass 字段和校验规则。
 - [UIP-0002-pass-state-machine.md](./UIP-0002-pass-state-machine.md)：矿工证状态机、事件排序、`prev` 严格校验与 burn 终态。
 - [UIP-0003-pass-energy-formula.md](./UIP-0003-pass-energy-formula.md)：矿工证 raw energy 公式、余额惩罚、继承折损与终态能量。
 - [UIP-0004-collab-leader-effective-energy.md](./UIP-0004-collab-leader-effective-energy.md)：协作矿工证 Leader 解析、collab contribution 与 effective energy。
@@ -36,6 +36,25 @@ UIP 参考 BTC BIP 和 Ethereum EIP 的组织方式，但应保持 USDB 自身�
 - [UIP-0014-leader-quote-activity-and-candidate-energy.md](./UIP-0014-leader-quote-activity-and-candidate-energy.md)：Leader 主动报价活跃窗口、candidate energy 和 candidate level 策略。
 - [UIP-0015-auxiliary-hashpower-pool.md](./UIP-0015-auxiliary-hashpower-pool.md)：辅助算力池激活边界、BTC 算力证明纲要、pass 绑定和 reward 分配待审计问题。
 - [uip-split-design.md](./uip-split-design.md)：经济模型拆分与标准化顺序。
+
+## 跨 UIP 术语索引
+
+本节只提供导航，不复制规范定义。术语的规范含义以“定义 UIP”中的术语和规则为准；其他 UIP 使用该术语时必须引用定义 UIP，不得赋予不同含义。
+
+| 术语族 | 定义 UIP | 规范边界 |
+| --- | --- | --- |
+| `pass`、`pass_id`、`pass_kind`、`owner_script_hash`、`owner_btc_addr` | [UIP-0001](./UIP-0001-miner-pass-inscription.md) | BTC 铭文身份、canonical pass id、pass 类型和 owner 表示。 |
+| `Active`、`Dormant`、`Consumed`、`Burned`、`Invalid`、`prev`、mint / remint | [UIP-0002](./UIP-0002-pass-state-machine.md) | pass 生命周期、事件顺序和继承消费状态。 |
+| `raw_energy`、`settled_raw_energy`、`projected_raw_energy`、`inheritable_energy` | [UIP-0003](./UIP-0003-pass-energy-formula.md) | BTC-side 可持久化、可继承能量。 |
+| `leader_ref`、`resolved_leader`、`leader_eligible`、`collab_contribution`、`effective_energy` | [UIP-0004](./UIP-0004-collab-leader-effective-energy.md) | BTC-side Leader 解析、ETHW eligibility 边界和 nominal effective energy。 |
+| `level`、`difficulty_factor_bps`、`real_difficulty` | [UIP-0005](./UIP-0005-level-and-real-difficulty.md) | indexer nominal level/factor 和 ETHW difficulty 折算公式。 |
+| `query_context`、`expected_state`、`external_state`、`candidate_pass`、`candidate_set_view`、`top_ranked_candidate`、`collab_breakdown` | [UIP-0006](./UIP-0006-usdb-economic-state-view.md) | USDB-side 历史查询、经济审计集合和确定性排序。 |
+| `ProfileSelectorPayload`、`selected_pass`、USDB miner、USDB validator | [UIP-0007](./UIP-0007-ethw-consensus-profile-selector.md) | ETHW 区块选择的 pass、链上 selector payload 和验证角色。 |
+| `candidate_energy`、`candidate_level`、`leader_quote_active` | [UIP-0014](./UIP-0014-leader-quote-activity-and-candidate-energy.md) | ETHW policy 应用于 selected pass 的实际候选能量和等级。 |
+
+特别地，`candidate_set_view` 的排序首项只是 `top_ranked_candidate`，不自动等于某个 ETHW 区块的 `selected_pass`，也不表示已经赢得 PoW 出块竞争。正式 UIP 不使用裸 `winner` 指代 pass；需要分别写明审计排序首项、区块声明的 pass 或已经通过 PoW 验证的区块。
+
+`validator test envelope` 是 regtest/E2E 的链外测试容器，不是正式链上 payload。正式 ETHW header payload 必须写作 UIP-0007 `ProfileSelectorPayload`。
 
 ## 后续建议
 

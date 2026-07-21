@@ -4,9 +4,11 @@
 
 这份设计把现有的 historical-context 校验脚本进一步收敛成更贴近 USDB validator 真实消费方式的测试模型。
 
-目标不是立刻模拟整条 ETHW 链，而是先固定一份更像真实 block body 的外部状态 payload，并验证：
+本文中的 JSON 是链外 regtest 使用的 **validator test envelope**，不是 UIP-0007 定义的链上 `ProfileSelectorPayload`。测试 envelope 可以携带完整 candidate/profile/breakdown 审计数据；链上 selector payload 只携带最小 `pass_id` 选择信息。除非显式写作 `ProfileSelectorPayload`，本文后续的 `payload`、脚本名和 helper 名都只是该 test envelope 的历史实现名称。
 
-1. 出块方可以在 BTC 高度 `H` 生成一份稳定的 validator payload。
+目标不是立刻模拟整条 ETHW 链，而是先固定一份更像真实 block body 校验输入的 test envelope，并验证：
+
+1. 出块方可以在 BTC 高度 `H` 生成一份稳定的 validator test envelope。
 2. 验证方只依赖 payload 和 BTC RPC，就能按历史上下文重放校验。
 3. BTC head 前进、same-height reorg、历史保留窗口变化、历史辅助数据缺失时，错误分流仍然稳定。
 
@@ -31,9 +33,9 @@
 - `regtest_assert_usdb_consensus_error`
 - live ord mint / send / reorg / restart helper
 
-## 3. Validator Payload v1
+## 3. Validator Test Envelope v1
 
-建议统一一份更贴近 ETHW block body 的 payload 结构：
+建议统一一份更贴近 ETHW block body 校验输入的链外测试 envelope 结构：
 
 ```json
 {
@@ -95,7 +97,9 @@
 - `resolved_height`
 - `query_block_height`
 
-单 pass payload 固定的是出块方选中的 miner pass 的完整能量三元组；multi-pass payload 额外携带 `candidate_passes` 与 `selection_rule = uip-0006:effective-energy-desc-pass-id-asc:v1`。
+本文用 `test_selected_pass` 指代 `miner_selection.inscription_id` 对应的 pass。它只表示测试 envelope 选择并要求重放校验的对象，不是 UIP-0007 的额外链上字段。
+
+单 pass envelope 固定的是测试选中的 miner pass 的完整能量三元组；multi-pass envelope 额外携带 `candidate_passes` 与 `selection_rule = uip-0006:effective-energy-desc-pass-id-asc:v1`。当前测试固定选择排序第一项，以验证 UIP-0006 ordering contract；该测试策略不定义 ETHW block-selection policy，也不表示该 pass 已经赢得 PoW 出块竞争。
 
 ## 4. 校验流程
 
@@ -125,7 +129,7 @@ validator 风格脚本应始终分两步：
 - `collab_contribution`
 - `effective_energy`
 
-candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderboard 或全部 active pass 手工拼装。profile/candidate/breakdown 必须返回同一 `external_state`，并能重算同一 winner 和 collab aggregate。
+`candidate_passes` 必须来自 UIP-0006 canonical `candidate_set_view`，不得从前端 raw leaderboard 或全部 active pass 手工拼装。profile/candidate/breakdown 必须返回同一 `external_state`，并能重算同一 `top_ranked_candidate` 和 collab aggregate。
 
 这样 validator 视角会比“先查当前 state，再零散拼断言”更贴近真实实现。
 
@@ -181,10 +185,10 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - 同一历史高度 `H` 下存在两张合法候选 pass
-- `winner` 与 `candidates` 被固定进同一份 block-body payload
+- `test_selected_pass` 与 `candidate_passes` 被固定进同一份 block-body test envelope
 - validator 在同一历史 `external_state` 下重查两张 pass 的 `snapshot / raw_energy / collab_contribution / effective_energy / state`
-- validator 证明 `winner` 满足 `effective_energy DESC + inscription_id ASC` 选择规则，而不是只校验单张 pass
-- 后续块让 winner 本身发生真实状态变化后，旧 payload 仍按 `H` 通过
+- validator 证明 `test_selected_pass` 等于 `top_ranked_candidate(candidate_passes, selection_rule)`，而不是只校验单张 pass
+- 后续块让当时的 `top_ranked_candidate` 发生真实状态变化后，旧 envelope 仍按 `H` 通过
 
 ### 6.5 Two-Pass Real Energy Advantage
 
@@ -193,10 +197,10 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - 同一历史高度 `H` 下两张候选 pass 存在真实 `effective_energy` 差异，而不是都落到 `0` 后只走 tie-break
-- `H` 时 `pass1.effective_energy > pass2.effective_energy`，payload 记录 `pass1` 为 winner
-- 后续块通过给 `pass2` owner 追加真实 BTC balance 并等待 energy 增长，使当前 head 上的赢家翻转为 `pass2`
-- validator 仍能按 `H` 的历史 `external_state` 证明旧 payload 合法
-- 新高度的 payload 会切换到新的 winner，从而证明“历史赢家”和“当前赢家”都能按各自上下文独立成立
+- `H` 时 `pass1.effective_energy > pass2.effective_energy`，test envelope 记录 `pass1` 为 `test_selected_pass`
+- 后续块通过给 `pass2` owner 追加真实 BTC balance 并等待 energy 增长，使当前 head 的 `top_ranked_candidate` 变为 `pass2`
+- validator 仍能按 `H` 的历史 `external_state` 证明旧 envelope 合法
+- 新高度的 envelope 会切换到新的 `top_ranked_candidate`，从而证明历史与当前排序首项都能按各自上下文独立成立
 
 ### 6.6 Two-Pass Competing Payloads
 
@@ -205,7 +209,7 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - 同一组候选 pass 在 `H` 与 `H+1` 生成两份不同的多 pass payload
-- 两份 payload 的 `snapshot_id / system_state_id / candidate_count / winner` 会发生变化
+- 两份 envelope 的 `snapshot_id / system_state_id / candidate_count / test_selected_pass` 会发生变化
 - 每份 payload 只能在各自历史视图下成立
 - 跨高度串用 payload 时返回 `SNAPSHOT_ID_MISMATCH`
 
@@ -216,7 +220,7 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - 针对多 pass competition payload 执行 same-height reorg
-- 旧 payload 的 state ref、winner pass、candidate passes 全部在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
+- 旧 envelope 的 state ref、`test_selected_pass`、`candidate_passes` 全部在同一 historical context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
 
 ### 6.8 Two-Pass Payload Tamper
 
@@ -224,9 +228,9 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 
 覆盖：
 
-- 在不改 `external_state` 的前提下篡改 multi-pass payload 的 `winner`
+- 在不改 `external_state` 的前提下篡改 multi-pass envelope 的 `test_selected_pass`
 - 基础历史 RPC 查询仍能重放真实链上状态
-- 但 validator 本地的 `winner == recomputed(candidate_passes, selection_rule)` 校验必须失败
+- 但 validator 本地的 `test_selected_pass == top_ranked_candidate(candidate_passes, selection_rule)` 校验必须失败
 
 ### 6.9 Three-Pass Candidate-Set
 
@@ -235,9 +239,9 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - 同一历史高度下 3 张 pass 组成 `candidate_passes`
-- payload 显式记录 `winner + candidate_passes + selection_rule`
-- validator 在同一历史 context 下重查 3 张 pass，并重算 winner
-- 后续块让当前 winner 真实发生 `transfer` 等状态变化，旧 payload 仍按历史视图成立
+- envelope 显式记录 `test_selected_pass + candidate_passes + selection_rule`
+- validator 在同一历史 context 下重查 3 张 pass，并重算 `top_ranked_candidate`
+- 后续块让当前 `top_ranked_candidate` 真实发生 `transfer` 等状态变化，旧 envelope 仍按历史视图成立
 
 ### 6.10 Five-Pass Candidate-Set Tamper
 
@@ -245,9 +249,9 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 
 覆盖：
 
-- 同一历史高度下 5 张 pass 组成更接近真实 validator 候选集合的 `candidate_set`
-- 在不改 `external_state` 的前提下篡改 payload 中记录的 winner
-- validator 通过本地重算 `winner == recomputed(candidate_passes, selection_rule)` 识别篡改
+- 同一历史高度下 5 张 pass 组成更接近真实 validator 审计输入的 `candidate_passes`
+- 在不改 `external_state` 的前提下篡改 envelope 中记录的 `test_selected_pass`
+- validator 通过本地重算 `test_selected_pass == top_ranked_candidate(candidate_passes, selection_rule)` 识别篡改
 
 ### 6.11 Five-Pass Candidate-Set Reorg
 
@@ -256,7 +260,7 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 覆盖：
 
 - same-height replacement 覆盖 5-pass candidate-set payload 所在高度
-- 旧 payload 的 `state ref / winner / candidate_passes` 在同一历史 context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
+- 旧 envelope 的 `state ref / test_selected_pass / candidate_passes` 在同一 historical context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
 
 ### 6.12 Protocol Version Mismatch
 
@@ -291,8 +295,8 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 
 覆盖：
 
-- 在 `winner + candidate_passes` payload 上篡改 `usdb_index_protocol_version`
-- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `PROTOCOL_VERSION_MISMATCH`
+- 在 `test_selected_pass + candidate_passes` envelope 上篡改 `usdb_index_protocol_version`
+- `state ref / test_selected_pass / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `PROTOCOL_VERSION_MISMATCH`
 
 ### 6.16 Candidate-Set Semantics Version Mismatch
 
@@ -300,8 +304,8 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 
 覆盖：
 
-- 在 `winner + candidate_passes` payload 上篡改 `balance_history_semantics_version`
-- `state ref / winner / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
+- 在 `test_selected_pass + candidate_passes` envelope 上篡改 `balance_history_semantics_version`
+- `state ref / test_selected_pass / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `VERSION_MISMATCH`
 
 ### 6.17 API Version Mismatch
 
@@ -406,7 +410,7 @@ candidate set 必须来自 UIP-0006 canonical view，不得从前端 raw leaderb
 当前设计刻意不做这些事情：
 
 - 不模拟完整 ETHW block header / parent hash / tx list
-- 不把前端 raw leaderboard 当作 candidate set；candidate 必须来自 UIP-0006 canonical view
+- 不把前端 raw leaderboard 当作 candidate set；`candidate_passes` 必须来自 UIP-0006 canonical `candidate_set_view`
 - 不直接引入完整 USDB validator 实现
 
 先把“单个 miner pass + 外部状态引用”的 block-body 校验链做扎实，收益最高，也更容易稳定回归。

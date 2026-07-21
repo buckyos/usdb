@@ -251,7 +251,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `service == "usdb-indexer"` 且 `api_version == "1.0.0"`。
 - `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`。
 - `economic_state_view_version` 与请求使用的 `view_version` 一致。
-- `candidate_set_selection_rule` 与 validator 使用的候选排序规则一致。
+- `candidate_set_selection_rule` 与 UIP-0006 `candidate_set_view` ordering contract 一致；该字段不声明 ETHW block-selection policy。
 - `economic_page_max_limit > 0`；client 的首包 `limit` 不得超过该声明值。
 
 参考实现中的调用入口：
@@ -600,7 +600,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 查询某高度 pass 的能量排行榜（内部按 `u128 energy DESC` 排序，RPC 输出 canonical decimal string）。
 
-该接口保留为前端/浏览器的 raw energy 展示榜单，不是 validator candidate set 口径。validator 或审计工具需要使用 `get_candidate_set_view`。
+该接口保留为前端/浏览器的 raw energy 展示榜单，不是 UIP-0006 `candidate_set_view`。需要 active-standard 审计集合的调用方必须使用 `get_candidate_set_view`。
 
 参数：
 
@@ -711,7 +711,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 查询某高度的 UIP-0006 candidate set audit view。
 
-该接口只返回 `active standard pass`，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 稳定排序。`effective_energy` 来自 UIP-0004 运行时派生，不写回 raw energy ledger。
+`candidate_pass` 严格表示目标 `external_state` 下的 `Active` standard pass。该接口返回全部 `candidate_pass`，排除 collab 和所有 non-active pass，并按 `effective_energy DESC, pass_id ASC` 稳定排序。成员资格不要求 energy 大于零；`effective_energy` 来自 UIP-0004 运行时派生，不写回 raw energy ledger。
+
+排序第一项称为 `top_ranked_candidate`，不自动等于 UIP-0007 `selected_pass`，也不表示已经赢得 PoW 出块竞争。请求/响应字段名 `selection_rule` 只表示本 audit view 的 ordering contract。
 
 参数：
 
@@ -784,13 +786,13 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `view_version` 必填；字段缺失是无效参数，不保留旧请求兼容入口。不支持的值返回 `VIEW_VERSION_MISMATCH`。
 - 即使未传 `context`，服务也必须重建目标高度的完整历史 identity 并返回 `external_state`；缺失历史辅助数据返回 `HISTORY_NOT_AVAILABLE`。
 - 服务在派生 candidate 数据前后重建并比较完整 state ref；若期间发生同高度 reorg，返回对应 state mismatch，不返回混合历史状态。
-- `total` 是该高度 active standard candidate 总数。
+- `total` 是该 `external_state` 下 `candidate_pass` 总数，包括 `effective_energy = 0` 的 Active standard pass。
 - `limit` 必须在 `1..=500`；非法 limit、cursor 篡改、跨资源复用或任一绑定字段变化均返回 `INVALID_PAGINATION`。
 - cursor 绑定 `view_version`、完整 `external_state`、resource、`selection_rule`、`limit` 和最后一条确定性排序 key；调用方不得解析或构造 cursor。
 - 排序使用内部 `u128 effective_energy`，RPC 只输出 canonical decimal string。
-- `level` 和 `difficulty_factor_bps` 按 UIP-0005 从每个 candidate 的 `effective_energy` 运行时派生，不改变 candidate 排序口径。
-- active collab pass 即使拥有很高 `raw_energy`，也不会直接进入 candidate set。
-- 若 active standard candidate 缺少 raw energy 记录，服务 fail closed 并返回 `INTERNAL_INVARIANT_BROKEN`。
+- `level` 和 `difficulty_factor_bps` 按 UIP-0005 从每个 `candidate_pass` 的 `effective_energy` 运行时派生，不改变排序口径。
+- active collab pass 即使拥有很高 `raw_energy`，也不能成为 `candidate_pass`。
+- 若 `candidate_pass` 缺少 raw energy 记录，服务 fail closed 并返回 `INTERNAL_INVARIANT_BROKEN`。
 
 ### 19) `get_collab_breakdown`
 

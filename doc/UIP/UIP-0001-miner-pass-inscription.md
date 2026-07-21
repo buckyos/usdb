@@ -63,12 +63,16 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 | 术语 | 含义 |
 | --- | --- |
 | pass | USDB 矿工证，由 BTC 铭文表达。 |
-| standard pass | 标准矿工证，可独立参与挖矿候选集合。 |
-| collab pass | 协作矿工证，向指定 Leader 提供能量，不可独立参与挖矿。 |
-| Leader | 被协作矿工证引用的标准矿工证。 |
-| owner | 当前持有该铭文 UTXO 的 BTC 地址语义。 |
+| `pass_id` | pass inscription id 的 canonical 文本表示，也是跨 UIP、RPC 和 ETHW selector 使用的唯一 pass 标识。 |
+| `pass_kind` | 由 v1 互斥字段确定的 schema 类型，只能是 `standard` 或 `collab`。 |
+| standard pass | 包含 `usdb_main` 的 pass kind；具备成为 UIP-0006 `candidate_pass` 的类型资格，但仍须满足 UIP-0002 状态条件。 |
+| collab pass | 包含一种 Leader 绑定字段的 pass kind；向成功解析的 Leader 提供能量，永远不能成为独立 `candidate_pass`。 |
+| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 ETHW 出块资格。 |
+| `owner_script_hash` | 当前持有铭文 UTXO 的输出脚本所对应的 canonical owner identity，用于状态比较、余额和索引。 |
+| `owner_btc_addr` | 能从对应输出脚本确定时使用的网络相关 BTC 地址表示，只用于输入或展示，不替代 `owner_script_hash`。 |
+| owner | 未带字段名时表示 `owner_script_hash`；文档需要表达地址时必须显式写 `owner_btc_addr`。 |
 | `usdb_main` | 标准矿工证绑定的 EVM 地址，用于 USDB 链侧挖矿身份和收益接收。 |
-| `leader_pass_id` | 固定 Leader 矿工证的 BTC inscription id。 |
+| `leader_pass_id` | 固定 Leader 矿工证的 canonical `pass_id`。 |
 | `leader_btc_addr` | Leader BTC 地址；按历史高度解析为该地址当前 active standard pass。 |
 
 # 规范关键词
@@ -80,6 +84,22 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 UIP-0001 定义 USDB 矿工证铭文的第一个标准协议版本：v1。
 
 当前代码和早期文档中的开发期载荷不定义为正式协议版本。开发期字段和本地测试数据不进入 UIP-0001 的规范版本序列；在当前 dev 阶段，旧载荷和旧数据库应直接删除或重建，不设计兼容解析或迁移路径。
+
+# Canonical Pass ID
+
+所有 pass inscription id 必须使用同一种 canonical 文本表示：
+
+```text
+pass_id = lowercase_hex(inscription_txid) + "i" + decimal(inscription_index)
+```
+
+其中：
+
+- `inscription_txid` 必须是 64 个 lowercase hex 字符。
+- `inscription_index` 必须是 `uint32` 的十进制表示；除数值 `0` 本身外禁止前导零。
+- `leader_pass_id`、`prev[]`、RPC `pass_id`、`candidate_set_view` tie-break 和 ETHW `ProfileSelectorPayload` 的链外表示必须使用同一 canonical encoding。
+- pass identity 的相等比较必须比较解析后的 inscription id；规范实现必须拒绝非 canonical 文本，不能让大小写或前导零别名绕过 duplicate 检测。
+- 任何按 `pass_id` 的 lexical ordering 都表示按 canonical ASCII 字节逐字节升序。
 
 ## v1 schema
 
@@ -107,9 +127,9 @@ v1 schema 必须包含：
 | `op` | string | 是 | all | 固定为 `"mint"`。 |
 | `v` | integer | 是 | all | 当前为 `1`。 |
 | `usdb_main` | string | 条件必填 | standard | 标准矿工证的 EVM 地址。 |
-| `leader_pass_id` | string | 条件必填 | collab | 固定 Leader 矿工证 inscription id。 |
+| `leader_pass_id` | string | 条件必填 | collab | 固定 Leader 矿工证 canonical `pass_id`。 |
 | `leader_btc_addr` | string | 条件必填 | collab | Leader BTC 地址，必须属于当前 BTC 网络。 |
-| `prev` | string[] | 否 | all | 被继承矿工证 inscription id 列表；缺省等价于空数组。 |
+| `prev` | string[] | 否 | all | 被继承矿工证 canonical `pass_id` 列表；缺省等价于空数组。 |
 
 ## 字段互斥规则
 
@@ -121,18 +141,18 @@ v1 schema 必须包含：
 - `leader_pass_id` 禁止存在。
 - `leader_btc_addr` 禁止存在。
 - `usdb_collab` 禁止存在。
-- 该 pass 可以独立进入后续 validator candidate set。
+- 该 pass 具备成为 UIP-0006 `candidate_pass` 的 `pass_kind` 资格；只有在目标 `external_state` 下处于 UIP-0002 `Active` 状态时才实际进入 `candidate_set_view`。
 
 ### collab pass
 
 当铭文包含 `leader_pass_id` 或 `leader_btc_addr`，且不包含 `usdb_main` 时，该铭文是 collab pass：
 
 - `leader_pass_id` 与 `leader_btc_addr` 必须二选一，禁止同时存在。
-- `leader_pass_id` 存在时，必须是合法 inscription id。
+- `leader_pass_id` 存在时，必须是合法且 canonical 的 `pass_id`。
 - `leader_btc_addr` 存在时，必须是当前 BTC 网络上的合法地址。
 - `usdb_main` 禁止存在。
 - `usdb_collab` 禁止存在。
-- 该 pass 禁止独立进入 validator candidate set。
+- 该 pass 永远禁止成为独立 `candidate_pass`，即使自身状态为 `Active` 且拥有非零 `raw_energy`。
 - 该 pass 的有效能量只能归入其 Leader 的 `effective_energy` 计算。
 
 协作矿工证仍然是 BTC owner 持有的 pass 资产，但在绑定有效期间，其挖矿身份与收益接收口径必须使用 Leader 的 `usdb_main`。
@@ -231,8 +251,8 @@ v1 中 `prev` 是可选字段。
 
 - 缺失 `prev` 等价于 `prev: []`。
 - `prev` 存在时必须是数组。
-- 数组元素必须是合法 inscription id 字符串。
-- 同一个 `prev` 数组中禁止出现重复 inscription id。
+- 数组元素必须是合法且 canonical 的 `pass_id` 字符串。
+- 同一个 `prev` 数组中禁止出现重复 pass identity；非 canonical 别名必须直接判 invalid，不能参与去重。
 
 `prev` 指向对象是否存在、是否可继承、是否已被消费，由 UIP-0002 和 UIP-0003 定义。
 
@@ -316,7 +336,7 @@ collab_pass -> leader_pass_id | leader_btc_addr -> leader.usdb_main
 - Leader 不再通过 `usdb_collab` 主动指定协作者。
 - 协作关系的链上授权来自 collab pass owner。
 - collab pass 不再携带自己的 `usdb_main`。
-- collab pass 不得作为独立挖矿身份参与 candidate set。
+- collab pass 不得成为独立 `candidate_pass`。
 - collab pass 的 raw energy 可以被索引用于审计，但参与挖矿时必须只计入 Leader 的 `effective_energy`。
 - `leader_pass_id` 模式绑定具体 pass，`leader_btc_addr` 模式绑定地址在历史高度上的 active standard pass。
 
@@ -377,6 +397,7 @@ effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-
 - v1 missing `prev` 等价于空数组。
 - v1 invalid `usdb_main`。
 - v1 invalid `leader_pass_id`。
+- v1 non-canonical `leader_pass_id` invalid。
 - v1 invalid `leader_btc_addr` for active BTC network。
 - v1 同时包含 `usdb_main` 和任一 leader 绑定字段 invalid。
 - v1 同时包含 `leader_pass_id` 和 `leader_btc_addr` invalid。
@@ -384,6 +405,7 @@ effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-
 - v1 包含 `usdb_collab` invalid。
 - v1 unknown field invalid。
 - v1 duplicate key invalid。
+- v1 non-canonical `prev` pass id invalid。
 - pre-standard development payload 不作为正式协议版本参与标准解析。
 
 参考实现的 parser、source comparison、indexer behavior 和 control-plane mint 测试已覆盖上述 core 规则；集中 live/regtest 阶段继续复核真实 ord body 和不同 content-type 来源的一致性。
@@ -396,7 +418,7 @@ effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-
 
 ## 防双计数
 
-collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
+collab pass 不能同时作为 `candidate_pass` 和 Leader 加成来源。
 
 ## 引用模式
 
@@ -411,7 +433,7 @@ collab pass 不能同时作为独立 candidate 和 Leader 加成来源。
 # 后续 UIP 依赖
 
 - `leader_pass_id` 的 mint-time Leader 有效性、同 block ordering 口径，以及 `leader_btc_addr` 的动态解析规则由 UIP-0002 定义。
-- collab pass 的 candidate 过滤、`effective_energy` 归属、防双计数和转换后的 derived energy 影响由 UIP-0004 定义。
+- collab pass 的 `effective_energy` 归属、防双计数和转换后的 derived energy 影响由 UIP-0004 定义；`candidate_pass` 和 `candidate_set_view` 由 UIP-0006 定义。
 - collab pass 转 standard pass 的继承折损使用 UIP-0003 的通用 `prev` 继承规则，不在 UIP-0001 分配额外退出折损率。
 - 主网的稳定 `network_id` 是否最终采用 `主网-mainnet`。
 

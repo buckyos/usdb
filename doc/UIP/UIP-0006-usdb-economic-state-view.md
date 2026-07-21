@@ -42,7 +42,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 # 当前实现状态
 
-参考实现已经完成 v1 历史 context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑，以及 candidate/breakdown 的 opaque `cursor + limit` 稳定分页。
+参考实现已经完成 v1 historical context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑，以及 `candidate_set_view` / `collab_breakdown` 的 opaque `cursor + limit` 稳定分页。
 
 `get_pass_economic_profile` 当前已满足：
 
@@ -54,11 +54,11 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 - BTC head 前进后按旧 `external_state` 重放同一 profile。
 - 派生前后重建并复验完整 historical state ref，同高度 reorg 期间不返回混合状态响应。
 
-candidate/breakdown 当前已直接使用本文固定的 `cursor + limit`，不保留旧 `page/page_size` 双栈。参考实现的 `max_limit` 为 500，cursor 绑定完整 external state、resource/query 条件、limit 和 continuation key。
+`candidate_set_view` / `collab_breakdown` 当前已直接使用本文固定的 `cursor + limit`，不保留旧 `page/page_size` 双栈。参考实现的 `max_limit` 为 500，cursor 绑定完整 external state、resource/query 条件、limit 和 continuation key。
 
-参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref/profile/candidate/breakdown。`get_rpc_info` 现在显式声明 view version、candidate selection rule、max limit 和四个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
+参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref、profile、`candidate_set_view` 和 `collab_breakdown`。`get_rpc_info` 现在显式声明 view version、`candidate_set_view` ordering rule、max limit 和四个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
 
-happy path、same-height reorg、three-pass candidate 和 three-collab breakdown 已通过真实 ord targeted smoke。集中回归入口现已切换到 canonical profile/candidate view，并补入 formula-version mismatch 与 three-collab 场景；完整 live/regtest 矩阵和大数据量查询/索引性能评估仍需在下一阶段执行。
+happy path、same-height reorg、three-pass `candidate_set_view` 和 three-collab `collab_breakdown` 已通过真实 ord targeted smoke。deterministic live/regtest 与 `100 / 1K / 10K` 规模矩阵也已完成；后续容量工作集中在并发、冷缓存、100K 以上规模和长时 soak。
 
 # 能力发现
 
@@ -79,6 +79,8 @@ features contains:
 
 `query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。consumer 需要同时满足自身所需的 readiness 与协议能力条件。
 
+能力字段 `candidate_set_selection_rule` 沿用 v1 RPC 名称，但其规范语义只是 `candidate_set_view` 的 ordering contract，不是 ETHW block-selection policy。
+
 # 非目标
 
 本文不定义：
@@ -94,11 +96,19 @@ features contains:
 
 | 术语 | 含义 |
 | --- | --- |
-| `external_state` | 绑定一次历史查询的 BTC / USDB 状态选择器。 |
+| `query_context` | 调用方请求中的历史查询约束，由 `requested_height` 和可选 `expected_state` 组成；RPC 字段名为 `context`。 |
+| `expected_state` | 调用方对目标高度历史 identity 的预期字段集合；服务必须逐字段验证，不能用 current head 或当前二进制常量替代。 |
+| `external_state` | 服务完成历史解析和校验后返回的完整、不可变 BTC / USDB state identity；它是查询结果锚点，不是调用方可自由构造的轻量 selector。 |
+| historical context | `query_context`、解析出的目标高度及其 `external_state` 的统称；规范字段必须使用前述精确名称，不能只写裸 `context`。 |
 | `economic_state_view` | `usdb-indexer` 在一个 `external_state` 下返回的经济状态视图。 |
 | `pass_economic_profile` | 某张 pass 在指定历史 context 下的 pass snapshot + energy profile。 |
-| `candidate_set_view` | 多张 candidate pass 的排序/审计查询结果；不等同于 USDB 链上 payload。 |
+| `candidate_pass` | 在同一 `external_state` 下状态为 `Active` 且 `pass_kind = standard` 的 pass；成员资格与 energy 是否为零无关。 |
+| `candidate_set_view` | 同一 `external_state` 下全部 `candidate_pass` 的确定性分页审计排序；不等同于 ETHW 链上 payload 或最终出块选择。 |
+| `top_ranked_candidate` | 按 `candidate_set_view.selection_rule` 排序后的第一项；只表示审计排序首项。 |
+| `collab_breakdown` | 同一 `external_state` 下，向一个 `resolved_leader` 贡献能量的 active collab pass 明细和完整 aggregate。 |
+| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为一个具体 ETHW 区块声明使用的 pass；不要求等于 `top_ranked_candidate`。 |
 | `resolved_profile` | 下游 validator 根据链上 payload 反查本文 state view 后得到的重算结果。 |
+| raw energy leaderboard | 面向前端/浏览器的 raw-energy 展示榜单；不是 `candidate_set_view`，也不得作为 ETHW 选择规则。 |
 
 # 规范关键词
 
@@ -117,7 +127,7 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 - JSON 字段集合。
 - 字段 canonical encoding。
 - 历史查询语义。
-- candidate set 排序规则。
+- `candidate_set_view` 排序规则。
 - mismatch / history unavailable 错误语义。
 
 影响公式参数但不改变 view 结构时，应升级 `formula_version`，不一定升级 `view_version`。
@@ -134,7 +144,7 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 
 # External State
 
-`external_state` 必须足够构造 `ConsensusQueryContext` 并重放 BTC 历史查询。
+`external_state` 必须包含足够信息，使实现可以构造等价的 `query_context` 并重放 BTC 历史查询。`ConsensusQueryContext` 和 `HistoricalStateRefInfo` 是参考实现类型名，不是额外的协议概念。
 
 v1 固定字段：
 
@@ -150,7 +160,7 @@ v1 固定字段：
 | `usdb_index_protocol_version` | string | 是 | usdb-indexer 外部协议版本。 |
 | `usdb_index_formula_version` | string | 是 | energy / effective energy / level 公式版本。 |
 
-`external_state` 必须由目标高度的历史 `HistoricalStateRefInfo` 构造，禁止拿当前二进制常量覆盖历史 identity 中的 protocol/formula version。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
+`external_state` 必须由目标高度的 durable historical state reference 构造，禁止拿当前二进制常量覆盖历史 identity 中的 protocol/formula version。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
 
 # Pass Economic Profile
 
@@ -178,7 +188,7 @@ v1 固定字段：
 }
 ```
 
-`block_height` 与 `context.requested_height` 同时存在时必须相等。`context` 可以省略；服务仍必须把最终解析高度的完整历史 identity 返回为 `external_state`。一旦提供 `expected_state`，服务必须逐字段按目标高度的历史 identity 校验，禁止与当前二进制常量或 current head 比较。
+RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `context.requested_height` 同时存在时必须相等。`context` 可以省略；服务仍必须把最终解析高度的完整历史 identity 返回为 `external_state`。一旦提供 `expected_state`，服务必须逐字段按目标高度的历史 identity 校验，禁止与当前二进制常量或 current head 比较。
 
 单张 pass 的经济状态视图 v1 结构：
 
@@ -216,17 +226,17 @@ v1 固定字段：
 
 | 字段 | 类型 | 来源 | 说明 |
 | --- | --- | --- | --- |
-| `pass_id` | string | UIP-0001 / UIP-0002 | inscription id。 |
-| `owner_script_hash` | string | pass snapshot | 当前历史 context 下的 canonical owner id，用于比较和索引。 |
-| `owner_btc_addr` | string | pass snapshot | 当前历史 context 下可展示的 BTC address；当实现能确定 address 时应该返回。 |
+| `pass_id` | string | UIP-0001 | canonical pass inscription id。 |
+| `owner_script_hash` | string | UIP-0001 / pass snapshot | 当前 historical context 下的 canonical owner identity，用于比较和索引。 |
+| `owner_btc_addr` | string | UIP-0001 / pass snapshot | 当前 historical context 下可展示的 BTC address；当实现能确定 address 时应该返回。 |
 | `state` | string | UIP-0002 | `active` / `dormant` / `consumed` / `burned` / `invalid`。 |
 | `pass_kind` | string | UIP-0001 | `standard` / `collab`。 |
 | `raw_energy` | decimal string | UIP-0003 | pass 自身 raw energy。 |
 | `collab_contribution` | decimal string | UIP-0004 | 作为 Leader 获得的协作贡献。 |
-| `effective_energy` | decimal string | UIP-0004 | `raw_energy + collab_contribution`，仅 standard active pass 可用于 candidate。 |
-| `level` | integer | UIP-0005 | 从 `effective_energy` 动态派生。 |
-| `difficulty_factor_bps` | integer | UIP-0005 | 从 `level` 动态派生。 |
-| `collab_breakdown_count` | integer | UIP-0004 | 当前 context 下贡献给该 Leader 的 collab pass 数量。 |
+| `effective_energy` | decimal string | UIP-0004 | BTC-side nominal 派生值；Active standard pass 返回饱和的 `raw_energy + collab_contribution`，collab 或 non-active pass 返回 `0`。 |
+| `level` | integer | UIP-0005 | 从 `effective_energy` 动态派生的 nominal level。 |
+| `difficulty_factor_bps` | integer | UIP-0005 | 从 nominal `level` 动态派生的 nominal factor。 |
+| `collab_breakdown_count` | integer | UIP-0004 | 当前 `external_state` 下贡献给该 `resolved_leader` 的 collab pass 数量。 |
 
 ## Owner 表示
 
@@ -234,13 +244,13 @@ owner 的 canonical 表示必须是 script hash 或等价确定性 owner id。�
 
 - 单 owner 单 active pass 校验。
 - history query 比对。
-- candidate set 聚合和索引。
+- `candidate_set_view` 聚合和索引。
 
 当实现能够从 pass satpoint 或历史输出脚本明确得到 BTC address 时，profile 应该同时返回 `owner_btc_addr`。address 可以推导出 script hash，但 script hash 反查 address 需要额外上下文，因此浏览器和审计视图保留 address display 字段是合理的。
 
 如果存在无法唯一编码为标准 BTC address 的 script，`owner_btc_addr` 可以为空，但 `owner_script_hash` 必须存在。
 
-从 `owner_script_hash` 反查 `owner_btc_addr` 不属于 UIP-0006 的核心要求。若后续需要一等反向查询能力，应通过独立索引器或后续 UIP 定义 script hash -> address 映射、快照语义和历史保留规则。缺少该反向索引不得阻塞 core profile、candidate set 或 ETHW reward replay。
+从 `owner_script_hash` 反查 `owner_btc_addr` 不属于 UIP-0006 的核心要求。若后续需要一等反向查询能力，应通过独立索引器或后续 UIP 定义 script hash -> address 映射、快照语义和历史保留规则。缺少该反向索引不得阻塞 core profile、`candidate_set_view` 或 ETHW reward replay。
 
 ## Energy 字段编码
 
@@ -270,12 +280,12 @@ standard pass:
 - 可以拥有 `raw_energy`。
 - 可以作为 Leader 接收 `collab_contribution`。
 - `effective_energy = raw_energy + collab_contribution`。
-- 如果处于 `active`，可以成为下游链 candidate。
+- 如果处于 `active`，就是本文定义的 `candidate_pass`；即使 `effective_energy = 0` 也仍在集合中。
 
 collab pass:
 
 - 可以拥有自身 `raw_energy`。
-- 不得直接作为下游链 independent candidate。
+- 永远不能成为独立 `candidate_pass`。
 - 对自身查询时 `collab_contribution = 0`。
 - 对自身查询时 `effective_energy = 0`，除非后续 UIP 明确引入新的用途。
 - 其贡献必须通过 Leader 的 collab breakdown 查询进入 Leader 的 `collab_contribution`。
@@ -328,7 +338,23 @@ breakdown v1 页响应必须包含 `view_version`、完整 `external_state`、`l
 
 # Candidate Set View
 
-USDB-side 应提供 candidate set audit view，用于浏览器 overview、排行榜、测试和下游链调试。
+USDB-side 应提供 `candidate_set_view`，用于浏览器 overview、审计排序、测试和下游链调试。
+
+在一个固定 `external_state = S` 下，成员资格定义为：
+
+```text
+candidate_pass(pass, S)
+    = pass.state(S.btc_height) == Active
+      and pass.pass_kind == standard
+```
+
+因此：
+
+- 所有且仅有 `Active` standard pass 进入 `candidate_set_view`。
+- collab、Dormant、Consumed、Burned 和 Invalid pass 必须排除。
+- 成员资格不要求 `raw_energy`、`collab_contribution`、`effective_energy` 或 `level` 大于零。
+- UIP-0014 quote activity、`leader_eligible` 和 `candidate_energy` 不改变本文集合成员资格；它们属于 ETHW-side policy。
+- 同一页及所有 continuation page 的每一项必须来自同一个 `external_state`。
 
 v1 排序规则固定为：
 
@@ -339,11 +365,13 @@ selection_rule = "uip-0006:effective-energy-desc-pass-id-asc:v1"
 含义：
 
 ```text
-winner = max(candidate_set.items, by effective_energy)
+top_ranked_candidate = first(candidate_set.items)
 tie_break = smallest pass_id lexical order
 ```
 
-该规则只定义 USDB-side audit view 的确定性排序。USDB 链上 payload 是否携带 candidate set、是否只携带 selected `pass_id`、是否使用 PoW threshold 验证，由 ETHW-side UIP 定义。
+其中 `pass_id` 必须使用 UIP-0001 canonical encoding，lexical order 表示 ASCII 字节逐字节升序。
+
+字段名 `selection_rule` 只表示本 view 的 ordering contract。该规则不产生共识 `winner`，也不声明 `top_ranked_candidate` 已赢得 PoW 竞争。某个 ETHW 区块的 `selected_pass` 由 UIP-0007 `ProfileSelectorPayload` 显式声明；其 quote activity、`candidate_energy` 和 PoW threshold 验证由 ETHW-side UIP 定义。
 
 Candidate set view 是一等查询，不要求下游先逐个读取所有 pass profile 后自行排序。实现可以按分页返回：
 
@@ -374,7 +402,7 @@ cursor 必须完整绑定：
 
 - `view_version`。
 - 完整 `external_state`，包括 protocol/formula/query semantics versions。
-- 资源 identity：candidate set 或指定 `leader_pass_id` 的 breakdown。
+- 资源 identity：`candidate_set_view` 或指定 `leader_pass_id` 的 `collab_breakdown`。
 - `selection_rule` 或 `sort`、全部 filter、`limit`。
 - 最后一条已返回记录的确定性排序 key。
 
@@ -418,14 +446,14 @@ cursor 必须完整绑定：
 | `SNAPSHOT_NOT_READY` | 服务当前没有可用于共识查询的完整状态锚点。 |
 | `HISTORY_NOT_AVAILABLE` | 所需历史 context 已不可用。 |
 | `STATE_NOT_RETAINED` | 本地 durable state 不再保留目标高度。 |
-| `PASS_NOT_FOUND` | 目标 pass 在该 context 下不存在。 |
+| `PASS_NOT_FOUND` | 目标 pass 在该 `query_context` 解析出的 `external_state` 下不存在。 |
 | `INVALID_PAGINATION` | `limit` 非法、cursor 无法验证或 cursor 与请求绑定字段不一致。 |
 | `INTERNAL_INVARIANT_BROKEN` | 服务内部从同一历史状态重算出的字段彼此矛盾。 |
 | `ECONOMIC_FIELD_MISMATCH` | 下游 verifier 将外部输入/承诺字段与本文 view 重算结果比较时不一致。 |
 
 查询 RPC 的 mismatch 错误必须带 structured data，至少包含 expected state、actual state、requested height 和 canonical `mismatch_field`。protocol/formula 必须和目标高度的历史 identity 比较；禁止和当前进程常量比较。
 
-`ECONOMIC_FIELD_MISMATCH` 不是 `get_pass_economic_profile`、`get_candidate_set_view` 或 `get_collab_breakdown` 的请求错误：这些查询没有 caller-supplied expected economic fields。它属于 ETHW validator、审计工具或其他下游 verifier 的本地校验结果，例如外部 payload 声明的 `effective_energy` 与 profile 重算值不同。若服务自己在一次查询内得到矛盾结果，应返回 `INTERNAL_INVARIANT_BROKEN`，不得冒充 caller mismatch。
+`ECONOMIC_FIELD_MISMATCH` 不是 `get_pass_economic_profile`、`get_candidate_set_view` 或 `get_collab_breakdown` 的请求错误：这些查询没有 caller-supplied expected economic fields。它属于 ETHW validator、审计工具或其他下游 verifier 的本地校验结果，例如链外 validator test envelope 声明的 `effective_energy` 与 profile 重算值不同。若服务自己在一次查询内得到矛盾结果，应返回 `INTERNAL_INVARIANT_BROKEN`，不得冒充 caller mismatch。
 
 # 与 ETHW 链上 Payload 的关系
 
@@ -438,7 +466,7 @@ ETHW ProfileSelectorPayload
     -> btc_height
     -> snapshot_id
     -> system_state_id
-    -> pass_id
+    -> selected_pass = pass_id
         |
         v
 USDB Economic State View
@@ -451,7 +479,7 @@ USDB Economic State View
     -> collab_breakdown_count / collab_breakdown query
 ```
 
-因此，本文字段集合是 USDB 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。
+因此，本文字段集合是 USDB 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。`selected_pass` 只需是目标 `external_state` 下的 `candidate_pass`；UIP-0007 不要求它等于本文的 `top_ranked_candidate`。
 
 # 测试要求
 
@@ -463,13 +491,15 @@ USDB Economic State View
 - 查询派生期间 same-height state ref 变化时，post-check 返回 state mismatch。
 - `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 可在同一 context 下重算一致。
 - collab Leader profile 可通过 breakdown 或审计查询重算 aggregate contribution。
-- collab pass 不直接进入 candidate set view。
+- 所有 Active standard pass 都进入 `candidate_set_view`，包括 `effective_energy = 0` 的 pass。
+- collab 和所有 non-Active pass 不进入 `candidate_set_view`。
+- `top_ranked_candidate` 按 `effective_energy DESC, canonical pass_id ASC` 得出，但不代表 ETHW block-selection 或 PoW 验证结果。
 - `view_version` / `protocol_version` / `formula_version` mismatch。
 - history retention 不足时返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
-参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile/candidate/breakdown、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放和 restart 重放；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim、并发/冷缓存与长时 soak 仍属于后续容量评估。
+参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放和 restart 重放；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim、并发/冷缓存与长时 soak 仍属于后续容量评估。
 
 # 后续实现议题
 

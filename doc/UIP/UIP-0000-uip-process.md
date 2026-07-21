@@ -18,7 +18,7 @@ UIP 是 USDB 正式协议规范的承载格式。后续会用 UIP 拆分并标�
 
 - BTC 侧矿工证铭文协议。
 - pass 状态机与 energy 公式。
-- validator payload 与历史状态验证。
+- USDB economic state view、ETHW 链上 selector payload 与历史状态验证。
 - collab / leader / effective energy / difficulty。
 - CoinBase、price / real_price、辅助算力池等经济模型组件。
 
@@ -167,6 +167,18 @@ Activation: <None | See Activation Matrix | TODO>
 
 Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段和状态。
 
+### 9.1 跨 UIP 术语引用
+
+跨 UIP 使用的协议术语必须有唯一的规范所有者：
+
+- 首次定义该概念的 UIP 必须在“术语”或规范章节中给出完整含义、作用层和必要的 canonical encoding。
+- 后续 UIP 必须引用定义 UIP，不得用同名术语表达不同概念。
+- 如果后续规则在原概念上增加新的过滤、状态或计算层，必须使用新的限定名称。例如 `effective_energy` 与 `candidate_energy`、`candidate_pass` 与 `selected_pass` 必须保持区分。
+- 规范性正文不得在未定义或未引用来源的情况下直接使用 `candidate`、`winner`、`Leader`、`owner`、`validator payload` 或无前缀的 `energy` 等跨层歧义词。
+- `doc/UIP/README.md` 的跨 UIP 术语索引只负责导航；若索引与正式 UIP 不一致，以已激活且优先级更高的正式 UIP 为准。
+
+对一个既有术语进行不兼容的语义修改时，必须升级负责该术语的协议版本或由后续 UIP 显式 supersede，不能只修改下游文档中的描述。
+
 ## 10. 协议优先级
 
 当文档、实现和讨论稿不一致时，解释优先级如下：
@@ -277,10 +289,10 @@ UIP 必须声明自己影响哪些版本字段。
 
 | 字段 | 用途 |
 | --- | --- |
-| `protocol_version` | 矿工证协议、状态机、validator payload 等外部协议版本。 |
+| `protocol_version` | 矿工证协议、状态机、USDB economic state view 等外部协议版本。 |
 | `formula_version` | energy、effective energy、level、difficulty、CoinBase、price 等公式版本。 |
 | `query_semantics_version` | RPC 历史查询、projection、exact / at_or_before 语义版本。 |
-| `payload_version` | validator payload 结构版本。 |
+| `payload_version` | UIP-0007 `ProfileSelectorPayload` 等明确命名的链上 payload 结构版本；不同 payload 类型不得共用未限定的版本语义。 |
 | `commit_protocol_version` | local commit / block commit 序列化与哈希规则。 |
 
 版本规则：
@@ -288,7 +300,7 @@ UIP 必须声明自己影响哪些版本字段。
 - 影响共识结果的公式变更必须升级 `formula_version`。
 - 影响铭文 schema 或状态机解释的变更必须升级 `protocol_version`。
 - 影响 RPC 查询结果解释但不改变底层状态的变更必须升级 `query_semantics_version`。
-- 影响 validator payload 字段或重放规则的变更必须升级 `payload_version`。
+- 影响某个链上 payload 字段或重放规则的变更必须升级该 payload 类型对应的 `payload_version`。
 - 影响 commit 哈希输入或序列化规则的变更必须升级 `commit_protocol_version`。
 
 ## 15. 历史重放规则
@@ -324,7 +336,7 @@ Standards Track UIP 如果包含实现要求，必须列出：
 - 必须新增或更新的测试。
 - 是否需要迁移已有数据。
 - 是否需要更新 RPC 文档。
-- 是否需要更新 validator payload 或 regtest/world-sim 脚本。
+- 是否需要更新 UIP-0007 `ProfileSelectorPayload`、链外 validator test envelope 或 regtest/world-sim 脚本。
 
 参考实现合并后，不代表 UIP 自动进入 `Final`，也不代表 UIP 自动在任何网络激活。
 
@@ -338,7 +350,7 @@ Standards Track UIP 必须定义测试要求。
 - 状态机单元测试。
 - storage / RPC 历史查询测试。
 - regtest 场景测试。
-- validator payload tamper / mismatch 测试。
+- 链上 `ProfileSelectorPayload` 或链外 validator test envelope tamper / mismatch 测试。
 - reorg / rollback 测试。
 - network-specific activation 测试。
 

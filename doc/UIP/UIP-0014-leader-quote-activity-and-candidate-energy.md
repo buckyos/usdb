@@ -17,8 +17,8 @@ Activation: ETHW network activation matrix; first official networks enable v1 qu
 - ETHW 侧单独维护 Leader quote activity state。
 - Leader 超过一周没有有效主动报价时，仍可作为普通 standard pass 出块，但不得使用协作者能量。
 - v1 使用 `FixedPrice` 时，主动报价是 activity heartbeat，不改变 UIP-0013 的 fixed price。
-- candidate energy 和 candidate level 必须使用 parent ETHW state 中已经生效的 quote activity。
-- block `N` 内的有效 quote 最早影响 block `N+1` 的 candidate energy。
+- `candidate_energy` 和 `candidate_level` 必须使用 parent ETHW state 中已经生效的 quote activity。
+- block `N` 内的有效 quote 最早影响 block `N+1` 的 `candidate_energy`。
 
 # 动机
 
@@ -65,12 +65,14 @@ candidate_energy
 | `block_quote_reference` | 出块时引用某个已存在、可验证、未过期报价来源状态的 payload。 |
 | `leader_quote_active` | Leader 在最近窗口内存在有效 quote 的状态。 |
 | `last_valid_quote_block` | ETHW state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
+| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为当前 ETHW 区块声明的 UIP-0006 `candidate_pass`。 |
 | `self_energy` | standard pass 自身的 `raw_energy`。 |
-| `nominal_effective_energy` | UIP-0004 的 `raw_energy + collab_contribution`。 |
-| `candidate_energy` | USDB 链出块候选、level 和 difficulty 实际使用的能量。 |
+| `nominal_effective_energy` | UIP-0004 `effective_energy` 在 ETHW policy 中的明确别名，即 `raw_energy + collab_contribution`。 |
+| `candidate_energy` | 对当前 `selected_pass` 应用 quote activity 后，ETHW difficulty policy 实际使用的能量；不改变 UIP-0006 `candidate_set_view` 成员资格。 |
 | `self_level` | `level(self_energy)`。 |
 | `nominal_leader_level` | `level(nominal_effective_energy)`。 |
 | `candidate_level` | `level(candidate_energy)`。 |
+| `candidate_difficulty_factor_bps` | 按 UIP-0005 从 `candidate_level` 派生、供当前 ETHW 区块 difficulty 校验使用的 factor。 |
 | `quote_policy_version` | 本文定义的 quote activity 规则版本。 |
 
 # 规范关键词
@@ -204,7 +206,7 @@ nominal_effective_energy(leader, h)
 candidate_energy(collab, h) = 0
 ```
 
-collab pass 不直接进入 USDB validator candidate set。
+collab pass 不能成为 UIP-0006 `candidate_pass`，也不能成为 UIP-0007 `selected_pass`。本文只决定一个已选 standard pass 实际使用多少协作能量，不重新定义 `candidate_set_view` 成员资格或排序。
 
 # Quote Active 规则
 
@@ -229,7 +231,7 @@ leader_quote_active_N
 
 所有计算必须使用 unsigned integer，并在 underflow / overflow 时 fail closed。
 
-quote active 状态不修改 USDB indexer 里的 `effective_energy`。它只决定 ETHW 侧 candidate energy 如何从 USDB indexer 返回的能量视图中选取。
+quote active 状态不修改 USDB indexer 里的 `effective_energy`。它只决定 ETHW 侧 `candidate_energy` 如何从 USDB indexer 返回的能量视图中选取。
 
 # Candidate Energy
 
@@ -275,7 +277,7 @@ candidate_difficulty_factor_bps
 
 而不是无条件使用 `nominal_leader_level`。
 
-USDB indexer 可以继续返回 `raw_energy`、`collab_contribution`、`effective_energy` 和按 `effective_energy` 派生的 `level` 作为审计视图。USDB validator 必须按本文规则自行计算 `candidate_energy` 和 `candidate_level`。
+USDB indexer 可以继续返回 `raw_energy`、`collab_contribution`、`effective_energy` 和按 `effective_energy` 派生的 nominal `level` 作为审计视图。USDB validator 必须按本文规则自行计算 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。
 
 # FixedPrice V1 Quote
 
@@ -406,7 +408,7 @@ candidate_level = UIP-0005.level(candidate_energy)
 candidate_difficulty_factor_bps
     = UIP-0005.difficulty_factor_bps(candidate_level)
 
-validate block difficulty / reward policy using candidate values
+validate block difficulty / reward policy using candidate_energy and candidate_level
 
 if block contains valid leader_quote:
     write last_valid_quote_block(leader) = N into child state
@@ -430,7 +432,7 @@ if block contains valid leader_quote:
 ETHW reorg 时：
 
 - `last_valid_quote_block` 必须随 ETHW state 回滚。
-- candidate energy 和 candidate level 必须按回滚后的 parent state 重算。
+- `candidate_energy` 和 `candidate_level` 必须按回滚后的 parent state 重算。
 - quote payload 本身随区块历史重放。
 
 # 与 UIP-0004 的关系
@@ -482,9 +484,9 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 
 至少需要覆盖：
 
-- 无 `last_valid_quote_block` 时，candidate energy 只使用 `raw_energy`。
-- quote active 时，candidate energy 使用 `raw_energy + collab_contribution`。
-- quote stale 后，candidate energy 回落到 `raw_energy`。
+- 无 `last_valid_quote_block` 时，`candidate_energy` 只使用 `raw_energy`。
+- quote active 时，`candidate_energy` 使用 `raw_energy + collab_contribution`。
+- quote stale 后，`candidate_energy` 回落到 `raw_energy`。
 - `LEADER_QUOTE_WINDOW_BLOCKS = 50400` 边界高度。
 - block `N` 的有效 quote 只影响 block `N+1`。
 - FixedPrice v1 中 quoted price 必须等于 parent `PRICE_ATOMS_PER_BTC_SLOT`。
@@ -493,7 +495,7 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 - quote payload 存在但无效时区块无效。
 - 仅完成 future `quote_source_update` 不刷新 `last_valid_quote_block`；必须被成功出块引用后才刷新。
 - pass remint 后，新 pass 不继承旧 pass 的 quote activity。
-- reorg 后 `last_valid_quote_block` 回滚，candidate level 重算。
+- reorg 后 `last_valid_quote_block` 回滚，`candidate_level` 重算。
 
 # 待审计问题
 

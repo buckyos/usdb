@@ -552,3 +552,29 @@
 
 - 仍需 cold cache/物理 I/O、并发与 cache eviction、collab 多 Leader 分布、100K 以上容量点和长时 soak。
 - 这些属于容量与运维评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐。
+
+## 跨 UIP 术语收口
+
+状态：已完成文档和 parser 对齐，改动尚未提交，等待 review。
+
+### 规范组织
+
+- `doc/UIP/README.md` 增加非规范性的跨 UIP 术语索引，只负责把术语指向唯一的定义 UIP。
+- UIP-0000 增加术语所有权规则：下游 UIP 必须引用定义 UIP；增加过滤、状态或计算层时必须使用新的限定名称，禁止用同名词覆盖原语义。
+- `uip-split-design.md` 明确为非规范路线图，所有规划性简写均服从 README 索引和正式 UIP。
+
+### 关键边界
+
+- UIP-0001 固定 `pass_id` canonical encoding、`pass_kind`、`owner_script_hash` / `owner_btc_addr`；所有 lexical ordering 均按 canonical ASCII 文本。
+- UIP-0004 区分 `leader_ref`、`resolved_leader` 和 ETHW-side `leader_eligible`，并把 `effective_energy` 固定为 BTC-side nominal 派生值。
+- UIP-0006 将 `candidate_pass` 定义为同一 `external_state` 下的 Active standard pass，成员资格与 energy 是否为零无关；`candidate_set_view` 只提供确定性审计排序。
+- 排序第一项统一称为 `top_ranked_candidate`；UIP-0007 区块头显式携带的是 `selected_pass`，两者不要求相同，也都不能简写成 PoW `winner`。
+- UIP-0014 的 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps` 是 ETHW policy 对 `selected_pass` 的实际输入，不回写 UIP-0004 nominal 字段，也不改变 UIP-0006 集合成员资格。
+- UIP-0007 `ProfileSelectorPayload` 是链上最小二进制 selector；validator block-body JSON 明确称为链外 `validator test envelope`，不再把完整审计字段误称为链上 payload。
+
+### 实现与测试
+
+- mint parser 对 `leader_pass_id` 和 `prev[]` 执行 canonical inscription id 校验，拒绝 uppercase txid、index 前导零等文本别名；开发期不保留兼容解析。
+- duplicate `prev` 在解析后的 pass identity 上判断，storage/RPC 继续只接收和输出 canonical `pass_id`。
+- 增加 non-canonical `leader_pass_id` 与 `prev` invalid 单元测试。
+- RPC 注释和 v1 文档明确 `selection_rule` 只是 `candidate_set_view` ordering contract；raw energy leaderboard 不是 candidate view。

@@ -56,7 +56,7 @@ UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式
 - `prev` 继承折损率和 rounding。
 - collab energy 权重。
 - level、difficulty、reward split。
-- validator payload 的完整字段集合。
+- UIP-0007 链上 `ProfileSelectorPayload` 或链外 validator test envelope 的字段集合。
 - 前端展示状态命名。
 - BTC block 内 transaction-level 的余额结算顺序；本文以 BTC block 为最小经济结算粒度。
 
@@ -65,10 +65,14 @@ UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式
 | 术语 | 含义 |
 | --- | --- |
 | pass | 符合 UIP-0001 v1 schema 的矿工证铭文。 |
-| standard pass | 包含 `usdb_main` 的 pass，可独立参与挖矿候选集合。 |
-| collab pass | 包含 `leader_pass_id` 或 `leader_btc_addr` 的 pass，不可独立参与挖矿候选集合。 |
-| owner | 当前持有 pass 所在 UTXO 的 BTC 地址语义，规范化后以 script hash 或等价确定性 ID 表达。 |
+| `pass_id` | UIP-0001 定义的 canonical pass inscription id。 |
+| standard pass | UIP-0001 `pass_kind = standard` 的 pass；处于 `Active` 时可成为 UIP-0006 `candidate_pass`。 |
+| collab pass | UIP-0001 `pass_kind = collab` 的 pass；不能成为独立 `candidate_pass`。 |
+| owner | UIP-0001 定义的 `owner_script_hash`；地址输入或展示必须显式写作 `owner_btc_addr`。 |
 | state | pass 在指定 BTC 高度下的协议状态。 |
+| mint | 创建一张新 pass inscription，并按 schema 和状态前置条件决定其初始 state 的事件。 |
+| remint | 新 mint 通过非空 `prev[]` 原子消费旧 pass 并继承其可继承 raw energy 的流程。 |
+| `prev` consumption | valid remint 将一张可继承旧 pass 转为 `Consumed` 的一次性状态效果。 |
 | active owner set | 在某一高度所有处于 `Active` 的 pass 按 owner 形成的集合。 |
 | event height | 触发状态转换的 BTC block height。 |
 | block-level balance snapshot | 某 owner 在一个 BTC block 完整执行后的聚合余额视图。 |
@@ -78,7 +82,7 @@ UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式
 
 矿工证状态必须是以下之一：
 
-| 状态 | 含义 | 是否可增长 raw energy | 是否可作为 `prev` | 是否可独立挖矿 |
+| 状态 | 含义 | 是否可增长 raw energy | 是否可作为 `prev` | 是否具备 `candidate_pass` 状态资格 |
 | --- | --- | --- | --- | --- |
 | `Active` | 当前活跃 pass。 | 是 | 否，除非在同一次 valid mint 中被先虚拟转为 `Dormant`。 | 仅 standard pass 可以。 |
 | `Dormant` | 已冻结 pass。 | 否 | 是。 | 否。 |
@@ -118,7 +122,7 @@ collab pass 可以处于 `Active`，并可按 UIP-0003 继续累计 raw energy�
 2. 同一 transaction 中，transfer/burn 事件先于 mint 事件。
 3. 同一 transaction 的多个 transfer/burn 事件按 input index 升序。
 4. 同一 transaction 的多个 mint 事件按 inscription index 升序。
-5. 如果以上字段仍相同，按 inscription id 字符串升序。
+5. 如果以上字段仍相同，按 UIP-0001 canonical `pass_id` 的 ASCII 字节逐字节升序。
 
 历史查询在高度 `h` 查询某 pass 当前态时，必须观察高度 `h` 的全部 ordered events 执行完成后的最终状态。
 
@@ -336,7 +340,7 @@ standard pass 与 collab pass 共享同一状态集合和单 owner 单 active �
 | 项 | standard pass | collab pass |
 | --- | --- | --- |
 | `Active` raw energy | 可以增长 | 可以增长 |
-| 独立 candidate set | 可以进入 | 禁止进入 |
+| UIP-0006 `candidate_pass` | `Active` 时可以成为 | 禁止成为 |
 | `effective_energy` | 基于自身和 collab 加成 | 独立口径为 `0` |
 | Leader 解析 | 不适用 | 由 UIP-0001 字段和 UIP-0004 规则解析 |
 | 转为另一类型 | 可通过新 mint + `prev` | 可通过新 mint + `prev` |
@@ -370,7 +374,7 @@ collab pass 的 Leader 绑定字段由 UIP-0001 定义。
 
 `leader_btc_addr` 在 UIP-0002 中不需要额外延迟一个 BTC block。解析口径是目标高度完整 block 执行后的 canonical pass snapshot。
 
-ETHW 侧是否需要额外 finality lag、epoch 延迟或 validator payload 固定窗口，不属于 UIP-0002，应由 validator / effective energy 相关 UIP 定义。
+ETHW 侧是否需要额外 finality lag、epoch 延迟或 `ProfileSelectorPayload` 引用 BTC 历史状态的固定窗口，不属于 UIP-0002，应由 ETHW-side selector / effective energy 相关 UIP 定义。
 
 # Activation Matrix
 
@@ -412,7 +416,7 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧�
 最小测试集合：
 
 - valid standard mint creates `Active` pass。
-- valid collab mint creates `Active` collab pass but cannot enter independent candidate set。
+- valid collab mint creates `Active` collab pass but cannot become a `candidate_pass`。
 - invalid schema mint records `Invalid` and does not affect old active pass。
 - same owner multi mint: old active becomes `Dormant`, new pass becomes `Active`。
 - same owner remint with `prev = [old_active]`: old active becomes `Consumed`, new pass becomes `Active`。

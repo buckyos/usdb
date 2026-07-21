@@ -1095,7 +1095,7 @@ pub struct CandidateSetViewPage {
     pub view_version: String,
     /// Exact historical state identity used to derive every row in this page.
     pub external_state: EconomicExternalState,
-    /// Selection rule used for ordering and winner derivation.
+    /// Ordering contract used to derive the top-ranked audit item.
     pub selection_rule: String,
     /// Total number of active standard candidate passes.
     pub total: u64,
@@ -1402,7 +1402,7 @@ pub trait UsdbIndexerRpc {
         params: GetPassEconomicProfileParams,
     ) -> JsonResult<PassEconomicProfileView>;
 
-    /// Returns the UIP-0006 validator/audit candidate set view at a target height.
+    /// Returns the UIP-0006 USDB-side candidate-set audit view at a target height.
     #[rpc(name = "get_candidate_set_view")]
     fn get_candidate_set_view(
         &self,

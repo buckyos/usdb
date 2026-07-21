@@ -37,8 +37,8 @@ Activation: BTC network activation matrix; development networks activate from he
 
 - 公式层使用 `UNIT_SATS = 100_000`、`ENERGY_PER_UNIT_BLOCK = 1`、unit snapshot delta、age-based penalty 和逐 prev 5% 折损。
 - settlement / projection、Active/Dormant/Consumed/Burned 状态边界和 `u128` 饱和算术已统一；Consumed/Burned energy 为 `0`。
-- RocksDB energy value 使用 `u128`；RPC、validator JSON、Rust client 和前端通过 canonical decimal string 传递 energy。
-- range / raw leaderboard 的 `items[].energy` 明确保持 UIP-0003 raw energy 口径；profile/candidate 的 derived energy 由 UIP-0004 / UIP-0006 运行时计算。
+- RocksDB energy value 使用 `u128`；RPC、链外 validator test JSON、Rust client 和前端通过 canonical decimal string 传递 energy。
+- range / raw leaderboard 的 `items[].energy` 明确保持 UIP-0003 raw energy 口径；profile / `candidate_set_view` 的 derived energy 由 UIP-0004 / UIP-0006 运行时计算。
 - 公式单测、timeline、状态机、RPC 与跨组件类型测试已覆盖 unit 边界、penalty、inherit rounding、饱和和历史投影。
 
 当前剩余工作是集中 live/regtest 交叉验证和大数据运行评估；公开网络的公式版本激活由 UIP-0008 承接，不增加旧 DB 迁移逻辑。
@@ -50,7 +50,7 @@ Activation: BTC network activation matrix; development networks activate from he
 - standard pass / collab pass 的铭文字段。
 - pass 状态机和 `prev` 严格校验。
 - Leader 解析、collab 权重和 `effective_energy`。
-- level、real difficulty、validator candidate set。
+- UIP-0005 level/real difficulty、UIP-0006 `candidate_set_view` 和 UIP-0014 `candidate_energy`。
 - reward split、价格、发行和辅助算力池。
 
 # 术语
@@ -61,7 +61,7 @@ Activation: BTC network activation matrix; development networks activate from he
 | `settled_raw_energy` | 在某一事件高度完成懒结算后的 raw energy。 |
 | `projected_raw_energy` | 对 Active pass 从最近 checkpoint 投影到查询高度的 raw energy。 |
 | `inheritable_energy` | 某张 pass 可通过 `prev` 传给新 pass 的 raw energy。 |
-| `effective_energy` | 挖矿候选和难度计算使用的有效能量，由 UIP-0004/0005 定义，不可继承。 |
+| `effective_energy` | UIP-0004 定义的 BTC-side nominal effective energy，是 UIP-0006 审计排序和 UIP-0005 nominal level 的输入；不可继承，也不等同于 UIP-0014 `candidate_energy`。 |
 | `owner_balance_sats` | pass 当前 owner 在 BTC 侧的可计入余额，单位 sat。 |
 | `balance_units` | 将 owner BTC 余额按 `UNIT_SATS` 向下取整后的离散余额单位。 |
 | `last_settlement_height` | 最近一条 energy checkpoint 的高度，即 `latest_energy_record.block_height`。 |
@@ -401,9 +401,9 @@ energy_result = min(exact_integer_result, ENERGY_MAX)
 
 也就是说，乘法、加法和多 `prev` 求和必须等价于“先用无限精度整数计算，再在最终写入 energy 字段时 saturate 到 `ENERGY_MAX`”。实现可以使用更宽整数、checked arithmetic 或 arbitrary precision，只要结果一致。
 
-## JSON / RPC / Validator Payload 表示
+## JSON / RPC / 链外验证数据表示
 
-任何 JSON、RPC、validator payload 或跨语言接口中的 energy 值必须编码为十进制字符串：
+任何 JSON、RPC、链外 validator test envelope 或其他跨语言接口中的 energy 值必须编码为十进制字符串。UIP-0007 链上 `ProfileSelectorPayload` 不直接携带 energy 字段：
 
 ```json
 {
@@ -516,5 +516,5 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 - BTC indexer 已将 RocksDB `PassEnergyValue.energy` 改为 `uint128`；开发期不做旧 DB 迁移兼容，测试需要时重建 DB。
 - BTC indexer RPC 已将 pass energy snapshot 输出拆为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string；后两者按 UIP-0004 实时派生，不写回 raw ledger。
 - BTC indexer RPC range / leaderboard 的 `items[].energy` 仍表示 UIP-0003 raw energy，并输出 canonical decimal string。
-- 前端、CLI、validator payload 和 UIP-0006 state view 消费 energy 字段时必须继续使用 `string`，不得退回 JSON number。
+- 前端、CLI、链外 validator test envelope 和 UIP-0006 state view 消费 energy 字段时必须继续使用 `string`，不得退回 JSON number。
 - formula-version mismatch 与单 prev remint 折损已通过 targeted live；完整 runner 仍需继续复核 burn 终态、多 prev 边界和 reorg 重放。

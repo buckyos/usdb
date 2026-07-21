@@ -4,11 +4,11 @@
 
 本文档用于把当前 `doc/usdb-economic-model-design.md` 中混合在一起的目标经济模型拆分成一组可逐步标准化、实现和验证的 UIP。
 
-它是拆分设计，不是最终协议正文。后续正式协议应独立成文，并使用稳定编号、状态和激活规则。
+它是拆分设计，不是最终协议正文。后续正式协议应独立成文，并使用稳定编号、状态和激活规则。本文出现的跨 UIP 术语一律按 [README 跨 UIP 术语索引](./README.md#跨-uip-术语索引) 及其指向的正式 UIP 解释；规划性简写不得覆盖正式定义。
 
 ## 2. 拆分原则
 
-1. **先共识核心，后经济扩展**：先处理会直接影响 pass 状态、energy、validator 选择和历史重放的规则，再处理 CoinBase、分账、价格和辅助算力池。
+1. **先共识核心，后经济扩展**：先处理会直接影响 pass 状态、energy、ETHW `selected_pass` 验证和历史重放的规则，再处理 CoinBase、分账、价格和辅助算力池。
 2. **先 schema，再状态，再公式**：铭文格式必须先固定，否则状态机和能量继承规则没有稳定输入。
 3. **每个 UIP 必须可测试**：正式 UIP 不只写目标语义，还要列出实现入口、历史查询语义、reorg 语义和测试矩阵。
 4. **版本和激活必须显式**：影响共识结果的 UIP 必须定义激活高度或治理激活方式，不得以代码发布即生效。
@@ -203,7 +203,7 @@ inherit(prev_i) = floor(raw_energy(prev_i) * 9500 / 10000)
 
 需要解决：
 
-- `uint128` energy 在 RocksDB、RPC、validator payload 和前端展示中的迁移。
+- `uint128` energy 在 RocksDB、RPC、链外 validator test envelope 和前端展示中的迁移；UIP-0007 链上 `ProfileSelectorPayload` 不携带 energy。
 - decimal string 的 canonical encoding。
 - `active_block_height` 在部分减仓时的比例更新。
 - Burned energy 终态是否强制为 0。
@@ -264,7 +264,7 @@ effective_energy
 
 - pass storage schema。
 - energy leaderboard。
-- validator candidate set。
+- UIP-0006 `candidate_set_view`。
 - RPC pass snapshot / energy snapshot。
 
 测试要求：
@@ -343,14 +343,14 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - level。
 - difficulty factor。
 - collab breakdown。
-- optional candidate set audit view。
+- optional `candidate_set_view` audit query。
 - formula version。
 - protocol version。
 - view version。
 
 需要解决：
 
-- candidate set audit view 作为 usdb-indexer 一等查询后的性能参数、分页 cursor 和 `max_limit`。
+- `candidate_set_view` 作为 usdb-indexer 一等查询后的性能参数、分页 cursor 和 `max_limit`。
 - view 与 historical state ref 的绑定方式。
 - collab breakdown 通过单独确定性分页查询提供后的可选排序策略和索引成本。
 - owner 字段采用 `owner_script_hash` 作为 canonical id，并在可确定时返回 `owner_btc_addr`。
@@ -553,7 +553,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 建议延后原因：
 
-- 依赖 pass / energy / leader / validator payload 稳定。
+- 依赖 pass / energy / Leader / UIP-0007 `ProfileSelectorPayload` 稳定。
 - 依赖 UIP-0010 先确定分红池地址、bootstrap 状态和 fee split activation 边界。
 
 ## 19. UIP-0012: Collaboration Efficiency Coefficient K

@@ -14,8 +14,8 @@ Activation: BTC and ETHW network activation matrix
 
 核心规则：
 
-- standard pass 可以独立进入 validator candidate set。
-- collab pass 不能独立进入 validator candidate set。
+- active standard pass 可以成为 UIP-0006 `candidate_pass`。
+- collab pass 不能成为独立 `candidate_pass`。
 - collab pass 自己仍按 UIP-0003 累计 `raw_energy`。
 - collab pass 通过 `leader_pass_id` 或 `leader_btc_addr` 解析到唯一 Active standard Leader 后，以折算权重贡献给 Leader 的 `effective_energy`。
 - `effective_energy` 是派生值，不可继承、不可写回 raw energy ledger。
@@ -54,12 +54,13 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 
 | 术语 | 含义 |
 | --- | --- |
-| Leader | collab pass 引用的 active standard pass。 |
+| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 ETHW 出块资格。 |
 | `leader_ref` | `leader_pass_id` 或 `leader_btc_addr` 的抽象引用。 |
 | `resolved_leader` | 在某一 BTC 高度解析出的唯一 active standard pass。 |
+| `leader_eligible` | ETHW policy 对 `resolved_leader` 的额外出块资格判断，不属于 USDB indexer 派生状态。 |
 | `collab_source_energy` | collab pass 自身的 `raw_energy`。 |
-| `collab_contribution` | collab pass 按权重折算后贡献给 Leader 的能量。 |
-| `effective_energy` | validator candidate set、level 或 difficulty 可使用的派生能量。 |
+| `collab_contribution` | collab pass 按权重折算后贡献给 `resolved_leader` 的能量。 |
+| `effective_energy` | BTC-side nominal 派生能量，是 UIP-0006 `candidate_set_view` 排序和 UIP-0005 nominal level 的输入；不等同于 UIP-0014 `candidate_energy`。 |
 
 # 规范关键词
 
@@ -79,8 +80,8 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 - `get_pass_energy` 返回 `raw_energy`、`collab_contribution`、`effective_energy` 三字段。
 - `get_collab_breakdown` 返回某个 Leader 在指定 BTC 高度的 collab contribution 明细、稳定分页和全量 aggregate。
 - `get_candidate_set_view` 只枚举 active standard pass，排除 collab pass，并按 `effective_energy DESC, pass_id ASC` 排序。
-- validator block-body regtest JSON payload 已统一携带 `raw_energy`、`collab_contribution`、`effective_energy`，winner 重算使用 `effective_energy`。
-- `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不作为 validator candidate set 口径。
+- 链外 validator block-body regtest JSON envelope 已统一携带 `raw_energy`、`collab_contribution`、`effective_energy`，测试中的 top-ranked pass 重算使用 `effective_energy`。
+- `get_pass_energy_leaderboard` 保留为前端/浏览器 raw energy 展示榜单，不作为 UIP-0006 `candidate_set_view` 口径。
 - Rust/service tests 已覆盖 fixed/address Leader、Leader remint、invalid/non-active Leader、多 collab aggregate、consume/remint 和 breakdown 重算；真实 ord three-collab targeted smoke 已通过。
 
 UIP-0005 / UIP-0006 已在本文三字段基础上完成 level/factor 和 economic state view 对接。本文仍保持 `Draft` 状态；后续 view/version 变化应在对应 UIP 中升级，不应反向修改 UIP-0004 的 raw/effective 能量定义。
@@ -96,10 +97,10 @@ collab pass 的 Leader 引用来自 UIP-0001 v1 schema。
 `leader_pass_id` 绑定固定 pass：
 
 ```text
-candidate = pass_by_inscription_id(leader_pass_id, h)
+referenced_pass = pass_by_inscription_id(leader_pass_id, h)
 ```
 
-只有当 `candidate` 同时满足以下条件时，解析成功：
+只有当 `referenced_pass` 同时满足以下条件时，解析成功：
 
 - 存在。
 - 是 standard pass。
@@ -119,12 +120,12 @@ resolved_leader(collab, h) = none
 `leader_btc_addr` 绑定 BTC 地址在高度 `h` 的 active standard pass：
 
 ```text
-candidate = active_standard_pass_by_owner(leader_btc_addr, h)
+address_pass = active_standard_pass_by_owner(leader_btc_addr, h)
 ```
 
 只有当该地址在高度 `h` 能解析到唯一 active standard pass 时，解析成功。
 
-由于 UIP-0002 规定同一 owner 同一高度最多一张 Active pass，因此标准实现中该解析应天然唯一。若实现检测到多张 active standard pass，必须视为索引状态不一致，并不得让 collab contribution 进入 candidate set。
+由于 UIP-0002 规定同一 owner 同一高度最多一张 Active pass，因此标准实现中该解析应天然唯一。若实现检测到多张 active standard pass，必须视为索引状态不一致，并令本次 `resolved_leader = none`，不得把 collab contribution 计入任一 standard pass。
 
 `leader_btc_addr` 不需要目标地址在 collab pass mint 时已经出现。地址格式合法即可。若该地址在某一高度没有 active standard pass，则该高度不贡献有效能量。
 
@@ -194,13 +195,13 @@ resolved_leader(collab_i, h) = leader
 
 ## Collab Pass 独立口径
 
-collab pass 在独立挖矿候选口径下：
+collab pass 在 UIP-0006 `candidate_pass` 口径下：
 
 ```text
 effective_energy(collab, h) = 0
 ```
 
-collab pass 不得直接进入 validator candidate set。它只能通过 Leader 的 `effective_energy` 间接影响候选排序和后续 level/difficulty。
+collab pass 永远不能成为 `candidate_pass`。它只能通过 `resolved_leader` 的 `effective_energy` 间接影响 UIP-0006 审计排序，以及后续 nominal level / ETHW `candidate_energy` policy。
 
 ## 非 Active Pass
 
@@ -324,15 +325,15 @@ UIP-0004 不定义额外的 `COLLAB_EXIT_PENALTY_BPS`。
 - `old_collab` 不再向任何 Leader 贡献 `collab_contribution`。
 - `new_pass` 只获得 `old_collab` 自身 raw energy 的 UIP-0003 继承值，不继承旧 Leader aggregation 或旧 collab contribution。
 
-# 查询与 Payload 字段
+# 查询与链外验证数据字段
 
-RPC 或 validator payload 必须区分返回：
+RPC response 或链外 validator test envelope 必须区分：
 
 | 字段 | 来源 | 是否可继承 | 用途 |
 | --- | --- | --- | --- |
 | `raw_energy` | UIP-0003 | 是 | pass 自身资产能量、历史查询、`prev` 继承。 |
 | `collab_contribution` | UIP-0004 | 否 | 该 pass 作为 Leader 收到的 collab 折算贡献；非 Leader 或无贡献时为 `0`。 |
-| `effective_energy` | UIP-0004 | 否 | candidate set、level、difficulty 输入。 |
+| `effective_energy` | UIP-0004 | 否 | UIP-0006 `candidate_set_view` 审计排序和 UIP-0005 nominal level 输入。 |
 
 三者必须满足：
 
@@ -344,7 +345,7 @@ effective_energy = 0,
     if pass is collab pass or pass.state != Active
 ```
 
-按照 UIP-0003，energy 数值在 JSON、RPC 和 validator payload 中必须使用 canonical decimal string。
+按照 UIP-0003，energy 数值在 JSON、RPC 和链外 validator test envelope 中必须使用 canonical decimal string。UIP-0007 链上 `ProfileSelectorPayload` 不直接携带这些 energy 字段。
 
 为了审计 Leader effective energy，查询接口应该提供 per-collab breakdown。最小明细字段建议为：
 
@@ -357,24 +358,24 @@ effective_energy = 0,
 | `leader_ref_kind` | `leader_pass_id` 或 `leader_btc_addr`。 |
 | `leader_ref_value` | collab pass 声明的 Leader 引用值。 |
 
-实现可以在轻量 snapshot 中只返回 aggregate `collab_contribution`，但 validator payload 或审计查询必须能携带或获取上述明细，以便独立重算。
+实现可以在轻量 snapshot 中只返回 aggregate `collab_contribution`，但链外 validator test envelope 或审计查询必须能携带或获取上述明细，以便独立重算。
 
 当前 `usdb-indexer` 实现中：
 
 - 单 pass 轻量查询使用 `get_pass_energy`，返回 aggregate `collab_contribution`。
 - 审计明细使用 `get_collab_breakdown`，返回 `aggregate_collab_contribution` 和可分页的 per-collab item。
-- candidate set 审计使用 `get_candidate_set_view`，返回 active standard candidate 的三字段能量和排序结果。
-- validator JSON payload 允许携带三字段快照；验证方仍应在同一 historical context 下重查 `get_pass_energy` / breakdown 来审计 aggregate。
+- `candidate_set_view` 审计使用 `get_candidate_set_view`，返回 UIP-0006 `candidate_pass` 的三字段能量和排序结果。
+- 链外 validator test envelope 允许携带三字段快照；验证方仍应在同一 historical context 下重查 `get_pass_energy` / breakdown 来审计 aggregate。
 
 # 与后续 UIP 的边界
 
 UIP-0004 只定义 BTC-side `effective_energy` 派生 view。以下事项不应改变本文的 `raw_energy`、`collab_contribution` 或 `effective_energy`：
 
 - UIP-0005：从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`。
-- UIP-0006：把 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 candidate set 组织成统一 economic state view。
-- UIP-0014：ETHW / validator policy 中的 quote activity 和 candidate energy 回落规则。
+- UIP-0006：把 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 `candidate_set_view` 组织成统一 economic state view。
+- UIP-0014：ETHW / validator policy 中的 quote activity 和 `candidate_energy` 回落规则。
 
-尤其是 UIP-0014 中 quote stale 时的 candidate energy 降级，只能影响下游 validator/mining policy，不得回写或重定义 USDB indexer 的 `effective_energy`。
+尤其是 UIP-0014 中 quote stale 时的 `candidate_energy` 降级，只能影响下游 validator/mining policy，不得回写或重定义 USDB indexer 的 `effective_energy`。
 
 # 安全性
 
@@ -383,7 +384,7 @@ UIP-0004 只定义 BTC-side `effective_energy` 派生 view。以下事项不应�
 实现必须满足：
 
 ```text
-Σ effective_energy(candidate, h)
+Σ effective_energy(candidate_pass_i, h)
 ```
 
 中，每张 active collab pass 的 `collab_source_energy` 最多出现一次，且只能以折算后的 `collab_contribution` 出现。
@@ -426,7 +427,7 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 - `leader_pass_id` 指向 dormant/consumed/burned/invalid pass。
 - `leader_btc_addr` 在无 active pass 时 contribution 为 0。
 - `leader_btc_addr` 在 Leader remint 后自动解析到新 active pass。
-- collab pass 自身不进入 candidate set。
+- collab pass 自身不能成为 `candidate_pass`。
 - collab contribution 不写回 raw energy。
 - 多个 collab pass 指向同一 Leader。
 - 同一 collab pass 不会贡献给多个 Leader。
@@ -434,7 +435,7 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 - collab pass remint 为 standard pass 时只继承 UIP-0003 折损后的 raw energy。
 - collab pass remint 为新 collab pass 时只继承 UIP-0003 折损后的 raw energy。
 - old collab 被 consumed 后不再向旧 Leader 贡献 `collab_contribution`。
-- payload 同时携带 `raw_energy`、`collab_contribution`、`effective_energy`，且可由 breakdown 重算。
+- 链外 validator test envelope 同时携带 `raw_energy`、`collab_contribution`、`effective_energy`，且可由 breakdown 重算。
 
 当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景，three-collab breakdown 已获得真实 ord targeted smoke 覆盖。集中 live/regtest 阶段继续补齐 `leader_btc_addr` remint 跟随、fixed binding 不跟随、old collab consumed 和大规模 collab 聚合/分页场景。
 
@@ -447,4 +448,4 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 3. 所有 valid Dormant pass 都按一致规则支持 remint，不区分旧 pass 是 standard 还是 collab。
 4. collab 退出统一使用 remint + `prev`，不定义单独转换交易。
 5. UIP-0004 不定义 `COLLAB_EXIT_PENALTY_BPS`；退出成本来自 UIP-0003 的通用继承折损。
-6. payload / 查询必须区分 `raw_energy`、`collab_contribution`、`effective_energy`，并支持 collab contribution 明细审计。
+6. 链外验证数据 / 查询必须区分 `raw_energy`、`collab_contribution`、`effective_energy`，并支持 collab contribution 明细审计；UIP-0007 链上 `ProfileSelectorPayload` 只携带最小 selector。

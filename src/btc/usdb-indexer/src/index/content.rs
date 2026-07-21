@@ -24,6 +24,19 @@ const USDB_MINT_SCHEMA_FIELDS: [&str; 7] = [
     "prev",
 ];
 
+fn parse_canonical_inscription_id(value: &str) -> Result<InscriptionId, String> {
+    let parsed = InscriptionId::from_str(value)
+        .map_err(|error| format!("Invalid inscription id {}: {}", value, error))?;
+    let canonical = parsed.to_string();
+    if canonical != value {
+        return Err(format!(
+            "Non-canonical inscription id {}, expected {}",
+            value, canonical
+        ));
+    }
+    Ok(parsed)
+}
+
 /*
 {
   "p": "usdb",
@@ -216,7 +229,7 @@ impl USDBMint {
         self.prev
             .iter()
             .map(|prev| {
-                InscriptionId::from_str(prev).map_err(|e| {
+                parse_canonical_inscription_id(prev).map_err(|e| {
                     format!(
                         "Failed to parse prev inscription id {} in USDBMint: {}",
                         prev, e
@@ -228,7 +241,7 @@ impl USDBMint {
 
     pub fn leader_pass_inscription_id(&self) -> Result<Option<InscriptionId>, String> {
         match &self.leader_pass_id {
-            Some(id) => InscriptionId::from_str(id)
+            Some(id) => parse_canonical_inscription_id(id)
                 .map(Some)
                 .map_err(|e| format!("Failed to parse leader_pass_id {}: {}", id, e)),
             None => Ok(None),
@@ -572,8 +585,8 @@ impl InscriptionContentLoader {
                 .get("leader_pass_id")
                 .and_then(|value| value.as_str())
             {
-                Some(leader_pass_id) => match InscriptionId::from_str(leader_pass_id) {
-                    Ok(_) => Some(leader_pass_id.to_string()),
+                Some(leader_pass_id) => match parse_canonical_inscription_id(leader_pass_id) {
+                    Ok(parsed) => Some(parsed.to_string()),
                     Err(e) => {
                         return Ok(ParsedMintContent::Invalid(MintValidationError {
                             code: MintValidationErrorCode::InvalidLeaderPassId,
@@ -686,17 +699,17 @@ impl InscriptionContentLoader {
                 }));
             };
 
-            if InscriptionId::from_str(id).is_err() {
-                return Err(ParsedMintContent::Invalid(MintValidationError {
+            let parsed = parse_canonical_inscription_id(id).map_err(|error| {
+                ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidPrevId,
                     reason: format!(
-                        "Invalid prev inscription id {} for inscription {}",
-                        id, inscription_id
+                        "Invalid prev inscription id {} for inscription {}: {}",
+                        id, inscription_id, error
                     ),
-                }));
-            }
+                })
+            })?;
 
-            if !seen.insert(id.to_string()) {
+            if !seen.insert(parsed) {
                 return Err(ParsedMintContent::Invalid(MintValidationError {
                     code: MintValidationErrorCode::InvalidPrevId,
                     reason: format!(
@@ -706,7 +719,7 @@ impl InscriptionContentLoader {
                 }));
             }
 
-            prev.push(id.to_string());
+            prev.push(parsed.to_string());
         }
 
         Ok(prev)
@@ -902,6 +915,26 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_mint_content_str_non_canonical_leader_pass_id_invalid() {
+        let inscription_id = test_inscription_id(16, 0);
+        let non_canonical = format!("{}i0", "A".repeat(64));
+        let content = format!(
+            r#"{{"p":"usdb","op":"mint","v":1,"leader_pass_id":"{}","prev":[]}}"#,
+            non_canonical
+        );
+
+        let result =
+            InscriptionContentLoader::classify_mint_content_str(&inscription_id, &content).unwrap();
+        match result {
+            ParsedMintContent::Invalid(err) => {
+                assert_eq!(err.code, MintValidationErrorCode::InvalidLeaderPassId);
+                assert!(err.reason.contains("Non-canonical inscription id"));
+            }
+            _ => panic!("expected non-canonical leader pass id to be invalid"),
+        }
+    }
+
+    #[test]
     fn test_classify_mint_content_str_invalid_leader_btc_addr_for_network() {
         let inscription_id = test_inscription_id(7, 0);
         let content = format!(
@@ -935,6 +968,26 @@ mod tests {
                 assert_eq!(err.code, MintValidationErrorCode::InvalidPrevId)
             }
             _ => panic!("expected invalid mint content"),
+        }
+    }
+
+    #[test]
+    fn test_classify_mint_content_str_non_canonical_prev_id_invalid() {
+        let inscription_id = test_inscription_id(17, 0);
+        let non_canonical = format!("{}i00", "1".repeat(64));
+        let content = format!(
+            r#"{{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":["{}"]}}"#,
+            non_canonical
+        );
+
+        let result =
+            InscriptionContentLoader::classify_mint_content_str(&inscription_id, &content).unwrap();
+        match result {
+            ParsedMintContent::Invalid(err) => {
+                assert_eq!(err.code, MintValidationErrorCode::InvalidPrevId);
+                assert!(err.reason.contains("Non-canonical inscription id"));
+            }
+            _ => panic!("expected non-canonical prev id to be invalid"),
         }
     }
 

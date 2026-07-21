@@ -46,14 +46,17 @@ USDB validator 验证旧块时，不能查询 USDB current head。旧块必须�
 
 | 术语 | 含义 |
 | --- | --- |
+| USDB miner | 组装并尝试挖出 ETHW / USDB 区块、选择本区块 `pass_id` 并写入 `ProfileSelectorPayload` 的出块方。 |
+| USDB validator | 按 ETHW 共识规则验证区块及其 `ProfileSelectorPayload`、历史 USDB profile、reward 和 difficulty 的验证逻辑或节点。 |
 | `ProfileSelectorPayload` | 写入 ETHW `header.Extra` 的固定二进制 profile selector payload。 |
 | `profile_selector` | 用于定位某个历史 USDB state 下某张 pass profile 的最小字段集合。 |
 | `difficulty_policy_version` | 本区块声明使用的 `level -> difficulty` 算法版本。 |
 | `btc_height` | payload 锁定的 BTC 历史高度。 |
 | `snapshot_id` | upstream balance-history consensus snapshot id。 |
 | `system_state_id` | USDB system state id。 |
-| `pass_id` | 被本区块声明为 consensus profile input 的 miner pass inscription id。 |
-| `resolved_profile` | validator 根据 payload 查询 UIP-0006 后得到的经济状态。 |
+| `pass_id` | UIP-0001 canonical pass inscription id；在本文 payload 中标识 `selected_pass`。 |
+| `selected_pass` | 一个具体 ETHW 区块显式声明使用的 UIP-0006 `candidate_pass`；不要求等于 `candidate_set_view` 的 `top_ranked_candidate`。 |
+| `resolved_profile` | USDB validator 根据 payload 查询 UIP-0006 后得到的 `selected_pass` 经济状态。 |
 
 # 规范关键词
 
@@ -98,7 +101,7 @@ ProfileSelectorPayload =
     uint32 pass_index
 ```
 
-链外展示 `pass_id` 时使用：
+链外展示 `pass_id` 时必须使用 UIP-0001 定义的 canonical encoding：
 
 ```text
 pass_id = lowercase_hex(pass_txid) + "i" + decimal(pass_index)
@@ -153,11 +156,13 @@ validator 必须把它放入 expected state，并要求 USDB 返回同一 system
 
 `pass_id` 是本块声明使用的 miner pass。
 
+本文将它称为 `selected_pass`。`selected_pass` 必须在 payload 指定的 historical state 下满足 UIP-0006 `candidate_pass` 条件，即 `state = Active` 且 `pass_kind = standard`。它不需要是 `candidate_set_view` 的 `top_ranked_candidate`；UIP-0006 ordering contract 不是 ETHW block-selection policy。
+
 v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`usdb_main` 或其它地址字段隐式反查。原因是：
 
 - 当前 USDB 稳定查询主键是 pass id / inscription id。
 - 一个 USDB/EVM 地址不一定唯一映射到一张 pass。
-- 后续 candidate-set 或多 pass 场景需要避免隐式选择歧义。
+- 后续 `candidate_set_view` 或多 pass 场景需要避免隐式选择歧义。
 
 # Validator Replay
 
@@ -165,11 +170,12 @@ validator 必须按以下顺序验证：
 
 1. 从 `header.Extra` 解析 `ProfileSelectorPayload`。
 2. 校验 payload version 和固定长度。
-3. 使用 `btc_height`、`snapshot_id`、`system_state_id` 构造 USDB historical query context。
+3. 使用 `btc_height`、`snapshot_id`、`system_state_id` 构造 UIP-0006 `query_context` 和 `expected_state`。
 4. 使用 `pass_id` 查询 UIP-0006 定义的 pass economic profile，或使用等价的历史 `get_pass_snapshot` / `get_pass_energy` RPC 组合。
-5. 按 ETHW reward rule version 从 resolved profile 重算 reward input。
-6. 如果 future ETHW difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
-7. 在 `Finalize` / state transition 中使用重算 reward 结果发放奖励。
+5. 确认 resolved profile 对应的 `selected_pass` 满足 UIP-0006 `candidate_pass` 条件。
+6. 按 ETHW reward rule version 从 resolved profile 重算 reward input。
+7. 如果 future ETHW difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
+8. 在 `Finalize` / state transition 中使用重算 reward 结果发放奖励。
 
 任一步失败都必须 fail-closed。validator 不得因为 USDB 不可用、历史不可用或 mismatch 而继续接受新区块。
 
@@ -239,7 +245,7 @@ miner 生成新区块时应该：
 
 1. 从本地 USDB companion service 获取 current system state。
 2. 使用配置的 `pass_id` 在该 state 下确认 pass 可查询。
-3. 从 ETHW chain config 读取 candidate block height 对应的 expected `difficulty_policy_version`。
+3. 从 ETHW chain config 读取待挖 ETHW block height 对应的 expected `difficulty_policy_version`。
 4. 将 `difficulty_policy_version`、`btc_height`、`snapshot_id`、`system_state_id` 和 `pass_id` 编码成 `ProfileSelectorPayload`。
 5. 写入待挖区块的 `header.Extra`。
 
