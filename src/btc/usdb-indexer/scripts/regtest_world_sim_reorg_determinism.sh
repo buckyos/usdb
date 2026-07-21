@@ -14,7 +14,7 @@ SIM_FAIL_FAST="${SIM_FAIL_FAST:-1}"
 SIM_REPORT_FLUSH_EVERY="${SIM_REPORT_FLUSH_EVERY:-1}"
 
 SIM_POLICY_MODE="${SIM_POLICY_MODE:-scripted}"
-SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}"
+SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-standard_mint,fixed_collab_mint,address_collab_mint,send_balance,transfer,standard_remint,fixed_collab_remint,address_collab_remint,spend_balance,noop}"
 SIM_REORG_INTERVAL_BLOCKS="${SIM_REORG_INTERVAL_BLOCKS:-20}"
 SIM_REORG_DEPTH="${SIM_REORG_DEPTH:-3}"
 SIM_REORG_MAX_EVENTS="${SIM_REORG_MAX_EVENTS:-2}"

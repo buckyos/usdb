@@ -479,3 +479,46 @@
 
 - validator aggregate runner 在 protocol-version mismatch slot 首次遇到一个残留 ord 进程占用端口；确认非协议失败后，使用空闲独立端口重跑该项，并按原顺序完成其余场景。
 - 本轮没有运行完整 300-block 随机 world-sim 或长时 soak；这两项属于后续规模/稳定性评估，不影响 UIP-0001 至 UIP-0006 确定性协议矩阵结论。
+
+## UIP-0001 至 UIP-0006 Reorg/Cursor/Historical Context 集中复核
+
+状态：已完成。2026-07-18 在确定性矩阵基础上聚焦重跑 80 个 service 测试和 19 个独立 live/regtest 场景，全部通过；本轮未发现新的协议或实现偏差。
+
+### 执行范围与结论
+
+- service 层 80 个测试全部通过，覆盖 cursor 篡改/绑定变化/same-height reorg、旧 external state 回放、派生期间二次 state-ref 校验，以及 profile/candidate/breakdown 的历史查询。
+- 11 个 reorg/restart/recovery 场景全部通过：height-regression、same-height、三轮 multi-reorg、hybrid reorg、三类真实 ord transfer/remint 回滚，以及 energy/transfer reload 故障注入恢复。
+- pending recovery marker 在故障后可持久化、自动重试清理，并可跨 usdb-indexer 进程重启继续恢复；未来高度的 pass commit 与 balance snapshot 均被清理。
+- 4 个 historical context 场景全部通过：head advance 后旧 context 可重放；历史锚点被替换后返回 `SNAPSHOT_ID_MISMATCH (-32042)`；提高 retention floor 后返回 `STATE_NOT_RETAINED (-32048)`；保留窗口内辅助历史缺失时返回 `HISTORY_NOT_AVAILABLE (-32049)`。
+- candidate set 和 collab breakdown 均以 `limit=2` 遍历 3 项、强制跨两页 opaque cursor；排序、去重、total、external state 冻结和 collab aggregate 独立复算全部通过，head advance 后仍可重放原历史结果。
+- validator payload restart consistency 通过；payload version upgrade restart 同时验证两个历史高度的 payload 在服务重启后仍保持各自 snapshot/system-state identity 并可重放。
+
+### 后续边界
+
+- 本轮是确定性功能复核，没有重复执行完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak；这些继续作为规模与稳定性阶段任务。
+
+## World-Sim UIP-0001 至 UIP-0006 经济机制扩展
+
+状态：核心实现和聚焦 live smoke 已完成；未执行 300-block 随机 soak。
+
+### 改动事项
+
+- world-sim 动作模型由旧 `mint/remint` 拆为 `standard`、`fixed collab`、`address collab` 三类 mint 和三类 remint；payload 直接使用 UIP-0001 v1 严格字段，不保留旧 action/参数兼容入口。
+- remint prev 收敛为 actor-owned `Active / Dormant` pass，transfer 同样排除 terminal pass；collab 动作会锁定本次使用的 active standard Leader。
+- recovery state 升级为 v3，持久化 pass kind 与原始 Leader 引用；reorg rebuild 从 canonical pass snapshot 重建这些身份字段。
+- 全局检查新增 UIP-0004 至 UIP-0006 独立审计：candidate 必须等于 active standard 集合，active collab 必须被排除；fixed/address Leader 在目标高度独立解析；两种 breakdown 排序均完整遍历 cursor，并从 raw energy 重算 contribution、饱和 aggregate、effective energy 与 profile count。
+- validator historical replay 在原 candidate/profile 对比基础上增加 breakdown aggregate 重算，并校验历史 external state 冻结。
+- 新增 deterministic economic bootstrap，覆盖 Leader remint 后 fixed 不跟随/address 自动跟随，以及 standard/fixed/address remint 的 `Consumed / raw=0` 和新 pass raw-only inheritance 路径。
+- 新增纯 Python 测试与 `regtest_world_sim_economic_views.sh` 聚焦入口；后者以 `limit=2` 强制 cursor continuation，并从 JSONL 报告检查必需动作和零失败指标。
+
+### 已验证
+
+- `python3 src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py`：6 个纯测试通过。
+- 新增/调整 shell 脚本全部通过 `bash -n`，Python 入口通过 `py_compile`，`git diff --check` 通过。
+- 独立 regtest smoke 于 2026-07-18 通过：bootstrap 完成 8 个业务步骤和 1 个 energy-growth block，随后运行 3 个 tick；最终 2 张 active standard、2 张 active collab，完成 2 次 historical candidate/profile/breakdown replay。
+- smoke 最终指标：`verify_fail=0`、`global_cross_check_fail=0`、`validator_sample_fail=0`、`global_cross_check_ok=11`、`validator_sample_ok=2`。
+- 同入口追加 `depth=3` deterministic reorg 组合 smoke 通过：回滚区间覆盖最终 address-collab remint，本地 pass identity/ownership 从 canonical history 重建后继续收敛；最终 `reorg_ok=1`、`validator_sample_ok=3`，三类 fail 指标仍为 0。
+
+### 后续边界
+
+- 继续保留 300-block 随机 world-sim、reorg 组合和大 candidate/breakdown 数据量性能评估，作为后续 soak 阶段；本次聚焦入口验证的是新机制和审计闭环可用。

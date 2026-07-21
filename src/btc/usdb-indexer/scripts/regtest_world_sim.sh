@@ -31,19 +31,21 @@ SIM_BLOCKS="${SIM_BLOCKS:-300}"
 SIM_SEED="${SIM_SEED:-42}"
 SIM_FEE_RATE="${SIM_FEE_RATE:-1}"
 SIM_MAX_ACTIONS_PER_BLOCK="${SIM_MAX_ACTIONS_PER_BLOCK:-2}"
-SIM_MINT_PROBABILITY="${SIM_MINT_PROBABILITY:-0.20}"
+SIM_STANDARD_MINT_PROBABILITY="${SIM_STANDARD_MINT_PROBABILITY:-0.14}"
+SIM_FIXED_COLLAB_MINT_PROBABILITY="${SIM_FIXED_COLLAB_MINT_PROBABILITY:-0.04}"
+SIM_ADDRESS_COLLAB_MINT_PROBABILITY="${SIM_ADDRESS_COLLAB_MINT_PROBABILITY:-0.04}"
 SIM_INVALID_MINT_PROBABILITY="${SIM_INVALID_MINT_PROBABILITY:-0.02}"
-SIM_TRANSFER_PROBABILITY="${SIM_TRANSFER_PROBABILITY:-0.20}"
-SIM_REMINT_PROBABILITY="${SIM_REMINT_PROBABILITY:-0.10}"
-SIM_SEND_PROBABILITY="${SIM_SEND_PROBABILITY:-0.30}"
-SIM_SPEND_PROBABILITY="${SIM_SPEND_PROBABILITY:-0.15}"
+SIM_TRANSFER_PROBABILITY="${SIM_TRANSFER_PROBABILITY:-0.18}"
+SIM_REMINT_PROBABILITY="${SIM_REMINT_PROBABILITY:-0.12}"
+SIM_SEND_PROBABILITY="${SIM_SEND_PROBABILITY:-0.28}"
+SIM_SPEND_PROBABILITY="${SIM_SPEND_PROBABILITY:-0.14}"
 SIM_SLEEP_MS_BETWEEN_BLOCKS="${SIM_SLEEP_MS_BETWEEN_BLOCKS:-0}"
 SIM_FAIL_FAST="${SIM_FAIL_FAST:-0}"
 SIM_INITIAL_ACTIVE_AGENTS="${SIM_INITIAL_ACTIVE_AGENTS:-3}"
 SIM_AGENT_GROWTH_INTERVAL_BLOCKS="${SIM_AGENT_GROWTH_INTERVAL_BLOCKS:-30}"
 SIM_AGENT_GROWTH_STEP="${SIM_AGENT_GROWTH_STEP:-1}"
 SIM_POLICY_MODE="${SIM_POLICY_MODE:-adaptive}"
-SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-mint,send_balance,transfer,remint,spend_balance,noop}"
+SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-standard_mint,fixed_collab_mint,address_collab_mint,send_balance,transfer,standard_remint,fixed_collab_remint,address_collab_remint,spend_balance,noop}"
 SIM_REPORT_ENABLED="${SIM_REPORT_ENABLED:-1}"
 SIM_REPORT_FILE="${SIM_REPORT_FILE:-$WORK_DIR/world-sim-report.jsonl}"
 SIM_REPORT_FLUSH_EVERY="${SIM_REPORT_FLUSH_EVERY:-1}"
@@ -54,6 +56,8 @@ SIM_GLOBAL_CROSS_CHECK_ENABLED="${SIM_GLOBAL_CROSS_CHECK_ENABLED:-1}"
 SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS="${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS:-20}"
 SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N="${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N:-20}"
 SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE="${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE:-16}"
+SIM_ECONOMIC_PAGE_LIMIT="${SIM_ECONOMIC_PAGE_LIMIT:-16}"
+SIM_ECONOMIC_BOOTSTRAP_ENABLED="${SIM_ECONOMIC_BOOTSTRAP_ENABLED:-0}"
 SIM_VALIDATOR_SAMPLE_ENABLED="${SIM_VALIDATOR_SAMPLE_ENABLED:-0}"
 SIM_VALIDATOR_SAMPLE_MODE="${SIM_VALIDATOR_SAMPLE_MODE:-single}"
 SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED="${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED:-0}"
@@ -666,7 +670,7 @@ main() {
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, economic_page_limit=${SIM_ECONOMIC_PAGE_LIMIT}, economic_bootstrap_enabled=${SIM_ECONOMIC_BOOTSTRAP_ENABLED}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -706,6 +710,10 @@ main() {
       validator_sample_args+=(--enable-validator-sample-tamper-check)
     fi
   fi
+  local economic_bootstrap_args=()
+  if [[ "$SIM_ECONOMIC_BOOTSTRAP_ENABLED" == "1" ]]; then
+    economic_bootstrap_args+=(--enable-economic-bootstrap)
+  fi
 
   python3 "$WORLD_SIMULATOR" \
     --btc-cli "$BITCOIN_CLI_BIN" \
@@ -726,7 +734,9 @@ main() {
     --seed "$SIM_SEED" \
     --fee-rate "$SIM_FEE_RATE" \
     --max-actions-per-block "$SIM_MAX_ACTIONS_PER_BLOCK" \
-    --mint-probability "$SIM_MINT_PROBABILITY" \
+    --standard-mint-probability "$SIM_STANDARD_MINT_PROBABILITY" \
+    --fixed-collab-mint-probability "$SIM_FIXED_COLLAB_MINT_PROBABILITY" \
+    --address-collab-mint-probability "$SIM_ADDRESS_COLLAB_MINT_PROBABILITY" \
     --invalid-mint-probability "$SIM_INVALID_MINT_PROBABILITY" \
     --transfer-probability "$SIM_TRANSFER_PROBABILITY" \
     --remint-probability "$SIM_REMINT_PROBABILITY" \
@@ -738,6 +748,8 @@ main() {
     --agent-growth-step "$SIM_AGENT_GROWTH_STEP" \
     --policy-mode "$SIM_POLICY_MODE" \
     --scripted-cycle "$SIM_SCRIPTED_CYCLE" \
+    --economic-page-limit "$SIM_ECONOMIC_PAGE_LIMIT" \
+    "${economic_bootstrap_args[@]}" \
     "${self_check_args[@]}" \
     "${global_cross_check_args[@]}" \
     "${validator_sample_args[@]}" \

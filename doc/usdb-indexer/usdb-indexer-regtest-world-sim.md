@@ -19,7 +19,9 @@
 - [regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_simulator.py)
 - [regtest_world_sim_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh)
 - [regtest_world_sim_reorg_determinism.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh)
+- [regtest_world_sim_economic_views.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh)
 - [compare_world_sim_reports.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/compare_world_sim_reports.py)
+- [test_regtest_world_simulator.py](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py)
 - [run_live.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live.sh)
 - [run_live_reorg.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_live_reorg.sh)
 - [usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)
@@ -42,13 +44,18 @@
   - 每个区块内限制“单 agent 最多一次参与”，避免同块多动作互相覆盖
   - 支持按区块逐步扩容 active agents，模拟用户增长
 - 随机操作类型（按概率）：
-  - `mint`
+  - `standard_mint`
+  - `fixed_collab_mint`
+  - `address_collab_mint`
   - `invalid_mint`
   - `transfer`
-  - `remint(prev)`
+  - `standard_remint(prev)`
+  - `fixed_collab_remint(prev)`
+  - `address_collab_remint(prev)`
   - `send_balance`
   - `spend_balance`
   - `noop`
+  - remint 只从 actor 当前真实拥有的 `Active / Dormant` pass 中选择 prev；collab mint/remint 会锁定本动作使用的 active standard Leader，避免同块并发动作改变验证前提。
 - 每个 tick（每个新区块）会输出：
   - 当前链高度与 usdb `synced_height`
     - 这里的 `synced_height` 对应 `get_sync_status.synced_block_height`，表示 `usdb-indexer` 本地 durable 已提交高度
@@ -56,7 +63,13 @@
   - 本块执行动作与失败数
   - 动作后 RPC 验证成功/失败
   - agent 粒度自检（默认开启）：按 UIP-0003 unit、age penalty 和 `u128` 饱和规则，对选中 agent 的 active pass 做独立能量数值校验
-  - 全局交叉检查（低频采样，默认开启）：每 K 块对比 `leaderboard top N` 与 `get_pass_energy`，并抽样 active owner 校验 `balance-history` 与 usdb 视图一致性
+  - 全局交叉检查（低频采样，默认开启）：
+    - 对比 raw-energy leaderboard 与 `get_pass_energy`
+    - 要求 candidate set 精确等于 active standard 集合，并按 `effective_energy DESC, pass_id ASC` 排序
+    - active collab 自身必须保持 `effective=0 / level=0 / factor=10000` 且不进入 candidate
+    - 独立解析 fixed/address Leader 绑定，并用两种 breakdown 排序完整遍历 opaque cursor
+    - 从 breakdown 每行 raw energy 重算 5000 bps contribution、饱和 aggregate，再与 Leader profile/candidate 的 contribution/effective/count 交叉验证
+    - 抽样 active owner 校验 `balance-history` 与 usdb 视图一致性
   - pass 总量 / active / invalid
   - active address 总余额
   - 能量榜首摘要
@@ -71,11 +84,16 @@
   - 如果启用 reorg 注入，报告中还会出现 `event = "reorg"` 的单独事件。
 - 可选启用 validator sampled historical validation：
   - 周期性从 UIP-0006 canonical candidate view 抓取一张或多张 active standard pass 历史样本
-  - 在 head 继续前进后，按包含完整 version identity 的历史 `ConsensusQueryContext` 重新校验 `state ref / economic profile / candidate set`
+  - 在 head 继续前进后，按包含完整 version identity 的历史 `ConsensusQueryContext` 重新校验 `state ref / economic profile / candidate set / collab breakdown`
   - `candidate_set` 模式下还会重算 winner，并可选执行 wrong-winner / tamper 检测
   - 报告中会出现 `event = "validator_sample_capture"` 与 `event = "validator_sample_validation"`
   - 如果打开 tamper 检测，还会出现 `event = "validator_sample_tamper_validation"`
 - 运行失败时会自动打印关键日志尾部，提升排障速度。
+- 可选 deterministic economic bootstrap：
+  - 依次构造 standard Leader、fixed collab、address collab 和第二张 standard candidate
+  - 先积累一块 raw energy，再 remint Leader，断言 fixed collab 不跟随、address collab 自动跟随
+  - 分别 remint fixed/address collab，断言旧 pass `Consumed / raw=0`，新 collab 仅继承 raw energy并重新进入 breakdown
+  - 每一步都执行完整 profile/candidate/breakdown 全局交叉检查
 
 `world-sim` 的整体组件关系、读写链路和 reorg 时的侧视变化见：[usdb-indexer-regtest-topology.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-topology.md)。
 
@@ -100,6 +118,14 @@ src/btc/usdb-indexer/scripts/run_live_reorg.sh
 ```
 
 This wrapper keeps the same long-run style, but enables periodic replacement-chain injection for soak testing.
+
+UIP-0001 至 UIP-0006 economic view 聚焦回归：
+
+```bash
+src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh
+```
+
+该入口默认使用 `limit=2` 强制 candidate/breakdown cursor 翻页，执行 deterministic economic bootstrap，并在后续区块完成 candidate-set historical replay；结束时会从 JSONL 报告硬性校验所有必需 action 和零失败指标。
 
 运行期间可同时打开前端页面观察动态变化：
 
@@ -132,12 +158,14 @@ This wrapper keeps the same long-run style, but enables periodic replacement-cha
 - `SIM_SEED`：随机种子（默认 `42`）
 - `SIM_FEE_RATE`：铭文与转移费率（默认 `1`）
 - `SIM_MAX_ACTIONS_PER_BLOCK`：每块最大动作数（默认 `2`）
-- `SIM_MINT_PROBABILITY`（默认 `0.20`）
+- `SIM_STANDARD_MINT_PROBABILITY`（默认 `0.14`）
+- `SIM_FIXED_COLLAB_MINT_PROBABILITY`（默认 `0.04`）
+- `SIM_ADDRESS_COLLAB_MINT_PROBABILITY`（默认 `0.04`）
 - `SIM_INVALID_MINT_PROBABILITY`（默认 `0.02`）
-- `SIM_TRANSFER_PROBABILITY`（默认 `0.20`）
-- `SIM_REMINT_PROBABILITY`（默认 `0.10`）
-- `SIM_SEND_PROBABILITY`（默认 `0.30`）
-- `SIM_SPEND_PROBABILITY`（默认 `0.15`）
+- `SIM_TRANSFER_PROBABILITY`（默认 `0.18`）
+- `SIM_REMINT_PROBABILITY`（默认 `0.12`，平均分配给三种 remint action）
+- `SIM_SEND_PROBABILITY`（默认 `0.28`）
+- `SIM_SPEND_PROBABILITY`（默认 `0.14`）
 - `SIM_SLEEP_MS_BETWEEN_BLOCKS`：每块间隔毫秒（默认 `0`）
 - `SIM_FAIL_FAST`：动作失败是否立刻退出（`1` 开启）
 - `SIM_INITIAL_ACTIVE_AGENTS`：初始 active agents 数（默认 `3`）
@@ -155,6 +183,8 @@ This wrapper keeps the same long-run style, but enables periodic replacement-cha
 - `SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS`：每隔多少块执行一次全局交叉检查（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N`：每次检查的能量榜前 N 条（默认 `20`）
 - `SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE`：每次检查抽样的 active owner 数（默认 `16`，`0` 表示全量）
+- `SIM_ECONOMIC_PAGE_LIMIT`：candidate/breakdown cursor 分页大小（默认 `16`）
+- `SIM_ECONOMIC_BOOTSTRAP_ENABLED`：是否在随机 tick 前执行 deterministic economic bootstrap（默认 `0`）
 - `SIM_VALIDATOR_SAMPLE_ENABLED`：是否启用 validator sampled validation（默认 `0`）
 - `SIM_VALIDATOR_SAMPLE_MODE`：`single` 或 `candidate_set`（默认 `single`）
 - `SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED`：是否在 `candidate_set` 回放成功后追加 wrong-winner / tamper 检测（默认 `0`）
@@ -180,7 +210,7 @@ src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 
 ```bash
 SIM_POLICY_MODE=scripted \
-SIM_SCRIPTED_CYCLE=mint,send_balance,transfer,remint,spend_balance,noop \
+SIM_SCRIPTED_CYCLE=standard_mint,fixed_collab_mint,address_collab_mint,send_balance,transfer,standard_remint,fixed_collab_remint,address_collab_remint,spend_balance,noop \
 src/btc/usdb-indexer/scripts/regtest_world_sim.sh
 ```
 

@@ -57,8 +57,27 @@ class ActionExpectation:
     target_id: int | None = None
     target_had_active_before: bool | None = None
     prev_inscription_id: str | None = None
+    pass_kind: str | None = None
+    leader_ref_kind: str | None = None
+    leader_ref_value: str | None = None
     expect_invalid: bool = False
     action_id: str | None = None
+
+
+@dataclass(frozen=True)
+class PassIdentity:
+    pass_kind: str
+    leader_ref_kind: str | None = None
+    leader_ref_value: str | None = None
+
+
+@dataclass(frozen=True)
+class MintPlan:
+    pass_kind: str
+    prev_inscription_id: str | None = None
+    leader_ref_kind: str | None = None
+    leader_ref_value: str | None = None
+    leader_agent_id: int | None = None
 
 
 @dataclass
@@ -153,7 +172,9 @@ class Args:
     seed: int
     fee_rate: int
     max_actions_per_block: int
-    mint_probability: float
+    standard_mint_probability: float
+    fixed_collab_mint_probability: float
+    address_collab_mint_probability: float
     invalid_mint_probability: float
     transfer_probability: float
     remint_probability: float
@@ -177,6 +198,8 @@ class Args:
     global_cross_check_interval_blocks: int
     global_cross_check_leaderboard_top_n: int
     global_cross_check_owner_sample_size: int
+    economic_page_limit: int
+    economic_bootstrap_enabled: bool
     reorg_interval_blocks: int
     reorg_depth: int
     reorg_max_events: int
@@ -195,24 +218,42 @@ class Args:
 class RegtestWorldSimulator:
     INSCRIPTION_ID_PATTERN = re.compile(r"([0-9a-f]{64}i\d+)")
     TXID_PATTERN = re.compile(r"\b([0-9a-f]{64})\b")
-    RECOVERY_STATE_VERSION = 2
+    RECOVERY_STATE_VERSION = 3
     ENERGY_MAX = 2**128 - 1
     UNIT_SATS = 100_000
     ENERGY_PER_UNIT_BLOCK = 1
     PENALTY_LAMBDA_NUM = 3
     PENALTY_LAMBDA_DEN = 2
+    COLLAB_WEIGHT_BPS = 5_000
+    BPS_DENOMINATOR = 10_000
     ECONOMIC_VIEW_VERSION = "uip-0006-usdb-economic-state-view:v1"
     CANDIDATE_SELECTION_RULE = "uip-0006:effective-energy-desc-pass-id-asc:v1"
-    ECONOMIC_PAGE_LIMIT = 256
     SUPPORTED_ACTIONS = {
-        "mint",
+        "standard_mint",
+        "fixed_collab_mint",
+        "address_collab_mint",
         "invalid_mint",
         "transfer",
-        "remint",
+        "standard_remint",
+        "fixed_collab_remint",
+        "address_collab_remint",
         "send_balance",
         "spend_balance",
         "noop",
     }
+    MINT_ACTIONS = {
+        "standard_mint",
+        "fixed_collab_mint",
+        "address_collab_mint",
+        "invalid_mint",
+    }
+    REMINT_ACTIONS = {
+        "standard_remint",
+        "fixed_collab_remint",
+        "address_collab_remint",
+    }
+    FIXED_COLLAB_ACTIONS = {"fixed_collab_mint", "fixed_collab_remint"}
+    ADDRESS_COLLAB_ACTIONS = {"address_collab_mint", "address_collab_remint"}
     ORD_TRANSIENT_ERROR_PATTERNS = (
         "output in wallet but not in ord server",
     )
@@ -246,6 +287,8 @@ class RegtestWorldSimulator:
             )
         if not self.args.scripted_cycle:
             raise WorldSimError("scripted_cycle must not be empty")
+        if self.args.economic_page_limit <= 0:
+            raise WorldSimError("economic_page_limit must be greater than zero")
         unknown_actions = [
             action for action in self.args.scripted_cycle if action not in self.SUPPORTED_ACTIONS
         ]
@@ -259,6 +302,7 @@ class RegtestWorldSimulator:
         self.temp_dir = Path(args.temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
+        self.address_script_hash_cache: dict[str, str] = {}
         self.agents: list[Agent] = []
         self._init_agents()
         self.total_agents = len(self.agents)
@@ -272,19 +316,34 @@ class RegtestWorldSimulator:
         self.active_agent_count = min(
             self.total_agents, max(1, self.args.initial_active_agents)
         )
+        if self.args.economic_bootstrap_enabled:
+            if self.total_agents < 4:
+                raise WorldSimError(
+                    "economic bootstrap requires at least four configured agents"
+                )
+            self.active_agent_count = max(self.active_agent_count, 4)
 
         # Global pass ownership index used for candidate selection.
         self.pass_owner_by_id: dict[str, int] = {}
+        self.pass_identity_by_id: dict[str, PassIdentity] = {}
 
         self.metrics = {
-            "mint_ok": 0,
-            "mint_fail": 0,
+            "standard_mint_ok": 0,
+            "standard_mint_fail": 0,
+            "fixed_collab_mint_ok": 0,
+            "fixed_collab_mint_fail": 0,
+            "address_collab_mint_ok": 0,
+            "address_collab_mint_fail": 0,
             "invalid_mint_ok": 0,
             "invalid_mint_fail": 0,
             "transfer_ok": 0,
             "transfer_fail": 0,
-            "remint_ok": 0,
-            "remint_fail": 0,
+            "standard_remint_ok": 0,
+            "standard_remint_fail": 0,
+            "fixed_collab_remint_ok": 0,
+            "fixed_collab_remint_fail": 0,
+            "address_collab_remint_ok": 0,
+            "address_collab_remint_fail": 0,
             "send_ok": 0,
             "send_fail": 0,
             "spend_ok": 0,
@@ -393,6 +452,8 @@ class RegtestWorldSimulator:
                 "global_cross_check_interval_blocks": self.args.global_cross_check_interval_blocks,
                 "global_cross_check_leaderboard_top_n": self.args.global_cross_check_leaderboard_top_n,
                 "global_cross_check_owner_sample_size": self.args.global_cross_check_owner_sample_size,
+                "economic_page_limit": self.args.economic_page_limit,
+                "economic_bootstrap_enabled": self.args.economic_bootstrap_enabled,
                 "reorg_interval_blocks": self.args.reorg_interval_blocks,
                 "reorg_depth": self.args.reorg_depth,
                 "reorg_max_events": self.args.reorg_max_events,
@@ -493,6 +554,9 @@ class RegtestWorldSimulator:
             "target_id": expectation.target_id,
             "target_had_active_before": expectation.target_had_active_before,
             "prev_inscription_id": expectation.prev_inscription_id,
+            "pass_kind": expectation.pass_kind,
+            "leader_ref_kind": expectation.leader_ref_kind,
+            "leader_ref_value": expectation.leader_ref_value,
             "expect_invalid": expectation.expect_invalid,
             "action_id": expectation.action_id,
         }
@@ -508,6 +572,9 @@ class RegtestWorldSimulator:
             target_id=payload.get("target_id"),
             target_had_active_before=payload.get("target_had_active_before"),
             prev_inscription_id=payload.get("prev_inscription_id"),
+            pass_kind=payload.get("pass_kind"),
+            leader_ref_kind=payload.get("leader_ref_kind"),
+            leader_ref_value=payload.get("leader_ref_value"),
             expect_invalid=bool(payload.get("expect_invalid", False)),
             action_id=payload.get("action_id"),
         )
@@ -728,6 +795,14 @@ class RegtestWorldSimulator:
                 inscription_id: int(owner_id)
                 for inscription_id, owner_id in self.pass_owner_by_id.items()
             },
+            "pass_identity_by_id": {
+                inscription_id: {
+                    "pass_kind": identity.pass_kind,
+                    "leader_ref_kind": identity.leader_ref_kind,
+                    "leader_ref_value": identity.leader_ref_value,
+                }
+                for inscription_id, identity in self.pass_identity_by_id.items()
+            },
             "agents": [self.serialize_agent(agent) for agent in self.agents],
             "validator_samples": [
                 self.serialize_validator_sample(sample)
@@ -752,6 +827,14 @@ class RegtestWorldSimulator:
             "pass_owner_by_id": {
                 inscription_id: int(owner_id)
                 for inscription_id, owner_id in self.pass_owner_by_id.items()
+            },
+            "pass_identity_by_id": {
+                inscription_id: {
+                    "pass_kind": identity.pass_kind,
+                    "leader_ref_kind": identity.leader_ref_kind,
+                    "leader_ref_value": identity.leader_ref_value,
+                }
+                for inscription_id, identity in self.pass_identity_by_id.items()
             },
             "agents": [self.serialize_agent(agent) for agent in self.agents],
             "validator_samples": [
@@ -872,7 +955,7 @@ class RegtestWorldSimulator:
         return inscription_ids
 
     def build_action_probe_state(self, actor: Agent, action: str) -> dict[str, Any] | None:
-        if action in {"mint", "invalid_mint", "remint", "transfer"}:
+        if action in self.MINT_ACTIONS | self.REMINT_ACTIONS | {"transfer"}:
             return {
                 "wallet_name": actor.wallet_name,
                 "wallet_txids": sorted(self.list_wallet_txids(actor.wallet_name)),
@@ -946,7 +1029,7 @@ class RegtestWorldSimulator:
                 "raw_output": txid,
             }
 
-        if plan.action in {"mint", "invalid_mint", "remint"}:
+        if plan.action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
             if not wallet_name:
                 return None
             baseline_inscriptions = {
@@ -1079,6 +1162,15 @@ class RegtestWorldSimulator:
             str(inscription_id): int(owner_id)
             for inscription_id, owner_id in (payload.get("pass_owner_by_id") or {}).items()
         }
+        self.pass_identity_by_id = {
+            str(inscription_id): PassIdentity(
+                pass_kind=str(identity.get("pass_kind", "")),
+                leader_ref_kind=identity.get("leader_ref_kind"),
+                leader_ref_value=identity.get("leader_ref_value"),
+            )
+            for inscription_id, identity in (payload.get("pass_identity_by_id") or {}).items()
+            if isinstance(identity, dict)
+        }
         agent_payloads = payload.get("agents") or []
         if len(agent_payloads) != len(self.agents):
             raise WorldSimError(
@@ -1112,7 +1204,7 @@ class RegtestWorldSimulator:
     ) -> ActionReceipt:
         local_patch: dict[str, Any] | None = None
         if expectation is not None:
-            if expectation.action in {"mint", "invalid_mint", "remint"}:
+            if expectation.action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
                 if expectation.inscription_id is None:
                     raise WorldSimError(
                         f"mint-like receipt missing inscription_id for action_id={planned_action.action_id}"
@@ -1122,6 +1214,9 @@ class RegtestWorldSimulator:
                     "inscription_id": expectation.inscription_id,
                     "owner_agent_id": expectation.actor_id,
                     "invalid": expectation.expect_invalid,
+                    "pass_kind": expectation.pass_kind,
+                    "leader_ref_kind": expectation.leader_ref_kind,
+                    "leader_ref_value": expectation.leader_ref_value,
                 }
             elif expectation.action == "transfer":
                 if expectation.inscription_id is None or expectation.target_id is None:
@@ -1182,6 +1277,11 @@ class RegtestWorldSimulator:
                     owner = self.agents[owner_agent_id]
                     owner.owned_passes.add(inscription_id)
                     self.pass_owner_by_id[inscription_id] = owner_agent_id
+                    self.pass_identity_by_id[inscription_id] = PassIdentity(
+                        pass_kind=str(local_patch.get("pass_kind", "standard")),
+                        leader_ref_kind=local_patch.get("leader_ref_kind"),
+                        leader_ref_value=local_patch.get("leader_ref_value"),
+                    )
                     if bool(local_patch.get("invalid", False)):
                         owner.invalid_passes.add(inscription_id)
             elif patch_kind == "transfer":
@@ -1230,54 +1330,67 @@ class RegtestWorldSimulator:
             pre_height,
         )
 
-        if plan.action in {"mint", "invalid_mint", "remint"}:
-            prev: list[str] | None = None
-            if plan.action == "remint":
-                prev_id = self.choose_prev_for_remint(rng)
-                if prev_id is None:
-                    raise WorldSimError(
-                        f"cannot rebuild remint receipt without prev for action_id={plan.action_id}"
-                    )
-                prev = [prev_id]
+        if plan.action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
+            mint_plan = self.build_mint_plan(
+                actor=actor,
+                action=plan.action,
+                available_agent_ids=available_ids,
+                pre_height=pre_height,
+                rng=rng,
+            )
             inscription_id = self.extract_inscription_id(raw_output)
             pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
             invalid_usdb_main = plan.action == "invalid_mint"
+            leader_detail = (
+                f":{mint_plan.leader_ref_kind}={mint_plan.leader_ref_value}"
+                if mint_plan.leader_ref_kind and mint_plan.leader_ref_value
+                else ""
+            )
             detail = (
                 f"invalid_mint:{inscription_id}:owner={actor.wallet_name}"
                 if invalid_usdb_main
                 else (
-                    f"remint:prev={prev[0]}:remint_like_mint:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}"
-                    if prev
-                    else f"mint:{inscription_id}:owner={actor.wallet_name}"
+                    f"{plan.action}:{inscription_id}:owner={actor.wallet_name}:prev={mint_plan.prev_inscription_id}{leader_detail}"
+                    if mint_plan.prev_inscription_id
+                    else f"{plan.action}:{inscription_id}:owner={actor.wallet_name}{leader_detail}"
                 )
             )
             expectation = ActionExpectation(
                 action=plan.action,
                 actor_id=actor.agent_id,
                 inscription_id=inscription_id,
-                prev_inscription_id=prev[0] if prev else None,
+                prev_inscription_id=mint_plan.prev_inscription_id,
                 expect_invalid=invalid_usdb_main,
                 actor_pre_balance=pre_balance,
+                pass_kind=mint_plan.pass_kind,
+                leader_ref_kind=mint_plan.leader_ref_kind,
+                leader_ref_value=mint_plan.leader_ref_value,
             )
-            metric_key = "invalid_mint_ok" if invalid_usdb_main else ("remint_ok" if prev else "mint_ok")
+            used_agent_ids = [actor.agent_id]
+            if mint_plan.leader_agent_id is not None:
+                used_agent_ids.append(mint_plan.leader_agent_id)
             return ActionReceipt(
                 action_id=plan.action_id,
                 action=plan.action,
                 actor_id=actor.agent_id,
                 detail=detail,
-                used_agent_ids=[actor.agent_id],
+                used_agent_ids=sorted(used_agent_ids),
                 expectation=self.serialize_expectation(expectation),
-                metric_deltas={metric_key: 1},
+                metric_deltas={f"{plan.action}_ok": 1},
                 local_patch={
                     "kind": "mint_like",
                     "inscription_id": inscription_id,
                     "owner_agent_id": actor.agent_id,
                     "invalid": invalid_usdb_main,
+                    "pass_kind": mint_plan.pass_kind,
+                    "leader_ref_kind": mint_plan.leader_ref_kind,
+                    "leader_ref_value": mint_plan.leader_ref_value,
                 },
             )
 
         if plan.action == "transfer":
-            if not actor.owned_passes:
+            transfer_candidates = self.load_actor_remint_candidates(actor, pre_height)
+            if not transfer_candidates:
                 raise WorldSimError(
                     f"cannot rebuild transfer receipt without owned passes for action_id={plan.action_id}"
                 )
@@ -1290,7 +1403,13 @@ class RegtestWorldSimulator:
                 raise WorldSimError(
                     f"cannot rebuild transfer receipt without target candidates for action_id={plan.action_id}"
                 )
-            inscription_id = rng.choice(sorted(actor.owned_passes))
+            inscription_id = str(
+                rng.choice(transfer_candidates).get("inscription_id", "")
+            )
+            if not inscription_id:
+                raise WorldSimError(
+                    f"cannot rebuild transfer receipt from empty inscription id for action_id={plan.action_id}"
+                )
             target = rng.choice(target_candidates)
             target_active_before = (
                 self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
@@ -1691,6 +1810,9 @@ class RegtestWorldSimulator:
         return match.group(1)
 
     def address_to_script_hash(self, address: str) -> str:
+        cached = self.address_script_hash_cache.get(address)
+        if cached is not None:
+            return cached
         # `validateaddress` is a non-wallet RPC, avoiding wallet selection errors.
         address_info = json.loads(self.run_btc_cli(None, ["validateaddress", address]))
         script_pubkey = address_info.get("scriptPubKey")
@@ -1699,7 +1821,9 @@ class RegtestWorldSimulator:
                 f"validateaddress missing scriptPubKey: address={address}, payload={address_info}"
             )
         script_bytes = bytes.fromhex(script_pubkey)
-        return hashlib.sha256(script_bytes).digest()[::-1].hex()
+        script_hash = hashlib.sha256(script_bytes).digest()[::-1].hex()
+        self.address_script_hash_cache[address] = script_hash
+        return script_hash
 
     @staticmethod
     def btc_to_sat(amount_btc: str) -> int:
@@ -1747,6 +1871,16 @@ class RegtestWorldSimulator:
         )
         return min(
             base * cls.PENALTY_LAMBDA_NUM // cls.PENALTY_LAMBDA_DEN,
+            cls.ENERGY_MAX,
+        )
+
+    @classmethod
+    def calc_collab_contribution(cls, raw_energy: int) -> int:
+        raw = min(max(int(raw_energy), 0), cls.ENERGY_MAX)
+        quotient, remainder = divmod(raw, cls.BPS_DENOMINATOR)
+        return min(
+            quotient * cls.COLLAB_WEIGHT_BPS
+            + remainder * cls.COLLAB_WEIGHT_BPS // cls.BPS_DENOMINATOR,
             cls.ENERGY_MAX,
         )
 
@@ -1833,6 +1967,78 @@ class RegtestWorldSimulator:
             },
         }
 
+    def load_pass_economic_profile_at_height(
+        self,
+        inscription_id: str,
+        block_height: int,
+        context: dict[str, Any],
+        *,
+        expected_external_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        profile_view = self.rpc_usdb(
+            "get_pass_economic_profile",
+            [
+                {
+                    "view_version": self.ECONOMIC_VIEW_VERSION,
+                    "pass_id": inscription_id,
+                    "block_height": block_height,
+                    "context": context,
+                }
+            ],
+        )
+        if not isinstance(profile_view, dict):
+            raise WorldSimError(
+                "economic profile returned non-object: "
+                f"block_height={block_height}, inscription_id={inscription_id}, "
+                f"profile_view={profile_view}"
+            )
+        if profile_view.get("view_version") != self.ECONOMIC_VIEW_VERSION:
+            raise WorldSimError(
+                "economic profile view version mismatch: "
+                f"expected={self.ECONOMIC_VIEW_VERSION}, got={profile_view.get('view_version')}"
+            )
+        external_state = profile_view.get("external_state") or {}
+        if int(external_state.get("btc_height", -1)) != block_height:
+            raise WorldSimError(
+                "economic profile external-state height mismatch: "
+                f"expected={block_height}, got={external_state.get('btc_height')}"
+            )
+        if expected_external_state is not None and external_state != expected_external_state:
+            raise WorldSimError(
+                "economic profile external-state identity mismatch: "
+                f"inscription_id={inscription_id}, expected={expected_external_state}, "
+                f"got={external_state}"
+            )
+        profile = profile_view.get("pass") or {}
+        if not isinstance(profile, dict) or profile.get("pass_id") != inscription_id:
+            raise WorldSimError(
+                "economic profile is missing requested pass: "
+                f"expected={inscription_id}, profile={profile}"
+            )
+        return profile
+
+    @staticmethod
+    def assert_zero_economic_profile(
+        profile: dict[str, Any], *, inscription_id: str, expected_state: str
+    ) -> None:
+        expected = {
+            "state": expected_state,
+            "raw_energy": "0",
+            "collab_contribution": "0",
+            "effective_energy": "0",
+            "level": 0,
+            "difficulty_factor_bps": 10_000,
+            "collab_breakdown_count": 0,
+        }
+        for field_name, expected_value in expected.items():
+            actual_value = profile.get(field_name)
+            if actual_value != expected_value:
+                raise WorldSimError(
+                    "terminal economic profile mismatch: "
+                    f"inscription_id={inscription_id}, field={field_name}, "
+                    f"expected={expected_value}, got={actual_value}"
+                )
+
     @staticmethod
     def candidate_from_view_item(item: dict[str, Any]) -> ValidatorSampleCandidate:
         return ValidatorSampleCandidate(
@@ -1853,13 +2059,14 @@ class RegtestWorldSimulator:
         cursor: str | None = None
         aggregate: dict[str, Any] | None = None
         page_count = 0
+        page_limit = self.args.economic_page_limit
 
         while True:
             params: dict[str, Any] = {
                 "view_version": self.ECONOMIC_VIEW_VERSION,
                 "selection_rule": self.CANDIDATE_SELECTION_RULE,
                 "cursor": cursor,
-                "limit": self.ECONOMIC_PAGE_LIMIT,
+                "limit": page_limit,
             }
             if cursor is None:
                 params["block_height"] = block_height
@@ -1881,15 +2088,15 @@ class RegtestWorldSimulator:
                     "validator sample candidate selection rule mismatch: "
                     f"expected={self.CANDIDATE_SELECTION_RULE}, got={page.get('selection_rule')}"
                 )
-            if int(page.get("limit", 0)) != self.ECONOMIC_PAGE_LIMIT:
+            if int(page.get("limit", 0)) != page_limit:
                 raise WorldSimError(
                     "validator sample candidate page limit mismatch: "
-                    f"expected={self.ECONOMIC_PAGE_LIMIT}, got={page.get('limit')}"
+                    f"expected={page_limit}, got={page.get('limit')}"
                 )
-            if int(page.get("max_limit", 0)) < self.ECONOMIC_PAGE_LIMIT:
+            if int(page.get("max_limit", 0)) < page_limit:
                 raise WorldSimError(
                     "validator sample candidate max_limit is below requested limit: "
-                    f"requested={self.ECONOMIC_PAGE_LIMIT}, max_limit={page.get('max_limit')}"
+                    f"requested={page_limit}, max_limit={page.get('max_limit')}"
                 )
 
             external_state = page.get("external_state") or {}
@@ -1976,6 +2183,265 @@ class RegtestWorldSimulator:
             )
         return aggregate
 
+    def load_collab_breakdown_at_height(
+        self,
+        leader_pass_id: str,
+        block_height: int,
+        context: dict[str, Any],
+        *,
+        sort: str,
+        expected_external_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        cursor: str | None = None
+        aggregate: dict[str, Any] | None = None
+        seen_cursors: set[str] = set()
+        page_limit = self.args.economic_page_limit
+
+        while True:
+            params: dict[str, Any] = {
+                "view_version": self.ECONOMIC_VIEW_VERSION,
+                "leader_pass_id": leader_pass_id,
+                "sort": sort,
+                "cursor": cursor,
+                "limit": page_limit,
+            }
+            if cursor is None:
+                params["block_height"] = block_height
+                params["context"] = context
+
+            page = self.rpc_usdb("get_collab_breakdown", [params])
+            if not isinstance(page, dict):
+                raise WorldSimError(
+                    "collab breakdown returned non-object: "
+                    f"leader={leader_pass_id}, block_height={block_height}, page={page}"
+                )
+            if page.get("view_version") != self.ECONOMIC_VIEW_VERSION:
+                raise WorldSimError(
+                    "collab breakdown view version mismatch: "
+                    f"expected={self.ECONOMIC_VIEW_VERSION}, got={page.get('view_version')}"
+                )
+            if page.get("leader_pass_id") != leader_pass_id:
+                raise WorldSimError(
+                    "collab breakdown Leader mismatch: "
+                    f"expected={leader_pass_id}, got={page.get('leader_pass_id')}"
+                )
+            if page.get("sort") != sort:
+                raise WorldSimError(
+                    f"collab breakdown sort mismatch: expected={sort}, got={page.get('sort')}"
+                )
+            if int(page.get("limit", 0)) != page_limit:
+                raise WorldSimError(
+                    "collab breakdown page limit mismatch: "
+                    f"expected={page_limit}, got={page.get('limit')}"
+                )
+            if int(page.get("max_limit", 0)) < page_limit:
+                raise WorldSimError(
+                    "collab breakdown max_limit is below requested limit: "
+                    f"requested={page_limit}, max_limit={page.get('max_limit')}"
+                )
+
+            external_state = page.get("external_state") or {}
+            if int(external_state.get("btc_height", -1)) != block_height:
+                raise WorldSimError(
+                    "collab breakdown external-state height mismatch: "
+                    f"expected={block_height}, got={external_state.get('btc_height')}"
+                )
+            if expected_external_state is not None and external_state != expected_external_state:
+                raise WorldSimError(
+                    "collab breakdown external-state identity mismatch: "
+                    f"leader={leader_pass_id}, expected={expected_external_state}, "
+                    f"got={external_state}"
+                )
+            items = page.get("items") or []
+            if not isinstance(items, list):
+                raise WorldSimError(
+                    "collab breakdown items must be an array: "
+                    f"leader={leader_pass_id}, items={items}"
+                )
+
+            if aggregate is None:
+                aggregate = {
+                    "view_version": page["view_version"],
+                    "external_state": external_state,
+                    "leader_pass_id": page["leader_pass_id"],
+                    "leader_state": page.get("leader_state"),
+                    "leader_pass_kind": page.get("leader_pass_kind"),
+                    "sort": page["sort"],
+                    "total": int(page.get("total", 0)),
+                    "aggregate_collab_contribution": str(
+                        page.get("aggregate_collab_contribution", "")
+                    ),
+                    "limit": int(page["limit"]),
+                    "max_limit": int(page["max_limit"]),
+                    "items": [],
+                }
+            else:
+                immutable_fields = {
+                    "view_version": page.get("view_version"),
+                    "external_state": external_state,
+                    "leader_pass_id": page.get("leader_pass_id"),
+                    "leader_state": page.get("leader_state"),
+                    "leader_pass_kind": page.get("leader_pass_kind"),
+                    "sort": page.get("sort"),
+                    "total": int(page.get("total", 0)),
+                    "aggregate_collab_contribution": str(
+                        page.get("aggregate_collab_contribution", "")
+                    ),
+                    "limit": int(page.get("limit", 0)),
+                    "max_limit": int(page.get("max_limit", 0)),
+                }
+                for field_name, actual in immutable_fields.items():
+                    if aggregate[field_name] != actual:
+                        raise WorldSimError(
+                            "collab breakdown continuation changed immutable field: "
+                            f"leader={leader_pass_id}, field={field_name}, "
+                            f"expected={aggregate[field_name]}, got={actual}"
+                        )
+
+            aggregate["items"].extend(items)
+            next_cursor = page.get("next_cursor")
+            if next_cursor is None:
+                break
+            if not isinstance(next_cursor, str) or not next_cursor:
+                raise WorldSimError(
+                    f"collab breakdown returned invalid cursor: {next_cursor}"
+                )
+            if next_cursor in seen_cursors:
+                raise WorldSimError("collab breakdown repeated a continuation cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+            if len(seen_cursors) > 10_000:
+                raise WorldSimError("collab breakdown pagination exceeded safety limit")
+
+        if aggregate is None:
+            raise WorldSimError("collab breakdown pagination produced no page")
+        items = aggregate["items"]
+        if len(items) != aggregate["total"]:
+            raise WorldSimError(
+                "collab breakdown pagination is incomplete: "
+                f"leader={leader_pass_id}, expected={aggregate['total']}, got={len(items)}"
+            )
+        item_ids = [str(item.get("collab_pass_id", "")) for item in items]
+        if any(not item_id for item_id in item_ids) or len(item_ids) != len(set(item_ids)):
+            raise WorldSimError(
+                f"collab breakdown contains empty or duplicate pass ids: leader={leader_pass_id}"
+            )
+
+        recomputed_aggregate = 0
+        for item in items:
+            raw_energy = int(item.get("collab_raw_energy", 0))
+            contribution = int(item.get("collab_contribution", 0))
+            expected_contribution = self.calc_collab_contribution(raw_energy)
+            if int(item.get("collab_weight_bps", -1)) != self.COLLAB_WEIGHT_BPS:
+                raise WorldSimError(
+                    "collab breakdown weight mismatch: "
+                    f"pass={item.get('collab_pass_id')}, expected={self.COLLAB_WEIGHT_BPS}, "
+                    f"got={item.get('collab_weight_bps')}"
+                )
+            if contribution != expected_contribution:
+                raise WorldSimError(
+                    "collab breakdown contribution formula mismatch: "
+                    f"pass={item.get('collab_pass_id')}, raw={raw_energy}, "
+                    f"expected={expected_contribution}, got={contribution}"
+                )
+            recomputed_aggregate = self.saturating_energy_add(
+                recomputed_aggregate, contribution
+            )
+
+        if recomputed_aggregate != int(aggregate["aggregate_collab_contribution"]):
+            raise WorldSimError(
+                "collab breakdown aggregate is not reproducible from rows: "
+                f"leader={leader_pass_id}, expected={recomputed_aggregate}, "
+                f"got={aggregate['aggregate_collab_contribution']}"
+            )
+        if sort == "collab_pass_id_asc":
+            expected_items = sorted(items, key=lambda item: str(item["collab_pass_id"]))
+        elif sort == "contribution_desc_pass_id_asc":
+            expected_items = sorted(
+                items,
+                key=lambda item: (
+                    -int(item["collab_contribution"]),
+                    str(item["collab_pass_id"]),
+                ),
+            )
+        else:
+            raise WorldSimError(f"unsupported collab breakdown sort: {sort}")
+        if items != expected_items:
+            raise WorldSimError(
+                f"collab breakdown ordering mismatch: leader={leader_pass_id}, sort={sort}"
+            )
+        return aggregate
+
+    def resolve_expected_collab_leader(
+        self,
+        collab_snapshot: dict[str, Any],
+        active_standard_by_id: dict[str, dict[str, Any]],
+        active_standard_by_owner: dict[str, dict[str, Any]],
+    ) -> str | None:
+        fixed_leader_id = collab_snapshot.get("leader_pass_id")
+        address_leader = collab_snapshot.get("leader_btc_addr")
+        if fixed_leader_id and address_leader:
+            raise WorldSimError(
+                "collab pass declares both Leader reference kinds: "
+                f"pass={collab_snapshot.get('inscription_id')}"
+            )
+        if fixed_leader_id:
+            fixed_id = str(fixed_leader_id)
+            return fixed_id if fixed_id in active_standard_by_id else None
+        if address_leader:
+            owner_script_hash = self.address_to_script_hash(str(address_leader))
+            leader = active_standard_by_owner.get(owner_script_hash)
+            return str(leader["inscription_id"]) if leader is not None else None
+        raise WorldSimError(
+            "active collab pass is missing a Leader reference: "
+            f"pass={collab_snapshot.get('inscription_id')}"
+        )
+
+    def cross_check_profile_with_breakdown(
+        self,
+        *,
+        profile: dict[str, Any],
+        block_height: int,
+        context: dict[str, Any],
+        expected_external_state: dict[str, Any] | None = None,
+    ) -> int:
+        pass_id = str(profile.get("pass_id", ""))
+        if profile.get("state") != "active" or profile.get("pass_kind") != "standard":
+            raise WorldSimError(
+                "profile/breakdown cross-check requires an active standard pass: "
+                f"pass={pass_id}, state={profile.get('state')}, kind={profile.get('pass_kind')}"
+            )
+        breakdown = self.load_collab_breakdown_at_height(
+            pass_id,
+            block_height,
+            context,
+            sort="collab_pass_id_asc",
+            expected_external_state=expected_external_state,
+        )
+        aggregate = int(breakdown["aggregate_collab_contribution"])
+        if int(profile.get("collab_contribution", 0)) != aggregate:
+            raise WorldSimError(
+                "profile/breakdown contribution mismatch: "
+                f"pass={pass_id}, profile={profile.get('collab_contribution')}, "
+                f"breakdown={aggregate}"
+            )
+        if int(profile.get("collab_breakdown_count", -1)) != len(breakdown["items"]):
+            raise WorldSimError(
+                "profile/breakdown row-count mismatch: "
+                f"pass={pass_id}, profile={profile.get('collab_breakdown_count')}, "
+                f"rows={len(breakdown['items'])}"
+            )
+        expected_effective = self.saturating_energy_add(
+            int(profile.get("raw_energy", 0)), aggregate
+        )
+        if int(profile.get("effective_energy", 0)) != expected_effective:
+            raise WorldSimError(
+                "profile/breakdown effective energy mismatch: "
+                f"pass={pass_id}, expected={expected_effective}, "
+                f"got={profile.get('effective_energy')}"
+            )
+        return len(breakdown["items"])
+
     def should_capture_validator_sample(self, tick: int) -> bool:
         if not self.args.validator_sample_enabled:
             return False
@@ -1987,40 +2453,9 @@ class RegtestWorldSimulator:
     def build_validator_sample_candidate(
         self, inscription_id: str, block_height: int, context: dict[str, Any]
     ) -> ValidatorSampleCandidate:
-        profile_view = self.rpc_usdb(
-            "get_pass_economic_profile",
-            [
-                {
-                    "view_version": self.ECONOMIC_VIEW_VERSION,
-                    "pass_id": inscription_id,
-                    "block_height": block_height,
-                    "context": context,
-                }
-            ],
+        profile = self.load_pass_economic_profile_at_height(
+            inscription_id, block_height, context
         )
-        if not isinstance(profile_view, dict):
-            raise WorldSimError(
-                "validator sample profile returned non-object: "
-                f"block_height={block_height}, inscription_id={inscription_id}, "
-                f"profile_view={profile_view}"
-            )
-        if profile_view.get("view_version") != self.ECONOMIC_VIEW_VERSION:
-            raise WorldSimError(
-                "validator sample profile view version mismatch: "
-                f"expected={self.ECONOMIC_VIEW_VERSION}, got={profile_view.get('view_version')}"
-            )
-        external_state = profile_view.get("external_state") or {}
-        if int(external_state.get("btc_height", -1)) != block_height:
-            raise WorldSimError(
-                "validator sample profile external-state height mismatch: "
-                f"expected={block_height}, got={external_state.get('btc_height')}"
-            )
-        profile = profile_view.get("pass") or {}
-        if not isinstance(profile, dict) or profile.get("pass_id") != inscription_id:
-            raise WorldSimError(
-                "validator sample profile is missing requested pass: "
-                f"expected={inscription_id}, profile={profile}"
-            )
         return self.candidate_from_view_item(profile)
 
     @staticmethod
@@ -2305,14 +2740,24 @@ class RegtestWorldSimulator:
                                 "validator sample candidate disappeared from canonical view: "
                                 f"sample={sample.sample_id}, candidate={expected.inscription_id}"
                             )
-                        profile_candidate = self.build_validator_sample_candidate(
-                            expected.inscription_id, sample.block_height, context
+                        profile = self.load_pass_economic_profile_at_height(
+                            expected.inscription_id,
+                            sample.block_height,
+                            context,
+                            expected_external_state=candidate_view["external_state"],
                         )
+                        profile_candidate = self.candidate_from_view_item(profile)
                         self.assert_validator_candidate_matches(
                             actual, profile_candidate, sample.sample_id
                         )
                         self.assert_validator_candidate_matches(
                             expected, actual, sample.sample_id
+                        )
+                        self.cross_check_profile_with_breakdown(
+                            profile=profile,
+                            block_height=sample.block_height,
+                            context=context,
+                            expected_external_state=candidate_view["external_state"],
                         )
                         actual_candidates.append(actual)
 
@@ -2327,9 +2772,10 @@ class RegtestWorldSimulator:
                         sample, actual_winner, tick, block_height
                     )
                 else:
-                    actual = self.build_validator_sample_candidate(
+                    profile = self.load_pass_economic_profile_at_height(
                         sample.inscription_id, sample.block_height, context
                     )
+                    actual = self.candidate_from_view_item(profile)
                     expected = ValidatorSampleCandidate(
                         inscription_id=sample.inscription_id,
                         owner=sample.owner,
@@ -2344,6 +2790,24 @@ class RegtestWorldSimulator:
                     self.assert_validator_candidate_matches(
                         expected, actual, sample.sample_id
                     )
+                    if actual.state == "active" and actual.pass_kind == "standard":
+                        self.cross_check_profile_with_breakdown(
+                            profile=profile,
+                            block_height=sample.block_height,
+                            context=context,
+                        )
+                    elif actual.pass_kind == "collab":
+                        collab_boundary = (
+                            actual.collab_contribution,
+                            actual.effective_energy,
+                            actual.level,
+                            actual.difficulty_factor_bps,
+                        )
+                        if collab_boundary != (0, 0, 0, self.BPS_DENOMINATOR):
+                            raise WorldSimError(
+                                "historical collab profile violated zero-effective boundary: "
+                                f"sample={sample.sample_id}, values={collab_boundary}"
+                            )
 
                 sample.validated = True
                 sample.validated_tick = tick
@@ -2534,16 +2998,60 @@ class RegtestWorldSimulator:
         amount = Decimal(sat) / Decimal("100000000")
         return f"{amount:.8f}"
 
+    @classmethod
+    def pass_identity_for_action(cls, action: str) -> PassIdentity:
+        if action in {"standard_mint", "standard_remint", "invalid_mint"}:
+            return PassIdentity(pass_kind="standard")
+        if action in cls.FIXED_COLLAB_ACTIONS:
+            return PassIdentity(pass_kind="collab", leader_ref_kind="leader_pass_id")
+        if action in cls.ADDRESS_COLLAB_ACTIONS:
+            return PassIdentity(pass_kind="collab", leader_ref_kind="leader_btc_addr")
+        raise WorldSimError(f"action does not define a mint identity: {action}")
+
+    @staticmethod
+    def pass_identity_from_snapshot(snapshot: dict[str, Any]) -> PassIdentity:
+        leader_pass_id = snapshot.get("leader_pass_id")
+        leader_btc_addr = snapshot.get("leader_btc_addr")
+        if leader_pass_id:
+            return PassIdentity(
+                pass_kind=str(snapshot.get("pass_kind", "")),
+                leader_ref_kind="leader_pass_id",
+                leader_ref_value=str(leader_pass_id),
+            )
+        if leader_btc_addr:
+            return PassIdentity(
+                pass_kind=str(snapshot.get("pass_kind", "")),
+                leader_ref_kind="leader_btc_addr",
+                leader_ref_value=str(leader_btc_addr),
+            )
+        return PassIdentity(pass_kind=str(snapshot.get("pass_kind", "")))
+
     def write_mint_content(
-        self, usdb_main: str, prev: list[str], invalid_usdb_main: bool = False
+        self,
+        *,
+        usdb_main: str,
+        identity: PassIdentity,
+        prev: list[str],
+        invalid_usdb_main: bool = False,
     ) -> Path:
         payload = {
             "p": "usdb",
             "op": "mint",
             "v": 1,
-            "usdb_main": "0x123" if invalid_usdb_main else usdb_main,
             "prev": prev,
         }
+        if identity.pass_kind == "standard":
+            payload["usdb_main"] = "0x123" if invalid_usdb_main else usdb_main
+        elif identity.leader_ref_kind == "leader_pass_id":
+            if not identity.leader_ref_value:
+                raise WorldSimError("fixed collab mint is missing leader_pass_id")
+            payload["leader_pass_id"] = identity.leader_ref_value
+        elif identity.leader_ref_kind == "leader_btc_addr":
+            if not identity.leader_ref_value:
+                raise WorldSimError("address collab mint is missing leader_btc_addr")
+            payload["leader_btc_addr"] = identity.leader_ref_value
+        else:
+            raise WorldSimError(f"unsupported mint identity: {identity}")
         fd, path = tempfile.mkstemp(
             prefix="usdb-world-mint-", suffix=".json", dir=self.temp_dir
         )
@@ -2551,6 +3059,115 @@ class RegtestWorldSimulator:
         content_path = Path(path)
         content_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
         return content_path
+
+    def load_actor_remint_candidates(
+        self, actor: Agent, block_height: int
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for inscription_id in sorted(actor.owned_passes):
+            snapshot = self.get_pass_snapshot(inscription_id, block_height)
+            if snapshot is None:
+                continue
+            if str(snapshot.get("owner", "")) != actor.owner_script_hash:
+                continue
+            if str(snapshot.get("state", "")) not in {"active", "dormant"}:
+                continue
+            candidates.append(snapshot)
+        return candidates
+
+    def load_active_standard_leader_candidates(
+        self,
+        actor: Agent,
+        available_agent_ids: set[int],
+        block_height: int,
+        preferred_leader_agent_id: int | None = None,
+    ) -> list[tuple[Agent, dict[str, Any]]]:
+        candidate_ids = sorted(available_agent_ids - {actor.agent_id})
+        if preferred_leader_agent_id is not None:
+            candidate_ids = [
+                agent_id
+                for agent_id in candidate_ids
+                if agent_id == preferred_leader_agent_id
+            ]
+
+        candidates: list[tuple[Agent, dict[str, Any]]] = []
+        for agent_id in candidate_ids:
+            leader = self.agents[agent_id]
+            snapshot = self.get_owner_active_pass_snapshot(
+                leader.owner_script_hash, block_height
+            )
+            if snapshot is None:
+                continue
+            if (
+                str(snapshot.get("state", "")) == "active"
+                and str(snapshot.get("pass_kind", "")) == "standard"
+            ):
+                candidates.append((leader, snapshot))
+        return candidates
+
+    def build_mint_plan(
+        self,
+        *,
+        actor: Agent,
+        action: str,
+        available_agent_ids: set[int],
+        pre_height: int,
+        rng: random.Random,
+        preferred_leader_agent_id: int | None = None,
+        preferred_prev_inscription_id: str | None = None,
+    ) -> MintPlan:
+        base_identity = self.pass_identity_for_action(action)
+        prev_inscription_id: str | None = None
+        if action in self.REMINT_ACTIONS:
+            prev_candidates = self.load_actor_remint_candidates(actor, pre_height)
+            if preferred_prev_inscription_id is not None:
+                prev_candidates = [
+                    snapshot
+                    for snapshot in prev_candidates
+                    if snapshot.get("inscription_id") == preferred_prev_inscription_id
+                ]
+            if not prev_candidates:
+                raise WorldSimError(
+                    "remint requires an actor-owned Active or Dormant prev: "
+                    f"actor={actor.wallet_name}, action={action}, pre_height={pre_height}"
+                )
+            prev_snapshot = rng.choice(prev_candidates)
+            prev_inscription_id = str(prev_snapshot.get("inscription_id", ""))
+            if not prev_inscription_id:
+                raise WorldSimError(f"remint prev snapshot has no inscription id: {prev_snapshot}")
+
+        leader_ref_value: str | None = None
+        leader_agent_id: int | None = None
+        if base_identity.pass_kind == "collab":
+            leader_candidates = self.load_active_standard_leader_candidates(
+                actor,
+                available_agent_ids,
+                pre_height,
+                preferred_leader_agent_id,
+            )
+            if not leader_candidates:
+                raise WorldSimError(
+                    "collab mint requires another available active standard Leader: "
+                    f"actor={actor.wallet_name}, action={action}, pre_height={pre_height}"
+                )
+            leader, leader_snapshot = rng.choice(leader_candidates)
+            leader_agent_id = leader.agent_id
+            if base_identity.leader_ref_kind == "leader_pass_id":
+                leader_ref_value = str(leader_snapshot.get("inscription_id", ""))
+            else:
+                leader_ref_value = leader.receive_address
+            if not leader_ref_value:
+                raise WorldSimError(
+                    f"collab Leader reference is empty: action={action}, leader={leader.wallet_name}"
+                )
+
+        return MintPlan(
+            pass_kind=base_identity.pass_kind,
+            prev_inscription_id=prev_inscription_id,
+            leader_ref_kind=base_identity.leader_ref_kind,
+            leader_ref_value=leader_ref_value,
+            leader_agent_id=leader_agent_id,
+        )
 
     def maybe_grow_agents(self, tick: int) -> None:
         if self.active_agent_count >= self.total_agents:
@@ -2603,7 +3220,9 @@ class RegtestWorldSimulator:
         self, agent: Agent, available_agent_ids: set[int], pre_height: int
     ) -> dict[str, float]:
         global_prob = {
-            "mint": self.args.mint_probability,
+            "standard_mint": self.args.standard_mint_probability,
+            "fixed_collab_mint": self.args.fixed_collab_mint_probability,
+            "address_collab_mint": self.args.address_collab_mint_probability,
             "invalid_mint": self.args.invalid_mint_probability,
             "transfer": self.args.transfer_probability,
             "remint": self.args.remint_probability,
@@ -2653,10 +3272,14 @@ class RegtestWorldSimulator:
         }[agent.persona]
 
         weights: dict[str, float] = {
-            "mint": global_prob["mint"] * persona_bias["mint"],
+            "standard_mint": global_prob["standard_mint"] * persona_bias["mint"],
+            "fixed_collab_mint": global_prob["fixed_collab_mint"] * persona_bias["mint"],
+            "address_collab_mint": global_prob["address_collab_mint"] * persona_bias["mint"],
             "invalid_mint": global_prob["invalid_mint"] * persona_bias["invalid_mint"],
             "transfer": global_prob["transfer"] * persona_bias["transfer"],
-            "remint": global_prob["remint"] * persona_bias["remint"],
+            "standard_remint": global_prob["remint"] * persona_bias["remint"] / 3,
+            "fixed_collab_remint": global_prob["remint"] * persona_bias["remint"] / 3,
+            "address_collab_remint": global_prob["remint"] * persona_bias["remint"] / 3,
             "send_balance": global_prob["send_balance"] * persona_bias["send_balance"],
             "spend_balance": global_prob["spend_balance"] * persona_bias["spend_balance"],
             "noop": noop_base * persona_bias["noop"],
@@ -2665,25 +3288,29 @@ class RegtestWorldSimulator:
         has_pass = len(agent.owned_passes) > 0
         if not has_pass:
             weights["transfer"] = 0.0
-            weights["remint"] = 0.0
-            weights["mint"] *= 1.3
+            for action in self.REMINT_ACTIONS:
+                weights[action] = 0.0
+            weights["standard_mint"] *= 1.3
 
         if len(available_agent_ids) < 2:
             weights["transfer"] = 0.0
 
         if agent.cooldown > 0:
             weights["transfer"] *= 0.65
-            weights["remint"] *= 0.65
-            weights["mint"] *= 0.75
+            for action in self.REMINT_ACTIONS:
+                weights[action] *= 0.65
+            for action in self.MINT_ACTIONS:
+                weights[action] *= 0.75
 
         # Markov-style transition preference based on last action.
-        if agent.last_action == "mint":
+        if agent.last_action.endswith("_mint"):
             weights["transfer"] *= 1.25
             weights["send_balance"] *= 1.20
             weights["spend_balance"] *= 1.15
         elif agent.last_action == "transfer":
-            weights["remint"] *= 1.35
-            weights["mint"] *= 1.15
+            for action in self.REMINT_ACTIONS:
+                weights[action] *= 1.35
+            weights["standard_mint"] *= 1.15
         elif agent.last_action == "spend_balance":
             weights["send_balance"] *= 1.35
             weights["noop"] *= 0.70
@@ -2696,6 +3323,12 @@ class RegtestWorldSimulator:
         except Exception:
             # Keep simulation moving even if one balance query is transiently unavailable.
             weights["spend_balance"] *= 0.60
+
+        for action in list(weights):
+            if action != "noop" and not self.is_action_viable(
+                agent, action, available_agent_ids, pre_height
+            ):
+                weights[action] = 0.0
 
         return weights
 
@@ -2729,9 +3362,25 @@ class RegtestWorldSimulator:
         self, agent: Agent, action: str, available_agent_ids: set[int], pre_height: int
     ) -> bool:
         if action == "transfer":
-            return len(agent.owned_passes) > 0 and len(available_agent_ids) >= 2
-        if action == "remint":
-            return len(self.pass_owner_by_id) > 0
+            return bool(self.load_actor_remint_candidates(agent, pre_height)) and len(
+                available_agent_ids
+            ) >= 2
+        if action in self.REMINT_ACTIONS:
+            if not self.load_actor_remint_candidates(agent, pre_height):
+                return False
+            if action in self.FIXED_COLLAB_ACTIONS | self.ADDRESS_COLLAB_ACTIONS:
+                return bool(
+                    self.load_active_standard_leader_candidates(
+                        agent, available_agent_ids, pre_height
+                    )
+                )
+            return True
+        if action in self.FIXED_COLLAB_ACTIONS | self.ADDRESS_COLLAB_ACTIONS:
+            return bool(
+                self.load_active_standard_leader_candidates(
+                    agent, available_agent_ids, pre_height
+                )
+            )
         if action == "spend_balance":
             try:
                 return self.get_balance_at_height(agent.owner_script_hash, pre_height) >= 200_000
@@ -2760,15 +3409,33 @@ class RegtestWorldSimulator:
         self,
         actor: Agent,
         action_id: str,
+        action: str,
+        available_agent_ids: set[int],
         pre_height: int,
-        invalid_usdb_main: bool,
-        prev: list[str] | None,
         rng: random.Random,
-        count_as_mint: bool = True,
-    ) -> tuple[str, ActionExpectation]:
+        preferred_leader_agent_id: int | None = None,
+        preferred_prev_inscription_id: str | None = None,
+    ) -> tuple[str, ActionExpectation, set[int]]:
+        plan = self.build_mint_plan(
+            actor=actor,
+            action=action,
+            available_agent_ids=available_agent_ids,
+            pre_height=pre_height,
+            rng=rng,
+            preferred_leader_agent_id=preferred_leader_agent_id,
+            preferred_prev_inscription_id=preferred_prev_inscription_id,
+        )
+        identity = PassIdentity(
+            pass_kind=plan.pass_kind,
+            leader_ref_kind=plan.leader_ref_kind,
+            leader_ref_value=plan.leader_ref_value,
+        )
+        invalid_usdb_main = action == "invalid_mint"
+        prev = [plan.prev_inscription_id] if plan.prev_inscription_id else []
         content_path = self.write_mint_content(
             usdb_main=actor.usdb_main_address,
-            prev=prev or [],
+            identity=identity,
+            prev=prev,
             invalid_usdb_main=invalid_usdb_main,
         )
         output = self.run_ord_wallet(
@@ -2785,12 +3452,16 @@ class RegtestWorldSimulator:
         )
         self.write_external_action_result(
             action_id=action_id,
-            action="invalid_mint" if invalid_usdb_main else ("remint" if prev else "mint"),
+            action=action,
             raw_output=output,
         )
         inscription_id = self.extract_inscription_id(output)
         self.pass_owner_by_id[inscription_id] = actor.agent_id
+        self.pass_identity_by_id[inscription_id] = identity
         actor.owned_passes.add(inscription_id)
+        used_agent_ids = {actor.agent_id}
+        if plan.leader_agent_id is not None:
+            used_agent_ids.add(plan.leader_agent_id)
         if invalid_usdb_main:
             actor.invalid_passes.add(inscription_id)
             self.metrics["invalid_mint_ok"] += 1
@@ -2803,25 +3474,35 @@ class RegtestWorldSimulator:
                     inscription_id=inscription_id,
                     expect_invalid=True,
                     actor_pre_balance=pre_balance,
+                    pass_kind="standard",
                 ),
+                used_agent_ids,
             )
 
-        if count_as_mint:
-            self.metrics["mint_ok"] += 1
+        self.metrics[f"{action}_ok"] += 1
         pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
+        leader_detail = (
+            f":{plan.leader_ref_kind}={plan.leader_ref_value}"
+            if plan.leader_ref_kind and plan.leader_ref_value
+            else ""
+        )
         return (
             (
-                f"remint_like_mint:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}"
+                f"{action}:{inscription_id}:owner={actor.wallet_name}:prev={prev[0]}{leader_detail}"
                 if prev
-                else f"mint:{inscription_id}:owner={actor.wallet_name}"
+                else f"{action}:{inscription_id}:owner={actor.wallet_name}{leader_detail}"
             ),
             ActionExpectation(
-                action="remint" if prev else "mint",
+                action=action,
                 actor_id=actor.agent_id,
                 inscription_id=inscription_id,
                 prev_inscription_id=prev[0] if prev else None,
                 actor_pre_balance=pre_balance,
+                pass_kind=plan.pass_kind,
+                leader_ref_kind=plan.leader_ref_kind,
+                leader_ref_value=plan.leader_ref_value,
             ),
+            used_agent_ids,
         )
 
     def op_transfer(
@@ -2832,7 +3513,8 @@ class RegtestWorldSimulator:
         pre_height: int,
         rng: random.Random,
     ) -> tuple[str, ActionExpectation, set[int]]:
-        if not actor.owned_passes:
+        transfer_candidates = self.load_actor_remint_candidates(actor, pre_height)
+        if not transfer_candidates:
             self.metrics["skip"] += 1
             return "transfer:skip:no_pass", ActionExpectation("noop", actor.agent_id), {
                 actor.agent_id
@@ -2851,7 +3533,11 @@ class RegtestWorldSimulator:
                 {actor.agent_id},
             )
 
-        inscription_id = rng.choice(sorted(actor.owned_passes))
+        inscription_id = str(rng.choice(transfer_candidates).get("inscription_id", ""))
+        if not inscription_id:
+            raise WorldSimError(
+                f"transfer candidate has no inscription id: actor={actor.wallet_name}"
+            )
         target = rng.choice(target_candidates)
         target_active_before = (
             self.get_owner_active_pass_snapshot(target.owner_script_hash, pre_height) is not None
@@ -2976,20 +3662,6 @@ class RegtestWorldSimulator:
             ),
         )
 
-    def choose_prev_for_remint(self, rng: random.Random) -> str | None:
-        if not self.pass_owner_by_id:
-            return None
-        # Prefer non-invalid prev candidates to better reflect valid remint flow.
-        non_invalid = [
-            inscription_id
-            for inscription_id, owner_id in self.pass_owner_by_id.items()
-            if inscription_id not in self.agents[owner_id].invalid_passes
-        ]
-        candidates = non_invalid if non_invalid else list(self.pass_owner_by_id.keys())
-        if not candidates:
-            return None
-        return rng.choice(sorted(candidates))
-
     def execute_agent_action(
         self,
         actor: Agent,
@@ -3003,47 +3675,19 @@ class RegtestWorldSimulator:
             self.metrics["skip"] += 1
             return "noop", None, {actor.agent_id}
 
-        if action == "mint":
-            detail, expectation = self.op_mint(
+        if action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
+            detail, expectation, used_ids = self.op_mint(
                 actor=actor,
                 action_id=action_id,
+                action=action,
+                available_agent_ids=available_agent_ids,
                 pre_height=pre_height,
-                invalid_usdb_main=False,
-                prev=None,
                 rng=rng,
             )
-            return detail, expectation, {actor.agent_id}
-
-        if action == "invalid_mint":
-            detail, expectation = self.op_mint(
-                actor=actor,
-                action_id=action_id,
-                pre_height=pre_height,
-                invalid_usdb_main=True,
-                prev=None,
-                rng=rng,
-            )
-            return detail, expectation, {actor.agent_id}
+            return detail, expectation, used_ids
 
         if action == "transfer":
             return self.op_transfer(actor, action_id, available_agent_ids, pre_height, rng)
-
-        if action == "remint":
-            prev = self.choose_prev_for_remint(rng)
-            if prev is None:
-                self.metrics["skip"] += 1
-                return "remint:skip:no_prev", None, {actor.agent_id}
-            detail, expectation = self.op_mint(
-                actor=actor,
-                action_id=action_id,
-                pre_height=pre_height,
-                invalid_usdb_main=False,
-                prev=[prev],
-                rng=rng,
-                count_as_mint=False,
-            )
-            self.metrics["remint_ok"] += 1
-            return f"remint:prev={prev}:{detail}", expectation, {actor.agent_id}
 
         if action == "send_balance":
             detail, expectation = self.op_send_balance(actor, action_id, pre_height, rng)
@@ -3065,17 +3709,11 @@ class RegtestWorldSimulator:
         if action == "spend_balance":
             self.metrics["spend_fail"] += 1
             return
-        if action == "mint":
-            self.metrics["mint_fail"] += 1
-            return
-        if action == "invalid_mint":
-            self.metrics["invalid_mint_fail"] += 1
+        if action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
+            self.metrics[f"{action}_fail"] += 1
             return
         if action == "transfer":
             self.metrics["transfer_fail"] += 1
-            return
-        if action == "remint":
-            self.metrics["remint_fail"] += 1
             return
 
     def verify_expectation(self, expectation: ActionExpectation, block_height: int) -> None:
@@ -3107,7 +3745,7 @@ class RegtestWorldSimulator:
                 )
             return
 
-        if expectation.action in {"mint", "invalid_mint", "remint"}:
+        if expectation.action in self.MINT_ACTIONS | self.REMINT_ACTIONS:
             inscription_id = expectation.inscription_id
             if inscription_id is None:
                 raise WorldSimError("mint-like expectation missing inscription_id")
@@ -3125,12 +3763,56 @@ class RegtestWorldSimulator:
                     f"inscription_id={inscription_id}, expected_owner={actor.owner_script_hash}, got={owner}"
                 )
 
+            expected_pass_kind = expectation.pass_kind or "standard"
+            actual_pass_kind = str(snapshot.get("pass_kind", ""))
+            if actual_pass_kind != expected_pass_kind:
+                raise WorldSimError(
+                    "mint-like pass kind mismatch: "
+                    f"inscription_id={inscription_id}, expected={expected_pass_kind}, "
+                    f"got={actual_pass_kind}"
+                )
+            if snapshot.get("leader_pass_id") != (
+                expectation.leader_ref_value
+                if expectation.leader_ref_kind == "leader_pass_id"
+                else None
+            ):
+                raise WorldSimError(
+                    "mint-like fixed Leader reference mismatch: "
+                    f"inscription_id={inscription_id}, snapshot={snapshot.get('leader_pass_id')}, "
+                    f"expectation={expectation.leader_ref_value}"
+                )
+            if snapshot.get("leader_btc_addr") != (
+                expectation.leader_ref_value
+                if expectation.leader_ref_kind == "leader_btc_addr"
+                else None
+            ):
+                raise WorldSimError(
+                    "mint-like address Leader reference mismatch: "
+                    f"inscription_id={inscription_id}, snapshot={snapshot.get('leader_btc_addr')}, "
+                    f"expectation={expectation.leader_ref_value}"
+                )
+
+            state_ref = self.get_state_ref_at_height(block_height)
+            if state_ref is None:
+                raise WorldSimError(
+                    f"mint-like verification missing state ref at height={block_height}"
+                )
+            context = self.build_consensus_context_from_state_ref(state_ref)
+            profile = self.load_pass_economic_profile_at_height(
+                inscription_id, block_height, context
+            )
+
             if expectation.expect_invalid:
                 if state != "invalid":
                     raise WorldSimError(
                         "invalid_mint verification failed: "
                         f"inscription_id={inscription_id}, state={state}"
                     )
+                self.assert_zero_economic_profile(
+                    profile,
+                    inscription_id=inscription_id,
+                    expected_state="invalid",
+                )
                 return
 
             if state not in {"active", "dormant"}:
@@ -3139,7 +3821,35 @@ class RegtestWorldSimulator:
                     f"inscription_id={inscription_id}, state={state}"
                 )
 
-            if expectation.action == "remint" and expectation.prev_inscription_id:
+            if profile.get("state") != state or profile.get("pass_kind") != expected_pass_kind:
+                raise WorldSimError(
+                    "mint-like profile disagrees with pass snapshot: "
+                    f"inscription_id={inscription_id}, snapshot_state={state}, "
+                    f"snapshot_kind={expected_pass_kind}, profile={profile}"
+                )
+            if profile.get("owner_script_hash") != actor.owner_script_hash:
+                raise WorldSimError(
+                    "mint-like profile owner mismatch: "
+                    f"inscription_id={inscription_id}, expected={actor.owner_script_hash}, "
+                    f"got={profile.get('owner_script_hash')}"
+                )
+            if expected_pass_kind == "collab":
+                collab_boundary = {
+                    "collab_contribution": "0",
+                    "effective_energy": "0",
+                    "level": 0,
+                    "difficulty_factor_bps": 10_000,
+                    "collab_breakdown_count": 0,
+                }
+                for field_name, expected_value in collab_boundary.items():
+                    if profile.get(field_name) != expected_value:
+                        raise WorldSimError(
+                            "active collab profile boundary mismatch: "
+                            f"inscription_id={inscription_id}, field={field_name}, "
+                            f"expected={expected_value}, got={profile.get(field_name)}"
+                        )
+
+            if expectation.action in self.REMINT_ACTIONS and expectation.prev_inscription_id:
                 prev = snapshot.get("prev") or []
                 if expectation.prev_inscription_id not in prev:
                     raise WorldSimError(
@@ -3147,6 +3857,23 @@ class RegtestWorldSimulator:
                         f"inscription_id={inscription_id}, prev={prev}, "
                         f"expected_prev={expectation.prev_inscription_id}"
                     )
+                prev_snapshot = self.get_pass_snapshot(
+                    expectation.prev_inscription_id, block_height
+                )
+                if prev_snapshot is None or prev_snapshot.get("state") != "consumed":
+                    raise WorldSimError(
+                        "remint did not consume prev atomically: "
+                        f"child={inscription_id}, prev={expectation.prev_inscription_id}, "
+                        f"prev_snapshot={prev_snapshot}"
+                    )
+                prev_profile = self.load_pass_economic_profile_at_height(
+                    expectation.prev_inscription_id, block_height, context
+                )
+                self.assert_zero_economic_profile(
+                    prev_profile,
+                    inscription_id=expectation.prev_inscription_id,
+                    expected_state="consumed",
+                )
             return
 
         if expectation.action == "transfer":
@@ -3190,6 +3917,9 @@ class RegtestWorldSimulator:
         agent.active_pass_id = inscription_id
         agent.owned_passes.add(inscription_id)
         self.pass_owner_by_id[inscription_id] = agent.agent_id
+        self.pass_identity_by_id[inscription_id] = self.pass_identity_from_snapshot(
+            active_snapshot
+        )
 
     def select_agents_for_self_check(self, active_agent_ids: list[int], tick: int) -> list[int]:
         if not self.args.agent_self_check_enabled:
@@ -3410,8 +4140,238 @@ class RegtestWorldSimulator:
 
         return rows
 
+    def cross_check_economic_views(
+        self,
+        *,
+        block_height: int,
+        context: dict[str, Any],
+        active_rows: list[dict[str, Any]],
+    ) -> dict[str, int]:
+        candidate_view = self.load_candidate_set_view_at_height(block_height, context)
+        external_state = candidate_view["external_state"]
+        candidate_items = candidate_view["items"]
+        candidate_by_id = {
+            str(item.get("pass_id", "")): item for item in candidate_items
+        }
+
+        active_standard_by_id: dict[str, dict[str, Any]] = {}
+        active_standard_by_owner: dict[str, dict[str, Any]] = {}
+        active_collab_by_id: dict[str, dict[str, Any]] = {}
+        for row in active_rows:
+            pass_id = str(row.get("inscription_id", ""))
+            snapshot = self.get_pass_snapshot(pass_id, block_height)
+            if snapshot is None:
+                raise WorldSimError(
+                    "economic cross-check missing active pass snapshot: "
+                    f"pass={pass_id}, block_height={block_height}"
+                )
+            if snapshot.get("state") != "active":
+                raise WorldSimError(
+                    f"active-pass view returned non-active snapshot: pass={pass_id}, snapshot={snapshot}"
+                )
+            pass_kind = str(snapshot.get("pass_kind", ""))
+            owner = str(snapshot.get("owner", ""))
+            if pass_kind == "standard":
+                active_standard_by_id[pass_id] = snapshot
+                if owner in active_standard_by_owner:
+                    raise WorldSimError(
+                        "duplicate active standard owner during economic cross-check: "
+                        f"owner={owner}"
+                    )
+                active_standard_by_owner[owner] = snapshot
+            elif pass_kind == "collab":
+                active_collab_by_id[pass_id] = snapshot
+            else:
+                raise WorldSimError(
+                    f"active pass has unsupported kind: pass={pass_id}, kind={pass_kind}"
+                )
+
+        expected_candidate_ids = set(active_standard_by_id)
+        actual_candidate_ids = set(candidate_by_id)
+        if actual_candidate_ids != expected_candidate_ids:
+            raise WorldSimError(
+                "candidate set does not equal active standard set: "
+                f"missing={sorted(expected_candidate_ids - actual_candidate_ids)}, "
+                f"unexpected={sorted(actual_candidate_ids - expected_candidate_ids)}"
+            )
+
+        profiles: dict[str, dict[str, Any]] = {}
+        for pass_id in sorted(active_standard_by_id):
+            profile = self.load_pass_economic_profile_at_height(
+                pass_id,
+                block_height,
+                context,
+                expected_external_state=external_state,
+            )
+            profiles[pass_id] = profile
+            candidate = self.candidate_from_view_item(candidate_by_id[pass_id])
+            profile_candidate = self.candidate_from_view_item(profile)
+            self.assert_validator_candidate_matches(
+                candidate, profile_candidate, f"global-economic:{block_height}:{pass_id}"
+            )
+
+        for pass_id in sorted(active_collab_by_id):
+            if pass_id in candidate_by_id:
+                raise WorldSimError(
+                    f"active collab pass leaked into candidate set: pass={pass_id}"
+                )
+            profile = self.load_pass_economic_profile_at_height(
+                pass_id,
+                block_height,
+                context,
+                expected_external_state=external_state,
+            )
+            profiles[pass_id] = profile
+            expected_boundary = {
+                "state": "active",
+                "pass_kind": "collab",
+                "collab_contribution": "0",
+                "effective_energy": "0",
+                "level": 0,
+                "difficulty_factor_bps": self.BPS_DENOMINATOR,
+                "collab_breakdown_count": 0,
+            }
+            for field_name, expected_value in expected_boundary.items():
+                if profile.get(field_name) != expected_value:
+                    raise WorldSimError(
+                        "active collab profile boundary mismatch: "
+                        f"pass={pass_id}, field={field_name}, expected={expected_value}, "
+                        f"got={profile.get(field_name)}"
+                    )
+
+        expected_collabs_by_leader: dict[str, set[str]] = {
+            pass_id: set() for pass_id in active_standard_by_id
+        }
+        unresolved_collab_count = 0
+        for pass_id, snapshot in active_collab_by_id.items():
+            leader_id = self.resolve_expected_collab_leader(
+                snapshot, active_standard_by_id, active_standard_by_owner
+            )
+            if leader_id is None:
+                unresolved_collab_count += 1
+                continue
+            expected_collabs_by_leader[leader_id].add(pass_id)
+
+        breakdown_row_count = 0
+        for leader_id in sorted(active_standard_by_id):
+            by_pass_id = self.load_collab_breakdown_at_height(
+                leader_id,
+                block_height,
+                context,
+                sort="collab_pass_id_asc",
+                expected_external_state=external_state,
+            )
+            by_contribution = self.load_collab_breakdown_at_height(
+                leader_id,
+                block_height,
+                context,
+                sort="contribution_desc_pass_id_asc",
+                expected_external_state=external_state,
+            )
+            for breakdown in (by_pass_id, by_contribution):
+                if breakdown.get("leader_state") != "active":
+                    raise WorldSimError(
+                        f"active standard Leader breakdown state mismatch: leader={leader_id}"
+                    )
+                if breakdown.get("leader_pass_kind") != "standard":
+                    raise WorldSimError(
+                        f"active Leader breakdown kind mismatch: leader={leader_id}"
+                    )
+            if by_pass_id["aggregate_collab_contribution"] != by_contribution[
+                "aggregate_collab_contribution"
+            ]:
+                raise WorldSimError(
+                    f"collab breakdown sorts disagree on aggregate: leader={leader_id}"
+                )
+            rows_by_id = {
+                str(item["collab_pass_id"]): item for item in by_pass_id["items"]
+            }
+            contribution_rows_by_id = {
+                str(item["collab_pass_id"]): item
+                for item in by_contribution["items"]
+            }
+            if rows_by_id != contribution_rows_by_id:
+                raise WorldSimError(
+                    f"collab breakdown sorts disagree on row set: leader={leader_id}"
+                )
+            expected_collab_ids = expected_collabs_by_leader[leader_id]
+            if set(rows_by_id) != expected_collab_ids:
+                raise WorldSimError(
+                    "collab breakdown does not match independently resolved Leader bindings: "
+                    f"leader={leader_id}, missing={sorted(expected_collab_ids - set(rows_by_id))}, "
+                    f"unexpected={sorted(set(rows_by_id) - expected_collab_ids)}"
+                )
+
+            for collab_id, item in rows_by_id.items():
+                snapshot = active_collab_by_id[collab_id]
+                profile = profiles[collab_id]
+                if item.get("collab_owner_script_hash") != snapshot.get("owner"):
+                    raise WorldSimError(
+                        f"collab breakdown owner mismatch: pass={collab_id}"
+                    )
+                if int(item.get("collab_raw_energy", 0)) != int(
+                    profile.get("raw_energy", 0)
+                ):
+                    raise WorldSimError(
+                        f"collab breakdown raw energy mismatch with profile: pass={collab_id}"
+                    )
+                if snapshot.get("leader_pass_id"):
+                    expected_ref_kind = "leader_pass_id"
+                    expected_ref_value = str(snapshot["leader_pass_id"])
+                else:
+                    expected_ref_kind = "leader_btc_addr"
+                    expected_ref_value = str(snapshot.get("leader_btc_addr", ""))
+                if (
+                    item.get("leader_ref_kind") != expected_ref_kind
+                    or item.get("leader_ref_value") != expected_ref_value
+                ):
+                    raise WorldSimError(
+                        "collab breakdown Leader reference mismatch: "
+                        f"pass={collab_id}, expected={expected_ref_kind}:{expected_ref_value}, "
+                        f"got={item.get('leader_ref_kind')}:{item.get('leader_ref_value')}"
+                    )
+
+            aggregate_contribution = int(
+                by_pass_id["aggregate_collab_contribution"]
+            )
+            leader_profile = profiles[leader_id]
+            if int(leader_profile.get("collab_contribution", 0)) != aggregate_contribution:
+                raise WorldSimError(
+                    "Leader profile contribution differs from breakdown aggregate: "
+                    f"leader={leader_id}, profile={leader_profile.get('collab_contribution')}, "
+                    f"breakdown={aggregate_contribution}"
+                )
+            if int(leader_profile.get("collab_breakdown_count", -1)) != len(rows_by_id):
+                raise WorldSimError(
+                    "Leader profile breakdown count mismatch: "
+                    f"leader={leader_id}, profile={leader_profile.get('collab_breakdown_count')}, "
+                    f"rows={len(rows_by_id)}"
+                )
+            expected_effective = self.saturating_energy_add(
+                int(leader_profile.get("raw_energy", 0)), aggregate_contribution
+            )
+            if int(leader_profile.get("effective_energy", 0)) != expected_effective:
+                raise WorldSimError(
+                    "Leader effective energy cannot be reproduced: "
+                    f"leader={leader_id}, expected={expected_effective}, "
+                    f"got={leader_profile.get('effective_energy')}"
+                )
+            breakdown_row_count += len(rows_by_id)
+
+        return {
+            "candidate_count": len(candidate_items),
+            "active_standard_count": len(active_standard_by_id),
+            "active_collab_count": len(active_collab_by_id),
+            "resolved_collab_count": sum(
+                len(pass_ids) for pass_ids in expected_collabs_by_leader.values()
+            ),
+            "unresolved_collab_count": unresolved_collab_count,
+            "breakdown_row_count": breakdown_row_count,
+        }
+
     def reset_local_chain_view(self) -> None:
         self.pass_owner_by_id.clear()
+        self.pass_identity_by_id.clear()
         for agent in self.agents:
             agent.owned_passes.clear()
             agent.active_pass_id = None
@@ -3452,6 +4412,15 @@ class RegtestWorldSimulator:
 
             agent.owned_passes.add(inscription_id)
             self.pass_owner_by_id[inscription_id] = agent.agent_id
+            snapshot = self.get_pass_snapshot(inscription_id, block_height)
+            if snapshot is None:
+                raise WorldSimError(
+                    "missing pass snapshot during reorg rebuild: "
+                    f"pass={inscription_id}, block_height={block_height}"
+                )
+            self.pass_identity_by_id[inscription_id] = self.pass_identity_from_snapshot(
+                snapshot
+            )
 
             if state == "invalid":
                 agent.invalid_passes.add(inscription_id)
@@ -3686,6 +4655,16 @@ class RegtestWorldSimulator:
             compared_top_items += 1
 
         active_rows = self.load_all_active_passes_at_height(block_height)
+        state_ref = self.get_state_ref_at_height(block_height)
+        if state_ref is None:
+            raise WorldSimError(
+                f"global cross-check missing state ref at height={block_height}"
+            )
+        economic_info = self.cross_check_economic_views(
+            block_height=block_height,
+            context=self.build_consensus_context_from_state_ref(state_ref),
+            active_rows=active_rows,
+        )
         owner_to_pass: dict[str, str] = {}
         for row in active_rows:
             owner = str(row.get("owner", ""))
@@ -3773,7 +4752,7 @@ class RegtestWorldSimulator:
             )
 
         elapsed_ms = int((time.time() - start_ts) * 1000)
-        return {
+        result = {
             "tick": tick,
             "block_height": block_height,
             "top_n": top_n,
@@ -3784,6 +4763,8 @@ class RegtestWorldSimulator:
             "snapshot_total_balance": snapshot_total_balance,
             "elapsed_ms": elapsed_ms,
         }
+        result.update(economic_info)
+        return result
 
     def mine_one_block(self) -> int:
         self.run_btc_cli(
@@ -3834,6 +4815,198 @@ class RegtestWorldSimulator:
         energy = top_item.get("energy", "-")
         return f"{inscription_id[:12]}..:{energy}"
 
+    def run_economic_bootstrap_mint(
+        self,
+        *,
+        step: int,
+        actor_id: int,
+        action: str,
+        preferred_leader_agent_id: int | None = None,
+        preferred_prev_inscription_id: str | None = None,
+    ) -> tuple[str, int, dict[str, Any]]:
+        actor = self.agents[actor_id]
+        pre_height = int(self.run_btc_cli(None, ["getblockcount"]))
+        action_id = f"economic-bootstrap-{step:02d}-{action}-agent-{actor_id}"
+        detail, expectation, _ = self.op_mint(
+            actor=actor,
+            action_id=action_id,
+            action=action,
+            available_agent_ids=set(self.get_active_agent_ids()),
+            pre_height=pre_height,
+            rng=self.derived_rng("economic-bootstrap", step, actor_id, action),
+            preferred_leader_agent_id=preferred_leader_agent_id,
+            preferred_prev_inscription_id=preferred_prev_inscription_id,
+        )
+        block_height = self.mine_one_block()
+        self.wait_service_synced(block_height)
+        self.verify_expectation(expectation, block_height)
+        self.metrics["verify_ok"] += 1
+        actor.last_action = action
+        actor.cooldown = 0
+        for active_agent_id in self.get_active_agent_ids():
+            self.refresh_agent_state(self.agents[active_agent_id], block_height)
+        cross_check = self.run_global_cross_check(block_height, -step)
+        self.metrics["global_cross_check_ok"] += 1
+        self.clear_external_action_result(action_id)
+        self.emit_report(
+            "economic_bootstrap_step",
+            {
+                "step": step,
+                "action": action,
+                "actor_id": actor_id,
+                "pass_id": expectation.inscription_id,
+                "prev_pass_id": expectation.prev_inscription_id,
+                "leader_ref_kind": expectation.leader_ref_kind,
+                "leader_ref_value": expectation.leader_ref_value,
+                "block_height": block_height,
+                "detail": detail,
+                "global_cross_check_info": cross_check,
+            },
+        )
+        if expectation.inscription_id is None:
+            raise WorldSimError(f"economic bootstrap action produced no pass id: {action}")
+        return expectation.inscription_id, block_height, cross_check
+
+    def run_economic_bootstrap(self) -> None:
+        self.log("Starting deterministic UIP0001-UIP0006 economic bootstrap")
+
+        leader_v1, _, _ = self.run_economic_bootstrap_mint(
+            step=1, actor_id=0, action="standard_mint"
+        )
+        fixed_v1, _, _ = self.run_economic_bootstrap_mint(
+            step=2,
+            actor_id=1,
+            action="fixed_collab_mint",
+            preferred_leader_agent_id=0,
+        )
+        address_v1, _, _ = self.run_economic_bootstrap_mint(
+            step=3,
+            actor_id=2,
+            action="address_collab_mint",
+            preferred_leader_agent_id=0,
+        )
+        candidate_peer, _, _ = self.run_economic_bootstrap_mint(
+            step=4, actor_id=3, action="standard_mint"
+        )
+
+        growth_height = self.mine_one_block()
+        self.wait_service_synced(growth_height)
+        for active_agent_id in self.get_active_agent_ids():
+            self.refresh_agent_state(self.agents[active_agent_id], growth_height)
+        growth_cross_check = self.run_global_cross_check(growth_height, -5)
+        self.metrics["global_cross_check_ok"] += 1
+        self.emit_report(
+            "economic_bootstrap_step",
+            {
+                "step": 5,
+                "action": "energy_growth",
+                "block_height": growth_height,
+                "global_cross_check_info": growth_cross_check,
+            },
+        )
+
+        leader_v2, remint_height, _ = self.run_economic_bootstrap_mint(
+            step=6,
+            actor_id=0,
+            action="standard_remint",
+            preferred_prev_inscription_id=leader_v1,
+        )
+        state_ref = self.get_state_ref_at_height(remint_height)
+        if state_ref is None:
+            raise WorldSimError(
+                f"economic bootstrap missing state ref at height={remint_height}"
+            )
+        context = self.build_consensus_context_from_state_ref(state_ref)
+        old_leader_profile = self.load_pass_economic_profile_at_height(
+            leader_v1, remint_height, context
+        )
+        self.assert_zero_economic_profile(
+            old_leader_profile,
+            inscription_id=leader_v1,
+            expected_state="consumed",
+        )
+        old_leader_breakdown = self.load_collab_breakdown_at_height(
+            leader_v1,
+            remint_height,
+            context,
+            sort="collab_pass_id_asc",
+        )
+        if old_leader_breakdown["items"]:
+            raise WorldSimError(
+                "consumed fixed Leader retained collab contributions after remint: "
+                f"leader={leader_v1}, items={old_leader_breakdown['items']}"
+            )
+        new_leader_breakdown = self.load_collab_breakdown_at_height(
+            leader_v2,
+            remint_height,
+            context,
+            sort="collab_pass_id_asc",
+        )
+        followed_ids = {
+            str(item["collab_pass_id"]) for item in new_leader_breakdown["items"]
+        }
+        if followed_ids != {address_v1}:
+            raise WorldSimError(
+                "Leader remint follow semantics mismatch: "
+                f"expected_address_only={[address_v1]}, got={sorted(followed_ids)}, "
+                f"fixed_pass={fixed_v1}"
+            )
+
+        fixed_v2, _, _ = self.run_economic_bootstrap_mint(
+            step=7,
+            actor_id=1,
+            action="fixed_collab_remint",
+            preferred_leader_agent_id=0,
+            preferred_prev_inscription_id=fixed_v1,
+        )
+        address_v2, final_height, _ = self.run_economic_bootstrap_mint(
+            step=8,
+            actor_id=2,
+            action="address_collab_remint",
+            preferred_leader_agent_id=0,
+            preferred_prev_inscription_id=address_v1,
+        )
+        final_state_ref = self.get_state_ref_at_height(final_height)
+        if final_state_ref is None:
+            raise WorldSimError(
+                f"economic bootstrap missing final state ref at height={final_height}"
+            )
+        final_context = self.build_consensus_context_from_state_ref(final_state_ref)
+        final_breakdown = self.load_collab_breakdown_at_height(
+            leader_v2,
+            final_height,
+            final_context,
+            sort="collab_pass_id_asc",
+        )
+        final_collab_ids = {
+            str(item["collab_pass_id"]) for item in final_breakdown["items"]
+        }
+        if final_collab_ids != {fixed_v2, address_v2}:
+            raise WorldSimError(
+                "economic bootstrap final collab set mismatch: "
+                f"expected={sorted([fixed_v2, address_v2])}, got={sorted(final_collab_ids)}"
+            )
+
+        self.emit_report(
+            "economic_bootstrap_complete",
+            {
+                "block_height": final_height,
+                "leader_v1": leader_v1,
+                "leader_v2": leader_v2,
+                "candidate_peer": candidate_peer,
+                "fixed_collab_v1": fixed_v1,
+                "fixed_collab_v2": fixed_v2,
+                "address_collab_v1": address_v1,
+                "address_collab_v2": address_v2,
+                "leader_remint_followed_collabs": sorted(followed_ids),
+                "final_collab_ids": sorted(final_collab_ids),
+            },
+        )
+        self.log(
+            "Deterministic economic bootstrap completed: "
+            f"height={final_height}, leader={leader_v2}, collabs={sorted(final_collab_ids)}"
+        )
+
     def run(self) -> None:
         self.log(
             "World simulation started: "
@@ -3847,6 +5020,8 @@ class RegtestWorldSimulator:
             f"global_cross_check_interval_blocks={self.args.global_cross_check_interval_blocks}, "
             f"global_cross_check_leaderboard_top_n={self.args.global_cross_check_leaderboard_top_n}, "
             f"global_cross_check_owner_sample_size={self.args.global_cross_check_owner_sample_size}, "
+            f"economic_page_limit={self.args.economic_page_limit}, "
+            f"economic_bootstrap_enabled={self.args.economic_bootstrap_enabled}, "
             f"validator_sample_enabled={self.args.validator_sample_enabled}, "
             f"validator_sample_mode={self.args.validator_sample_mode}, "
             f"validator_sample_tamper_enabled={self.args.validator_sample_tamper_enabled}, "
@@ -3903,6 +5078,12 @@ class RegtestWorldSimulator:
                 raise WorldSimError(
                     f"unsupported recovery state status: {resume_status}"
                 )
+
+        if self.args.economic_bootstrap_enabled:
+            if self.resume_state is None:
+                self.run_economic_bootstrap()
+            else:
+                self.log("Skipping economic bootstrap while resuming recovery state")
 
         while True:
             if self.args.blocks > 0 and tick >= self.args.blocks:
@@ -4643,12 +5824,14 @@ def parse_args() -> Args:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--fee-rate", type=int, default=1)
     parser.add_argument("--max-actions-per-block", type=int, default=2)
-    parser.add_argument("--mint-probability", type=float, default=0.20)
+    parser.add_argument("--standard-mint-probability", type=float, default=0.14)
+    parser.add_argument("--fixed-collab-mint-probability", type=float, default=0.04)
+    parser.add_argument("--address-collab-mint-probability", type=float, default=0.04)
     parser.add_argument("--invalid-mint-probability", type=float, default=0.02)
-    parser.add_argument("--transfer-probability", type=float, default=0.20)
-    parser.add_argument("--remint-probability", type=float, default=0.10)
-    parser.add_argument("--send-probability", type=float, default=0.30)
-    parser.add_argument("--spend-probability", type=float, default=0.15)
+    parser.add_argument("--transfer-probability", type=float, default=0.18)
+    parser.add_argument("--remint-probability", type=float, default=0.12)
+    parser.add_argument("--send-probability", type=float, default=0.28)
+    parser.add_argument("--spend-probability", type=float, default=0.14)
     parser.add_argument("--sleep-ms-between-blocks", type=int, default=0)
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--temp-dir", required=True)
@@ -4658,7 +5841,11 @@ def parse_args() -> Args:
     parser.add_argument("--policy-mode", default="adaptive")
     parser.add_argument(
         "--scripted-cycle",
-        default="mint,send_balance,transfer,remint,spend_balance,noop",
+        default=(
+            "standard_mint,fixed_collab_mint,address_collab_mint,"
+            "send_balance,transfer,standard_remint,fixed_collab_remint,"
+            "address_collab_remint,spend_balance,noop"
+        ),
     )
     parser.add_argument("--report-file")
     parser.add_argument("--report-flush-every", type=int, default=1)
@@ -4702,6 +5889,17 @@ def parse_args() -> Args:
         type=int,
         default=16,
         help="How many active owners to sample per global cross-check (0 means all active owners)",
+    )
+    parser.add_argument(
+        "--economic-page-limit",
+        type=int,
+        default=16,
+        help="Page size used while replaying cursor-based UIP0006 economic views",
+    )
+    parser.add_argument(
+        "--enable-economic-bootstrap",
+        action="store_true",
+        help="Build a deterministic standard/collab/remint scenario before random ticks",
     )
     parser.add_argument(
         "--enable-validator-sample",
@@ -4787,7 +5985,9 @@ def parse_args() -> Args:
         seed=parsed.seed,
         fee_rate=parsed.fee_rate,
         max_actions_per_block=parsed.max_actions_per_block,
-        mint_probability=parsed.mint_probability,
+        standard_mint_probability=parsed.standard_mint_probability,
+        fixed_collab_mint_probability=parsed.fixed_collab_mint_probability,
+        address_collab_mint_probability=parsed.address_collab_mint_probability,
         invalid_mint_probability=parsed.invalid_mint_probability,
         transfer_probability=parsed.transfer_probability,
         remint_probability=parsed.remint_probability,
@@ -4811,6 +6011,8 @@ def parse_args() -> Args:
         global_cross_check_interval_blocks=parsed.global_cross_check_interval_blocks,
         global_cross_check_leaderboard_top_n=parsed.global_cross_check_leaderboard_top_n,
         global_cross_check_owner_sample_size=parsed.global_cross_check_owner_sample_size,
+        economic_page_limit=parsed.economic_page_limit,
+        economic_bootstrap_enabled=parsed.enable_economic_bootstrap,
         validator_sample_enabled=parsed.enable_validator_sample,
         validator_sample_mode=parsed.validator_sample_mode,
         validator_sample_tamper_enabled=parsed.enable_validator_sample_tamper_check,
