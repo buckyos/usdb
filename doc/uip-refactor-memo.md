@@ -578,3 +578,31 @@
 - duplicate `prev` 在解析后的 pass identity 上判断，storage/RPC 继续只接收和输出 canonical `pass_id`。
 - 增加 non-canonical `leader_pass_id` 与 `prev` invalid 单元测试。
 - RPC 注释和 v1 文档明确 `selection_rule` 只是 `candidate_set_view` ordering contract；raw energy leaderboard 不是 candidate view。
+
+## UIP-0007 Profile Selector 与 Economic Profile 基础对齐
+
+状态：前三项基础重构已完成，尚未提交，等待 review；chain config 激活和最终 reward/difficulty policy 不在本批范围。
+
+### Wire Contract
+
+- go-ethereum 删除旧 105-byte `RewardPayloadV1`，直接替换为 UIP-0007 107-byte `ProfileSelectorPayload`，加入 big-endian `difficulty_policy_version` 并按固定 offset 编解码，不保留旧格式兼容入口。
+- `pass_id`、`snapshot_id` 和 `system_state_id` 文本入口改为严格 canonical 校验；拒绝 `0x`、uppercase txid/hash、非零 inscription index 前导零和其它文本别名。
+- 新增独立 golden binary vector、精确 size/version、canonical parser 和 roundtrip 测试，避免仅靠自洽 roundtrip 掩盖 offset 或 endian 错误。
+
+### UIP-0006 Profile Client
+
+- Go client 删除 `get_pass_snapshot + get_pass_energy` 组合接口，统一调用冻结版本 `get_pass_economic_profile`。
+- client 类型完整承接 `view_version`、`external_state`、pass state/kind、三种 decimal-string energy、level/factor 和 breakdown count；新增无网络 fake transport 测试，直接校验 RPC 方法名、参数对象和当前返回结构。
+
+### Resolved Consensus Profile
+
+- 新增 `ResolvedConsensusProfile`，miner 和 validator 共用同一只读解析/校验路径。
+- 校验 payload 与 profile 的 BTC height、snapshot id、system state id、pass id、view version 和完整 external-state identity；`selected_pass` 必须为 `Active / standard`，不要求是 `top_ranked_candidate`。
+- 三种 energy 按 canonical `uint128` decimal 解析；Go 端重算 `raw + collab contribution` 的 u128 饱和值，并使用 UIP-0005 固定阈值表重算 level 和 difficulty factor，任何不一致均 fail closed。
+- 现有 development reward adapter 改为只消费已验证 profile；最终 reward 和 real difficulty 公式继续由 UIP-0009/UIP-0011/UIP-0014 承接。
+
+### 已验证与后续边界
+
+- `go test -cover ./internal/usdb` 通过，statement coverage 为 `78.9%`；`go test ./miner`、USDB ethash 定向测试和 `go vet ./internal/usdb ./miner ./consensus/ethash` 通过。
+- 完整 `go test -count=1 ./consensus/ethash` 在允许临时 loopback `httptest` listener 的环境下通过；沙箱内的首次阻断仅来自 listener 权限限制。
+- 后续仍需：由 UIP-0008/UIP-0009 chain config 提供按 ETHW block height 的 expected versions；在 header validation 中执行精确 107-byte/version 校验；移除本地开关决定共识语义；更新旧 105-byte reward live/E2E 脚本和集成文档。
