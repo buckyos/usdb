@@ -5,7 +5,17 @@ use rocksdb::{ColumnFamilyDescriptor, DB, Options};
 use rust_rocksdb::{self as rocksdb};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use usdb_util::USDBScriptHash;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassEnergyReadMetrics {
+    pub point_gets: u64,
+    pub iterator_seeks: u64,
+    pub records_decoded: u64,
+}
 
 #[derive(Clone, Debug)]
 pub struct PassEnergyKey {
@@ -50,6 +60,12 @@ const META_KEY_MAX_RECORD_BLOCK_HEIGHT: &[u8] = b"max_record_block_height";
 pub struct PassEnergyStorage {
     file: PathBuf,
     db: DB,
+    #[cfg(test)]
+    point_gets_for_test: AtomicU64,
+    #[cfg(test)]
+    iterator_seeks_for_test: AtomicU64,
+    #[cfg(test)]
+    records_decoded_for_test: AtomicU64,
 }
 
 impl PassEnergyStorage {
@@ -87,8 +103,33 @@ impl PassEnergyStorage {
 
         info!("Opened Pass Energy RocksDB at {}", db_path.display());
 
-        let ret = Self { file: db_path, db };
+        let ret = Self {
+            file: db_path,
+            db,
+            #[cfg(test)]
+            point_gets_for_test: AtomicU64::new(0),
+            #[cfg(test)]
+            iterator_seeks_for_test: AtomicU64::new(0),
+            #[cfg(test)]
+            records_decoded_for_test: AtomicU64::new(0),
+        };
         Ok(ret)
+    }
+
+    #[cfg(test)]
+    pub fn reset_read_metrics_for_test(&self) {
+        self.point_gets_for_test.store(0, Ordering::Relaxed);
+        self.iterator_seeks_for_test.store(0, Ordering::Relaxed);
+        self.records_decoded_for_test.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub fn read_metrics_for_test(&self) -> PassEnergyReadMetrics {
+        PassEnergyReadMetrics {
+            point_gets: self.point_gets_for_test.load(Ordering::Relaxed),
+            iterator_seeks: self.iterator_seeks_for_test.load(Ordering::Relaxed),
+            records_decoded: self.records_decoded_for_test.load(Ordering::Relaxed),
+        }
     }
 
     // Just concatenate inscription id and block height as key Txid:LEN + 4 + 4
@@ -192,6 +233,52 @@ impl PassEnergyStorage {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn insert_pass_energy_records_for_test(
+        &self,
+        records: &[PassEnergyRecord],
+    ) -> Result<(), String> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let energy_cf = self
+            .db
+            .cf_handle(PASS_ENERGY_CF)
+            .ok_or_else(|| format!("Column family {} not found", PASS_ENERGY_CF))?;
+        let meta_cf = self
+            .db
+            .cf_handle(META_CF)
+            .ok_or_else(|| format!("Column family {} not found", META_CF))?;
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut max_height = self.get_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT)?;
+
+        for record in records {
+            let key_bytes = Self::make_energy_key(&record.inscription_id, record.block_height)?;
+            let value = PassEnergyValue {
+                state: record.state.clone(),
+                active_block_height: record.active_block_height,
+                owner_address: record.owner_address,
+                owner_balance: record.owner_balance,
+                owner_delta: record.owner_delta,
+                energy: record.energy,
+            };
+            let value_bytes = bincode::serde::encode_to_vec(&value, bincode::config::standard())
+                .map_err(|e| format!("Failed to serialize PassEnergyValue: {}", e))?;
+            batch.put_cf(energy_cf, key_bytes, value_bytes);
+            max_height = Some(max_height.map_or(record.block_height, |height| {
+                height.max(record.block_height)
+            }));
+        }
+        batch.put_cf(
+            meta_cf,
+            META_KEY_MAX_RECORD_BLOCK_HEIGHT,
+            max_height.unwrap().to_be_bytes(),
+        );
+        self.db
+            .write(&batch)
+            .map_err(|e| format!("Failed to bulk insert pass energy test records: {}", e))
+    }
+
     fn get_meta_u32(&self, key: &[u8]) -> Result<Option<u32>, String> {
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", META_CF);
@@ -199,6 +286,8 @@ impl PassEnergyStorage {
             msg
         })?;
 
+        #[cfg(test)]
+        self.point_gets_for_test.fetch_add(1, Ordering::Relaxed);
         match self.db.get_cf(cf, key).map_err(|e| {
             let msg = format!("Failed to read energy meta key {:?}: {}", key, e);
             error!("{}", msg);
@@ -314,12 +403,17 @@ impl PassEnergyStorage {
 
         let key_bytes = Self::make_energy_key(inscription_id, block_height)?;
 
+        #[cfg(test)]
+        self.point_gets_for_test.fetch_add(1, Ordering::Relaxed);
         match self.db.get_cf(cf, key_bytes).map_err(|e| {
             let msg = format!("Failed to get pass energy record: {}", e);
             error!("{}", msg);
             msg
         })? {
             Some(value_bytes) => {
+                #[cfg(test)]
+                self.records_decoded_for_test
+                    .fetch_add(1, Ordering::Relaxed);
                 let (value, _) =
                     bincode::serde::decode_from_slice(&value_bytes, bincode::config::standard())
                         .map_err(|e| {
@@ -346,6 +440,8 @@ impl PassEnergyStorage {
         })?;
 
         let max_key = Self::make_energy_key(inscription_id, from_block_height)?;
+        #[cfg(test)]
+        self.iterator_seeks_for_test.fetch_add(1, Ordering::Relaxed);
         let iter = self.db.iterator_cf(
             cf,
             rocksdb::IteratorMode::From(&max_key, rocksdb::Direction::Reverse),
@@ -370,6 +466,9 @@ impl PassEnergyStorage {
                             error!("{}", msg);
                             msg
                         })?;
+                #[cfg(test)]
+                self.records_decoded_for_test
+                    .fetch_add(1, Ordering::Relaxed);
 
                 last_record = Some(PassEnergyRecord {
                     inscription_id: key.inscription_id,

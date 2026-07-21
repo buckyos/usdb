@@ -5,8 +5,8 @@ use super::economic_cursor::{
 use super::rpc::*;
 use crate::config::ConfigManagerRef;
 use crate::index::{
-    COLLAB_WEIGHT_BPS, DerivedCollabBreakdownItem, DerivedPassEnergyMode, Energy,
-    InscriptionIndexer, MinerPassKind, MinerPassState, calc_difficulty_factor_bps,
+    COLLAB_WEIGHT_BPS, CandidateSetDerivationError, DerivedCollabBreakdownItem,
+    DerivedPassEnergyMode, Energy, InscriptionIndexer, MinerPassState, calc_difficulty_factor_bps,
     calc_level_from_effective_energy,
 };
 use crate::status::StatusManagerRef;
@@ -15,6 +15,7 @@ use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use ord::InscriptionId;
 use serde_json::json;
+use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -40,6 +41,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 const MAX_RPC_PAGE_SIZE: usize = 1_000;
+const ECONOMIC_VIEW_CACHE_MAX_ENTRIES: usize = 2;
 
 type CurrentStateForErrorPayload = (
     Option<IndexerSnapshotInfo>,
@@ -71,6 +73,98 @@ struct RankedPassEnergyItem {
 struct RankedCandidateSetItem {
     item: CandidateSetViewItem,
     effective_energy: Energy,
+}
+
+#[derive(Clone, Debug)]
+struct CandidateSetViewCacheEntry {
+    external_state: EconomicExternalState,
+    selection_rule: String,
+    total: u64,
+    items: Arc<Vec<CandidateSetViewItem>>,
+}
+
+#[derive(Debug, Default)]
+struct CandidateSetViewCache {
+    entries: VecDeque<CandidateSetViewCacheEntry>,
+}
+
+impl CandidateSetViewCache {
+    fn get(
+        &mut self,
+        external_state: &EconomicExternalState,
+        selection_rule: &str,
+    ) -> Option<(u64, Arc<Vec<CandidateSetViewItem>>)> {
+        let position = self.entries.iter().position(|entry| {
+            entry.external_state == *external_state && entry.selection_rule == selection_rule
+        })?;
+        let entry = self.entries.remove(position)?;
+        let result = (entry.total, entry.items.clone());
+        self.entries.push_back(entry);
+        Some(result)
+    }
+
+    fn insert(&mut self, entry: CandidateSetViewCacheEntry) {
+        self.entries.retain(|current| {
+            current.external_state != entry.external_state
+                || current.selection_rule != entry.selection_rule
+        });
+        self.entries.push_back(entry);
+        while self.entries.len() > ECONOMIC_VIEW_CACHE_MAX_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CachedCollabBreakdown {
+    leader_state: String,
+    leader_pass_kind: String,
+    aggregate_collab_contribution: Energy,
+    items: Arc<Vec<DerivedCollabBreakdownItem>>,
+}
+
+#[derive(Clone, Debug)]
+struct CollabBreakdownCacheEntry {
+    external_state: EconomicExternalState,
+    leader_pass_id: String,
+    sort: String,
+    breakdown: CachedCollabBreakdown,
+}
+
+#[derive(Debug, Default)]
+struct CollabBreakdownCache {
+    entries: VecDeque<CollabBreakdownCacheEntry>,
+}
+
+impl CollabBreakdownCache {
+    fn get(
+        &mut self,
+        external_state: &EconomicExternalState,
+        leader_pass_id: &str,
+        sort: &str,
+    ) -> Option<CachedCollabBreakdown> {
+        let position = self.entries.iter().position(|entry| {
+            entry.external_state == *external_state
+                && entry.leader_pass_id == leader_pass_id
+                && entry.sort == sort
+        })?;
+        let entry = self.entries.remove(position)?;
+        let result = entry.breakdown.clone();
+        self.entries.push_back(entry);
+        Some(result)
+    }
+
+    fn insert(&mut self, entry: CollabBreakdownCacheEntry) {
+        self.entries.retain(|current| {
+            current.external_state != entry.external_state
+                || current.leader_pass_id != entry.leader_pass_id
+                || current.sort != entry.sort
+        });
+        self.entries.push_back(entry);
+        while self.entries.len() > ECONOMIC_VIEW_CACHE_MAX_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
 }
 
 fn encode_energy_decimal(energy: Energy) -> String {
@@ -132,6 +226,8 @@ pub struct UsdbIndexerRpcServer {
     shutdown_tx: watch::Sender<()>,
     server_handle: Arc<Mutex<Option<jsonrpc_http_server::CloseHandle>>>,
     pass_energy_leaderboard_cache: Arc<Mutex<PassEnergyLeaderboardCache>>,
+    candidate_set_view_cache: Arc<Mutex<CandidateSetViewCache>>,
+    collab_breakdown_cache: Arc<Mutex<CollabBreakdownCache>>,
 }
 
 impl UsdbIndexerRpcServer {
@@ -152,6 +248,8 @@ impl UsdbIndexerRpcServer {
             pass_energy_leaderboard_cache: Arc::new(Mutex::new(
                 PassEnergyLeaderboardCache::default(),
             )),
+            candidate_set_view_cache: Arc::new(Mutex::new(CandidateSetViewCache::default())),
+            collab_breakdown_cache: Arc::new(Mutex::new(CollabBreakdownCache::default())),
         }
     }
 
@@ -1907,74 +2005,31 @@ impl UsdbIndexerRpcServer {
         resolved_height: u32,
     ) -> Result<(u64, Vec<CandidateSetViewItem>), JsonError> {
         let build_start = Instant::now();
-        let storage = self.indexer.miner_pass_storage();
-        let total_candidates = storage
-            .get_active_standard_pass_count_from_history_at_height(resolved_height)
-            .map_err(Self::to_internal_error)?;
-
-        if total_candidates == 0 {
-            return Ok((0, Vec::new()));
-        }
-
-        let load_page_size = self.config.config().usdb.active_address_page_size.max(1);
-        let total_candidates_usize = usize::try_from(total_candidates).map_err(|_| {
-            Self::to_internal_error(format!(
-                "Candidate count overflow when building candidate set view: total_candidates={}",
-                total_candidates
-            ))
-        })?;
-        let total_pages = total_candidates_usize.div_ceil(load_page_size);
-        let mut rows = Vec::with_capacity(total_candidates_usize);
-        for page in 0..total_pages {
-            let page_rows = storage
-                .get_active_standard_passes_by_page_from_history_at_height(
-                    page,
-                    load_page_size,
-                    resolved_height,
-                )
-                .map_err(Self::to_internal_error)?;
-            if page_rows.is_empty() {
-                break;
+        let candidates = match self
+            .indexer
+            .effective_energy_resolver()
+            .resolve_active_standard_candidate_set(resolved_height)
+        {
+            Ok(candidates) => candidates,
+            Err(CandidateSetDerivationError::Storage(message)) => {
+                return Err(Self::to_internal_error(message));
             }
-            rows.extend(page_rows);
-        }
-
-        let mut ranked = Vec::with_capacity(rows.len());
-        for row in rows {
-            let pass_id = row.pass.inscription_id;
-            let Some(snapshot) = self
-                .indexer
-                .effective_energy_resolver()
-                .resolve_pass_energy(&pass_id, resolved_height, DerivedPassEnergyMode::AtOrBefore)
-                .map_err(Self::to_internal_error)?
-            else {
+            Err(CandidateSetDerivationError::Invariant { pass_id, detail }) => {
                 return Err(Self::to_business_error(
                     ERR_INTERNAL_INVARIANT_BROKEN,
                     "INTERNAL_INVARIANT_BROKEN",
                     json!({
-                        "inscription_id": pass_id.to_string(),
+                        "inscription_id": pass_id,
                         "resolved_height": resolved_height,
-                        "detail": "Active standard candidate is missing a raw energy record"
-                    }),
-                ));
-            };
-
-            if snapshot.state != MinerPassState::Active
-                || snapshot.pass_kind != MinerPassKind::Standard
-            {
-                return Err(Self::to_business_error(
-                    ERR_INTERNAL_INVARIANT_BROKEN,
-                    "INTERNAL_INVARIANT_BROKEN",
-                    json!({
-                        "inscription_id": pass_id.to_string(),
-                        "resolved_height": resolved_height,
-                        "state": snapshot.state.as_str(),
-                        "pass_kind": snapshot.pass_kind.as_str(),
-                        "detail": "Kind-aware active standard query returned a non-candidate pass"
+                        "detail": detail
                     }),
                 ));
             }
-
+        };
+        let total_candidates = candidates.len() as u64;
+        let mut ranked = Vec::with_capacity(candidates.len());
+        for snapshot in candidates {
+            let pass_id = snapshot.pass.pass.inscription_id;
             let level = calc_level_from_effective_energy(snapshot.effective_energy);
             let difficulty_factor_bps = calc_difficulty_factor_bps(level);
 
@@ -1982,9 +2037,9 @@ impl UsdbIndexerRpcServer {
                 effective_energy: snapshot.effective_energy,
                 item: CandidateSetViewItem {
                     pass_id: pass_id.to_string(),
-                    owner_script_hash: row.pass.owner.to_string(),
-                    state: snapshot.state.as_str().to_string(),
-                    pass_kind: snapshot.pass_kind.as_str().to_string(),
+                    owner_script_hash: snapshot.pass.pass.owner.to_string(),
+                    state: snapshot.pass.pass.state.as_str().to_string(),
+                    pass_kind: snapshot.pass.pass.pass_kind.as_str().to_string(),
                     record_block_height: snapshot.record.block_height,
                     raw_energy: encode_energy_decimal(snapshot.raw_energy),
                     collab_contribution: encode_energy_decimal(snapshot.collab_contribution),
@@ -2495,24 +2550,42 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 params.context.as_ref(),
             )?,
         };
-
-        let Some(mut breakdown) = self
-            .indexer
-            .effective_energy_resolver()
-            .resolve_collab_breakdown(&leader_pass_id, query_height)
-            .map_err(Self::to_internal_error)?
-        else {
-            return Err(Self::to_business_error(
-                ERR_PASS_NOT_FOUND,
-                "PASS_NOT_FOUND",
-                json!({
-                    "leader_pass_id": params.leader_pass_id,
-                    "query_block_height": query_height
-                }),
-            ));
+        let initial_external_state = EconomicExternalState::from(&initial_state_ref);
+        let leader_pass_id_text = leader_pass_id.to_string();
+        let cached = self.collab_breakdown_cache.lock().unwrap().get(
+            &initial_external_state,
+            &leader_pass_id_text,
+            sort.as_str(),
+        );
+        let cache_hit = cached.is_some();
+        let breakdown = match cached {
+            Some(cached) => cached,
+            None => {
+                let Some(mut derived) = self
+                    .indexer
+                    .effective_energy_resolver()
+                    .resolve_collab_breakdown(&leader_pass_id, query_height)
+                    .map_err(Self::to_internal_error)?
+                else {
+                    return Err(Self::to_business_error(
+                        ERR_PASS_NOT_FOUND,
+                        "PASS_NOT_FOUND",
+                        json!({
+                            "leader_pass_id": params.leader_pass_id,
+                            "query_block_height": query_height
+                        }),
+                    ));
+                };
+                Self::sort_collab_breakdown_items(&mut derived.items, sort);
+                CachedCollabBreakdown {
+                    leader_state: derived.leader.pass.state.as_str().to_string(),
+                    leader_pass_kind: derived.leader.pass.pass_kind.as_str().to_string(),
+                    aggregate_collab_contribution: derived.aggregate_collab_contribution,
+                    items: Arc::new(derived.items),
+                }
+            }
         };
 
-        Self::sort_collab_breakdown_items(&mut breakdown.items, sort);
         let total = breakdown.items.len() as u64;
         let start = Self::collab_cursor_start(&breakdown.items, cursor.as_ref())?;
         let end = start
@@ -2526,6 +2599,17 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let state_ref = self.revalidate_economic_query_context(query_height, &initial_state_ref)?;
         let external_state = EconomicExternalState::from(&state_ref);
+        if !cache_hit {
+            self.collab_breakdown_cache
+                .lock()
+                .unwrap()
+                .insert(CollabBreakdownCacheEntry {
+                    external_state: external_state.clone(),
+                    leader_pass_id: leader_pass_id_text.clone(),
+                    sort: sort.as_str().to_string(),
+                    breakdown: breakdown.clone(),
+                });
+        }
         let next_cursor = if end < breakdown.items.len() {
             let last = &breakdown.items[end - 1];
             Some(Self::encode_cursor(EconomicPageCursor::CollabBreakdown(
@@ -2546,9 +2630,9 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         Ok(CollabBreakdownPage {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
             external_state,
-            leader_pass_id: leader_pass_id.to_string(),
-            leader_state: breakdown.leader.pass.state.as_str().to_string(),
-            leader_pass_kind: breakdown.leader.pass.pass_kind.as_str().to_string(),
+            leader_pass_id: leader_pass_id_text,
+            leader_state: breakdown.leader_state,
+            leader_pass_kind: breakdown.leader_pass_kind,
             sort: sort.as_str().to_string(),
             total,
             aggregate_collab_contribution: encode_energy_decimal(
@@ -2899,14 +2983,37 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             )?,
         };
         let call_start = Instant::now();
-
-        let (total, ranked) = self.build_candidate_set_view_dataset(query_height)?;
+        let initial_external_state = EconomicExternalState::from(&initial_state_ref);
+        let cached = self
+            .candidate_set_view_cache
+            .lock()
+            .unwrap()
+            .get(&initial_external_state, selection_rule);
+        let cache_hit = cached.is_some();
+        let (total, ranked) = match cached {
+            Some((total, ranked)) => (total, ranked),
+            None => {
+                let (total, ranked) = self.build_candidate_set_view_dataset(query_height)?;
+                (total, Arc::new(ranked))
+            }
+        };
         let start = Self::candidate_cursor_start(&ranked, cursor.as_ref())?;
         let end = start.saturating_add(params.limit).min(ranked.len());
         let items = ranked[start..end].to_vec();
 
         let state_ref = self.revalidate_economic_query_context(query_height, &initial_state_ref)?;
         let external_state = EconomicExternalState::from(&state_ref);
+        if !cache_hit {
+            self.candidate_set_view_cache
+                .lock()
+                .unwrap()
+                .insert(CandidateSetViewCacheEntry {
+                    external_state: external_state.clone(),
+                    selection_rule: selection_rule.to_string(),
+                    total,
+                    items: ranked.clone(),
+                });
+        }
         let next_cursor = if end < ranked.len() {
             let last = &ranked[end - 1];
             Some(Self::encode_cursor(EconomicPageCursor::CandidateSet(
@@ -2924,13 +3031,14 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
 
         info!(
-            "Candidate set view served: module=rpc_server, resolved_height={}, selection_rule={}, total={}, limit={}, cursor_present={}, next_cursor_present={}, elapsed_ms={}",
+            "Candidate set view served: module=rpc_server, resolved_height={}, selection_rule={}, total={}, limit={}, cursor_present={}, next_cursor_present={}, cache_hit={}, elapsed_ms={}",
             query_height,
             selection_rule,
             total,
             params.limit,
             cursor.is_some(),
             next_cursor.is_some(),
+            cache_hit,
             call_start.elapsed().as_millis()
         );
 
@@ -3095,6 +3203,8 @@ mod tests {
         LocalStatePassCommitIdentity, SystemStateIdentity, ToUSDBScriptHash, USDBScriptHash,
         address_string_to_script_hash, build_local_state_commit, build_system_state_id,
     };
+
+    mod economic_scale;
 
     fn test_root_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -6383,6 +6493,28 @@ mod tests {
             page0.aggregate_collab_contribution
         );
 
+        let mut replacement = ready_balance_history_snapshot(120);
+        replacement.stable_block_hash = Some("cc".repeat(32));
+        replacement.latest_block_commit = Some("dd".repeat(32));
+        storage
+            .upsert_balance_history_snapshot_anchor(&replacement)
+            .unwrap();
+        let reorg_mismatch = server
+            .get_collab_breakdown(GetCollabBreakdownParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                leader_pass_id: leader.inscription_id.to_string(),
+                block_height: None,
+                context: None,
+                sort: Some("contribution_desc_pass_id_asc".to_string()),
+                cursor: page0.next_cursor,
+                limit: 1,
+            })
+            .unwrap_err();
+        assert_eq!(
+            reorg_mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+        );
+
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
     }
@@ -6471,7 +6603,15 @@ mod tests {
         seed_state_ref_context(&server, 120);
         let storage = server.indexer.miner_pass_storage();
 
-        let leader = make_active_pass(87, 187, 100);
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &server.config.config().bitcoin.network(),
+        )
+        .unwrap();
+        let mut leader = make_active_pass(87, 187, 100);
+        leader.owner = leader_owner;
+        leader.mint_owner = leader_owner;
         let tie_low_id = make_active_pass(88, 188, 100);
         let tie_high_id = make_active_pass(89, 189, 100);
         let dormant_standard = make_active_pass(90, 190, 100);
@@ -6490,8 +6630,13 @@ mod tests {
             .unwrap();
 
         let collab_high_raw = make_collab_pass(91, 191, 101, leader.inscription_id);
+        let collab_addr =
+            make_collab_pass_with_leader_addr(92, 192, 102, leader_btc_addr, leader_owner);
         storage
             .add_new_mint_pass_at_height(&collab_high_raw, collab_high_raw.mint_block_height)
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&collab_addr, collab_addr.mint_block_height)
             .unwrap();
 
         seed_energy_record(&server, &leader, 120, 100);
@@ -6505,8 +6650,10 @@ mod tests {
             10_000,
         );
         seed_energy_record(&server, &collab_high_raw, 120, 2_000_000);
+        seed_energy_record(&server, &collab_addr, 120, 400);
 
-        let contribution = calc_collab_contribution(2_000_000);
+        let contribution =
+            calc_collab_contribution(2_000_000).saturating_add(calc_collab_contribution(400));
         let expected_leader_effective = 100u128.saturating_add(contribution);
         let leader_energy = get_pass_energy_exact_for_test(&server, &leader, 120);
         assert_eq!(leader_energy.raw_energy, "100");
@@ -6533,7 +6680,7 @@ mod tests {
                 page_size: 1,
             })
             .unwrap();
-        assert_eq!(raw_leaderboard.total, 4);
+        assert_eq!(raw_leaderboard.total, 5);
         assert_eq!(
             raw_leaderboard.items[0].inscription_id,
             collab_high_raw.inscription_id.to_string(),
@@ -6638,7 +6785,61 @@ mod tests {
             .map(|item| item.pass_id.clone())
             .collect::<Vec<_>>();
         assert!(!candidate_ids.contains(&collab_high_raw.inscription_id.to_string()));
+        assert!(!candidate_ids.contains(&collab_addr.inscription_id.to_string()));
         assert!(!candidate_ids.contains(&dormant_standard.inscription_id.to_string()));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_candidate_set_rejects_address_leader_owner_mismatch() {
+        let (server, root_dir) = build_server("candidate_address_owner_mismatch", 120);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let leader_btc_addr = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
+        let leader_owner = address_string_to_script_hash(
+            leader_btc_addr,
+            &server.config.config().bitcoin.network(),
+        )
+        .unwrap();
+
+        let mut leader = make_active_pass(193, 243, 100);
+        leader.owner = leader_owner;
+        leader.mint_owner = leader_owner;
+        let collab = make_collab_pass_with_leader_addr(
+            194,
+            244,
+            101,
+            leader_btc_addr,
+            test_script_hash(245),
+        );
+        storage
+            .add_new_mint_pass_at_height(&leader, leader.mint_block_height)
+            .unwrap();
+        storage
+            .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &leader, 120, 1_000);
+        seed_energy_record(&server, &collab, 120, 200);
+
+        let error = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(120),
+                context: None,
+                selection_rule: None,
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            ErrorCode::ServerError(ERR_INTERNAL_INVARIANT_BROKEN)
+        );
+        let data = error.data.unwrap();
+        assert_eq!(data["inscription_id"], collab.inscription_id.to_string());
+        assert!(data["detail"].as_str().unwrap().contains("owner mismatch"));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();

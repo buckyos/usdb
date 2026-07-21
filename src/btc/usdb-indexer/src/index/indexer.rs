@@ -228,7 +228,7 @@ impl InscriptionIndexer {
         let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
             miner_pass_storage.clone(),
             pass_energy_manager.clone(),
-            miner_pass_manager.clone(),
+            config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
         ));
 
@@ -281,7 +281,7 @@ impl InscriptionIndexer {
         let effective_energy_resolver = Arc::new(EffectiveEnergyResolver::new(
             miner_pass_storage.clone(),
             pass_energy_manager.clone(),
-            miner_pass_manager.clone(),
+            config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
         ));
         Self {

@@ -540,6 +540,24 @@ impl PassEnergyManager {
         self.storage.insert_pass_energy_record(record)
     }
 
+    #[cfg(test)]
+    pub fn insert_pass_energy_records_for_test(
+        &self,
+        records: &[PassEnergyRecord],
+    ) -> Result<(), String> {
+        self.storage.insert_pass_energy_records_for_test(records)
+    }
+
+    #[cfg(test)]
+    pub fn reset_storage_read_metrics_for_test(&self) {
+        self.storage.reset_read_metrics_for_test();
+    }
+
+    #[cfg(test)]
+    pub fn storage_read_metrics_for_test(&self) -> crate::storage::PassEnergyReadMetrics {
+        self.storage.read_metrics_for_test()
+    }
+
     // Kernel function to update the energy of a Miner Pass at given block height
     pub async fn update_pass_energy(
         &self,

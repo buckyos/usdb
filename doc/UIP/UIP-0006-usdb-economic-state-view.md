@@ -469,9 +469,9 @@ USDB Economic State View
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
-参考实现的 Rust/service tests 已覆盖上述 core 规则；targeted live 已覆盖 profile/candidate/breakdown、formula-version mismatch、head advance 和 same-height reorg。完整 runner 仍需执行全场景 reorg/restart 和大数据 cursor 压测后，才能声明 UIP-0006 live regression 完成。
+参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile/candidate/breakdown、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放和 restart 重放；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim、并发/冷缓存与长时 soak 仍属于后续容量评估。
 
 # 后续实现议题
 
-1. `contribution_desc_pass_id_asc` 在大数据量 cursor 分页下的数据库索引成本。
+1. cold cache、并发、多个 historical context 和 100K 以上规模下的物理 I/O/缓存容量评估。
 2. script hash -> BTC address 反向索引是否作为后续独立能力实现。

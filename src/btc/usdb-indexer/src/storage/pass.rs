@@ -3,6 +3,8 @@ use balance_history::SnapshotInfo as BalanceHistorySnapshotInfo;
 use bitcoincore_rpc::bitcoin::Txid;
 use ord::InscriptionId;
 use ordinals::SatPoint;
+#[cfg(test)]
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -160,6 +162,17 @@ impl MinerPassStorage {
         storage.init_db()?;
 
         Ok(storage)
+    }
+
+    #[cfg(test)]
+    pub fn set_sql_trace_for_test(&self, trace_fn: Option<fn(TraceEvent<'_>)>) {
+        let conn = self.conn.lock().unwrap();
+        conn.trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT
+                | TraceEventCodes::SQLITE_TRACE_PROFILE
+                | TraceEventCodes::SQLITE_TRACE_ROW,
+            trace_fn,
+        );
     }
 
     fn init_db(&self) -> Result<(), String> {

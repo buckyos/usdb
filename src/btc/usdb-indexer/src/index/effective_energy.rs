@@ -1,12 +1,12 @@
 use super::content::{MinerPassKind, MinerPassState};
 use super::energy::{PassEnergyManagerRef, PassEnergyResult};
 use super::energy_formula::{Energy, calc_collab_contribution, calc_standard_effective_energy};
-use super::pass::{CollabLeaderRefKind, MinerPassManagerRef};
 use crate::storage::{MinerPassSnapshotInfo, MinerPassStorageRef, PassEnergyRecord};
+use bitcoincore_rpc::bitcoin::Network;
 use ord::InscriptionId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use usdb_util::{USDBScriptHash, address_string_to_script_hash};
 
 /// Query mode used by derived UIP-0004 energy resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +40,41 @@ pub struct DerivedPassEnergySnapshot {
     pub collab_breakdown_count: u64,
 }
 
+/// Batch-derived candidate energy for one active standard pass.
+pub struct DerivedCandidateEnergySnapshot {
+    /// Historical active standard pass snapshot used for owner and kind fields.
+    pub pass: MinerPassSnapshotInfo,
+    /// Stored raw energy record used as the projection base.
+    pub record: PassEnergyRecord,
+    /// UIP-0003 raw energy projected to the candidate-set height.
+    pub raw_energy: Energy,
+    /// Aggregate UIP-0004 contribution from active collab passes.
+    pub collab_contribution: Energy,
+    /// Saturating sum of raw energy and collab contribution.
+    pub effective_energy: Energy,
+    /// Number of active collab passes included in the aggregate.
+    pub collab_breakdown_count: u64,
+}
+
+/// Failure category for batch candidate derivation.
+pub enum CandidateSetDerivationError {
+    /// SQLite/RocksDB or serialization failure while reading durable state.
+    Storage(String),
+    /// Durable pass and energy rows disagree with candidate-set invariants.
+    Invariant {
+        /// Pass most directly associated with the violated invariant.
+        pass_id: String,
+        /// Stable diagnostic detail for logs and structured RPC errors.
+        detail: String,
+    },
+}
+
+impl From<String> for CandidateSetDerivationError {
+    fn from(value: String) -> Self {
+        Self::Storage(value)
+    }
+}
+
 /// One audited collab contribution item resolved for a Leader at one BTC height.
 #[derive(Clone, Debug)]
 pub struct DerivedCollabBreakdownItem {
@@ -71,10 +106,26 @@ pub struct DerivedCollabBreakdown {
 
 struct CollabBreakdownCollector<'a> {
     leader_pass_id: &'a InscriptionId,
+    leader_owner: &'a USDBScriptHash,
     block_height: u32,
     seen_collabs: &'a mut BTreeSet<InscriptionId>,
     aggregate: &'a mut Energy,
     items: &'a mut Vec<DerivedCollabBreakdownItem>,
+}
+
+#[derive(Clone, Copy)]
+enum CollabRelationSource {
+    LeaderPassId,
+    LeaderBtcOwner,
+}
+
+impl CollabRelationSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LeaderPassId => "leader_pass_id",
+            Self::LeaderBtcOwner => "leader_btc_owner",
+        }
+    }
 }
 
 /// Read-only UIP-0004 effective energy resolver.
@@ -85,7 +136,7 @@ struct CollabBreakdownCollector<'a> {
 pub struct EffectiveEnergyResolver {
     pass_storage: MinerPassStorageRef,
     pass_energy_manager: PassEnergyManagerRef,
-    miner_pass_manager: MinerPassManagerRef,
+    network: Network,
     collab_page_size: usize,
 }
 
@@ -97,13 +148,13 @@ impl EffectiveEnergyResolver {
     pub fn new(
         pass_storage: MinerPassStorageRef,
         pass_energy_manager: PassEnergyManagerRef,
-        miner_pass_manager: MinerPassManagerRef,
+        network: Network,
         collab_page_size: usize,
     ) -> Self {
         Self {
             pass_storage,
             pass_energy_manager,
-            miner_pass_manager,
+            network,
             collab_page_size: collab_page_size.max(1),
         }
     }
@@ -179,6 +230,231 @@ impl EffectiveEnergyResolver {
             effective_energy,
             collab_breakdown_count,
         }))
+    }
+
+    /// Resolve all active standard candidate energies with one pass-history scan.
+    ///
+    /// This is equivalent to resolving every active standard pass separately,
+    /// but builds fixed-id and address-owner Leader maps once. Raw energy is
+    /// still read independently for every standard and collab pass so UIP-0003
+    /// projection and corruption checks remain unchanged.
+    pub fn resolve_active_standard_candidate_set(
+        &self,
+        block_height: u32,
+    ) -> Result<Vec<DerivedCandidateEnergySnapshot>, CandidateSetDerivationError> {
+        let standards = self.load_all_active_passes(block_height, MinerPassKind::Standard)?;
+        if standards.is_empty() {
+            return Ok(Vec::new());
+        }
+        let collabs = self.load_all_active_passes(block_height, MinerPassKind::Collab)?;
+
+        let mut standard_by_id = HashMap::with_capacity(standards.len());
+        let mut standard_by_owner = HashMap::with_capacity(standards.len());
+        for (index, standard) in standards.iter().enumerate() {
+            standard_by_id.insert(standard.pass.inscription_id.to_string(), index);
+            let owner = standard.pass.owner.to_string();
+            if let Some(previous) = standard_by_owner.insert(owner.clone(), index) {
+                let msg = format!(
+                    "Multiple active standard passes share one owner while building candidate set: block_height={}, owner={}, first_pass_id={}, second_pass_id={}",
+                    block_height,
+                    owner,
+                    standards[previous].pass.inscription_id,
+                    standard.pass.inscription_id
+                );
+                error!("{}", msg);
+                return Err(CandidateSetDerivationError::Invariant {
+                    pass_id: standard.pass.inscription_id.to_string(),
+                    detail: msg,
+                });
+            }
+        }
+
+        let mut collab_aggregates = vec![(0u128, 0u64); standards.len()];
+        for collab in collabs {
+            let leader_index = match (
+                collab.pass.leader_pass_id.as_ref(),
+                collab.pass.leader_btc_addr.as_deref(),
+                collab.pass.leader_btc_owner.as_ref(),
+            ) {
+                (Some(leader_pass_id), None, None) => {
+                    standard_by_id.get(&leader_pass_id.to_string()).copied()
+                }
+                (None, Some(leader_btc_addr), Some(stored_leader_owner)) => {
+                    let normalized_owner = address_string_to_script_hash(
+                        leader_btc_addr,
+                        &self.network,
+                    )
+                    .map_err(|error| {
+                        let detail = format!(
+                            "Invalid collab Leader BTC address while building candidate set: collab_pass_id={}, leader_btc_addr={}, network={}, error={}",
+                            collab.pass.inscription_id,
+                            leader_btc_addr,
+                            self.network,
+                            error
+                        );
+                        error!("{}", detail);
+                        CandidateSetDerivationError::Invariant {
+                            pass_id: collab.pass.inscription_id.to_string(),
+                            detail,
+                        }
+                    })?;
+                    if normalized_owner != *stored_leader_owner {
+                        let msg = format!(
+                            "Collab Leader BTC owner mismatch while building candidate set: collab_pass_id={}, leader_btc_addr={}, stored_owner={}, normalized_owner={}, network={}",
+                            collab.pass.inscription_id,
+                            leader_btc_addr,
+                            stored_leader_owner,
+                            normalized_owner,
+                            self.network
+                        );
+                        error!("{}", msg);
+                        return Err(CandidateSetDerivationError::Invariant {
+                            pass_id: collab.pass.inscription_id.to_string(),
+                            detail: msg,
+                        });
+                    }
+                    standard_by_owner
+                        .get(&normalized_owner.to_string())
+                        .copied()
+                }
+                (None, None, None) => None,
+                _ => {
+                    let msg = format!(
+                        "Invalid collab Leader reference while building candidate set: collab_pass_id={}, block_height={}",
+                        collab.pass.inscription_id, block_height
+                    );
+                    error!("{}", msg);
+                    return Err(CandidateSetDerivationError::Invariant {
+                        pass_id: collab.pass.inscription_id.to_string(),
+                        detail: msg,
+                    });
+                }
+            };
+            let Some(leader_index) = leader_index else {
+                continue;
+            };
+            let Some((_, collab_raw)) = self.resolve_raw_energy_record_at_or_before(
+                &collab.pass.inscription_id,
+                block_height,
+            )?
+            else {
+                let msg = format!(
+                    "Active collab pass missing raw energy while building candidate set: collab_pass_id={}, block_height={}",
+                    collab.pass.inscription_id, block_height
+                );
+                error!("{}", msg);
+                return Err(CandidateSetDerivationError::Invariant {
+                    pass_id: collab.pass.inscription_id.to_string(),
+                    detail: msg,
+                });
+            };
+            if collab_raw.state != MinerPassState::Active {
+                let msg = format!(
+                    "Active collab pass energy state mismatch while building candidate set: collab_pass_id={}, block_height={}, energy_state={}",
+                    collab.pass.inscription_id,
+                    block_height,
+                    collab_raw.state.as_str()
+                );
+                error!("{}", msg);
+                return Err(CandidateSetDerivationError::Invariant {
+                    pass_id: collab.pass.inscription_id.to_string(),
+                    detail: msg,
+                });
+            }
+            let contribution = calc_collab_contribution(collab_raw.energy);
+            let aggregate = &mut collab_aggregates[leader_index];
+            aggregate.0 = aggregate.0.saturating_add(contribution);
+            aggregate.1 = aggregate.1.saturating_add(1);
+        }
+
+        let mut candidates = Vec::with_capacity(standards.len());
+        for (standard, (collab_contribution, collab_breakdown_count)) in
+            standards.into_iter().zip(collab_aggregates)
+        {
+            let Some((record, raw_result)) = self.resolve_target_raw_energy(
+                &standard.pass.inscription_id,
+                block_height,
+                DerivedPassEnergyMode::AtOrBefore,
+            )?
+            else {
+                let msg = format!(
+                    "Active standard pass missing raw energy while building candidate set: pass_id={}, block_height={}",
+                    standard.pass.inscription_id, block_height
+                );
+                error!("{}", msg);
+                return Err(CandidateSetDerivationError::Invariant {
+                    pass_id: standard.pass.inscription_id.to_string(),
+                    detail: msg,
+                });
+            };
+            if raw_result.state != MinerPassState::Active {
+                let msg = format!(
+                    "Active standard pass energy state mismatch while building candidate set: pass_id={}, block_height={}, energy_state={}",
+                    standard.pass.inscription_id,
+                    block_height,
+                    raw_result.state.as_str()
+                );
+                error!("{}", msg);
+                return Err(CandidateSetDerivationError::Invariant {
+                    pass_id: standard.pass.inscription_id.to_string(),
+                    detail: msg,
+                });
+            }
+            candidates.push(DerivedCandidateEnergySnapshot {
+                pass: standard,
+                record,
+                raw_energy: raw_result.energy,
+                collab_contribution,
+                effective_energy: calc_standard_effective_energy(
+                    raw_result.energy,
+                    collab_contribution,
+                ),
+                collab_breakdown_count,
+            });
+        }
+        Ok(candidates)
+    }
+
+    fn load_all_active_passes(
+        &self,
+        block_height: u32,
+        pass_kind: MinerPassKind,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        let mut page = 0usize;
+        let mut passes = Vec::new();
+        loop {
+            let rows = match pass_kind {
+                MinerPassKind::Standard => self
+                    .pass_storage
+                    .get_active_standard_passes_by_page_from_history_at_height(
+                        page,
+                        self.collab_page_size,
+                        block_height,
+                    )?,
+                MinerPassKind::Collab => self
+                    .pass_storage
+                    .get_active_collab_passes_by_page_from_history_at_height(
+                        page,
+                        self.collab_page_size,
+                        block_height,
+                    )?,
+            };
+            let page_len = rows.len();
+            passes.extend(rows);
+            if page_len < self.collab_page_size {
+                break;
+            }
+            page = page.checked_add(1).ok_or_else(|| {
+                let msg = format!(
+                    "Pass pagination overflow while building candidate set: block_height={}, pass_kind={}",
+                    block_height,
+                    pass_kind.as_str()
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        }
+        Ok(passes)
     }
 
     /// Resolve all active collab pass contributions for one Leader pass.
@@ -278,6 +554,7 @@ impl EffectiveEnergyResolver {
 
         let mut collector = CollabBreakdownCollector {
             leader_pass_id,
+            leader_owner,
             block_height,
             seen_collabs: &mut seen_collabs,
             aggregate: &mut aggregate,
@@ -295,7 +572,7 @@ impl EffectiveEnergyResolver {
                     )
             },
             &mut collector,
-            "leader_pass_id",
+            CollabRelationSource::LeaderPassId,
         )?;
 
         self.collect_collab_breakdown_pages(
@@ -309,7 +586,7 @@ impl EffectiveEnergyResolver {
                     )
             },
             &mut collector,
-            "leader_btc_owner",
+            CollabRelationSource::LeaderBtcOwner,
         )?;
 
         Ok((aggregate, items))
@@ -319,7 +596,7 @@ impl EffectiveEnergyResolver {
         &self,
         mut load_page: F,
         collector: &mut CollabBreakdownCollector<'_>,
-        source: &'static str,
+        source: CollabRelationSource,
     ) -> Result<(), String>
     where
         F: FnMut(usize) -> Result<Vec<MinerPassSnapshotInfo>, String>,
@@ -340,17 +617,78 @@ impl EffectiveEnergyResolver {
                     continue;
                 }
 
-                let Some(resolved_leader) =
-                    self.miner_pass_manager.resolve_collab_leader_at_height(
-                        &collab_snapshot.pass,
-                        collector.block_height,
-                    )?
-                else {
-                    continue;
+                let (leader_ref_kind, leader_ref_value) = match source {
+                    CollabRelationSource::LeaderPassId => match (
+                        collab_snapshot.pass.leader_pass_id.as_ref(),
+                        collab_snapshot.pass.leader_btc_addr.as_ref(),
+                        collab_snapshot.pass.leader_btc_owner.as_ref(),
+                    ) {
+                        (Some(leader_pass_id), None, None)
+                            if leader_pass_id == collector.leader_pass_id =>
+                        {
+                            ("leader_pass_id", leader_pass_id.to_string())
+                        }
+                        _ => {
+                            let msg = format!(
+                                "Invalid fixed Leader relation returned by storage: collab_pass_id={}, leader_pass_id={}, block_height={}",
+                                collab_snapshot.pass.inscription_id,
+                                collector.leader_pass_id,
+                                collector.block_height
+                            );
+                            error!("{}", msg);
+                            return Err(msg);
+                        }
+                    },
+                    CollabRelationSource::LeaderBtcOwner => match (
+                        collab_snapshot.pass.leader_pass_id.as_ref(),
+                        collab_snapshot.pass.leader_btc_addr.as_deref(),
+                        collab_snapshot.pass.leader_btc_owner.as_ref(),
+                    ) {
+                        (None, Some(leader_btc_addr), Some(stored_leader_owner)) => {
+                            let normalized_owner = address_string_to_script_hash(
+                                leader_btc_addr,
+                                &self.network,
+                            )
+                            .map_err(|error| {
+                                let msg = format!(
+                                    "Invalid address Leader relation returned by storage: collab_pass_id={}, leader_btc_addr={}, network={}, error={}",
+                                    collab_snapshot.pass.inscription_id,
+                                    leader_btc_addr,
+                                    self.network,
+                                    error
+                                );
+                                error!("{}", msg);
+                                msg
+                            })?;
+                            if normalized_owner != *stored_leader_owner
+                                || normalized_owner != *collector.leader_owner
+                            {
+                                let msg = format!(
+                                    "Address Leader owner mismatch returned by storage: collab_pass_id={}, leader_pass_id={}, stored_owner={}, normalized_owner={}, expected_owner={}, network={}",
+                                    collab_snapshot.pass.inscription_id,
+                                    collector.leader_pass_id,
+                                    stored_leader_owner,
+                                    normalized_owner,
+                                    collector.leader_owner,
+                                    self.network
+                                );
+                                error!("{}", msg);
+                                return Err(msg);
+                            }
+                            ("leader_btc_addr", leader_btc_addr.to_string())
+                        }
+                        _ => {
+                            let msg = format!(
+                                "Invalid address Leader relation returned by storage: collab_pass_id={}, leader_pass_id={}, block_height={}",
+                                collab_snapshot.pass.inscription_id,
+                                collector.leader_pass_id,
+                                collector.block_height
+                            );
+                            error!("{}", msg);
+                            return Err(msg);
+                        }
+                    },
                 };
-                if resolved_leader.leader.pass.inscription_id != *collector.leader_pass_id {
-                    continue;
-                }
 
                 let Some((record_block_height, collab_raw)) = self
                     .resolve_raw_energy_record_at_or_before(
@@ -387,9 +725,8 @@ impl EffectiveEnergyResolver {
                     record_block_height,
                     collab_raw_energy: collab_raw.energy,
                     collab_contribution,
-                    leader_ref_kind: leader_ref_kind_as_str(&resolved_leader.leader_ref_kind)
-                        .to_string(),
-                    leader_ref_value: resolved_leader.leader_ref_value,
+                    leader_ref_kind: leader_ref_kind.to_string(),
+                    leader_ref_value,
                 });
             }
 
@@ -399,7 +736,9 @@ impl EffectiveEnergyResolver {
             page = page.checked_add(1).ok_or_else(|| {
                 let msg = format!(
                     "Collab pagination overflow while resolving effective energy: leader_inscription_id={}, block_height={}, source={}",
-                    collector.leader_pass_id, collector.block_height, source
+                    collector.leader_pass_id,
+                    collector.block_height,
+                    source.as_str()
                 );
                 error!("{}", msg);
                 msg
@@ -426,12 +765,5 @@ impl EffectiveEnergyResolver {
             self.pass_energy_manager
                 .project_energy_record_no_balance_change(&record, block_height),
         )))
-    }
-}
-
-fn leader_ref_kind_as_str(kind: &CollabLeaderRefKind) -> &'static str {
-    match kind {
-        CollabLeaderRefKind::LeaderPassId => "leader_pass_id",
-        CollabLeaderRefKind::LeaderBtcAddr => "leader_btc_addr",
     }
 }

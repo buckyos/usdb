@@ -521,4 +521,34 @@
 
 ### 后续边界
 
-- 继续保留 300-block 随机 world-sim、reorg 组合和大 candidate/breakdown 数据量性能评估，作为后续 soak 阶段；本次聚焦入口验证的是新机制和审计闭环可用。
+- 继续保留 300-block 随机 world-sim 和更长 reorg 组合作为后续 soak；candidate/breakdown 首轮大数据量评估见下一节，后续只保留 cold cache、并发和更高容量点。
+
+## UIP-0004 至 UIP-0006 Economic View 规模评估
+
+状态：首轮 `100 / 1K / 10K` deterministic release 矩阵已完成；改动尚未提交，等待 review。
+
+### 实现与测试入口
+
+- 新增 ignored release scale test 和 `run_economic_scale_eval.sh`，每档构造等量 active standard/collab；collab 一半固定 Leader、一半 address Leader，并集中到同一 Leader 形成 breakdown 大集合。
+- 使用真实 SQLite/RocksDB，记录 latency、RSS/VmHWM、DB size、SQLite statement/result-row/VM-step/fullscan/sort，以及 RocksDB get/seek/decode 逻辑操作。
+- 硬断言 candidate 排除 collab、两种 breakdown 排序集合/aggregate 一致、profile/candidate/breakdown 交叉一致、冻结 external state 重放和重启重放摘要一致。
+- 原始 JSON 默认写入 `src/btc/target/economic-scale/`；详细方法和结果见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。
+
+### 查询路径修正
+
+- candidate 派生改为一次加载 active standard/collab 历史 snapshot，并建立 `leader_pass_id` / `leader_btc_owner` map；每个 pass 只读取一次 raw energy。
+- address Leader 在批量路径继续按当前 BTC network 规范化，并校验存储的 owner relation，避免性能优化绕过 UIP-0004 network 规则。
+- breakdown 直接信任按 relation 索引筛出的 active collab 行，并执行字段 invariant 校验，不再逐 collab 重复解析 Leader。
+- candidate 和按 sort 排好的 breakdown 增加最多 2 项的有界缓存；key 包含完整 `EconomicExternalState` 及 resource 参数，只在派生后 state-ref 二次校验通过时写入。
+- continuation page 仍执行完整 external-state 前后校验；same-height reorg 会因 state identity 变化 fail closed，不复用旧 cache。
+
+### 结果摘要
+
+- 1K 原始 candidate 全分页约 `16.16s / 40,288 SQLite reads / 20K RocksDB seeks`；优化后约 `13.02ms / 270 statements / 2K seeks`。
+- 10K standard + 10K collab、`limit=100`：candidate 首次全分页约 `323.55ms`、cache replay `23.29ms`；breakdown 首次约 `247.51ms`、cache replay `147.04ms`；profile `95.45ms`；peak RSS 约 `50.94 MiB`，fixture DB 约 `27.96 MiB`。
+- 10K 的 `limit=20/100/500` 均通过相同 digest/aggregate；页数越多，逐页 external-state 校验成本按页数增长，但 RocksDB cache replay 读取保持为 0。
+
+### 后续边界
+
+- 仍需 cold cache/物理 I/O、并发与 cache eviction、collab 多 Leader 分布、100K 以上容量点和长时 soak。
+- 这些属于容量与运维评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐。
