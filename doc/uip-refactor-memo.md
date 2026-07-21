@@ -606,3 +606,27 @@
 - `go test -cover ./internal/usdb` 通过，statement coverage 为 `78.9%`；`go test ./miner`、USDB ethash 定向测试和 `go vet ./internal/usdb ./miner ./consensus/ethash` 通过。
 - 完整 `go test -count=1 ./consensus/ethash` 在允许临时 loopback `httptest` listener 的环境下通过；沙箱内的首次阻断仅来自 listener 权限限制。
 - 后续仍需：由 UIP-0008/UIP-0009 chain config 提供按 ETHW block height 的 expected versions；在 header validation 中执行精确 107-byte/version 校验；移除本地开关决定共识语义；更新旧 105-byte reward live/E2E 脚本和集成文档。
+
+## UIP-0007 Chain Config、Header Validation 与 CLI 边界
+
+状态：实现和聚焦测试已完成，改动尚未提交，等待 review；旧 reward live/E2E runner 的 payload/RPC 迁移仍单独保留。
+
+### Chain Config 与 Miner
+
+- `params.ChainConfig` 新增嵌套 `usdb` 共识配置；当前 v1 固定 `payloadVersion=1`、`difficultyPolicyVersion=1`，配置存在即按 UIP-0009 从 genesis 激活。
+- 新增 `USDBConsensusAt(ethw_block)` 查询入口；当前返回 genesis 固定版本，但 builder、header validator 和 reward transition 都显式按待处理 ETHW block number 查询，为后续 UIP-0008 高度矩阵保留唯一入口。
+- payload builder 删除构造期固定 policy version，`BuildCurrentPayload(ctx, blockNumber)` 从 chain config 取得 expected version；不支持的 payload version、无效共识配置、current system state/profile 不可用或 selected pass 非 candidate 均停止组块。
+- worker 在 USDB chain 上即使调用方请求 `noExtra` 也必须生成 selector；active chain 缺少 builder 或初始化失败时禁止回退到静态/空 extra-data。
+
+### Validator 与运行参数
+
+- `VerifyHeader` 在 USDB 共识激活时执行纯二进制校验：精确 107 bytes、支持的 payload version，以及 payload `difficulty_policy_version` 与 chain config expected version 完全一致；该阶段不访问 USDB RPC。
+- reward state transition 在调用 historical profile RPC 前重复同一 binary/version guard，保证直接组块和状态转换路径也 fail closed。
+- ethash reward 选择、validator companion 初始化和 miner builder 初始化全部改由 chain config 是否激活 USDB 决定；非 USDB chain 即使配置 companion RPC 也继续使用 legacy reward。
+- 删除 `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留 validator/miner RPC URL、query timeout 和 selected pass id，不能启用、关闭或改写共识版本。
+
+### 测试与后续
+
+- 新增 chain-config JSON roundtrip/版本查询、builder block-number 与 fail-closed、binary policy mismatch、header integration、worker mandatory payload、inactive-chain legacy reward 和 CLI operational flag 测试。
+- 已通过 `go test -count=1 ./params ./internal/usdb ./miner`、完整 `./consensus/ethash`、完整 `./cmd/geth ./cmd/utils ./eth/ethconfig`、USDB genesis 定向测试，以及相关包 `go vet`；shell runner 同步通过 `bash -n`。当前环境为 Go 1.26，旧 `fjl/memsize` linkname 检查需要对 CLI 测试使用 `-ldflags=-checklinkname=0`。
+- go-ethereum 内三条 shell runner 已移除旧 enable flags；其内部仍使用 105-byte offset、`get_pass_snapshot/get_pass_energy` 和旧 mint 字段，必须在集中 UIP-0007 live/E2E 阶段整体迁移到 107-byte `ProfileSelectorPayload` 与 `get_pass_economic_profile` 后再执行。

@@ -340,7 +340,13 @@ UIP-0008 负责通用版本激活矩阵。ETHW 具体 chain config、genesis、U
 
 # 实现迁移注意
 
-- 当前 go-ethereum 原型中的 `RewardPayloadV1` 命名应在正式实现前重命名为 `ProfileSelectorPayload`。该重命名需要同步加入 `difficulty_policy_version`，正式 v1 固定布局为 107 bytes。
+- 当前 go-ethereum 实现已经移除旧 `RewardPayloadV1`，统一使用 107-byte
+  `ProfileSelectorPayload`，并由 ETHW chain config 按待处理 block number 提供 expected
+  `payload_version / difficulty_policy_version`。
+- miner/validator CLI 只保留 companion RPC URL、timeout 和 selected pass 等运行参数；
+  是否激活本规则及 expected version 只能由 chain config 决定。
+- `VerifyHeader` 已执行不访问 RPC 的固定长度和版本校验；historical profile 查询继续在
+  reward/difficulty state-transition 路径按本 UIP 的 selector 进行。
 
 # 后续实现议题
 

@@ -354,10 +354,14 @@ USDB miner 和 validator 都依赖本地 USDB companion service。
 
 - miner-side USDB payload builder。
 - validator-side USDB reward verifier。
-- `--miner.usdb.*` flags。
-- `--ethash.usdb.*` flags。
+- `ChainConfig.usdb.payloadVersion / difficultyPolicyVersion` genesis 配置和按 ETHW block
+  number 的 lookup 入口。
+- miner-side `--miner.usdb.rpcurl / passid / timeout` 运行参数。
+- validator-side `--ethash.usdb.rpcurl / timeout` 运行参数。
 
-这些实现仍使用旧 `RewardPayloadV1` 命名和 105-byte payload，正式实现必须迁移到 UIP-0007 `ProfileSelectorPayload` 107-byte 结构。
+当前实现已经迁移到 UIP-0007 `ProfileSelectorPayload` 107-byte 结构，并删除
+`--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
+的唯一来源；运行参数不能启用、关闭或覆盖共识规则。
 
 # Reward / Difficulty / Fee Split 边界
 
