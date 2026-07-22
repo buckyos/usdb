@@ -126,8 +126,12 @@ fn encode_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoincore_rpc::bitcoin::Network;
+    use usdb_util::embedded_btc_activation_registry;
 
     fn external_state() -> EconomicExternalState {
+        let registry = embedded_btc_activation_registry(Network::Regtest).unwrap();
+        let active_version_set = registry.lookup_active_version_set(120).unwrap();
         EconomicExternalState {
             btc_height: 120,
             snapshot_id: "snapshot".to_string(),
@@ -136,8 +140,9 @@ mod tests {
             system_state_id: "system".to_string(),
             balance_history_api_version: "api".to_string(),
             balance_history_semantics_version: "semantics".to_string(),
-            usdb_index_protocol_version: "protocol".to_string(),
-            usdb_index_formula_version: "formula".to_string(),
+            activation_registry_id: registry.activation_registry_id(),
+            active_version_set_id: active_version_set.active_version_set_id(),
+            active_version_set,
         }
     }
 

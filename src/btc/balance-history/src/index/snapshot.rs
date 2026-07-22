@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::{USDBScriptHash, UTXOEntry};
+use usdb_util::{BtcScriptHash, UTXOEntry};
 
 /// Version tag for the first external snapshot manifest sidecar format.
 pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v1";
@@ -1096,7 +1096,7 @@ impl SnapshotInstaller {
 
         // Load balance by batch
         let page_size = 1024 * 256; // 256k entries per batch
-        let mut last_script_hash: Option<USDBScriptHash> = None;
+        let mut last_script_hash: Option<BtcScriptHash> = None;
         let mut installed_total = 0u64;
         loop {
             let entries = snapshot_db
@@ -1498,7 +1498,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::watch;
     use usdb_util::{
-        CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ToUSDBScriptHash,
+        CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ToBtcScriptHash,
         build_consensus_snapshot_id,
     };
 
@@ -1527,7 +1527,7 @@ mod tests {
     ) -> SnapshotManifest {
         let stable_block_hash = format!("{:x}", commit.btc_block_hash);
         let consensus_identity =
-            build_consensus_snapshot_identity(config, block_height, &stable_block_hash);
+            build_consensus_snapshot_identity(config, block_height, &stable_block_hash).unwrap();
         let snapshot_id = build_consensus_snapshot_id(&consensus_identity);
         let state_ref = HistoricalSnapshotStateRef {
             block_height,
@@ -1594,7 +1594,7 @@ mod tests {
         let config = Arc::new(test_config_with_root(&root_dir));
 
         let old_script = ScriptBuf::from(vec![1u8; 32]);
-        let old_script_hash = old_script.to_usdb_script_hash();
+        let old_script_hash = old_script.to_btc_script_hash();
         let old_outpoint = OutPoint {
             txid: Txid::from_slice(&[2u8; 32]).unwrap(),
             vout: 0,
@@ -1630,7 +1630,7 @@ mod tests {
 
         let snapshot_path = root_dir.join("install_source_snapshot.db");
         let new_script = ScriptBuf::from(vec![9u8; 32]);
-        let new_script_hash = new_script.to_usdb_script_hash();
+        let new_script_hash = new_script.to_btc_script_hash();
         let new_outpoint = OutPoint {
             txid: Txid::from_slice(&[4u8; 32]).unwrap(),
             vout: 1,
@@ -1825,7 +1825,7 @@ mod tests {
         let snapshot_path = root_dir.join("install_source_snapshot.db");
         let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
         let new_script = ScriptBuf::from(vec![9u8; 32]);
-        let new_script_hash = new_script.to_usdb_script_hash();
+        let new_script_hash = new_script.to_btc_script_hash();
         let new_outpoint = OutPoint {
             txid: Txid::from_slice(&[4u8; 32]).unwrap(),
             vout: 1,
@@ -2118,7 +2118,7 @@ mod tests {
         live_db.put_btc_block_height(10).unwrap();
         live_db
             .put_address_history_async(&vec![BalanceHistoryEntry {
-                script_hash: ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash(),
+                script_hash: ScriptBuf::from(vec![3u8; 32]).to_btc_script_hash(),
                 block_height: 10,
                 delta: 75,
                 balance: 75,

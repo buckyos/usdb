@@ -61,12 +61,12 @@
 | ECO-005 | P0 | Done | 明确并实现 energy penalty v2 公式 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | Done | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | Done | 定义并实现 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
-| ECO-008 | P1 | In Progress | BTC effective_energy / level 已完成，ETHW real_difficulty 待后续 UIP | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, ETHW payload |
+| ECO-008 | P1 | In Progress | BTC effective_energy / level 已完成，USDB-chain real_difficulty 待后续 UIP | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, USDB-chain payload |
 | ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
 | ECO-010 | P2 | In Progress | CoinBase、K、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
-| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 USDB 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`, validator block-body docs/tests |
+| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 USDB 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Done | 明确 JSON schema、content-type、重复 key 和未知字段策略 | inscription source/content parser |
-| ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` |
+| ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md` |
 
 ## 6. 详细条目
 
@@ -225,10 +225,11 @@
 - 优先级：`P1`
 - 状态：`In Progress`
 - 当前现状：
-  - `USDB_INDEX_FORMULA_VERSION` 当前是全局常量 `pass-energy-formula:v1`。
-  - 文档要求公式变更必须通过显式激活高度或治理决议，不应代码发布即生效。
+  - 已删除全局 formula/protocol 常量；Rust 服务按 BTC network 选择独立内嵌 registry 并按历史高度查询，ETHW expected versions 独立由本地 chain config 查询。
+  - `activation_registry_id` / `active_version_set_id` canonical encoding 已固定，Rust/Go 通过共享 golden vector 交叉校验。
+  - upstream `snapshot_id` 只承诺 balance-history；indexer `local_state_commit` 承诺 `commit_protocol_version + active_version_set_id`。
+  - indexer 与 balance-history 均在写入前 fail closed；UIP-0006 external state/cursor 使用 registry/set identity 冻结历史查询。
   - `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md` 已进入 Draft。
-  - 已确认 `local_state_commit` 只需要承诺 `active_version_set_id`，不需要内联完整 `active_version_set`。
   - 已确认首个正式 ETHW 网络必须启用 level-based difficulty policy，不保留 `difficulty_policy_version = 0` 语义。
 - 目标：
   - 建立公式版本、协议版本、查询语义版本之间的关系。
@@ -236,8 +237,8 @@
   - 明确 state ref / snapshot id 是否包含激活版本表。
   - 明确 `active_version_set`、`activation_registry_id` 和 `local_state_commit` 的关系。
 - 下一步：
-  - Review UIP-0008 中 version family、activation record、state commit 绑定和跨版本 `prev` 继承规则。
-  - 再更新共识 identity 和历史查询路径。
+  - 冻结 public testnet/mainnet 的 network id、具体激活高度和 registry 发布/签名流程。
+  - 随首个 v2 实现补齐双版本 dispatch、跨激活高度 reorg 和跨版本 `prev` 继承测试。
 - 验收：
   - 同一节点能对不同历史高度按对应公式版本查询。
   - validator payload version mismatch 路径可覆盖经济公式版本。
@@ -275,26 +276,26 @@
 - 当前现状：
   - UIP-0006 已实现 historical `external_state`、economic profile、candidate set、collab breakdown、opaque cursor、version/rule 校验和 typed client/CLI/control-plane capability。
   - validator JSON 测试 payload 已从 UIP-0006 profile/candidate view 构造，不再使用旧 raw `energy` 拼装路径。
-  - USDB-side state view 与 ETHW-side on-chain payload 已明确分层；UIP-0006 indexer scope 完成，UIP-0007/UIP-0009 ETHW scope 仍待对齐。
-  - `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md` 已进入 Draft。
+  - BTC-side USDB state view 与 USDB-chain on-chain payload 已明确分层；UIP-0006 indexer scope 完成，UIP-0007/UIP-0009 USDB-chain scope 仍待对齐。
+  - `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md` 已进入 Draft。
   - 已确认 `stable_block_hash` 不进入 UIP-0007 v1 header payload，由 UIP-0006 state view 返回。
   - 已确认 reward rule 与 future difficulty policy 复用同一 profile selector。
   - 已确认 `ProfileSelectorPayload` 是正式 payload 命名；当前 go-ethereum 原型中的 `RewardPayloadV1` 应在正式实现前重命名。
-  - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 ETHW chain config / fork policy 的 expected version。
+  - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 USDB chain config / fork policy 的 expected version。
   - 已确认 collab bonus 不在 header 中携带全量 `collab_pass_id`。
-  - `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md` 已进入 Draft，用于承接 ETHW chain config、genesis 和 USDB consensus version 激活。
+  - `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md` 已进入 Draft，用于承接 USDB chain config、genesis 和 consensus version 激活。
 - 目标：
   - 明确 USDB indexer 可以提供的完整经济状态 / 审计视图。
-  - 明确 ETHW `header.Extra` 只携带最小历史 selector。
+  - 明确 USDB `header.Extra` 只携带最小历史 selector。
   - 明确哪些字段由 validator 通过 UIP-0006 本地重算，不需要进入 USDB 链上 payload。
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
   - Review UIP-0007 中 profile selector 二进制布局和 validator replay 流程。
-  - Review UIP-0009 中 ETHW chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
+  - Review UIP-0009 中 USDB chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
   - 执行完整 UIP-0001-0006 live/regtest，并基于大规模数据集评估 `contribution_desc_pass_id_asc` 的数据库索引成本。
 - 验收：
   - USDB state view 可在历史 context 下重放。
-  - ETHW profile selector 只用最小字段即可重放 reward input，并可供 future difficulty policy 复用。
+  - USDB profile selector 只用最小字段即可重放 reward input，并可供 future difficulty policy 复用。
 
 ### ECO-012. 明确 canonical JSON、content-type 和未知字段策略
 

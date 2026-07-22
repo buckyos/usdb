@@ -18,7 +18,7 @@ UIP 是 USDB 正式协议规范的承载格式。后续会用 UIP 拆分并标�
 
 - BTC 侧矿工证铭文协议。
 - pass 状态机与 energy 公式。
-- USDB economic state view、ETHW 链上 selector payload 与历史状态验证。
+- USDB economic state view、USDB chain 上 selector payload 与历史状态验证。
 - collab / leader / effective energy / difficulty。
 - CoinBase、price / real_price、辅助算力池等经济模型组件。
 
@@ -33,7 +33,7 @@ UIP 是 USDB 正式协议规范的承载格式。后续会用 UIP 拆分并标�
 - 哪些文档属于正式协议。
 - 草案、review 和 final 的状态流。
 - 已激活协议与实现代码之间的优先级。
-- 协议激活高度应锚定 BTC 还是 ETHW。
+- 协议激活高度应锚定 BTC 还是 USDB chain。
 - 同一协议在 mainnet、testnet、regtest 等不同网络上的激活是否可以不同。
 
 如果不先固定 UIP 流程，后续 `UIP-0001` 铭文 schema、`UIP-0003` energy formula、`UIP-0008` 版本激活等文档会缺少共同解释框架。
@@ -44,9 +44,9 @@ UIP 是 USDB 正式协议规范的承载格式。后续会用 UIP 拆分并标�
 - **正式 UIP**：位于 `doc/UIP/`，并使用本文定义头部字段和状态流的文档。
 - **讨论稿**：尚未进入正式 UIP 状态流的设计文档，例如旧经济模型草案、review 记录和规划文档。
 - **激活**：某个 UIP 的规范开始约束指定链、指定网络和指定高度之后的协议行为。
-- **激活锚点**：用于判断 UIP 是否生效的链上高度或治理决议，例如 BTC height 或 ETHW block number。
+- **激活锚点**：用于判断 UIP 是否生效的链上高度或治理决议，例如 BTC height 或 USDB block number。
 - **网络类型**：mainnet、testnet、signet、regtest、devnet、local 等网络类别。
-- **网络标识**：具体网络名称或链 ID，例如 `btc-mainnet`、`btc-regtest`、`ethw-mainnet`、`ethw-testnet`、`主网-mainnet`。
+- **网络标识**：具体网络名称或链 ID，例如 `btc-mainnet`、`btc-regtest`、`usdb-mainnet`、`usdb-testnet`。
 
 ## 4. 规范性关键词
 
@@ -202,10 +202,10 @@ Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段�
 
 激活范围必须同时说明：
 
-- 对应链：BTC、ETHW 或跨链组合。
+- 对应链：BTC、USDB 或跨链组合。
 - 网络类型：mainnet、testnet、signet、regtest、devnet、local。
 - 网络标识：具体网络名称或链 ID。
-- 激活锚点：BTC height、ETHW block number、治理决议或显式 none。
+- 激活锚点：BTC height、USDB block number、治理决议或显式 none。
 - 激活状态：Planned、Active、Deferred、Superseded。
 
 ### 11.1 链字段
@@ -213,14 +213,14 @@ Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段�
 | 链字段 | 含义 |
 | --- | --- |
 | `BTC` | BTC 主链或 BTC 兼容网络上的铭文、余额、UTXO、reorg 和 indexer 派生规则。 |
-| `ETHW` | ETHW 链上的 validator、执行、收益合约、治理或价格更新规则。 |
-| `CrossChain` | 同时依赖 BTC 与 ETHW 状态的规则。 |
+| `USDB` | USDB chain 上的 validator、执行、收益合约、治理或价格更新规则。 |
+| `CrossChain` | 同时依赖 BTC 与 USDB chain 状态的规则。 |
 
 ### 11.2 网络类型
 
 | 网络类型 | 含义 |
 | --- | --- |
-| `mainnet` | 正式生产网络，例如 BTC mainnet、ETHW mainnet、主网。 |
+| `mainnet` | 正式生产网络，例如 BTC mainnet 或 USDB mainnet。 |
 | `testnet` | 公开测试网络。 |
 | `signet` | BTC signet 或同类受控测试网络。 |
 | `regtest` | 本地可控 BTC regtest。 |
@@ -239,10 +239,9 @@ Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段�
 | `BTC` | `testnet` | `btc-testnet4` |
 | `BTC` | `signet` | `btc-signet` |
 | `BTC` | `regtest` | `btc-regtest` |
-| `ETHW` | `mainnet` | `ethw-mainnet` |
-| `ETHW` | `testnet` | `ethw-testnet` |
-| `ETHW` | `mainnet` | `主网-mainnet` |
-| `ETHW` | `devnet` | `ethw-devnet-<name>` |
+| `USDB` | `mainnet` | `usdb-mainnet` |
+| `USDB` | `testnet` | `usdb-testnet` |
+| `USDB` | `devnet` | `usdb-devnet-<name>` |
 
 如果某个网络还没有稳定 ID，必须写 `TODO`，不能省略。
 
@@ -256,14 +255,14 @@ Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段�
 | --- | --- | --- | --- | --- | --- | --- |
 | BTC | regtest | btc-regtest | btc_height | TBD | Planned | 本地测试可先启用。 |
 | BTC | mainnet | btc-mainnet | btc_height | TBD | Planned | 正式 BTC 铭文规则激活高度。 |
-| ETHW | testnet | ethw-testnet | ethw_block | TBD | Planned | validator 侧测试激活。 |
-| ETHW | mainnet | 主网-mainnet | ethw_block | TBD | Planned | 主网执行侧激活。 |
-| CrossChain | mainnet | btc-mainnet + 主网-mainnet | governance | TBD | Planned | 同时依赖 BTC 与 ETHW 的规则。 |
+| USDB | testnet | usdb-testnet | usdb_block | TBD | Planned | validator 侧测试激活。 |
+| USDB | mainnet | usdb-mainnet | usdb_block | TBD | Planned | 主网执行侧激活。 |
+| CrossChain | mainnet | btc-mainnet + usdb-mainnet | governance | TBD | Planned | 同时依赖 BTC 与 USDB chain 的规则。 |
 
 规则：
 
 - BTC 侧铭文、余额、pass 状态、energy 派生规则，默认使用 `btc_height` 作为激活锚点。
-- USDB validator、执行、收益合约、治理和价格更新规则，默认使用 `ethw_block` 或治理决议作为激活锚点。
+- USDB validator、执行、收益合约、治理和价格更新规则，默认使用 `usdb_block` 或治理决议作为激活锚点。
 - 跨链规则必须明确主锚点和辅助锚点。
 - 不同网络可以有不同激活高度，但必须在同一 UIP 的激活矩阵中显式列出。
 - 未列出的网络不得假设自动激活。
@@ -274,7 +273,7 @@ Process 和 Informational UIP 可以裁剪模板，但必须保留头部字段�
 | --- | --- |
 | `none` | 流程类或说明类文档，不需要链上激活。 |
 | `btc_height` | 以 BTC 区块高度作为激活点。 |
-| `ethw_block` | 以 ETHW 区块号作为激活点。 |
+| `usdb_block` | 以 USDB chain 区块号作为激活点。 |
 | `governance` | 以治理决议或链上配置作为激活点。 |
 | `manual` | 仅用于 devnet/local，不得用于 mainnet。 |
 | `hybrid` | 同时依赖多个锚点，必须在 Notes 中说明逻辑。 |
@@ -367,7 +366,7 @@ Standards Track UIP 必须定义测试要求。
 UIP 流程必须避免以下风险：
 
 - 代码发布隐式改变已激活共识规则。
-- BTC 网络和 ETHW 网络激活高度混淆。
+- BTC 网络和 USDB chain 网络激活高度混淆。
 - mainnet、testnet、regtest 共享未声明的激活状态。
 - 查询层字段反向影响 validator 或奖励结算。
 - 历史高度被当前 head 的最新协议解释污染。
@@ -375,17 +374,16 @@ UIP 流程必须避免以下风险：
 
 ## 20. 待定问题
 
-1. 主网的稳定 `network_id` 是否就使用 `主网-mainnet`，还是需要英文/链 ID 格式。
-2. ETHW 测试网和 devnet 的正式网络标识列表。
+1. 正式 mainnet 的最终 `network_id`（当前占位为 `usdb-mainnet`）和 chain ID。
+2. USDB chain 测试网和 devnet 的正式网络标识列表。
 3. 治理决议的编号格式和链上引用方式。
-4. 激活矩阵是否需要单独维护成机器可读文件。
-5. `protocol_version` 与 `formula_version` 是否继续保持全局常量，还是按高度查询。
+4. activation registry 与 release manifest 的签名和发布流程。
 
 ## 21. 下一步
 
 建议后续按以下顺序推进：
 
 1. review 本文的状态流、激活矩阵和网络标识。
-2. 明确 `主网-mainnet` 等网络 ID。
-3. 起草 `UIP-0001-miner-pass-inscription.md`。
+2. 在 UIP-0008/UIP-0009 中冻结正式 `usdb-*` network ID、chain ID 和 activation artifact。
+3. 为 release manifest 定义签名和发布流程。
 4. 将旧 `doc/矿工证铭文协议.md` 标记为被 `UIP-0001` supersede 或迁移到参考资料。

@@ -6,7 +6,7 @@ use bitcoincore_rpc::bitcoin::Network;
 use ord::InscriptionId;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use usdb_util::{USDBScriptHash, address_string_to_script_hash};
+use usdb_util::{BtcScriptHash, address_string_to_script_hash};
 
 /// Query mode used by derived UIP-0004 energy resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub struct DerivedCollabBreakdownItem {
     /// Collab pass inscription id.
     pub collab_pass_id: InscriptionId,
     /// Collab pass owner script hash at the query height.
-    pub collab_owner: USDBScriptHash,
+    pub collab_owner: BtcScriptHash,
     /// Raw energy record height used for the collab pass.
     pub record_block_height: u32,
     /// UIP-0003 raw energy projected to the query height.
@@ -106,7 +106,7 @@ pub struct DerivedCollabBreakdown {
 
 struct CollabBreakdownCollector<'a> {
     leader_pass_id: &'a InscriptionId,
-    leader_owner: &'a USDBScriptHash,
+    leader_owner: &'a BtcScriptHash,
     block_height: u32,
     seen_collabs: &'a mut BTreeSet<InscriptionId>,
     aggregate: &'a mut Energy,
@@ -531,7 +531,7 @@ impl EffectiveEnergyResolver {
     fn resolve_standard_collab_summary(
         &self,
         leader_pass_id: &InscriptionId,
-        leader_owner: &USDBScriptHash,
+        leader_owner: &BtcScriptHash,
         block_height: u32,
     ) -> Result<(Energy, u64), String> {
         let (aggregate, items) = self.resolve_standard_collab_breakdown_items(
@@ -545,7 +545,7 @@ impl EffectiveEnergyResolver {
     fn resolve_standard_collab_breakdown_items(
         &self,
         leader_pass_id: &InscriptionId,
-        leader_owner: &USDBScriptHash,
+        leader_owner: &BtcScriptHash,
         block_height: u32,
     ) -> Result<(Energy, Vec<DerivedCollabBreakdownItem>), String> {
         let mut seen_collabs = BTreeSet::new();

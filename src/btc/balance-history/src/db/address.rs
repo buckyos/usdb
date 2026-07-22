@@ -2,9 +2,9 @@ use bitcoincore_rpc::bitcoin::ScriptBuf;
 use rocksdb::{ColumnFamilyDescriptor, DB, Options, WriteBatch};
 use rust_rocksdb as rocksdb;
 use std::path::{Path, PathBuf};
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
-// Address mapping column family USDBScriptHash -> ScriptBuf
+// Address mapping column family BtcScriptHash -> ScriptBuf
 pub const ADDRESS_CF: &str = "address";
 
 // File index column family BlockFileIndex -> boolean
@@ -216,7 +216,7 @@ impl AddressDB {
         }
     }
 
-    pub fn put_addresses(&self, list: &Vec<(USDBScriptHash, ScriptBuf)>) -> Result<(), String> {
+    pub fn put_addresses(&self, list: &Vec<(BtcScriptHash, ScriptBuf)>) -> Result<(), String> {
         let cf = self.db.cf_handle(ADDRESS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", ADDRESS_CF);
             error!("{}", msg);
@@ -249,7 +249,7 @@ impl AddressDB {
         })
     }
 
-    pub fn get_address(&self, script_hash: &USDBScriptHash) -> Result<Option<ScriptBuf>, String> {
+    pub fn get_address(&self, script_hash: &BtcScriptHash) -> Result<Option<ScriptBuf>, String> {
         let cf = self.db.cf_handle(ADDRESS_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", ADDRESS_CF);
             error!("{}", msg);

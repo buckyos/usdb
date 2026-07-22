@@ -114,8 +114,8 @@ class ValidatorSample:
     system_state_id: str
     balance_history_api_version: str
     balance_history_semantics_version: str
-    usdb_index_protocol_version: str
-    usdb_index_formula_version: str
+    activation_registry_id: str
+    active_version_set_id: str
     candidates: list[ValidatorSampleCandidate] = field(default_factory=list)
     winner_inscription_id: str | None = None
     expected_consensus_error: str | None = None
@@ -163,10 +163,10 @@ class Args:
     agent_wallets: list[str]
     agent_addresses: list[str]
     identity_seed: str | None
-    usdb_miner_address: str | None
-    usdb_miner_agent_id: int
+    usdb_chain_miner_address: str | None
+    usdb_chain_miner_agent_id: int
     balance_history_rpc_url: str
-    usdb_rpc_url: str
+    usdb_indexer_rpc_url: str
     sync_timeout_sec: int
     blocks: int
     seed: int
@@ -306,12 +306,12 @@ class RegtestWorldSimulator:
         self.agents: list[Agent] = []
         self._init_agents()
         self.total_agents = len(self.agents)
-        if self.args.usdb_miner_address and not (
-            0 <= self.args.usdb_miner_agent_id < self.total_agents
+        if self.args.usdb_chain_miner_address and not (
+            0 <= self.args.usdb_chain_miner_agent_id < self.total_agents
         ):
             raise WorldSimError(
-                "usdb_miner_agent_id is out of range for configured agents: "
-                f"{self.args.usdb_miner_agent_id} not in [0, {self.total_agents - 1}]"
+                "usdb_chain_miner_agent_id is out of range for configured agents: "
+                f"{self.args.usdb_chain_miner_agent_id} not in [0, {self.total_agents - 1}]"
             )
         self.active_agent_count = min(
             self.total_agents, max(1, self.args.initial_active_agents)
@@ -439,8 +439,8 @@ class RegtestWorldSimulator:
                 "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
                 "identity_seed": self.args.identity_seed,
-                "usdb_miner_address": self.args.usdb_miner_address,
-                "usdb_miner_agent_id": self.args.usdb_miner_agent_id,
+                "usdb_chain_miner_address": self.args.usdb_chain_miner_address,
+                "usdb_chain_miner_agent_id": self.args.usdb_chain_miner_agent_id,
                 "total_agents": self.total_agents,
                 "initial_active_agents": self.active_agent_count,
                 "policy_mode": self.args.policy_mode,
@@ -632,8 +632,8 @@ class RegtestWorldSimulator:
             "system_state_id": sample.system_state_id,
             "balance_history_api_version": sample.balance_history_api_version,
             "balance_history_semantics_version": sample.balance_history_semantics_version,
-            "usdb_index_protocol_version": sample.usdb_index_protocol_version,
-            "usdb_index_formula_version": sample.usdb_index_formula_version,
+            "activation_registry_id": sample.activation_registry_id,
+            "active_version_set_id": sample.active_version_set_id,
             "candidates": [
                 self.serialize_validator_sample_candidate(candidate)
                 for candidate in sample.candidates
@@ -692,11 +692,11 @@ class RegtestWorldSimulator:
             balance_history_semantics_version=str(
                 payload.get("balance_history_semantics_version", "")
             ),
-            usdb_index_protocol_version=str(
-                payload.get("usdb_index_protocol_version", "")
+            activation_registry_id=str(
+                payload.get("activation_registry_id", "")
             ),
-            usdb_index_formula_version=str(
-                payload.get("usdb_index_formula_version", "")
+            active_version_set_id=str(
+                payload.get("active_version_set_id", "")
             ),
             candidates=[
                 self.deserialize_validator_sample_candidate(candidate)
@@ -1537,10 +1537,10 @@ class RegtestWorldSimulator:
             script_hash = self.address_to_script_hash(address)
             usdb_main_address = self.derived_evm_address("agent", idx, wallet, address)
             if (
-                self.args.usdb_miner_address
-                and idx == self.args.usdb_miner_agent_id
+                self.args.usdb_chain_miner_address
+                and idx == self.args.usdb_chain_miner_agent_id
             ):
-                usdb_main_address = self.args.usdb_miner_address
+                usdb_main_address = self.args.usdb_chain_miner_address
             agent = Agent(
                 agent_id=idx,
                 wallet_name=wallet,
@@ -1790,7 +1790,7 @@ class RegtestWorldSimulator:
         return payload.get("result")
 
     def rpc_usdb(self, method: str, params: Any) -> Any:
-        return self.rpc_result(self.rpc_call(self.args.usdb_rpc_url, method, params), method)
+        return self.rpc_result(self.rpc_call(self.args.usdb_indexer_rpc_url, method, params), method)
 
     def rpc_balance_history(self, method: str, params: Any) -> Any:
         return self.rpc_result(
@@ -1934,7 +1934,7 @@ class RegtestWorldSimulator:
         return result if isinstance(result, dict) else None
 
     def raw_usdb_rpc(self, method: str, params: Any) -> dict[str, Any]:
-        payload = self.rpc_call(self.args.usdb_rpc_url, method, params)
+        payload = self.rpc_call(self.args.usdb_indexer_rpc_url, method, params)
         if not isinstance(payload, dict):
             raise WorldSimError(f"{method} returned non-dict payload: {payload}")
         return payload
@@ -1958,11 +1958,11 @@ class RegtestWorldSimulator:
                 "balance_history_semantics_version": consensus_identity.get(
                     "balance_history_semantics_version"
                 ),
-                "usdb_index_protocol_version": consensus_identity.get(
-                    "usdb_index_protocol_version"
+                "activation_registry_id": local_state_info.get(
+                    "activation_registry_id"
                 ),
-                "usdb_index_formula_version": consensus_identity.get(
-                    "usdb_index_formula_version"
+                "active_version_set_id": local_state_info.get(
+                    "active_version_set_id"
                 ),
             },
         }
@@ -2582,11 +2582,11 @@ class RegtestWorldSimulator:
                 balance_history_semantics_version=str(
                     external_state.get("balance_history_semantics_version", "")
                 ),
-                usdb_index_protocol_version=str(
-                    external_state.get("usdb_index_protocol_version", "")
+                activation_registry_id=str(
+                    external_state.get("activation_registry_id", "")
                 ),
-                usdb_index_formula_version=str(
-                    external_state.get("usdb_index_formula_version", "")
+                active_version_set_id=str(
+                    external_state.get("active_version_set_id", "")
                 ),
                 candidates=candidates,
                 winner_inscription_id=winner.inscription_id,
@@ -2620,11 +2620,11 @@ class RegtestWorldSimulator:
                     balance_history_semantics_version=str(
                         external_state.get("balance_history_semantics_version", "")
                     ),
-                    usdb_index_protocol_version=str(
-                        external_state.get("usdb_index_protocol_version", "")
+                    activation_registry_id=str(
+                        external_state.get("activation_registry_id", "")
                     ),
-                    usdb_index_formula_version=str(
-                        external_state.get("usdb_index_formula_version", "")
+                    active_version_set_id=str(
+                        external_state.get("active_version_set_id", "")
                     ),
                 )
                 self.validator_samples.append(sample)
@@ -2677,8 +2677,8 @@ class RegtestWorldSimulator:
                     "system_state_id": sample.system_state_id,
                     "balance_history_api_version": sample.balance_history_api_version,
                     "balance_history_semantics_version": sample.balance_history_semantics_version,
-                    "usdb_index_protocol_version": sample.usdb_index_protocol_version,
-                    "usdb_index_formula_version": sample.usdb_index_formula_version,
+                    "activation_registry_id": sample.activation_registry_id,
+                    "active_version_set_id": sample.active_version_set_id,
                 },
             }
             try:
@@ -4792,7 +4792,7 @@ class RegtestWorldSimulator:
                 top_item = items[0]
 
         exact_snapshot = self.rpc_call(
-            self.args.usdb_rpc_url,
+            self.args.usdb_indexer_rpc_url,
             "get_active_balance_snapshot",
             [{"block_height": block_height}],
             retries=1,
@@ -5815,10 +5815,10 @@ def parse_args() -> Args:
     parser.add_argument("--agent-wallets", required=True)
     parser.add_argument("--agent-addresses", required=True)
     parser.add_argument("--identity-seed")
-    parser.add_argument("--usdb-miner-address")
-    parser.add_argument("--usdb-miner-agent-id", type=int, default=0)
+    parser.add_argument("--usdb-chain-miner-address")
+    parser.add_argument("--usdb-chain-miner-agent-id", type=int, default=0)
     parser.add_argument("--balance-history-rpc-url", required=True)
-    parser.add_argument("--usdb-rpc-url", required=True)
+    parser.add_argument("--usdb-indexer-rpc-url", required=True)
     parser.add_argument("--sync-timeout-sec", type=int, default=300)
     parser.add_argument("--blocks", type=int, default=200)
     parser.add_argument("--seed", type=int, default=42)
@@ -5976,10 +5976,10 @@ def parse_args() -> Args:
         agent_wallets=agent_wallets,
         agent_addresses=agent_addresses,
         identity_seed=parsed.identity_seed,
-        usdb_miner_address=parsed.usdb_miner_address,
-        usdb_miner_agent_id=parsed.usdb_miner_agent_id,
+        usdb_chain_miner_address=parsed.usdb_chain_miner_address,
+        usdb_chain_miner_agent_id=parsed.usdb_chain_miner_agent_id,
         balance_history_rpc_url=parsed.balance_history_rpc_url,
-        usdb_rpc_url=parsed.usdb_rpc_url,
+        usdb_indexer_rpc_url=parsed.usdb_indexer_rpc_url,
         sync_timeout_sec=parsed.sync_timeout_sec,
         blocks=parsed.blocks,
         seed=parsed.seed,

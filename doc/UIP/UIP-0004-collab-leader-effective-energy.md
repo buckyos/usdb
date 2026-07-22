@@ -6,7 +6,7 @@ Layer: BTC Application / USDB Validator Input
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003
 Supersedes: doc/usdb-economic-model-design.md collab and effective energy sections after activation
-Activation: BTC and ETHW network activation matrix
+Activation: BTC and USDB-chain network activation matrix
 
 # 摘要
 
@@ -46,18 +46,18 @@ UIP-0004 的目标是把所有协作能量都定义为 derived view，彻底避�
 - raw energy 增长、惩罚、继承折损。
 - pass 状态机。
 - level 和 real difficulty 的具体公式。
-- ETHW 侧 Leader eligibility、出块历史窗口、报价有效性和最终挖矿准入策略。
+- USDB chain 侧 Leader eligibility、出块历史窗口、报价有效性和最终挖矿准入策略。
 - reward split 和协作者收益分配。
-- ETHW 链上 payload 的完整字段集合和二进制编码。
+- USDB chain 上 payload 的完整字段集合和二进制编码。
 
 # 术语
 
 | 术语 | 含义 |
 | --- | --- |
-| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 ETHW 出块资格。 |
+| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 USDB chain 出块资格。 |
 | `leader_ref` | `leader_pass_id` 或 `leader_btc_addr` 的抽象引用。 |
 | `resolved_leader` | 在某一 BTC 高度解析出的唯一 active standard pass。 |
-| `leader_eligible` | ETHW policy 对 `resolved_leader` 的额外出块资格判断，不属于 USDB indexer 派生状态。 |
+| `leader_eligible` | USDB chain policy 对 `resolved_leader` 的额外出块资格判断，不属于 USDB indexer 派生状态。 |
 | `collab_source_energy` | collab pass 自身的 `raw_energy`。 |
 | `collab_contribution` | collab pass 按权重折算后贡献给 `resolved_leader` 的能量。 |
 | `effective_energy` | BTC-side nominal 派生能量，是 UIP-0006 `candidate_set_view` 排序和 UIP-0005 nominal level 的输入；不等同于 UIP-0014 `candidate_energy`。 |
@@ -201,7 +201,7 @@ collab pass 在 UIP-0006 `candidate_pass` 口径下：
 effective_energy(collab, h) = 0
 ```
 
-collab pass 永远不能成为 `candidate_pass`。它只能通过 `resolved_leader` 的 `effective_energy` 间接影响 UIP-0006 审计排序，以及后续 nominal level / ETHW `candidate_energy` policy。
+collab pass 永远不能成为 `candidate_pass`。它只能通过 `resolved_leader` 的 `effective_energy` 间接影响 UIP-0006 审计排序，以及后续 nominal level / USDB chain `candidate_energy` policy。
 
 ## 非 Active Pass
 
@@ -211,7 +211,7 @@ collab pass 永远不能成为 `candidate_pass`。它只能通过 `resolved_lead
 effective_energy(pass, h) = 0, if pass.state(h) != Active
 ```
 
-# Leader Eligibility Is ETHW Policy
+# Leader Eligibility Is USDB chain Policy
 
 UIP-0004 不把 USDB 链出块历史或报价窗口反向写入 USDB indexer。
 
@@ -223,14 +223,14 @@ collab_contribution(pass, h)
 effective_energy(pass, h)
 ```
 
-USDB validator 或 mining policy 可以在查询 USDB indexer 后，再结合 ETHW 侧本地可验证数据判断该 Leader 的 `effective_energy` 是否可用于出块选择。例如：
+USDB validator 或 mining policy 可以在查询 USDB indexer 后，再结合 USDB chain 侧本地可验证数据判断该 Leader 的 `effective_energy` 是否可用于出块选择。例如：
 
 ```text
-leader_eligible(leader, ethw_context)
-    = has_recent_quoted_usdb_block(leader, ethw_context)
+leader_eligible(leader, usdb_chain_context)
+    = has_recent_quoted_usdb_block(leader, usdb_chain_context)
 ```
 
-该判断属于 ETHW 侧规则，不得改变 USDB indexer 中任一 pass 的 `raw_energy`、`collab_contribution` 或 `effective_energy`。
+该判断属于 USDB chain 侧规则，不得改变 USDB indexer 中任一 pass 的 `raw_energy`、`collab_contribution` 或 `effective_energy`。
 
 因此，UIP-0004 的 collab contribution 公式只依赖 BTC 侧 Leader 解析结果：
 
@@ -373,7 +373,7 @@ UIP-0004 只定义 BTC-side `effective_energy` 派生 view。以下事项不应�
 
 - UIP-0005：从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`。
 - UIP-0006：把 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 `candidate_set_view` 组织成统一 economic state view。
-- UIP-0014：ETHW / validator policy 中的 quote activity 和 `candidate_energy` 回落规则。
+- UIP-0014：USDB chain / validator policy 中的 quote activity 和 `candidate_energy` 回落规则。
 
 尤其是 UIP-0014 中 quote stale 时的 `candidate_energy` 降级，只能影响下游 validator/mining policy，不得回写或重定义 USDB indexer 的 `effective_energy`。
 

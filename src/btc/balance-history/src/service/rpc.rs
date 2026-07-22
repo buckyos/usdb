@@ -8,7 +8,7 @@ use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use usdb_util::{
-    ConsensusQueryContext, ConsensusSnapshotIdentity, ConsensusStateReference, USDBScriptHash,
+    BtcScriptHash, ConsensusQueryContext, ConsensusSnapshotIdentity, ConsensusStateReference,
 };
 
 /// Public RPC/API version of balance-history.
@@ -22,7 +22,7 @@ pub const BALANCE_HISTORY_API_VERSION: &str = "1.0.0";
 /// The current value explicitly means:
 /// - balance snapshot queries use at-or-before semantics
 /// - delta queries use exact-height semantics
-pub const BALANCE_HISTORY_SEMANTICS_VERSION: &str = "balance-snapshot-at-or-before:v1";
+pub const BALANCE_HISTORY_SEMANTICS_VERSION: &str = usdb_util::BALANCE_HISTORY_SEMANTICS_VERSION_V1;
 /// Fixed protocol stable lag used by balance-history.
 ///
 /// This is not a local tuning knob. Changing it changes the externally visible
@@ -40,7 +40,7 @@ pub const BALANCE_HISTORY_STABLE_LAG: u32 = 0;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBalanceParams {
     /// Target script hash in balance-history's canonical internal format.
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
 
     /// Optional exact query height.
     ///
@@ -63,7 +63,7 @@ pub struct GetBalanceParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetBalancesParams {
     /// Ordered list of target script hashes.
-    pub script_hashes: Vec<USDBScriptHash>,
+    pub script_hashes: Vec<BtcScriptHash>,
 
     /// Optional exact query height shared by all requested script hashes.
     pub block_height: Option<u32>,
@@ -87,7 +87,7 @@ pub struct AddressBalance {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetAddressBalanceSummaryParams {
     /// Target script hash in balance-history's canonical internal format.
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
 
     /// Half-open range `[start, end)` to summarize.
     pub block_range: Range<u32>,
@@ -97,7 +97,7 @@ pub struct GetAddressBalanceSummaryParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetAddressBalanceBucketsParams {
     /// Target script hash in balance-history's canonical internal format.
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
 
     /// Half-open range `[start, end)` to aggregate.
     pub block_range: Range<u32>,
@@ -231,8 +231,6 @@ impl From<SnapshotStateReferenceSeed> for ConsensusStateReference {
                         .snapshot
                         .balance_history_semantics_version
                         .clone(),
-                    usdb_index_formula_version: usdb_util::USDB_INDEX_FORMULA_VERSION.to_string(),
-                    usdb_index_protocol_version: usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string(),
                 };
                 usdb_util::build_consensus_snapshot_id(&identity)
             });
@@ -245,8 +243,8 @@ impl From<SnapshotStateReferenceSeed> for ConsensusStateReference {
             balance_history_semantics_version: Some(
                 seed.snapshot.balance_history_semantics_version,
             ),
-            usdb_index_protocol_version: Some(usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string()),
-            usdb_index_formula_version: Some(usdb_util::USDB_INDEX_FORMULA_VERSION.to_string()),
+            activation_registry_id: None,
+            active_version_set_id: None,
             local_state_commit: None,
             system_state_id: None,
         }
@@ -288,18 +286,8 @@ impl From<&HistoricalSnapshotStateRef> for ConsensusStateReference {
                     .balance_history_semantics_version
                     .clone(),
             ),
-            usdb_index_protocol_version: Some(
-                state_ref
-                    .consensus_identity
-                    .usdb_index_protocol_version
-                    .clone(),
-            ),
-            usdb_index_formula_version: Some(
-                state_ref
-                    .consensus_identity
-                    .usdb_index_formula_version
-                    .clone(),
-            ),
+            activation_registry_id: None,
+            active_version_set_id: None,
             local_state_commit: None,
             system_state_id: None,
         }
@@ -322,7 +310,7 @@ pub struct GetStateRefAtHeightParams {
 /// Historical consensus state reference for one exact balance-history height.
 ///
 /// This is distinct from `get_snapshot_info`, which only reports the current
-/// stable head. ETHW-style validators use this structure to pin validation to
+/// stable head. USDB-chain validators use this structure to pin validation to
 /// one historical BTC state instead of whatever the current head happens to be.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoricalSnapshotStateRef {
@@ -460,7 +448,7 @@ pub struct UtxoInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveScriptHashesParams {
     /// Ordered list of target script hashes.
-    pub script_hashes: Vec<USDBScriptHash>,
+    pub script_hashes: Vec<BtcScriptHash>,
     /// When true, include raw scriptPubKey hex in each resolved item.
     pub include_script_pubkey: Option<bool>,
 }

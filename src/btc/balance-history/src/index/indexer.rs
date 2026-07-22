@@ -7,14 +7,14 @@ use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
-use crate::service::BALANCE_HISTORY_STABLE_LAG;
+use crate::service::{BALANCE_HISTORY_STABLE_LAG, resolve_balance_history_active_versions};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 // Use to keep the balance history result for a block
-type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
+type BlockHistoryResult = HashMap<BtcScriptHash, BalanceHistoryEntry>;
 
 fn compute_stable_sync_target_height(
     rpc_tip_height: u32,
@@ -22,6 +22,20 @@ fn compute_stable_sync_target_height(
     stable_lag: u32,
 ) -> u32 {
     max_sync_block_height.min(rpc_tip_height.saturating_sub(stable_lag))
+}
+
+fn validate_activation_at_height(
+    config: &BalanceHistoryConfigRef,
+    block_height: u32,
+) -> Result<(), String> {
+    resolve_balance_history_active_versions(config, block_height)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "Unsupported balance-history activation at BTC height {}: {}",
+                block_height, error
+            )
+        })
 }
 
 // Find the highest local height that still matches the current canonical BTC chain.
@@ -143,6 +157,7 @@ impl BalanceHistoryIndexer {
 
         // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
+        validate_activation_at_height(&config, last_synced_block_height)?;
         let btc_rpc_client = create_btc_rpc_client(&config)?;
         let rpc_latest_block_height = btc_rpc_client.get_latest_block_height().map_err(|e| {
             let msg = format!("Failed to get latest block height from BTC client: {}", e);
@@ -265,6 +280,7 @@ impl BalanceHistoryIndexer {
             }
         };
         output.println("Database initialized.");
+        validate_activation_at_height(&config, db.get_btc_block_height()?)?;
 
         let cache_strategy = match btc_client.get_type() {
             BTCClientType::LocalLoader => crate::cache::CacheStrategy::BestEffort,
@@ -682,6 +698,10 @@ impl BalanceHistoryIndexer {
         assert!(!height_range.is_empty(), "Height range should not be empty");
         let batch_start_height = height_range.start;
 
+        for block_height in height_range.clone() {
+            validate_activation_at_height(&self.config, block_height)?;
+        }
+
         self.output.set_index_message(&format!(
             "Processing block batch [{} - {})",
             height_range.start, height_range.end
@@ -752,7 +772,7 @@ mod tests {
     use crate::btc::BTCClient;
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, OutPoint, ScriptBuf};
+    use bitcoincore_rpc::bitcoin::{Amount, Block, BlockHash, Network, OutPoint, ScriptBuf};
     use std::collections::BTreeMap;
 
     struct FakeBTCClient {
@@ -864,6 +884,17 @@ mod tests {
     fn test_compute_stable_sync_target_height_saturates_at_zero() {
         assert_eq!(compute_stable_sync_target_height(1, u32::MAX, 2), 0);
         assert_eq!(compute_stable_sync_target_height(0, u32::MAX, 2), 0);
+    }
+
+    #[test]
+    fn test_validate_activation_at_height_fails_closed_for_unlisted_network() {
+        let mut config = BalanceHistoryConfig::default();
+        config.btc.network = Network::Regtest;
+        assert!(validate_activation_at_height(&Arc::new(config.clone()), 0).is_ok());
+
+        config.btc.network = Network::Signet;
+        let error = validate_activation_at_height(&Arc::new(config), 0).unwrap_err();
+        assert!(error.contains("activation record not found"));
     }
 
     #[test]

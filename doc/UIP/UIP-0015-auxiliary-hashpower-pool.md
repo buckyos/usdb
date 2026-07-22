@@ -2,16 +2,16 @@ UIP: UIP-0015
 Title: Auxiliary Hashpower Pool
 Status: Draft
 Type: Standards Track
-Layer: ETHW Reward / Auxiliary BTC Hashpower
+Layer: USDB chain Reward / Auxiliary BTC Hashpower
 Created: 2026-05-16
 Requires: UIP-0000, UIP-0001, UIP-0006, UIP-0007, UIP-0008, UIP-0009, UIP-0011
-Activation: Not enabled in v1 public networks; activation requires a future aux pool policy version and ETHW activation matrix entry
+Activation: Not enabled in v1 public networks; activation requires a future aux pool policy version and USDB chain activation matrix entry
 
 # 摘要
 
 本文定义辅助算力池的协议边界和首版设计纲要。
 
-辅助算力池的目标是允许持有矿工证的 BTC 矿工支付手续费，向 USDB ETHW 网络提交可验证的 BTC 辅助算力证明，并在辅助算力池启用后参与 UIP-0011 预留的 CoinBase 份额。
+辅助算力池的目标是允许持有矿工证的 BTC 矿工支付手续费，向 USDB chain 网络提交可验证的 BTC 辅助算力证明，并在辅助算力池启用后参与 UIP-0011 预留的 CoinBase 份额。
 
 v1 public network 不默认启用辅助算力池。初始版本应表达为 disabled policy version，而不是本地开关：
 
@@ -22,7 +22,7 @@ aux_pool_coinbase_atoms = 0
 miner_coinbase_atoms = coinbase_emission_atoms
 ```
 
-只有在 UIP-0015 进入 Final、证明格式和分配规则完成审计、并通过 UIP-0008 activation matrix 在指定 ETHW 高度激活 `aux_pool_policy_version > 0` 后，才允许启用辅助算力池分账。
+只有在 UIP-0015 进入 Final、证明格式和分配规则完成审计、并通过 UIP-0008 activation matrix 在指定 USDB chain 高度激活 `aux_pool_policy_version > 0` 后，才允许启用辅助算力池分账。
 
 # 动机
 
@@ -45,7 +45,7 @@ aux_pool_reward     = CoinBase * 0.25
 
 - aux pool 在 v1 是可升级预留机制，不是默认启用机制。
 - UIP-0011 只消费 aux pool 的启用状态和分账结果，不定义证明细节。
-- 所有辅助算力提交必须最终能从 ETHW 链上状态和已承诺的 BTC 历史视图重放验证，不能依赖 live BTC RPC 或外部临时状态。
+- 所有辅助算力提交必须最终能从 USDB chain 上状态和已承诺的 BTC 历史视图重放验证，不能依赖 live BTC RPC 或外部临时状态。
 - aux pool 不应引入独立的本地 `enabled` boolean；是否 active 必须由 activation matrix、policy version 和链上承诺状态共同决定。
 
 # 非目标
@@ -122,14 +122,14 @@ aux_pool_active(block_height)
       AND aux_pool_verifier_code_hash == expected_aux_pool_verifier_code_hash
 ```
 
-`active_version_set(block_height)` 由 UIP-0008 activation matrix 按目标 ETHW chain、network 和 block height 查询得到。
+`active_version_set(block_height)` 由 UIP-0008 activation matrix 按目标 USDB chain、network 和 block height 查询得到。
 
 如果未来某个新网络希望从 genesis 启用辅助算力池，不应设置本地 genesis boolean，而应在该网络 activation matrix 中写入：
 
 ```text
 component = aux_pool_policy_version
 version = 1
-activation_anchor = ethw_block
+activation_anchor = usdb_block
 activation_value = 0
 ```
 
@@ -140,7 +140,7 @@ activation_value = 0
 3. `aux_pool_recipient` 或 aux pool system contract 固定。
 4. proof verifier 规则固定。
 5. reward distribution 规则固定。
-6. activation matrix 明确 ETHW chain、network、activation block。
+6. activation matrix 明确 USDB chain、network、activation block。
 7. 如果使用 system contract，`aux_pool_verifier_code_hash` 必须固定并可由节点校验。
 
 # 高层流程
@@ -157,8 +157,8 @@ btc_reference_hash
 btc_reference_difficulty
 ```
 
-4. 证明进入 ETHW 共识可见数据，建议通过 aux pool system contract / system transaction 承载，而不是塞入 `header.Extra`。
-5. ETHW 执行层验证：
+4. 证明进入 USDB chain 共识可见数据，建议通过 aux pool system contract / system transaction 承载，而不是塞入 `header.Extra`。
+5. USDB chain 执行层验证：
 
 ```text
 proof is canonical
@@ -178,9 +178,9 @@ UIP-0007 的 `ProfileSelectorPayload` 需要保持短小稳定，不应承载完
 
 辅助算力证明可能包含 BTC header、share、nonce、merkle 相关字段或提交者绑定字段，体积和验证成本都高于 `header.Extra` 适合承载的范围。因此，v1 草案倾向：
 
-- ETHW block header 只保留 UIP-0007 selector。
+- USDB block header 只保留 UIP-0007 selector。
 - aux pool proof 通过普通交易、system transaction 或 system contract call 进入执行层。
-- accepted submission 进入 ETHW state，并由 `stateRoot` 承诺。
+- accepted submission 进入 USDB chain state，并由 `stateRoot` 承诺。
 - reward split 只消费已经进入 parent state 或当前 state transition 中按规则生效的 aux pool state。
 
 具体 proof ABI 和 storage key 是待审计项。
@@ -193,8 +193,8 @@ UIP-0007 的 `ProfileSelectorPayload` 需要保持短小稳定，不应承载完
 
 | 方案 | 说明 | 风险 |
 | --- | --- | --- |
-| ETHW 内置 BTC header relay | ETHW 链上维护可验证 BTC header chain / difficulty state。 | 实现成本高，但 replay 最清晰。 |
-| USDB indexer state commitment | 通过 UIP-0006 / UIP-0008 绑定稳定 BTC 历史视图。 | 需要明确 ETHW 如何验证该视图，不可退化为信任外部服务。 |
+| USDB chain 内置 BTC header relay | USDB chain 上维护可验证 BTC header chain / difficulty state。 | 实现成本高，但 replay 最清晰。 |
+| USDB indexer state commitment | 通过 UIP-0006 / UIP-0008 绑定稳定 BTC 历史视图。 | 需要明确 USDB chain 如何验证该视图，不可退化为信任外部服务。 |
 | proof 自带 BTC header chain segment | 每个 proof 携带足够 BTC headers。 | 体积和 gas 成本可能过高。 |
 
 Draft 阶段不选定最终方案。Final 前必须固定 BTC reference validation 方案，并覆盖 BTC reorg 语义。
@@ -208,8 +208,8 @@ Draft 阶段不选定最终方案。Final 前必须固定 BTC reference validati
 ```text
 submitter_pass_id
 submitter_owner_script_hash or owner_btc_addr
-submitter_eth_address
-submission_eth_sender
+submitter_usdb_account
+submission_usdb_sender
 btc_reference_height
 proof_nonce or proof_id
 ```
@@ -236,7 +236,7 @@ aux pool 必须防止同一份 BTC 工作量被重复领取。
 - `proof_id` canonical encoding。
 - 同一 proof 被同一 pass 重复提交时的处理。
 - 同一 proof 被不同 pass 重复提交时的处理。
-- proof 在不同 ETHW fork / network 重放时的隔离字段。
+- proof 在不同 USDB chain fork / network 重放时的隔离字段。
 - proof 在不同 reward window 重放时的隔离字段。
 - 低成本垃圾提交的手续费或押金规则。
 
@@ -299,12 +299,12 @@ miner_coinbase_atoms
 - UIP-0011 定义 CoinBase emission 和 75% / 25% split 的消费边界。
 - UIP-0007 不承载完整辅助算力证明，只承载 consensus profile selector。
 - UIP-0008 定义 aux pool policy version 和 activation matrix 的网络化激活。
-- UIP-0009 定义 ETHW chain config 中是否预留 aux pool 相关字段。
-- UIP-0006 可提供与 submitter pass、owner、energy 相关的审计视图，但不能替代 ETHW 共识验证。
+- UIP-0009 定义 USDB chain config 中是否预留 aux pool 相关字段。
+- UIP-0006 可提供与 submitter pass、owner、energy 相关的审计视图，但不能替代 USDB chain 共识验证。
 
 # 状态与重放
 
-aux pool accepted submission 必须进入 ETHW state，并随 `stateRoot` 被承诺。
+aux pool accepted submission 必须进入 USDB chain state，并随 `stateRoot` 被承诺。
 
 推荐状态边界：
 
@@ -316,7 +316,7 @@ aux pool accepted submission 必须进入 ETHW state，并随 `stateRoot` 被承
 | accepted submissions | aux pool system contract storage | 证明提交量可能较大，不适合固定少量 reserved slots。 |
 | distribution checkpoints | aux pool system contract storage | 用于 reward claim 和历史审计。 |
 
-所有状态更新必须支持 ETHW reorg 回滚。
+所有状态更新必须支持 USDB chain reorg 回滚。
 
 # 测试要求
 
@@ -330,7 +330,7 @@ Final 前至少需要覆盖：
 - 同一 proof 重复提交时被拒绝或按最终规则幂等处理。
 - 不同 pass 竞争同一 proof 的处理路径。
 - inactive / dormant / consumed / burned pass 提交被拒绝。
-- ETHW reorg 后 accepted submissions 和分配状态正确回滚。
+- USDB chain reorg 后 accepted submissions 和分配状态正确回滚。
 - 历史区块重放不依赖 live BTC RPC。
 - `header.Extra` 不包含完整 proof，仍符合 UIP-0007 payload 长度约束。
 
@@ -340,8 +340,8 @@ Final 前至少需要覆盖：
 | --- | --- | --- |
 | aux pool 是否在 v1 public network 启用 | 不启用，初始 `aux_pool_policy_version = 0`。 | activation matrix 是否显式记录 disabled version，还是只记录后续启用版本。 |
 | 有效算力证明格式 | 通过 system contract / system tx 提交，不进 `header.Extra`。 | 具体 proof ABI、canonical encoding 和 test vector。 |
-| BTC reference validation | 不允许 live BTC RPC。 | 选择 BTC header relay、USDB state commitment 或 proof 自带 header segment。 |
-| 最近 2 个 BTC 高度窗口 | 保留设计大纲口径。 | 以 BTC height、BTC hash 还是 ETHW 已知 BTC state 计算窗口。 |
+| BTC reference validation | 不允许 live BTC RPC。 | 选择 BTC header relay、BTC-side USDB state commitment 或 proof 自带 header segment。 |
+| 最近 2 个 BTC 高度窗口 | 保留设计大纲口径。 | 以 BTC height、BTC hash 还是 USDB chain 已知 BTC state 计算窗口。 |
 | 75% 门槛边界 | 使用 `AUX_HASHPOWER_THRESHOLD_BPS = 7500`。 | 严格 `>` 还是 `>=`。 |
 | miner pass binding | 倾向绑定 active pass `pass_id`。 | owner / BTC address 继承、remint、collab pass 是否允许。 |
 | 多提交者竞争 | 未定。 | 按先到先得、按 work 比例、按窗口聚合还是其他方式。 |

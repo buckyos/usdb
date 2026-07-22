@@ -12,7 +12,7 @@ RUN2_WORK_DIR="${RUN2_WORK_DIR:-${WORK_DIR}/run2}"
 BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-${BTC_RPC_PORT:-28132}}"
 BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-${BTC_P2P_PORT:-28133}}"
 BASE_BH_RPC_PORT="${BASE_BH_RPC_PORT:-${BH_RPC_PORT:-28110}}"
-BASE_USDB_RPC_PORT="${BASE_USDB_RPC_PORT:-${USDB_RPC_PORT:-28120}}"
+BASE_USDB_INDEXER_RPC_PORT="${BASE_USDB_INDEXER_RPC_PORT:-${USDB_INDEXER_RPC_PORT:-28120}}"
 BASE_ORD_SERVER_PORT="${BASE_ORD_SERVER_PORT:-${ORD_SERVER_PORT:-28130}}"
 PORT_STRIDE="${PORT_STRIDE:-100}"
 
@@ -45,7 +45,7 @@ run_once() {
   local btc_rpc_port="$(( BASE_BTC_RPC_PORT + port_offset ))"
   local btc_p2p_port="$(( BASE_BTC_P2P_PORT + port_offset ))"
   local bh_rpc_port="$(( BASE_BH_RPC_PORT + port_offset ))"
-  local usdb_rpc_port="$(( BASE_USDB_RPC_PORT + port_offset ))"
+  local usdb_indexer_rpc_port="$(( BASE_USDB_INDEXER_RPC_PORT + port_offset ))"
   local ord_server_port="$(( BASE_ORD_SERVER_PORT + port_offset ))"
 
   log "Starting ${run_tag}: seed=${SIM_SEED}, blocks=${SIM_BLOCKS}, work_dir=${run_work_dir}, btc_rpc_port=${btc_rpc_port}, ord_server_port=${ord_server_port}"
@@ -54,7 +54,7 @@ run_once() {
     BTC_RPC_PORT="${btc_rpc_port}" \
     BTC_P2P_PORT="${btc_p2p_port}" \
     BH_RPC_PORT="${bh_rpc_port}" \
-    USDB_RPC_PORT="${usdb_rpc_port}" \
+    USDB_INDEXER_RPC_PORT="${usdb_indexer_rpc_port}" \
     ORD_SERVER_PORT="${ord_server_port}" \
     SIM_SEED="${SIM_SEED}" \
     SIM_BLOCKS="${SIM_BLOCKS}" \

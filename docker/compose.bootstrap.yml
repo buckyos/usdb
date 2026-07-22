@@ -88,7 +88,7 @@ services:
         condition: service_started
     environment:
       BOOTSTRAP_DIR: ${BOOTSTRAP_DIR:-/bootstrap}
-      ETHW_RPC_URL: ${ETHW_RPC_URL:-http://ethw-node:8545}
+      USDB_CHAIN_RPC_URL: ${USDB_CHAIN_RPC_URL:-http://ethw-node:8545}
       SOURCE_DAO_BOOTSTRAP_MODE: ${SOURCE_DAO_BOOTSTRAP_MODE:-disabled}
       SOURCE_DAO_BOOTSTRAP_SCOPE: ${SOURCE_DAO_BOOTSTRAP_SCOPE:-dao-dividend-only}
       SOURCE_DAO_BOOTSTRAP_PREPARE: ${SOURCE_DAO_BOOTSTRAP_PREPARE:-validate}

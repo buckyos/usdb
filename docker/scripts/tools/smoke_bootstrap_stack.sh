@@ -191,7 +191,7 @@ ETHW_CANONICAL_TRUSTED_KEYS_FILE=/bootstrap/trusted-ethw-genesis-keys.json
 ETHW_HTTP_BIND_PORT=0
 ETHW_WS_BIND_PORT=0
 ETHW_P2P_BIND_PORT=0
-ETHW_RPC_URL=http://ethw-node:8545
+USDB_CHAIN_RPC_URL=http://ethw-node:8545
 
 CONTROL_PLANE_ROOT_DIR=/data/usdb-control-plane
 CONTROL_PLANE_PORT=28140

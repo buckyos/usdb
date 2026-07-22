@@ -4,10 +4,10 @@ import { FieldValueList } from '../components/FieldValueList'
 import {
   executeBtcMint,
   fetchBalanceHistorySingleBalance,
-  fetchEthwAddressStatus,
+  fetchUsdbChainAddressStatus,
   fetchBtcWorldSimDevSigner,
   fetchBtcWorldSimIdentities,
-  fetchEthwDevIdentity,
+  fetchUsdbChainDevIdentity,
   prepareBtcMintDraft,
   fetchUsdbOwnerActivePass,
   fetchUsdbPassEnergy,
@@ -26,8 +26,8 @@ import type {
   BtcMintExecuteResponse,
   BtcMintPrepareResponse,
   BtcWorldSimIdentitiesResponse,
-  EthwAddressStatusResponse,
-  EthwDevIdentityResponse,
+  UsdbChainAddressStatusResponse,
+  UsdbChainDevIdentityResponse,
   OverviewResponse,
   PassEnergySnapshot,
   PassSnapshot,
@@ -47,11 +47,11 @@ import {
   type BtcWalletSnapshot,
 } from '../lib/btcWallet'
 import {
-  connectEthWallet,
-  detectEthWalletProvider,
-  readEthWalletSnapshot,
-  type EthWalletSnapshot,
-} from '../lib/ethWallet'
+  connectEvmWallet,
+  detectEvmWalletProvider,
+  readEvmWalletSnapshot,
+  type EvmWalletSnapshot,
+} from '../lib/evmWallet'
 
 interface MePageProps {
   data?: OverviewResponse
@@ -59,8 +59,8 @@ interface MePageProps {
   t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string
 }
 
-type IdentityKind = 'eth' | 'btc'
-type EthIdentitySource = 'browser_wallet' | 'dev_sim_identity' | 'manual_address'
+type IdentityKind = 'usdb' | 'btc'
+type UsdbIdentitySource = 'browser_wallet' | 'dev_sim_identity' | 'manual_address'
 type BtcIdentitySource = 'browser_wallet' | 'world_sim_agent' | 'manual_address'
 type BtcMintFlowStep = 'edit' | 'review' | 'signing' | 'submitting' | 'waiting' | 'success'
 type BtcMintPassKind = 'standard' | 'collab'
@@ -75,10 +75,10 @@ interface WalletPassRecognition {
 type BtcRuntimeNetwork = 'mainnet' | 'testnet' | 'testnet4' | 'regtest' | 'signet'
 
 const BTC_ME_SESSION_STORAGE_KEY = 'usdb.console.me.btc.v2'
-const ETH_ME_SESSION_STORAGE_KEY = 'usdb.console.me.eth.v1'
+const USDB_ME_SESSION_STORAGE_KEY = 'usdb.console.me.usdb.v1'
 
-interface PersistedEthSessionState {
-  identitySource?: EthIdentitySource
+interface PersistedUsdbSessionState {
+  identitySource?: UsdbIdentitySource
   manualAddress?: string
 }
 
@@ -215,12 +215,12 @@ function loadPersistedBtcSessionState(): PersistedBtcSessionState {
   }
 }
 
-function loadPersistedEthSessionState(): PersistedEthSessionState {
-  const raw = readSessionStorageValue(ETH_ME_SESSION_STORAGE_KEY)
+function loadPersistedUsdbSessionState(): PersistedUsdbSessionState {
+  const raw = readSessionStorageValue(USDB_ME_SESSION_STORAGE_KEY)
   if (!raw) return {}
 
   try {
-    const parsed = JSON.parse(raw) as Partial<PersistedEthSessionState>
+    const parsed = JSON.parse(raw) as Partial<PersistedUsdbSessionState>
     const identitySource =
       parsed.identitySource === 'browser_wallet' ||
       parsed.identitySource === 'dev_sim_identity' ||
@@ -232,21 +232,21 @@ function loadPersistedEthSessionState(): PersistedEthSessionState {
       manualAddress: typeof parsed.manualAddress === 'string' ? parsed.manualAddress : undefined,
     }
   } catch {
-    writeSessionStorageValue(ETH_ME_SESSION_STORAGE_KEY, null)
+    writeSessionStorageValue(USDB_ME_SESSION_STORAGE_KEY, null)
     return {}
   }
 }
 
 function normalizeIdentityKind(value?: string): IdentityKind | null {
-  if (value === 'eth' || value === 'btc') return value
+  if (value === 'usdb' || value === 'btc') return value
   return null
 }
 
-function validateEthAddress(value: string) {
+function validateEvmAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value.trim())
 }
 
-function normalizeEthChainId(value?: string | null) {
+function normalizeEvmChainId(value?: string | null) {
   const normalized = (value ?? '').trim().toLowerCase()
   if (!normalized) return null
   if (/^0x[0-9a-f]+$/.test(normalized)) return normalized
@@ -343,13 +343,13 @@ function identitySourceLabel(
   return t('me.values.identitySourceManualAddress')
 }
 
-function ethIdentitySourceLabel(
-  source: EthIdentitySource,
+function usdbIdentitySourceLabel(
+  source: UsdbIdentitySource,
   t: MePageProps['t'],
 ) {
-  if (source === 'browser_wallet') return t('me.values.identitySourceEthBrowserWallet')
-  if (source === 'dev_sim_identity') return t('me.values.identitySourceEthDevSim')
-  return t('me.values.identitySourceEthManualAddress')
+  if (source === 'browser_wallet') return t('me.values.identitySourceUsdbBrowserWallet')
+  if (source === 'dev_sim_identity') return t('me.values.identitySourceUsdbDevSim')
+  return t('me.values.identitySourceUsdbManualAddress')
 }
 
 function btcSignerSourceLabel(
@@ -361,15 +361,15 @@ function btcSignerSourceLabel(
   return t('me.values.signerSourceBrowserWallet')
 }
 
-function formatWeiAsEth(value: string | null | undefined, t: MePageProps['t']) {
+function formatUsdbAtoms(value: string | null | undefined, t: MePageProps['t']) {
   if (!value) return t('common.notYetAvailable')
   try {
-    const wei = BigInt(value)
+    const atoms = BigInt(value)
     const base = 10n ** 18n
-    const whole = wei / base
-    const fraction = wei % base
+    const whole = atoms / base
+    const fraction = atoms % base
     const fractionText = fraction.toString().padStart(18, '0').slice(0, 6).replace(/0+$/, '')
-    return `${whole.toString()}${fractionText ? `.${fractionText}` : ''} ETH`
+    return `${whole.toString()}${fractionText ? `.${fractionText}` : ''} USDB`
   } catch {
     return value
   }
@@ -378,21 +378,21 @@ function formatWeiAsEth(value: string | null | undefined, t: MePageProps['t']) {
 export function MePage({ data, locale, t }: MePageProps) {
   const { identityKind } = useParams()
   const activeIdentity = normalizeIdentityKind(identityKind)
-  const [ethSessionBoot] = useState<PersistedEthSessionState>(() => loadPersistedEthSessionState())
+  const [usdbSessionBoot] = useState<PersistedUsdbSessionState>(() => loadPersistedUsdbSessionState())
   const [btcSessionBoot] = useState<PersistedBtcSessionState>(() => loadPersistedBtcSessionState())
-  const [ethAddress, setEthAddress] = useState(ethSessionBoot.manualAddress ?? '')
-  const [ethIdentitySource, setEthIdentitySource] = useState<EthIdentitySource>(
-    ethSessionBoot.identitySource ?? 'manual_address',
+  const [usdbAddress, setUsdbAddress] = useState(usdbSessionBoot.manualAddress ?? '')
+  const [usdbIdentitySource, setUsdbIdentitySource] = useState<UsdbIdentitySource>(
+    usdbSessionBoot.identitySource ?? 'manual_address',
   )
-  const [ethWallet, setEthWallet] = useState<EthWalletSnapshot | null>(null)
-  const [ethWalletLoading, setEthWalletLoading] = useState(false)
-  const [ethWalletError, setEthWalletError] = useState<string | null>(null)
-  const [ethDevIdentity, setEthDevIdentity] = useState<EthwDevIdentityResponse | null>(null)
-  const [ethDevIdentityLoading, setEthDevIdentityLoading] = useState(false)
-  const [ethDevIdentityError, setEthDevIdentityError] = useState<string | null>(null)
-  const [ethAddressStatus, setEthAddressStatus] = useState<EthwAddressStatusResponse | null>(null)
-  const [ethAddressStatusLoading, setEthAddressStatusLoading] = useState(false)
-  const [ethAddressStatusError, setEthAddressStatusError] = useState<string | null>(null)
+  const [evmWallet, setEvmWallet] = useState<EvmWalletSnapshot | null>(null)
+  const [evmWalletLoading, setEvmWalletLoading] = useState(false)
+  const [evmWalletError, setEvmWalletError] = useState<string | null>(null)
+  const [usdbDevIdentity, setUsdbDevIdentity] = useState<UsdbChainDevIdentityResponse | null>(null)
+  const [usdbDevIdentityLoading, setUsdbDevIdentityLoading] = useState(false)
+  const [usdbDevIdentityError, setUsdbDevIdentityError] = useState<string | null>(null)
+  const [usdbAddressStatus, setUsdbAddressStatus] = useState<UsdbChainAddressStatusResponse | null>(null)
+  const [usdbAddressStatusLoading, setUsdbAddressStatusLoading] = useState(false)
+  const [usdbAddressStatusError, setUsdbAddressStatusError] = useState<string | null>(null)
   const [btcAddress, setBtcAddress] = useState(btcSessionBoot.manualAddress ?? '')
   const [btcWallet, setBtcWallet] = useState<BtcWalletSnapshot | null>(null)
   const [btcBrowserWalletSnapshot, setBtcBrowserWalletSnapshot] = useState<BtcWalletSnapshot | null>(null)
@@ -486,32 +486,32 @@ export function MePage({ data, locale, t }: MePageProps) {
   const btcMintInputResetReady = useRef(false)
 
   if (!activeIdentity) {
-    return <Navigate to="/me/eth" replace />
+    return <Navigate to="/me/usdb" replace />
   }
 
-  const ethwReachable = Boolean(data?.services.ethw.reachable)
-  const ethwConsensusReady = Boolean(data?.services.ethw.data?.consensus_ready)
-  const ethwRuntimeProfile = data?.capabilities.ethw_runtime_profile ?? 'unknown'
-  const ethwRuntimeChainId = normalizeEthChainId(data?.services.ethw.data?.chain_id)
-  const ethWalletChainId = normalizeEthChainId(ethWallet?.chainId)
-  const hasInjectedEthWallet = detectEthWalletProvider()
-  const ethWalletConnected = Boolean(ethWallet?.address)
-  const ethDevIdentityAvailable = Boolean(ethDevIdentity?.available && ethDevIdentity.address)
-  const ethLookupAddress =
-    (ethIdentitySource === 'browser_wallet'
-      ? ethWallet?.address
-      : ethIdentitySource === 'dev_sim_identity'
-        ? ethDevIdentity?.address
-        : ethAddress.trim()) || null
-  const ethWalletNetworkMismatch =
-    ethIdentitySource === 'browser_wallet' &&
-    ethwRuntimeChainId != null &&
-    ethWalletChainId != null &&
-    ethwRuntimeChainId !== ethWalletChainId
-  const ethWalletNetworkMismatchMessage = ethWalletNetworkMismatch
-    ? t('me.eth.networkMismatch', undefined, {
-        walletChain: ethWalletChainId ?? t('common.notYetAvailable'),
-        runtimeChain: ethwRuntimeChainId ?? t('common.notYetAvailable'),
+  const usdbReachable = Boolean(data?.services.usdb_chain.reachable)
+  const usdbConsensusReady = Boolean(data?.services.usdb_chain.data?.consensus_ready)
+  const usdbChainRuntimeProfile = data?.capabilities.usdb_chain_runtime_profile ?? 'unknown'
+  const usdbRuntimeChainId = normalizeEvmChainId(data?.services.usdb_chain.data?.chain_id)
+  const evmWalletChainId = normalizeEvmChainId(evmWallet?.chainId)
+  const hasInjectedEvmWallet = detectEvmWalletProvider()
+  const evmWalletConnected = Boolean(evmWallet?.address)
+  const usdbDevIdentityAvailable = Boolean(usdbDevIdentity?.available && usdbDevIdentity.address)
+  const usdbLookupAddress =
+    (usdbIdentitySource === 'browser_wallet'
+      ? evmWallet?.address
+      : usdbIdentitySource === 'dev_sim_identity'
+        ? usdbDevIdentity?.address
+        : usdbAddress.trim()) || null
+  const evmWalletNetworkMismatch =
+    usdbIdentitySource === 'browser_wallet' &&
+    usdbRuntimeChainId != null &&
+    evmWalletChainId != null &&
+    usdbRuntimeChainId !== evmWalletChainId
+  const evmWalletNetworkMismatchMessage = evmWalletNetworkMismatch
+    ? t('me.usdb.networkMismatch', undefined, {
+        walletChain: evmWalletChainId ?? t('common.notYetAvailable'),
+        runtimeChain: usdbRuntimeChainId ?? t('common.notYetAvailable'),
       })
     : null
   const sourcedaoReady = Boolean(data?.bootstrap.sourcedao_bootstrap_marker.exists)
@@ -566,10 +566,10 @@ export function MePage({ data, locale, t }: MePageProps) {
       })
     : null
   const ethActiveIdentityCanWrite =
-    ethIdentitySource === 'browser_wallet'
-      ? ethWalletConnected && !ethWalletNetworkMismatch
-      : ethIdentitySource === 'dev_sim_identity'
-        ? ethwRuntimeProfile === 'development' && ethDevIdentityAvailable
+    usdbIdentitySource === 'browser_wallet'
+      ? evmWalletConnected && !evmWalletNetworkMismatch
+      : usdbIdentitySource === 'dev_sim_identity'
+        ? usdbChainRuntimeProfile === 'development' && usdbDevIdentityAvailable
         : false
   const btcBrowserSignerReady = btcBrowserWalletConnected && !btcBrowserWalletNetworkMismatch
   const btcWorldSimSignerReady =
@@ -621,17 +621,17 @@ export function MePage({ data, locale, t }: MePageProps) {
     Boolean(btcSelectedWorldSimIdentity)
 
   const activeAddressValue =
-    activeIdentity === 'eth'
-      ? ethLookupAddress ?? ''
+    activeIdentity === 'usdb'
+      ? usdbLookupAddress ?? ''
       : btcLookupAddress ?? ''
 
   const activeAddressStatus =
-    activeIdentity === 'eth'
+    activeIdentity === 'usdb'
       ? activeAddressValue === ''
         ? t('me.identity.notSet')
-        : ethWalletNetworkMismatch
+        : evmWalletNetworkMismatch
           ? t('me.identity.networkMismatch')
-          : validateEthAddress(activeAddressValue)
+          : validateEvmAddress(activeAddressValue)
             ? t('me.identity.validFormat')
             : t('me.identity.checkFormat')
       : activeAddressValue === ''
@@ -861,63 +861,63 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.passOwnerDelta'),
     },
   ]
-  const ethIdentitySourceValue = ethIdentitySourceLabel(ethIdentitySource, t)
+  const usdbIdentitySourceValue = usdbIdentitySourceLabel(usdbIdentitySource, t)
   const btcSignerSourceValue = btcSignerSourceLabel(btcIdentitySource, t)
   const btcIdentitySourceValue = identitySourceLabel(btcIdentitySource, t)
-  const ethWalletSummaryItems = [
+  const evmWalletSummaryItems = [
     {
       label: t('me.fields.walletProvider'),
-      value: displayText(ethWallet?.source, t),
-      helpText: t('me.help.ethWalletProvider'),
+      value: displayText(evmWallet?.source, t),
+      helpText: t('me.help.usdbWalletProvider'),
     },
     {
       label: t('me.fields.walletAddress'),
-      value: displayText(ethWallet?.address, t),
-      helpText: t('me.help.ethWalletAddress'),
+      value: displayText(evmWallet?.address, t),
+      helpText: t('me.help.usdbWalletAddress'),
     },
     {
       label: t('me.fields.walletNetwork'),
-      value: displayText(ethWallet?.chainId, t),
-      helpText: t('me.help.ethWalletNetwork'),
+      value: displayText(evmWallet?.chainId, t),
+      helpText: t('me.help.usdbWalletNetwork'),
     },
     {
       label: t('me.fields.runtimeChainId'),
-      value: displayText(ethwRuntimeChainId, t),
+      value: displayText(usdbRuntimeChainId, t),
       helpText: t('help.fields.chainId'),
     },
     {
       label: t('me.fields.walletBalance'),
-      value: formatWeiAsEth(ethWallet?.balanceWei, t),
-      helpText: t('me.help.ethWalletBalance'),
+      value: formatUsdbAtoms(evmWallet?.balanceAtomsHex, t),
+      helpText: t('me.help.usdbWalletBalance'),
     },
   ]
-  const ethDevIdentityItems = [
+  const usdbDevIdentityItems = [
     {
       label: t('me.fields.currentAddress'),
-      value: displayText(ethDevIdentity?.address, t),
-      helpText: t('me.help.currentEthAddress'),
+      value: displayText(usdbDevIdentity?.address, t),
+      helpText: t('me.help.currentUsdbAddress'),
     },
     {
       label: t('me.fields.identityMode'),
-      value: displayText(ethDevIdentity?.identity_mode, t),
-      helpText: t('me.help.ethDevIdentityMode'),
+      value: displayText(usdbDevIdentity?.identity_mode, t),
+      helpText: t('me.help.usdbDevIdentityMode'),
     },
     {
       label: t('me.fields.identityScheme'),
-      value: displayText(ethDevIdentity?.identity_scheme, t),
-      helpText: t('me.help.ethDevIdentityScheme'),
+      value: displayText(usdbDevIdentity?.identity_scheme, t),
+      helpText: t('me.help.usdbDevIdentityScheme'),
     },
     {
       label: t('me.fields.markerPath'),
-      value: displayText(ethDevIdentity?.marker_path, t),
-      helpText: t('me.help.ethDevIdentityMarker'),
+      value: displayText(usdbDevIdentity?.marker_path, t),
+      helpText: t('me.help.usdbDevIdentityMarker'),
     },
   ]
-  const ethIdentityStatusItems = [
+  const usdbIdentityStatusItems = [
     {
       label: t('me.fields.currentAddress'),
-      value: displayText(ethLookupAddress, t),
-      helpText: t('me.help.currentEthAddress'),
+      value: displayText(usdbLookupAddress, t),
+      helpText: t('me.help.currentUsdbAddress'),
     },
     {
       label: t('me.fields.addressStatus'),
@@ -925,25 +925,25 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.addressStatus'),
     },
     {
-      label: t('me.fields.ethwBalance'),
-      value: ethAddressStatusLoading
+      label: t('me.fields.usdbBalance'),
+      value: usdbAddressStatusLoading
         ? t('actions.reloading')
-        : formatWeiAsEth(
-            ethAddressStatus?.balance_wei ??
-              (ethIdentitySource === 'browser_wallet' ? ethWallet?.balanceWei : null),
+        : formatUsdbAtoms(
+            usdbAddressStatus?.balance_atoms_hex ??
+              (usdbIdentitySource === 'browser_wallet' ? evmWallet?.balanceAtomsHex : null),
             t,
           ),
-      helpText: t('me.help.ethwAddressBalance'),
+      helpText: t('me.help.usdbAddressBalance'),
     },
     {
       label: t('me.fields.runtimeChainId'),
-      value: displayText(ethAddressStatus?.ethw_chain_id ?? ethwRuntimeChainId, t),
+      value: displayText(usdbAddressStatus?.usdb_chain_id ?? usdbRuntimeChainId, t),
       helpText: t('help.fields.chainId'),
     },
     {
       label: t('me.fields.latestBlock'),
       value: displayText(
-        ethAddressStatus?.latest_block_number ?? data?.services.ethw.data?.block_number,
+        usdbAddressStatus?.latest_block_number ?? data?.services.usdb_chain.data?.block_number,
         t,
       ),
       helpText: t('help.fields.blockNumber'),
@@ -951,17 +951,17 @@ export function MePage({ data, locale, t }: MePageProps) {
     {
       label: t('me.fields.linkedMinerPass'),
       value: t('common.notYetAvailable'),
-      helpText: t('me.help.ethLinkedMinerPass'),
+      helpText: t('me.help.usdbLinkedMinerPass'),
     },
     {
       label: t('me.fields.passEnergy'),
       value: t('common.notYetAvailable'),
-      helpText: t('me.help.ethLinkedPassEnergy'),
+      helpText: t('me.help.usdbLinkedPassEnergy'),
     },
     {
       label: t('me.fields.miningDifficulty'),
       value: t('common.notYetAvailable'),
-      helpText: t('me.help.ethMiningDifficulty'),
+      helpText: t('me.help.usdbMiningDifficulty'),
     },
   ]
   const btcWalletCapabilityItems = [
@@ -1150,17 +1150,17 @@ export function MePage({ data, locale, t }: MePageProps) {
         ]
 
   const capabilityItems =
-    activeIdentity === 'eth'
+    activeIdentity === 'usdb'
       ? [
           {
-            label: t('me.fields.ethwRuntime'),
-            value: ethwReachable ? t('service.reachable') : t('service.offline'),
-            helpText: t('me.help.ethwRuntime'),
+            label: t('me.fields.usdbRuntime'),
+            value: usdbReachable ? t('service.reachable') : t('service.offline'),
+            helpText: t('me.help.usdbRuntime'),
           },
           {
-            label: t('me.fields.ethwConsensus'),
-            value: ethwConsensusReady ? t('service.consensusReady') : t('common.notYetAvailable'),
-            helpText: t('me.help.ethwConsensus'),
+            label: t('me.fields.usdbConsensus'),
+            value: usdbConsensusReady ? t('service.consensusReady') : t('common.notYetAvailable'),
+            helpText: t('me.help.usdbConsensus'),
           },
           {
             label: t('me.fields.sourcedaoBootstrap'),
@@ -1169,18 +1169,18 @@ export function MePage({ data, locale, t }: MePageProps) {
           },
           {
             label: t('me.fields.identitySource'),
-            value: ethIdentitySourceValue,
-            helpText: t('me.help.ethIdentitySource'),
+            value: usdbIdentitySourceValue,
+            helpText: t('me.help.usdbIdentitySource'),
           },
           {
             label: t('me.fields.runtimeProfile'),
-            value: runtimeProfileLabel(ethwRuntimeProfile, t),
-            helpText: t('me.help.ethwRuntimeProfile'),
+            value: runtimeProfileLabel(usdbChainRuntimeProfile, t),
+            helpText: t('me.help.usdbChainRuntimeProfile'),
           },
           {
             label: t('me.fields.connectCapability'),
-            value: hasInjectedEthWallet ? t('states.completed') : t('common.notYetAvailable'),
-            helpText: t('me.help.ethConnectCapability'),
+            value: hasInjectedEvmWallet ? t('states.completed') : t('common.notYetAvailable'),
+            helpText: t('me.help.usdbConnectCapability'),
           },
         ]
       : [
@@ -1220,12 +1220,12 @@ export function MePage({ data, locale, t }: MePageProps) {
         ]
 
   const identityItems =
-    activeIdentity === 'eth'
+    activeIdentity === 'usdb'
       ? [
           {
             label: t('me.fields.identitySource'),
-            value: ethIdentitySourceValue,
-            helpText: t('me.help.ethIdentitySource'),
+            value: usdbIdentitySourceValue,
+            helpText: t('me.help.usdbIdentitySource'),
           },
           {
             label: t('me.fields.writeCapability'),
@@ -1235,7 +1235,7 @@ export function MePage({ data, locale, t }: MePageProps) {
           {
             label: t('me.fields.currentAddress'),
             value: displayText(activeAddressValue || null, t),
-            helpText: t('me.help.currentEthAddress'),
+            helpText: t('me.help.currentUsdbAddress'),
           },
           {
             label: t('me.fields.addressStatus'),
@@ -1244,17 +1244,17 @@ export function MePage({ data, locale, t }: MePageProps) {
           },
           {
             label: t('me.fields.chainId'),
-            value: displayText(ethwRuntimeChainId, t),
+            value: displayText(usdbRuntimeChainId, t),
             helpText: t('help.fields.chainId'),
           },
           {
             label: t('me.fields.detectedWalletNetwork'),
-            value: displayText(ethWallet?.chainId, t),
-            helpText: t('me.help.ethWalletNetwork'),
+            value: displayText(evmWallet?.chainId, t),
+            helpText: t('me.help.usdbWalletNetwork'),
           },
           {
             label: t('me.fields.latestBlock'),
-            value: displayText(data?.services.ethw.data?.block_number, t),
+            value: displayText(data?.services.usdb_chain.data?.block_number, t),
             helpText: t('help.fields.blockNumber'),
           },
         ]
@@ -1307,11 +1307,11 @@ export function MePage({ data, locale, t }: MePageProps) {
         ]
 
   const workspaceSummaryItems =
-    activeIdentity === 'eth'
+    activeIdentity === 'usdb'
       ? [
           {
             label: t('me.fields.primaryAction'),
-            value: t('me.values.ethContractActions'),
+            value: t('me.values.usdbContractActions'),
             helpText: t('me.help.primaryAction'),
           },
           {
@@ -1321,13 +1321,13 @@ export function MePage({ data, locale, t }: MePageProps) {
           },
           {
             label: t('me.fields.identityMode'),
-            value: ethIdentitySourceValue,
+            value: usdbIdentitySourceValue,
             helpText: t('me.help.identityMode'),
           },
           {
             label: t('me.fields.currentAddress'),
             value: displayText(activeAddressValue || null, t),
-            helpText: t('me.help.currentEthAddress'),
+            helpText: t('me.help.currentUsdbAddress'),
           },
         ]
       : [
@@ -1366,34 +1366,34 @@ export function MePage({ data, locale, t }: MePageProps) {
 
   useEffect(() => {
     writeSessionStorageValue(
-      ETH_ME_SESSION_STORAGE_KEY,
+      USDB_ME_SESSION_STORAGE_KEY,
       JSON.stringify({
-        identitySource: ethIdentitySource,
-        manualAddress: ethAddress,
-      } satisfies PersistedEthSessionState),
+        identitySource: usdbIdentitySource,
+        manualAddress: usdbAddress,
+      } satisfies PersistedUsdbSessionState),
     )
-  }, [ethAddress, ethIdentitySource])
+  }, [usdbAddress, usdbIdentitySource])
 
   useEffect(() => {
-    if (activeIdentity !== 'eth') return
-    if (ethwRuntimeProfile === 'public' && ethIdentitySource === 'dev_sim_identity') {
-      setEthIdentitySource(ethWalletConnected ? 'browser_wallet' : 'manual_address')
+    if (activeIdentity !== 'usdb') return
+    if (usdbChainRuntimeProfile === 'public' && usdbIdentitySource === 'dev_sim_identity') {
+      setUsdbIdentitySource(evmWalletConnected ? 'browser_wallet' : 'manual_address')
     }
-  }, [activeIdentity, ethIdentitySource, ethWalletConnected, ethwRuntimeProfile])
+  }, [activeIdentity, usdbIdentitySource, evmWalletConnected, usdbChainRuntimeProfile])
 
   useEffect(() => {
-    if (activeIdentity !== 'eth') return
+    if (activeIdentity !== 'usdb') return
     let cancelled = false
 
-    void readEthWalletSnapshot()
+    void readEvmWalletSnapshot()
       .then((snapshot) => {
         if (cancelled) return
-        setEthWallet(snapshot)
-        setEthWalletError(null)
+        setEvmWallet(snapshot)
+        setEvmWalletError(null)
       })
       .catch((error: Error) => {
         if (cancelled) return
-        setEthWalletError(error.message)
+        setEvmWalletError(error.message)
       })
 
     return () => {
@@ -1402,77 +1402,77 @@ export function MePage({ data, locale, t }: MePageProps) {
   }, [activeIdentity])
 
   useEffect(() => {
-    if (activeIdentity !== 'eth') return
-    if (ethwRuntimeProfile !== 'development') {
-      setEthDevIdentity(null)
-      setEthDevIdentityError(null)
+    if (activeIdentity !== 'usdb') return
+    if (usdbChainRuntimeProfile !== 'development') {
+      setUsdbDevIdentity(null)
+      setUsdbDevIdentityError(null)
       return
     }
 
     let cancelled = false
-    setEthDevIdentityLoading(true)
-    setEthDevIdentityError(null)
+    setUsdbDevIdentityLoading(true)
+    setUsdbDevIdentityError(null)
 
-    void fetchEthwDevIdentity()
+    void fetchUsdbChainDevIdentity()
       .then((response) => {
         if (cancelled) return
-        setEthDevIdentity(response)
-        setEthDevIdentityError(response.error ?? null)
+        setUsdbDevIdentity(response)
+        setUsdbDevIdentityError(response.error ?? null)
       })
       .catch((error: Error) => {
         if (cancelled) return
-        setEthDevIdentity(null)
-        setEthDevIdentityError(error.message)
+        setUsdbDevIdentity(null)
+        setUsdbDevIdentityError(error.message)
       })
       .finally(() => {
         if (cancelled) return
-        setEthDevIdentityLoading(false)
+        setUsdbDevIdentityLoading(false)
       })
 
     return () => {
       cancelled = true
     }
-  }, [activeIdentity, ethwRuntimeProfile])
+  }, [activeIdentity, usdbChainRuntimeProfile])
 
   useEffect(() => {
-    if (activeIdentity !== 'eth' || ethwRuntimeProfile !== 'development') return
-    if (!ethDevIdentityAvailable || ethAddress.trim()) return
-    setEthIdentitySource((current) => (current === 'manual_address' ? 'dev_sim_identity' : current))
-  }, [activeIdentity, ethAddress, ethDevIdentityAvailable, ethwRuntimeProfile])
+    if (activeIdentity !== 'usdb' || usdbChainRuntimeProfile !== 'development') return
+    if (!usdbDevIdentityAvailable || usdbAddress.trim()) return
+    setUsdbIdentitySource((current) => (current === 'manual_address' ? 'dev_sim_identity' : current))
+  }, [activeIdentity, usdbAddress, usdbDevIdentityAvailable, usdbChainRuntimeProfile])
 
   useEffect(() => {
-    if (activeIdentity !== 'eth') return
-    if (!ethLookupAddress || !validateEthAddress(ethLookupAddress) || !ethwReachable) {
-      setEthAddressStatus(null)
-      setEthAddressStatusError(null)
-      setEthAddressStatusLoading(false)
+    if (activeIdentity !== 'usdb') return
+    if (!usdbLookupAddress || !validateEvmAddress(usdbLookupAddress) || !usdbReachable) {
+      setUsdbAddressStatus(null)
+      setUsdbAddressStatusError(null)
+      setUsdbAddressStatusLoading(false)
       return
     }
 
     let cancelled = false
-    setEthAddressStatusLoading(true)
-    setEthAddressStatusError(null)
+    setUsdbAddressStatusLoading(true)
+    setUsdbAddressStatusError(null)
 
-    void fetchEthwAddressStatus(ethLookupAddress)
+    void fetchUsdbChainAddressStatus(usdbLookupAddress)
       .then((response) => {
         if (cancelled) return
-        setEthAddressStatus(response)
-        setEthAddressStatusError(response.error ?? null)
+        setUsdbAddressStatus(response)
+        setUsdbAddressStatusError(response.error ?? null)
       })
       .catch((error: Error) => {
         if (cancelled) return
-        setEthAddressStatus(null)
-        setEthAddressStatusError(error.message)
+        setUsdbAddressStatus(null)
+        setUsdbAddressStatusError(error.message)
       })
       .finally(() => {
         if (cancelled) return
-        setEthAddressStatusLoading(false)
+        setUsdbAddressStatusLoading(false)
       })
 
     return () => {
       cancelled = true
     }
-  }, [activeIdentity, ethLookupAddress, ethwReachable])
+  }, [activeIdentity, usdbLookupAddress, usdbReachable])
 
   useEffect(() => {
     if (!btcSelectedWorldSimIdentity?.owner_address) return
@@ -1966,20 +1966,20 @@ export function MePage({ data, locale, t }: MePageProps) {
     usdbIndexerReady,
   ])
 
-  async function handleConnectEthWallet() {
-    setEthWalletLoading(true)
-    setEthWalletError(null)
+  async function handleConnectEvmWallet() {
+    setEvmWalletLoading(true)
+    setEvmWalletError(null)
 
     try {
-      const snapshot = await connectEthWallet()
-      setEthWallet(snapshot)
+      const snapshot = await connectEvmWallet()
+      setEvmWallet(snapshot)
       if (snapshot.address) {
-        setEthIdentitySource('browser_wallet')
+        setUsdbIdentitySource('browser_wallet')
       }
     } catch (error) {
-      setEthWalletError(error instanceof Error ? error.message : String(error))
+      setEvmWalletError(error instanceof Error ? error.message : String(error))
     } finally {
-      setEthWalletLoading(false)
+      setEvmWalletLoading(false)
     }
   }
 
@@ -2281,9 +2281,9 @@ export function MePage({ data, locale, t }: MePageProps) {
   }
 
   const currentTitle =
-    activeIdentity === 'eth' ? t('me.eth.title') : t('me.btc.title')
+    activeIdentity === 'usdb' ? t('me.usdb.title') : t('me.btc.title')
   const currentBody =
-    activeIdentity === 'eth' ? t('me.eth.body') : t('me.btc.body')
+    activeIdentity === 'usdb' ? t('me.usdb.body') : t('me.btc.body')
   const btcWalletCardTitle =
     btcIdentitySource === 'manual_address'
       ? t('me.btc.readOnlyIdentityTitle')
@@ -2316,13 +2316,13 @@ export function MePage({ data, locale, t }: MePageProps) {
       helpText: t('me.help.runtimeNetwork'),
     },
     {
-      label: t('me.fields.ethwRuntimeProfile'),
-      value: runtimeProfileLabel(ethwRuntimeProfile, t),
-      helpText: t('me.help.ethwRuntimeProfile'),
+      label: t('me.fields.usdbChainRuntimeProfile'),
+      value: runtimeProfileLabel(usdbChainRuntimeProfile, t),
+      helpText: t('me.help.usdbChainRuntimeProfile'),
     },
     {
       label: t('me.fields.runtimeChainId'),
-      value: displayText(ethwRuntimeChainId, t),
+      value: displayText(usdbRuntimeChainId, t),
       helpText: t('help.fields.chainId'),
     },
     {
@@ -2348,8 +2348,8 @@ export function MePage({ data, locale, t }: MePageProps) {
             <span className="status-pill" data-tone={btcRuntimeProfile === 'development' ? 'warning' : 'neutral'}>
               {`${t('me.fields.btcRuntimeProfile')}: ${runtimeProfileLabel(btcRuntimeProfile, t)}`}
             </span>
-            <span className="status-pill" data-tone={ethwRuntimeProfile === 'development' ? 'warning' : 'neutral'}>
-              {`${t('me.fields.ethwRuntimeProfile')}: ${runtimeProfileLabel(ethwRuntimeProfile, t)}`}
+            <span className="status-pill" data-tone={usdbChainRuntimeProfile === 'development' ? 'warning' : 'neutral'}>
+              {`${t('me.fields.usdbChainRuntimeProfile')}: ${runtimeProfileLabel(usdbChainRuntimeProfile, t)}`}
             </span>
           </div>
         </div>
@@ -2379,16 +2379,16 @@ export function MePage({ data, locale, t }: MePageProps) {
           </div>
           <div className="mt-4 grid gap-3">
             <NavLink
-              to="/me/eth"
+              to="/me/usdb"
               className={({ isActive }) =>
                 isActive ? 'console-service-selector active' : 'console-service-selector'
               }
             >
               <h4 className="text-sm font-semibold text-[color:var(--cp-text)]">
-                {t('me.selector.ethTitle')}
+                {t('me.selector.usdbTitle')}
               </h4>
               <p className="mt-1 text-sm text-[color:var(--cp-muted)]">
-                {t('me.selector.ethBody')}
+                {t('me.selector.usdbBody')}
               </p>
             </NavLink>
             <NavLink
@@ -2418,23 +2418,23 @@ export function MePage({ data, locale, t }: MePageProps) {
                 {currentBody}
               </p>
             </div>
-            {activeIdentity === 'eth' ? (
+            {activeIdentity === 'usdb' ? (
               <div className="flex flex-wrap items-center gap-3">
-                {ethIdentitySource === 'browser_wallet' ? (
+                {usdbIdentitySource === 'browser_wallet' ? (
                   <button
                     type="button"
-                    className={ethWalletConnected ? 'console-secondary-button' : 'console-action-button'}
-                    disabled={!hasInjectedEthWallet || ethWalletLoading}
-                    onClick={() => void handleConnectEthWallet()}
+                    className={evmWalletConnected ? 'console-secondary-button' : 'console-action-button'}
+                    disabled={!hasInjectedEvmWallet || evmWalletLoading}
+                    onClick={() => void handleConnectEvmWallet()}
                   >
-                    {ethWalletLoading
+                    {evmWalletLoading
                       ? t('actions.reloading')
-                      : ethWalletConnected
-                        ? t('me.eth.refreshWallet')
-                        : t('me.eth.connectWallet')}
+                      : evmWalletConnected
+                        ? t('me.usdb.refreshWallet')
+                        : t('me.usdb.connectWallet')}
                   </button>
                 ) : null}
-                {ethWalletConnected && ethIdentitySource === 'browser_wallet' ? (
+                {evmWalletConnected && usdbIdentitySource === 'browser_wallet' ? (
                   <span className="status-pill" data-tone="success">
                     {t('me.values.walletConnected')}
                   </span>
@@ -2473,15 +2473,15 @@ export function MePage({ data, locale, t }: MePageProps) {
                   {t('me.identity.selectorTitle')}
                 </h4>
                 <p className="mt-1 text-sm leading-6 text-[color:var(--cp-muted)]">
-                  {activeIdentity === 'eth'
-                    ? t('me.identity.ethSelectorBody')
+                  {activeIdentity === 'usdb'
+                    ? t('me.identity.usdbSelectorBody')
                     : t('me.identity.btcSelectorBody')}
                 </p>
               </div>
               <span
                 className="status-pill"
                 data-tone={
-                  activeIdentity === 'eth'
+                  activeIdentity === 'usdb'
                     ? ethActiveIdentityCanWrite
                       ? 'success'
                       : 'warning'
@@ -2490,7 +2490,7 @@ export function MePage({ data, locale, t }: MePageProps) {
                       : 'warning'
                 }
               >
-                {activeIdentity === 'eth'
+                {activeIdentity === 'usdb'
                   ? ethActiveIdentityCanWrite
                     ? t('me.values.writeEnabled')
                     : t('me.values.readOnly')
@@ -2500,80 +2500,80 @@ export function MePage({ data, locale, t }: MePageProps) {
               </span>
             </div>
             <div className="mt-4 grid gap-4">
-              {activeIdentity === 'eth' ? (
+              {activeIdentity === 'usdb' ? (
                 <>
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       className={
-                        ethIdentitySource === 'browser_wallet'
+                        usdbIdentitySource === 'browser_wallet'
                           ? 'console-action-button'
                           : 'console-secondary-button'
                       }
-                      onClick={() => setEthIdentitySource('browser_wallet')}
+                      onClick={() => setUsdbIdentitySource('browser_wallet')}
                     >
-                      {t('me.values.identitySourceEthBrowserWallet')}
+                      {t('me.values.identitySourceUsdbBrowserWallet')}
                     </button>
-                    {ethwRuntimeProfile === 'development' ? (
+                    {usdbChainRuntimeProfile === 'development' ? (
                       <button
                         type="button"
                         className={
-                          ethIdentitySource === 'dev_sim_identity'
+                          usdbIdentitySource === 'dev_sim_identity'
                             ? 'console-action-button'
                             : 'console-secondary-button'
                         }
-                        onClick={() => setEthIdentitySource('dev_sim_identity')}
+                        onClick={() => setUsdbIdentitySource('dev_sim_identity')}
                       >
-                        {t('me.values.identitySourceEthDevSim')}
+                        {t('me.values.identitySourceUsdbDevSim')}
                       </button>
                     ) : null}
                     <button
                       type="button"
                       className={
-                        ethIdentitySource === 'manual_address'
+                        usdbIdentitySource === 'manual_address'
                           ? 'console-action-button'
                           : 'console-secondary-button'
                       }
-                      onClick={() => setEthIdentitySource('manual_address')}
+                      onClick={() => setUsdbIdentitySource('manual_address')}
                     >
-                      {t('me.values.identitySourceEthManualAddress')}
+                      {t('me.values.identitySourceUsdbManualAddress')}
                     </button>
                   </div>
 
-                  {ethIdentitySource === 'manual_address' ? (
+                  {usdbIdentitySource === 'manual_address' ? (
                     <label className="grid gap-2 text-sm font-medium text-[color:var(--cp-text)]">
-                      <span>{t('me.identity.ethInputLabel')}</span>
+                      <span>{t('me.identity.usdbInputLabel')}</span>
                       <input
                         className="console-input"
-                        value={ethAddress}
-                        onChange={(event) => setEthAddress(event.target.value)}
-                        placeholder={t('me.identity.ethPlaceholder')}
+                        value={usdbAddress}
+                        onChange={(event) => setUsdbAddress(event.target.value)}
+                        placeholder={t('me.identity.usdbPlaceholder')}
                       />
                     </label>
                   ) : null}
 
-                  {ethIdentitySource === 'browser_wallet' && !ethWalletConnected ? (
+                  {usdbIdentitySource === 'browser_wallet' && !evmWalletConnected ? (
                     <p className="text-sm text-[color:var(--cp-muted)]">
-                      {t('me.eth.browserIdentityUnavailable')}
+                      {t('me.usdb.browserIdentityUnavailable')}
                     </p>
                   ) : null}
 
-                  {ethIdentitySource === 'dev_sim_identity' ? (
+                  {usdbIdentitySource === 'dev_sim_identity' ? (
                     <div className="grid gap-3">
-                      <FieldValueList items={ethDevIdentityItems} />
-                      {ethDevIdentityLoading ? (
+                      <FieldValueList items={usdbDevIdentityItems} />
+                      {usdbDevIdentityLoading ? (
                         <p className="text-sm text-[color:var(--cp-muted)]">
                           {t('actions.reloading')}
                         </p>
                       ) : null}
-                      {ethDevIdentityError ? (
+                      {usdbDevIdentityError ? (
                         <p className="text-sm text-[color:var(--cp-danger)]">
-                          {ethDevIdentityError}
+                          {usdbDevIdentityError}
                         </p>
                       ) : null}
-                      {!ethDevIdentityLoading && !ethDevIdentityError && !ethDevIdentityAvailable ? (
+                      {!usdbDevIdentityLoading && !usdbDevIdentityError && !usdbDevIdentityAvailable ? (
                         <p className="text-sm text-[color:var(--cp-muted)]">
-                          {t('me.eth.devIdentityUnavailable')}
+                          {t('me.usdb.devIdentityUnavailable')}
                         </p>
                       ) : null}
                     </div>
@@ -2702,17 +2702,17 @@ export function MePage({ data, locale, t }: MePageProps) {
               {t('me.btc.walletUnavailable')}
             </p>
           ) : null}
-          {activeIdentity === 'eth' && ethIdentitySource === 'browser_wallet' && !hasInjectedEthWallet ? (
+          {activeIdentity === 'usdb' && usdbIdentitySource === 'browser_wallet' && !hasInjectedEvmWallet ? (
             <p className="mt-4 text-sm text-[color:var(--cp-warning)]">
-              {t('me.eth.walletUnavailable')}
+              {t('me.usdb.walletUnavailable')}
             </p>
           ) : null}
-          {activeIdentity === 'eth' && ethWalletError ? (
-            <p className="mt-2 text-sm text-[color:var(--cp-danger)]">{ethWalletError}</p>
+          {activeIdentity === 'usdb' && evmWalletError ? (
+            <p className="mt-2 text-sm text-[color:var(--cp-danger)]">{evmWalletError}</p>
           ) : null}
-          {activeIdentity === 'eth' && ethWalletNetworkMismatchMessage ? (
+          {activeIdentity === 'usdb' && evmWalletNetworkMismatchMessage ? (
             <p className="mt-2 text-sm text-[color:var(--cp-danger)]">
-              {ethWalletNetworkMismatchMessage}
+              {evmWalletNetworkMismatchMessage}
             </p>
           ) : null}
           {activeIdentity === 'btc' && btcWalletError ? (
@@ -2732,7 +2732,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             {t('me.capability.title')}
           </h3>
           <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {activeIdentity === 'eth' ? t('me.capability.ethBody') : t('me.capability.btcBody')}
+            {activeIdentity === 'usdb' ? t('me.capability.usdbBody') : t('me.capability.btcBody')}
           </p>
           <div className="mt-4">
             <FieldValueList items={capabilityItems} />
@@ -2744,7 +2744,7 @@ export function MePage({ data, locale, t }: MePageProps) {
             {t('me.identity.title')}
           </h3>
           <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-            {activeIdentity === 'eth' ? t('me.identity.ethBody') : t('me.identity.btcBody')}
+            {activeIdentity === 'usdb' ? t('me.identity.usdbBody') : t('me.identity.btcBody')}
           </p>
           <div className="mt-4">
             <FieldValueList items={identityItems} />
@@ -2752,75 +2752,75 @@ export function MePage({ data, locale, t }: MePageProps) {
         </article>
       </section>
 
-      {activeIdentity === 'eth' ? (
+      {activeIdentity === 'usdb' ? (
         <section className="grid gap-4 xl:grid-cols-2">
           <article className="console-card">
             <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
               {t('me.identityStatus.title')}
             </h3>
             <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('me.identityStatus.ethBody')}
+              {t('me.identityStatus.usdbBody')}
             </p>
             <div className="mt-4">
-              <FieldValueList items={ethIdentityStatusItems} />
+              <FieldValueList items={usdbIdentityStatusItems} />
             </div>
-            {!ethLookupAddress ? (
+            {!usdbLookupAddress ? (
               <p className="mt-4 text-sm text-[color:var(--cp-muted)]">
-                {t('me.identityStatus.ethUnavailable')}
+                {t('me.identityStatus.usdbUnavailable')}
               </p>
             ) : null}
-            {ethAddressStatusError ? (
-              <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{ethAddressStatusError}</p>
+            {usdbAddressStatusError ? (
+              <p className="mt-4 text-sm text-[color:var(--cp-danger)]">{usdbAddressStatusError}</p>
             ) : null}
           </article>
 
           <article className="console-card">
             <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('me.eth.walletTitle')}
+              {t('me.usdb.walletTitle')}
             </h3>
             <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('me.eth.walletBody')}
+              {t('me.usdb.walletBody')}
             </p>
             <div className="mt-4 grid gap-4">
-              <FieldValueList items={ethWalletSummaryItems} />
-              {!hasInjectedEthWallet ? (
+              <FieldValueList items={evmWalletSummaryItems} />
+              {!hasInjectedEvmWallet ? (
                 <p className="text-sm text-[color:var(--cp-warning)]">
-                  {t('me.eth.walletUnavailable')}
+                  {t('me.usdb.walletUnavailable')}
                 </p>
               ) : null}
-              {ethWalletNetworkMismatchMessage ? (
+              {evmWalletNetworkMismatchMessage ? (
                 <p className="text-sm text-[color:var(--cp-danger)]">
-                  {ethWalletNetworkMismatchMessage}
+                  {evmWalletNetworkMismatchMessage}
                 </p>
               ) : null}
-              {ethWalletError ? (
-                <p className="text-sm text-[color:var(--cp-danger)]">{ethWalletError}</p>
+              {evmWalletError ? (
+                <p className="text-sm text-[color:var(--cp-danger)]">{evmWalletError}</p>
               ) : null}
             </div>
           </article>
 
-          {ethwRuntimeProfile === 'development' ? (
+          {usdbChainRuntimeProfile === 'development' ? (
             <article className="console-card">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-                    {t('me.eth.devIdentityTitle')}
+                    {t('me.usdb.devIdentityTitle')}
                   </h3>
                   <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-                    {t('me.eth.devIdentityBody')}
+                    {t('me.usdb.devIdentityBody')}
                   </p>
                 </div>
-                <span className="status-pill" data-tone={ethDevIdentityAvailable ? 'success' : 'warning'}>
-                  {ethDevIdentityAvailable ? t('states.completed') : t('states.pending')}
+                <span className="status-pill" data-tone={usdbDevIdentityAvailable ? 'success' : 'warning'}>
+                  {usdbDevIdentityAvailable ? t('states.completed') : t('states.pending')}
                 </span>
               </div>
               <div className="mt-4 grid gap-4">
-                <FieldValueList items={ethDevIdentityItems} />
-                {ethDevIdentityLoading ? (
+                <FieldValueList items={usdbDevIdentityItems} />
+                {usdbDevIdentityLoading ? (
                   <p className="text-sm text-[color:var(--cp-muted)]">{t('actions.reloading')}</p>
                 ) : null}
-                {ethDevIdentityError ? (
-                  <p className="text-sm text-[color:var(--cp-danger)]">{ethDevIdentityError}</p>
+                {usdbDevIdentityError ? (
+                  <p className="text-sm text-[color:var(--cp-danger)]">{usdbDevIdentityError}</p>
                 ) : null}
               </div>
             </article>
@@ -3934,11 +3934,11 @@ export function MePage({ data, locale, t }: MePageProps) {
           {t('me.nextActions.title')}
         </h3>
         <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-          {activeIdentity === 'eth' ? t('me.nextActions.ethBody') : t('me.nextActions.btcBody')}
+          {activeIdentity === 'usdb' ? t('me.nextActions.usdbBody') : t('me.nextActions.btcBody')}
         </p>
         <ul className="mt-4 grid gap-2 text-sm leading-6 text-[color:var(--cp-text)]">
-          {(activeIdentity === 'eth'
-            ? ['me.nextActions.ethItem1', 'me.nextActions.ethItem2', 'me.nextActions.ethItem3']
+          {(activeIdentity === 'usdb'
+            ? ['me.nextActions.usdbItem1', 'me.nextActions.usdbItem2', 'me.nextActions.usdbItem3']
             : ['me.nextActions.btcItem1', 'me.nextActions.btcItem2', 'me.nextActions.btcItem3']
           ).map((key) => (
             <li key={key}>{t(key)}</li>

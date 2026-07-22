@@ -1,6 +1,6 @@
 use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
 use crate::models::{
-    BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, EthBlockHeader,
+    BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, UsdbChainBlockHeader,
     UsdbIndexerReadiness, UsdbIndexerRpcInfo,
 };
 use bitcoincore_rpc::bitcoin::PrivateKey;
@@ -134,47 +134,50 @@ impl RpcClient {
         self.json_rpc_call(url, method, params).await
     }
 
-    /// Returns the ETHW client version via `web3_clientVersion`.
-    pub async fn ethw_client_version(&self, url: &str) -> Result<String, String> {
+    /// Returns the USDB execution client version via `web3_clientVersion`.
+    pub async fn usdb_client_version(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "web3_clientVersion", json!([]))
             .await
     }
 
-    /// Returns the ETHW chain id via `eth_chainId`.
-    pub async fn ethw_chain_id(&self, url: &str) -> Result<String, String> {
+    /// Returns the USDB chain id via `eth_chainId`.
+    pub async fn usdb_chain_id(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "eth_chainId", json!([])).await
     }
 
-    /// Returns the ETHW network id via `net_version`.
-    pub async fn ethw_network_id(&self, url: &str) -> Result<String, String> {
+    /// Returns the USDB network id via `net_version`.
+    pub async fn usdb_network_id(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "net_version", json!([])).await
     }
 
-    /// Returns the latest ETHW block number as a hex quantity string.
-    pub async fn ethw_block_number(&self, url: &str) -> Result<String, String> {
+    /// Returns the latest USDB block number as a hex quantity string.
+    pub async fn usdb_block_number(&self, url: &str) -> Result<String, String> {
         self.json_rpc_call(url, "eth_blockNumber", json!([])).await
     }
 
-    /// Returns the ETHW balance for one address via `eth_getBalance`.
+    /// Returns the USDB native-currency balance for one address via `eth_getBalance`.
     ///
     /// The raw hex quantity is returned unchanged so callers do not lose precision
     /// converting large EVM balances through fixed-width integer types.
-    pub async fn ethw_balance(&self, url: &str, address: &str) -> Result<String, String> {
+    pub async fn usdb_chain_balance(&self, url: &str, address: &str) -> Result<String, String> {
         self.json_rpc_call(url, "eth_getBalance", json!([address, "latest"]))
             .await
     }
 
-    /// Returns the raw ETHW syncing payload from `eth_syncing`.
+    /// Returns the raw USDB syncing payload from `eth_syncing`.
     ///
     /// Callers can distinguish `false` from an in-progress sync object without losing
     /// fidelity by decoding into `serde_json::Value`.
-    pub async fn ethw_syncing(&self, url: &str) -> Result<Value, String> {
+    pub async fn usdb_syncing(&self, url: &str) -> Result<Value, String> {
         self.json_rpc_call(url, "eth_syncing", json!([])).await
     }
 
-    /// Returns the latest ETHW block header, or `None` if the upstream returned
+    /// Returns the latest USDB block header, or `None` if the upstream returned
     /// `result: null`.
-    pub async fn ethw_latest_block(&self, url: &str) -> Result<Option<EthBlockHeader>, String> {
+    pub async fn usdb_latest_block(
+        &self,
+        url: &str,
+    ) -> Result<Option<UsdbChainBlockHeader>, String> {
         self.json_rpc_call(url, "eth_getBlockByNumber", json!(["latest", false]))
             .await
     }

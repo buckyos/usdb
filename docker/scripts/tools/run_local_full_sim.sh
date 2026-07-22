@@ -34,7 +34,7 @@ It combines:
 
 If docker/local/dev-full-sim/env/dev-full-sim.env does not exist, this helper
 initializes it from docker/env/dev-full-sim.env.example once. It will also
-scaffold ETHW chain bootstrap config, SourceDAO bootstrap config, and ETHW genesis inputs under:
+scaffold USDB-chain bootstrap config, SourceDAO bootstrap config, and USDB genesis inputs under:
 
   docker/local/dev-full-sim/bootstrap/manifests/
 
@@ -166,7 +166,7 @@ prepare_state_mode() {
         exit 1
       fi
       echo "WORLD_SIM_STATE_MODE=seeded-reset -> clearing Docker volumes before startup"
-      echo "Current implementation will deterministically recreate ord wallet identities and USDB miner identity from WORLD_SIM_IDENTITY_SEED."
+      echo "Current implementation will deterministically recreate ord wallet identities and the USDB-chain miner account from WORLD_SIM_IDENTITY_SEED."
       compose down -v --remove-orphans >/dev/null 2>&1 || true
       ;;
     *)

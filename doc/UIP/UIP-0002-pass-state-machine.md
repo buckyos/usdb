@@ -276,7 +276,7 @@ new_mint -----------------------------------------------> Active
 
 ## 所有权一致性
 
-UIP-0002 采用 BTC owner 一致性，而不是 USDB/EVM 地址、Leader 地址或 lineage 一致性。
+UIP-0002 采用 BTC owner 一致性，而不是 USDB-chain account address、Leader 地址或 lineage 一致性。
 
 即：
 
@@ -374,19 +374,19 @@ collab pass 的 Leader 绑定字段由 UIP-0001 定义。
 
 `leader_btc_addr` 在 UIP-0002 中不需要额外延迟一个 BTC block。解析口径是目标高度完整 block 执行后的 canonical pass snapshot。
 
-ETHW 侧是否需要额外 finality lag、epoch 延迟或 `ProfileSelectorPayload` 引用 BTC 历史状态的固定窗口，不属于 UIP-0002，应由 ETHW-side selector / effective energy 相关 UIP 定义。
+USDB chain 侧是否需要额外 finality lag、epoch 延迟或 `ProfileSelectorPayload` 引用 BTC 历史状态的固定窗口，不属于 UIP-0002，应由 USDB-chain selector / effective energy 相关 UIP 定义。
 
 # Activation Matrix
 
-UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。ETHW 侧只消费索引结果。
+UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。USDB chain 侧只消费索引结果。
 
 | Chain | Network Type | Network ID | Activation Anchor | Activation Value | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | BTC | regtest | btc-regtest | btc_height | TBD | Planned | 本地测试先启用 strict state machine。 |
 | BTC | testnet | btc-testnet4 | btc_height | TBD | Planned | 公开测试网验证历史 replay。 |
 | BTC | mainnet | btc-mainnet | btc_height | TBD | Planned | BTC 主网 pass 状态机激活高度。 |
-| ETHW | devnet | ethw-devnet-<name> | governance | TBD | Planned | ETHW 侧切换到消费 UIP-0002 pass snapshot。 |
-| ETHW | mainnet | 主网-mainnet | governance | TBD | Planned | 主网接受 UIP-0002 pass 语义的治理激活点。 |
+| USDB | devnet | usdb-devnet-<name> | governance | TBD | Planned | USDB chain 侧切换到消费 UIP-0002 pass snapshot。 |
+| USDB | mainnet | usdb-mainnet | governance | TBD | Planned | 主网接受 UIP-0002 pass 语义的治理激活点。 |
 
 未列出的网络不得默认激活 UIP-0002。
 

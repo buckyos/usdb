@@ -37,7 +37,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 type StatusUpdateRecord = (Option<u32>, Option<u32>, Option<String>);
 
@@ -180,8 +180,6 @@ impl MockBalanceHistoryCommitProvider {
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
-            usdb_index_formula_version: usdb_util::USDB_INDEX_FORMULA_VERSION.to_string(),
-            usdb_index_protocol_version: usdb_util::USDB_INDEX_PROTOCOL_VERSION.to_string(),
         };
         balance_history::HistoricalSnapshotStateRef {
             block_height,
@@ -254,7 +252,7 @@ impl BalanceHistoryCommitApi for MockBalanceHistoryCommitProvider {
 struct MockCreateInfo {
     satpoint: ordinals::SatPoint,
     value: Amount,
-    address: Option<USDBScriptHash>,
+    address: Option<BtcScriptHash>,
     commit_txid: Txid,
     commit_outpoint: OutPoint,
 }
@@ -263,7 +261,7 @@ struct MockCreateInfo {
 struct MockTransferTracker {
     create_infos: HashMap<String, MockCreateInfo>,
     transfers_by_height: HashMap<u32, Vec<InscriptionTransferItem>>,
-    added: Mutex<Vec<(InscriptionId, USDBScriptHash, ordinals::SatPoint)>>,
+    added: Mutex<Vec<(InscriptionId, BtcScriptHash, ordinals::SatPoint)>>,
     init_called: AtomicBool,
     staged_blocks: Mutex<HashSet<u32>>,
     commit_calls: AtomicU32,
@@ -362,7 +360,7 @@ impl TransferTrackerApi for MockTransferTracker {
     fn add_new_inscription<'a>(
         &'a self,
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         satpoint: ordinals::SatPoint,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
@@ -511,7 +509,7 @@ impl InscriptionSource for MockInscriptionSource {
 
 fn make_active_pass(
     inscription_id: InscriptionId,
-    owner: USDBScriptHash,
+    owner: BtcScriptHash,
     mint_height: u32,
 ) -> MinerPassInfo {
     MinerPassInfo {
@@ -797,7 +795,7 @@ fn snapshot_from_commit(commit: &balance_history::BlockCommitInfo) -> BalanceHis
 fn active_owner_set_at_height(
     storage: &MinerPassStorageRef,
     block_height: u32,
-) -> HashSet<USDBScriptHash> {
+) -> HashSet<BtcScriptHash> {
     let mut owners = HashSet::new();
     let mut page = 0usize;
     loop {

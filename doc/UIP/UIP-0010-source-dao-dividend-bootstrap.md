@@ -2,14 +2,14 @@ UIP: UIP-0010
 Title: SourceDAO and Dividend Bootstrap
 Status: Draft
 Type: Standards Track
-Layer: ETHW Genesis / System Contracts / Fee Split Activation
+Layer: USDB chain Genesis / System Contracts / Fee Split Activation
 Created: 2026-04-27
 Requires: UIP-0000, UIP-0008, UIP-0009
-Activation: ETHW network activation matrix; first official networks define canonical genesis and bootstrap artifacts before public launch
+Activation: USDB-chain network activation matrix; first official networks define canonical genesis and bootstrap artifacts before public launch
 
 # 摘要
 
-本文定义 USDB ETHW 链上 SourceDAO / Dividend system contract 的冷启动流程。
+本文定义 USDB chain 上 SourceDAO / Dividend system contract 的冷启动流程。
 
 UIP-0010 解决的问题是：
 
@@ -25,7 +25,7 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 
 普通“链启动后部署合约再决定地址”的方式不适合这里，原因是：
 
-1. ETHW 共识规则需要提前知道 fee split 目标地址。
+1. USDB chain 共识规则需要提前知道 fee split 目标地址。
 2. `Dividend` 依赖 `Dao` 地址和初始化参数。
 3. 如果 `DividendAddress` 由运行期部署动态决定，会让共识配置依赖链启动后的普通交易结果，形成冷启动循环。
 
@@ -52,7 +52,7 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 | `source_dao_bootstrap_config` | 启动后初始化 SourceDAO / Dividend 所需的配置。 |
 | `bootstrap_state` | SourceDAO bootstrap job 写出的状态快照。 |
 | `bootstrap_marker` | 表示 bootstrap 已完成的最小 marker。 |
-| `DividendFeeSplitBlock` | ETHW 开始把 fee split 目标金额记入 `DividendAddress` 的激活高度。 |
+| `DividendFeeSplitBlock` | USDB chain 开始把 fee split 目标金额记入 `DividendAddress` 的激活高度。 |
 
 # 规范关键词
 
@@ -78,7 +78,7 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 4. `ethw-node`
    - 只在 init marker 与 genesis artifact 匹配时启动。
 5. `sourcedao-bootstrap`
-   - 等待 ETHW RPC ready。
+   - 等待 USDB chain RPC ready。
    - 读取 `sourcedao-bootstrap-config.json`。
    - 调用 SourceDAO 工作区脚本初始化 Dao / Dividend 及可选模块。
    - 写出 `sourcedao-bootstrap-state.json` 与 `sourcedao-bootstrap.done.json`。
@@ -101,7 +101,7 @@ fixed_system_addresses
 - `DaoAddress` 和 `DividendAddress` 必须在 network release 前固定。
 - `DaoAddress` 和 `DividendAddress` 的 runtime code 必须进入 canonical genesis `alloc`。
 - `bootstrapAdmin` 必须在 genesis 中拥有足够余额发送 bootstrap 交易。
-- `DividendFeeSplitBlock` 必须在 ETHW chain config 中固定。
+- `DividendFeeSplitBlock` 必须在 USDB chain config 中固定。
 - fee split 不得在 `Dividend` 初始化完成前生效。
 - public network 不得依赖节点本地松散配置动态生成不同 genesis。
 
@@ -129,7 +129,7 @@ public network 最终采用前必须完成一次 release preflight：
 - 确认 `DaoAddress` / `DividendAddress` 不与其他 genesis alloc 地址冲突。
 - 确认这两个地址只作为 system predeploy 地址使用，不分配给普通用户或 bootstrap 账户。
 - 确认 canonical genesis 中这两个地址的 runtime code 非空。
-- 确认 release manifest、ETHW chain config、SourceDAO bootstrap config 中的地址完全一致。
+- 确认 release manifest、USDB chain config、SourceDAO bootstrap config 中的地址完全一致。
 - 如果 public release 决定继续使用当前 `0x...1001` / `0x...1002`，这些地址必须进入 release manifest 并在该网络生命周期内视为固定。
 
 # Genesis Predeploy
@@ -179,10 +179,10 @@ v1 建议的实现方向：
 
 UIP-0010 将可信性分为两层：
 
-1. 共识可信：由 canonical genesis、`USDBGenesisHash`、ETHW chain config、链上交易历史和本地状态校验保证。
+1. 共识可信：由 canonical genesis、`USDBGenesisHash`、USDB chain config、链上交易历史和本地状态校验保证。
 2. 发布物可信：由 release manifest signature 保证，用于证明下载到的关键文件来自指定发布方。
 
-release manifest signature 类似安装包、Docker image 或 Linux package repository 的数字签名。它不改变 ETHW 共识规则，也不能替代节点本地的 genesis / chain / contract state 校验。
+release manifest signature 类似安装包、Docker image 或 Linux package repository 的数字签名。它不改变 USDB chain 共识规则，也不能替代节点本地的 genesis / chain / contract state 校验。
 
 public network release manifest 应至少承诺以下内容的 hash 或明确值：
 
@@ -208,7 +208,7 @@ bootnodes / discovery config hash
 verify release manifest signature
     -> verify release manifest 中记录的文件 hash
     -> init / start with canonical genesis
-    -> sync ETHW chain
+    -> sync USDB chain
     -> verify on-chain SourceDAO / Dividend bootstrap state
 ```
 
@@ -221,7 +221,7 @@ verify release manifest signature
 
 # Chain Config Fields
 
-UIP-0010 要求 ETHW chain config 至少表达：
+UIP-0010 要求 USDB chain config 至少表达：
 
 ```text
 DividendAddress
@@ -233,7 +233,7 @@ fee_split_policy_version
 
 - `DividendAddress == 0x0` 时，fee split 必须视为未启用。
 - `DividendFeeSplitBlock == nil` 时，fee split 必须视为未启用。
-- 只有 `DividendAddress != 0x0` 且 `DividendFeeSplitBlock` 已到达时，ETHW 才能执行 fee split 状态转换。
+- 只有 `DividendAddress != 0x0` 且 `DividendFeeSplitBlock` 已到达时，USDB chain 才能执行 fee split 状态转换。
 - `fee_split_policy_version` 描述后续 UIP-0011 定义的具体分账公式版本。
 
 当前 go-ethereum 原型已有：
@@ -342,8 +342,8 @@ public network 如果把 SourceDAO 作为首个 release 的完整治理系统，
 
 规则：
 
-- `DividendFeeSplitBlock` 之前，ETHW 不得把 fee split 金额记入 `DividendAddress`。
-- `DividendFeeSplitBlock` 之后，ETHW 可以按 `fee_split_policy_version` 对交易手续费执行分账。
+- `DividendFeeSplitBlock` 之前，USDB chain 不得把 fee split 金额记入 `DividendAddress`。
+- `DividendFeeSplitBlock` 之后，USDB chain 可以按 `fee_split_policy_version` 对交易手续费执行分账。
 - `DividendFeeSplitBlock` 必须配置为 bootstrap 初始化完成之后的高度。
 - 如果节点在到达 `DividendFeeSplitBlock` 时无法确认 `DividendAddress` 已预置 code，必须 fail closed。
 
@@ -362,7 +362,7 @@ public network 的 `DividendFeeSplitBlock` 不需要是一个精确的“最小�
 - explorer / monitor / joiner 同步验证。
 - 必要时的节点重启或配置修正。
 
-当前 docker 冷启动流程会在 ETHW RPC ready 后紧跟执行 SourceDAO bootstrap，因此 local dev / CI 可以使用很短的激活窗口。public network 应由 activation matrix 固定最终高度。
+当前 docker 冷启动流程会在 USDB chain RPC ready 后紧跟执行 SourceDAO bootstrap，因此 local dev / CI 可以使用很短的激活窗口。public network 应由 activation matrix 固定最终高度。
 
 # Bootstrap State and Marker
 
@@ -408,7 +408,7 @@ bootstrap job 必须输出可审计状态。
 - `bootstrap_marker` 可以不单独签名；如果需要发布给 joiner 或运维系统，应通过已签名 manifest 间接承诺其 hash。
 - 签名主体应该是 release operator、组委会多签或后续治理确认的 release signing key。
 
-签名的安全目标是 release artifact provenance 和供应链完整性，不是改变 ETHW 共识。共识仍由 canonical genesis、chain config 和链上交易历史决定。
+签名的安全目标是 release artifact provenance 和供应链完整性，不是改变 USDB chain 共识。共识仍由 canonical genesis、chain config 和链上交易历史决定。
 
 # Joiner Validation
 
@@ -448,7 +448,7 @@ v1 建议：
 
 # 与 UIP-0009 的关系
 
-UIP-0009 定义 ETHW chain config、genesis、difficulty、payload version 和网络启动边界。
+UIP-0009 定义 USDB chain config、genesis、difficulty、payload version 和网络启动边界。
 
 UIP-0010 在 UIP-0009 基础上进一步定义：
 

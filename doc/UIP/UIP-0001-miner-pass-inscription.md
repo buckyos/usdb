@@ -17,7 +17,7 @@ Activation: BTC network activation matrix
 - 标准矿工证：包含 `usdb_main`，不包含 leader 绑定字段，可以作为独立挖矿身份。
 - 协作矿工证：包含 `leader_pass_id` 或 `leader_btc_addr` 二选一，不包含 `usdb_main`，不能独立参与挖矿。
 
-v1 schema 移除 `usdb_collab` 的协议语义。协作关系不再由 Leader 主动填写协作者 USDB/EVM 地址表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
+v1 schema 移除 `usdb_collab` 的协议语义。协作关系不再由 Leader 主动填写协作者 USDB-chain account address 表达，而由协作者在自己 mint 的矿工证中显式指定 Leader 绑定字段表达。
 
 # 动机
 
@@ -63,15 +63,15 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 | 术语 | 含义 |
 | --- | --- |
 | pass | USDB 矿工证，由 BTC 铭文表达。 |
-| `pass_id` | pass inscription id 的 canonical 文本表示，也是跨 UIP、RPC 和 ETHW selector 使用的唯一 pass 标识。 |
+| `pass_id` | pass inscription id 的 canonical 文本表示，也是跨 UIP、RPC 和 USDB chain selector 使用的唯一 pass 标识。 |
 | `pass_kind` | 由 v1 互斥字段确定的 schema 类型，只能是 `standard` 或 `collab`。 |
 | standard pass | 包含 `usdb_main` 的 pass kind；具备成为 UIP-0006 `candidate_pass` 的类型资格，但仍须满足 UIP-0002 状态条件。 |
 | collab pass | 包含一种 Leader 绑定字段的 pass kind；向成功解析的 Leader 提供能量，永远不能成为独立 `candidate_pass`。 |
-| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 ETHW 出块资格。 |
+| Leader | collab pass 所声明的协作目标角色；该名称本身不表示目标高度已经解析成功或具备 USDB chain 出块资格。 |
 | `owner_script_hash` | 当前持有铭文 UTXO 的输出脚本所对应的 canonical owner identity，用于状态比较、余额和索引。 |
 | `owner_btc_addr` | 能从对应输出脚本确定时使用的网络相关 BTC 地址表示，只用于输入或展示，不替代 `owner_script_hash`。 |
 | owner | 未带字段名时表示 `owner_script_hash`；文档需要表达地址时必须显式写 `owner_btc_addr`。 |
-| `usdb_main` | 标准矿工证绑定的 EVM 地址，用于 USDB 链侧挖矿身份和收益接收。 |
+| `usdb_main` | 标准矿工证绑定的 USDB-chain account address，用于 USDB chain 挖矿身份和收益接收。 |
 | `leader_pass_id` | 固定 Leader 矿工证的 canonical `pass_id`。 |
 | `leader_btc_addr` | Leader BTC 地址；按历史高度解析为该地址当前 active standard pass。 |
 
@@ -97,7 +97,7 @@ pass_id = lowercase_hex(inscription_txid) + "i" + decimal(inscription_index)
 
 - `inscription_txid` 必须是 64 个 lowercase hex 字符。
 - `inscription_index` 必须是 `uint32` 的十进制表示；除数值 `0` 本身外禁止前导零。
-- `leader_pass_id`、`prev[]`、RPC `pass_id`、`candidate_set_view` tie-break 和 ETHW `ProfileSelectorPayload` 的链外表示必须使用同一 canonical encoding。
+- `leader_pass_id`、`prev[]`、RPC `pass_id`、`candidate_set_view` tie-break 和 USDB chain `ProfileSelectorPayload` 的链外表示必须使用同一 canonical encoding。
 - pass identity 的相等比较必须比较解析后的 inscription id；规范实现必须拒绝非 canonical 文本，不能让大小写或前导零别名绕过 duplicate 检测。
 - 任何按 `pass_id` 的 lexical ordering 都表示按 canonical ASCII 字节逐字节升序。
 
@@ -201,7 +201,7 @@ v1 schema 必须包含：
 
 | 候选字段 | 优点 | 问题 | 结论 |
 | --- | --- | --- | --- |
-| `leader_usdb_main` | 与 USDB 链挖矿身份直接相关 | USDB/EVM 地址可被多个 pass 复用，Leader remint 后地址不一定唯一；历史高度上难以反查具体 pass | 不推荐 |
+| `leader_usdb_main` | 与 USDB chain 挖矿身份直接相关 | USDB-chain account address 可被多个 pass 复用，Leader remint 后地址不一定唯一；历史高度上难以反查具体 pass | 不推荐 |
 | `leader_pass_id` | inscription id 不可变，唯一、可索引、可历史重放 | Leader remint 后不会自动跟随新 pass | 支持，适合固定 pass 绑定 |
 | `leader_btc_addr` | Leader remint 后可自动跟随该地址的新 active standard pass | 协作者会自动接受该地址后续 active pass 和 `usdb_main` 变化 | 支持，适合地址身份绑定 |
 
@@ -282,15 +282,15 @@ application/json;charset=utf-8
 
 # 激活矩阵
 
-UIP-0001 主要影响 BTC 侧铭文解析和由 BTC 派生的 pass 状态。ETHW 侧只消费索引结果，不直接解析 BTC inscription content。
+UIP-0001 主要影响 BTC 侧铭文解析和由 BTC 派生的 pass 状态。USDB chain 侧只消费索引结果，不直接解析 BTC inscription content。
 
 | Chain | Network Type | Network ID | Activation Anchor | Activation Value | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | BTC | regtest | btc-regtest | btc_height | TBD | Planned | 本地回归测试可最先启用 v1 strict schema。 |
 | BTC | testnet | btc-testnet4 | btc_height | TBD | Planned | 公开测试网验证 parser 和历史重放。 |
 | BTC | mainnet | btc-mainnet | btc_height | TBD | Planned | 主网 v1 schema 激活高度。 |
-| ETHW | devnet | ethw-devnet-<name> | governance | TBD | Planned | ETHW 侧切换到消费 v1 pass snapshot。 |
-| ETHW | mainnet | 主网-mainnet | governance | TBD | Planned | 主网 mainnet 接受 v1 pass 语义的治理激活点。 |
+| USDB | devnet | usdb-devnet-<name> | governance | TBD | Planned | USDB chain 侧切换到消费 v1 pass snapshot。 |
+| USDB | mainnet | usdb-mainnet | governance | TBD | Planned | USDB 主网接受 v1 pass 语义的治理激活点。 |
 
 未列出的网络不得默认激活 UIP-0001。
 
@@ -435,7 +435,7 @@ collab pass 不能同时作为 `candidate_pass` 和 Leader 加成来源。
 - `leader_pass_id` 的 mint-time Leader 有效性、同 block ordering 口径，以及 `leader_btc_addr` 的动态解析规则由 UIP-0002 定义。
 - collab pass 的 `effective_energy` 归属、防双计数和转换后的 derived energy 影响由 UIP-0004 定义；`candidate_pass` 和 `candidate_set_view` 由 UIP-0006 定义。
 - collab pass 转 standard pass 的继承折损使用 UIP-0003 的通用 `prev` 继承规则，不在 UIP-0001 分配额外退出折损率。
-- 主网的稳定 `network_id` 是否最终采用 `主网-mainnet`。
+- 正式 mainnet 的具体 `network_id` 由 UIP-0008/UIP-0009 冻结，且必须使用 `usdb-*` 命名空间。
 
 # 下一步
 

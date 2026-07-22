@@ -4,14 +4,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 pub type BalanceRpcFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait BalanceRpcBackend: Send + Sync {
     fn get_addresses_balances<'a>(
         &'a self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         block_height: Option<u32>,
         block_range: Option<std::ops::Range<u32>>,
     ) -> BalanceRpcFuture<'a, Result<Vec<Vec<AddressBalance>>, String>>;
@@ -36,7 +36,7 @@ impl BalanceHistoryBackend {
 impl BalanceRpcBackend for BalanceHistoryBackend {
     fn get_addresses_balances<'a>(
         &'a self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         block_height: Option<u32>,
         block_range: Option<std::ops::Range<u32>>,
     ) -> BalanceRpcFuture<'a, Result<Vec<Vec<AddressBalance>>, String>> {
@@ -56,13 +56,13 @@ pub trait BalanceRpcLoader: Send + Sync {
     // - Exact-at-height delta semantics are provided by balance-history delta RPC, not this API.
     fn load_balances<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
-    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>>;
+    ) -> BalanceRpcFuture<'a, Result<Vec<(BtcScriptHash, AddressBalance)>, String>>;
 
     fn load_total_balance<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
     ) -> BalanceRpcFuture<'a, Result<u64, String>>;
 }
@@ -70,9 +70,9 @@ pub trait BalanceRpcLoader: Send + Sync {
 fn collect_batch_balances(
     block_height: u32,
     batch_index: usize,
-    addresses: &[USDBScriptHash],
+    addresses: &[BtcScriptHash],
     balances: Vec<Vec<AddressBalance>>,
-) -> Result<Vec<(USDBScriptHash, AddressBalance)>, String> {
+) -> Result<Vec<(BtcScriptHash, AddressBalance)>, String> {
     if balances.len() != addresses.len() {
         let msg = format!(
             "Address balance batch size mismatch: module=balance_rpc_loader, block_height={}, batch_index={}, requested={}, got={}",
@@ -128,9 +128,9 @@ impl<B: BalanceRpcBackend> SerialBalanceLoader<B> {
 impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for SerialBalanceLoader<B> {
     fn load_balances<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
-    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>> {
+    ) -> BalanceRpcFuture<'a, Result<Vec<(BtcScriptHash, AddressBalance)>, String>> {
         Box::pin(async move {
             let mut all_entries = Vec::with_capacity(active_addresses.len());
             for (batch_index, batch) in active_addresses.chunks(self.batch_size).enumerate() {
@@ -151,7 +151,7 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for SerialBalanceLoader<B>
 
     fn load_total_balance<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
     ) -> BalanceRpcFuture<'a, Result<u64, String>> {
         Box::pin(async move {
@@ -165,7 +165,7 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for SerialBalanceLoader<B>
 
 struct BatchQueryResult {
     batch_index: usize,
-    addresses: Vec<USDBScriptHash>,
+    addresses: Vec<BtcScriptHash>,
     balances: Vec<Vec<AddressBalance>>,
 }
 
@@ -214,7 +214,7 @@ impl<B: BalanceRpcBackend> ConcurrentBalanceLoader<B> {
         backend: Arc<B>,
         block_height: u32,
         batch_index: usize,
-        addresses: Vec<USDBScriptHash>,
+        addresses: Vec<BtcScriptHash>,
         timeout_ms: u64,
         max_retries: u32,
     ) -> Result<BatchQueryResult, String> {
@@ -277,11 +277,11 @@ impl<B: BalanceRpcBackend> ConcurrentBalanceLoader<B> {
 impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for ConcurrentBalanceLoader<B> {
     fn load_balances<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
-    ) -> BalanceRpcFuture<'a, Result<Vec<(USDBScriptHash, AddressBalance)>, String>> {
+    ) -> BalanceRpcFuture<'a, Result<Vec<(BtcScriptHash, AddressBalance)>, String>> {
         Box::pin(async move {
-            let batches: Vec<Vec<USDBScriptHash>> = active_addresses
+            let batches: Vec<Vec<BtcScriptHash>> = active_addresses
                 .chunks(self.batch_size)
                 .map(|chunk| chunk.to_vec())
                 .collect();
@@ -359,7 +359,7 @@ impl<B: BalanceRpcBackend + 'static> BalanceRpcLoader for ConcurrentBalanceLoade
 
     fn load_total_balance<'a>(
         &'a self,
-        active_addresses: Vec<USDBScriptHash>,
+        active_addresses: Vec<BtcScriptHash>,
         block_height: u32,
     ) -> BalanceRpcFuture<'a, Result<u64, String>> {
         Box::pin(async move {
@@ -408,7 +408,7 @@ impl MockBalanceBackend {
 impl BalanceRpcBackend for MockBalanceBackend {
     fn get_addresses_balances<'a>(
         &'a self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         block_height: Option<u32>,
         _block_range: Option<std::ops::Range<u32>>,
     ) -> BalanceRpcFuture<'a, Result<Vec<Vec<AddressBalance>>, String>> {
@@ -441,10 +441,10 @@ mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::sync::Arc;
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
-    fn script_hash(tag: u8) -> USDBScriptHash {
-        ScriptBuf::from(vec![tag; 32]).to_usdb_script_hash()
+    fn script_hash(tag: u8) -> BtcScriptHash {
+        ScriptBuf::from(vec![tag; 32]).to_btc_script_hash()
     }
 
     fn make_balance(balance: u64, block_height: u32) -> AddressBalance {

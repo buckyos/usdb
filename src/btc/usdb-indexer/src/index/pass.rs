@@ -9,7 +9,7 @@ use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use usdb_util::{USDBScriptHash, address_string_to_script_hash};
+use usdb_util::{BtcScriptHash, address_string_to_script_hash};
 
 pub struct PassMintInscriptionInfo {
     pub inscription_id: InscriptionId,
@@ -18,7 +18,7 @@ pub struct PassMintInscriptionInfo {
     // The minting transaction info
     pub mint_txid: Txid,
     pub mint_block_height: u32,
-    pub mint_owner: USDBScriptHash, // The owner address who minted the pass
+    pub mint_owner: BtcScriptHash, // The owner address who minted the pass
 
     pub satpoint: SatPoint,
 
@@ -36,7 +36,7 @@ pub struct InvalidPassMintInscriptionInfo {
     pub inscription_number: i32,
     pub mint_txid: Txid,
     pub mint_block_height: u32,
-    pub mint_owner: USDBScriptHash,
+    pub mint_owner: BtcScriptHash,
     pub satpoint: SatPoint,
     pub error_code: String,
     pub error_reason: String,
@@ -142,7 +142,7 @@ impl MinerPassManager {
     fn resolve_leader_btc_owner_for_mint(
         &self,
         mint_info: &PassMintInscriptionInfo,
-    ) -> Result<Option<USDBScriptHash>, String> {
+    ) -> Result<Option<BtcScriptHash>, String> {
         let Some(leader_btc_addr) = mint_info.leader_btc_addr.as_deref() else {
             return Ok(None);
         };
@@ -726,7 +726,7 @@ impl MinerPassManager {
     pub async fn on_pass_transfer(
         &self,
         inscription_id: &InscriptionId,
-        new_owner: &USDBScriptHash,
+        new_owner: &BtcScriptHash,
         satpoint: &SatPoint,
         block_height: u32,
     ) -> Result<(), String> {
@@ -921,7 +921,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     #[derive(Default)]
     struct NoopBalanceProvider;
@@ -929,7 +929,7 @@ mod tests {
     impl BalanceProvider for NoopBalanceProvider {
         fn get_balance_at_height<'a>(
             &'a self,
-            _address: USDBScriptHash,
+            _address: BtcScriptHash,
             _block_height: u32,
         ) -> Pin<
             Box<dyn std::future::Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>,
@@ -939,7 +939,7 @@ mod tests {
 
         fn get_balance_at_range<'a>(
             &'a self,
-            _address: USDBScriptHash,
+            _address: BtcScriptHash,
             _block_range: std::ops::Range<u32>,
         ) -> Pin<
             Box<dyn std::future::Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>,
@@ -956,9 +956,9 @@ mod tests {
         std::env::temp_dir().join(format!("usdb_indexer_pass_test_{}_{}", test_name, nanos))
     }
 
-    fn test_script_hash(tag: u8) -> USDBScriptHash {
+    fn test_script_hash(tag: u8) -> BtcScriptHash {
         let script = ScriptBuf::from(vec![tag; 32]);
-        script.to_usdb_script_hash()
+        script.to_btc_script_hash()
     }
 
     fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -993,7 +993,7 @@ mod tests {
 
     fn test_mint_info(
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         block_height: u32,
         prev: Vec<InscriptionId>,
     ) -> PassMintInscriptionInfo {
@@ -1015,7 +1015,7 @@ mod tests {
 
     fn test_collab_mint_info(
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         block_height: u32,
         leader_pass_id: InscriptionId,
     ) -> PassMintInscriptionInfo {
@@ -1037,7 +1037,7 @@ mod tests {
 
     fn test_pass_info(
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         block_height: u32,
         pass_kind: MinerPassKind,
         state: MinerPassState,
@@ -1069,7 +1069,7 @@ mod tests {
 
     fn test_collab_pass_info_with_leader_pass(
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         block_height: u32,
         leader_pass_id: InscriptionId,
     ) -> MinerPassInfo {
@@ -1086,7 +1086,7 @@ mod tests {
 
     fn test_collab_pass_info_with_leader_addr(
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         block_height: u32,
         leader_btc_addr: &str,
     ) -> MinerPassInfo {
@@ -1110,7 +1110,7 @@ mod tests {
         MinerPassStorageRef,
         MinerPassManager,
         InscriptionId,
-        USDBScriptHash,
+        BtcScriptHash,
         SatPoint,
     ) {
         let root_dir = test_root_dir(test_name);

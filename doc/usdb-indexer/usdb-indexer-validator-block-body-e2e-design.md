@@ -35,7 +35,7 @@
 
 ## 3. Validator Test Envelope v1
 
-建议统一一份更贴近 ETHW block body 校验输入的链外测试 envelope 结构：
+建议统一一份更贴近 USDB block body 校验输入的链外测试 envelope 结构：
 
 ```json
 {
@@ -48,8 +48,9 @@
     "system_state_id": "system-...",
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_protocol_version": "1.0.0",
-    "usdb_index_formula_version": "pass-energy-formula:v1"
+    "activation_registry_id": "...",
+    "active_version_set": {"energy_formula_version":"uip-0003-pass-energy-formula:v1"},
+    "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "miner_selection": {
     "inscription_id": "txidi0",
@@ -75,8 +76,9 @@
 - `system_state_id`
 - `balance_history_api_version`
 - `balance_history_semantics_version`
-- `usdb_index_protocol_version`
-- `usdb_index_formula_version`
+- `activation_registry_id`
+- `active_version_set`
+- `active_version_set_id`
 
 其中：
 
@@ -99,7 +101,7 @@
 
 本文用 `test_selected_pass` 指代 `miner_selection.inscription_id` 对应的 pass。它只表示测试 envelope 选择并要求重放校验的对象，不是 UIP-0007 的额外链上字段。
 
-单 pass envelope 固定的是测试选中的 miner pass 的完整能量三元组；multi-pass envelope 额外携带 `candidate_passes` 与 `selection_rule = uip-0006:effective-energy-desc-pass-id-asc:v1`。当前测试固定选择排序第一项，以验证 UIP-0006 ordering contract；该测试策略不定义 ETHW block-selection policy，也不表示该 pass 已经赢得 PoW 出块竞争。
+单 pass envelope 固定的是测试选中的 miner pass 的完整能量三元组；multi-pass envelope 额外携带 `candidate_passes` 与 `selection_rule = uip-0006:effective-energy-desc-pass-id-asc:v1`。当前测试固定选择排序第一项，以验证 UIP-0006 ordering contract；该测试策略不定义 USDB block-selection policy，也不表示该 pass 已经赢得 PoW 出块竞争。
 
 ## 4. 校验流程
 
@@ -262,23 +264,23 @@ validator 风格脚本应始终分两步：
 - same-height replacement 覆盖 5-pass candidate-set payload 所在高度
 - 旧 envelope 的 `state ref / test_selected_pass / candidate_passes` 在同一 historical context 下稳定返回 `SNAPSHOT_ID_MISMATCH`
 
-### 6.12 Protocol Version Mismatch
+### 6.12 Active Version Set Mismatch
 
 - `regtest_live_ord_validator_block_body_protocol_version_mismatch.sh`
 
 覆盖：
 
-- 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_protocol_version`
-- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `PROTOCOL_VERSION_MISMATCH`
+- 在不改历史高度和业务对象的前提下，篡改 payload 的 `active_version_set_id`
+- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `ACTIVE_VERSION_SET_MISMATCH`
 
-### 6.13 Formula Version Mismatch
+### 6.13 Active Version Set Mismatch Alias Runner
 
 - `regtest_live_ord_validator_block_body_formula_version_mismatch.sh`
 
 覆盖：
 
-- 在不改历史高度和业务对象的前提下，篡改 payload 的 `usdb_index_formula_version`
-- `state ref / economic profile / candidate set / collab breakdown` 都稳定返回 `FORMULA_VERSION_MISMATCH`
+- 旧 runner 文件名暂未重命名，但测试内容已切换为篡改 `active_version_set_id`
+- active formula 不受本地实现支持时由启动/历史 lookup 返回 `FORMULA_VERSION_MISMATCH`，不再通过旧聚合字段注入
 
 ### 6.14 Semantics Version Mismatch
 
@@ -289,14 +291,14 @@ validator 风格脚本应始终分两步：
 - 在不改历史高度和业务对象的前提下，篡改 payload 的 `balance_history_semantics_version`
 - 历史 context 路径稳定返回 `VERSION_MISMATCH`
 
-### 6.15 Candidate-Set Protocol Version Mismatch
+### 6.15 Candidate-Set Active Version Set Mismatch
 
 - `regtest_live_ord_validator_block_body_candidate_set_protocol_version_mismatch.sh`
 
 覆盖：
 
-- 在 `test_selected_pass + candidate_passes` envelope 上篡改 `usdb_index_protocol_version`
-- `state ref / test_selected_pass / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `PROTOCOL_VERSION_MISMATCH`
+- 在 `test_selected_pass + candidate_passes` envelope 上篡改 `active_version_set_id`
+- `state ref / test_selected_pass / candidate_passes` 的整条 candidate-set 校验路径都稳定返回 `ACTIVE_VERSION_SET_MISMATCH`
 
 ### 6.16 Candidate-Set Semantics Version Mismatch
 
@@ -322,9 +324,9 @@ validator 风格脚本应始终分两步：
 
 覆盖：
 
-- 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
+- 在同一历史 test envelope 上同时构造 `api / semantics / active version set identity` 三类篡改
 - BTC head 前进后，原 payload 继续通过
-- API / semantics tampered payload 返回 `VERSION_MISMATCH`，protocol tampered payload 返回 `PROTOCOL_VERSION_MISMATCH`
+- API / semantics tampered envelope 返回 `VERSION_MISMATCH`，set identity tampered envelope 返回 `ACTIVE_VERSION_SET_MISMATCH`
 
 ### 6.19 Payload-Version Upgrade
 
@@ -409,7 +411,7 @@ validator 风格脚本应始终分两步：
 
 当前设计刻意不做这些事情：
 
-- 不模拟完整 ETHW block header / parent hash / tx list
+- 不模拟完整 USDB block header / parent hash / tx list
 - 不把前端 raw leaderboard 当作 candidate set；`candidate_passes` 必须来自 UIP-0006 canonical `candidate_set_view`
 - 不直接引入完整 USDB validator 实现
 

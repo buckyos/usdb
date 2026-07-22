@@ -25,7 +25,7 @@ fn default_usdb_indexer_rpc_url() -> String {
     format!("http://127.0.0.1:{USDB_INDEXER_SERVICE_HTTP_PORT}")
 }
 
-fn default_ethw_rpc_url() -> String {
+fn default_usdb_chain_rpc_url() -> String {
     "http://127.0.0.1:8545".to_string()
 }
 
@@ -61,15 +61,15 @@ fn default_snapshot_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/balance-history/bootstrap/snapshot-loader.done.json")
 }
 
-fn default_ethw_init_marker_path() -> PathBuf {
+fn default_usdb_init_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-init.done.json")
 }
 
-fn default_ethw_identity_marker_path() -> PathBuf {
+fn default_usdb_identity_marker_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-sim-identity.json")
 }
 
-fn default_ethw_genesis_path() -> PathBuf {
+fn default_usdb_genesis_path() -> PathBuf {
     PathBuf::from("docker/local/dev-sim/bootstrap/manifests/ethw-genesis.json")
 }
 
@@ -132,8 +132,8 @@ pub struct RpcTargets {
     pub balance_history_url: String,
     #[serde(default = "default_usdb_indexer_rpc_url")]
     pub usdb_indexer_url: String,
-    #[serde(default = "default_ethw_rpc_url")]
-    pub ethw_url: String,
+    #[serde(default = "default_usdb_chain_rpc_url")]
+    pub usdb_chain_url: String,
     #[serde(default = "default_ord_rpc_url")]
     pub ord_url: String,
 }
@@ -143,7 +143,7 @@ impl Default for RpcTargets {
         Self {
             balance_history_url: default_balance_history_rpc_url(),
             usdb_indexer_url: default_usdb_indexer_rpc_url(),
-            ethw_url: default_ethw_rpc_url(),
+            usdb_chain_url: default_usdb_chain_rpc_url(),
             ord_url: default_ord_rpc_url(),
         }
     }
@@ -181,12 +181,12 @@ pub struct BootstrapPaths {
     pub bootstrap_manifest: PathBuf,
     #[serde(default = "default_snapshot_marker_path")]
     pub snapshot_marker: PathBuf,
-    #[serde(default = "default_ethw_init_marker_path")]
-    pub ethw_init_marker: PathBuf,
-    #[serde(default = "default_ethw_identity_marker_path")]
-    pub ethw_identity_marker: PathBuf,
-    #[serde(default = "default_ethw_genesis_path")]
-    pub ethw_genesis: PathBuf,
+    #[serde(default = "default_usdb_init_marker_path")]
+    pub usdb_init_marker: PathBuf,
+    #[serde(default = "default_usdb_identity_marker_path")]
+    pub usdb_identity_marker: PathBuf,
+    #[serde(default = "default_usdb_genesis_path")]
+    pub usdb_genesis: PathBuf,
     #[serde(default = "default_sourcedao_state_path")]
     pub sourcedao_bootstrap_state: PathBuf,
     #[serde(default = "default_sourcedao_marker_path")]
@@ -200,9 +200,9 @@ impl Default for BootstrapPaths {
         Self {
             bootstrap_manifest: default_bootstrap_manifest_path(),
             snapshot_marker: default_snapshot_marker_path(),
-            ethw_init_marker: default_ethw_init_marker_path(),
-            ethw_identity_marker: default_ethw_identity_marker_path(),
-            ethw_genesis: default_ethw_genesis_path(),
+            usdb_init_marker: default_usdb_init_marker_path(),
+            usdb_identity_marker: default_usdb_identity_marker_path(),
+            usdb_genesis: default_usdb_genesis_path(),
             sourcedao_bootstrap_state: default_sourcedao_state_path(),
             sourcedao_bootstrap_marker: default_sourcedao_marker_path(),
             world_sim_bootstrap_marker: default_world_sim_marker_path(),
@@ -353,11 +353,11 @@ mod tests {
             PathBuf::from("docker/local/dev-sim/bootstrap/sourcedao-bootstrap.done.json")
         );
         assert_eq!(
-            config.bootstrap.ethw_genesis,
+            config.bootstrap.usdb_genesis,
             PathBuf::from("docker/local/dev-sim/bootstrap/manifests/ethw-genesis.json")
         );
         assert_eq!(
-            config.bootstrap.ethw_identity_marker,
+            config.bootstrap.usdb_identity_marker,
             PathBuf::from("docker/local/dev-sim/ethw/bootstrap/ethw-sim-identity.json")
         );
         assert_eq!(

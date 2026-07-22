@@ -4,7 +4,7 @@ use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::{OutPointCodec, USDBScriptHash, UTXOEntry};
+use usdb_util::{BtcScriptHash, OutPointCodec, UTXOEntry};
 
 // The version of the snapshot database schema.
 pub const SNAPSHOT_DB_VERSION: u32 = 2;
@@ -517,7 +517,7 @@ impl SnapshotDB {
 
     pub fn get_balance_history_entry(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> Result<Option<BalanceHistoryEntry>, String> {
         let mut stmt = self.conn.prepare(
             "SELECT script_hash, height, balance, delta FROM balance_history WHERE script_hash = ?1"
@@ -546,7 +546,7 @@ impl SnapshotDB {
                         msg
                     })?;
 
-                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                    BtcScriptHash::from_slice(&blob).map_err(|e| {
                         let msg = format!("Failed to convert script_hash blob: {}", e);
                         error!("{}", msg);
                         msg
@@ -616,7 +616,7 @@ impl SnapshotDB {
                         msg
                     })?;
 
-                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                    BtcScriptHash::from_slice(&blob).map_err(|e| {
                         let msg = format!("Failed to convert script_hash blob: {}", e);
                         error!("{}", msg);
                         msg
@@ -648,7 +648,7 @@ impl SnapshotDB {
     pub fn get_balance_history_entries(
         &self,
         page_size: u32,
-        last_script_hash: Option<&USDBScriptHash>,
+        last_script_hash: Option<&BtcScriptHash>,
     ) -> Result<Vec<BalanceHistoryEntry>, String> {
         let sql = match last_script_hash {
             Some(_) => {
@@ -701,7 +701,7 @@ impl SnapshotDB {
                         msg
                     })?;
 
-                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                    BtcScriptHash::from_slice(&blob).map_err(|e| {
                         let msg = format!("Failed to convert script_hash blob: {}", e);
                         error!("{}", msg);
                         msg
@@ -981,7 +981,7 @@ impl SnapshotDB {
                         msg
                     })?;
 
-                    USDBScriptHash::from_slice(&blob).map_err(|e| {
+                    BtcScriptHash::from_slice(&blob).map_err(|e| {
                         let msg = format!("Failed to convert script_hash blob: {}", e);
                         error!("{}", msg);
                         msg
@@ -1002,7 +1002,7 @@ impl SnapshotDB {
     pub fn get_script_registry_entries(
         &self,
         page_size: u32,
-        last_script_hash: Option<&USDBScriptHash>,
+        last_script_hash: Option<&BtcScriptHash>,
     ) -> Result<Vec<ScriptRegistryEntry>, String> {
         let sql = match last_script_hash {
             Some(_) => {
@@ -1055,7 +1055,7 @@ impl SnapshotDB {
                     msg
                 })?;
 
-                USDBScriptHash::from_slice(&blob).map_err(|e| {
+                BtcScriptHash::from_slice(&blob).map_err(|e| {
                     let msg = format!("Failed to convert script_hash blob: {}", e);
                     error!("{}", msg);
                     msg
@@ -1088,7 +1088,7 @@ mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
     use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     #[test]
     fn test_snapshot_db_creation() {
@@ -1160,11 +1160,11 @@ mod tests {
         let second_script = ScriptBuf::from(vec![2u8; 32]);
         let mut entries = vec![
             ScriptRegistryEntry {
-                script_hash: first_script.to_usdb_script_hash(),
+                script_hash: first_script.to_btc_script_hash(),
                 script_pubkey: first_script,
             },
             ScriptRegistryEntry {
-                script_hash: second_script.to_usdb_script_hash(),
+                script_hash: second_script.to_btc_script_hash(),
                 script_pubkey: second_script,
             },
         ];

@@ -11,7 +11,7 @@ use rust_rocksdb::{self as rocksdb};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOValue};
 
 // Column family names
@@ -40,22 +40,22 @@ pub const META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
 pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_manifest_verified";
 pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provenance";
 
-pub const BALANCE_HISTORY_KEY_LEN: usize = USDBScriptHash::LEN + 4; // USDBScriptHash (32 bytes) + block_height (4 bytes)
+pub const BALANCE_HISTORY_KEY_LEN: usize = BtcScriptHash::LEN + 4; // BtcScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
-pub const SCRIPT_REGISTRY_KEY_LEN: usize = USDBScriptHash::LEN;
+pub const SCRIPT_REGISTRY_KEY_LEN: usize = BtcScriptHash::LEN;
 pub const BLOCKS_KEY_LEN: usize = BlockHash::LEN; // BlockHash (32 bytes)
 pub const BLOCKS_VALUE_LEN: usize = std::mem::size_of::<BlockEntry>(); // block_file_index (4 bytes) + block_file_offset (8 bytes) + block_record_index (4 bytes)
 // Value layout in BLOCK_COMMITS_CF: block hash + balance delta root + block commit.
 pub const BLOCK_COMMIT_VALUE_LEN: usize = BlockHash::LEN + 32 + 32;
 pub const BLOCK_UNDO_META_VALUE_LEN: usize = 2 + BlockHash::LEN + 4 + 4 + 4;
 pub const BLOCK_UNDO_UTXO_KEY_LEN: usize = 4 + 4;
-pub const BLOCK_UNDO_UTXO_VALUE_LEN: usize = UTXO_KEY_LEN + USDBScriptHash::LEN + 8;
-pub const BLOCK_UNDO_BALANCE_INDEX_KEY_LEN: usize = 4 + USDBScriptHash::LEN;
+pub const BLOCK_UNDO_UTXO_VALUE_LEN: usize = UTXO_KEY_LEN + BtcScriptHash::LEN + 8;
+pub const BLOCK_UNDO_BALANCE_INDEX_KEY_LEN: usize = 4 + BtcScriptHash::LEN;
 
 #[derive(Debug, Clone)]
 pub struct BalanceHistoryEntry {
     // Address script hash.
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
     // Block height where this record was written.
     pub block_height: u32,
     // Balance delta applied at this height.
@@ -105,7 +105,7 @@ pub struct BlockUndoUtxoEntry {
     // Outpoint to delete or restore while reverting a block.
     pub outpoint: OutPoint,
     // Script hash owning the UTXO at the reverted height.
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
     // UTXO value used to reconstruct spent outputs.
     pub value: u64,
 }
@@ -121,7 +121,7 @@ pub struct BlockUndoBundle {
     // Outputs spent by the block and restored on rollback.
     pub spent_utxos: Vec<BlockUndoUtxoEntry>,
     // Script hashes whose exact block-height balance rows must be deleted.
-    pub touched_script_hashes: Vec<USDBScriptHash>,
+    pub touched_script_hashes: Vec<BtcScriptHash>,
 }
 
 /// Auxiliary mapping from the canonical script hash key to the original BTC locking script.
@@ -130,7 +130,7 @@ pub struct BlockUndoBundle {
 /// part of the balance-history block commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptRegistryEntry {
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
     pub script_pubkey: ScriptBuf,
 }
 
@@ -371,7 +371,7 @@ impl BalanceHistoryDB {
         balance_history_cf_options.set_compression_type(rocksdb::DBCompressionType::Lz4);
 
         balance_history_cf_options.set_prefix_extractor(
-            rocksdb::SliceTransform::create_fixed_prefix(USDBScriptHash::LEN),
+            rocksdb::SliceTransform::create_fixed_prefix(BtcScriptHash::LEN),
         );
 
         balance_history_cf_options
@@ -538,13 +538,13 @@ impl BalanceHistoryDB {
     }
 
     fn make_balance_history_key(
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         block_height: u32,
     ) -> [u8; BALANCE_HISTORY_KEY_LEN] {
         // It is important that the block height is stored in big-endian format
         let mut key = [0u8; BALANCE_HISTORY_KEY_LEN];
-        key[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref());
-        key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+        key[..BtcScriptHash::LEN].copy_from_slice(script_hash.as_ref());
+        key[BtcScriptHash::LEN..BtcScriptHash::LEN + 4]
             .copy_from_slice(&block_height.to_be_bytes());
         key
     }
@@ -555,7 +555,7 @@ impl BalanceHistoryDB {
             "Invalid balance key length {}",
             key.len()
         );
-        let block_height_bytes = &key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4];
+        let block_height_bytes = &key[BtcScriptHash::LEN..BtcScriptHash::LEN + 4];
 
         u32::from_be_bytes(block_height_bytes.try_into().unwrap())
     }
@@ -675,8 +675,8 @@ impl BalanceHistoryDB {
         let mut value = [0u8; BLOCK_UNDO_UTXO_VALUE_LEN];
         value[..UTXO_KEY_LEN].copy_from_slice(&Self::make_utxo_key(&entry.outpoint));
         let mut offset = UTXO_KEY_LEN;
-        value[offset..offset + USDBScriptHash::LEN].copy_from_slice(entry.script_hash.as_ref());
-        offset += USDBScriptHash::LEN;
+        value[offset..offset + BtcScriptHash::LEN].copy_from_slice(entry.script_hash.as_ref());
+        offset += BtcScriptHash::LEN;
         value[offset..offset + 8].copy_from_slice(&entry.value.to_be_bytes());
         value
     }
@@ -697,22 +697,22 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             msg
         })?;
-        let mut script_hash_bytes = [0u8; USDBScriptHash::LEN];
+        let mut script_hash_bytes = [0u8; BtcScriptHash::LEN];
         let mut offset = UTXO_KEY_LEN;
-        script_hash_bytes.copy_from_slice(&value[offset..offset + USDBScriptHash::LEN]);
-        offset += USDBScriptHash::LEN;
+        script_hash_bytes.copy_from_slice(&value[offset..offset + BtcScriptHash::LEN]);
+        offset += BtcScriptHash::LEN;
         let value_sats = u64::from_be_bytes(value[offset..offset + 8].try_into().unwrap());
 
         Ok(BlockUndoUtxoEntry {
             outpoint,
-            script_hash: USDBScriptHash::from_byte_array(script_hash_bytes),
+            script_hash: BtcScriptHash::from_byte_array(script_hash_bytes),
             value: value_sats,
         })
     }
 
     fn make_block_undo_balance_index_key(
         block_height: u32,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> [u8; BLOCK_UNDO_BALANCE_INDEX_KEY_LEN] {
         let mut key = [0u8; BLOCK_UNDO_BALANCE_INDEX_KEY_LEN];
         key[..4].copy_from_slice(&block_height.to_be_bytes());
@@ -1248,7 +1248,7 @@ impl BalanceHistoryDB {
     pub fn get_block_undo_touched_script_hashes(
         &self,
         block_height: u32,
-    ) -> Result<Vec<USDBScriptHash>, String> {
+    ) -> Result<Vec<BtcScriptHash>, String> {
         let cf = self
             .db
             .cf_handle(BLOCK_UNDO_BALANCE_INDEX_CF)
@@ -1259,7 +1259,7 @@ impl BalanceHistoryDB {
             })?;
         let start_key = Self::make_block_undo_balance_index_key(
             block_height,
-            &USDBScriptHash::from_byte_array([0u8; USDBScriptHash::LEN]),
+            &BtcScriptHash::from_byte_array([0u8; BtcScriptHash::LEN]),
         );
         let mut read_opts = ReadOptions::default();
         read_opts.set_prefix_same_as_start(true);
@@ -1283,9 +1283,9 @@ impl BalanceHistoryDB {
             if !Self::block_height_prefix_matches(&key, block_height) {
                 break;
             }
-            let mut bytes = [0u8; USDBScriptHash::LEN];
-            bytes.copy_from_slice(&key[4..4 + USDBScriptHash::LEN]);
-            script_hashes.push(USDBScriptHash::from_byte_array(bytes));
+            let mut bytes = [0u8; BtcScriptHash::LEN];
+            bytes.copy_from_slice(&key[4..4 + BtcScriptHash::LEN]);
+            script_hashes.push(BtcScriptHash::from_byte_array(bytes));
         }
 
         Ok(script_hashes)
@@ -1923,7 +1923,7 @@ impl BalanceHistoryDB {
     // Get the latest balance entry for a given script_hash
     pub fn get_latest_balance(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> Result<BalanceHistoryData, String> {
         let cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", BALANCE_HISTORY_CF);
@@ -1951,8 +1951,8 @@ impl BalanceHistoryDB {
                 found_key.len()
             );
 
-            // Check if the USDBScriptHash matches
-            if &found_key[0..USDBScriptHash::LEN] == script_hash.as_ref() as &[u8] {
+            // Check if the BtcScriptHash matches
+            if &found_key[0..BtcScriptHash::LEN] == script_hash.as_ref() as &[u8] {
                 let block_height = Self::parse_block_height_from_key(&found_key);
                 let (delta, balance) = Self::parse_balance_from_value(&found_val);
                 let entry = BalanceHistoryData {
@@ -1978,7 +1978,7 @@ impl BalanceHistoryDB {
     /// Get the balance entry for a given script_hash at or before the target block height
     pub fn get_balance_at_block_height(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         target_height: u32,
     ) -> Result<BalanceHistoryData, String> {
         // Make the search key
@@ -2017,9 +2017,9 @@ impl BalanceHistoryDB {
                 found_key.len()
             );
 
-            // Boundary check 1: Ensure the key length is correct and belongs to the same USDBScriptHash
+            // Boundary check 1: Ensure the key length is correct and belongs to the same BtcScriptHash
             // impl AsRef<[u8]> for Hash
-            if &found_key[0..USDBScriptHash::LEN] == script_hash.as_ref() as &[u8] {
+            if &found_key[0..BtcScriptHash::LEN] == script_hash.as_ref() as &[u8] {
                 // Found a record for the same address.
                 // Since it is Reverse and the starting point is target_height,
                 // the found_height here must be <= target_height.
@@ -2043,7 +2043,7 @@ impl BalanceHistoryDB {
             }
         }
 
-        // If the iterator is empty, or has moved to the previous USDBScriptHash,
+        // If the iterator is empty, or has moved to the previous BtcScriptHash,
         // it means there are no records for this address before the target_height.
         // The default balance is 0. and block_height is 0.
         let entry = BalanceHistoryData {
@@ -2058,7 +2058,7 @@ impl BalanceHistoryDB {
     /// Get balance records for a given script_hash within [range_begin, range_end)
     pub fn get_balance_in_range(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         range_begin: u32,
         range_end: u32,
     ) -> Result<Vec<BalanceHistoryData>, String> {
@@ -2102,9 +2102,9 @@ impl BalanceHistoryDB {
                 key.len()
             );
 
-            // Boundary check 1: Check if the USDBScriptHash matches
-            // If a different USDBScriptHash is encountered, it means the data for the current address has been fully traversed
-            if &key[0..USDBScriptHash::LEN] != script_hash.as_ref() as &[u8] {
+            // Boundary check 1: Check if the BtcScriptHash matches
+            // If a different BtcScriptHash is encountered, it means the data for the current address has been fully traversed
+            if &key[0..BtcScriptHash::LEN] != script_hash.as_ref() as &[u8] {
                 break;
             }
 
@@ -2134,7 +2134,7 @@ impl BalanceHistoryDB {
     /// Get the balance delta for a given script_hash at the target block height if it exists, otherwise return None
     pub fn get_balance_delta_at_block_height(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         target_height: u32,
     ) -> Result<Option<BalanceHistoryData>, String> {
         // Make the target key
@@ -2168,7 +2168,7 @@ impl BalanceHistoryDB {
 
     pub fn get_all_balance(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> Result<Vec<BalanceHistoryData>, String> {
         self.get_balance_in_range(script_hash, 0, u32::MAX)
     }
@@ -2228,7 +2228,7 @@ impl BalanceHistoryDB {
     pub fn put_utxo(
         &self,
         outpoint: &OutPoint,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         amount: u64,
     ) -> Result<(), String> {
         let cf = self.db.cf_handle(UTXO_CF).ok_or_else(|| {
@@ -2240,7 +2240,7 @@ impl BalanceHistoryDB {
         let mut ops = WriteOptions::default();
         ops.set_sync(false);
 
-        // Value format: USDBScriptHash (32 bytes) + amount (u64)
+        // Value format: BtcScriptHash (32 bytes) + amount (u64)
         let value = UTXOValue::encode(script_hash, amount);
 
         let key = Self::make_utxo_key(outpoint);
@@ -2264,7 +2264,7 @@ impl BalanceHistoryDB {
         let mut batch = WriteBatch::default();
 
         for utxo in utxos {
-            // Value format: USDBScriptHash (32 bytes) + amount (u64)
+            // Value format: BtcScriptHash (32 bytes) + amount (u64)
             let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
             let key = Self::make_utxo_key(&utxo.outpoint);
 
@@ -2296,7 +2296,7 @@ impl BalanceHistoryDB {
         let mut batch = WriteBatch::default();
 
         for (outpoint, utxo) in new_utxos {
-            // Value format: USDBScriptHash (32 bytes) + amount (u64)
+            // Value format: BtcScriptHash (32 bytes) + amount (u64)
             let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
             let key = Self::make_utxo_key(outpoint);
 
@@ -2405,7 +2405,7 @@ impl BalanceHistoryDB {
 
     pub fn get_script_registry_entry(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> Result<Option<ScriptBuf>, String> {
         let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
@@ -2429,7 +2429,7 @@ impl BalanceHistoryDB {
 
     pub fn get_script_registry_entries(
         &self,
-        script_hashes: &[USDBScriptHash],
+        script_hashes: &[BtcScriptHash],
     ) -> Result<Vec<Option<ScriptBuf>>, String> {
         let cf = self.db.cf_handle(SCRIPT_REGISTRY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", SCRIPT_REGISTRY_CF);
@@ -2579,9 +2579,9 @@ impl BalanceHistoryDB {
         })?;
 
         let mut seek_key = vec![shard_index];
-        seek_key.resize(USDBScriptHash::LEN, 0xFF); // max USDBScriptHash
+        seek_key.resize(BtcScriptHash::LEN, 0xFF); // max BtcScriptHash
         let seek_key = Self::make_balance_history_key(
-            &USDBScriptHash::from_slice(&seek_key).unwrap(),
+            &BtcScriptHash::from_slice(&seek_key).unwrap(),
             u32::MAX,
         );
 
@@ -2589,7 +2589,7 @@ impl BalanceHistoryDB {
             .db
             .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
-        let mut current_script_hash: Option<USDBScriptHash> = None;
+        let mut current_script_hash: Option<BtcScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(batch_size);
         let mut entries_processed = 0u64;
@@ -2607,9 +2607,9 @@ impl BalanceHistoryDB {
 
             entries_processed += 1;
 
-            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
+            let script_hash = BtcScriptHash::from_slice(&key[0..BtcScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
-                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+                key[BtcScriptHash::LEN..BtcScriptHash::LEN + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -2797,7 +2797,7 @@ impl BalanceHistoryDB {
             }
 
             entries_processed += 1;
-            let script_hash = USDBScriptHash::from_slice(&key).map_err(|e| {
+            let script_hash = BtcScriptHash::from_slice(&key).map_err(|e| {
                 let msg = format!("Failed to parse script registry key: {}", e);
                 error!("{}", msg);
                 msg
@@ -2936,7 +2936,7 @@ impl BalanceHistoryDB {
     // Traverse the latest balance entry for each script_hash in descending order
     pub fn traverse_latest<F>(
         &self,
-        start_script_hash: Option<USDBScriptHash>,
+        start_script_hash: Option<BtcScriptHash>,
         batch_size: usize,
         mut callback: F,
     ) -> Result<(), String>
@@ -2953,7 +2953,7 @@ impl BalanceHistoryDB {
 
         let mut iter = match start_script_hash {
             Some(script_hash) => {
-                let mut seek_key = Vec::with_capacity(USDBScriptHash::LEN + 4);
+                let mut seek_key = Vec::with_capacity(BtcScriptHash::LEN + 4);
                 seek_key.extend_from_slice(script_hash.as_ref());
                 seek_key.extend_from_slice(&[0xFF; 4]); // max block height
 
@@ -2963,16 +2963,16 @@ impl BalanceHistoryDB {
             None => self.db.full_iterator_cf(&cf, IteratorMode::End),
         };
 
-        let mut current_script_hash: Option<USDBScriptHash> = None;
+        let mut current_script_hash: Option<BtcScriptHash> = None;
         let mut snapshot = Vec::with_capacity(batch_size);
         while let Some(Ok((key, value))) = iter.next() {
             if key.len() != BALANCE_HISTORY_KEY_LEN {
                 continue;
             }
 
-            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
+            let script_hash = BtcScriptHash::from_slice(&key[0..BtcScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
-                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+                key[BtcScriptHash::LEN..BtcScriptHash::LEN + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -3014,7 +3014,7 @@ impl BalanceHistoryDB {
 
     pub fn traverse_at_height<F>(
         &self,
-        start_script_hash: Option<USDBScriptHash>,
+        start_script_hash: Option<BtcScriptHash>,
         target_block_height: u32,
         batch_size: usize,
         mut callback: F,
@@ -3032,7 +3032,7 @@ impl BalanceHistoryDB {
 
         let mut iter = match start_script_hash {
             Some(script_hash) => {
-                let mut seek_key = Vec::with_capacity(USDBScriptHash::LEN + 4);
+                let mut seek_key = Vec::with_capacity(BtcScriptHash::LEN + 4);
                 seek_key.extend_from_slice(script_hash.as_ref());
                 seek_key.extend_from_slice(&[0xFF; 4]); // max block height
 
@@ -3042,7 +3042,7 @@ impl BalanceHistoryDB {
             None => self.db.full_iterator_cf(&cf, IteratorMode::End),
         };
 
-        let mut current_script_hash: Option<USDBScriptHash> = None;
+        let mut current_script_hash: Option<BtcScriptHash> = None;
         let mut current_founded = false;
         let mut snapshot = Vec::with_capacity(batch_size);
         while let Some(Ok((key, value))) = iter.next() {
@@ -3050,9 +3050,9 @@ impl BalanceHistoryDB {
                 continue;
             }
 
-            let script_hash = USDBScriptHash::from_slice(&key[0..USDBScriptHash::LEN]).unwrap();
+            let script_hash = BtcScriptHash::from_slice(&key[0..BtcScriptHash::LEN]).unwrap();
             let height = u32::from_be_bytes(
-                key[USDBScriptHash::LEN..USDBScriptHash::LEN + 4]
+                key[BtcScriptHash::LEN..BtcScriptHash::LEN + 4]
                     .try_into()
                     .unwrap(),
             );
@@ -3371,12 +3371,12 @@ mod tests {
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::sync::{Arc, Mutex};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     #[test]
     fn test_make_and_parse_key() {
         let script = ScriptBuf::from(vec![0u8; 32]);
-        let script_hash = script.to_usdb_script_hash();
+        let script_hash = script.to_btc_script_hash();
         let block_height = 123456;
 
         let key = BalanceHistoryDB::make_balance_history_key(&script_hash, block_height);
@@ -3413,7 +3413,7 @@ mod tests {
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
         let script = ScriptBuf::from(vec![1u8; 32]);
-        let script_hash = script.to_usdb_script_hash();
+        let script_hash = script.to_btc_script_hash();
 
         let entries = vec![
             BalanceHistoryEntry {
@@ -3568,9 +3568,9 @@ mod tests {
 
         let script_a = ScriptBuf::from(vec![1u8; 32]);
         let script_b = ScriptBuf::from(vec![2u8; 32]);
-        let script_hash_a = script_a.to_usdb_script_hash();
-        let script_hash_b = script_b.to_usdb_script_hash();
-        let missing_hash = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+        let script_hash_a = script_a.to_btc_script_hash();
+        let script_hash_b = script_b.to_btc_script_hash();
+        let missing_hash = ScriptBuf::from(vec![3u8; 32]).to_btc_script_hash();
 
         db.put_script_registry_entries(&[
             ScriptRegistryEntry {
@@ -3655,11 +3655,11 @@ mod tests {
         let second_script = ScriptBuf::from(vec![2u8; 32]);
         let mut expected = vec![
             ScriptRegistryEntry {
-                script_hash: first_script.to_usdb_script_hash(),
+                script_hash: first_script.to_btc_script_hash(),
                 script_pubkey: first_script,
             },
             ScriptRegistryEntry {
-                script_hash: second_script.to_usdb_script_hash(),
+                script_hash: second_script.to_btc_script_hash(),
                 script_pubkey: second_script,
             },
         ];
@@ -3807,7 +3807,7 @@ mod tests {
             vout: 1,
         };
         let script = ScriptBuf::from(vec![2u8; 32]);
-        let script_hash = script.to_usdb_script_hash();
+        let script_hash = script.to_btc_script_hash();
         let amount = 1000u64;
 
         // Put UTXO
@@ -3909,7 +3909,7 @@ mod tests {
             vout: 1,
         };
         let spent_script = ScriptBuf::from(vec![9u8; 32]);
-        let spent_script_hash = spent_script.to_usdb_script_hash();
+        let spent_script_hash = spent_script.to_btc_script_hash();
         db.put_utxo(&spent_outpoint, &spent_script_hash, 900)
             .unwrap();
 
@@ -3918,7 +3918,7 @@ mod tests {
             vout: 2,
         };
         let new_script = ScriptBuf::from(vec![8u8; 32]);
-        let new_script_hash = new_script.to_usdb_script_hash();
+        let new_script_hash = new_script.to_btc_script_hash();
         let new_utxo = Arc::new(UTXOValue {
             script_hash: new_script_hash,
             value: 1800,
@@ -3982,7 +3982,7 @@ mod tests {
                 txid: Txid::from_slice(&[1u8; 32]).unwrap(),
                 vout: 2,
             },
-            script_hash: ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash(),
+            script_hash: ScriptBuf::from(vec![1u8; 32]).to_btc_script_hash(),
             value: 100,
         };
         let spent = BlockUndoUtxoEntry {
@@ -3990,10 +3990,10 @@ mod tests {
                 txid: Txid::from_slice(&[2u8; 32]).unwrap(),
                 vout: 3,
             },
-            script_hash: ScriptBuf::from(vec![2u8; 32]).to_usdb_script_hash(),
+            script_hash: ScriptBuf::from(vec![2u8; 32]).to_btc_script_hash(),
             value: 200,
         };
-        let touched_script_hash = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+        let touched_script_hash = ScriptBuf::from(vec![3u8; 32]).to_btc_script_hash();
         let bundle = BlockUndoBundle {
             block_height: 88,
             btc_block_hash: BlockHash::from_slice(&[9u8; 32]).unwrap(),
@@ -4061,7 +4061,7 @@ mod tests {
             txid: Txid::from_slice(&[4u8; 32]).unwrap(),
             vout: 1,
         };
-        let existing_script_hash = ScriptBuf::from(vec![4u8; 32]).to_usdb_script_hash();
+        let existing_script_hash = ScriptBuf::from(vec![4u8; 32]).to_btc_script_hash();
         db.put_utxo(&existing_outpoint, &existing_script_hash, 400)
             .unwrap();
 
@@ -4079,7 +4079,7 @@ mod tests {
             txid: Txid::from_slice(&[5u8; 32]).unwrap(),
             vout: 2,
         };
-        let new_script_hash = ScriptBuf::from(vec![5u8; 32]).to_usdb_script_hash();
+        let new_script_hash = ScriptBuf::from(vec![5u8; 32]).to_btc_script_hash();
         let new_utxo = Arc::new(UTXOValue {
             script_hash: new_script_hash,
             value: 900,
@@ -4156,7 +4156,7 @@ mod tests {
 
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
-        let script_11 = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let script_11 = ScriptBuf::from(vec![1u8; 32]).to_btc_script_hash();
         let entry_11 = BalanceHistoryEntry {
             script_hash: script_11,
             block_height: 11,
@@ -4171,7 +4171,7 @@ mod tests {
             txid: Txid::from_slice(&[9u8; 32]).unwrap(),
             vout: 0,
         };
-        let script_12 = ScriptBuf::from(vec![2u8; 32]).to_usdb_script_hash();
+        let script_12 = ScriptBuf::from(vec![2u8; 32]).to_btc_script_hash();
         let utxo_12 = Arc::new(UTXOValue {
             script_hash: script_12,
             value: 20,
@@ -4213,7 +4213,7 @@ mod tests {
             txid: Txid::from_slice(&[8u8; 32]).unwrap(),
             vout: 1,
         };
-        let script_13 = ScriptBuf::from(vec![3u8; 32]).to_usdb_script_hash();
+        let script_13 = ScriptBuf::from(vec![3u8; 32]).to_btc_script_hash();
         let utxo_13 = Arc::new(UTXOValue {
             script_hash: script_13,
             value: 30,
@@ -4296,7 +4296,7 @@ mod tests {
 
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
-        let base_script = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let base_script = ScriptBuf::from(vec![1u8; 32]).to_btc_script_hash();
         let base_entry = BalanceHistoryEntry {
             script_hash: base_script,
             block_height: 11,
@@ -4308,7 +4308,7 @@ mod tests {
             .unwrap();
 
         for height in 12..=13u32 {
-            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_btc_script_hash();
             let outpoint = OutPoint {
                 txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
                 vout: height,
@@ -4388,7 +4388,7 @@ mod tests {
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
         for height in 10..=12u32 {
-            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_btc_script_hash();
             let outpoint = OutPoint {
                 txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
                 vout: height,
@@ -4452,7 +4452,7 @@ mod tests {
 
         let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
 
-        let base_script = ScriptBuf::from(vec![1u8; 32]).to_usdb_script_hash();
+        let base_script = ScriptBuf::from(vec![1u8; 32]).to_btc_script_hash();
         let base_entry = BalanceHistoryEntry {
             script_hash: base_script,
             block_height: 11,
@@ -4464,7 +4464,7 @@ mod tests {
             .unwrap();
 
         for height in 12..=13u32 {
-            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_usdb_script_hash();
+            let script_hash = ScriptBuf::from(vec![height as u8; 32]).to_btc_script_hash();
             let outpoint = OutPoint {
                 txid: Txid::from_slice(&[height as u8; 32]).unwrap(),
                 vout: height,

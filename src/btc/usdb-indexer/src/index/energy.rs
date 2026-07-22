@@ -10,7 +10,7 @@ use std::future::Future;
 use std::ops::Range;
 use std::pin::Pin;
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassEnergyResult {
@@ -23,13 +23,13 @@ type BalanceProviderFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String
 pub(crate) trait BalanceProvider: Send + Sync {
     fn get_balance_at_height<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_height: u32,
     ) -> BalanceProviderFuture<'a, Vec<AddressBalance>>;
 
     fn get_balance_at_range<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_range: Range<u32>,
     ) -> BalanceProviderFuture<'a, Vec<AddressBalance>>;
 }
@@ -53,7 +53,7 @@ impl RpcBalanceProvider {
 impl BalanceProvider for RpcBalanceProvider {
     fn get_balance_at_height<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_height: u32,
     ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
         Box::pin(async move {
@@ -65,7 +65,7 @@ impl BalanceProvider for RpcBalanceProvider {
 
     fn get_balance_at_range<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_range: Range<u32>,
     ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
         Box::pin(async move {
@@ -308,7 +308,7 @@ impl PassEnergyManager {
     // Get the balance of an address at a specific block height, which may changed on or before that height
     async fn get_balance_at_height(
         &self,
-        address: &USDBScriptHash,
+        address: &BtcScriptHash,
         block_height: u32,
     ) -> Result<AddressBalance, String> {
         let mut balances = self
@@ -341,7 +341,7 @@ impl PassEnergyManager {
 
     async fn get_balance_at_range(
         &self,
-        address: &USDBScriptHash,
+        address: &BtcScriptHash,
         block_range: std::ops::Range<u32>,
     ) -> Result<Vec<AddressBalance>, String> {
         let balances = self
@@ -355,7 +355,7 @@ impl PassEnergyManager {
     pub async fn on_new_pass(
         &self,
         inscription_id: &InscriptionId,
-        owner_address: &USDBScriptHash,
+        owner_address: &BtcScriptHash,
         block_height: u32,
         inherited_energy: Energy,
     ) -> Result<(), String> {
@@ -649,7 +649,7 @@ impl PassEnergyManager {
     pub fn apply_active_balance_change(
         &self,
         inscription_id: &InscriptionId,
-        owner_address: &USDBScriptHash,
+        owner_address: &BtcScriptHash,
         block_height: u32,
         owner_balance: u64,
         owner_delta: i64,
@@ -667,7 +667,7 @@ impl PassEnergyManager {
     fn apply_active_balance_change_internal(
         &self,
         inscription_id: &InscriptionId,
-        owner_address: &USDBScriptHash,
+        owner_address: &BtcScriptHash,
         block_height: u32,
         owner_balance: u64,
         owner_delta: i64,
@@ -847,7 +847,7 @@ impl PassEnergyManager {
     pub fn on_pass_consumed(
         &self,
         inscription_id: &InscriptionId,
-        owner_address: &USDBScriptHash,
+        owner_address: &BtcScriptHash,
         block_height: u32,
     ) -> Result<(), String> {
         // Insert a new record with zero energy and state consumed
@@ -870,7 +870,7 @@ impl PassEnergyManager {
     pub async fn on_pass_burned(
         &self,
         inscription_id: &InscriptionId,
-        owner_address: &USDBScriptHash,
+        owner_address: &BtcScriptHash,
         expected_previous_state: MinerPassState,
         block_height: u32,
     ) -> Result<(), String> {
@@ -986,7 +986,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     struct TestBalanceProvider {
         at_height: Vec<AddressBalance>,
@@ -996,7 +996,7 @@ mod tests {
     impl BalanceProvider for TestBalanceProvider {
         fn get_balance_at_height<'a>(
             &'a self,
-            _address: USDBScriptHash,
+            _address: BtcScriptHash,
             _block_height: u32,
         ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
             let ret = self.at_height.clone();
@@ -1005,7 +1005,7 @@ mod tests {
 
         fn get_balance_at_range<'a>(
             &'a self,
-            _address: USDBScriptHash,
+            _address: BtcScriptHash,
             _block_range: std::ops::Range<u32>,
         ) -> BalanceProviderFuture<'a, Vec<AddressBalance>> {
             let ret = self.at_range.clone();
@@ -1021,9 +1021,9 @@ mod tests {
         std::env::temp_dir().join(format!("usdb_indexer_energy_test_{}_{}", test_name, nanos))
     }
 
-    fn test_script_hash(tag: u8) -> USDBScriptHash {
+    fn test_script_hash(tag: u8) -> BtcScriptHash {
         let script = ScriptBuf::from(vec![tag; 32]);
-        script.to_usdb_script_hash()
+        script.to_btc_script_hash()
     }
 
     fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {

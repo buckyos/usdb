@@ -1,338 +1,154 @@
 Title: UIP-0008 Activation Registry Implementation Notes
 Status: Working Notes
-Related: UIP-0008
+Related: UIP-0008, UIP-0009
 Created: 2026-04-26
 
 # 摘要
 
-本文是 UIP-0008 的实现阶段备忘，用于记录 activation registry 在 USDB 多服务架构中的落地方式。
-
-核心建议：
+本文记录 UIP-0008 在当前多服务架构中的实现边界。当前结论是：
 
 ```text
-集中定义，分散校验和使用
+按共识所有权分别定义，运行时本地解析，发布时用 manifest 关联
 ```
 
-也就是：
+不再维护同时包含 BTC、USDB chain 和多个网络的全局 runtime registry。
 
-- activation matrix / registry 作为同一份共识配置来源集中定义。
-- 各服务在本地加载同一份 registry，并在自己的职责边界内校验和使用。
-- 不引入运行时中心化 activation service，避免新增单点依赖。
+# 配置所有权
 
-本文不是正式协议正文。若后续实现稳定，应把稳定部分回写到 UIP-0008，或新增专门 UIP 固定 machine-readable registry schema、canonical encoding 和跨仓库发布机制。
+| 配置 | 权威来源 | Lookup context | 消费方 |
+| --- | --- | --- | --- |
+| BTC pass / energy / state-view versions | network-scoped BTC registry | BTC network + `btc_height` | balance-history、usdb-indexer |
+| USDB chain payload / difficulty / reward policy versions | USDB chain genesis / `ChainConfig.usdb.activations[]` | USDB chain + `usdb_block` | miner、header validator、reward transition |
+| 跨链 release 关联 | audit-only release manifest | release artifact identity | CI、部署工具、reviewer |
 
-# 背景
+核心约束：
 
-USDB 当前横跨多个组件：
+- BTC 服务只加载配置 network 对应的一个 registry 文件。
+- USDB chain 节点只从本地 chain config 取得 expected USDB chain versions。
+- companion RPC 只返回 payload 指向的历史 BTC economic state，不回答 USDB chain 规则是否激活。
+- control-plane 可以汇总和审计这些 identity，但不能成为共识路径上的 activation service。
 
-- `balance-history`
-- `usdb-indexer`
-- `usdb-control-plane`
-- ETHW / go-ethereum 扩展
-- 浏览器、脚本和审计工具
+# BTC Registry Artifacts
 
-这些组件都会依赖协议版本：
-
-- BTC-side pass / balance / energy 版本。
-- USDB state view / query semantics 版本。
-- ETHW header payload / difficulty / reward 版本。
-- local state commit / system state id 版本。
-
-如果每个组件各自维护 activation matrix，就会出现同一高度下版本解释不一致的问题，进一步导致：
-
-- `snapshot_id` 不一致。
-- `system_state_id` 不一致。
-- validator replay 失败。
-- ETHW difficulty / reward 校验分叉。
-- 审计工具无法复现节点状态。
-
-# 设计原则
-
-## 1. 单一配置来源
-
-activation registry 应该只有一个 canonical source。
-
-推荐路径：
+当前文件：
 
 ```text
-doc/UIP/activation-registry.json
+src/btc/usdb-util/activation-registry/btc-mainnet.json
+src/btc/usdb-util/activation-registry/btc-regtest.json
 ```
 
-或在实现阶段先放到更适合构建系统的位置，例如：
+schema：
 
 ```text
-src/btc/usdb-util/activation-registry.json
+uip-0008-btc-activation-registry:v1
 ```
 
-无论最终路径在哪里，所有服务都应该从同一份 registry 生成或读取版本信息。
+每个文件包含一个顶层 `scope = network_type + network_id`，record 只包含 BTC-side version family 和 `activation_height`。文件内不得出现其他 BTC network 或 USDB-chain family。
 
-## 2. 共享库优先
-
-Rust 侧应在 `usdb-util` 中集中实现：
-
-- `ActivationRecord`
-- `ActivationRegistry`
-- `ChainContext`
-- `ActiveVersionSet`
-- `activation_registry_id`
-- `active_version_set_id`
-- `lookup_active_version_set(context)`
-
-`balance-history`、`usdb-indexer` 和 `usdb-control-plane` 不应各自实现 activation lookup 逻辑。
-
-## 3. 跨语言生成或校验
-
-go-ethereum 不能直接依赖 Rust crate，因此需要一个跨语言策略：
-
-- 方案 A：go-ethereum 读取同一份 JSON registry，并实现同一套 canonical 校验。
-- 方案 B：由 registry 生成 Go 侧常量和测试向量。
-- 方案 C：先在早期实现中手写 Go chain config，但必须通过 `activation_registry_id` 和测试向量与 Rust 侧校验一致。
-
-长期更推荐方案 A 或 B。
-
-## 4. 本地校验，不依赖中心服务
-
-不要把 activation lookup 做成一个运行时中心 RPC 服务。
-
-原因：
-
-- validator / miner 不能依赖额外中心服务决定共识规则。
-- 中心服务不可用会影响出块和验块。
-- 网络分区时容易产生不一致行为。
-
-正确方式是每个节点本地加载同一份 registry，并在启动和运行时做一致性检查。
-
-# 推荐架构
+当前 canonical ID：
 
 ```text
-activation-registry.json
-        |
-        | parse / canonical encode
-        v
-usdb-util::ActivationRegistry
-        |
-        +--> balance-history
-        |       - expose balance_history_semantics_version
-        |       - include upstream version fields in snapshot identity
-        |
-        +--> usdb-indexer
-        |       - lookup BTC-side active_version_set by btc_height
-        |       - compute active_version_set_id
-        |       - include active_version_set_id in local_state_commit
-        |       - expose versions in UIP-0006 state view
-        |
-        +--> usdb-control-plane
-        |       - expose registry metadata
-        |       - reject incompatible service combinations
-        |
-        +--> scripts / tests
-                - activation boundary tests
-                - version mismatch tests
-
-activation-registry.json
-        |
-        | read or generate
-        v
-go-ethereum / ETHW
-        - expected payload_version by ethw_block
-        - expected difficulty_policy_version by ethw_block
-        - expected reward_rule_version by ethw_block
-        - compare USDB state view registry id / active version id
+btc-mainnet = bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e
+btc-regtest = 22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d
 ```
 
-# 服务职责
+两个 registry 当前激活相同的九个 BTC v1 family，所以 `active_version_set_id` 相同：
+
+```text
+01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691
+```
+
+testnet3、testnet4 和 signet 尚无独立 artifact，配置这些 network 时必须 fail closed，不能回退到 mainnet 或 regtest。
+
+# USDB Chain Config
+
+go-ethereum 的 `ChainConfig.usdb.activations[]` 是 USDB chain activation 的唯一运行时来源。
+
+当前实现已覆盖：
+
+- activation record 严格按 USDB block 排序且禁止同高冲突。
+- `USDBConsensusAt(blockNumber)` 返回目标高度最新的完整 version set。
+- `CheckCompatible` 拒绝修改已生效 activation，并给出 rewind height。
+- genesis JSON roundtrip 保留完整 activation records。
+- miner、validator 和 reward transition 消费同一个 resolved chain-config profile。
+- CLI 仅提供 RPC URL、timeout、selected pass 等运行参数，不能启用或覆盖共识规则。
+
+USDB chain 不读取 Rust BTC registry JSON，也不通过 RPC 查询 expected `payload_version`、`difficulty_policy_version` 或 reward policy version。companion service 不可用时 miner/validator fail closed，是因为历史 BTC profile 不可验证，不是因为 USDB chain activation lookup 依赖 RPC。
+
+# State Identity
+
+```text
+activation_registry_id = hash(network-scoped BTC registry)
+active_version_set_id  = hash(BTC active version set at target height)
+local_state_commit     = hash(commit_protocol_version, snapshot_id, active_version_set_id, derived_state_root)
+system_state_id        = hash(snapshot_id, local_state_commit)
+```
+
+边界：
+
+- `snapshot_id` 只承诺 upstream balance-history state。
+- `activation_registry_id` 是 BTC source-network registry 的审计 identity。
+- `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则。
+- USDB chain-config activation identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
+
+# Cross-chain Release Manifest
+
+当前 audit artifact：
+
+```text
+src/btc/usdb-util/release-manifest.json
+```
+
+它记录：
+
+- BTC registry artifact path、network scope 和 canonical ID。
+- USDB-chain network ID、chain ID、genesis hash、chain-config source 和 activation authority。
+
+manifest 用于 release review、CI 和部署审计。它不得：
+
+- 参与 BTC registry ID 或 `active_version_set_id` 计算。
+- 为 USDB chain header validation 提供 expected version。
+- 通过运行时 RPC 动态覆盖任一链的本地配置。
+
+# 服务行为
 
 ## balance-history
 
-职责：
-
-- 暴露自身 API version 和 query semantics version。
-- 在 `ConsensusSnapshotIdentity` 中保留 balance-history 相关版本字段。
-- 不负责选择 USDB energy / level / reward 公式。
-
-不应做：
-
-- 不应自己维护 USDB activation matrix。
-- 不应解释 ETHW reward 或 difficulty 版本。
+- 按配置 BTC network 加载对应 registry。
+- 启动、batch 写入和历史 state-ref 查询都按目标 BTC height 校验 `balance_history_semantics_version`。
+- 不解释 pass energy 或任何 USDB chain policy。
 
 ## usdb-indexer
 
-职责：
+- 启动时校验配置 genesis height 和 durable synced height。
+- 每个 block mutation 前按目标 BTC height 解析并校验完整 BTC v1 set。
+- UIP-0006 external state 返回 `activation_registry_id + active_version_set + active_version_set_id`。
+- historical profile、candidate、breakdown 和 cursor 必须冻结相同 external state。
 
-- 按 `btc_height` 查询 BTC-side `active_version_set`。
-- 使用对应版本解析 pass、状态机、energy、effective energy、level。
-- 将 `active_version_set_id` 绑定进 `local_state_commit`。
-- 在 UIP-0006 state view 中返回 registry / version 相关审计字段。
+## go-ethereum
 
-关键点：
+- 本地 chain config 决定 expected USDB chain versions。
+- historical profile resolver 校验 BTC registry/set identity 的格式、自洽性及同一次 replay 内稳定性。
+- BTC registry identity 漂移、profile 字段篡改或 companion service 不可用时停止组块或拒绝区块。
 
-- 历史查询必须按目标高度 lookup，不能用当前 head 的版本。
-- 如果本地不支持目标版本，必须 fail closed。
-- 如果 registry 与 upstream / validator 期望不一致，必须返回明确 mismatch。
+# 测试状态
 
-## usdb-control-plane
+Rust registry tests 覆盖：
 
-职责：
+- per-network embedded lookup 与 v1 family surface。
+- registry scope mismatch。
+- 未配置 network fail closed。
+- BTC registry 拒绝 USDB chain family。
+- activation boundary、duplicate height、supersedes、planned record。
+- canonical record ordering、network-scoped registry ID golden。
+- release manifest 重算 BTC registry ID，并固定 USDB chain ID / genesis hash / authority。
 
-- 汇总服务版本、registry id、active version set 信息。
-- 对外展示当前部署是否满足目标网络配置。
-- 在启动或健康检查中发现不兼容服务组合。
+Go tests继续覆盖 active-version-set codec/golden、chain-config activation boundary、`CheckCompatible`、genesis roundtrip、miner/validator version guard 和 RPC failure mapping。
 
-不应做：
+# 后续事项
 
-- 不应成为共识路径上的唯一 activation lookup 服务。
-
-## ETHW / go-ethereum
-
-职责：
-
-- 按 ETHW block number / chain config 查询 expected `payload_version`。
-- 按 ETHW block number / chain config 查询 expected `difficulty_policy_version`。
-- 按 ETHW block number / chain config 查询 expected `reward_rule_version`。
-- 验证 block header 中声明的 `payload_version` 和 `difficulty_policy_version`。
-- 查询 USDB state view 时校验 registry id / active version set id。
-
-关键点：
-
-- payload 中的 `difficulty_policy_version` 是声明，不是 miner 自由选择。
-- expected version 来自 ETHW chain config / activation registry。
-- 不一致时拒绝区块或停止出块。
-
-# Registry ID 与 Version Set ID
-
-推荐语义：
-
-```text
-activation_registry_id = hash(canonical_activation_registry)
-active_version_set_id  = hash(canonical_active_version_set)
-```
-
-`local_state_commit` 只需要承诺 `active_version_set_id`，不需要内联完整 `active_version_set`。
-
-前提是：
-
-- `active_version_set_id -> active_version_set` 可通过稳定 registry 重建。
-- registry schema 和 canonical encoding 已固定。
-- 节点启动时可以检查 registry id 是否符合目标网络。
-
-在 schema 未固定前，先不要把 `activation_registry_id` 作为强共识字段。可以先作为 RPC / status 的审计字段暴露。
-
-# 机器可读 Registry
-
-机器可读 registry 是指 JSON / YAML / TOML 这类可以被程序解析的 activation matrix。
-
-它解决的是：
-
-- 避免手工同步 Markdown 表格。
-- 给 Rust / Go / 测试脚本提供同一份输入。
-- 为 `activation_registry_id` 提供 canonical 输入。
-- 让 CI 能检查冲突记录和缺失网络。
-
-落地顺序建议：
-
-1. 先保留 Markdown 里的初始激活矩阵。
-2. 实现 `usdb-util::ActivationRegistry` 时定义 JSON schema。
-3. 增加测试向量，固定排序、字段类型、未知字段策略。
-4. 生成 `activation_registry_id`。
-5. go-ethereum 侧读取同一 JSON 或使用生成代码。
-
-# 启动校验
-
-每个关键服务启动时应该记录并校验：
-
-- registry source。
-- `activation_registry_id`。
-- network id。
-- supported version families。
-- target network required version families。
-
-公开网络上，如果 registry 缺失、冲突或版本不支持，服务必须 fail closed。
-
-开发网络可以允许显式 override，但日志必须清晰标出：
-
-```text
-activation_registry_override=true
-network_type=local
-```
-
-# RPC / State View 暴露
-
-UIP-0006 state view 后续应该暴露：
-
-```json
-{
-  "activation_registry_id": "...",
-  "active_version_set_id": "...",
-  "active_version_set": {
-    "energy_formula_version": "...",
-    "effective_energy_formula_version": "...",
-    "level_formula_version": "...",
-    "state_view_version": "..."
-  }
-}
-```
-
-可以先返回完整 `active_version_set` 方便调试；进入共识 commit 时只承诺 `active_version_set_id`。
-
-# 测试建议
-
-至少需要：
-
-- registry parse test。
-- canonical encoding test。
-- duplicate active record conflict test。
-- unknown public network fail closed test。
-- regtest genesis activation test。
-- height boundary lookup test。
-- reorg across activation height test。
-- local override is rejected on public networks。
-- Rust / Go activation test vectors match。
-- `local_state_commit` changes when `active_version_set_id` changes。
-
-# 分阶段实现建议
-
-## Phase 1: Rust-only Registry
-
-- 在 `usdb-util` 中定义结构和 lookup。
-- 先支持当前 v1 / genesis activation。
-- `usdb-indexer` 使用 lookup 替代全局公式常量。
-- UIP-0006 state view 返回 active version fields。
-
-## Phase 2: Commit Binding
-
-- 定义 canonical `active_version_set_id`。
-- 将 `active_version_set_id` 纳入 `local_state_commit`。
-- 增加 mismatch 错误和测试。
-
-## Phase 3: Machine-readable Registry
-
-- 增加 `activation-registry.json`。
-- 固定 schema、排序和未知字段策略。
-- 生成 `activation_registry_id`。
-
-## Phase 4: ETHW Integration
-
-- go-ethereum 侧读取或生成 registry。
-- ETHW chain config 固定 expected versions。
-- block validation 校验 `payload_version` 和 `difficulty_policy_version`。
-- 与 USDB state view 交叉校验 registry id / active version set id。
-
-当前进度：go-ethereum 已在 `ChainConfig.usdb.activations` 中实现按 ETHW block 排序的
-完整 version set、边界 lookup、冲突/顺序校验、`CheckCompatible` 回退高度以及 genesis
-JSON roundtrip。miner、header validator 和 reward transition 均只消费该 lookup 结果，
-CLI 不能覆盖版本。跨语言 machine-readable registry、canonical encoding、
-`activation_registry_id` 和 `active_version_set_id` 仍属于 Phase 2/3 依赖；在这些 schema
-冻结前，Go chain config 是 UIP-0008 允许的早期手写实现，不另建运行时 activation service。
-
-development chain 当前只激活已经实现的 `payload_version=1` 和
-`difficulty_policy_version=1`；其余完整字段显式保留为 `0`，以免在 UIP-0011 至 UIP-0015
-实现前误激活未定义 state transition。这是开发期 staging，不改变本文对首个正式网络
-version set 的要求。
-
-# 待定事项
-
-1. machine-readable registry 的最终路径。
-2. canonical encoding 使用 JSON canonicalization 还是自定义二进制编码。
-3. registry 是否进入 release artifact。
-4. go-ethereum 使用读取 JSON 还是生成 Go 代码。
-5. `activation_registry_id` 何时从审计字段升级为强共识字段。
+1. 正式 BTC source network registry 的 indexing origin / activation height review。
+2. 正式 USDB chain testnet/mainnet genesis、chain ID 和 activation blocks 冻结。
+3. release manifest 签名和发布流程。
+4. UIP-0011 至 UIP-0015 实现后，将 USDB chain staging `0` policy 替换为正式 activation records。
+5. 如增加 BTC testnet3/testnet4/signet，必须分别新增 registry 文件、golden ID 和 live replay matrix。

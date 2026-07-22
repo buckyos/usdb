@@ -1,9 +1,9 @@
-export interface EthWalletSnapshot {
+export interface EvmWalletSnapshot {
   source: string
   address: string | null
   chainId: string | null
   networkId: string | null
-  balanceWei: string | null
+  balanceAtomsHex: string | null
 }
 
 interface Eip1193Provider {
@@ -45,8 +45,8 @@ function providerSource(provider: Eip1193Provider) {
 async function readProviderSnapshot(
   provider: Eip1193Provider,
   account: string | null,
-): Promise<EthWalletSnapshot> {
-  const [chainId, networkId, balanceWei] = await Promise.all([
+): Promise<EvmWalletSnapshot> {
+  const [chainId, networkId, balanceAtomsHex] = await Promise.all([
     provider.request({ method: 'eth_chainId' }).catch(() => null),
     provider.request({ method: 'net_version' }).catch(() => null),
     account
@@ -59,15 +59,15 @@ async function readProviderSnapshot(
     address: account,
     chainId: normalizeHexQuantity(chainId),
     networkId: typeof networkId === 'string' ? networkId : null,
-    balanceWei: normalizeHexQuantity(balanceWei),
+    balanceAtomsHex: normalizeHexQuantity(balanceAtomsHex),
   }
 }
 
-export function detectEthWalletProvider() {
+export function detectEvmWalletProvider() {
   return getEthereumProvider() != null
 }
 
-export async function readEthWalletSnapshot(): Promise<EthWalletSnapshot | null> {
+export async function readEvmWalletSnapshot(): Promise<EvmWalletSnapshot | null> {
   const provider = getEthereumProvider()
   if (!provider) return null
 
@@ -75,7 +75,7 @@ export async function readEthWalletSnapshot(): Promise<EthWalletSnapshot | null>
   return readProviderSnapshot(provider, firstAccount(accounts))
 }
 
-export async function connectEthWallet(): Promise<EthWalletSnapshot> {
+export async function connectEvmWallet(): Promise<EvmWalletSnapshot> {
   const provider = getEthereumProvider()
   if (!provider) {
     throw new Error('No injected EIP-1193 / MetaMask wallet provider was found.')
@@ -84,7 +84,7 @@ export async function connectEthWallet(): Promise<EthWalletSnapshot> {
   const accounts = await provider.request({ method: 'eth_requestAccounts' })
   const account = firstAccount(accounts)
   if (!account) {
-    throw new Error('The injected ETH wallet did not return a valid account.')
+    throw new Error('The injected EVM wallet did not return a valid USDB-chain account.')
   }
 
   return readProviderSnapshot(provider, account)

@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand};
 use std::ops::Range;
 use std::str::FromStr;
 use usdb_util::BALANCE_HISTORY_SERVICE_HTTP_PORT;
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
 #[derive(Parser)]
 #[command(name = "btc-rpc-cli")]
@@ -73,7 +73,7 @@ pub struct BalancesPosition {
 
 pub enum UserId {
     Address(Address<NetworkUnchecked>),
-    ScriptHash(USDBScriptHash),
+    ScriptHash(BtcScriptHash),
 }
 
 impl FromStr for UserId {
@@ -81,10 +81,10 @@ impl FromStr for UserId {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // First check if it's a valid Address by trying to parse it
-        // If that fails, try to parse it as a USDBScriptHash
+        // If that fails, try to parse it as a BtcScriptHash
         if let Ok(addr) = Address::<NetworkUnchecked>::from_str(s) {
             Ok(UserId::Address(addr))
-        } else if let Ok(script_hash) = s.parse::<USDBScriptHash>() {
+        } else if let Ok(script_hash) = s.parse::<BtcScriptHash>() {
             Ok(UserId::ScriptHash(script_hash))
         } else {
             let msg = format!("Invalid user ID: {}", s);
@@ -96,7 +96,7 @@ impl FromStr for UserId {
 }
 
 impl UserId {
-    pub fn to_script_hash(&self, network: Network) -> Result<USDBScriptHash, String> {
+    pub fn to_script_hash(&self, network: Network) -> Result<BtcScriptHash, String> {
         match self {
             UserId::Address(addr) => {
                 // First convert to a NetworkChecked address
@@ -106,7 +106,7 @@ impl UserId {
                     msg
                 })?;
 
-                Ok(checked_addr.script_pubkey().to_usdb_script_hash())
+                Ok(checked_addr.script_pubkey().to_btc_script_hash())
             }
             UserId::ScriptHash(sh) => Ok(*sh),
         }

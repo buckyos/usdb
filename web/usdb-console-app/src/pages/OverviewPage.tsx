@@ -33,7 +33,7 @@ function normalizeNumericIdentifier(value?: string | null) {
   }
 }
 
-function shouldShowEthwNetworkId(chainId?: string | null, networkId?: string | null) {
+function shouldShowUsdbNetworkId(chainId?: string | null, networkId?: string | null) {
   if (!networkId) return false
   if (!chainId) return true
   return normalizeNumericIdentifier(chainId) !== normalizeNumericIdentifier(networkId)
@@ -88,9 +88,9 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
           helpText={t('help.metrics.btcHeight', '')}
         />
         <MetricCard
-          label={t('metrics.ethwHeight')}
-          value={displayNumber(locale, data?.services.ethw.data?.block_number, t)}
-          helpText={t('help.metrics.ethwHeight', '')}
+          label={t('metrics.usdbHeight')}
+          value={displayNumber(locale, data?.services.usdb_chain.data?.block_number, t)}
+          helpText={t('help.metrics.usdbHeight', '')}
         />
       </section>
 
@@ -222,35 +222,35 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
             ]}
           />
           <ServiceSummaryCard
-            title="ETHW / Geth"
-            status={data ? serviceLabel(data.services.ethw, t) : '-'}
-            tone={data ? serviceTone(data.services.ethw) : 'neutral'}
+            title="USDB Chain / Geth"
+            status={data ? serviceLabel(data.services.usdb_chain, t) : '-'}
+            tone={data ? serviceTone(data.services.usdb_chain) : 'neutral'}
             items={[
               {
                 label: t('fields.chainId'),
-                value: displayText(data?.services.ethw.data?.chain_id, t),
+                value: displayText(data?.services.usdb_chain.data?.chain_id, t),
                 helpText: t('help.fields.chainId', ''),
               },
-              ...(shouldShowEthwNetworkId(
-                data?.services.ethw.data?.chain_id,
-                data?.services.ethw.data?.network_id,
+              ...(shouldShowUsdbNetworkId(
+                data?.services.usdb_chain.data?.chain_id,
+                data?.services.usdb_chain.data?.network_id,
               )
                 ? [
                     {
                       label: t('fields.networkId'),
-                      value: displayText(data?.services.ethw.data?.network_id, t),
+                      value: displayText(data?.services.usdb_chain.data?.network_id, t),
                       helpText: t('help.fields.networkId', ''),
                     },
                   ]
                 : []),
               {
                 label: t('fields.blockNumber'),
-                value: displayNumber(locale, data?.services.ethw.data?.block_number, t),
+                value: displayNumber(locale, data?.services.usdb_chain.data?.block_number, t),
                 helpText: t('help.fields.blockNumber', ''),
               },
               {
                 label: t('fields.latestBlockHash'),
-                value: displayText(data?.services.ethw.data?.latest_block_hash, t),
+                value: displayText(data?.services.usdb_chain.data?.latest_block_hash, t),
                 monospace: true,
                 helpText: t('help.fields.latestBlockHash', ''),
               },
@@ -258,14 +258,14 @@ export function OverviewPage({ data, locale, t }: OverviewPageProps) {
                 label: t('fields.latestBlockTime'),
                 value: displayDateTimeFromUnixSeconds(
                   locale,
-                  data?.services.ethw.data?.latest_block_time,
+                  data?.services.usdb_chain.data?.latest_block_time,
                   t,
                 ),
                 helpText: t('help.fields.latestBlockTime', ''),
               },
               {
                 label: t('fields.client'),
-                value: displayText(data?.services.ethw.data?.client_version, t),
+                value: displayText(data?.services.usdb_chain.data?.client_version, t),
                 helpText: t('help.fields.client', ''),
               },
             ]}

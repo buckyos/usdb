@@ -22,7 +22,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
-use usdb_util::{BTCRpcClient, BTCRpcClientRef};
+use usdb_util::{
+    ActivationRegistryError, ActiveVersionSet, BTCRpcClient, BTCRpcClientRef,
+    BtcActivationRegistry, embedded_btc_activation_registry,
+};
 
 #[path = "indexer/block_events.rs"]
 mod block_events;
@@ -138,6 +141,7 @@ impl ReorgRecoveryFaultInjector {
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
+    activation_registry: BtcActivationRegistry,
     block_hint_provider: Arc<dyn BlockHintProvider>,
     inscription_source: Arc<dyn InscriptionSource>,
 
@@ -200,6 +204,23 @@ impl Drop for BlockMutationCollectionGuard<'_> {
 
 impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
+        let activation_registry =
+            embedded_btc_activation_registry(config.config().bitcoin.network())
+                .map_err(|error| error.to_string())?
+                .clone();
+        let startup_versions = activation_registry
+            .lookup_active_version_set(config.config().usdb.genesis_block_height)
+            .map_err(|error| error.to_string())?;
+        startup_versions
+            .validate_btc_indexer_v1()
+            .map_err(|error| error.to_string())?;
+        info!(
+            "Activation registry loaded: module=indexer, registry_id={}, active_version_set_id={}, block_height={}",
+            activation_registry.activation_registry_id(),
+            startup_versions.active_version_set_id(),
+            config.config().usdb.genesis_block_height
+        );
+
         // Init btc client
         let btc_client = Arc::new(BTCRpcClient::new(
             config.config().bitcoin.rpc_url(),
@@ -219,6 +240,19 @@ impl InscriptionIndexer {
         // Init pass storage
         let miner_pass_storage = MinerPassStorage::new(&config.data_dir())?;
         let miner_pass_storage = Arc::new(miner_pass_storage);
+        if let Some(persisted_height) = miner_pass_storage.get_synced_btc_block_height()? {
+            let persisted_versions = activation_registry
+                .lookup_active_version_set(persisted_height)
+                .map_err(|error| error.to_string())?;
+            persisted_versions
+                .validate_btc_indexer_v1()
+                .map_err(|error| error.to_string())?;
+            info!(
+                "Persisted activation state validated: module=indexer, active_version_set_id={}, block_height={}",
+                persisted_versions.active_version_set_id(),
+                persisted_height
+            );
+        }
 
         let miner_pass_manager = Arc::new(MinerPassManager::new(
             config.clone(),
@@ -244,6 +278,7 @@ impl InscriptionIndexer {
 
         let ret = Self {
             config,
+            activation_registry,
             block_hint_provider,
             inscription_source,
 
@@ -284,8 +319,13 @@ impl InscriptionIndexer {
             config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
         ));
+        let activation_registry =
+            embedded_btc_activation_registry(config.config().bitcoin.network())
+                .expect("embedded activation registry must be valid")
+                .clone();
         Self {
             config,
+            activation_registry,
             block_hint_provider,
             inscription_source,
             transfer_tracker,
@@ -380,6 +420,23 @@ impl InscriptionIndexer {
 
     pub fn miner_pass_storage(&self) -> &MinerPassStorageRef {
         &self.miner_pass_storage
+    }
+
+    /// Returns the immutable activation registry embedded in this node binary.
+    pub fn activation_registry(&self) -> &BtcActivationRegistry {
+        &self.activation_registry
+    }
+
+    /// Resolves and validates the exact BTC-side version set active at one height.
+    pub fn active_version_set_at(
+        &self,
+        block_height: u32,
+    ) -> Result<ActiveVersionSet, ActivationRegistryError> {
+        let active_versions = self
+            .activation_registry
+            .lookup_active_version_set(block_height)?;
+        active_versions.validate_btc_indexer_v1()?;
+        Ok(active_versions)
     }
 
     pub fn pass_energy_manager(&self) -> &PassEnergyManagerRef {
@@ -831,7 +888,7 @@ impl InscriptionIndexer {
     }
 
     // Backfill exact-height upstream snapshot-history rows for already durable local
-    // heights. This lets historical ETHW-style validation resolve the upstream
+    // heights. This lets historical USDB-chain validation resolve the upstream
     // anchor that was in force at one exact BTC height even after head advances.
     async fn backfill_balance_history_snapshot_history(
         &self,
@@ -1233,6 +1290,10 @@ impl InscriptionIndexer {
         info!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
         let mut energy_finalized = false;
+
+        // Version selection must succeed before any per-block state is mutated.
+        self.active_version_set_at(height)
+            .map_err(|error| error.to_string())?;
 
         // Mark energy sync as pending first so crashes can be detected and repaired on restart.
         self.pass_energy_manager.begin_block_sync(height)?;

@@ -16,7 +16,7 @@ btc_rpc_password="${BTC_RPC_PASSWORD:-}"
 ord_data_dir="${ORD_DATA_DIR:-/data/ord}"
 ord_server_url="${ORD_SERVER_URL:-http://ord-server:28130}"
 balance_history_rpc_url="${BALANCE_HISTORY_RPC_URL:-http://balance-history:28110}"
-usdb_rpc_url="${USDB_RPC_URL:-http://usdb-indexer:28120}"
+usdb_indexer_rpc_url="${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28120}"
 world_sim_work_dir="${WORLD_SIM_WORK_DIR:-/data/world-sim}"
 world_simulator="${WORLD_SIMULATOR:-/opt/usdb/world-sim/regtest_world_simulator.py}"
 world_sim_bip39_wordlist="${WORLD_SIM_BIP39_WORDLIST:-/opt/usdb/world-sim/bip39-english.txt}"
@@ -35,9 +35,9 @@ ethw_identity_marker="${ETHW_IDENTITY_MARKER:-${ethw_data_dir}/bootstrap/ethw-si
 ethw_identity_marker_wait_secs="${ETHW_IDENTITY_MARKER_WAIT_SECS:-60}"
 ethw_identity_mode="${ETHW_IDENTITY_MODE:-none}"
 ethw_identity_seed="${ETHW_IDENTITY_SEED:-${world_sim_identity_seed}}"
-usdb_miner_address_override="${USDB_MINER_ADDRESS:-}"
-usdb_miner_agent_id="${USDB_MINER_AGENT_ID:-0}"
-resolved_usdb_miner_address=""
+usdb_chain_miner_address_override="${USDB_CHAIN_MINER_ADDRESS:-}"
+usdb_chain_miner_agent_id="${USDB_CHAIN_MINER_AGENT_ID:-0}"
+resolved_usdb_chain_miner_address=""
 
 miner_wallet_name="${MINER_WALLET_NAME:-usdb-world-miner}"
 wallet_prefix="${ORD_WALLET_PREFIX:-usdb-world-agent}"
@@ -248,7 +248,7 @@ wait_until_usdb_synced() {
   local start_ts now resp synced consensus_ready
   start_ts="$(date +%s)"
   while true; do
-    resp="$(json_rpc_call "${usdb_rpc_url}" "get_synced_block_height" || true)"
+    resp="$(json_rpc_call "${usdb_indexer_rpc_url}" "get_synced_block_height" || true)"
     synced="$(echo "${resp}" | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
@@ -259,7 +259,7 @@ res = d.get("result")
 print(int(res) if res is not None else 0)
 ' 2>/dev/null || true)"
     synced="${synced:-0}"
-    consensus_ready="$(rpc_consensus_ready "${usdb_rpc_url}" 2>/dev/null || echo 0)"
+    consensus_ready="$(rpc_consensus_ready "${usdb_indexer_rpc_url}" 2>/dev/null || echo 0)"
     if [[ "${synced}" -ge "${target_height}" ]] && [[ "${consensus_ready}" == "1" ]]; then
       return
     fi
@@ -538,8 +538,8 @@ prepare_runtime_environment() {
       exit 1
       ;;
   esac
-  if ! [[ "${usdb_miner_agent_id}" =~ ^[0-9]+$ ]]; then
-    echo "USDB_MINER_AGENT_ID must be a non-negative integer" >&2
+  if ! [[ "${usdb_chain_miner_agent_id}" =~ ^[0-9]+$ ]]; then
+    echo "USDB_CHAIN_MINER_AGENT_ID must be a non-negative integer" >&2
     exit 1
   fi
 }
@@ -549,7 +549,7 @@ wait_core_services() {
   wait_for_bitcoin_rpc
   wait_http_ready "ord-server" "${ord_server_url}/blockcount"
   wait_rpc_ready "balance-history" "${balance_history_rpc_url}" "get_network_type"
-  wait_rpc_ready "usdb-indexer" "${usdb_rpc_url}" "get_network_type"
+  wait_rpc_ready "usdb-indexer" "${usdb_indexer_rpc_url}" "get_network_type"
 }
 
 bootstrap_marker_matches() {
@@ -598,25 +598,25 @@ for key, value in expected.items():
 PY
   python3 - "${world_sim_bootstrap_marker}" \
     "${usdb_sim_protocol_alignment}" \
-    "${resolved_usdb_miner_address}" \
-    "${usdb_miner_agent_id}" <<'PY'
+    "${resolved_usdb_chain_miner_address}" \
+    "${usdb_chain_miner_agent_id}" <<'PY'
 import json
 import sys
 
-marker_path, usdb_sim_protocol_alignment, resolved_usdb_miner_address, usdb_miner_agent_id = sys.argv[1:]
+marker_path, usdb_sim_protocol_alignment, resolved_usdb_chain_miner_address, usdb_chain_miner_agent_id = sys.argv[1:]
 with open(marker_path, "r", encoding="utf-8") as fp:
     data = json.load(fp)
 
 expected = {
     "usdb_protocol_alignment": usdb_sim_protocol_alignment == "1",
-    "usdb_miner_address": resolved_usdb_miner_address,
-    "usdb_miner_agent_id": int(usdb_miner_agent_id),
+    "usdb_chain_miner_address": resolved_usdb_chain_miner_address,
+    "usdb_chain_miner_agent_id": int(usdb_chain_miner_agent_id),
 }
 
 for key, value in expected.items():
     actual = data.get(
         key,
-        False if key == "usdb_protocol_alignment" else (0 if key == "usdb_miner_agent_id" else ""),
+        False if key == "usdb_protocol_alignment" else (0 if key == "usdb_chain_miner_agent_id" else ""),
     )
     if actual != value:
         raise SystemExit(1)
@@ -680,8 +680,8 @@ write_bootstrap_marker() {
     "${world_sim_identity_seed}" \
     "${identity_scheme}" \
     "${usdb_sim_protocol_alignment}" \
-    "${resolved_usdb_miner_address}" \
-    "${usdb_miner_agent_id}" \
+    "${resolved_usdb_chain_miner_address}" \
+    "${usdb_chain_miner_agent_id}" \
     "${current_height}" \
     "${agent_wallets_csv}" \
     "${agent_addresses_csv}" <<'PY'
@@ -703,8 +703,8 @@ import time
     world_sim_identity_seed,
     identity_scheme,
     usdb_sim_protocol_alignment,
-    resolved_usdb_miner_address,
-    usdb_miner_agent_id,
+    resolved_usdb_chain_miner_address,
+    usdb_chain_miner_agent_id,
     current_height,
     agent_wallets_csv,
     agent_addresses_csv,
@@ -724,8 +724,8 @@ payload = {
     "identity_seed": world_sim_identity_seed,
     "identity_scheme": identity_scheme,
     "usdb_protocol_alignment": usdb_sim_protocol_alignment == "1",
-    "usdb_miner_address": resolved_usdb_miner_address,
-    "usdb_miner_agent_id": int(usdb_miner_agent_id),
+    "usdb_chain_miner_address": resolved_usdb_chain_miner_address,
+    "usdb_chain_miner_agent_id": int(usdb_chain_miner_agent_id),
     "bootstrap_height": int(current_height),
     "agent_wallets": [v for v in agent_wallets_csv.split(",") if v],
     "agent_addresses": [v for v in agent_addresses_csv.split(",") if v],
@@ -763,32 +763,32 @@ validate_evm_address() {
 resolve_usdb_protocol_alignment() {
   local address="" deadline now
 
-  resolved_usdb_miner_address=""
+  resolved_usdb_chain_miner_address=""
   if [[ "${usdb_sim_protocol_alignment}" != "1" ]]; then
     return 0
   fi
 
-  if [[ -n "${usdb_miner_address_override}" ]]; then
-    validate_evm_address "${usdb_miner_address_override}"
-    resolved_usdb_miner_address="${usdb_miner_address_override}"
-    log "Using USDB miner alignment address from environment: ${resolved_usdb_miner_address}"
+  if [[ -n "${usdb_chain_miner_address_override}" ]]; then
+    validate_evm_address "${usdb_chain_miner_address_override}"
+    resolved_usdb_chain_miner_address="${usdb_chain_miner_address_override}"
+    log "Using USDB-chain miner alignment address from environment: ${resolved_usdb_chain_miner_address}"
     return 0
   fi
 
   deadline="$(( $(date +%s) + ethw_identity_marker_wait_secs ))"
   while true; do
     if [[ -f "${ethw_identity_marker}" ]]; then
-      address="$(json_read_field "${ethw_identity_marker}" "usdb_miner_address")"
+      address="$(json_read_field "${ethw_identity_marker}" "usdb_chain_miner_address")"
       if [[ -n "${address}" ]]; then
         validate_evm_address "${address}"
-        resolved_usdb_miner_address="${address}"
-        log "Using USDB miner alignment address from marker ${ethw_identity_marker}: ${resolved_usdb_miner_address}"
+        resolved_usdb_chain_miner_address="${address}"
+        log "Using USDB-chain miner alignment address from marker ${ethw_identity_marker}: ${resolved_usdb_chain_miner_address}"
         return 0
       fi
     fi
     now="$(date +%s)"
     if (( now >= deadline )); then
-      echo "ETHW protocol alignment is enabled, but ETHW identity marker is unavailable or incomplete: ${ethw_identity_marker}" >&2
+      echo "USDB-chain protocol alignment is enabled, but the ethw-node runtime identity marker is unavailable or incomplete: ${ethw_identity_marker}" >&2
       exit 1
     fi
     sleep 1
@@ -1069,10 +1069,10 @@ run_simulator_batch() {
     --agent-wallets "${agent_wallets_csv}" \
     --agent-addresses "${agent_addresses_csv}" \
     --identity-seed "${world_sim_identity_seed}" \
-    --usdb-miner-address "${resolved_usdb_miner_address}" \
-    --usdb-miner-agent-id "${usdb_miner_agent_id}" \
+    --usdb-chain-miner-address "${resolved_usdb_chain_miner_address}" \
+    --usdb-chain-miner-agent-id "${usdb_chain_miner_agent_id}" \
     --balance-history-rpc-url "${balance_history_rpc_url}" \
-    --usdb-rpc-url "${usdb_rpc_url}" \
+    --usdb-indexer-rpc-url "${usdb_indexer_rpc_url}" \
     --sync-timeout-sec "${sync_timeout_sec}" \
     --blocks "${batch_blocks}" \
     --seed "${batch_seed}" \

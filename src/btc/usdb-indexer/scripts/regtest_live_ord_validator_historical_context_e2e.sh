@@ -13,7 +13,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-29932}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-29933}"
 BH_RPC_PORT="${BH_RPC_PORT:-29910}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-29920}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-29920}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-29930}"
 WALLET_NAME="${WALLET_NAME:-usdbvalidatorhist}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-validator-a}"
@@ -94,7 +94,7 @@ EOF
   pass_energy_resp="$(regtest_rpc_call_usdb_indexer "get_pass_energy" "[{\"inscription_id\":\"${pass_id}\",\"block_height\":${historical_height},\"mode\":\"at_or_before\"}]")"
   regtest_assert_json_expr "$pass_energy_resp" "data.get('error') is None" "True"
 
-  payload_file="$WORK_DIR/ethw_validator_block_payload.json"
+  payload_file="$WORK_DIR/usdb_validator_block_payload.json"
   regtest_write_validator_payload_v1 "$payload_file" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp"
   regtest_log "Wrote validator block-body payload v1: ${payload_file}"
 

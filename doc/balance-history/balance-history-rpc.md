@@ -231,8 +231,8 @@
       "expected_state": {
         "snapshot_id": "snapshot-expected-...",
         "stable_block_hash": "000000...",
-        "usdb_index_protocol_version": "1.0.0",
-        "usdb_index_formula_version": "pass-energy-formula:v1"
+        "balance_history_api_version": "1.0.0",
+        "balance_history_semantics_version": "balance-snapshot-at-or-before:v1"
       }
     }
   }],
@@ -254,9 +254,7 @@
     "stable_block_hash": "000000...",
     "stable_lag": 0,
     "balance_history_api_version": "1.0.0",
-    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_formula_version": "pass-energy-formula:v1",
-    "usdb_index_protocol_version": "1.0.0"
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1"
   },
   "snapshot_id": "....",
   "snapshot_id_hash_algo": "sha256",
@@ -271,8 +269,8 @@
 - 这条接口回答的是“高度 `H` 的历史 state ref”，不是当前 head 的 snapshot；
 - `context` 可选；不传时只返回该高度的历史 state ref；
 - 传入 `context.expected_state` 后，服务会对该高度的历史 state ref 做严格校验；
-- 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`；
-- protocol/formula selector 与目标高度记录的历史 identity 比较，不与当前进程常量比较；
+- 若历史 state ref 与 `expected_state` 不一致，会返回结构化共识错误，例如 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`；
+- `snapshot_id` 只承诺 balance-history 的 BTC anchor、API 和 query semantics，不包含 usdb-indexer formula、activation registry 或 active version set；这些 identity 由 usdb-indexer 的 `local_state_commit/system_state_id` 承诺；
 - 若高度合法，但该节点当前缺少构造该历史 state ref 所需的 block commit，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`；
 - 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
 - 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
@@ -285,13 +283,13 @@
 
 ```json
 {
-  "script_hash": "<USDBScriptHash>",
+  "script_hash": "<BtcScriptHash>",
   "block_height": 800000,
   "block_range": { "start": 700000, "end": 800000 }
 }
 ```
 
-- `script_hash`：必填，USDBScriptHash 字符串
+- `script_hash`：必填，`BtcScriptHash` 字符串，即 Bitcoin `scriptPubKey` 的 SHA-256 摘要反转字节序，与 Electrum RPC 的 script hash 表示一致
 - `block_height`：可选，指定高度查询
 - `block_range`：可选，区间查询，语义为 `[start, end)`
 
@@ -309,7 +307,7 @@
   "method": "get_address_balance",
   "params": [
     {
-      "script_hash": "<USDBScriptHash>",
+      "script_hash": "<BtcScriptHash>",
       "block_height": 800000,
       "block_range": null
     }
@@ -338,7 +336,7 @@
   "method": "get_address_balance",
   "params": [
     {
-      "script_hash": "<USDBScriptHash>",
+      "script_hash": "<BtcScriptHash>",
       "block_height": null,
       "block_range": { "start": 799000, "end": 800000 }
     }
@@ -361,7 +359,7 @@
 
 ```json
 {
-  "script_hashes": ["<USDBScriptHash-1>", "<USDBScriptHash-2>"],
+  "script_hashes": ["<BtcScriptHash-1>", "<BtcScriptHash-2>"],
   "block_height": null,
   "block_range": { "start": 799000, "end": 800000 }
 }
@@ -383,7 +381,7 @@
 
 ```json
 {
-  "script_hashes": ["<USDBScriptHash-1>", "<USDBScriptHash-2>"],
+  "script_hashes": ["<BtcScriptHash-1>", "<BtcScriptHash-2>"],
   "include_script_pubkey": false
 }
 ```
@@ -398,7 +396,7 @@
   "network": "regtest",
   "items": [
     {
-      "script_hash": "<USDBScriptHash>",
+      "script_hash": "<BtcScriptHash>",
       "found": true,
       "script_pubkey": null,
       "address": "bcrt1p...",
@@ -406,7 +404,7 @@
       "standard": true
     },
     {
-      "script_hash": "<missing-USDBScriptHash>",
+      "script_hash": "<missing-BtcScriptHash>",
       "found": false,
       "script_pubkey": null,
       "address": null,
@@ -434,8 +432,14 @@
 
 - `SNAPSHOT_NOT_READY` (`-32041`)
 - `HEIGHT_NOT_SYNCED` (`-32040`)
-- `PROTOCOL_VERSION_MISMATCH` (`-32051`)
-- `FORMULA_VERSION_MISMATCH` (`-32052`)
+- `SNAPSHOT_ID_MISMATCH` (`-32042`)
+- `BLOCK_HASH_MISMATCH` (`-32043`)
+- `VERSION_MISMATCH` (`-32044`)
+- `ACTIVATION_RECORD_NOT_FOUND` (`-32053`)
+- `ACTIVATION_RECORD_CONFLICT` (`-32054`)
+- `VERSION_NOT_SUPPORTED` (`-32055`)
+
+balance-history 不解释 USDB indexer formula，也不返回已删除的全局 protocol mismatch；其 snapshot identity 只承诺自身 API 与 query semantics。
 
 错误示例：
 
@@ -508,7 +512,7 @@ curl -s http://127.0.0.1:28010 \
 ```bash
 curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<USDBScriptHash>","block_height":800000,"block_range":null}],"id":2}'
+  -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<BtcScriptHash>","block_height":800000,"block_range":null}],"id":2}'
 ```
 
 ## 兼容性说明

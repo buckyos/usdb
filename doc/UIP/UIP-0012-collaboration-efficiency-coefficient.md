@@ -2,10 +2,10 @@ UIP: UIP-0012
 Title: Collaboration Efficiency Coefficient K
 Status: Draft
 Type: Standards Track
-Layer: ETHW Reward / Economic Policy
+Layer: USDB chain Reward / Economic Policy
 Created: 2026-04-29
 Requires: UIP-0000, UIP-0004, UIP-0006, UIP-0008, UIP-0009, UIP-0011
-Activation: ETHW network activation matrix; first official networks define K policy version before public launch
+Activation: USDB-chain network activation matrix; first official networks define K policy version before public launch
 
 # 摘要
 
@@ -21,8 +21,8 @@ Activation: ETHW network activation matrix; first official networks define K pol
 核心规则：
 
 - 当前区块的 `CE_N` 使用出块 Leader 在 UIP-0006 历史 context 下的 `collab_contribution`。
-- 历史平均值 `AE_N` 使用过去固定数量 ETHW reward blocks 的 `CE` rolling window。
-- rolling window 状态存入 ETHW reserved system account storage，并由 `stateRoot` 承诺。
+- 历史平均值 `AE_N` 使用过去固定数量 USDB chain reward blocks 的 `CE` rolling window。
+- rolling window 状态存入 USDB chain reserved system account storage，并由 `stateRoot` 承诺。
 - warmup 阶段不使用动态 `K`，固定 `k_bps = 10000`。
 - UIP-0011 只消费本文输出的 `k_bps`，不重新定义 `K` 的窗口或公式。
 
@@ -36,7 +36,7 @@ AE = 过去 1 周有效 Leader 出块时的协作矿工能量平均值
 0.8 < K <= 2.0
 ```
 
-如果每个区块都扫描过去一周区块来计算 `AE`，验证成本会随窗口长度增长，不适合作为 ETHW 共识路径。
+如果每个区块都扫描过去一周区块来计算 `AE`，验证成本会随窗口长度增长，不适合作为 USDB chain 共识路径。
 
 因此，本文把 `K` 设计为一个由 `stateRoot` 承诺的 rolling-window policy。每个区块只更新固定数量的 reserved storage slots，同时保留完整的 reorg 和历史审计语义。
 
@@ -57,7 +57,7 @@ AE = 过去 1 周有效 Leader 出块时的协作矿工能量平均值
 | `CE_N` | 区块 `N` 的 current collaboration energy sample。v1 使用当前 Leader 的 `collab_contribution`。 |
 | `AE_N` | 区块 `N` 计算 `K` 时使用的 historical average collaboration energy。 |
 | `k_bps` | `K` 的 basis points 表示。`10000` 表示 `K = 1.0`。 |
-| `K_WINDOW_BLOCKS` | rolling window 长度，使用固定 ETHW block 数量。 |
+| `K_WINDOW_BLOCKS` | rolling window 长度，使用固定 USDB block 数量。 |
 | `K warmup` | rolling window 未填满时固定 `k_bps = 10000` 的阶段。 |
 | `K ring buffer` | reserved system storage 中存放最近 `K_WINDOW_BLOCKS` 个 `CE` sample 的环形窗口。 |
 | `collaboration_efficiency_policy_version` | 本文定义的 `K` policy 版本。 |
@@ -74,7 +74,7 @@ AE = 过去 1 周有效 Leader 出块时的协作矿工能量平均值
 collaboration_efficiency_policy_version = 1
 ```
 
-该版本必须由 ETHW chain config、activation matrix 或 reward policy version 集合确定。
+该版本必须由 USDB chain config、activation matrix 或 reward policy version 集合确定。
 
 如果未来只修改 `K` 函数、窗口长度、warmup 规则或 `CE` sample 口径，而 UIP-0007 payload 字节布局不变，应升级 `collaboration_efficiency_policy_version` 或对应 reward policy version，不应强制升级 `payload_version`。
 
@@ -146,7 +146,7 @@ k_bps_N = K_BPS_BASE
 
 # Reserved System Storage
 
-`K` rolling window 状态必须存放在 ETHW reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
+`K` rolling window 状态必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
 建议定义：
 
@@ -247,13 +247,13 @@ else:
 
 # Reorg 语义
 
-ETHW reorg 时：
+USDB chain reorg 时：
 
-- `K` rolling window storage 必须随 ETHW state 回滚。
-- `K_LAST_*` 审计 slot 如存在，也必须随 ETHW state 回滚。
-- 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 USDB state，并得到同一 `CE_N`。
+- `K` rolling window storage 必须随 USDB chain state 回滚。
+- `K_LAST_*` 审计 slot 如存在，也必须随 USDB chain state 回滚。
+- 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 BTC-side USDB state，并得到同一 `CE_N`。
 
-USDB / BTC 侧 reorg 由 UIP-0006 / UIP-0008 的历史 selector 和 activation matrix 处理。USDB validator 不得使用 USDB current head 替换旧块的历史 state。
+BTC-side USDB reorg 由 UIP-0006 / UIP-0008 的历史 selector 和 activation matrix 处理。USDB validator 不得使用 BTC-side USDB current head 替换旧块的历史 state。
 
 # 与 UIP-0011 的关系
 
@@ -286,7 +286,7 @@ go-ethereum:
 
 - `/home/bucky/work/go-ethereum/core/state_transition.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
-- reward verifier / USDB companion integration
+- reward verifier / BTC-side `usdb-indexer` integration
 
 USDB indexer:
 
@@ -306,7 +306,7 @@ USDB indexer:
 - `CE >= 2 * AE` 时 `k_bps = 20000`。
 - ring buffer 覆盖旧 sample 后 `K_WINDOW_SUM_SLOT` 正确更新。
 - reorg 后 rolling window 和 last audit slots 正确回滚。
-- 旧块重放时不得使用当前 USDB state 的 `collab_contribution`。
+- 旧块重放时不得使用当前 BTC-side USDB state 的 `collab_contribution`。
 
 # 待审计问题
 

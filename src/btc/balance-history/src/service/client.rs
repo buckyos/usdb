@@ -10,7 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::ops::Range;
-use usdb_util::{ConsensusQueryContext, ConsensusRpcErrorData, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ConsensusQueryContext, ConsensusRpcErrorData};
 
 pub struct RpcClient {
     url: String,
@@ -147,7 +147,7 @@ impl RpcClient {
 
     pub async fn get_address_balance(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: BtcScriptHash,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<AddressBalance>, String> {
@@ -162,7 +162,7 @@ impl RpcClient {
 
     pub async fn get_addresses_balances(
         &self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<Vec<AddressBalance>>, String> {
@@ -178,7 +178,7 @@ impl RpcClient {
 
     pub async fn get_address_balance_delta(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: BtcScriptHash,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<Option<AddressBalance>>, String> {
@@ -193,7 +193,7 @@ impl RpcClient {
 
     pub async fn get_addresses_balances_delta(
         &self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         block_height: Option<u32>,
         block_range: Option<Range<u32>>,
     ) -> Result<Vec<Vec<Option<AddressBalance>>>, String> {
@@ -213,7 +213,7 @@ impl RpcClient {
 
     pub async fn get_address_balance_summary(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: BtcScriptHash,
         block_range: Range<u32>,
     ) -> Result<AddressBalanceSummary, String> {
         let params = json!([{
@@ -227,7 +227,7 @@ impl RpcClient {
 
     pub async fn get_address_balance_timeseries(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: BtcScriptHash,
         block_range: Range<u32>,
         bucket_size: u32,
     ) -> Result<Vec<AddressBalanceTimeseriesPoint>, String> {
@@ -247,7 +247,7 @@ impl RpcClient {
 
     pub async fn get_address_flow_buckets(
         &self,
-        script_hash: USDBScriptHash,
+        script_hash: BtcScriptHash,
         block_range: Range<u32>,
         bucket_size: u32,
     ) -> Result<Vec<AddressFlowBucket>, String> {
@@ -263,7 +263,7 @@ impl RpcClient {
 
     pub async fn resolve_script_hashes(
         &self,
-        script_hashes: Vec<USDBScriptHash>,
+        script_hashes: Vec<BtcScriptHash>,
         include_script_pubkey: bool,
     ) -> Result<ScriptHashResolutionResponse, String> {
         self.rpc_call::<ScriptHashResolutionResponse>(

@@ -183,14 +183,14 @@ export function BootstrapPage({ data, t }: BootstrapPageProps) {
       summary: data?.bootstrap.snapshot_marker ?? artifactFallback(),
     },
     {
-      title: t('artifacts.ethwInitMarker'),
-      helpText: t('help.artifacts.ethwInitMarker'),
-      summary: data?.bootstrap.ethw_init_marker ?? artifactFallback(),
+      title: t('artifacts.usdbInitMarker'),
+      helpText: t('help.artifacts.usdbInitMarker'),
+      summary: data?.bootstrap.usdb_init_marker ?? artifactFallback(),
     },
     {
-      title: t('artifacts.ethwGenesis'),
-      helpText: t('help.artifacts.ethwGenesis'),
-      summary: data?.bootstrap.ethw_genesis ?? artifactFallback(),
+      title: t('artifacts.usdbGenesis'),
+      helpText: t('help.artifacts.usdbGenesis'),
+      summary: data?.bootstrap.usdb_genesis ?? artifactFallback(),
     },
     {
       title: t('artifacts.sourcedaoState'),

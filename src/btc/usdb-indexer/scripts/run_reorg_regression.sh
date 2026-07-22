@@ -16,7 +16,7 @@ RUN_VALIDATOR_BLOCK_BODY_SUITE="${RUN_VALIDATOR_BLOCK_BODY_SUITE:-1}"
 BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-30132}"
 BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-30133}"
 BASE_BH_RPC_PORT="${BASE_BH_RPC_PORT:-30110}"
-BASE_USDB_RPC_PORT="${BASE_USDB_RPC_PORT:-30120}"
+BASE_USDB_INDEXER_RPC_PORT="${BASE_USDB_INDEXER_RPC_PORT:-30120}"
 BASE_ORD_RPC_PORT="${BASE_ORD_RPC_PORT:-30130}"
 PORT_STRIDE="${PORT_STRIDE:-100}"
 
@@ -36,7 +36,7 @@ run_case() {
   local btc_rpc_port="$((BASE_BTC_RPC_PORT + slot * PORT_STRIDE))"
   local btc_p2p_port="$((BASE_BTC_P2P_PORT + slot * PORT_STRIDE))"
   local bh_rpc_port="$((BASE_BH_RPC_PORT + slot * PORT_STRIDE))"
-  local usdb_rpc_port="$((BASE_USDB_RPC_PORT + slot * PORT_STRIDE))"
+  local usdb_indexer_rpc_port="$((BASE_USDB_INDEXER_RPC_PORT + slot * PORT_STRIDE))"
   local ord_rpc_port="$((BASE_ORD_RPC_PORT + slot * PORT_STRIDE))"
 
   run_cmd env \
@@ -45,7 +45,7 @@ run_case() {
     BTC_RPC_PORT="${btc_rpc_port}" \
     BTC_P2P_PORT="${btc_p2p_port}" \
     BH_RPC_PORT="${bh_rpc_port}" \
-    USDB_RPC_PORT="${usdb_rpc_port}" \
+    USDB_INDEXER_RPC_PORT="${usdb_indexer_rpc_port}" \
     ORD_RPC_PORT="${ord_rpc_port}" \
     bash "${SCRIPT_DIR}/${script_name}"
 }

@@ -26,7 +26,7 @@ class RunnerArgs:
     btc_rpc_port: int
     wallet_name: str
     balance_history_rpc_url: str
-    usdb_rpc_url: str
+    usdb_indexer_rpc_url: str
     target_height: int
     sync_timeout_sec: int
     send_amount_btc: str
@@ -166,12 +166,12 @@ class RegtestScenarioRunner:
         deadline = time.time() + self.args.sync_timeout_sec
         while time.time() < deadline:
             result = self.rpc_result(
-                self.rpc_call(self.args.usdb_rpc_url, "get_synced_block_height", []),
+                self.rpc_call(self.args.usdb_indexer_rpc_url, "get_synced_block_height", []),
                 "get_synced_block_height",
             )
             height = 0 if result is None else int(result)
             readiness = self.rpc_result(
-                self.rpc_call(self.args.usdb_rpc_url, "get_readiness", []),
+                self.rpc_call(self.args.usdb_indexer_rpc_url, "get_readiness", []),
                 "get_readiness",
             )
             consensus_ready = bool(
@@ -193,7 +193,7 @@ class RegtestScenarioRunner:
 
     def get_usdb_synced_height(self) -> int:
         result = self.rpc_result(
-            self.rpc_call(self.args.usdb_rpc_url, "get_synced_block_height", []),
+            self.rpc_call(self.args.usdb_indexer_rpc_url, "get_synced_block_height", []),
             "get_synced_block_height",
         )
         return 0 if result is None else int(result)
@@ -310,7 +310,7 @@ class RegtestScenarioRunner:
     ) -> dict[str, Any]:
         result = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_rpc_url,
+                self.args.usdb_indexer_rpc_url,
                 "get_pass_energy",
                 [
                     {
@@ -591,7 +591,7 @@ class RegtestScenarioRunner:
     ) -> dict[str, Any]:
         normalized = service.strip().lower()
         if normalized in {"usdb", "usdb-indexer", "usdb_indexer"}:
-            url = self.args.usdb_rpc_url
+            url = self.args.usdb_indexer_rpc_url
         elif normalized in {"balance-history", "balance_history", "bh"}:
             url = self.args.balance_history_rpc_url
         else:
@@ -637,7 +637,7 @@ class RegtestScenarioRunner:
             raise ScenarioError(f"Unexpected balance-history network: {bh_network}")
 
         usdb_network = self.rpc_result(
-            self.rpc_call(self.args.usdb_rpc_url, "get_network_type", []),
+            self.rpc_call(self.args.usdb_indexer_rpc_url, "get_network_type", []),
             "get_network_type",
         )
         if usdb_network != "regtest":
@@ -647,7 +647,7 @@ class RegtestScenarioRunner:
 
     def assert_usdb_rpc_info(self) -> None:
         result = self.rpc_result(
-            self.rpc_call(self.args.usdb_rpc_url, "get_rpc_info", []), "get_rpc_info"
+            self.rpc_call(self.args.usdb_indexer_rpc_url, "get_rpc_info", []), "get_rpc_info"
         )
         if not isinstance(result, dict):
             raise ScenarioError(f"Invalid get_rpc_info result: {result}")
@@ -667,7 +667,7 @@ class RegtestScenarioRunner:
         self, expected_height: int, expected_total_balance: int, expected_active_count: int
     ) -> None:
         sync_status = self.rpc_result(
-            self.rpc_call(self.args.usdb_rpc_url, "get_sync_status", []), "get_sync_status"
+            self.rpc_call(self.args.usdb_indexer_rpc_url, "get_sync_status", []), "get_sync_status"
         )
         if not isinstance(sync_status, dict):
             raise ScenarioError(f"Invalid get_sync_status result: {sync_status}")
@@ -684,7 +684,7 @@ class RegtestScenarioRunner:
 
         active_page = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_rpc_url,
+                self.args.usdb_indexer_rpc_url,
                 "get_active_passes_at_height",
                 [{"at_height": expected_height, "page": 0, "page_size": 64}],
             ),
@@ -703,7 +703,7 @@ class RegtestScenarioRunner:
 
         invalid_page = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_rpc_url,
+                self.args.usdb_indexer_rpc_url,
                 "get_invalid_passes",
                 [
                     {
@@ -730,7 +730,7 @@ class RegtestScenarioRunner:
 
         latest_snapshot = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_rpc_url, "get_latest_active_balance_snapshot", []
+                self.args.usdb_indexer_rpc_url, "get_latest_active_balance_snapshot", []
             ),
             "get_latest_active_balance_snapshot",
         )
@@ -752,7 +752,7 @@ class RegtestScenarioRunner:
 
         exact_snapshot = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_rpc_url,
+                self.args.usdb_indexer_rpc_url,
                 "get_active_balance_snapshot",
                 [{"block_height": expected_height}],
             ),
@@ -1228,7 +1228,7 @@ class RegtestScenarioRunner:
         self.wait_rpc_ready(
             "balance-history", self.args.balance_history_rpc_url, "get_network_type"
         )
-        self.wait_rpc_ready("usdb-indexer", self.args.usdb_rpc_url, "get_network_type")
+        self.wait_rpc_ready("usdb-indexer", self.args.usdb_indexer_rpc_url, "get_network_type")
         self.assert_networks()
         self.assert_usdb_rpc_info()
 
@@ -1306,7 +1306,7 @@ def parse_args() -> RunnerArgs:
     parser.add_argument("--btc-rpc-port", required=True, type=int)
     parser.add_argument("--wallet-name", required=True)
     parser.add_argument("--balance-history-rpc-url", required=True)
-    parser.add_argument("--usdb-rpc-url", required=True)
+    parser.add_argument("--usdb-indexer-rpc-url", required=True)
     parser.add_argument("--target-height", required=True, type=int)
     parser.add_argument("--sync-timeout-sec", default=300, type=int)
     parser.add_argument("--send-amount-btc", default="1.0")
@@ -1325,7 +1325,7 @@ def parse_args() -> RunnerArgs:
         btc_rpc_port=parsed.btc_rpc_port,
         wallet_name=parsed.wallet_name,
         balance_history_rpc_url=parsed.balance_history_rpc_url,
-        usdb_rpc_url=parsed.usdb_rpc_url,
+        usdb_indexer_rpc_url=parsed.usdb_indexer_rpc_url,
         target_height=parsed.target_height,
         sync_timeout_sec=parsed.sync_timeout_sec,
         send_amount_btc=parsed.send_amount_btc,

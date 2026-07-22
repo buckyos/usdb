@@ -96,7 +96,7 @@ ensure_ethw_chain_config() {
   mkdir -p "${manifests_dir}"
 
   [[ -f "${source_template}" ]] || {
-    echo "Missing ETHW chain bootstrap template: ${source_template}" >&2
+    echo "Missing USDB-chain bootstrap template: ${source_template}" >&2
     exit 1
   }
 
@@ -125,7 +125,7 @@ for (const field of ["genesisDifficulty", "minimumDifficulty"]) {
 
 if (updated) {
   fs.writeFileSync(targetConfig, `${JSON.stringify(target, null, 2)}\n`);
-  console.log(`Backfilled ETHW difficulty defaults in ${targetConfig}`);
+  console.log(`Backfilled USDB-chain difficulty defaults in ${targetConfig}`);
 }
 NODE
 }
@@ -193,7 +193,7 @@ validate_bootstrap_config_alignment() {
   source_dao_config="${manifests_dir}/sourcedao-bootstrap-config.json"
 
   [[ -f "${ethw_chain_config}" ]] || {
-    echo "Missing ETHW chain bootstrap config: ${ethw_chain_config}" >&2
+    echo "Missing USDB-chain bootstrap config: ${ethw_chain_config}" >&2
     exit 1
   }
   [[ -f "${source_dao_config}" ]] || {
@@ -321,7 +321,7 @@ ensure_ethw_genesis() {
   ensure_ethw_image_exists
   ensure_source_dao_artifacts
   [[ -f "${chain_config_file}" ]] || {
-    echo "Missing ETHW chain bootstrap config: ${chain_config_file}" >&2
+    echo "Missing USDB-chain bootstrap config: ${chain_config_file}" >&2
     exit 1
   }
 

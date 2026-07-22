@@ -10,12 +10,12 @@ use ord::{InscriptionId, ParsedEnvelope};
 use ordinals::SatPoint;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use usdb_util::{BTCRpcClient, BTCRpcClientRef, USDBScriptHash};
+use usdb_util::{BTCRpcClient, BTCRpcClientRef, BtcScriptHash};
 
 pub struct InscriptionCreateInfo {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<USDBScriptHash>,
+    pub address: Option<BtcScriptHash>,
     pub commit_txid: Txid,
     pub commit_outpoint: OutPoint,
 }
@@ -23,7 +23,7 @@ pub struct InscriptionCreateInfo {
 #[derive(Clone)]
 pub struct TransferTrackSeed {
     pub inscription_id: InscriptionId,
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
     pub satpoint: SatPoint,
 }
 
@@ -207,7 +207,7 @@ impl InscriptionTransferTracker {
     pub async fn add_new_inscription(
         &self,
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         satpoint: SatPoint,
     ) -> Result<(), String> {
         let mut inscriptions = self.inscriptions.lock().unwrap();

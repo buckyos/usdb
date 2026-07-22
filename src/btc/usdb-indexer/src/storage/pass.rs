@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 // Key for storing the last synced BTC block height
 const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
@@ -39,7 +39,7 @@ pub struct MinerPassInfo {
 
     pub mint_txid: Txid,
     pub mint_block_height: u32,
-    pub mint_owner: USDBScriptHash, // The owner address who minted the pass
+    pub mint_owner: BtcScriptHash, // The owner address who minted the pass
 
     pub satpoint: SatPoint, // The satpoint of the inscription, maybe changed after transfer
 
@@ -49,28 +49,28 @@ pub struct MinerPassInfo {
     pub usdb_main: String,
     pub leader_pass_id: Option<InscriptionId>,
     pub leader_btc_addr: Option<String>,
-    pub leader_btc_owner: Option<USDBScriptHash>,
+    pub leader_btc_owner: Option<BtcScriptHash>,
     pub prev: Vec<InscriptionId>,
     pub invalid_code: Option<String>,
     pub invalid_reason: Option<String>,
 
     // Current owner address of the pass, when the pass is transferred,
     // the owner changes and state changed to Dormant by default
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
     pub state: MinerPassState,
 }
 
 #[derive(Clone, Debug)]
 pub struct ValidMinerPassInfo {
     pub inscription_id: InscriptionId,
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
     pub satpoint: SatPoint,
 }
 
 #[derive(Clone, Debug)]
 pub struct ActiveMinerPassInfo {
     pub inscription_id: InscriptionId,
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
 }
 
 pub struct MinerPassSnapshotInfo {
@@ -95,7 +95,7 @@ pub struct MinerPassHistoryInfo {
     pub block_height: u32,
     pub event_type: String,
     pub state: MinerPassState,
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
     pub satpoint: SatPoint,
 }
 
@@ -2243,8 +2243,8 @@ impl MinerPassStorage {
         event_type: &str,
         prev_state: Option<MinerPassState>,
         new_state: MinerPassState,
-        prev_owner: Option<USDBScriptHash>,
-        new_owner: USDBScriptHash,
+        prev_owner: Option<BtcScriptHash>,
+        new_owner: BtcScriptHash,
         prev_satpoint: Option<SatPoint>,
         new_satpoint: SatPoint,
     ) -> Result<(), String> {
@@ -2300,8 +2300,8 @@ impl MinerPassStorage {
         event_type: &str,
         prev_state: Option<MinerPassState>,
         new_state: MinerPassState,
-        prev_owner: Option<USDBScriptHash>,
-        new_owner: USDBScriptHash,
+        prev_owner: Option<BtcScriptHash>,
+        new_owner: BtcScriptHash,
         prev_satpoint: Option<SatPoint>,
         new_satpoint: SatPoint,
     ) -> Result<(), String> {
@@ -2406,7 +2406,7 @@ impl MinerPassStorage {
     pub fn transfer_owner(
         &self,
         inscription_id: &InscriptionId,
-        new_owner: &USDBScriptHash,
+        new_owner: &BtcScriptHash,
         new_satpoint: &SatPoint,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
@@ -2450,7 +2450,7 @@ impl MinerPassStorage {
     pub fn transfer_owner_at_height(
         &self,
         inscription_id: &InscriptionId,
-        new_owner: &USDBScriptHash,
+        new_owner: &BtcScriptHash,
         new_satpoint: &SatPoint,
         block_height: u32,
     ) -> Result<(), String> {
@@ -2733,7 +2733,7 @@ impl MinerPassStorage {
 
         let leader_btc_owner = match row.get::<_, Option<String>>("leader_btc_owner") {
             Ok(Some(value)) if value.is_empty() => None,
-            Ok(Some(value)) => Some(value.parse::<USDBScriptHash>().map_err(|e| {
+            Ok(Some(value)) => Some(value.parse::<BtcScriptHash>().map_err(|e| {
                 let msg = format!(
                     "Failed to parse leader_btc_owner field from miner pass row {}: {}",
                     value, e
@@ -2964,7 +2964,7 @@ impl MinerPassStorage {
                 error!("{}", msg);
                 msg
             })?
-            .parse::<USDBScriptHash>()
+            .parse::<BtcScriptHash>()
             .map_err(|e| {
                 let msg = format!("Failed to parse new_owner from history row: {}", e);
                 error!("{}", msg);
@@ -3093,7 +3093,7 @@ impl MinerPassStorage {
     // There is one an at most one active mint pass per owner at any time
     pub fn get_last_active_mint_pass_by_owner(
         &self,
-        owner: &USDBScriptHash,
+        owner: &BtcScriptHash,
     ) -> Result<Option<MinerPassInfo>, String> {
         let conn = self.conn.lock().unwrap();
 
@@ -3501,7 +3501,7 @@ impl MinerPassStorage {
     /// as a storage invariant violation.
     pub fn get_owner_active_standard_pass_from_history_at_height(
         &self,
-        owner: &USDBScriptHash,
+        owner: &BtcScriptHash,
         block_height: u32,
     ) -> Result<Option<MinerPassSnapshotInfo>, String> {
         let conn = self.conn.lock().unwrap();
@@ -4107,7 +4107,7 @@ impl MinerPassStorage {
         page: usize,
         page_size: usize,
         block_height: u32,
-        leader_btc_owner: &USDBScriptHash,
+        leader_btc_owner: &BtcScriptHash,
     ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
         let leader_value = leader_btc_owner.to_string();
         self.get_active_collab_passes_by_leader_ref_from_history_at_height(
@@ -4343,7 +4343,7 @@ impl MinerPassStorage {
                     error!("{}", msg);
                     msg
                 })?
-                .parse::<USDBScriptHash>()
+                .parse::<BtcScriptHash>()
                 .map_err(|e| {
                     let msg = format!("Failed to parse owner from history row: {}", e);
                     error!("{}", msg);
@@ -4504,7 +4504,7 @@ impl MinerPassStorage {
 
     pub fn get_owner_pass_count_from_history_at_height_by_states(
         &self,
-        owner: &USDBScriptHash,
+        owner: &BtcScriptHash,
         block_height: u32,
         states: &[MinerPassState],
     ) -> Result<u64, String> {
@@ -4569,7 +4569,7 @@ impl MinerPassStorage {
 
     pub fn get_owner_passes_by_page_from_history_at_height_by_states(
         &self,
-        owner: &USDBScriptHash,
+        owner: &BtcScriptHash,
         block_height: u32,
         states: &[MinerPassState],
         page: usize,
@@ -4843,7 +4843,7 @@ impl MinerPassStorage {
 
     pub fn get_owner_active_pass_from_history_at_height(
         &self,
-        owner: &USDBScriptHash,
+        owner: &BtcScriptHash,
         block_height: u32,
     ) -> Result<Option<ActiveMinerPassInfo>, String> {
         let conn = self.conn.lock().unwrap();
@@ -4928,7 +4928,7 @@ impl MinerPassStorage {
                     error!("{}", msg);
                     msg
                 })?
-                .parse::<USDBScriptHash>()
+                .parse::<BtcScriptHash>()
                 .map_err(|e| {
                     let msg = format!("Failed to parse owner from owner active history row: {}", e);
                     error!("{}", msg);
@@ -5173,7 +5173,7 @@ mod tests {
     use bitcoincore_rpc::bitcoin::hashes::Hash;
     use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     fn test_data_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -5185,9 +5185,9 @@ mod tests {
         dir
     }
 
-    fn script_hash(tag: u8) -> USDBScriptHash {
+    fn script_hash(tag: u8) -> BtcScriptHash {
         let script = ScriptBuf::from(vec![tag; 32]);
-        script.to_usdb_script_hash()
+        script.to_btc_script_hash()
     }
 
     fn inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -5210,7 +5210,7 @@ mod tests {
     fn make_pass(
         ins_tag: u8,
         index: u32,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         state: MinerPassState,
         height: u32,
     ) -> MinerPassInfo {
@@ -5238,7 +5238,7 @@ mod tests {
     fn make_collab_pass(
         ins_tag: u8,
         index: u32,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         state: MinerPassState,
         height: u32,
         leader_pass_id: InscriptionId,
@@ -5253,10 +5253,10 @@ mod tests {
     fn make_collab_pass_with_leader_btc_owner(
         ins_tag: u8,
         index: u32,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         state: MinerPassState,
         height: u32,
-        leader_btc_owner: USDBScriptHash,
+        leader_btc_owner: BtcScriptHash,
     ) -> MinerPassInfo {
         let mut pass = make_pass(ins_tag, index, owner, state, height);
         pass.pass_kind = MinerPassKind::Collab;
@@ -5272,7 +5272,7 @@ mod tests {
         block_height: u32,
         event_type: &'static str,
         state: MinerPassState,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         satpoint: SatPoint,
     }
 
@@ -5312,14 +5312,14 @@ mod tests {
         *seed
     }
 
-    fn random_owner(seed: &mut u64) -> USDBScriptHash {
+    fn random_owner(seed: &mut u64) -> BtcScriptHash {
         let tag = ((lcg_next(seed) % 16) as u8).wrapping_add(10);
         script_hash(tag)
     }
 
     fn has_other_active_owner(
         snapshots: &HashMap<InscriptionId, ModelPassEvent>,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         self_pass: Option<&InscriptionId>,
     ) -> bool {
         snapshots.iter().any(|(id, event)| {
@@ -5333,7 +5333,7 @@ mod tests {
         seed: &mut u64,
         snapshots: &HashMap<InscriptionId, ModelPassEvent>,
         self_pass: Option<&InscriptionId>,
-    ) -> Option<USDBScriptHash> {
+    ) -> Option<BtcScriptHash> {
         for _ in 0..64 {
             let owner = random_owner(seed);
             if !has_other_active_owner(snapshots, owner, self_pass) {
@@ -6155,7 +6155,7 @@ mod tests {
             }
 
             // Compare active-pass snapshot page query vs reference model.
-            let expected_active: HashMap<InscriptionId, USDBScriptHash> = pass_ids
+            let expected_active: HashMap<InscriptionId, BtcScriptHash> = pass_ids
                 .iter()
                 .filter_map(|pass_id| {
                     model_events
@@ -6172,7 +6172,7 @@ mod tests {
                 .collect();
 
             let actual_rows = load_all_active_from_history(&storage, query_height, 3);
-            let mut actual_active = HashMap::<InscriptionId, USDBScriptHash>::new();
+            let mut actual_active = HashMap::<InscriptionId, BtcScriptHash>::new();
             let mut seen_pass = HashSet::<InscriptionId>::new();
             for row in actual_rows {
                 assert!(

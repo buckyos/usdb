@@ -100,7 +100,7 @@
 当前已经存在的脚本型 e2e：
 
 - BTC regtest / ord / `balance-history` / `usdb-indexer`
-- ETHW reward e2e
+- USDB-chain reward e2e
 - SourceDAO bootstrap smoke
 
 这些测试先保持现状，不强行搬进 Docker 编排。
@@ -611,7 +611,7 @@ usdb/docker/
 9. 下一阶段：补 `ord` profile 和更完整的 dev-sim 编排
 10. 下一阶段：补 DAO / Dividend 初始化 hook
 11. 已完成：补 single-node ETHW full-sim 与 deterministic miner identity
-12. 已完成：补 USDB miner identity 与 world-sim miner-pass `usdb_main` 对齐
+12. 已完成：补 USDB-chain miner account 与 world-sim miner-pass `usdb_main` 对齐
 
 原因：
 

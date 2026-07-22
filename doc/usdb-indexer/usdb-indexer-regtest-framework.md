@@ -85,7 +85,7 @@
    - 也覆盖 ETHW 风格历史校验请求在 head 前进、same-height reorg、历史窗口上升、历史辅助数据缺失时的错误分流
 4. validator block-body 层：
    - `regtest_live_ord_validator_*`
-   - 负责更贴近 ETHW block body 的 `external_state + miner_selection + candidate_passes`
+   - 负责更贴近 USDB block body 的 `external_state + miner_selection + candidate_passes`
    - 覆盖单 pass、多 pass、真实 energy 竞争、payload 篡改、历史竞争态、same-height reorg、retention / history-not-available
 5. world-sim 压力层：
    - `regtest_world_sim.sh`
@@ -177,7 +177,7 @@ bash src/btc/usdb-indexer/scripts/run_reorg_regression.sh
 1. `BASE_BTC_RPC_PORT`
 2. `BASE_BTC_P2P_PORT`
 3. `BASE_BH_RPC_PORT`
-4. `BASE_USDB_RPC_PORT`
+4. `BASE_USDB_INDEXER_RPC_PORT`
 5. `BASE_ORD_RPC_PORT`
 
 这样每条场景即使顺序执行，也不会依赖上一条场景的端口释放时序。

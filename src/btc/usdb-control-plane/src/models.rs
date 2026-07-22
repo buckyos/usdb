@@ -117,7 +117,7 @@ pub struct ServicesSummary {
     pub btc_node: ServiceProbe<BtcNodeServiceSummary>,
     pub balance_history: ServiceProbe<BalanceHistoryServiceSummary>,
     pub usdb_indexer: ServiceProbe<UsdbIndexerServiceSummary>,
-    pub ethw: ServiceProbe<EthwServiceSummary>,
+    pub usdb_chain: ServiceProbe<UsdbChainServiceSummary>,
     pub ord: ServiceProbe<OrdServiceSummary>,
 }
 
@@ -126,7 +126,7 @@ pub struct CapabilitiesSummary {
     pub ord_available: bool,
     pub btc_console_mode: String,
     pub btc_runtime_profile: String,
-    pub ethw_runtime_profile: String,
+    pub usdb_chain_runtime_profile: String,
     /// Versioned UIP-0006 capability discovered from `usdb-indexer`.
     pub usdb_economic_state_view: UsdbEconomicStateViewCapabilitySummary,
 }
@@ -151,7 +151,7 @@ pub struct BtcWorldSimIdentity {
     pub agent_id: usize,
     pub wallet_name: String,
     pub owner_address: String,
-    pub is_usdb_miner_aligned: bool,
+    pub is_usdb_chain_miner_aligned: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,10 +176,10 @@ pub struct BtcWorldSimDevSignerResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct EthwDevIdentityResponse {
-    pub ethw_chain_id: Option<String>,
-    pub ethw_network_id: Option<String>,
-    pub ethw_runtime_profile: String,
+pub struct UsdbChainDevIdentityResponse {
+    pub usdb_chain_id: Option<String>,
+    pub usdb_network_id: Option<String>,
+    pub usdb_chain_runtime_profile: String,
     pub available: bool,
     pub marker_path: String,
     pub address: Option<String>,
@@ -189,17 +189,17 @@ pub struct EthwDevIdentityResponse {
     pub error: Option<String>,
 }
 
-/// User-facing ETHW identity status for one selected EVM address.
+/// User-facing USDB-chain identity status for one selected EVM address.
 ///
 /// This endpoint-backed shape keeps the console identity page consistent across
 /// browser-wallet, development-signer, and manual-address modes.
 #[derive(Debug, Clone, Serialize)]
-pub struct EthwAddressStatusResponse {
-    pub ethw_chain_id: Option<String>,
-    pub ethw_network_id: Option<String>,
-    pub ethw_runtime_profile: String,
+pub struct UsdbChainAddressStatusResponse {
+    pub usdb_chain_id: Option<String>,
+    pub usdb_network_id: Option<String>,
+    pub usdb_chain_runtime_profile: String,
     pub address: String,
-    pub balance_wei: Option<String>,
+    pub balance_atoms_hex: Option<String>,
     pub latest_block_number: Option<String>,
     pub available: bool,
     pub error: Option<String>,
@@ -209,8 +209,8 @@ pub struct EthwAddressStatusResponse {
 pub struct BootstrapSummary {
     pub bootstrap_manifest: ArtifactSummary,
     pub snapshot_marker: ArtifactSummary,
-    pub ethw_init_marker: ArtifactSummary,
-    pub ethw_genesis: ArtifactSummary,
+    pub usdb_init_marker: ArtifactSummary,
+    pub usdb_genesis: ArtifactSummary,
     pub sourcedao_bootstrap_state: ArtifactSummary,
     pub sourcedao_bootstrap_marker: ArtifactSummary,
     pub steps: Vec<BootstrapStepSummary>,
@@ -325,7 +325,7 @@ pub struct BtcNodeServiceSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct EthwServiceSummary {
+pub struct UsdbChainServiceSummary {
     pub client_version: Option<String>,
     pub chain_id: Option<String>,
     pub network_id: Option<String>,
@@ -428,7 +428,7 @@ pub struct BitcoinBlockHeader {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct EthBlockHeader {
+pub struct UsdbChainBlockHeader {
     pub hash: Option<String>,
     pub timestamp: String,
 }

@@ -20,16 +20,17 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::watch;
+use usdb_util::{
+    ActivationRegistryError, ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+    ConsensusStateReference, LocalStateActiveBalanceSnapshot, LocalStatePassCommitIdentity,
+    USDB_INDEXER_SERVICE_NAME, VersionFamily,
+};
+use usdb_util::{BtcScriptHash, parse_script_hash_any};
 #[cfg(test)]
 use usdb_util::{
     CONSENSUS_SOURCE_CHAIN_BTC, USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES,
     build_consensus_snapshot_id,
 };
-use usdb_util::{
-    ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusStateReference,
-    LocalStateActiveBalanceSnapshot, LocalStatePassCommitIdentity, USDB_INDEXER_SERVICE_NAME,
-};
-use usdb_util::{USDBScriptHash, parse_script_hash_any};
 
 fn encode_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -367,6 +368,50 @@ impl UsdbIndexerRpcServer {
             .map_err(Self::to_internal_error)
     }
 
+    fn to_activation_error(&self, block_height: u32, error: ActivationRegistryError) -> JsonError {
+        let code = match &error {
+            ActivationRegistryError::ActivationRecordNotFound(_) => {
+                ConsensusRpcErrorCode::ActivationRecordNotFound
+            }
+            ActivationRegistryError::VersionNotSupported {
+                family: VersionFamily::CommitProtocolVersion,
+                ..
+            } => ConsensusRpcErrorCode::CommitProtocolVersionMismatch,
+            ActivationRegistryError::VersionNotSupported {
+                family:
+                    VersionFamily::EnergyFormulaVersion
+                    | VersionFamily::EffectiveEnergyFormulaVersion
+                    | VersionFamily::LevelFormulaVersion,
+                ..
+            } => ConsensusRpcErrorCode::FormulaVersionMismatch,
+            ActivationRegistryError::VersionNotSupported { .. } => {
+                ConsensusRpcErrorCode::VersionNotSupported
+            }
+            ActivationRegistryError::ActivationRecordConflict(_)
+            | ActivationRegistryError::Parse(_)
+            | ActivationRegistryError::UnsupportedSchemaVersion(_)
+            | ActivationRegistryError::InvalidRecord(_) => {
+                ConsensusRpcErrorCode::ActivationRecordConflict
+            }
+        };
+        let mut data = ConsensusRpcErrorData::new(USDB_INDEXER_SERVICE_NAME);
+        data.requested_height = Some(block_height);
+        data.local_synced_height = self.synced_height().ok().flatten();
+        data.actual_state.activation_registry_id =
+            Some(self.indexer.activation_registry().activation_registry_id());
+        data.detail = Some(error.to_string());
+        Self::to_consensus_error(code, data)
+    }
+
+    fn active_version_set_at(
+        &self,
+        block_height: u32,
+    ) -> Result<usdb_util::ActiveVersionSet, JsonError> {
+        self.indexer
+            .active_version_set_at(block_height)
+            .map_err(|error| self.to_activation_error(block_height, error))
+    }
+
     /// Build the current externally visible state reference that is attached to
     /// consensus-facing RPC errors. This lets callers compare the service's
     /// actual state with the state they expected to query against.
@@ -380,19 +425,18 @@ impl UsdbIndexerRpcServer {
             .map(ConsensusStateReference::from)
             .unwrap_or_default();
 
-        // Current-state errors expose the running protocol/formula pair.
-        // Historical queries instead use the versions recorded by the selected
-        // snapshot identity so replay never drifts to the current binary.
         if snapshot.is_some() || local_state.is_some() || system_state.is_some() {
-            reference.usdb_index_protocol_version = Some(USDB_INDEX_PROTOCOL_VERSION.to_string());
-            reference.usdb_index_formula_version = Some(USDB_INDEX_FORMULA_VERSION.to_string());
+            reference.activation_registry_id =
+                Some(self.indexer.activation_registry().activation_registry_id());
         }
 
         if let Some(local_state) = local_state {
+            reference.active_version_set_id = Some(local_state.active_version_set_id.clone());
             reference.local_state_commit = Some(local_state.local_state_commit.clone());
         }
 
         if let Some(system_state) = system_state {
+            reference.active_version_set_id = Some(system_state.active_version_set_id.clone());
             reference.system_state_id = Some(system_state.system_state_id.clone());
             reference.local_state_commit = Some(system_state.local_state_commit.clone());
         }
@@ -554,7 +598,7 @@ impl UsdbIndexerRpcServer {
         Ok(local_state)
     }
 
-    /// Require the top-level system-state identity that ETHW-style consumers
+    /// Require the top-level system-state identity that USDB-chain consumers
     /// use as the fixed external state reference for validation.
     fn require_system_state_info(&self) -> Result<SystemStateInfo, JsonError> {
         let snapshot = self.require_upstream_snapshot_info()?;
@@ -940,8 +984,8 @@ impl UsdbIndexerRpcServer {
         require_cursor_field_match!(stable_block_hash);
         require_cursor_field_match!(balance_history_api_version);
         require_cursor_field_match!(balance_history_semantics_version);
-        require_cursor_field_match!(usdb_index_protocol_version);
-        require_cursor_field_match!(usdb_index_formula_version);
+        require_cursor_field_match!(activation_registry_id);
+        require_cursor_field_match!(active_version_set_id);
         require_cursor_field_match!(local_state_commit);
         require_cursor_field_match!(system_state_id);
         Ok(())
@@ -1024,6 +1068,11 @@ impl UsdbIndexerRpcServer {
         require_latest_balance_snapshot_consistency: bool,
     ) -> Result<LocalStateCommitInfo, JsonError> {
         let synced_height = snapshot.local_synced_block_height;
+        let active_version_set = self.active_version_set_at(synced_height)?;
+        let commit_protocol_version = active_version_set
+            .require_string(VersionFamily::CommitProtocolVersion)
+            .map_err(|error| self.to_activation_error(synced_height, error))?
+            .to_string();
         let latest_pass_block_commit = self
             .indexer
             .miner_pass_storage()
@@ -1094,6 +1143,9 @@ impl UsdbIndexerRpcServer {
         };
 
         Ok(LocalStateCommitInfo::from(LocalStateCommitInfoSeed {
+            activation_registry_id: self.indexer.activation_registry().activation_registry_id(),
+            active_version_set,
+            commit_protocol_version,
             local_synced_block_height: synced_height,
             upstream_snapshot_id: snapshot.snapshot_id.clone(),
             latest_pass_block_commit,
@@ -1287,59 +1339,44 @@ impl UsdbIndexerRpcServer {
             ));
         }
 
-        if let Some(expected_usdb_protocol_version) =
-            expected_state.usdb_index_protocol_version.as_ref()
-            && expected_usdb_protocol_version
-                != &state_ref
-                    .snapshot_info
-                    .consensus_identity
-                    .usdb_index_protocol_version
+        if let Some(expected_registry_id) = expected_state.activation_registry_id.as_ref()
+            && expected_registry_id != &state_ref.local_state_commit_info.activation_registry_id
         {
             return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::ProtocolVersionMismatch,
+                ConsensusRpcErrorCode::ActiveVersionSetMismatch,
                 self.build_consensus_error_data_for_state(
                     Some(block_height),
                     expected_state.clone(),
                     actual_state,
                     Some(format!(
-                        "Expected usdb-index protocol version {} at height {}, got {}",
-                        expected_usdb_protocol_version,
+                        "Expected activation registry id {} at height {}, got {}",
+                        expected_registry_id,
                         block_height,
-                        state_ref
-                            .snapshot_info
-                            .consensus_identity
-                            .usdb_index_protocol_version
+                        state_ref.local_state_commit_info.activation_registry_id
                     )),
                 )
-                .with_mismatch_field("usdb_index_protocol_version"),
+                .with_mismatch_field("activation_registry_id"),
             ));
         }
 
-        if let Some(expected_usdb_formula_version) =
-            expected_state.usdb_index_formula_version.as_ref()
-            && expected_usdb_formula_version
-                != &state_ref
-                    .snapshot_info
-                    .consensus_identity
-                    .usdb_index_formula_version
+        if let Some(expected_active_version_set_id) = expected_state.active_version_set_id.as_ref()
+            && expected_active_version_set_id
+                != &state_ref.local_state_commit_info.active_version_set_id
         {
             return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::FormulaVersionMismatch,
+                ConsensusRpcErrorCode::ActiveVersionSetMismatch,
                 self.build_consensus_error_data_for_state(
                     Some(block_height),
                     expected_state.clone(),
                     actual_state,
                     Some(format!(
-                        "Expected usdb-index formula version {} at height {}, got {}",
-                        expected_usdb_formula_version,
+                        "Expected active version-set id {} at height {}, got {}",
+                        expected_active_version_set_id,
                         block_height,
-                        state_ref
-                            .snapshot_info
-                            .consensus_identity
-                            .usdb_index_formula_version
+                        state_ref.local_state_commit_info.active_version_set_id
                     )),
                 )
-                .with_mismatch_field("usdb_index_formula_version"),
+                .with_mismatch_field("active_version_set_id"),
             ));
         }
 
@@ -1545,7 +1582,7 @@ impl UsdbIndexerRpcServer {
         })
     }
 
-    fn parse_owner(&self, value: &str) -> Result<USDBScriptHash, JsonError> {
+    fn parse_owner(&self, value: &str) -> Result<BtcScriptHash, JsonError> {
         parse_script_hash_any(value, &self.config.config().bitcoin.network())
             .map_err(|e| Self::to_invalid_params(format!("Invalid owner {}: {}", value, e)))
     }
@@ -2107,6 +2144,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             economic_state_view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
             candidate_set_selection_rule: CANDIDATE_SET_SELECTION_RULE.to_string(),
             economic_page_max_limit: USDB_ECONOMIC_PAGE_MAX_LIMIT,
+            activation_registry_id: self.indexer.activation_registry().activation_registry_id(),
         })
     }
 
@@ -3198,9 +3236,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
-        ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+        BtcScriptHash, ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
         ConsensusStateReference, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
-        LocalStatePassCommitIdentity, SystemStateIdentity, ToUSDBScriptHash, USDBScriptHash,
+        LocalStatePassCommitIdentity, SystemStateIdentity, ToBtcScriptHash, VersionFamily,
         address_string_to_script_hash, build_local_state_commit, build_system_state_id,
     };
 
@@ -3216,8 +3254,8 @@ mod tests {
         dir
     }
 
-    fn test_script_hash(tag: u8) -> USDBScriptHash {
-        ScriptBuf::from(vec![tag; 32]).to_usdb_script_hash()
+    fn test_script_hash(tag: u8) -> BtcScriptHash {
+        ScriptBuf::from(vec![tag; 32]).to_btc_script_hash()
     }
 
     fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -3279,7 +3317,7 @@ mod tests {
         owner_tag: u8,
         mint_height: u32,
         leader_btc_addr: &str,
-        leader_btc_owner: USDBScriptHash,
+        leader_btc_owner: BtcScriptHash,
     ) -> MinerPassInfo {
         let mut pass = make_active_pass(ins_tag, owner_tag, mint_height);
         pass.pass_kind = MinerPassKind::Collab;
@@ -3581,14 +3619,6 @@ mod tests {
                 .consensus_identity
                 .balance_history_semantics_version,
             balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
-        );
-        assert_eq!(
-            snapshot.consensus_identity.usdb_index_formula_version,
-            USDB_INDEX_FORMULA_VERSION
-        );
-        assert_eq!(
-            snapshot.consensus_identity.usdb_index_protocol_version,
-            USDB_INDEX_PROTOCOL_VERSION
         );
         assert_eq!(snapshot.commit_protocol_version, "1.0.0");
         assert_eq!(snapshot.commit_hash_algo, "sha256");
@@ -3902,9 +3932,26 @@ mod tests {
             .unwrap();
 
         let info = server.get_local_state_commit_info().unwrap().unwrap();
+        let expected_active_versions = server.indexer.active_version_set_at(120).unwrap();
+        let expected_registry_id = server
+            .indexer
+            .activation_registry()
+            .activation_registry_id();
+        let expected_commit_protocol_version = expected_active_versions
+            .require_string(VersionFamily::CommitProtocolVersion)
+            .unwrap();
         assert_eq!(info.local_synced_block_height, 120);
         assert_eq!(info.local_state_commit_hash_algo, LOCAL_STATE_HASH_ALGO);
-        assert_eq!(info.local_state_commit_version, LOCAL_STATE_VERSION);
+        assert_eq!(
+            info.local_state_commit_version,
+            expected_commit_protocol_version
+        );
+        assert_eq!(info.activation_registry_id, expected_registry_id);
+        assert_eq!(info.active_version_set, expected_active_versions);
+        assert_eq!(
+            info.active_version_set_id,
+            info.active_version_set.active_version_set_id()
+        );
         assert_eq!(
             info.latest_pass_block_commit,
             Some(LocalStatePassCommitIdentity {
@@ -3925,11 +3972,12 @@ mod tests {
         assert_eq!(
             info.local_state_identity,
             LocalStateCommitIdentity {
+                commit_protocol_version: expected_commit_protocol_version.to_string(),
                 upstream_snapshot_id: info.upstream_snapshot_id.clone(),
+                active_version_set_id: info.active_version_set_id.clone(),
                 local_synced_block_height: 120,
                 latest_pass_block_commit: info.latest_pass_block_commit.clone(),
                 latest_active_balance_snapshot: info.latest_active_balance_snapshot.clone(),
-                usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
             }
         );
         assert_eq!(
@@ -4131,12 +4179,12 @@ mod tests {
             balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
         );
         assert_eq!(
-            external_state.usdb_index_protocol_version,
-            USDB_INDEX_PROTOCOL_VERSION
+            external_state.activation_registry_id,
+            state_ref.local_state_commit_info.activation_registry_id
         );
         assert_eq!(
-            external_state.usdb_index_formula_version,
-            USDB_INDEX_FORMULA_VERSION
+            external_state.active_version_set_id,
+            external_state.active_version_set.active_version_set_id()
         );
         let context = ConsensusQueryContext::from(&external_state);
         assert_eq!(context.requested_height, Some(120));
@@ -4417,27 +4465,27 @@ mod tests {
     }
 
     #[test]
-    fn test_historical_state_ref_uses_recorded_protocol_and_formula_versions() {
+    fn test_historical_state_ref_uses_recorded_activation_identity() {
         let (server, root_dir) =
-            build_server_with_genesis("historical_recorded_versions", 120, 100);
+            build_server_with_genesis("historical_activation_identity", 120, 100);
         seed_state_ref_context(&server, 120);
-        let mut state_ref = server.build_historical_state_ref_info(120).unwrap();
-        state_ref
-            .snapshot_info
-            .consensus_identity
-            .usdb_index_protocol_version = "historical-protocol:v1".to_string();
-        state_ref
-            .snapshot_info
-            .consensus_identity
-            .usdb_index_formula_version = "historical-formula:v1".to_string();
+        let state_ref = server.build_historical_state_ref_info(120).unwrap();
+        let registry_id = state_ref
+            .local_state_commit_info
+            .activation_registry_id
+            .clone();
+        let active_version_set_id = state_ref
+            .local_state_commit_info
+            .active_version_set_id
+            .clone();
 
         server
             .validate_historical_state_ref_expected_state(
                 120,
                 &state_ref,
                 &ConsensusStateReference {
-                    usdb_index_protocol_version: Some("historical-protocol:v1".to_string()),
-                    usdb_index_formula_version: Some("historical-formula:v1".to_string()),
+                    activation_registry_id: Some(registry_id.clone()),
+                    active_version_set_id: Some(active_version_set_id.clone()),
                     ..Default::default()
                 },
             )
@@ -4446,40 +4494,43 @@ mod tests {
         let cases = [
             (
                 ConsensusStateReference {
-                    usdb_index_protocol_version: Some("historical-protocol:v2".to_string()),
+                    activation_registry_id: Some("unexpected-registry".to_string()),
                     ..Default::default()
                 },
-                ConsensusRpcErrorCode::ProtocolVersionMismatch,
-                "usdb_index_protocol_version",
+                "activation_registry_id",
             ),
             (
                 ConsensusStateReference {
-                    usdb_index_formula_version: Some("historical-formula:v2".to_string()),
+                    active_version_set_id: Some("unexpected-active-set".to_string()),
                     ..Default::default()
                 },
-                ConsensusRpcErrorCode::FormulaVersionMismatch,
-                "usdb_index_formula_version",
+                "active_version_set_id",
             ),
         ];
 
-        for (expected_state, expected_code, mismatch_field) in cases {
+        for (expected_state, mismatch_field) in cases {
             let err = server
                 .validate_historical_state_ref_expected_state(120, &state_ref, &expected_state)
                 .unwrap_err();
             match err.code {
-                ErrorCode::ServerError(code) => assert_eq!(code, expected_code.code()),
+                ErrorCode::ServerError(code) => {
+                    assert_eq!(code, ConsensusRpcErrorCode::ActiveVersionSetMismatch.code())
+                }
                 _ => panic!("unexpected error code: {:?}", err.code),
             }
-            assert_eq!(err.message, expected_code.as_str());
+            assert_eq!(
+                err.message,
+                ConsensusRpcErrorCode::ActiveVersionSetMismatch.as_str()
+            );
             let data = decode_consensus_error_data(&err);
             assert_eq!(data.mismatch_field.as_deref(), Some(mismatch_field));
             assert_eq!(
-                data.actual_state.usdb_index_protocol_version.as_deref(),
-                Some("historical-protocol:v1")
+                data.actual_state.activation_registry_id.as_deref(),
+                Some(registry_id.as_str())
             );
             assert_eq!(
-                data.actual_state.usdb_index_formula_version.as_deref(),
-                Some("historical-formula:v1")
+                data.actual_state.active_version_set_id.as_deref(),
+                Some(active_version_set_id.as_str())
             );
         }
 
@@ -5595,28 +5646,28 @@ mod tests {
 
         seed_energy_record(&server, &pass, 120, 100);
         let valid_profile = get_pass_economic_profile_for_test(&server, &pass, 120);
-        let mut formula_mismatch_context =
+        let mut active_set_mismatch_context =
             ConsensusQueryContext::from(&valid_profile.external_state);
-        formula_mismatch_context
+        active_set_mismatch_context
             .expected_state
-            .usdb_index_formula_version = Some("pass-energy-formula:unexpected".to_string());
-        let formula_mismatch = server
+            .active_version_set_id = Some("unexpected-active-version-set".to_string());
+        let active_set_mismatch = server
             .get_pass_economic_profile(GetPassEconomicProfileParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 pass_id: pass.inscription_id.to_string(),
                 block_height: Some(120),
-                context: Some(formula_mismatch_context),
+                context: Some(active_set_mismatch_context),
             })
             .unwrap_err();
         assert_eq!(
-            formula_mismatch.code,
-            ErrorCode::ServerError(ConsensusRpcErrorCode::FormulaVersionMismatch.code())
+            active_set_mismatch.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::ActiveVersionSetMismatch.code())
         );
         assert_eq!(
-            decode_consensus_error_data(&formula_mismatch)
+            decode_consensus_error_data(&active_set_mismatch)
                 .mismatch_field
                 .as_deref(),
-            Some("usdb_index_formula_version")
+            Some("active_version_set_id")
         );
 
         let unsupported = server
@@ -6337,12 +6388,11 @@ mod tests {
         assert_eq!(page0.external_state.btc_height, 120);
         assert_eq!(page0.external_state.stable_block_hash, "aa".repeat(32));
         assert_eq!(
-            page0.external_state.usdb_index_protocol_version,
-            USDB_INDEX_PROTOCOL_VERSION
-        );
-        assert_eq!(
-            page0.external_state.usdb_index_formula_version,
-            USDB_INDEX_FORMULA_VERSION
+            page0.external_state.active_version_set_id,
+            page0
+                .external_state
+                .active_version_set
+                .active_version_set_id()
         );
         assert_eq!(page0.limit, 1);
         assert_eq!(page0.max_limit, ECONOMIC_PAGE_MAX_LIMIT);
@@ -6714,12 +6764,11 @@ mod tests {
             balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
         );
         assert_eq!(
-            page0.external_state.usdb_index_protocol_version,
-            USDB_INDEX_PROTOCOL_VERSION
-        );
-        assert_eq!(
-            page0.external_state.usdb_index_formula_version,
-            USDB_INDEX_FORMULA_VERSION
+            page0.external_state.active_version_set_id,
+            page0
+                .external_state
+                .active_version_set
+                .active_version_set_id()
         );
         assert_eq!(page0.total, 3);
         assert_eq!(page0.limit, 2);

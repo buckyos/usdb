@@ -253,10 +253,10 @@ fn scale_inscription_id(namespace: u8, index: u32) -> InscriptionId {
     }
 }
 
-fn scale_owner(namespace: u8, index: u32) -> USDBScriptHash {
+fn scale_owner(namespace: u8, index: u32) -> BtcScriptHash {
     let mut script = vec![namespace; 36];
     script[32..].copy_from_slice(&index.to_be_bytes());
-    ScriptBuf::from(script).to_usdb_script_hash()
+    ScriptBuf::from(script).to_btc_script_hash()
 }
 
 fn scale_satpoint(namespace: u8, index: u32) -> SatPoint {
@@ -274,7 +274,7 @@ enum ScaleLeaderRef<'a> {
     PassId(InscriptionId),
     Address {
         address: &'a str,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
     },
 }
 
@@ -282,7 +282,7 @@ fn scale_pass(
     namespace: u8,
     index: u32,
     inscription_number: i32,
-    owner: USDBScriptHash,
+    owner: BtcScriptHash,
     pass_kind: MinerPassKind,
     leader_ref: ScaleLeaderRef<'_>,
 ) -> MinerPassInfo {

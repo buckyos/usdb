@@ -6,7 +6,7 @@ use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
 pub(super) fn test_data_dir(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -24,8 +24,8 @@ pub(super) fn cleanup_data_dir(dir: &PathBuf) {
     }
 }
 
-pub(super) fn script_hash(tag: u8) -> USDBScriptHash {
-    ScriptBuf::from(vec![tag; 32]).to_usdb_script_hash()
+pub(super) fn script_hash(tag: u8) -> BtcScriptHash {
+    ScriptBuf::from(vec![tag; 32]).to_btc_script_hash()
 }
 
 pub(super) fn inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -48,7 +48,7 @@ pub(super) fn satpoint(tag: u8, vout: u32, offset: u64) -> SatPoint {
 pub(super) fn make_pass(
     tag: u8,
     index: u32,
-    owner: USDBScriptHash,
+    owner: BtcScriptHash,
     mint_block_height: u32,
 ) -> MinerPassInfo {
     MinerPassInfo {

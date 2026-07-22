@@ -271,7 +271,7 @@
 
 ## UIP-0005 Level and Real Difficulty
 
-状态：UIP-0005 usdb-indexer core 暂时收尾。公式层 helper、纯单元测试、`get_pass_energy` 查询派生字段、candidate set view 派生字段、状态边界和服务层交叉验证均已对接；版本绑定和 validator / ETHW policy 闭环由 UIP-0006、UIP-0008、UIP-0009 承接。
+状态：UIP-0005 usdb-indexer core 暂时收尾。公式层 helper、纯单元测试、`get_pass_energy` 查询派生字段、candidate set view 派生字段、状态边界和服务层交叉验证均已对接；版本绑定和 validator / USDB-chain policy 闭环由 UIP-0006、UIP-0008、UIP-0009 承接。
 
 ### 已对接内容
 
@@ -279,7 +279,7 @@
   - 新增 UIP-0005 level / difficulty 参数常量、整数阈值表和关键常量注释。
   - 新增 `calc_level_from_effective_energy(effective_energy)`，按整数阈值表计算 level，运行时不使用浮点、`log` 或 `pow`。
   - 新增 `calc_difficulty_factor_bps(level)`，按每级 100 bps 折扣计算并 clamp 到 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
-  - 新增 `calc_real_difficulty(base_difficulty, difficulty_factor_bps)` 纯公式 helper，用于 ETHW 侧 ceil 规则测试；usdb-indexer 不查询、不持久化 ETHW `base_difficulty` / `real_difficulty`。
+  - 新增 `calc_real_difficulty(base_difficulty, difficulty_factor_bps)` 纯公式 helper，用于 USDB chain 侧 ceil 规则测试；usdb-indexer 不查询、不持久化 USDB-chain `base_difficulty` / `real_difficulty`。
 - `src/btc/usdb-indexer/src/service/rpc.rs`
   - `PassEnergySnapshot` 增加 `level` 和 `difficulty_factor_bps`。
   - `CandidateSetViewItem` 增加 `level` 和 `difficulty_factor_bps`。
@@ -289,16 +289,16 @@
   - 补充状态边界测试：active standard 使用 collab 聚合后的 `effective_energy` 计算 level；active collab、non-active standard、dormant / consumed / burned / invalid Leader 的 `effective_energy = 0` 时均返回 `level = 0`、`difficulty_factor_bps = 10000`。
   - 增加服务层交叉验证：同一 leader/collab 场景下，`get_pass_energy` 与 `get_candidate_set_view` 的 leader energy / level / factor 完全一致；collab 自身返回 `level = 0`、`difficulty_factor_bps = 10000` 且不进入 candidate set。
 - `doc/usdb-indexer/usdb-indexer-rpc-v1.md`
-  - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 ETHW difficulty。
+  - 更新 `PassEnergySnapshot` 和 `get_pass_energy` 字段说明，明确 UIP-0005 派生字段不依赖 USDB-chain difficulty。
   - 更新 `get_candidate_set_view` 返回字段说明，明确 UIP-0005 字段不改变 candidate 排序口径。
 
 ### 当时后续项（当前状态）
 
 - UIP-0006 economic state view、candidate/profile 版本字段和审计查询口径已完成，详见后续章节。
 - UIP-0008：统一 formula version、历史高度 activation matrix 与参数版本重放。
-- UIP-0009：明确 ETHW `base_difficulty` / `real_difficulty` 类型、来源和重算 policy。
+- UIP-0009：明确 USDB-chain `base_difficulty` / `real_difficulty` 类型、来源和重算 policy。
 - UIP-0005 / UIP-0006 已对齐，现进入集中 live/regtest 复核和大数据性能阶段。
-- UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 ETHW 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。
+- UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 USDB chain 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。
 
 ## UIP-0006 USDB Economic State View
 
@@ -451,8 +451,8 @@
 
 - UIP-0001 至 UIP-0006 保持 `Draft`，但实现状态、后续依赖和测试说明已按当前代码更新。
 - UIP-0001/UIP-0002 移除已经完成的 parser/state-machine 未决项，只保留 UIP-0008 activation 和可选审计 API。
-- UIP-0003/UIP-0004/UIP-0005/UIP-0006 移除“后续再实现 UIP-0004/0005/0006”等过期描述，明确 BTC/indexer core 已完成及 ETHW/UIP-0008/UIP-0009 边界。
-- economic issue tracker 将 ECO-002 至 ECO-007、ECO-012 标为 `Done`；ECO-008/ECO-011 保持 `In Progress`，并明确只剩 ETHW policy/payload 或集中测试与性能部分。
+- UIP-0003/UIP-0004/UIP-0005/UIP-0006 移除“后续再实现 UIP-0004/0005/0006”等过期描述，明确 BTC/indexer core 已完成及 USDB-chain/UIP-0008/UIP-0009 边界。
+- economic issue tracker 将 ECO-002 至 ECO-007、ECO-012 标为 `Done`；ECO-008/ECO-011 保持 `In Progress`，并明确只剩 USDB-chain policy/payload 或集中测试与性能部分。
 
 ## UIP-0001 至 UIP-0006 确定性 Live/Regtest 矩阵
 
@@ -566,10 +566,10 @@
 ### 关键边界
 
 - UIP-0001 固定 `pass_id` canonical encoding、`pass_kind`、`owner_script_hash` / `owner_btc_addr`；所有 lexical ordering 均按 canonical ASCII 文本。
-- UIP-0004 区分 `leader_ref`、`resolved_leader` 和 ETHW-side `leader_eligible`，并把 `effective_energy` 固定为 BTC-side nominal 派生值。
+- UIP-0004 区分 `leader_ref`、`resolved_leader` 和 USDB-chain `leader_eligible`，并把 `effective_energy` 固定为 BTC-side nominal 派生值。
 - UIP-0006 将 `candidate_pass` 定义为同一 `external_state` 下的 Active standard pass，成员资格与 energy 是否为零无关；`candidate_set_view` 只提供确定性审计排序。
 - 排序第一项统一称为 `top_ranked_candidate`；UIP-0007 区块头显式携带的是 `selected_pass`，两者不要求相同，也都不能简写成 PoW `winner`。
-- UIP-0014 的 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps` 是 ETHW policy 对 `selected_pass` 的实际输入，不回写 UIP-0004 nominal 字段，也不改变 UIP-0006 集合成员资格。
+- UIP-0014 的 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps` 是 USDB-chain policy 对 `selected_pass` 的实际输入，不回写 UIP-0004 nominal 字段，也不改变 UIP-0006 集合成员资格。
 - UIP-0007 `ProfileSelectorPayload` 是链上最小二进制 selector；validator block-body JSON 明确称为链外 `validator test envelope`，不再把完整审计字段误称为链上 payload。
 
 ### 实现与测试
@@ -605,7 +605,7 @@
 
 - `go test -cover ./internal/usdb` 通过，statement coverage 为 `78.9%`；`go test ./miner`、USDB ethash 定向测试和 `go vet ./internal/usdb ./miner ./consensus/ethash` 通过。
 - 完整 `go test -count=1 ./consensus/ethash` 在允许临时 loopback `httptest` listener 的环境下通过；沙箱内的首次阻断仅来自 listener 权限限制。
-- 后续仍需：由 UIP-0008/UIP-0009 chain config 提供按 ETHW block height 的 expected versions；在 header validation 中执行精确 107-byte/version 校验；移除本地开关决定共识语义；更新旧 105-byte reward live/E2E 脚本和集成文档。
+- 后续仍需：由 UIP-0008/UIP-0009 chain config 提供按 USDB block height 的 expected versions；在 header validation 中执行精确 107-byte/version 校验；移除本地开关决定共识语义；更新旧 105-byte reward live/E2E 脚本和集成文档。
 
 ## UIP-0007 Chain Config、Header Validation 与 CLI 边界
 
@@ -613,8 +613,8 @@
 
 ### Chain Config 与 Miner
 
-- `params.ChainConfig.usdb` 已由固定两个字段替换为按 ETHW block 严格排序的 `activations[]`；每条记录携带 UIP-0008/UIP-0009 完整 version set。
-- `USDBConsensusAt(ethw_block)` 返回目标高度最近生效版本；首次激活前返回 inactive，激活边界及之后按对应完整版本集合解释。
+- `params.ChainConfig.usdb` 已由固定两个字段替换为按 USDB block 严格排序的 `activations[]`；每条记录携带 UIP-0008/UIP-0009 完整 version set。
+- `USDBConsensusAt(usdb_block)` 返回目标高度最近生效版本；首次激活前返回 inactive，激活边界及之后按对应完整版本集合解释。
 - registry 增加空记录、乱序/同高冲突、必需版本和 reward 依赖校验；`CheckCompatible` 只允许修改尚未到达的未来激活，已生效差异返回最早安全回退高度。
 - built-in development chain 从 genesis 激活 payload/difficulty v1；UIP-0011 至 UIP-0015 尚未实现的版本字段显式为 `0`，非零未知 policy fail closed。
 - payload builder 删除构造期固定 policy version，`BuildCurrentPayload(ctx, blockNumber)` 从 chain config 取得 expected version；不支持的 payload version、无效共识配置、current system state/profile 不可用或 selected pass 非 candidate 均停止组块。
@@ -625,11 +625,67 @@
 - `VerifyHeader` 先执行精确 107 bytes 与 expected version 的纯二进制 guard，再解析 historical profile 并按 UIP-0005 `ceil(base_difficulty * factor / 10000)` 重算 difficulty；畸形字段不会触发 RPC。
 - miner `Prepare` 使用相同 chain-config policy 和 profile resolver 计算 difficulty；miner 生成、validator 验证的交叉测试会拒绝未折算的 base difficulty。
 - reward state transition 重复 binary guard 并消费同一 selector-bound profile；旧 `0.5..2.0` level multiplier 和 mock reward policy 已删除，UIP-0011 未激活前保留既有 Ethash 静态奖励。
-- companion 服务不可用、historical state 不可保留、same-height state replacement 或 profile 字段不一致时均 fail closed；非 USDB chain 继续使用 legacy 行为。
-- 删除 `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留 validator/miner RPC URL、query timeout 和 selected pass id，不能启用、关闭或改写共识版本。
+- BTC-side `usdb-indexer` 服务不可用、historical state 不可保留、same-height state replacement 或 profile 字段不一致时均 fail closed；非 USDB chain 继续使用 legacy 行为。
+- 删除 legacy `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留显式的 `--ethash.usdb-indexer.*` / `--miner.usdb-indexer.*` 访问参数、`--miner.usdb.passid` 和 query timeout，不能启用、关闭或改写共识版本。
 
 ### 测试与后续
 
 - 新增完整 activation/version lookup、`CheckCompatible`、genesis JSON roundtrip、RPC error mapping、candidate boundary、codec、historical replay、same-height replacement、服务不可用、selector/profile 篡改和 miner/validator 交叉测试。
 - `params`、`internal/usdb`、`miner`、`core`、`consensus/ethash`、`cmd/geth` 全包测试及受影响包 `go vet` 已通过。当前环境为 Go 1.26，旧 `fjl/memsize` linkname 检查仍需对 CLI 测试使用 `-ldflags=-checklinkname=0`。
 - 三条 live runner 已统一迁移到 107-byte `ProfileSelectorPayload`、UIP-0001 `v=1/usdb_main` mint 和 `get_pass_economic_profile`。basic、energy growth（含 factor `9900`）和 BTC head 前进后的 fresh-validator historical replay 均已实跑通过。
+
+## UIP-0008 Activation Registry 与 State Identity
+
+状态：机器可读 registry、canonical identity 和 Rust 历史解析链路已完成；改动尚未提交，等待 review。
+
+### Registry Contract
+
+- 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 `activation-registry/btc-mainnet.json` 与 `btc-regtest.json`；每个 artifact 在顶层固定一个 BTC network scope，record 只允许 BTC-side family 和 `activation_height`。
+- Rust API 改为先按配置的 `bitcoin::Network` 选择唯一内嵌 registry，再按目标高度 lookup；testnet3/testnet4/signet 在没有独立 artifact 时 fail closed，不能回退或混用其他 network。
+- `activation_registry_id` 改为 network-scoped canonical encoding，固定 golden：`btc-mainnet=bb751626...a7d39e`、`btc-regtest=22d820e6...aaf83d`；两者当前 active set 相同，继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
+- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 只由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 解析。
+- 新增 audit-only `release-manifest.json`，关联 BTC registry IDs 与 USDB `chain_id/genesis_hash/chain-config authority`；manifest 不参与 BTC identity、USDB header validation 或 runtime activation lookup。
+- 当前 `btc-mainnet` height 0 只定义 BTC source history 的 v1 解释，不代表 USDB public mainnet 已发布；正式网络的 indexing origin 和 USDB genesis 仍需分别冻结。
+
+### State Identity Boundary
+
+- `ConsensusSnapshotIdentity` 收敛为纯 balance-history identity，不再承诺 USDB indexer protocol/formula；balance-history RPC/state ref 也不再声明下游 activation identity。
+- indexer 的 `LocalStateCommitIdentity` 增加 `commit_protocol_version` 和 `active_version_set_id`，使 `local_state_commit` 与 `system_state_id` 承诺目标高度实际生效的完整版本集合。
+- UIP-0006 external state、economic cursor、profile、candidate 和 breakdown 统一暴露并冻结 `activation_registry_id + active_version_set + active_version_set_id`；不保留旧全局 protocol/formula 字段双栈。
+
+### Runtime Validation
+
+- indexer 启动时同时校验配置 genesis height 和 DB durable synced height 的 registry/v1 支持面，每次 `sync_block` 在写入前再按该 BTC 高度解析；未知、缺失、冲突、不支持版本以及降级二进制跨 activation 重启均不会产生部分状态。
+- balance-history 在 indexer/RPC 启动时校验当前 durable height，并在每个 batch 写入前逐高度校验 semantics activation；历史 state-ref lookup 将 activation 失败映射为结构化共识错误。
+- historical RPC 以请求冻结高度解析 active set，重算 set ID 后再构造 local/system state；expected state 与 cursor 对 registry/set identity 做精确匹配。
+- 新增 activation record、supported version、active set identity 和 commit protocol 的结构化 RPC 错误码；formula member 不支持继续映射到专用 formula mismatch。旧 `PROTOCOL_VERSION_MISMATCH/-32051` 随全局 protocol 字段删除，不保留 client 兼容映射。
+- Go client/verifier/builder 同步使用严格 active-set decoder 和 canonical ID 校验；builder 还会检查 current state 与 historical profile 两次读取之间的 registry/set identity 漂移。
+
+### 已验证与后续边界
+
+- `usdb-util` activation 16 个聚焦测试通过（新增 network scope、未配置 network、非法 BTC network class、USDB-chain family rejection、registry ID golden 与 release manifest 防篡改）；`cargo test -p usdb-indexer`：282 passed、0 failed、5 ignored。
+
+## USDB Chain 命名与系统边界收口
+
+状态：协议、实现和开发入口已按当前链身份收敛；改动尚未提交，等待 review。
+
+### 统一口径
+
+- `USDB protocol` 表示横跨 BTC 铭文、BTC-side 派生状态和 USDB chain 共识的协议族；具体对象不得仅依赖裸 `USDB` 推断所属系统。
+- 当前 EVM-compatible PoW 链统一称为 `USDB chain`；其 block、validator、miner、reward、difficulty、genesis、chain config 和 activation anchor 使用 USDB 命名。
+- BTC 索引服务统一称为 `BTC-side USDB services/state view`；USDB chain 的 EVM 地址称为 `USDB-chain account address`，BTC owner 继续使用 `owner_btc_addr` / `owner_script_hash`。
+- 原生资产在余额、发行和手续费语境中称为 `USDB native currency` 或 `USDB atom`，避免与协议族和链实现混淆。
+- `ETHW` 只保留在上游 fork 历史、继承专名/配置（例如 `Ethash`、`EthPoWForkBlock`、`ETHWStartDifficulty`）以及仍实际存在的运维标识（例如 `ethw-init`、`ethw-node`、`ETHW_COMMAND`）。
+
+### 实现与文档
+
+- UIP-0007/UIP-0009 文件名、标题、激活锚点和 network id 改为 USDB chain；release manifest 使用 `usdb_chain_configs`，USDB activation 继续只由本地 genesis/chain config 决定，不依赖 BTC RPC。
+- BTC Electrum-compatible script hash 类型从易歧义的 `USDBScriptHash` 改为 `BtcScriptHash`；字节/数据库编码不变，RPC 文档明确其为反转字节序的 `SHA-256(scriptPubKey)`。
+- control-plane 链 RPC 配置使用 `usdb_chain_url`，链账户接口使用 `/api/usdb-chain/...` 和 `UsdbChain*` 类型；console 展示区分 USDB 链账户地址、BTC owner 与 USDB 原生资产余额，原生最小单位字段使用 `balance_atoms_hex`。Docker 生成的 TOML 和保留的静态 console 基线同步使用新 schema，不保留 `ethw_*` API 字段。
+- 消除裸 `USDB_RPC_*` 歧义：BTC-side 测试框架和 world simulator 改为 `USDB_INDEXER_RPC_PORT` / `USDB_INDEXER_RPC_URL` / `--usdb-indexer-rpc-url`，USDB chain 节点使用 `USDB_CHAIN_RPC_URL`。geth 访问 indexer 的运行参数改为 `--miner.usdb-indexer.*` / `--ethash.usdb-indexer.*`，而 `--miner.usdb.passid` 仍表示 USDB protocol selector。
+- world-sim/geth 中原先可能与 BTC owner 混淆的 `USDB_MINER_ADDRESS` 改为 `USDB_CHAIN_MINER_ADDRESS`；对应 CLI、identity marker 和 alignment 字段统一使用 `usdb_chain_miner_*`。这些值始终表示 USDB-chain account/coinbase，不表示 BTC pass owner。
+- go-ethereum 的新增集成文档和 E2E 入口从 `usdb-ethw-*` / `usdb_ethw_*` 改为 `usdb-*` / `usdb_profile_*`；JSON-RPC `eth_*`、`Ethash` 和底层 geth 运维名称继续保留。
+- 本批为开发期直接 schema/API 改名，不保留旧字段、旧 route、旧脚本名或兼容双栈。
+- `balance-history` 排除手工 snapshot fixture 后为 101 passed、0 failed；未过滤执行时唯一失败仍是既有 `db::snapshot::tests::test_load` 依赖本机预置 height 900000 snapshot，与本批 identity 改动无关。
+- `cargo fmt --check`、`usdb-control-plane` test/clippy 和 `usdb-util` activation/hash test 通过；Go `params`、`internal/usdb`、`consensus/ethash`、`miner`、`cmd/utils`、`cmd/geth`、`eth/ethconfig` 测试与 vet 通过，Rust/Go canonical active-set golden vector 一致。console type-check/build、Python compile/help、regtest shell syntax和 dev/bootstrap Compose config 均已复核。
+- 正式网络的具体 activation 高度、签名/发布流程以及未来 v2 dispatch 仍需随 UIP-0008/UIP-0009 冻结；开发期数据库不做迁移兼容，测试时删除旧库重建。

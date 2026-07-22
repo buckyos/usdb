@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
 pub(super) fn test_root_dir(suite: &str, test_name: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -27,9 +27,9 @@ pub(super) fn cleanup_temp_dir(root_dir: &PathBuf) {
     }
 }
 
-pub(super) fn test_script_hash(tag: u8) -> USDBScriptHash {
+pub(super) fn test_script_hash(tag: u8) -> BtcScriptHash {
     let script = ScriptBuf::from(vec![tag; 32]);
-    script.to_usdb_script_hash()
+    script.to_btc_script_hash()
 }
 
 pub(super) fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -51,14 +51,14 @@ pub(super) fn test_satpoint(tag: u8, vout: u32, offset: u64) -> SatPoint {
 
 #[derive(Default)]
 pub(super) struct MockBalanceProvider {
-    heights: Mutex<HashMap<(USDBScriptHash, u32), Vec<AddressBalance>>>,
-    ranges: Mutex<HashMap<(USDBScriptHash, u32, u32), Vec<AddressBalance>>>,
+    heights: Mutex<HashMap<(BtcScriptHash, u32), Vec<AddressBalance>>>,
+    ranges: Mutex<HashMap<(BtcScriptHash, u32, u32), Vec<AddressBalance>>>,
 }
 
 impl MockBalanceProvider {
     pub(super) fn with_height(
         self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_height: u32,
         balance: u64,
         delta: i64,
@@ -76,7 +76,7 @@ impl MockBalanceProvider {
 
     pub(super) fn with_range(
         self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_range: Range<u32>,
         items: Vec<AddressBalance>,
     ) -> Self {
@@ -91,7 +91,7 @@ impl MockBalanceProvider {
 impl BalanceProvider for MockBalanceProvider {
     fn get_balance_at_height<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_height: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>> {
         Box::pin(async move {
@@ -108,7 +108,7 @@ impl BalanceProvider for MockBalanceProvider {
 
     fn get_balance_at_range<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_range: Range<u32>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>> {
         Box::pin(async move {

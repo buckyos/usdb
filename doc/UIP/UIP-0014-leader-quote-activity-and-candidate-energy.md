@@ -5,7 +5,7 @@ Type: Standards Track
 Layer: USDB Validator / Economic Policy
 Created: 2026-05-08
 Requires: UIP-0000, UIP-0004, UIP-0005, UIP-0006, UIP-0007, UIP-0008, UIP-0013
-Activation: ETHW network activation matrix; first official networks enable v1 quote activity policy from genesis
+Activation: USDB-chain network activation matrix; first official networks enable v1 quote activity policy from genesis
 
 # 摘要
 
@@ -14,10 +14,10 @@ Activation: ETHW network activation matrix; first official networks enable v1 qu
 核心规则：
 
 - UIP-0004 的 `raw_energy`、`collab_contribution`、`effective_energy` 仍由 USDB indexer 按 BTC 历史状态派生。
-- ETHW 侧单独维护 Leader quote activity state。
+- USDB chain 侧单独维护 Leader quote activity state。
 - Leader 超过一周没有有效主动报价时，仍可作为普通 standard pass 出块，但不得使用协作者能量。
 - v1 使用 `FixedPrice` 时，主动报价是 activity heartbeat，不改变 UIP-0013 的 fixed price。
-- `candidate_energy` 和 `candidate_level` 必须使用 parent ETHW state 中已经生效的 quote activity。
+- `candidate_energy` 和 `candidate_level` 必须使用 parent USDB chain state 中已经生效的 quote activity。
 - block `N` 内的有效 quote 最早影响 block `N+1` 的 `candidate_energy`。
 
 # 动机
@@ -32,7 +32,7 @@ collab_contribution(pass, h)
 effective_energy(pass, h)
 ```
 
-这些值只依赖 BTC 侧历史状态。Leader 是否最近主动报价，属于 ETHW 侧本地可验证规则。
+这些值只依赖 BTC 侧历史状态。Leader 是否最近主动报价，属于 USDB chain 侧本地可验证规则。
 
 因此，本文把“名义有效能量”和“实际候选能量”分离：
 
@@ -60,19 +60,19 @@ candidate_energy
 
 | 术语 | 含义 |
 | --- | --- |
-| `leader_quote` | Leader 在 ETHW 区块中提交的主动报价 heartbeat。 |
+| `leader_quote` | Leader 在 USDB chain 区块中提交的主动报价 heartbeat。 |
 | `quote_source_update` | 建立或更新一个可验证报价来源状态的操作。 |
 | `block_quote_reference` | 出块时引用某个已存在、可验证、未过期报价来源状态的 payload。 |
 | `leader_quote_active` | Leader 在最近窗口内存在有效 quote 的状态。 |
-| `last_valid_quote_block` | ETHW state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
-| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为当前 ETHW 区块声明的 UIP-0006 `candidate_pass`。 |
+| `last_valid_quote_block` | USDB chain state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
+| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为当前 USDB chain 区块声明的 UIP-0006 `candidate_pass`。 |
 | `self_energy` | standard pass 自身的 `raw_energy`。 |
-| `nominal_effective_energy` | UIP-0004 `effective_energy` 在 ETHW policy 中的明确别名，即 `raw_energy + collab_contribution`。 |
-| `candidate_energy` | 对当前 `selected_pass` 应用 quote activity 后，ETHW difficulty policy 实际使用的能量；不改变 UIP-0006 `candidate_set_view` 成员资格。 |
+| `nominal_effective_energy` | UIP-0004 `effective_energy` 在 USDB chain policy 中的明确别名，即 `raw_energy + collab_contribution`。 |
+| `candidate_energy` | 对当前 `selected_pass` 应用 quote activity 后，USDB chain difficulty policy 实际使用的能量；不改变 UIP-0006 `candidate_set_view` 成员资格。 |
 | `self_level` | `level(self_energy)`。 |
 | `nominal_leader_level` | `level(nominal_effective_energy)`。 |
 | `candidate_level` | `level(candidate_energy)`。 |
-| `candidate_difficulty_factor_bps` | 按 UIP-0005 从 `candidate_level` 派生、供当前 ETHW 区块 difficulty 校验使用的 factor。 |
+| `candidate_difficulty_factor_bps` | 按 UIP-0005 从 `candidate_level` 派生、供当前 USDB chain 区块 difficulty 校验使用的 factor。 |
 | `quote_policy_version` | 本文定义的 quote activity 规则版本。 |
 
 # 规范关键词
@@ -113,7 +113,7 @@ leader_quote_subject = resolved_profile.pass_id
 - quote 频率应显著高于 pass remint / pass 更新频率。矿工 remint 出新 pass 后，可以在下一次出块时提交新的 `block_quote_reference`。
 - 协作者通过 `leader_btc_addr` 自动跟随新 active pass 时，collab contribution 仍会进入该新 pass 的 `nominal_effective_energy`，但该新 pass 必须先完成有效 quote，才能把 collab contribution 用于 `candidate_energy`。
 
-v1 不支持按 `owner_script_hash`、BTC address 或 USDB/EVM address 继承 quote activity。
+v1 不支持按 `owner_script_hash`、BTC address 或 USDB-chain account address 继承 quote activity。
 
 如果未来希望 quote activity 按 owner / address 继承，必须升级 quote policy version，并审计 remint、转移和多 active pass 异常路径。
 
@@ -132,7 +132,7 @@ v1 不支持按 `owner_script_hash`、BTC address 或 USDB/EVM address 继承 qu
 规则：
 
 - `quote_source_update` 可以与出块解耦。
-- `block_quote_reference` 必须进入 ETHW 共识可见数据。
+- `block_quote_reference` 必须进入 USDB chain 共识可见数据。
 - 只有成功出块并携带有效 `block_quote_reference`，才更新 `last_valid_quote_block`。
 - 仅完成 `quote_source_update` 不会刷新 Leader quote activity。
 - `block_quote_reference` 必须绑定当前 UIP-0007 payload 选择的 standard pass。
@@ -149,7 +149,7 @@ v1 不支持按 `owner_script_hash`、BTC address 或 USDB/EVM address 继承 qu
 
 # Quote Authorization
 
-quote authorization 可以由 quote source 自身证明，也可以由 ETHW payload / 系统交易额外证明。
+quote authorization 可以由 quote source 自身证明，也可以由 USDB chain payload / 系统交易额外证明。
 
 通用规则：
 
@@ -157,9 +157,9 @@ quote authorization 可以由 quote source 自身证明，也可以由 ETHW payl
 quote_owner == selected_pass.usdb_main or selected_pass.quote_key
 ```
 
-如果某个 future quote source 已经能在自身状态中证明 `quote_owner` 与当前 selected Leader 绑定，则 ETHW payload 不需要重复携带签名。
+如果某个 future quote source 已经能在自身状态中证明 `quote_owner` 与当前 selected Leader 绑定，则 USDB chain payload 不需要重复携带签名。
 
-如果某个 future quote source 不能证明 quote owner 绑定，则该 policy 必须在 ETHW payload 或系统交易中提供额外签名 / 授权证明，否则不得启用。
+如果某个 future quote source 不能证明 quote owner 绑定，则该 policy 必须在 USDB chain payload 或系统交易中提供额外签名 / 授权证明，否则不得启用。
 
 FixedPrice v1 的授权边界：
 
@@ -210,7 +210,7 @@ collab pass 不能成为 UIP-0006 `candidate_pass`，也不能成为 UIP-0007 `s
 
 # Quote Active 规则
 
-验证 ETHW 区块 `N` 时，validator 从 parent state 读取：
+验证 USDB chain 区块 `N` 时，validator 从 parent state 读取：
 
 ```text
 last_valid_quote_block(leader)
@@ -231,7 +231,7 @@ leader_quote_active_N
 
 所有计算必须使用 unsigned integer，并在 underflow / overflow 时 fail closed。
 
-quote active 状态不修改 USDB indexer 里的 `effective_energy`。它只决定 ETHW 侧 `candidate_energy` 如何从 USDB indexer 返回的能量视图中选取。
+quote active 状态不修改 USDB indexer 里的 `effective_energy`。它只决定 USDB chain 侧 `candidate_energy` 如何从 USDB indexer 返回的能量视图中选取。
 
 # Candidate Energy
 
@@ -253,7 +253,7 @@ else:
 
 # Candidate Level
 
-UIP-0005 的 `level` 公式保持不变。本文只定义 ETHW 侧应把哪个 energy 作为输入。
+UIP-0005 的 `level` 公式保持不变。本文只定义 USDB chain 侧应把哪个 energy 作为输入。
 
 派生视图：
 
@@ -268,7 +268,7 @@ candidate_level
     = level_from_energy(candidate_energy)
 ```
 
-ETHW difficulty policy 必须使用：
+USDB chain difficulty policy 必须使用：
 
 ```text
 candidate_level
@@ -352,7 +352,7 @@ if block N contains valid leader_quote:
 
 # Reserved System Storage
 
-Leader quote activity state 必须存放在 ETHW reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
+Leader quote activity state 必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
 建议定义：
 
@@ -422,16 +422,16 @@ if block contains valid leader_quote:
 
 - UIP-0007 profile selector。
 - UIP-0006 在对应历史 context 下返回的 USDB economic profile。
-- parent ETHW state 中的 quote activity storage。
+- parent USDB chain state 中的 quote activity storage。
 - 当前区块中携带的 quote payload。
 - quote source 自身或 payload 提供的授权证明。
 - 当时 active 的 quote policy version / activation matrix。
 
 禁止通过 RPC 查询当前 head 的 Leader 报价状态来验证历史区块。
 
-ETHW reorg 时：
+USDB chain reorg 时：
 
-- `last_valid_quote_block` 必须随 ETHW state 回滚。
+- `last_valid_quote_block` 必须随 USDB chain state 回滚。
 - `candidate_energy` 和 `candidate_level` 必须按回滚后的 parent state 重算。
 - quote payload 本身随区块历史重放。
 
@@ -501,11 +501,11 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 
 | 问题 | 当前草案结论 | 后续动作 |
 | --- | --- | --- |
-| quote window 长度 | v1 使用 `50400` ETHW blocks，约 1 周。 | 与 public network block time 一起复核。 |
+| quote window 长度 | v1 使用 `50400` USDB blocks，约 1 周。 | 与 public network block time 一起复核。 |
 | quote subject | v1 固定使用 active standard pass `pass_id`，不支持 owner / address 继承。 | future owner / address 继承必须升级 quote policy version。 |
 | quote payload 编码位置 | 必须进入共识可见数据。 | 在 UIP-0007 payload 扩展或系统交易中固定 canonical encoding。 |
 | FixedPrice quote 是否需要签名 | 当前草案不要求额外签名。 | 委员会确认 unsigned heartbeat 是否可接受；若不可接受，需要扩容或改系统交易。 |
-| future quote source 授权 | 可由 quote source 自身证明，也可由 ETHW payload 证明。 | 后续 dynamic price source UIP 必须固定 owner binding / signature 规则。 |
+| future quote source 授权 | 可由 quote source 自身证明，也可由 USDB chain payload 证明。 | 后续 dynamic price source UIP 必须固定 owner binding / signature 规则。 |
 | quote source update 与 block reference | 当前草案采用两段模型，只有 block reference 刷新 activity。 | 后续 DeFi price source UIP 定义 source update 细节。 |
 | quote 是否每块必填 | 不强制；缺失则不更新 activity。 | 评估是否对 public network 强制每个 standard block 携带 quote。 |
 | stale 后是否完全失去 Leader 资格 | 当前草案为仅失去 collab energy，仍可按 self energy 出块。 | 委员会确认是否需要更严厉处罚。 |

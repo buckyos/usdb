@@ -45,7 +45,7 @@ bash src/btc/usdb-indexer/scripts/regtest_world_sim_reorg_determinism.sh
 7. `SIM_REORG_DEPTH`：默认 `3`。
 8. `SIM_REORG_MAX_EVENTS`：默认 `2`。
 9. `WORK_DIR`：双跑总目录，默认 `/tmp/usdb-world-determinism-reorg`。
-10. `BASE_BTC_RPC_PORT`、`BASE_BTC_P2P_PORT`、`BASE_BH_RPC_PORT`、`BASE_USDB_RPC_PORT`、`BASE_ORD_SERVER_PORT`：双跑的起始端口组。
+10. `BASE_BTC_RPC_PORT`、`BASE_BTC_P2P_PORT`、`BASE_BH_RPC_PORT`、`BASE_USDB_INDEXER_RPC_PORT`、`BASE_ORD_SERVER_PORT`：双跑的起始端口组。
 11. `PORT_STRIDE`：第二轮相对第一轮的端口偏移，默认 `100`。
 
 ## 验收标准

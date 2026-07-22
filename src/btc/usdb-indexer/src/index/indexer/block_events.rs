@@ -215,10 +215,10 @@ mod tests {
     };
     use ord::InscriptionId;
     use ordinals::SatPoint;
-    use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+    use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
-    fn test_script_hash(tag: u8) -> USDBScriptHash {
-        ScriptBuf::from(vec![tag; 32]).to_usdb_script_hash()
+    fn test_script_hash(tag: u8) -> BtcScriptHash {
+        ScriptBuf::from(vec![tag; 32]).to_btc_script_hash()
     }
 
     fn test_transaction(input_outpoints: Vec<OutPoint>) -> Transaction {

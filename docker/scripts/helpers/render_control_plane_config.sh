@@ -49,7 +49,7 @@ port = ${CONTROL_PLANE_PORT:-28040}
 [rpc]
 balance_history_url = "${BALANCE_HISTORY_RPC_URL:-http://balance-history:28010}"
 usdb_indexer_url = "${USDB_INDEXER_RPC_URL:-http://usdb-indexer:28020}"
-ethw_url = "${ETHW_RPC_URL:-http://ethw-node:8545}"
+usdb_chain_url = "${USDB_CHAIN_RPC_URL:-http://ethw-node:8545}"
 ord_url = "${ORD_RPC_URL:-http://ord-server:${ORD_SERVER_PORT:-28030}}"
 EOF
 
@@ -60,9 +60,9 @@ cat >>"${output_path}" <<EOF
 [bootstrap]
 bootstrap_manifest = "${CONTROL_PLANE_BOOTSTRAP_MANIFEST:-/bootstrap/bootstrap-manifest.json}"
 snapshot_marker = "${CONTROL_PLANE_SNAPSHOT_MARKER:-/data/balance-history/bootstrap/snapshot-loader.done.json}"
-ethw_init_marker = "${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-init.done.json}"
-ethw_identity_marker = "${CONTROL_PLANE_ETHW_IDENTITY_MARKER:-/data/ethw/bootstrap/ethw-sim-identity.json}"
-ethw_genesis = "${CONTROL_PLANE_ETHW_GENESIS:-/bootstrap/ethw-genesis.json}"
+usdb_init_marker = "${CONTROL_PLANE_ETHW_INIT_MARKER:-/data/ethw/bootstrap/ethw-init.done.json}"
+usdb_identity_marker = "${CONTROL_PLANE_ETHW_IDENTITY_MARKER:-/data/ethw/bootstrap/ethw-sim-identity.json}"
+usdb_genesis = "${CONTROL_PLANE_ETHW_GENESIS:-/bootstrap/ethw-genesis.json}"
 sourcedao_bootstrap_state = "${CONTROL_PLANE_SOURCEDAO_STATE:-/bootstrap/sourcedao-bootstrap-state.json}"
 sourcedao_bootstrap_marker = "${CONTROL_PLANE_SOURCEDAO_MARKER:-/bootstrap/sourcedao-bootstrap.done.json}"
 world_sim_bootstrap_marker = "${CONTROL_PLANE_WORLD_SIM_MARKER:-/data/world-sim/bootstrap/world-sim-bootstrap.done.json}"

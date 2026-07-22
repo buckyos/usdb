@@ -3,7 +3,7 @@ use crate::db::{AddressDBRef, BalanceHistoryDBRef, SnapshotDBRef};
 use crate::output::IndexOutputRef;
 use bitcoincore_rpc::bitcoin::ScriptBuf;
 use bitcoincore_rpc::bitcoin::address::Address;
-use usdb_util::{ElectrsClientRef, ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ElectrsClientRef, ToBtcScriptHash};
 
 pub struct BalanceHistoryVerifier {
     config: BalanceHistoryConfigRef,
@@ -27,7 +27,7 @@ impl BalanceHistoryVerifier {
         }
     }
 
-    pub fn verify_latest(&self, start: Option<USDBScriptHash>) -> Result<(), String> {
+    pub fn verify_latest(&self, start: Option<BtcScriptHash>) -> Result<(), String> {
         let stable_height = self.db.get_btc_block_height()?;
         info!(
             "Starting full balance history verification for stable block height {}",
@@ -106,7 +106,7 @@ impl BalanceHistoryVerifier {
     pub fn verify_at_height(
         &self,
         target_block_height: u32,
-        start: Option<USDBScriptHash>,
+        start: Option<BtcScriptHash>,
     ) -> Result<(), String> {
         info!(
             "Starting full balance history verification at block height {}",
@@ -131,7 +131,7 @@ impl BalanceHistoryVerifier {
             })
     }
 
-    pub fn verify_address_latest(&self, script_hash: &USDBScriptHash) -> Result<(), String> {
+    pub fn verify_address_latest(&self, script_hash: &BtcScriptHash) -> Result<(), String> {
         self.output.println(&format!(
             "Starting stable-height balance verification for script_hash: {}",
             script_hash
@@ -145,7 +145,7 @@ impl BalanceHistoryVerifier {
 
     pub fn verify_address_at_height(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         block_height: u32,
     ) -> Result<(), String> {
         self.output.println(&format!(
@@ -206,7 +206,7 @@ impl BalanceHistoryVerifier {
 
     fn verify_address_balance_at_height_sync(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
@@ -218,7 +218,7 @@ impl BalanceHistoryVerifier {
 
     async fn verify_address_balance_at_height(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
@@ -281,7 +281,7 @@ impl BalanceHistoryVerifier {
 
     fn verify_address_latest_balance_sync(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
@@ -293,7 +293,7 @@ impl BalanceHistoryVerifier {
 
     async fn verify_address_latest_balance(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         latest_block_height: u32,
         balance: u64,
     ) -> Result<(), String> {
@@ -336,7 +336,7 @@ impl BalanceHistoryVerifier {
 
     fn verify_address_latest_balance_batch_sync(
         &self,
-        script_hashes: &[USDBScriptHash],
+        script_hashes: &[BtcScriptHash],
         balances: &[u64],
         stable_height: u32,
     ) -> Result<(), String> {
@@ -348,7 +348,7 @@ impl BalanceHistoryVerifier {
 
     async fn verify_address_latest_balance_batch(
         &self,
-        script_hashes: &[USDBScriptHash],
+        script_hashes: &[BtcScriptHash],
         balances: &[u64],
         stable_height: u32,
     ) -> Result<(), String> {
@@ -473,7 +473,7 @@ impl SnapshotVerifier {
 
     fn load_address_by_script_hash(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
     ) -> Result<ScriptBuf, String> {
         let addr_entry = self.address_db.get_address(script_hash)?;
         match addr_entry {
@@ -481,7 +481,7 @@ impl SnapshotVerifier {
                 debug!(
                     "Loaded address for script hash {} -> {}",
                     script_hash,
-                    entry.to_usdb_script_hash()
+                    entry.to_btc_script_hash()
                 );
                 Ok(entry)
             }

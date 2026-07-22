@@ -1,3 +1,4 @@
+mod activation;
 mod btc;
 mod config;
 mod constants;
@@ -8,6 +9,7 @@ mod log_util;
 mod mem;
 mod types;
 
+pub use activation::*;
 pub use btc::*;
 pub use config::*;
 pub use constants::*;

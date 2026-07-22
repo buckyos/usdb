@@ -2,7 +2,7 @@ UIP: UIP-0006
 Title: USDB Economic State View
 Status: Draft
 Type: Standards Track
-Layer: USDB Indexer RPC / BTC Application Query
+Layer: BTC-side USDB Indexer RPC / BTC Application Query
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0002, UIP-0003, UIP-0004, UIP-0005
 Activation: USDB index protocol and formula version; development networks activate from height 0 after implementation
@@ -11,17 +11,17 @@ Activation: USDB index protocol and formula version; development networks activa
 
 本文定义 `usdb-indexer` 对外提供的经济状态视图和审计视图。
 
-它不是 ETHW 区块头里的链上 payload 编码，而是下游链、validator、浏览器和审计工具在某一 BTC 历史 context 下可查询、可重放、可比对的 USDB-side state view。
+它不是 USDB chain 区块头里的链上 payload 编码，而是下游链、validator、浏览器和审计工具在某一 BTC 历史 context 下可查询、可重放、可比对的 BTC-side USDB state view。
 
 核心规则：
 
-- view 必须绑定一个可重放的 BTC / USDB `external_state`。
+- view 必须绑定一个可重放的 BTC-side USDB `external_state`。
 - view 可以返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 和 `collab_breakdown_count`。
 - 完整 `collab_breakdown` 通过同一历史 context 下的确定性分页查询提供，不要求内联到主 profile。
 - energy 类字段必须使用 UIP-0003 的 `uint128` canonical decimal string。
 - `level` 和 `difficulty_factor_bps` 是基于 `effective_energy` 的查询时派生值，不要求持久化。
-- `leader_eligible`、ETHW `base_difficulty`、ETHW `real_difficulty`、reward rule 和 header payload encoding 不属于本文。
-- ETHW 链上共识 payload 应消费本文定义的 state view，但不得把本文的完整审计字段集合等同于链上 payload 字节。
+- `leader_eligible`、USDB chain `base_difficulty`、USDB chain `real_difficulty`、reward rule 和 header payload encoding 不属于本文。
+- USDB chain 上共识 payload 应消费本文定义的 state view，但不得把本文的完整审计字段集合等同于链上 payload 字节。
 
 # 动机
 
@@ -35,10 +35,10 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 - current head 查询被误用于历史块验证。
 - raw energy、collab contribution、effective energy 混用。
-- ETHW policy 字段反向污染 BTC-side 派生状态。
+- USDB chain policy 字段反向污染 BTC-side 派生状态。
 - 链上 payload 字段和审计明细字段边界不清。
 
-本文把 USDB-side 能提供的完整经济状态视图单独协议化。USDB 链上 payload 只需要引用其中的最小状态选择器，并在验证时按本文规则重算或查询。
+本文把 BTC-side USDB 能提供的完整经济状态视图单独协议化。USDB chain payload 只需要引用其中的最小状态选择器，并在验证时按本文规则重算或查询。
 
 # 当前实现状态
 
@@ -79,18 +79,18 @@ features contains:
 
 `query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。consumer 需要同时满足自身所需的 readiness 与协议能力条件。
 
-能力字段 `candidate_set_selection_rule` 沿用 v1 RPC 名称，但其规范语义只是 `candidate_set_view` 的 ordering contract，不是 ETHW block-selection policy。
+能力字段 `candidate_set_selection_rule` 沿用 v1 RPC 名称，但其规范语义只是 `candidate_set_view` 的 ordering contract，不是 USDB block-selection policy。
 
 # 非目标
 
 本文不定义：
 
-- ETHW `header.Extra` 二进制编码。
-- ETHW `ProfileSelectorPayload` 字段布局。
-- ETHW `base_difficulty` 来源、PoW target 编码或 chain weight 规则。
-- ETHW block reward、fee split、uncle reward、CoinBase 或分红池规则。
+- USDB chain `header.Extra` 二进制编码。
+- USDB chain `ProfileSelectorPayload` 字段布局。
+- USDB chain `base_difficulty` 来源、PoW target 编码或 chain weight 规则。
+- USDB block reward、fee split、uncle reward、CoinBase 或分红池规则。
 - pass 铭文 schema、pass 状态机、energy 公式本身。
-- Leader eligibility 的报价窗口和 USDB 链出块历史策略。
+- Leader eligibility 的报价窗口和 USDB chain 出块历史策略。
 
 # 术语
 
@@ -98,17 +98,17 @@ features contains:
 | --- | --- |
 | `query_context` | 调用方请求中的历史查询约束，由 `requested_height` 和可选 `expected_state` 组成；RPC 字段名为 `context`。 |
 | `expected_state` | 调用方对目标高度历史 identity 的预期字段集合；服务必须逐字段验证，不能用 current head 或当前二进制常量替代。 |
-| `external_state` | 服务完成历史解析和校验后返回的完整、不可变 BTC / USDB state identity；它是查询结果锚点，不是调用方可自由构造的轻量 selector。 |
+| `external_state` | 服务完成历史解析和校验后返回的完整、不可变 BTC-side USDB state identity；它是查询结果锚点，不是调用方可自由构造的轻量 selector。 |
 | historical context | `query_context`、解析出的目标高度及其 `external_state` 的统称；规范字段必须使用前述精确名称，不能只写裸 `context`。 |
 | `economic_state_view` | `usdb-indexer` 在一个 `external_state` 下返回的经济状态视图。 |
 | `pass_economic_profile` | 某张 pass 在指定历史 context 下的 pass snapshot + energy profile。 |
 | `candidate_pass` | 在同一 `external_state` 下状态为 `Active` 且 `pass_kind = standard` 的 pass；成员资格与 energy 是否为零无关。 |
-| `candidate_set_view` | 同一 `external_state` 下全部 `candidate_pass` 的确定性分页审计排序；不等同于 ETHW 链上 payload 或最终出块选择。 |
+| `candidate_set_view` | 同一 `external_state` 下全部 `candidate_pass` 的确定性分页审计排序；不等同于 USDB chain 上 payload 或最终出块选择。 |
 | `top_ranked_candidate` | 按 `candidate_set_view.selection_rule` 排序后的第一项；只表示审计排序首项。 |
 | `collab_breakdown` | 同一 `external_state` 下，向一个 `resolved_leader` 贡献能量的 active collab pass 明细和完整 aggregate。 |
-| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为一个具体 ETHW 区块声明使用的 pass；不要求等于 `top_ranked_candidate`。 |
+| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为一个具体 USDB chain 区块声明使用的 pass；不要求等于 `top_ranked_candidate`。 |
 | `resolved_profile` | 下游 validator 根据链上 payload 反查本文 state view 后得到的重算结果。 |
-| raw energy leaderboard | 面向前端/浏览器的 raw-energy 展示榜单；不是 `candidate_set_view`，也不得作为 ETHW 选择规则。 |
+| raw energy leaderboard | 面向前端/浏览器的 raw-energy 展示榜单；不是 `candidate_set_view`，也不得作为 USDB chain 选择规则。 |
 
 # 规范关键词
 
@@ -154,13 +154,14 @@ v1 固定字段：
 | `snapshot_id` | string | 是 | upstream balance-history consensus snapshot id。 |
 | `stable_block_hash` | string | 是 | `btc_height` 对应的 stable BTC block hash。 |
 | `local_state_commit` | string | 是 | usdb-indexer local durable state commit。 |
-| `system_state_id` | string | 是 | 下游链消费的顶层 USDB system state id。 |
+| `system_state_id` | string | 是 | 下游链消费的顶层 BTC-side USDB system state id。 |
 | `balance_history_api_version` | string | 是 | balance-history 对外 API 版本。 |
 | `balance_history_semantics_version` | string | 是 | balance-history 历史查询语义版本。 |
-| `usdb_index_protocol_version` | string | 是 | usdb-indexer 外部协议版本。 |
-| `usdb_index_formula_version` | string | 是 | energy / effective energy / level 公式版本。 |
+| `activation_registry_id` | string | 是 | 节点为当前 BTC source network 内置的 UIP-0008 registry canonical hash。 |
+| `active_version_set` | object | 是 | `btc_height` 对应的完整 UIP-0008 active version set。 |
+| `active_version_set_id` | string | 是 | `active_version_set` canonical encoding 的 hash，并由 `local_state_commit` 承诺。 |
 
-`external_state` 必须由目标高度的 durable historical state reference 构造，禁止拿当前二进制常量覆盖历史 identity 中的 protocol/formula version。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
+`external_state` 必须由目标高度的 durable historical state reference 构造，禁止拿 current-head version set 覆盖历史 identity。`active_version_set_id` 必须可由返回的 `active_version_set` 重算，并与 `local_state_commit` 使用的 id 一致。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
 
 # Pass Economic Profile
 
@@ -181,8 +182,8 @@ v1 固定字段：
       "system_state_id": "...",
       "balance_history_api_version": "1.0.0",
       "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-      "usdb_index_protocol_version": "1.0.0",
-      "usdb_index_formula_version": "pass-energy-formula:v1"
+      "activation_registry_id": "...",
+      "active_version_set_id": "..."
     }
   }
 }
@@ -203,8 +204,19 @@ RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `
     "system_state_id": "...",
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_protocol_version": "1.0.0",
-    "usdb_index_formula_version": "pass-energy-formula:v1"
+    "activation_registry_id": "...",
+    "active_version_set": {
+      "inscription_schema_version": "uip-0001-miner-pass-inscription:v1",
+      "pass_state_machine_version": "uip-0002-pass-state-machine:v1",
+      "energy_formula_version": "uip-0003-pass-energy-formula:v1",
+      "effective_energy_formula_version": "uip-0004-collab-leader-effective-energy:v1",
+      "level_formula_version": "uip-0005-level-and-real-difficulty:v1",
+      "query_semantics_version": "uip-0006-economic-query-semantics:v1",
+      "state_view_version": "uip-0006-usdb-economic-state-view:v1",
+      "commit_protocol_version": "uip-0008-usdb-local-state-commit:v1",
+      "balance_history_semantics_version": "balance-snapshot-at-or-before:v1"
+    },
+    "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "pass": {
     "pass_id": "txidi0",
@@ -250,7 +262,7 @@ owner 的 canonical 表示必须是 script hash 或等价确定性 owner id。�
 
 如果存在无法唯一编码为标准 BTC address 的 script，`owner_btc_addr` 可以为空，但 `owner_script_hash` 必须存在。
 
-从 `owner_script_hash` 反查 `owner_btc_addr` 不属于 UIP-0006 的核心要求。若后续需要一等反向查询能力，应通过独立索引器或后续 UIP 定义 script hash -> address 映射、快照语义和历史保留规则。缺少该反向索引不得阻塞 core profile、`candidate_set_view` 或 ETHW reward replay。
+从 `owner_script_hash` 反查 `owner_btc_addr` 不属于 UIP-0006 的核心要求。若后续需要一等反向查询能力，应通过独立索引器或后续 UIP 定义 script hash -> address 映射、快照语义和历史保留规则。缺少该反向索引不得阻塞 core profile、`candidate_set_view` 或 USDB chain reward replay。
 
 ## Energy 字段编码
 
@@ -338,7 +350,7 @@ breakdown v1 页响应必须包含 `view_version`、完整 `external_state`、`l
 
 # Candidate Set View
 
-USDB-side 应提供 `candidate_set_view`，用于浏览器 overview、审计排序、测试和下游链调试。
+BTC-side USDB 应提供 `candidate_set_view`，用于浏览器 overview、审计排序、测试和下游链调试。
 
 在一个固定 `external_state = S` 下，成员资格定义为：
 
@@ -353,7 +365,7 @@ candidate_pass(pass, S)
 - 所有且仅有 `Active` standard pass 进入 `candidate_set_view`。
 - collab、Dormant、Consumed、Burned 和 Invalid pass 必须排除。
 - 成员资格不要求 `raw_energy`、`collab_contribution`、`effective_energy` 或 `level` 大于零。
-- UIP-0014 quote activity、`leader_eligible` 和 `candidate_energy` 不改变本文集合成员资格；它们属于 ETHW-side policy。
+- UIP-0014 quote activity、`leader_eligible` 和 `candidate_energy` 不改变本文集合成员资格；它们属于 USDB-chain policy。
 - 同一页及所有 continuation page 的每一项必须来自同一个 `external_state`。
 
 v1 排序规则固定为：
@@ -371,7 +383,7 @@ tie_break = smallest pass_id lexical order
 
 其中 `pass_id` 必须使用 UIP-0001 canonical encoding，lexical order 表示 ASCII 字节逐字节升序。
 
-字段名 `selection_rule` 只表示本 view 的 ordering contract。该规则不产生共识 `winner`，也不声明 `top_ranked_candidate` 已赢得 PoW 竞争。某个 ETHW 区块的 `selected_pass` 由 UIP-0007 `ProfileSelectorPayload` 显式声明；其 quote activity、`candidate_energy` 和 PoW threshold 验证由 ETHW-side UIP 定义。
+字段名 `selection_rule` 只表示本 view 的 ordering contract。该规则不产生共识 `winner`，也不声明 `top_ranked_candidate` 已赢得 PoW 竞争。某个 USDB chain 区块的 `selected_pass` 由 UIP-0007 `ProfileSelectorPayload` 显式声明；其 quote activity、`candidate_energy` 和 PoW threshold 验证由 USDB-chain UIP 定义。
 
 Candidate set view 是一等查询，不要求下游先逐个读取所有 pass profile 后自行排序。实现可以按分页返回：
 
@@ -435,8 +447,12 @@ cursor 必须完整绑定：
 | 错误 | 触发条件 |
 | --- | --- |
 | `VIEW_VERSION_MISMATCH` | 不支持的 `view_version`。 |
-| `PROTOCOL_VERSION_MISMATCH` | `usdb_index_protocol_version` 不匹配。 |
-| `FORMULA_VERSION_MISMATCH` | `usdb_index_formula_version` 不匹配。 |
+| `ACTIVE_VERSION_SET_MISMATCH` | caller 固定的 `active_version_set_id`、返回 set 的重算 id 或 historical lookup 不一致。 |
+| `ACTIVATION_RECORD_NOT_FOUND` | 目标 network / height 缺少必需 activation record。 |
+| `ACTIVATION_RECORD_CONFLICT` | activation registry 在目标 context 存在冲突。 |
+| `VERSION_NOT_SUPPORTED` | active version set 包含本地实现不支持的版本。 |
+| `FORMULA_VERSION_MISMATCH` | active formula version 与派生字段实际使用的公式版本不一致。 |
+| `COMMIT_PROTOCOL_VERSION_MISMATCH` | active commit protocol 与本地 state commit encoder 不一致。 |
 | `VERSION_MISMATCH` | balance-history API 或 query semantics version 不匹配。 |
 | `SNAPSHOT_ID_MISMATCH` | `external_state.snapshot_id` 或对应 stable height 与历史 state ref 不匹配。 |
 | `BLOCK_HASH_MISMATCH` | `external_state.stable_block_hash` 与历史 state ref 不匹配。 |
@@ -453,16 +469,16 @@ cursor 必须完整绑定：
 
 查询 RPC 的 mismatch 错误必须带 structured data，至少包含 expected state、actual state、requested height 和 canonical `mismatch_field`。protocol/formula 必须和目标高度的历史 identity 比较；禁止和当前进程常量比较。
 
-`ECONOMIC_FIELD_MISMATCH` 不是 `get_pass_economic_profile`、`get_candidate_set_view` 或 `get_collab_breakdown` 的请求错误：这些查询没有 caller-supplied expected economic fields。它属于 ETHW validator、审计工具或其他下游 verifier 的本地校验结果，例如链外 validator test envelope 声明的 `effective_energy` 与 profile 重算值不同。若服务自己在一次查询内得到矛盾结果，应返回 `INTERNAL_INVARIANT_BROKEN`，不得冒充 caller mismatch。
+`ECONOMIC_FIELD_MISMATCH` 不是 `get_pass_economic_profile`、`get_candidate_set_view` 或 `get_collab_breakdown` 的请求错误：这些查询没有 caller-supplied expected economic fields。它属于 USDB chain validator、审计工具或其他下游 verifier 的本地校验结果，例如链外 validator test envelope 声明的 `effective_energy` 与 profile 重算值不同。若服务自己在一次查询内得到矛盾结果，应返回 `INTERNAL_INVARIANT_BROKEN`，不得冒充 caller mismatch。
 
-# 与 ETHW 链上 Payload 的关系
+# 与 USDB chain 上 Payload 的关系
 
-USDB 链上 payload 应只携带验证旧块所需的最小 selector。validator 再使用这些 selector 调用本文定义的 USDB-side state view。
+USDB chain payload 应只携带验证旧块所需的最小 selector。validator 再使用这些 selector 调用本文定义的 BTC-side USDB state view。
 
 当前关系：
 
 ```text
-ETHW ProfileSelectorPayload
+USDB chain ProfileSelectorPayload
     -> btc_height
     -> snapshot_id
     -> system_state_id
@@ -479,7 +495,7 @@ USDB Economic State View
     -> collab_breakdown_count / collab_breakdown query
 ```
 
-因此，本文字段集合是 USDB 链上 payload 可解析状态的超集，不代表这些字段都应写入 ETHW 区块头。`selected_pass` 只需是目标 `external_state` 下的 `candidate_pass`；UIP-0007 不要求它等于本文的 `top_ranked_candidate`。
+因此，本文字段集合是 USDB chain payload 可解析状态的超集，不代表这些字段都应写入 USDB chain 区块头。`selected_pass` 只需是目标 `external_state` 下的 `candidate_pass`；UIP-0007 不要求它等于本文的 `top_ranked_candidate`。
 
 # 测试要求
 
@@ -493,7 +509,7 @@ USDB Economic State View
 - collab Leader profile 可通过 breakdown 或审计查询重算 aggregate contribution。
 - 所有 Active standard pass 都进入 `candidate_set_view`，包括 `effective_energy = 0` 的 pass。
 - collab 和所有 non-Active pass 不进入 `candidate_set_view`。
-- `top_ranked_candidate` 按 `effective_energy DESC, canonical pass_id ASC` 得出，但不代表 ETHW block-selection 或 PoW 验证结果。
+- `top_ranked_candidate` 按 `effective_energy DESC, canonical pass_id ASC` 得出，但不代表 USDB block-selection 或 PoW 验证结果。
 - `view_version` / `protocol_version` / `formula_version` mismatch。
 - history retention 不足时返回 `HISTORY_NOT_AVAILABLE` 或 `STATE_NOT_RETAINED`。
 - cursor 正常续页在 current head 前进后仍固定原 external state。

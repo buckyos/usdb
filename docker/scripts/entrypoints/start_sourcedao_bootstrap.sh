@@ -12,7 +12,7 @@ runtime_config_file="${SOURCE_DAO_BOOTSTRAP_RUNTIME_CONFIG_FILE:-${bootstrap_dir
 repo_dir="${SOURCE_DAO_REPO_DIR:-/workspace/SourceDAO}"
 artifacts_dir="${SOURCE_DAO_ARTIFACTS_DIR:-${repo_dir}/artifacts-usdb}"
 prepare_mode="${SOURCE_DAO_BOOTSTRAP_PREPARE:-validate}"
-rpc_url="${ETHW_RPC_URL:-http://ethw-node:8545}"
+rpc_url="${USDB_CHAIN_RPC_URL:-http://ethw-node:8545}"
 wait_seconds="${SOURCE_DAO_RPC_WAIT_SECONDS:-300}"
 tsx_bin="${SOURCE_DAO_TSX_BIN:-${repo_dir}/node_modules/.bin/tsx}"
 
@@ -106,8 +106,8 @@ NODE
 wait_for_ethw_rpc() {
   local deadline=$((SECONDS + wait_seconds))
   while (( SECONDS < deadline )); do
-    if ETHW_RPC_URL="${rpc_url}" node <<'NODE' >/dev/null 2>&1
-const rpcUrl = process.env.ETHW_RPC_URL;
+    if USDB_CHAIN_RPC_URL="${rpc_url}" node <<'NODE' >/dev/null 2>&1
+const rpcUrl = process.env.USDB_CHAIN_RPC_URL;
 async function main() {
   const response = await fetch(rpcUrl, {
     method: "POST",

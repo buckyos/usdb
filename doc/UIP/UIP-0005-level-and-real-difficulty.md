@@ -6,13 +6,13 @@ Layer: BTC Application / USDB Validator Input
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0003, UIP-0004
 Supersedes: doc/usdb-economic-model-design.md level and difficulty sections after activation
-Activation: BTC and ETHW network activation matrix; development networks activate from height 0 after implementation
+Activation: BTC and USDB-chain network activation matrix; development networks activate from height 0 after implementation
 
 # 摘要
 
-本文定义确定性的 `energy -> level -> difficulty factor` 整数映射。USDB indexer 把 UIP-0004 `effective_energy` 代入该映射，返回 nominal `level` 和 `difficulty_factor_bps`；后续 ETHW policy 可以按同一映射从 UIP-0014 `candidate_energy` 派生实际 `candidate_level` 和 `candidate_difficulty_factor_bps`。
+本文定义确定性的 `energy -> level -> difficulty factor` 整数映射。USDB indexer 把 UIP-0004 `effective_energy` 代入该映射，返回 nominal `level` 和 `difficulty_factor_bps`；后续 USDB chain policy 可以按同一映射从 UIP-0014 `candidate_energy` 派生实际 `candidate_level` 和 `candidate_difficulty_factor_bps`。
 
-本文同时给出 ETHW 侧如何使用 `difficulty_factor_bps` 和动态 `base_difficulty` 计算 `real_difficulty` 的整数规则。`base_difficulty` 和 `real_difficulty` 不属于 USDB indexer 持久状态。
+本文同时给出 USDB chain 侧如何使用 `difficulty_factor_bps` 和动态 `base_difficulty` 计算 `real_difficulty` 的整数规则。`base_difficulty` 和 `real_difficulty` 不属于 USDB indexer 持久状态。
 
 核心规则：
 
@@ -47,9 +47,9 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 
 - raw energy 增长、惩罚和继承。
 - collab pass 的 Leader 解析和 `effective_energy` 聚合。
-- ETHW 侧 Leader eligibility、出块报价窗口、`candidate_energy` 或 `candidate_level` policy。
+- USDB chain 侧 Leader eligibility、出块报价窗口、`candidate_energy` 或 `candidate_level` policy。
 - base difficulty 的来源、USDB 链出块算法或 PoW target 编码。
-- USDB indexer 查询、持久化或反向依赖 ETHW `base_difficulty`。
+- USDB indexer 查询、持久化或反向依赖 USDB chain `base_difficulty`。
 - reward split、CoinBase 释放和价格规则。
 
 # 术语
@@ -62,8 +62,8 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 | `base_difficulty` | USDB validator / mining policy 输入的基础挖矿难度，不是 USDB indexer 输入。 |
 | `difficulty_factor_bps` | USDB indexer 从 nominal `level` 派生的审计系数，单位 bps。 |
 | `candidate_level` | UIP-0014 从 `candidate_energy` 派生的实际候选等级，使用本文同一阈值映射。 |
-| `candidate_difficulty_factor_bps` | UIP-0014 从 `candidate_level` 派生、供 ETHW difficulty policy 使用的系数。 |
-| `real_difficulty` | ETHW 侧把目标 policy 选择的 difficulty factor 应用于 `base_difficulty` 后的实际难度。 |
+| `candidate_difficulty_factor_bps` | UIP-0014 从 `candidate_level` 派生、供 USDB chain difficulty policy 使用的系数。 |
+| `real_difficulty` | USDB chain 侧把目标 policy 选择的 difficulty factor 应用于 `base_difficulty` 后的实际难度。 |
 
 # 规范关键词
 
@@ -73,20 +73,20 @@ UIP-0005 的目标是把等级和难度折算变成可重放、可测试、可�
 
 当前代码已实现本 UIP 的公式层 helper，并已在 `get_pass_energy`、`get_pass_economic_profile` 和 `get_candidate_set_view` 中运行时派生 `level` 和 `difficulty_factor_bps`。
 
-usdb-indexer 侧的 UIP-0005 core 已暂时收尾：公式、查询派生、`candidate_set_view`、状态边界和服务层交叉验证均已覆盖。下列版本绑定和 ETHW policy 闭环由后续 UIP 承接。
+usdb-indexer 侧的 UIP-0005 core 已暂时收尾：公式、查询派生、`candidate_set_view`、状态边界和服务层交叉验证均已覆盖。下列版本绑定和 USDB chain policy 闭环由后续 UIP 承接。
 
 在本 UIP 激活前，已有 leaderboard、RPC 或 validator 样例若只使用 raw `energy`，都不应被视为最终协议行为。实现进入本 UIP 后：
 
 - USDB indexer 查询接口应该基于 `effective_energy` 动态计算 `level` 和 `difficulty_factor_bps`。
 - USDB indexer 不需要持久化 `level` 或 `difficulty_factor_bps`。
-- USDB indexer 不计算、不持久化、不查询 ETHW `base_difficulty` 或 `real_difficulty`。
+- USDB indexer 不计算、不持久化、不查询 USDB chain `base_difficulty` 或 `real_difficulty`。
 - USDB validator / mining policy 必须先按已激活 policy 确定使用 nominal `difficulty_factor_bps` 还是 UIP-0014 `candidate_difficulty_factor_bps`，再和当前 `base_difficulty` 计算 `real_difficulty`。
 
 依赖后续 UIP 的事项：
 
 - UIP-0006 economic state view 已通过统一 profile / `candidate_set_view` 暴露 nominal 字段，并支持同一 historical context 下重算。
 - UIP-0008 定义 formula version 与历史高度 activation matrix。
-- UIP-0009 或后续 ETHW policy 决定是否显式承诺 `base_difficulty` 和 `real_difficulty`。
+- UIP-0009 或后续 USDB chain policy 决定是否显式承诺 `base_difficulty` 和 `real_difficulty`。
 - UIP-0014 定义 quote activity 如何从 `effective_energy` 得到实际 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。
 
 # 输入语义
@@ -137,9 +137,9 @@ level(pass, h) = 0
 1. `MAX_LEVEL = 50` 作为首版正式参数。
 2. 最大 difficulty discount 固定为 50%，即 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
 3. `level` 和 `difficulty_factor_bps` 是查询时派生值，不需要在 usdb-indexer 中持久化。
-4. `base_difficulty` 由 ETHW 提供，USDB indexer 不依赖该值。
+4. `base_difficulty` 由 USDB chain 提供，USDB indexer 不依赖该值。
 5. `real_difficulty` 在 USDB validator / mining policy 中计算，不写回 USDB indexer。
-6. 公开 ETHW 测试网和正式网应使用同一套 level 参数；local / regtest 可以为测试临时 override，但不得影响公开网络 activation matrix。
+6. 公开 USDB chain 测试网和正式网应使用同一套 level 参数；local / regtest 可以为测试临时 override，但不得影响公开网络 activation matrix。
 
 ## `LEVEL_E0` 量纲确认
 
@@ -310,7 +310,7 @@ difficulty_factor_bps >= MIN_DIFFICULTY_FACTOR_BPS
 
 `difficulty_factor_bps` 是 USDB indexer 可以返回的 BTC-side nominal derived value。它只依赖 `effective_energy`、`level` 和 UIP-0005 参数。
 
-ETHW 侧先按已激活 policy 得到 `policy_difficulty_factor_bps`。未启用额外 `candidate_energy` policy 时它可以等于 nominal `difficulty_factor_bps`；启用 UIP-0014 时必须等于 `candidate_difficulty_factor_bps`。随后结合当前 ETHW `base_difficulty` 计算实际难度：
+USDB chain 侧先按已激活 policy 得到 `policy_difficulty_factor_bps`。未启用额外 `candidate_energy` policy 时它可以等于 nominal `difficulty_factor_bps`；启用 UIP-0014 时必须等于 `candidate_difficulty_factor_bps`。随后结合当前 USDB chain `base_difficulty` 计算实际难度：
 
 ```text
 real_difficulty
@@ -319,7 +319,7 @@ real_difficulty
 
 `base_difficulty` 必须是正整数。若 `base_difficulty = 0`，validator / mining policy 必须视为无效输入。
 
-`base_difficulty` 的来源、更新规则、ETHW 网络上下文和是否需要显式承诺由 UIP-0009 或后续 ETHW mining policy 定义。USDB indexer 禁止为了计算本文字段而查询 ETHW `base_difficulty`。
+`base_difficulty` 的来源、更新规则、USDB chain 网络上下文和是否需要显式承诺由 UIP-0009 或后续 USDB chain mining policy 定义。USDB indexer 禁止为了计算本文字段而查询 USDB chain `base_difficulty`。
 
 整数 `ceil` 必须按如下方式实现：
 
@@ -337,7 +337,7 @@ ceil_mul_div(a, b, d) = floor((a * b + d - 1) / d)
 - 可以避免小 `base_difficulty` 在折算后变为 0。
 - 对矿工证折扣保持保守口径。
 
-# 查询与 ETHW Policy 字段
+# 查询与 USDB chain Policy 字段
 
 USDB indexer 查询接口应该携带以下 BTC-side 派生字段：
 
@@ -346,20 +346,20 @@ USDB indexer 查询接口应该携带以下 BTC-side 派生字段：
 | `effective_energy` | decimal string | UIP-0004 输出的 nominal effective energy。 |
 | `level` | integer | 按本文阈值表计算的 nominal 等级。 |
 | `difficulty_factor_bps` | integer | nominal 难度折算系数。 |
-| `usdb_index_formula_version` | string | 通过 UIP-0006 `external_state` 绑定 UIP-0005 参数版本。 |
+| `active_version_set.level_formula_version` | string | 通过 UIP-0006 `external_state.active_version_set_id` 绑定 UIP-0005 参数版本。 |
 
 这些字段可以动态计算，不需要作为独立状态持久化。实现可以缓存查询结果，但缓存不得改变历史重放语义。
 
-UIP-0006 economic state view 可以返回 `level` 和 `difficulty_factor_bps` 作为 nominal 审计字段。validator 必须按本文规则从 `effective_energy` 重算两者；若重算结果与 state view 中的字段不一致，必须拒绝该结果或将其标记为 invalid。实际 ETHW difficulty 是否使用这组 nominal 字段，必须再由已激活的 `candidate_energy` policy 决定。
+UIP-0006 economic state view 可以返回 `level` 和 `difficulty_factor_bps` 作为 nominal 审计字段。validator 必须按本文规则从 `effective_energy` 重算两者；若重算结果与 state view 中的字段不一致，必须拒绝该结果或将其标记为 invalid。实际 USDB chain difficulty 是否使用这组 nominal 字段，必须再由已激活的 `candidate_energy` policy 决定。
 
-ETHW block、mining proof 或 validator 逻辑若使用以下 ETHW-side 字段，其来源和编码由 UIP-0009 chain config 或后续 ETHW mining policy 定义：
+USDB block、mining proof 或 validator 逻辑若使用以下 USDB-chain 字段，其来源和编码由 UIP-0009 chain config 或后续 USDB chain mining policy 定义：
 
 | 字段 | 类型建议 | 含义 |
 | --- | --- | --- |
-| `base_difficulty` | decimal string | ETHW 当前基础难度。 |
-| `real_difficulty` | decimal string | ETHW 侧折算后的实际难度。 |
+| `base_difficulty` | decimal string | USDB chain 当前基础难度。 |
+| `real_difficulty` | decimal string | USDB chain 侧折算后的实际难度。 |
 
-如果后续 ETHW policy 显式携带或承诺 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，USDB validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该区块或将其标记为 invalid。
+如果后续 USDB chain policy 显式携带或承诺 `base_difficulty`、`difficulty_factor_bps` 与 `real_difficulty`，USDB validator 必须重算 `real_difficulty`。若重算结果不一致，必须拒绝该区块或将其标记为 invalid。
 
 # 历史查询与 Reorg 语义
 
@@ -374,7 +374,7 @@ level(pass, h)
 
 - 历史高度查询必须使用该高度激活的 UIP-0005 参数。
 - BTC reorg 改变 pass 状态、raw energy 或 collab contribution 时，`level` 和 `difficulty_factor_bps` 必须随 `effective_energy` 重算。
-- ETHW 侧 base difficulty 或 eligibility policy 的变化不得写回 USDB indexer 的 BTC 状态。
+- USDB chain 侧 base difficulty 或 eligibility policy 的变化不得写回 USDB indexer 的 BTC 状态。
 - `real_difficulty` 不是单纯 BTC 高度函数，不能作为 USDB indexer 的历史状态字段。
 
 # 与前后 UIP 的边界
@@ -383,11 +383,11 @@ level(pass, h)
 | --- | --- |
 | UIP-0003 | 产出 `raw_energy` 和 `inheritable_energy`；禁止读取或继承 level / difficulty。 |
 | UIP-0004 | 产出 `effective_energy`；不定义 level 和 difficulty。 |
-| UIP-0005 | 从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`；定义 ETHW 侧 real difficulty 折算公式。 |
+| UIP-0005 | 从 `effective_energy` 派生 `level` 和 `difficulty_factor_bps`；定义 USDB chain 侧 real difficulty 折算公式。 |
 | UIP-0006 | 定义 USDB economic state view 如何返回这些派生字段。 |
-| UIP-0007 | 定义 ETHW header 中如何用最小 selector 引用同一份 USDB profile。 |
+| UIP-0007 | 定义 USDB chain header 中如何用最小 selector 引用同一份 USDB profile。 |
 | UIP-0008 | 定义参数变更、阈值表变更和激活高度。 |
-| UIP-0009 | 定义 ETHW chain config、reward rule version 和 expected difficulty policy version。 |
+| UIP-0009 | 定义 USDB chain config、reward rule version 和 expected difficulty policy version。 |
 | UIP-0014 | 从 quote activity 和 nominal `effective_energy` 派生实际 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。 |
 
 # 安全性
@@ -421,14 +421,14 @@ level(pass, h)
 - `difficulty_factor_bps` 不低于 `5000`。
 - usdb-indexer 查询可动态返回 `level` 和 `difficulty_factor_bps`，但不需要持久化它们。
 - usdb-indexer 不查询、不持久化 `base_difficulty` 和 `real_difficulty`。
-- ETHW 侧 `real_difficulty` 使用向上取整，例如 `base_difficulty = 101, factor = 9900` 时结果为 `100`。
-- state view 或 future ETHW policy 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
+- USDB chain 侧 `real_difficulty` 使用向上取整，例如 `base_difficulty = 101, factor = 9900` 时结果为 `100`。
+- state view 或 future USDB chain policy 中携带的 `level` / `difficulty_factor_bps` / `real_difficulty` 与重算结果不一致时拒绝。
 - 参数表变更时，历史高度按当时激活版本重算。
 
-参考实现的公式、service/profile/`candidate_set_view` 交叉测试已覆盖 BTC-side nominal level/factor 和状态边界。当前未完成项只包括 UIP-0008 的历史参数激活，以及 UIP-0009 / UIP-0014 或后续 ETHW policy 对 `candidate_difficulty_factor_bps`、`base_difficulty / real_difficulty` 来源、编码和 mismatch 校验。
+参考实现的公式、service/profile/`candidate_set_view` 交叉测试已覆盖 BTC-side nominal level/factor 和状态边界。当前未完成项只包括 UIP-0008 的历史参数激活，以及 UIP-0009 / UIP-0014 或后续 USDB chain policy 对 `candidate_difficulty_factor_bps`、`base_difficulty / real_difficulty` 来源、编码和 mismatch 校验。
 
 # 待审计问题
 
-1. `base_difficulty` 的具体来源和数据类型是否应在 UIP-0009 或后续 ETHW difficulty policy 中固定为 ETHW `uint256` decimal string。
-2. ETHW difficulty policy 是否必须显式承诺 `base_difficulty` 和 `real_difficulty`，还是只使用可重算输入。
+1. `base_difficulty` 的具体来源和数据类型是否应在 UIP-0009 或后续 USDB chain difficulty policy 中固定为 USDB chain `uint256` decimal string。
+2. USDB chain difficulty policy 是否必须显式承诺 `base_difficulty` 和 `real_difficulty`，还是只使用可重算输入。
 3. local / regtest 的 level 参数 override 如何标识，避免误进入公开网络配置。

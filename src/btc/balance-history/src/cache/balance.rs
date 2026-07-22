@@ -4,16 +4,16 @@ use crate::config::BalanceHistoryConfigRef;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 use usdb_util::{BalanceHistoryData, BalanceHistoryDataRef};
 
-// Cache item size estimate: USDBScriptHash (32 bytes) + BalanceHistoryData (~20 bytes) ~ 52 bytes
+// Cache item size estimate: BtcScriptHash (32 bytes) + BalanceHistoryData (~20 bytes) ~ 52 bytes
 const CACHE_ITEM_SIZE: usize =
-    std::mem::size_of::<USDBScriptHash>() + std::mem::size_of::<BalanceHistoryData>();
+    std::mem::size_of::<BtcScriptHash>() + std::mem::size_of::<BalanceHistoryData>();
 const CACHE_OVERHEAD_BYTES: usize = 50; // Estimated overhead per entry in lru
 
 pub struct AddressBalanceCache {
-    cache: Mutex<LruCache<USDBScriptHash, BalanceHistoryDataRef>>, // script_hash -> balance
+    cache: Mutex<LruCache<BtcScriptHash, BalanceHistoryDataRef>>, // script_hash -> balance
     strategy: Mutex<CacheStrategy>,
     config: BalanceHistoryConfigRef,
 }
@@ -54,7 +54,7 @@ impl AddressBalanceCache {
         self.cache.lock().unwrap().len() as u64
     }
 
-    pub fn put(&self, script_hash: &USDBScriptHash, data: BalanceHistoryDataRef) {
+    pub fn put(&self, script_hash: &BtcScriptHash, data: BalanceHistoryDataRef) {
         if data.balance == 0 {
             // Do not cache zero balance entries to save memory
             // So we must remove any existing cache entry for this script_hash
@@ -67,7 +67,7 @@ impl AddressBalanceCache {
 
     pub fn get(
         &self,
-        script_hash: &USDBScriptHash,
+        script_hash: &BtcScriptHash,
         block_height: u32,
     ) -> Option<BalanceHistoryDataRef> {
         if let Some(cached) = self.cache.lock().unwrap().get(script_hash) {
@@ -143,7 +143,7 @@ mod tests {
         let mut cache = LruCache::new(NonZeroUsize::new(count + 1000).unwrap());
 
         for i in 0..count {
-            let script_hash = USDBScriptHash::hash(&i.to_le_bytes());
+            let script_hash = BtcScriptHash::hash(&i.to_le_bytes());
             let item = BalanceHistoryData {
                 block_height: i as u32,
                 delta: i as i64,

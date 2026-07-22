@@ -123,7 +123,7 @@ impl RpcClient {
             .await
     }
 
-    /// Returns the top-level system-state id for downstream consumers such as ETHW.
+    /// Returns the top-level system-state id for downstream USDB-chain consumers.
     pub async fn get_system_state_info(&self) -> Result<Option<SystemStateInfo>, String> {
         self.rpc_call::<Option<SystemStateInfo>>("get_system_state_info", json!([]))
             .await

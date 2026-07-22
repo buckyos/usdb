@@ -40,7 +40,7 @@ bash src/btc/usdb-indexer/scripts/regtest_pending_recovery_transfer_reload_resta
 1. `TARGET_HEIGHT`：reorg tip 高度，默认 `40`。
 2. `USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES`：注入失败次数，默认 `1`。
 3. `BTC_RPC_PORT` / `BTC_P2P_PORT`：bitcoind 端口，默认 `29932 / 29933`。
-4. `BH_RPC_PORT` / `USDB_RPC_PORT`：服务 RPC 端口，默认 `29910 / 29920`。
+4. `BH_RPC_PORT` / `USDB_INDEXER_RPC_PORT`：服务 RPC 端口，默认 `29910 / 29920`。
 
 ## 验收标准
 

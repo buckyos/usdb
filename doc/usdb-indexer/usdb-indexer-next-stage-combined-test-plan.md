@@ -133,19 +133,19 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 
 目标：
 
-- 补 `snapshot_id / system_state_id / protocol_version / semantics_version` 的升级边界
+- 补 `snapshot_id / system_state_id / active_version_set_id / semantics_version` 的升级边界
 - 验证历史 payload 在版本变化后稳定落到对应的结构化 version mismatch
 
 执行任务：
 
-1. `single-pass protocol version mismatch`
-   - 篡改 validator payload 的 `usdb_index_protocol_version`
-   - `state ref / economic profile / candidate set / collab breakdown` 必须统一返回 `PROTOCOL_VERSION_MISMATCH`
+1. `single-pass active version set mismatch`
+   - 篡改 validator test envelope 的 `active_version_set_id`
+   - `state ref / economic profile / candidate set / collab breakdown` 必须统一返回 `ACTIVE_VERSION_SET_MISMATCH`
 2. `single-pass semantics version mismatch`
    - 篡改 validator payload 的 `balance_history_semantics_version`
    - 历史 context 路径必须稳定返回 `VERSION_MISMATCH`
-3. `candidate-set protocol version mismatch`
-   - 在多 pass `winner + candidate_passes` payload 上重复版本篡改
+3. `candidate-set active version set mismatch`
+   - 在多 pass `winner + candidate_passes` test envelope 上重复 identity 篡改
    - 不只覆盖单 pass，还覆盖 candidate-set 的批量历史校验路径
 4. `candidate-set semantics version mismatch`
    - 在多 pass `winner + candidate_passes` payload 上重复语义版本篡改
@@ -153,12 +153,12 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 5. `balance-history API version mismatch`
    - 篡改 validator payload 的 `balance_history_api_version`
    - 四个 UIP-0006 view 必须统一返回 `VERSION_MISMATCH`
-6. `formula version mismatch`
-   - 篡改 validator payload 的 `usdb_index_formula_version`
-   - 四个 UIP-0006 view 必须统一返回 `FORMULA_VERSION_MISMATCH`
+6. `unsupported formula member`
+   - 在完整 `active_version_set` 内篡改 formula member，并同步重算 `active_version_set_id`
+   - 四个 UIP-0006 view 必须统一返回 `FORMULA_VERSION_MISMATCH`，证明不是仅校验 set identity
 7. `version matrix after head advance`
-   - 在同一历史 payload 上同时构造 `api / semantics / protocol` 三类版本篡改
-   - BTC head 前进后，原 payload 仍通过；API / semantics 返回 `VERSION_MISMATCH`，protocol 返回 `PROTOCOL_VERSION_MISMATCH`
+   - 在同一历史 test envelope 上同时构造 `api / semantics / active-version-set identity` 三类篡改
+   - BTC head 前进后，原 envelope 仍通过；API / semantics 返回 `VERSION_MISMATCH`，set identity 返回 `ACTIVE_VERSION_SET_MISMATCH`
 8. `payload-version upgrade coexistence`
    - 同一条链上先生成 `v1.0` 单 pass payload，再生成 `v1.1` candidate-set payload
    - validator 必须在同一升级窗口内接受两代 schema 的历史回放
@@ -202,7 +202,7 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
    - 更大规模 `candidate_set sampled soak`
    - 更复杂 winner 选择逻辑
    - 更贴近真实 USDB validator 的 sampled payload 结构
-2. 更贴近最终 ETHW block body 的选择证明
+2. 更贴近最终 USDB block body 的选择证明
    - 不只是明文 `winner + candidate_passes`
    - 而是更接近 `candidate_set_commit / selection proof` 一类结构
 3. 更大规模和更长时段的性能 / 稳定性矩阵

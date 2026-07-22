@@ -14,7 +14,7 @@ import {
 import type {
   BalanceHistorySummary,
   BtcNodeSummary,
-  EthwSummary,
+  UsdbChainSummary,
   OrdSummary,
   OverviewResponse,
   ServiceProbe,
@@ -28,9 +28,9 @@ interface ServicesPageProps {
 }
 
 type Translate = (key: string, fallback?: string, variables?: Record<string, string | number>) => string
-type ServiceId = 'btc-node' | 'balance-history' | 'usdb-indexer' | 'ethw' | 'ord'
+type ServiceId = 'btc-node' | 'balance-history' | 'usdb-indexer' | 'usdb-chain' | 'ord'
 
-const SERVICE_IDS: ServiceId[] = ['btc-node', 'balance-history', 'usdb-indexer', 'ethw', 'ord']
+const SERVICE_IDS: ServiceId[] = ['btc-node', 'balance-history', 'usdb-indexer', 'usdb-chain', 'ord']
 
 function normalizeNumericIdentifier(value?: string | null) {
   if (!value) return null
@@ -43,7 +43,7 @@ function normalizeNumericIdentifier(value?: string | null) {
   }
 }
 
-function shouldShowEthwNetworkId(chainId?: string | null, networkId?: string | null) {
+function shouldShowUsdbNetworkId(chainId?: string | null, networkId?: string | null) {
   if (!networkId) return false
   if (!chainId) return true
   return normalizeNumericIdentifier(chainId) !== normalizeNumericIdentifier(networkId)
@@ -299,7 +299,7 @@ function renderExplorerServiceDetails(
   )
 }
 
-function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | null) {
+function renderUsdbDetails(locale: string, t: Translate, data?: UsdbChainSummary | null) {
   return (
     <FieldValueList
       items={[
@@ -313,7 +313,7 @@ function renderEthwDetails(locale: string, t: Translate, data?: EthwSummary | nu
           value: displayText(data?.chain_id, t),
           helpText: t('help.fields.chainId'),
         },
-        ...(shouldShowEthwNetworkId(data?.chain_id, data?.network_id)
+        ...(shouldShowUsdbNetworkId(data?.chain_id, data?.network_id)
           ? [
               {
                 label: t('fields.networkId'),
@@ -435,10 +435,10 @@ function getServiceSummaryLine(
           tail: 8,
         }),
       })
-    case 'ethw':
-      return t('services.workspace.ethwSummary', undefined, {
-        block: displayNumber(locale, data.services.ethw.data?.block_number ?? null, t),
-        chainId: displayText(data.services.ethw.data?.chain_id, t),
+    case 'usdb-chain':
+      return t('services.workspace.usdbSummary', undefined, {
+        block: displayNumber(locale, data.services.usdb_chain.data?.block_number ?? null, t),
+        chainId: displayText(data.services.usdb_chain.data?.chain_id, t),
       })
     case 'ord':
       if (
@@ -477,11 +477,11 @@ function getServiceMeta(serviceId: ServiceId, t: Translate) {
         headline: t('services.usdbIndexer.title'),
         body: t('services.usdbIndexer.subtitle'),
       }
-    case 'ethw':
+    case 'usdb-chain':
       return {
-        title: 'ETHW / Geth',
-        headline: t('services.workspace.ethwTitle'),
-        body: t('services.workspace.ethwBody'),
+        title: 'USDB Chain / Geth',
+        headline: t('services.workspace.usdbTitle'),
+        body: t('services.workspace.usdbBody'),
       }
     case 'ord':
       return {
@@ -527,21 +527,21 @@ function renderServiceContent(
       return renderExplorerServiceDetails('balance-history', data, locale, t)
     case 'usdb-indexer':
       return renderExplorerServiceDetails('usdb-indexer', data, locale, t)
-    case 'ethw':
+    case 'usdb-chain':
       return (
         <article className="console-card">
           <div className="mb-4">
             <h3 className="text-base font-semibold text-[color:var(--cp-text)]">
-              {t('services.workspace.ethwRuntimeTitle')}
+              {t('services.workspace.usdbRuntimeTitle')}
             </h3>
             <p className="mt-2 text-sm leading-6 text-[color:var(--cp-muted)]">
-              {t('services.workspace.ethwRuntimeBody')}
+              {t('services.workspace.usdbRuntimeBody')}
             </p>
           </div>
-          {renderEthwDetails(locale, t, data?.services.ethw.data)}
-          {data?.services.ethw.error ? (
+          {renderUsdbDetails(locale, t, data?.services.usdb_chain.data)}
+          {data?.services.usdb_chain.error ? (
             <p className="mt-4 text-sm text-[color:var(--cp-danger)] break-all">
-              {data.services.ethw.error}
+              {data.services.usdb_chain.error}
             </p>
           ) : null}
         </article>
@@ -591,8 +591,8 @@ function getProbe(
       return data.services.balance_history
     case 'usdb-indexer':
       return data.services.usdb_indexer
-    case 'ethw':
-      return data.services.ethw
+    case 'usdb-chain':
+      return data.services.usdb_chain
     case 'ord':
       return data.services.ord
   }

@@ -13,7 +13,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-29832}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-29833}"
 BH_RPC_PORT="${BH_RPC_PORT:-29810}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-29820}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-29820}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-29830}"
 WALLET_NAME="${WALLET_NAME:-usdbvalidatorbody}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-validator-body-a}"
@@ -89,7 +89,7 @@ EOF
   profile_resp="$(regtest_get_pass_economic_profile_response "$pass_id" "$historical_height")"
   regtest_assert_json_expr "$profile_resp" "data.get('error') is None" "True"
 
-  payload_file="$WORK_DIR/ethw_validator_block_body_payload.json"
+  payload_file="$WORK_DIR/usdb_validator_block_body_payload.json"
   regtest_write_validator_payload_from_profile_v1 "$payload_file" "$profile_resp"
   regtest_log "Wrote validator block-body payload from UIP-0006 profile: ${payload_file}"
 

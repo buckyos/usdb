@@ -16,7 +16,7 @@ USDB_INDEXER_ROOT="${USDB_INDEXER_ROOT:-$WORK_DIR/usdb-indexer}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-29332}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-29333}"
 BH_RPC_PORT="${BH_RPC_PORT:-29310}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-29320}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-29320}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-29330}"
 WALLET_NAME="${WALLET_NAME:-usdbreorg}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-reorg-a}"
@@ -151,7 +151,7 @@ regtest_rpc_call_usdb_indexer() {
   local method="$1"
   local params="${2:-[]}"
   curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-    -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+    -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
@@ -525,8 +525,9 @@ payload = {
         "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
-        "usdb_index_protocol_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_protocol_version"],
-        "usdb_index_formula_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_formula_version"],
+        "activation_registry_id": state_ref["local_state_commit_info"]["activation_registry_id"],
+        "active_version_set": state_ref["local_state_commit_info"]["active_version_set"],
+        "active_version_set_id": state_ref["local_state_commit_info"]["active_version_set_id"],
     },
     "miner_selection": {
         "inscription_id": pass_snapshot["inscription_id"],
@@ -636,8 +637,9 @@ payload = {
         "balance_history_semantics_version": state_ref["snapshot_info"]["consensus_identity"]["balance_history_semantics_version"],
         "local_state_commit": state_ref["local_state_commit_info"]["local_state_commit"],
         "system_state_id": state_ref["system_state_info"]["system_state_id"],
-        "usdb_index_protocol_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_protocol_version"],
-        "usdb_index_formula_version": state_ref["snapshot_info"]["consensus_identity"]["usdb_index_formula_version"],
+        "activation_registry_id": state_ref["local_state_commit_info"]["activation_registry_id"],
+        "active_version_set": state_ref["local_state_commit_info"]["active_version_set"],
+        "active_version_set_id": state_ref["local_state_commit_info"]["active_version_set_id"],
     },
     "miner_selection": {
         "inscription_id": winner_snapshot["inscription_id"],
@@ -880,8 +882,8 @@ print(json.dumps({
         "balance_history_semantics_version": state["balance_history_semantics_version"],
         "local_state_commit": state["local_state_commit"],
         "system_state_id": state["system_state_id"],
-        "usdb_index_protocol_version": state["usdb_index_protocol_version"],
-        "usdb_index_formula_version": state["usdb_index_formula_version"],
+        "activation_registry_id": state["activation_registry_id"],
+        "active_version_set_id": state["active_version_set_id"],
     },
 }))
 PY
@@ -1410,7 +1412,7 @@ regtest_wait_balance_history_rpc_ready() {
 }
 
 regtest_wait_usdb_rpc_ready() {
-  regtest_wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
+  regtest_wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
 }
 
 regtest_wait_balance_history_consensus_ready() {
@@ -1678,7 +1680,7 @@ regtest_create_usdb_indexer_config() {
     "inscription_fixture_file": ${fixture_json},
     "inscription_source_shadow_compare": false,
     "inscription_source_shadow_fail_fast": false,
-    "rpc_server_port": ${USDB_RPC_PORT},
+    "rpc_server_port": ${USDB_INDEXER_RPC_PORT},
     "rpc_server_enabled": true,
     "monitor_ord_enabled": false
   }
@@ -2046,7 +2048,7 @@ regtest_start_balance_history() {
 }
 
 regtest_start_usdb_indexer() {
-  regtest_log "Starting usdb-indexer service (root=${USDB_INDEXER_ROOT}, rpc=${USDB_RPC_PORT})"
+  regtest_log "Starting usdb-indexer service (root=${USDB_INDEXER_ROOT}, rpc=${USDB_INDEXER_RPC_PORT})"
   local -a env_args=()
   if [[ -n "$USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES" ]]; then
     env_args+=(
@@ -2110,7 +2112,7 @@ regtest_stop_usdb_indexer() {
   if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
     regtest_log "Stopping usdb-indexer process pid=${USDB_INDEXER_PID}"
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+      -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1 || true
     regtest_stop_process "$USDB_INDEXER_PID"
@@ -2460,7 +2462,7 @@ regtest_print_failure_diagnostics() {
   fi
   REGTEST_DIAGNOSTICS_PRINTED=1
 
-  regtest_log "Failure diagnostics: exit_code=${exit_code}, work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_rpc_port=${USDB_RPC_PORT}"
+  regtest_log "Failure diagnostics: exit_code=${exit_code}, work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_indexer_rpc_port=${USDB_INDEXER_RPC_PORT}"
   regtest_print_tail_if_exists "ord server log" "$ORD_SERVER_LOG_FILE"
   regtest_print_tail_if_exists "balance-history log" "$BALANCE_HISTORY_LOG_FILE"
   regtest_print_tail_if_exists "usdb-indexer log" "$USDB_INDEXER_LOG_FILE"

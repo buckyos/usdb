@@ -94,7 +94,7 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 4. `WORK_DIR`：临时工作目录
 5. `BTC_RPC_PORT`：bitcoind RPC 端口
 6. `BH_RPC_PORT`：balance-history RPC 端口
-7. `USDB_RPC_PORT`：usdb-indexer RPC 端口
+7. `USDB_INDEXER_RPC_PORT`：usdb-indexer RPC 端口
 8. `TARGET_HEIGHT`：初始出块高度
 9. `SYNC_TIMEOUT_SEC`：同步超时秒数
 10. `ENABLE_TRANSFER_CHECK`：是否执行转账断言（默认 `1`）
@@ -124,7 +124,7 @@ BITCOIN_BIN_DIR=/home/bucky/btc/bitcoin-28.1/bin \
 TARGET_HEIGHT=101 \
 BTC_RPC_PORT=28132 \
 BH_RPC_PORT=28110 \
-USDB_RPC_PORT=28120 \
+USDB_INDEXER_RPC_PORT=28120 \
 src/btc/usdb-indexer/scripts/regtest_e2e_smoke.sh
 ```
 

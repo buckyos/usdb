@@ -1,15 +1,15 @@
 UIP: UIP-0007
-Title: ETHW Consensus Profile Selector
+Title: USDB Consensus Profile Selector
 Status: Draft
 Type: Standards Track
-Layer: ETHW Header / Consensus
+Layer: USDB Header / Consensus
 Created: 2026-04-25
 Requires: UIP-0000, UIP-0005, UIP-0006
-Activation: ETHW network activation matrix; USDB development chains activate from genesis
+Activation: USDB chain activation matrix; development chains may activate from genesis
 
 # 摘要
 
-本文定义 ETHW / USDB 链在区块头 `header.Extra` 中携带的最小 USDB consensus profile selector。
+本文定义 USDB chain 在区块头 `header.Extra` 中携带的最小 consensus profile selector。
 
 当前草案定义 `ProfileSelectorPayload`：
 
@@ -22,13 +22,13 @@ Activation: ETHW network activation matrix; USDB development chains activate fro
 
 # 动机
 
-USDB validator 验证旧块时，不能查询 USDB current head。旧块必须携带足够信息，使 validator 能回到该块出块时引用的 BTC / USDB 历史状态。
+USDB validator 验证旧块时，不能查询 BTC-side USDB state view 的 current head。旧块必须携带足够信息，使 validator 能回到该块出块时引用的 BTC-side USDB 历史状态。
 
 同时，链上 payload 必须尽量小：
 
 - `header.Extra` 是区块头字段，会进入 PoW seal hash。
 - payload 长度影响所有区块。
-- 审计字段可以通过 USDB-side view 查询，不需要全部写入区块头。
+- 审计字段可以通过 BTC-side USDB state view 查询，不需要全部写入区块头。
 
 因此本文只标准化链上最小 profile selector；完整经济状态和审计字段由 UIP-0006 定义。
 
@@ -36,7 +36,7 @@ USDB validator 验证旧块时，不能查询 USDB current head。旧块必须�
 
 本文不定义：
 
-- USDB-side economic state view 的完整 JSON 字段。
+- BTC-side USDB economic state view 的完整 JSON 字段。
 - raw energy、effective energy、level、difficulty factor 的公式。
 - block reward schedule、fee split、uncle reward 或 dividend 规则。
 - `level -> difficulty` 的 future PoW difficulty policy；本文只要求其复用同一 profile selector。
@@ -46,16 +46,16 @@ USDB validator 验证旧块时，不能查询 USDB current head。旧块必须�
 
 | 术语 | 含义 |
 | --- | --- |
-| USDB miner | 组装并尝试挖出 ETHW / USDB 区块、选择本区块 `pass_id` 并写入 `ProfileSelectorPayload` 的出块方。 |
-| USDB validator | 按 ETHW 共识规则验证区块及其 `ProfileSelectorPayload`、历史 USDB profile、reward 和 difficulty 的验证逻辑或节点。 |
-| `ProfileSelectorPayload` | 写入 ETHW `header.Extra` 的固定二进制 profile selector payload。 |
-| `profile_selector` | 用于定位某个历史 USDB state 下某张 pass profile 的最小字段集合。 |
+| USDB miner | 组装并尝试挖出 USDB block、选择本区块 `pass_id` 并写入 `ProfileSelectorPayload` 的出块方。 |
+| USDB validator | 按 USDB chain 共识规则验证区块及其 `ProfileSelectorPayload`、历史 pass economic profile、reward 和 difficulty 的验证逻辑或节点。 |
+| `ProfileSelectorPayload` | 写入 USDB chain `header.Extra` 的固定二进制 profile selector payload。 |
+| `profile_selector` | 用于定位某个 BTC-side USDB historical state 下某张 pass profile 的最小字段集合。 |
 | `difficulty_policy_version` | 本区块声明使用的 `level -> difficulty` 算法版本。 |
 | `btc_height` | payload 锁定的 BTC 历史高度。 |
 | `snapshot_id` | upstream balance-history consensus snapshot id。 |
-| `system_state_id` | USDB system state id。 |
+| `system_state_id` | BTC-side USDB system state id。 |
 | `pass_id` | UIP-0001 canonical pass inscription id；在本文 payload 中标识 `selected_pass`。 |
-| `selected_pass` | 一个具体 ETHW 区块显式声明使用的 UIP-0006 `candidate_pass`；不要求等于 `candidate_set_view` 的 `top_ranked_candidate`。 |
+| `selected_pass` | 一个具体 USDB chain 区块显式声明使用的 UIP-0006 `candidate_pass`；不要求等于 `candidate_set_view` 的 `top_ranked_candidate`。 |
 | `resolved_profile` | USDB validator 根据 payload 查询 UIP-0006 后得到的 `selected_pass` 经济状态。 |
 
 # 规范关键词
@@ -72,7 +72,7 @@ payload_version = 1
 
 该字段是 1 byte unsigned integer，写入 payload 第 0 字节。
 
-payload 编码或字段集合改变时必须升级 `payload_version`。reward 公式或 difficulty policy 公式改变但 payload 字节布局不变时，应通过 ETHW chain config / fork version 管理，不一定升级 `payload_version`。
+payload 编码或字段集合改变时必须升级 `payload_version`。reward 公式或 difficulty policy 公式改变但 payload 字节布局不变时，应通过 USDB chain config / fork version 管理，不一定升级 `payload_version`。
 
 # Binary Layout
 
@@ -81,7 +81,7 @@ payload 编码或字段集合改变时必须升级 `payload_version`。reward �
 | Offset | Size | 字段 | 类型 | 编码 |
 | --- | --- | --- | --- | --- |
 | 0 | 1 | `payload_version` | uint8 | 固定为 `1`。 |
-| 1 | 2 | `difficulty_policy_version` | uint16 | big-endian。必须匹配 ETHW chain config 在该 block height 下的期望值。 |
+| 1 | 2 | `difficulty_policy_version` | uint16 | big-endian。必须匹配 USDB chain config 在该 block height 下的期望值。 |
 | 3 | 4 | `btc_height` | uint32 | big-endian。 |
 | 7 | 32 | `snapshot_id` | bytes32 | 32-byte hex id 的原始字节。 |
 | 39 | 32 | `system_state_id` | bytes32 | 32-byte hex id 的原始字节。 |
@@ -109,13 +109,13 @@ pass_id = lowercase_hex(pass_txid) + "i" + decimal(pass_index)
 
 # Header Extra 规则
 
-当 ETHW USDB reward consensus rule 激活时：
+当 USDB-chain reward consensus rule 激活时：
 
 - `header.Extra` 必须正好等于一个 `ProfileSelectorPayload`。
 - `len(header.Extra)` 必须等于 `107`。
 - 不得在 payload 前后拼接 vanity bytes、JSON、签名或其它 opaque data。
 - `payload_version` 不支持时必须拒绝该区块。
-- `difficulty_policy_version` 与 ETHW chain config 在该 block height 下的期望值不一致时必须拒绝该区块。
+- `difficulty_policy_version` 与 USDB chain config 在该 block height 下的期望值不一致时必须拒绝该区块。
 
 实现可以将链级 `MaximumExtraDataSize` 设为大于 107 的值以预留后续版本空间，但 v1 验证必须按精确长度解析。
 
@@ -156,12 +156,12 @@ validator 必须把它放入 expected state，并要求 USDB 返回同一 system
 
 `pass_id` 是本块声明使用的 miner pass。
 
-本文将它称为 `selected_pass`。`selected_pass` 必须在 payload 指定的 historical state 下满足 UIP-0006 `candidate_pass` 条件，即 `state = Active` 且 `pass_kind = standard`。它不需要是 `candidate_set_view` 的 `top_ranked_candidate`；UIP-0006 ordering contract 不是 ETHW block-selection policy。
+本文将它称为 `selected_pass`。`selected_pass` 必须在 payload 指定的 historical state 下满足 UIP-0006 `candidate_pass` 条件，即 `state = Active` 且 `pass_kind = standard`。它不需要是 `candidate_set_view` 的 `top_ranked_candidate`；UIP-0006 ordering contract 不是 USDB block-selection policy。
 
 v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`usdb_main` 或其它地址字段隐式反查。原因是：
 
 - 当前 USDB 稳定查询主键是 pass id / inscription id。
-- 一个 USDB/EVM 地址不一定唯一映射到一张 pass。
+- 一个 USDB-chain account address 不一定唯一映射到一张 pass。
 - 后续 `candidate_set_view` 或多 pass 场景需要避免隐式选择歧义。
 
 # Validator Replay
@@ -173,8 +173,8 @@ validator 必须按以下顺序验证：
 3. 使用 `btc_height`、`snapshot_id`、`system_state_id` 构造 UIP-0006 `query_context` 和 `expected_state`。
 4. 使用 `pass_id` 查询 UIP-0006 定义的 pass economic profile，或使用等价的历史 `get_pass_snapshot` / `get_pass_energy` RPC 组合。
 5. 确认 resolved profile 对应的 `selected_pass` 满足 UIP-0006 `candidate_pass` 条件。
-6. 按 ETHW reward rule version 从 resolved profile 重算 reward input。
-7. 如果 future ETHW difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
+6. 按 USDB chain reward rule version 从 resolved profile 重算 reward input。
+7. 如果 future USDB chain difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
 8. 在 `Finalize` / state transition 中使用重算 reward 结果发放奖励。
 
 任一步失败都必须 fail-closed。validator 不得因为 USDB 不可用、历史不可用或 mismatch 而继续接受新区块。
@@ -196,11 +196,11 @@ validator 必须按以下顺序验证：
 - `base_difficulty`
 - `real_difficulty`
 
-这些字段必须通过 UIP-0006 state view 或 ETHW 本地 policy 在验证时重算。
+这些字段必须通过 UIP-0006 state view 或 USDB chain 本地 policy 在验证时重算。
 
 # 与 UIP-0006 的关系
 
-本文是 ETHW-side 链上 payload 规范。UIP-0006 是 USDB-side state view 规范。
+本文是 USDB chain payload 规范。UIP-0006 是 BTC-side USDB state view 规范。
 
 关系如下：
 
@@ -216,7 +216,7 @@ ProfileSelectorPayload(header.Extra)
 USDB Economic State View(UIP-0006)
         |
         v
-ETHW reward rule / future difficulty rule
+USDB chain reward rule / future difficulty rule
 ```
 
 因此，`ProfileSelectorPayload` 是 UIP-0006 可查询状态的最小 selector，而不是 UIP-0006 JSON profile 的链上序列化。
@@ -237,15 +237,15 @@ reward rule 和 future difficulty policy 必须消费同一个 selector 得到�
 - 同一区块的 reward、difficulty 和审计视图应引用同一张 miner pass。
 - `header.Extra` 字节空间有限，重复 selector 没有必要。
 
-如果 future difficulty policy 需要额外参数，应该优先放入 ETHW chain config / difficulty policy version，而不是在 header 中复制第二套 USDB selector。
+如果 future difficulty policy 需要额外参数，应该优先放入 USDB chain config / difficulty policy version，而不是在 header 中复制第二套 USDB selector。
 
 # Miner Payload Generation
 
 miner 生成新区块时应该：
 
-1. 从本地 USDB companion service 获取 current system state。
+1. 从本地 BTC-side `usdb-indexer` service 获取 current system state。
 2. 使用配置的 `pass_id` 在该 state 下确认 pass 可查询。
-3. 从 ETHW chain config 读取待挖 ETHW block height 对应的 expected `difficulty_policy_version`。
+3. 从 USDB chain config 读取待挖 USDB block number 对应的 expected `difficulty_policy_version`。
 4. 将 `difficulty_policy_version`、`btc_height`、`snapshot_id`、`system_state_id` 和 `pass_id` 编码成 `ProfileSelectorPayload`。
 5. 写入待挖区块的 `header.Extra`。
 
@@ -258,12 +258,12 @@ miner 不能正确构造 payload 时，不应继续挖 USDB reward-enabled 区�
 | 版本 | 位置 | 作用 |
 | --- | --- | --- |
 | `payload_version` | `header.Extra` 第 0 字节 | 描述 payload 字节布局。 |
-| `difficulty_policy_version` | `header.Extra` 第 1-2 字节；期望值来自 ETHW chain config / fork policy | 描述 `level -> difficulty` 公式和校验规则。 |
-| `reward_rule_version` | ETHW chain config / fork policy | 描述 reward 公式和奖励发放规则。 |
+| `difficulty_policy_version` | `header.Extra` 第 1-2 字节；期望值来自 USDB chain config / fork policy | 描述 `level -> difficulty` 公式和校验规则。 |
+| `reward_rule_version` | USDB chain config / fork policy | 描述 reward 公式和奖励发放规则。 |
 
 如果未来只改变 reward multiplier、base reward、collab bonus 或 difficulty policy 公式，但 `ProfileSelectorPayload` 字节布局不变，不应强制升级 `payload_version`。
 
-`difficulty_policy_version` 进入 payload 不是为了允许 miner 选择算法，而是为了让区块头显式承诺其声明的 difficulty policy。validator 必须用 ETHW chain config / fork policy 计算该 block height 下的 expected `difficulty_policy_version`，并要求 payload 中的值完全一致。
+`difficulty_policy_version` 进入 payload 不是为了允许 miner 选择算法，而是为了让区块头显式承诺其声明的 difficulty policy。validator 必须用 USDB chain config / fork policy 计算该 block height 下的 expected `difficulty_policy_version`，并要求 payload 中的值完全一致。
 
 如果未来确实需要在 header 中新增 selector 字段，则必须定义新的 payload version。仅为展示 `stable_block_hash`、列出 collab pass、或配置 difficulty policy 参数，不应升级 header payload；这些信息应优先来自 UIP-0006 state view 或 UIP-0009 chain config。
 
@@ -271,18 +271,18 @@ miner 不能正确构造 payload 时，不应继续挖 USDB reward-enabled 区�
 
 当前 v1 payload 不直接定义 `level -> difficulty`。
 
-如果后续 ETHW policy 引入 `level` 影响 PoW difficulty，应复用相同 selector 解析 UIP-0006 profile，再由新的 ETHW difficulty policy 决定：
+如果后续 USDB chain policy 引入 `level` 影响 PoW difficulty，应复用相同 selector 解析 UIP-0006 profile，再由新的 USDB chain difficulty policy 决定：
 
 - 是否仍使用 `ProfileSelectorPayload`。
 - 是否升级 payload version。
 - `base_difficulty` 是否来自 header / parent context。
 - `real_difficulty` 是否需要显式承诺。
 
-由于 difficulty 规则可能独立于 reward 规则演进，ETHW chain config 应定义独立的 `difficulty_policy_version` 激活规则。该版本字段同时进入 `header.Extra` 作为显式承诺，但 validator 必须以 chain config 的 expected version 为准，不得让 payload 中的值覆盖本地共识配置。
+由于 difficulty 规则可能独立于 reward 规则演进，USDB chain config 应定义独立的 `difficulty_policy_version` 激活规则。该版本字段同时进入 `header.Extra` 作为显式承诺，但 validator 必须以 chain config 的 expected version 为准，不得让 payload 中的值覆盖本地共识配置。
 
 # 与 Collab Bonus 的边界
 
-collab bonus 若进入 ETHW reward rule，不得要求每个区块在 header 中携带 Leader 的完整 `collab_pass_id` 列表。
+collab bonus 若进入 USDB chain reward rule，不得要求每个区块在 header 中携带 Leader 的完整 `collab_pass_id` 列表。
 
 原因：
 
@@ -292,9 +292,9 @@ collab bonus 若进入 ETHW reward rule，不得要求每个区块在 header 中
 
 因此，v1 payload 仍只携带 Leader `pass_id`。collab bonus 的 aggregate input 应通过 UIP-0006 profile 中的 `collab_contribution`、`effective_energy` 或后续明确的 bonus 字段重算。如果未来需要给协作者直接分润，应通过 UIP-0006 `get_collab_breakdown` 可验证查询、单独结算/claim 机制，或后续 reward distribution UIP 定义，而不是把全量 collab list 塞进 `header.Extra`。
 
-# 与 ETHW Chain Config 的边界
+# 与 USDB Chain Config 的边界
 
-`payload_version` 只描述 `header.Extra` 字节布局。以下字段和规则不属于本文，必须由 ETHW chain config / bootstrap UIP 定义：
+`payload_version` 只描述 `header.Extra` 字节布局。以下字段和规则不属于本文，必须由 USDB chain config / bootstrap UIP 定义：
 
 - ChainID / NetworkId。
 - genesis 和 PoW 基础参数。
@@ -304,7 +304,7 @@ collab bonus 若进入 ETHW reward rule，不得要求每个区块在 header 中
 - expected `difficulty_policy_version` 及其激活高度。
 - 这些版本从 genesis 生效还是在后续 fork 高度生效。
 
-UIP-0008 负责通用版本激活矩阵。ETHW 具体 chain config、genesis、USDB reward/difficulty policy version 字段应由单独的 ETHW Chain Config UIP 定义。
+UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genesis、USDB reward/difficulty policy version 字段应由单独的 USDB Chain Config UIP 定义。
 
 # 错误语义
 
@@ -332,16 +332,16 @@ UIP-0008 负责通用版本激活矩阵。ETHW 具体 chain config、genesis、U
 - invalid payload size。
 - miner 生成的 `header.Extra` 长度正好为 107。
 - `difficulty_policy_version` 与 chain config expected version 不一致时拒绝。
-- validator 使用 payload selectors 查询历史 USDB state。
-- BTC head 前进后，旧 ETHW block 仍按旧 payload 验证通过。
+- validator 使用 payload selectors 查询历史 BTC-side USDB state。
+- BTC head 前进后，旧 USDB block 仍按旧 payload 验证通过。
 - same-height BTC reorg 后，旧 payload 返回 state mismatch。
-- 缺少 USDB companion service 时 fail-closed。
+- 缺少 BTC-side `usdb-indexer` service 时 fail-closed。
 - 篡改 `btc_height` / `snapshot_id` / `system_state_id` / `pass_id` 任一字段会导致验证失败。
 
 # 实现迁移注意
 
 - 当前 go-ethereum 实现已经移除旧 `RewardPayloadV1`，统一使用 107-byte
-  `ProfileSelectorPayload`，并由 ETHW chain config 按待处理 block number 提供 expected
+  `ProfileSelectorPayload`，并由 USDB chain config 按待处理 block number 提供 expected
   `payload_version / difficulty_policy_version`。
 - miner/validator CLI 只保留 companion RPC URL、timeout 和 selected pass 等运行参数；
   是否激活本规则及 expected version 只能由 chain config 决定。
@@ -350,7 +350,7 @@ UIP-0008 负责通用版本激活矩阵。ETHW 具体 chain config、genesis、U
 - miner `Prepare`、validator `VerifyHeader` 与 reward state transition 均消费同一 selector
   解析出的 UIP-0006 profile。development chain 在 UIP-0011 激活前仍使用既有 Ethash
   静态奖励，不再使用旧 level/reward multiplier mock。
-- expected version 已由 UIP-0008/UIP-0009 的 chain-config activation registry 按 ETHW
+- expected version 已由 UIP-0008/UIP-0009 的本地 chain-config activation schedule 按 USDB chain
   block number 查询；历史 replay、same-height replacement、服务不可用、字段篡改和
   miner/validator 交叉校验已有 Go 测试及 live E2E 覆盖。
 

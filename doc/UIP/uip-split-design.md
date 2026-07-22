@@ -8,7 +8,7 @@
 
 ## 2. 拆分原则
 
-1. **先共识核心，后经济扩展**：先处理会直接影响 pass 状态、energy、ETHW `selected_pass` 验证和历史重放的规则，再处理 CoinBase、分账、价格和辅助算力池。
+1. **先共识核心，后经济扩展**：先处理会直接影响 pass 状态、energy、USDB chain `selected_pass` 验证和历史重放的规则，再处理 CoinBase、分账、价格和辅助算力池。
 2. **先 schema，再状态，再公式**：铭文格式必须先固定，否则状态机和能量继承规则没有稳定输入。
 3. **每个 UIP 必须可测试**：正式 UIP 不只写目标语义，还要列出实现入口、历史查询语义、reorg 语义和测试矩阵。
 4. **版本和激活必须显式**：影响共识结果的 UIP 必须定义激活高度或治理激活方式，不得以代码发布即生效。
@@ -69,9 +69,9 @@ Activation: <height/governance/TODO>
 | 4 | `UIP-0004` | Collab Pass, Leader, and Effective Energy | Standards Track | P1 | Draft |
 | 5 | `UIP-0005` | Level and Real Difficulty | Standards Track | P1 | Draft |
 | 6 | `UIP-0006` | USDB Economic State View | Standards Track | P1 | Draft |
-| 7 | `UIP-0007` | ETHW Consensus Profile Selector | Standards Track | P1 | Draft |
+| 7 | `UIP-0007` | USDB chain Consensus Profile Selector | Standards Track | P1 | Draft |
 | 8 | `UIP-0008` | Protocol Versioning and Activation Matrix | Process / Standards Track | P1 | Draft |
-| 9 | `UIP-0009` | ETHW Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
+| 9 | `UIP-0009` | USDB Chain Config and USDB Bootstrap | Standards Track | P1 | Draft |
 | 10 | `UIP-0010` | SourceDAO and Dividend Bootstrap | Standards Track | P1 | Draft |
 | 11 | `UIP-0011` | CoinBase Emission and Reward Split | Standards Track | P2 | Draft |
 | 12 | `UIP-0012` | Collaboration Efficiency Coefficient K | Standards Track | P2 | Draft |
@@ -127,7 +127,7 @@ Activation: <height/governance/TODO>
 
 - valid schema。
 - missing optional fields。
-- invalid USDB/EVM address。
+- invalid USDB-chain account address。
 - invalid `prev` inscription id。
 - unknown fields。
 - version mismatch。
@@ -254,7 +254,7 @@ effective_energy
 - `leader_btc_addr` 自动跟随 remint 后，如何证明 collab contribution 不会被重复继承。
 - collab pass remint 为 standard 或新 collab 后，旧 contribution 如何归零。
 - payload / 查询如何同时暴露 `raw_energy`、`collab_contribution`、`effective_energy` 和审计明细。
-- ETHW 侧如何在 UIP-0005 / UIP-0006 中基于出块历史判断 Leader eligibility。
+- USDB chain 侧如何在 UIP-0005 / UIP-0006 中基于出块历史判断 Leader eligibility。
 
 当前草案：
 
@@ -284,7 +284,7 @@ effective_energy
 
 - 定义 `level(effective_energy)`。
 - 定义 `difficulty_factor_bps(level)`。
-- 定义 ETHW 侧 `real_difficulty` 折算规则。
+- 定义 USDB chain 侧 `real_difficulty` 折算规则。
 - 定义下界约束。
 
 当前公式草案：
@@ -303,9 +303,9 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 已用整数阈值表替代非确定性 `log`。
 - 当前草案已确认采用 `MAX_LEVEL = 50` 和 `MIN_DIFFICULTY_FACTOR_BPS = 5000`。
 - UIP-0003 已采用 `ENERGY_PER_UNIT_BLOCK = 1`，与 issue #23 的 `E0 = 1_000_000` 量纲匹配。
-- usdb-indexer 只动态派生 `level` 和 `difficulty_factor_bps`，不持久化，也不读取 ETHW `base_difficulty`。
+- usdb-indexer 只动态派生 `level` 和 `difficulty_factor_bps`，不持久化，也不读取 USDB chain `base_difficulty`。
 - `real_difficulty` 由 USDB validator / mining policy 基于当前 `base_difficulty` 计算。
-- ETHW `base_difficulty` / `real_difficulty` 的来源、编码和是否显式承诺留给 UIP-0009 或后续 ETHW difficulty policy UIP。
+- USDB chain `base_difficulty` / `real_difficulty` 的来源、编码和是否显式承诺留给 UIP-0009 或后续 USDB chain difficulty policy UIP。
 
 实现影响：
 
@@ -329,9 +329,9 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 目标：
 
 - 定义 `usdb-indexer` 对外提供的经济状态视图。
-- 明确 USDB-side 能查询和审计的字段集合。
+- 明确 BTC-side USDB 能查询和审计的字段集合。
 - 明确 historical context、version mismatch、history unavailable 的错误行为。
-- 避免把 USDB-side 审计视图与 USDB 链上 payload 混为一体。
+- 避免把 BTC-side USDB 审计视图与 USDB chain payload 混为一体。
 
 需要纳入的字段：
 
@@ -369,15 +369,15 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - historical context。
 - reorg mismatch。
 
-## 14. UIP-0007: ETHW Consensus Profile Selector
+## 14. UIP-0007: USDB chain Consensus Profile Selector
 
 当前草案：
 
-- `doc/UIP/UIP-0007-ethw-consensus-profile-selector.md`
+- `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md`
 
 目标：
 
-- 定义 ETHW `header.Extra` 中的最小 USDB consensus profile selector。
+- 定义 USDB chain `header.Extra` 中的最小 USDB consensus profile selector。
 - 定义正式的 `ProfileSelectorPayload` 固定二进制编码。
 - 明确链上 payload 只携带 selector，不携带完整经济审计字段。
 - 明确 validator 如何通过 UIP-0006 state view 重算 reward input 和 future difficulty input。
@@ -397,7 +397,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - reward rule 与 future difficulty policy 复用同一 selector。
 - `difficulty_policy_version` 进入 payload 作为显式承诺，但必须匹配 chain config expected version。
 - collab bonus 不在 header 中携带全量 `collab_pass_id` 列表。
-- payload version 与 ETHW chain config / reward rule version 的边界。
+- payload version 与 USDB chain config / reward rule version 的边界。
 
 实现影响：
 
@@ -429,11 +429,11 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 需要解决：
 
-- 当前 `USDB_INDEX_FORMULA_VERSION` 是全局常量。
+- 已删除全局 `USDB_INDEX_FORMULA_VERSION`；BTC 服务先按配置 network 选择独立机器可读 registry，再按历史高度解析完整 `active_version_set`；USDB chain versions 独立由 chain config 解析。
 - 历史高度在公式升级后如何按旧公式重放。
 - 旧 pass 和新 pass 是否允许跨版本继承。
-- `activation_registry_id` / `active_version_set_id` 的 canonical encoding 何时固定。
-- 机器可读 activation registry 是否作为纯文档资产先落地。
+- `activation_registry_id` / `active_version_set_id` 的 canonical encoding 已按 UIP-0008 v1 固定并由 Rust/Go golden vector 交叉验证。
+- network-scoped BTC activation registries 已作为运行时输入落地，USDB chain config 保持本链 activation authority；audit-only release manifest 只关联两侧 artifact identity。
 
 实现影响：
 
@@ -447,23 +447,23 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - expected formula version mismatch。
 - rollback 后版本重放一致。
 
-## 16. UIP-0009: ETHW Chain Config and USDB Bootstrap
+## 16. UIP-0009: USDB Chain Config and USDB Bootstrap
 
 当前草案：
 
-- `doc/UIP/UIP-0009-ethw-chain-config-and-usdb-bootstrap.md`
+- `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md`
 
 目标：
 
-- 定义 USDB ETHW 链的 chain config 扩展字段。
+- 定义 USDB chain 的 chain config 扩展字段。
 - 定义 ChainID、NetworkId、genesis、PoW 基础参数和 USDB reward 开关。
 - 定义 active payload version、reward rule version 和 expected difficulty policy version。
 - 定义这些版本从 genesis 生效还是在后续 fork 高度生效。
-- 明确 USDB 新链不复用 ETHW / Merge 迁移语义。
+- 明确 USDB 新链不复用 USDB chain / Merge 迁移语义。
 
 需要解决：
 
-- ETHW fork 遗留字段如何收口。
+- legacy ETHW fork 遗留字段如何收口。
 - `ProfileSelectorPayload` version 如何进入 chain config。
 - `reward_rule_version` 与 UIP-0007 `payload_version` 的边界。
 - expected `difficulty_policy_version` 的 chain config 表达和激活高度。
@@ -562,7 +562,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - 定义 CoinBase 公式中的协作效率系数 `K`。
 - 定义 `CE_N`、`AE_N`、rolling window 和 warmup 规则。
-- 定义 `K` state 如何存入 ETHW reserved system storage 并由 `stateRoot` 承诺。
+- 定义 `K` state 如何存入 USDB chain reserved system storage 并由 `stateRoot` 承诺。
 - 固定 v1 `CE_N = collab_contribution` 的样本口径。
 
 需要解决：
@@ -578,7 +578,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 当前草案倾向：
 
 - v1 使用 UIP-0006 的 `collab_contribution` 作为 `CE_N`。
-- `AE_N` 使用过去固定 ETHW block 数量的 rolling window，不使用 wall-clock。
+- `AE_N` 使用过去固定 USDB block 数量的 rolling window，不使用 wall-clock。
 - `K_WINDOW_BLOCKS = 50400`，按 12 秒平均出块间隔对应 1 周。
 - 窗口未填满或 `AE_N == 0` 时，`k_bps = 10000`。
 - rolling window 使用 reserved system storage ring buffer，并随 `stateRoot` / reorg 自动回滚。
@@ -606,7 +606,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 当前草案倾向：
 
-- v1 使用 `FixedPrice`，从 genesis 固定 `100_000 USDB / BTC`。
+- v1 使用 `FixedPrice`，从 genesis 固定 `100_000 USDB native units / BTC`。
 - 不预设 `PRICE_REPORT_START_HEIGHT`，后续由 activation range 决定。
 - 必要时可以通过新增 `FixedPrice` range 调整启动期固定价格。
 - 外部以太坊 DeFi 和 USDB 自有 DeFi 都是可选后续 policy，不强制按阶段顺序启用。
@@ -620,7 +620,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 定义 stale Leader 如何从 `effective_energy` 回落到 `raw_energy`。
 - 定义 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。
 - 明确 FixedPrice v1 下 quote 只是 heartbeat，不更新 price。
-- 明确 quote activity 是 ETHW 侧 state，不反向写入 USDB indexer。
+- 明确 quote activity 是 USDB chain 侧 state，不反向写入 USDB indexer。
 
 需要解决：
 
@@ -637,7 +637,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 - `LEADER_QUOTE_WINDOW_BLOCKS = 50400`，按 12 秒平均出块间隔对应 1 周。
 - `candidate_energy = effective_energy` if leader quote active，否则 `candidate_energy = raw_energy`。
-- `candidate_level` 从 `candidate_energy` 派生，ETHW difficulty policy 使用 `candidate_level`。
+- `candidate_level` 从 `candidate_energy` 派生，USDB chain difficulty policy 使用 `candidate_level`。
 - block `N` 的有效 quote 最早影响 block `N+1`。
 - FixedPrice v1 中 quote 必须等于 parent price，仅作为 heartbeat。
 - v1 使用 active standard pass `pass_id` 作为 quote subject，不按 BTC owner / address 继承 quote activity。
@@ -664,10 +664,10 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 当前草案倾向：
 
 - v1 public network 不默认启用辅助算力池，初始 `aux_pool_policy_version = 0`。
-- 后续启用必须通过 UIP-0008 activation matrix 在指定 ETHW block height 激活 `aux_pool_policy_version > 0`。
+- 后续启用必须通过 UIP-0008 activation matrix 在指定 USDB block number 激活 `aux_pool_policy_version > 0`。
 - aux pool 不使用独立本地 `enabled` boolean；是否 active 由 policy version、recipient 和 verifier code hash 共同派生。
 - UIP-0015 Final 前，UIP-0011 必须保持 `aux_pool_coinbase_atoms = 0`，CoinBase 100% 归 miner。
-- 辅助算力证明不进入 UIP-0007 `header.Extra`，而是通过 system transaction / system contract 进入 ETHW state。
+- 辅助算力证明不进入 UIP-0007 `header.Extra`，而是通过 system transaction / system contract 进入 USDB chain state。
 - accepted submissions 必须由 `stateRoot` 承诺，并支持 reorg 回滚。
 - BTC reference validation 不得依赖 live BTC RPC，必须选择可历史重放的 BTC header / state commitment / proof segment 方案。
 - 当前倾向使用 active miner pass `pass_id` 作为辅助算力提交绑定 subject。

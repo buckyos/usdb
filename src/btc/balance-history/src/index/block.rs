@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntryRef, UTXOValue};
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
 // EMPTY_COMMIT_HASH is the genesis previous-commit value used when the batch
 // starts from block height 0 and there is no earlier committed block.
@@ -89,7 +89,7 @@ pub struct BatchBlockData {
     vout_utxos: Arc<RwLock<HashMap<OutPointRef, VOutUtxoInfo>>>,
 
     // Keep latest balances for all addresses involved while processing a batch.
-    balances: Arc<DashMap<USDBScriptHash, BalanceHistoryData>>,
+    balances: Arc<DashMap<BtcScriptHash, BalanceHistoryData>>,
 
     // Keep all balance history entries for the batch and flush them to DB once.
     balance_history: Arc<Mutex<Vec<BalanceHistoryEntry>>>,
@@ -402,7 +402,7 @@ impl BatchBlockPreloader {
                         txid: preload_tx.txid,
                         vout: n as u32,
                     };
-                    let script_hash = vout.script_pubkey.to_usdb_script_hash();
+                    let script_hash = vout.script_pubkey.to_btc_script_hash();
                     script_registry_entries.push(ScriptRegistryEntry {
                         script_hash,
                         script_pubkey: vout.script_pubkey.clone(),
@@ -558,7 +558,7 @@ impl BatchBlockPreloader {
                 let (script, amount) = self.btc_client.get_utxo(&outpoints[i])?;
                 let entry = UTXOValue {
                     value: amount.to_sat(),
-                    script_hash: script.to_usdb_script_hash(),
+                    script_hash: script.to_btc_script_hash(),
                 };
                 result.push(Arc::new(entry));
             }
@@ -764,7 +764,7 @@ impl BatchBlockFlusher {
         // undo window: we are already iterating every vin/vout in order to collect created
         // and spent UTXOs for the same undo bundle, so the marginal overhead is only a few
         // HashSet insertions plus one small merge from block_balance_deltas.
-        let touched_by_height: HashMap<u32, Vec<USDBScriptHash>> = {
+        let touched_by_height: HashMap<u32, Vec<BtcScriptHash>> = {
             let block_balance_deltas = data.block_balance_deltas.lock().unwrap();
             block_balance_deltas
                 .iter()
@@ -937,7 +937,7 @@ mod block_commit_tests {
     use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::{ToUSDBScriptHash, UTXOValue};
+    use usdb_util::{ToBtcScriptHash, UTXOValue};
 
     fn temp_db(test_name: &str) -> BalanceHistoryDBRef {
         let mut config = BalanceHistoryConfig::default();
@@ -980,7 +980,7 @@ mod block_commit_tests {
     fn make_entry(seed: u8, block_height: u32, delta: i64, balance: u64) -> BalanceHistoryEntry {
         let script = ScriptBuf::from(vec![seed; 32]);
         BalanceHistoryEntry {
-            script_hash: script.to_usdb_script_hash(),
+            script_hash: script.to_btc_script_hash(),
             block_height,
             delta,
             balance,
@@ -990,7 +990,7 @@ mod block_commit_tests {
     fn make_script_registry_entry(seed: u8) -> ScriptRegistryEntry {
         let script_pubkey = ScriptBuf::from(vec![seed; 32]);
         ScriptRegistryEntry {
-            script_hash: script_pubkey.to_usdb_script_hash(),
+            script_hash: script_pubkey.to_btc_script_hash(),
             script_pubkey,
         }
     }
@@ -1478,7 +1478,7 @@ mod block_commit_tests {
 }
 
 // Use to keep the balance history result for a block
-type BlockHistoryResult = HashMap<USDBScriptHash, BalanceHistoryEntry>;
+type BlockHistoryResult = HashMap<BtcScriptHash, BalanceHistoryEntry>;
 
 pub struct BatchBlockBalanceProcessor {}
 
@@ -1495,12 +1495,12 @@ impl BatchBlockBalanceProcessor {
         // First calc delta in parallel
         use rayon::prelude::*;
         let mut block_history_results: Vec<
-            Result<HashMap<USDBScriptHash, BalanceHistoryData>, String>,
+            Result<HashMap<BtcScriptHash, BalanceHistoryData>, String>,
         > = blocks
             .par_iter()
             .map(|block| {
                 // Traverse all transactions to calculate balance delta
-                let mut block_history: HashMap<USDBScriptHash, BalanceHistoryData> =
+                let mut block_history: HashMap<BtcScriptHash, BalanceHistoryData> =
                     HashMap::with_capacity(block.txdata.len() * 16);
                 for tx in block.txdata.iter() {
                     // Process vin (decrease balance)

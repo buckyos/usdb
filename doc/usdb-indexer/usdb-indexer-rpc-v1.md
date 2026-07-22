@@ -109,12 +109,12 @@
   "inscription_number": 123,
   "mint_txid": "txid",
   "mint_block_height": 900123,
-  "mint_owner": "<USDBScriptHash>",
+  "mint_owner": "<BtcScriptHash>",
   "usdb_main": "0x...",
   "prev": ["txidi0"],
   "invalid_code": "INVALID_USDB_MAIN",
   "invalid_reason": "Invalid usdb_main format",
-  "owner": "<USDBScriptHash>",
+  "owner": "<BtcScriptHash>",
   "state": "active",
   "satpoint": "txid:vout:offset",
   "last_event_id": 10086,
@@ -132,7 +132,7 @@
   "block_height": 900123,
   "event_type": "owner_transfer",
   "state": "dormant",
-  "owner": "<USDBScriptHash>",
+  "owner": "<BtcScriptHash>",
   "satpoint": "txid:vout:offset"
 }
 ```
@@ -146,7 +146,7 @@
   "query_block_height": 900130,
   "state": "active",
   "active_block_height": 900100,
-  "owner_address": "<USDBScriptHash>",
+  "owner_address": "<BtcScriptHash>",
   "owner_balance": 123000000,
   "owner_delta": -10000,
   "raw_energy": "123456789",
@@ -181,7 +181,8 @@
 当前阶段的能力边界：
 
 - 已支持 exact-height 历史 state ref 查询
-- 已支持基于 `expected_state` 的 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
+- 已支持基于 `expected_state` 的 `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / ACTIVE_VERSION_SET_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH`
+- historical activation lookup 还会区分 `ACTIVATION_RECORD_NOT_FOUND / ACTIVATION_RECORD_CONFLICT / VERSION_NOT_SUPPORTED / FORMULA_VERSION_MISMATCH / COMMIT_PROTOCOL_VERSION_MISMATCH`
 - 已区分：
   - `STATE_NOT_RETAINED`：高度低于当前统一历史保留窗口下界（当前实现即 `genesis_block_height`）
   - `HISTORY_NOT_AVAILABLE`：高度仍在保留窗口内，但当前缺少构造历史 state ref 所需的辅助数据
@@ -242,7 +243,8 @@
   ],
   "economic_state_view_version": "uip-0006-usdb-economic-state-view:v1",
   "candidate_set_selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
-  "economic_page_max_limit": 500
+  "economic_page_max_limit": 500,
+  "activation_registry_id": "..."
 }
 ```
 
@@ -251,8 +253,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `service == "usdb-indexer"` 且 `api_version == "1.0.0"`。
 - `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`。
 - `economic_state_view_version` 与请求使用的 `view_version` 一致。
-- `candidate_set_selection_rule` 与 UIP-0006 `candidate_set_view` ordering contract 一致；该字段不声明 ETHW block-selection policy。
+- `candidate_set_selection_rule` 与 UIP-0006 `candidate_set_view` ordering contract 一致；该字段不声明 USDB block-selection policy。
 - `economic_page_max_limit > 0`；client 的首包 `limit` 不得超过该声明值。
+- `activation_registry_id` 是节点为当前 BTC source network 内置的 UIP-0008 registry canonical SHA-256 id；不包含其他 BTC network 或 USDB chain config。
 
 参考实现中的调用入口：
 
@@ -453,7 +456,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
   "items": [
     {
       "inscription_id": "txidi0",
-      "owner": "<USDBScriptHash>"
+      "owner": "<BtcScriptHash>"
     }
   ]
 }
@@ -497,7 +500,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 ```json
 {
-  "owner": "<USDBScriptHash>",
+  "owner": "<BtcScriptHash>",
   "at_height": 900123
 }
 ```
@@ -628,7 +631,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
   "items": [
     {
       "inscription_id": "txidi0",
-      "owner": "<USDBScriptHash>",
+      "owner": "<BtcScriptHash>",
       "record_block_height": 900123,
       "state": "active",
       "energy": "123456789"
@@ -658,8 +661,8 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
       "system_state_id": "system-...",
       "balance_history_api_version": "1.0.0",
       "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-      "usdb_index_protocol_version": "1.0.0",
-      "usdb_index_formula_version": "pass-energy-formula:v1"
+      "activation_registry_id": "...",
+      "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
     }
   }
 }
@@ -678,12 +681,13 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "system_state_id": "system-...",
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_protocol_version": "1.0.0",
-    "usdb_index_formula_version": "pass-energy-formula:v1"
+    "activation_registry_id": "...",
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "pass": {
     "pass_id": "txidi0",
-    "owner_script_hash": "<USDBScriptHash>",
+    "owner_script_hash": "<BtcScriptHash>",
     "owner_btc_addr": null,
     "state": "active",
     "pass_kind": "standard",
@@ -755,8 +759,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "system_state_id": "system-...",
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_protocol_version": "1.0.0",
-    "usdb_index_formula_version": "pass-energy-formula:v1"
+    "activation_registry_id": "...",
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
   "total": 6000,
@@ -766,7 +771,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
   "items": [
     {
       "pass_id": "txidi0",
-      "owner_script_hash": "<USDBScriptHash>",
+      "owner_script_hash": "<BtcScriptHash>",
       "state": "active",
       "pass_kind": "standard",
       "record_block_height": 900120,
@@ -840,8 +845,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "system_state_id": "system-...",
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
-    "usdb_index_protocol_version": "1.0.0",
-    "usdb_index_formula_version": "pass-energy-formula:v1"
+    "activation_registry_id": "...",
+    "active_version_set": {"inscription_schema_version":"uip-0001-miner-pass-inscription:v1","pass_state_machine_version":"uip-0002-pass-state-machine:v1","energy_formula_version":"uip-0003-pass-energy-formula:v1","effective_energy_formula_version":"uip-0004-collab-leader-effective-energy:v1","level_formula_version":"uip-0005-level-and-real-difficulty:v1","query_semantics_version":"uip-0006-economic-query-semantics:v1","state_view_version":"uip-0006-usdb-economic-state-view:v1","commit_protocol_version":"uip-0008-usdb-local-state-commit:v1","balance_history_semantics_version":"balance-snapshot-at-or-before:v1"},
+    "active_version_set_id": "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
   },
   "leader_pass_id": "txidi0",
   "leader_state": "active",
@@ -855,7 +861,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
   "items": [
     {
       "collab_pass_id": "txidi1",
-      "collab_owner_script_hash": "<USDBScriptHash>",
+      "collab_owner_script_hash": "<BtcScriptHash>",
       "collab_owner_btc_addr": null,
       "record_block_height": 900120,
       "collab_raw_energy": "1000000",
@@ -933,8 +939,14 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `-32048 STATE_NOT_RETAINED`
 - `-32049 HISTORY_NOT_AVAILABLE`
 - `-32050 VIEW_VERSION_MISMATCH`
-- `-32051 PROTOCOL_VERSION_MISMATCH`
 - `-32052 FORMULA_VERSION_MISMATCH`
+- `-32053 ACTIVATION_RECORD_NOT_FOUND`
+- `-32054 ACTIVATION_RECORD_CONFLICT`
+- `-32055 VERSION_NOT_SUPPORTED`
+- `-32056 ACTIVE_VERSION_SET_MISMATCH`
+- `-32057 COMMIT_PROTOCOL_VERSION_MISMATCH`
+
+旧 `-32051 PROTOCOL_VERSION_MISMATCH` 已随全局 `usdb_index_protocol_version` 删除；开发期不保留兼容映射，也不复用该码位。
 
 这些错误会携带结构化 `data`，包含：
 

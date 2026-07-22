@@ -67,7 +67,7 @@ cp tools/config/sourcedao-bootstrap-full.example.json \
 Notes:
 
 - the config file still carries `rpcUrl`, but the Docker job overrides it with
-  `--rpc-url "${ETHW_RPC_URL}"`
+  `--rpc-url "${USDB_CHAIN_RPC_URL}"`
 - the Docker job also rewrites a runtime copy of the config under `/bootstrap`
   so `artifactsDir` resolves correctly inside the container
 - the recommended long-term source is now:

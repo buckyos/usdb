@@ -2,13 +2,11 @@ use jsonrpc_core::Result as JsonResult;
 use jsonrpc_derive::rpc;
 use serde::{Deserialize, Serialize};
 use usdb_util::{
-    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext,
-    ConsensusSnapshotIdentity, ConsensusStateReference, LOCAL_STATE_COMMIT_HASH_ALGO,
-    LOCAL_STATE_COMMIT_VERSION, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
+    ActiveVersionSet, CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION,
+    ConsensusQueryContext, ConsensusSnapshotIdentity, ConsensusStateReference,
+    LOCAL_STATE_COMMIT_HASH_ALGO, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
     LocalStatePassCommitIdentity, SYSTEM_STATE_ID_HASH_ALGO, SYSTEM_STATE_ID_VERSION,
     SystemStateIdentity, USDB_CANDIDATE_SET_SELECTION_RULE,
-    USDB_INDEX_FORMULA_VERSION as UTIL_USDB_INDEX_FORMULA_VERSION,
-    USDB_INDEX_PROTOCOL_VERSION as UTIL_USDB_INDEX_PROTOCOL_VERSION,
 };
 pub use usdb_util::{
     USDB_ECONOMIC_PAGE_MAX_LIMIT, USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_API_VERSION,
@@ -33,8 +31,6 @@ pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 /// Business error code returned when internal state invariants are violated during RPC resolution.
 pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
 
-pub const USDB_INDEX_FORMULA_VERSION: &str = UTIL_USDB_INDEX_FORMULA_VERSION;
-pub const USDB_INDEX_PROTOCOL_VERSION: &str = UTIL_USDB_INDEX_PROTOCOL_VERSION;
 /// Deterministic candidate-set ordering rule for the first UIP-0006 view.
 pub const CANDIDATE_SET_SELECTION_RULE: &str = USDB_CANDIDATE_SET_SELECTION_RULE;
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
@@ -43,8 +39,6 @@ pub const SNAPSHOT_ID_HASH_ALGO: &str = CONSENSUS_SNAPSHOT_ID_HASH_ALGO;
 pub const SNAPSHOT_ID_VERSION: &str = CONSENSUS_SNAPSHOT_ID_VERSION;
 /// Hash algorithm name used when deriving `LocalStateCommitInfo.local_state_commit`.
 pub const LOCAL_STATE_HASH_ALGO: &str = LOCAL_STATE_COMMIT_HASH_ALGO;
-/// Version tag of the local-state commit derivation rule exposed by the RPC layer.
-pub const LOCAL_STATE_VERSION: &str = LOCAL_STATE_COMMIT_VERSION;
 /// Hash algorithm name used when deriving `SystemStateInfo.system_state_id`.
 pub const SYSTEM_STATE_HASH_ALGO: &str = SYSTEM_STATE_ID_HASH_ALGO;
 /// Version tag of the system-state id derivation rule exposed by the RPC layer.
@@ -67,6 +61,8 @@ pub struct RpcInfo {
     pub candidate_set_selection_rule: String,
     /// Maximum `limit` accepted by UIP-0006 cursor-paged methods.
     pub economic_page_max_limit: usize,
+    /// Canonical identity of the activation registry embedded in this binary.
+    pub activation_registry_id: String,
 }
 
 /// Runtime synchronization status of the indexer.
@@ -142,8 +138,6 @@ impl From<IndexerSnapshotInfoSeed> for IndexerSnapshotInfo {
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
-            usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
         };
         let snapshot_id = usdb_util::build_consensus_snapshot_id(&consensus_identity);
 
@@ -180,18 +174,8 @@ impl From<&IndexerSnapshotInfo> for ConsensusStateReference {
                     .balance_history_semantics_version
                     .clone(),
             ),
-            usdb_index_protocol_version: Some(
-                snapshot
-                    .consensus_identity
-                    .usdb_index_protocol_version
-                    .clone(),
-            ),
-            usdb_index_formula_version: Some(
-                snapshot
-                    .consensus_identity
-                    .usdb_index_formula_version
-                    .clone(),
-            ),
+            activation_registry_id: None,
+            active_version_set_id: None,
             local_state_commit: None,
             system_state_id: None,
         }
@@ -231,6 +215,12 @@ pub struct PassBlockCommitInfo {
 /// Locally durable core-state commit anchored to one upstream snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalStateCommitInfo {
+    /// Canonical identity of the activation registry embedded in this node.
+    pub activation_registry_id: String,
+    /// Full version set selected at `local_synced_block_height`.
+    pub active_version_set: ActiveVersionSet,
+    /// Canonical identity of `active_version_set`.
+    pub active_version_set_id: String,
     /// Local durable synced height represented by this state commit.
     pub local_synced_block_height: u32,
     /// Upstream consensus snapshot id used when deriving this local state.
@@ -252,6 +242,9 @@ pub struct LocalStateCommitInfo {
 /// Normalized inputs required to derive one `LocalStateCommitInfo`.
 #[derive(Debug, Clone)]
 pub struct LocalStateCommitInfoSeed {
+    pub activation_registry_id: String,
+    pub active_version_set: ActiveVersionSet,
+    pub commit_protocol_version: String,
     pub local_synced_block_height: u32,
     pub upstream_snapshot_id: String,
     pub latest_pass_block_commit: Option<LocalStatePassCommitIdentity>,
@@ -260,16 +253,21 @@ pub struct LocalStateCommitInfoSeed {
 
 impl From<LocalStateCommitInfoSeed> for LocalStateCommitInfo {
     fn from(seed: LocalStateCommitInfoSeed) -> Self {
+        let active_version_set_id = seed.active_version_set.active_version_set_id();
         let local_state_identity = LocalStateCommitIdentity {
+            commit_protocol_version: seed.commit_protocol_version.clone(),
             upstream_snapshot_id: seed.upstream_snapshot_id.clone(),
+            active_version_set_id: active_version_set_id.clone(),
             local_synced_block_height: seed.local_synced_block_height,
             latest_pass_block_commit: seed.latest_pass_block_commit.clone(),
             latest_active_balance_snapshot: seed.latest_active_balance_snapshot.clone(),
-            usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
         };
         let local_state_commit = usdb_util::build_local_state_commit(&local_state_identity);
 
         Self {
+            activation_registry_id: seed.activation_registry_id,
+            active_version_set: seed.active_version_set,
+            active_version_set_id,
             local_synced_block_height: seed.local_synced_block_height,
             upstream_snapshot_id: seed.upstream_snapshot_id,
             latest_pass_block_commit: seed.latest_pass_block_commit,
@@ -277,7 +275,7 @@ impl From<LocalStateCommitInfoSeed> for LocalStateCommitInfo {
             local_state_identity,
             local_state_commit,
             local_state_commit_hash_algo: LOCAL_STATE_HASH_ALGO.to_string(),
-            local_state_commit_version: LOCAL_STATE_VERSION.to_string(),
+            local_state_commit_version: seed.commit_protocol_version,
         }
     }
 }
@@ -290,22 +288,23 @@ impl From<&LocalStateCommitInfo> for ConsensusStateReference {
             stable_block_hash: None,
             balance_history_api_version: None,
             balance_history_semantics_version: None,
-            usdb_index_protocol_version: Some(
-                local_state
-                    .local_state_identity
-                    .usdb_index_protocol_version
-                    .clone(),
-            ),
-            usdb_index_formula_version: Some(USDB_INDEX_FORMULA_VERSION.to_string()),
+            activation_registry_id: Some(local_state.activation_registry_id.clone()),
+            active_version_set_id: Some(local_state.active_version_set_id.clone()),
             local_state_commit: Some(local_state.local_state_commit.clone()),
             system_state_id: None,
         }
     }
 }
 
-/// Single top-level system-state id for downstream consumers such as ETHW.
+/// Single top-level system-state id for downstream USDB-chain consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemStateInfo {
+    /// Canonical identity of the activation registry embedded in this node.
+    pub activation_registry_id: String,
+    /// Full version set selected at `local_synced_block_height`.
+    pub active_version_set: ActiveVersionSet,
+    /// Canonical identity of `active_version_set`.
+    pub active_version_set_id: String,
     /// Local durable synced height represented by this system state.
     pub local_synced_block_height: u32,
     /// Upstream consensus snapshot id currently adopted by the node.
@@ -331,6 +330,9 @@ impl From<&LocalStateCommitInfo> for SystemStateInfo {
         let system_state_id = usdb_util::build_system_state_id(&system_state_identity);
 
         Self {
+            activation_registry_id: local_state.activation_registry_id.clone(),
+            active_version_set: local_state.active_version_set.clone(),
+            active_version_set_id: local_state.active_version_set_id.clone(),
             local_synced_block_height: local_state.local_synced_block_height,
             upstream_snapshot_id: local_state.upstream_snapshot_id.clone(),
             local_state_commit: local_state.local_state_commit.clone(),
@@ -350,8 +352,8 @@ impl From<&SystemStateInfo> for ConsensusStateReference {
             stable_block_hash: None,
             balance_history_api_version: None,
             balance_history_semantics_version: None,
-            usdb_index_protocol_version: Some(USDB_INDEX_PROTOCOL_VERSION.to_string()),
-            usdb_index_formula_version: Some(USDB_INDEX_FORMULA_VERSION.to_string()),
+            activation_registry_id: Some(system_state.activation_registry_id.clone()),
+            active_version_set_id: Some(system_state.active_version_set_id.clone()),
             local_state_commit: Some(system_state.local_state_commit.clone()),
             system_state_id: Some(system_state.system_state_id.clone()),
         }
@@ -366,7 +368,7 @@ pub struct GetStateRefAtHeightParams {
     /// Optional consensus selectors pinned by the caller for exact historical validation.
     ///
     /// This lets downstream validators re-check a historical `(height, state)`
-    /// tuple recorded in an ETHW block instead of accepting any state ref that
+    /// tuple recorded in a USDB block instead of accepting any state ref that
     /// happens to be reconstructable for the same height.
     pub context: Option<ConsensusQueryContext>,
 }
@@ -415,6 +417,18 @@ impl From<HistoricalStateRefInfoSeed> for HistoricalStateRefInfo {
 impl From<&HistoricalStateRefInfo> for ConsensusStateReference {
     fn from(state_ref: &HistoricalStateRefInfo) -> Self {
         let mut reference = ConsensusStateReference::from(&state_ref.snapshot_info);
+        reference.activation_registry_id = Some(
+            state_ref
+                .local_state_commit_info
+                .activation_registry_id
+                .clone(),
+        );
+        reference.active_version_set_id = Some(
+            state_ref
+                .local_state_commit_info
+                .active_version_set_id
+                .clone(),
+        );
         reference.local_state_commit =
             Some(state_ref.local_state_commit_info.local_state_commit.clone());
         reference.system_state_id = Some(state_ref.system_state_info.system_state_id.clone());
@@ -442,10 +456,12 @@ pub struct EconomicExternalState {
     pub balance_history_api_version: String,
     /// Historical balance query semantics version.
     pub balance_history_semantics_version: String,
-    /// Historical usdb-index public protocol version.
-    pub usdb_index_protocol_version: String,
-    /// Historical usdb-index formula version.
-    pub usdb_index_formula_version: String,
+    /// Canonical identity of the activation registry embedded in this node.
+    pub activation_registry_id: String,
+    /// Full version set selected at `btc_height`.
+    pub active_version_set: ActiveVersionSet,
+    /// Canonical identity of `active_version_set`.
+    pub active_version_set_id: String,
 }
 
 impl From<&HistoricalStateRefInfo> for EconomicExternalState {
@@ -459,8 +475,15 @@ impl From<&HistoricalStateRefInfo> for EconomicExternalState {
             system_state_id: state_ref.system_state_info.system_state_id.clone(),
             balance_history_api_version: identity.balance_history_api_version.clone(),
             balance_history_semantics_version: identity.balance_history_semantics_version.clone(),
-            usdb_index_protocol_version: identity.usdb_index_protocol_version.clone(),
-            usdb_index_formula_version: identity.usdb_index_formula_version.clone(),
+            activation_registry_id: state_ref
+                .local_state_commit_info
+                .activation_registry_id
+                .clone(),
+            active_version_set: state_ref.local_state_commit_info.active_version_set.clone(),
+            active_version_set_id: state_ref
+                .local_state_commit_info
+                .active_version_set_id
+                .clone(),
         }
     }
 }
@@ -475,8 +498,8 @@ impl From<&EconomicExternalState> for ConsensusStateReference {
             balance_history_semantics_version: Some(
                 external_state.balance_history_semantics_version.clone(),
             ),
-            usdb_index_protocol_version: Some(external_state.usdb_index_protocol_version.clone()),
-            usdb_index_formula_version: Some(external_state.usdb_index_formula_version.clone()),
+            activation_registry_id: Some(external_state.activation_registry_id.clone()),
+            active_version_set_id: Some(external_state.active_version_set_id.clone()),
             local_state_commit: Some(external_state.local_state_commit.clone()),
             system_state_id: Some(external_state.system_state_id.clone()),
         }
@@ -587,7 +610,7 @@ pub struct PassSnapshot {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary USDB address declared in mint content.
+    /// Primary USDB-chain account address declared in mint content.
     pub usdb_main: String,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
@@ -762,7 +785,7 @@ pub struct OwnerPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary USDB address declared by the pass mint content.
+    /// Primary USDB-chain account address declared by the pass mint content.
     pub usdb_main: String,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
@@ -819,7 +842,7 @@ pub struct RecentPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary USDB address declared by the pass mint content.
+    /// Primary USDB-chain account address declared by the pass mint content.
     pub usdb_main: String,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,
@@ -1237,7 +1260,7 @@ pub struct InvalidPassItem {
     pub mint_version: u32,
     /// Pass kind parsed from UIP-0001 v1 fields.
     pub pass_kind: String,
-    /// Primary USDB address in mint content.
+    /// Primary USDB-chain account address in mint content.
     pub usdb_main: String,
     /// Fixed Leader pass binding for collab passes.
     pub leader_pass_id: Option<String>,

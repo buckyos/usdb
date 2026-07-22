@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub struct PassEnergyKey {
 pub struct PassEnergyValue {
     pub state: MinerPassState,
     pub active_block_height: u32, // The block height when the pass mint or balance decreased(for active passes)
-    pub owner_address: USDBScriptHash,
+    pub owner_address: BtcScriptHash,
     pub owner_balance: u64, // In Satoshi at block height
     pub owner_delta: i64,   // In Satoshi at block height
     pub energy: Energy,     // Raw energy associated with the pass at block height
@@ -40,7 +40,7 @@ pub struct PassEnergyRecord {
 
     pub state: MinerPassState,
     pub active_block_height: u32, // The block height when the pass mint or balance decreased(for active passes)
-    pub owner_address: USDBScriptHash,
+    pub owner_address: BtcScriptHash,
     pub owner_balance: u64, // in Satoshi at block height
     pub owner_delta: i64,   // in Satoshi at block height
     pub energy: Energy,     // Raw energy associated with the pass at block height
@@ -833,7 +833,7 @@ mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::ScriptBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToUSDBScriptHash;
+    use usdb_util::ToBtcScriptHash;
 
     fn test_data_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -845,9 +845,9 @@ mod tests {
         dir
     }
 
-    fn script_hash(tag: u8) -> USDBScriptHash {
+    fn script_hash(tag: u8) -> BtcScriptHash {
         let script = ScriptBuf::from(vec![tag; 32]);
-        script.to_usdb_script_hash()
+        script.to_btc_script_hash()
     }
 
     fn inscription_id(tag: u8, index: u32) -> InscriptionId {

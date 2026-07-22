@@ -20,7 +20,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-28232}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-28233}"
 BH_RPC_PORT="${BH_RPC_PORT:-28210}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28220}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28220}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28230}"
 
 # Long-run soak defaults.
@@ -82,7 +82,7 @@ main() {
   fi
 
   log "Starting live reorg soak with AGENT_COUNT=${AGENT_COUNT}, SIM_BLOCKS=${SIM_BLOCKS}, reorg_interval=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
-  log "USDB RPC endpoint: http://127.0.0.1:${USDB_RPC_PORT}"
+  log "usdb-indexer RPC endpoint: http://127.0.0.1:${USDB_INDEXER_RPC_PORT}"
   log "Report file: ${SIM_REPORT_FILE}"
 
   exec env \
@@ -94,7 +94,7 @@ main() {
     BTC_RPC_PORT="${BTC_RPC_PORT}" \
     BTC_P2P_PORT="${BTC_P2P_PORT}" \
     BH_RPC_PORT="${BH_RPC_PORT}" \
-    USDB_RPC_PORT="${USDB_RPC_PORT}" \
+    USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT}" \
     ORD_SERVER_PORT="${ORD_SERVER_PORT}" \
     AGENT_COUNT="${AGENT_COUNT}" \
     PREMINE_BLOCKS="${PREMINE_BLOCKS}" \

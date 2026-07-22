@@ -6,7 +6,7 @@ identity_dir="${ETHW_IDENTITY_DIR:-${ethw_data_dir}/bootstrap}"
 identity_marker="${ETHW_IDENTITY_MARKER:-${identity_dir}/ethw-sim-identity.json}"
 identity_mode="${ETHW_IDENTITY_MODE:-none}"
 identity_seed="${ETHW_IDENTITY_SEED:-${WORLD_SIM_IDENTITY_SEED:-}}"
-explicit_address="${USDB_MINER_ADDRESS:-}"
+explicit_address="${USDB_CHAIN_MINER_ADDRESS:-}"
 explicit_private_key_hex="${USDB_MINER_PRIVATE_KEY_HEX:-}"
 auto_append_etherbase="${ETHW_AUTO_APPEND_MINER_ETHERBASE:-1}"
 ethw_command="${ETHW_COMMAND:-}"
@@ -34,10 +34,10 @@ while i < len(tokens):
     token = tokens[i]
     next_token = tokens[i + 1] if i + 1 < len(tokens) else ""
 
-    if token in ("--miner.etherbase", "--etherbase") and "USDB_MINER_ADDRESS" in next_token:
+    if token in ("--miner.etherbase", "--etherbase") and "USDB_CHAIN_MINER_ADDRESS" in next_token:
         i += 2
         continue
-    if (token.startswith("--miner.etherbase=") or token.startswith("--etherbase=")) and "USDB_MINER_ADDRESS" in token:
+    if (token.startswith("--miner.etherbase=") or token.startswith("--etherbase=")) and "USDB_CHAIN_MINER_ADDRESS" in token:
         i += 1
         continue
 
@@ -121,7 +121,7 @@ path, mode, address, fingerprint, scheme = sys.argv[1:6]
 payload = {
     "identity_mode": mode,
     "identity_scheme": scheme,
-    "usdb_miner_address": address,
+    "usdb_chain_miner_address": address,
     "identity_fingerprint": fingerprint,
 }
 tmp = f"{path}.tmp"
@@ -138,7 +138,7 @@ load_identity_marker_if_matching() {
 
   local current_fingerprint current_address
   current_fingerprint="$(json_read_field "${identity_marker}" "identity_fingerprint")"
-  current_address="$(json_read_field "${identity_marker}" "usdb_miner_address")"
+  current_address="$(json_read_field "${identity_marker}" "usdb_chain_miner_address")"
 
   if [[ -z "${current_fingerprint}" || -z "${current_address}" ]]; then
     echo "ETHW identity marker is incomplete: ${identity_marker}" >&2
@@ -165,7 +165,7 @@ import_private_key_and_resolve_address() {
   import_output="$("${ethw_geth_bin}" --datadir "${ethw_data_dir}" account import --password "${password_file}" "${key_file}" 2>&1)"
   address="$(printf '%s\n' "${import_output}" | sed -n 's/.*Address: {\([0-9a-fA-F]\{40\}\)}.*/0x\1/p' | tail -n 1)"
   if [[ -z "${address}" ]]; then
-    echo "Failed to parse USDB miner address from geth account import output" >&2
+    echo "Failed to parse USDB-chain miner address from geth account import output" >&2
     printf '%s\n' "${import_output}" >&2
     exit 1
   fi
@@ -175,12 +175,12 @@ import_private_key_and_resolve_address() {
   printf '%s\n' "${address}"
 }
 
-resolve_usdb_miner_address() {
+resolve_usdb_chain_miner_address() {
   local requested_fingerprint address candidate_key counter
   requested_fingerprint="$(identity_fingerprint)"
 
   if address="$(load_identity_marker_if_matching "${requested_fingerprint}")"; then
-    log "Reusing USDB miner identity from ${identity_marker}: ${address}"
+    log "Reusing USDB-chain miner account from ${identity_marker}: ${address}"
     printf '%s\n' "${address}"
     return 0
   fi
@@ -208,7 +208,7 @@ resolve_usdb_miner_address() {
           return 0
         fi
       done
-      echo "Failed to derive and import a deterministic USDB miner identity from ETHW_IDENTITY_SEED" >&2
+      echo "Failed to derive and import a deterministic USDB-chain miner account from ETHW_IDENTITY_SEED" >&2
       return 2
       ;;
     explicit-key)
@@ -223,7 +223,7 @@ resolve_usdb_miner_address() {
       ;;
     explicit-address)
       if [[ -z "${explicit_address}" ]]; then
-        echo "ETHW_IDENTITY_MODE=explicit-address requires USDB_MINER_ADDRESS" >&2
+        echo "ETHW_IDENTITY_MODE=explicit-address requires USDB_CHAIN_MINER_ADDRESS" >&2
         return 2
       fi
       write_identity_marker "${explicit_address}" "${requested_fingerprint}" "address-only-v1"
@@ -237,23 +237,23 @@ resolve_usdb_miner_address() {
   esac
 }
 
-if [[ "${ethw_command}" == *"USDB_MINER_ADDRESS"* ]]; then
+if [[ "${ethw_command}" == *"USDB_CHAIN_MINER_ADDRESS"* ]]; then
   ethw_command="$(sanitize_legacy_etherbase_placeholder)"
 fi
 
 set +e
-miner_address="$(resolve_usdb_miner_address)"
+miner_address="$(resolve_usdb_chain_miner_address)"
 resolve_status=$?
 set -e
 
 if [[ "${resolve_status}" -eq 0 ]]; then
-  export USDB_MINER_ADDRESS="${miner_address}"
+  export USDB_CHAIN_MINER_ADDRESS="${miner_address}"
   if [[ "${auto_append_etherbase}" == "1" && "${ethw_command}" != *"--miner.etherbase"* && "${ethw_command}" != *"--etherbase"* ]]; then
-    ethw_command="${ethw_command} --miner.etherbase ${USDB_MINER_ADDRESS}"
+    ethw_command="${ethw_command} --miner.etherbase ${USDB_CHAIN_MINER_ADDRESS}"
   fi
-  log "Using USDB miner address ${USDB_MINER_ADDRESS}"
+  log "Using USDB-chain miner address ${USDB_CHAIN_MINER_ADDRESS}"
 elif [[ "${resolve_status}" -eq 1 ]]; then
-  log "No USDB miner identity override requested; starting with provided ETHW_COMMAND"
+  log "No USDB-chain miner identity override requested; starting with provided ETHW_COMMAND"
 else
   exit "${resolve_status}"
 fi

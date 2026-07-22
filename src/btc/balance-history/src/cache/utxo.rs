@@ -140,7 +140,7 @@ pub type UTXOCacheRef = std::sync::Arc<UTXOCache>;
 mod tests {
     use super::*;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use usdb_util::USDBScriptHash;
+    use usdb_util::BtcScriptHash;
 
     #[test]
     fn test_utxo_cache_size() {
@@ -153,7 +153,7 @@ mod tests {
 
         // Append random entries up to count
         let value = UTXOValue {
-            script_hash: USDBScriptHash::from_slice(&[0u8; 32]).unwrap(),
+            script_hash: BtcScriptHash::from_slice(&[0u8; 32]).unwrap(),
             value: 1000,
         };
         let txid = Txid::from_slice(&[1u8; 32]).unwrap();

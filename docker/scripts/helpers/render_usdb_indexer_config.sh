@@ -66,7 +66,7 @@ cat >>"${output_path}" <<EOF
     "inscription_source_shadow_fail_fast": ${INSCRIPTION_SOURCE_SHADOW_FAIL_FAST:-false},
     "rpc_server_host": "${USDB_INDEXER_RPC_HOST:-0.0.0.0}",
     "rpc_server_port": ${USDB_INDEXER_RPC_PORT:-28020},
-    "rpc_server_enabled": ${USDB_RPC_SERVER_ENABLED:-true},
+    "rpc_server_enabled": ${USDB_INDEXER_RPC_SERVER_ENABLED:-true},
     "pass_energy_leaderboard_cache_enabled": ${PASS_ENERGY_LEADERBOARD_CACHE_ENABLED:-true},
     "pass_energy_leaderboard_cache_top_k": ${PASS_ENERGY_LEADERBOARD_CACHE_TOP_K:-1000}
   }

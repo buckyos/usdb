@@ -13,7 +13,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-30732}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-30733}"
 BH_RPC_PORT="${BH_RPC_PORT:-30710}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-30720}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-30720}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-30730}"
 WALLET_NAME="${WALLET_NAME:-usdbvalidatorversionmatrix}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-validator-version-matrix-a}"
@@ -97,14 +97,14 @@ EOF
   regtest_write_validator_payload_v1 "$payload_file" "$state_ref_resp" "$pass_snapshot_resp" "$pass_energy_resp"
   regtest_validate_validator_payload_success "$payload_file"
 
-  protocol_payload="$WORK_DIR/validator_block_body_version_matrix_protocol_payload.json"
+  active_set_payload="$WORK_DIR/validator_block_body_version_matrix_active_set_payload.json"
   semantics_payload="$WORK_DIR/validator_block_body_version_matrix_semantics_payload.json"
   api_payload="$WORK_DIR/validator_block_body_version_matrix_api_payload.json"
-  regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$protocol_payload" "usdb_index_protocol_version" "9.9.9-phase-c"
+  regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$active_set_payload" "active_version_set_id" "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
   regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$semantics_payload" "balance_history_semantics_version" "balance-snapshot-at-or-before:v999"
   regtest_write_validator_payload_tampered_external_state_field "$payload_file" "$api_payload" "balance_history_api_version" "9.9.9-phase-c"
 
-  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
+  regtest_validate_validator_payload_consensus_error "$active_set_payload" "-32056" "ACTIVE_VERSION_SET_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$semantics_payload" "-32044" "VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$api_payload" "-32044" "VERSION_MISMATCH"
 
@@ -117,7 +117,7 @@ EOF
   regtest_wait_usdb_consensus_ready
 
   regtest_validate_validator_payload_success "$payload_file"
-  regtest_validate_validator_payload_consensus_error "$protocol_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
+  regtest_validate_validator_payload_consensus_error "$active_set_payload" "-32056" "ACTIVE_VERSION_SET_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$semantics_payload" "-32044" "VERSION_MISMATCH"
   regtest_validate_validator_payload_consensus_error "$api_payload" "-32044" "VERSION_MISMATCH"
 

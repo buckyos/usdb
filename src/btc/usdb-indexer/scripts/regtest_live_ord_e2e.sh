@@ -15,7 +15,7 @@ SCENARIO_RUNNER="${SCENARIO_RUNNER:-$REPO_ROOT/src/btc/usdb-indexer/scripts/regt
 BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
 
 MINER_WALLET_NAME="${MINER_WALLET_NAME:-usdb-live-miner}"
@@ -78,7 +78,7 @@ print_failure_diagnostics() {
   DIAGNOSTIC_PRINTED=1
 
   log "Failure diagnostics: exit_code=${exit_code}, line=${line_no}, command=${command_text}"
-  log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_rpc_port=${USDB_RPC_PORT}"
+  log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_indexer_rpc_port=${USDB_INDEXER_RPC_PORT}"
   log "Wallet context: miner_wallet=${MINER_WALLET_NAME}, ord_wallet_a=${ORD_WALLET_NAME}, ord_wallet_b=${ORD_WALLET_NAME_B}"
 
   print_tail_if_exists "ord-server.log" "${WORK_DIR}/ord-server.log"
@@ -166,7 +166,7 @@ cleanup() {
 
   if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+      -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1
     stop_process "$USDB_INDEXER_PID"
@@ -326,7 +326,7 @@ wait_until_usdb_consensus_ready() {
   start_ts="$(date +%s)"
 
   while true; do
-    resp="$(rpc_call "http://127.0.0.1:${USDB_RPC_PORT}" "get_synced_block_height" "[]" || true)"
+    resp="$(rpc_call "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_synced_block_height" "[]" || true)"
     synced="$(echo "$resp" | python3 -c 'import json,sys
 try:
     d = json.load(sys.stdin)
@@ -336,7 +336,7 @@ except Exception:
 r = d.get("result")
 print(0 if r is None else int(r))' 2>/dev/null || true)"
     synced="${synced:-0}"
-    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_RPC_PORT}" 2>/dev/null || echo 0)"
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" 2>/dev/null || echo 0)"
     if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       return
     fi
@@ -581,7 +581,7 @@ create_usdb_indexer_config() {
     "inscription_fixture_file": null,
     "inscription_source_shadow_compare": false,
     "inscription_source_shadow_fail_fast": false,
-    "rpc_server_port": ${USDB_RPC_PORT},
+    "rpc_server_port": ${USDB_INDEXER_RPC_PORT},
     "rpc_server_enabled": true,
     "monitor_ord_enabled": false
   }
@@ -2171,7 +2171,7 @@ EOF
   ) >"${WORK_DIR}/usdb-indexer.log" 2>&1 &
   USDB_INDEXER_PID=$!
 
-  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
+  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
   wait_until_usdb_consensus_ready "$target_height"
 
   SCENARIO_FILE_PATH="$scenario_file"
@@ -2182,7 +2182,7 @@ EOF
     --btc-rpc-port "$BTC_RPC_PORT" \
     --wallet-name "$MINER_WALLET_NAME" \
     --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
-    --usdb-rpc-url "http://127.0.0.1:${USDB_RPC_PORT}" \
+    --usdb-indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     --target-height "$target_height" \
     --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
     --send-amount-btc "1.0" \

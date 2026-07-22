@@ -45,7 +45,7 @@ export function reachableServiceCount(services: ServicesSummary) {
     services.btc_node,
     services.balance_history,
     services.usdb_indexer,
-    services.ethw,
+    services.usdb_chain,
   ].filter((service) => service.reachable).length
 }
 
@@ -53,7 +53,7 @@ export function consensusReadyServiceCount(services: ServicesSummary) {
   return [
     services.balance_history.data?.consensus_ready ?? false,
     services.usdb_indexer.data?.consensus_ready ?? false,
-    services.ethw.data?.consensus_ready ?? false,
+    services.usdb_chain.data?.consensus_ready ?? false,
   ].filter(Boolean).length
 }
 
@@ -61,7 +61,7 @@ export function presentArtifactCount(bootstrap: BootstrapSummary) {
   return [
     bootstrap.bootstrap_manifest.exists,
     bootstrap.snapshot_marker.exists,
-    bootstrap.ethw_init_marker.exists,
+    bootstrap.usdb_init_marker.exists,
     bootstrap.sourcedao_bootstrap_state.exists,
     bootstrap.sourcedao_bootstrap_marker.exists,
   ].filter(Boolean).length

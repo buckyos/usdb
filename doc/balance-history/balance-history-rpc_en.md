@@ -124,13 +124,13 @@ Input object:
 
 ```json
 {
-  "script_hash": "<USDBScriptHash>",
+  "script_hash": "<BtcScriptHash>",
   "block_height": 800000,
   "block_range": { "start": 700000, "end": 800000 }
 }
 ```
 
-- `script_hash`: required, USDBScriptHash string
+- `script_hash`: required, `BtcScriptHash` string (the reversed SHA-256 of a Bitcoin `scriptPubKey`, matching Electrum RPC)
 - `block_height`: optional, point query at a specific height
 - `block_range`: optional, range query with `[start, end)` semantics
 
@@ -168,7 +168,7 @@ Input object:
 
 ```json
 {
-  "script_hashes": ["<USDBScriptHash-1>", "<USDBScriptHash-2>"],
+  "script_hashes": ["<BtcScriptHash-1>", "<BtcScriptHash-2>"],
   "include_script_pubkey": false
 }
 ```
@@ -183,7 +183,7 @@ Example result:
   "network": "regtest",
   "items": [
     {
-      "script_hash": "<USDBScriptHash>",
+      "script_hash": "<BtcScriptHash>",
       "found": true,
       "script_pubkey": null,
       "address": "bcrt1p...",
@@ -191,7 +191,7 @@ Example result:
       "standard": true
     },
     {
-      "script_hash": "<missing-USDBScriptHash>",
+      "script_hash": "<missing-BtcScriptHash>",
       "found": false,
       "script_pubkey": null,
       "address": null,
@@ -257,7 +257,7 @@ curl -s http://127.0.0.1:28010 \
 ```bash
 curl -s http://127.0.0.1:28010 \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<USDBScriptHash>","block_height":800000,"block_range":null}],"id":2}'
+  -d '{"jsonrpc":"2.0","method":"get_address_balance","params":[{"script_hash":"<BtcScriptHash>","block_height":800000,"block_range":null}],"id":2}'
 ```
 
 ## Compatibility Notes

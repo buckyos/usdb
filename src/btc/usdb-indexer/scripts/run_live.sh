@@ -21,7 +21,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
 
 # Total agent wallets created for simulation.
@@ -130,7 +130,7 @@ main() {
   confirm_and_reset_work_dir
 
   log "Starting live world simulation with AGENT_COUNT=${AGENT_COUNT}, SIM_BLOCKS=${SIM_BLOCKS}"
-  log "USDB RPC endpoint: http://127.0.0.1:${USDB_RPC_PORT}"
+  log "usdb-indexer RPC endpoint: http://127.0.0.1:${USDB_INDEXER_RPC_PORT}"
   log "Report file: ${SIM_REPORT_FILE}"
 
   env \
@@ -140,7 +140,7 @@ main() {
     BTC_RPC_PORT="${BTC_RPC_PORT}" \
     BTC_P2P_PORT="${BTC_P2P_PORT}" \
     BH_RPC_PORT="${BH_RPC_PORT}" \
-    USDB_RPC_PORT="${USDB_RPC_PORT}" \
+    USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT}" \
     ORD_SERVER_PORT="${ORD_SERVER_PORT}" \
     AGENT_COUNT="${AGENT_COUNT}" \
     PREMINE_BLOCKS="${PREMINE_BLOCKS}" \

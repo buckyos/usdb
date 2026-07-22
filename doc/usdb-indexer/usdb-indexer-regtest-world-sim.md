@@ -131,7 +131,7 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh
 
 1. `python3 -m http.server 8088`
 2. `http://127.0.0.1:8088/web/usdb-indexer-browser/`
-3. 页面 RPC endpoint 设置为当前 `USDB_RPC_PORT`（默认 `http://127.0.0.1:28120`）
+3. 页面 RPC endpoint 设置为当前 `USDB_INDEXER_RPC_PORT`（默认 `http://127.0.0.1:28120`）
 
 ## 常用环境变量
 
@@ -142,7 +142,7 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_economic_views.sh
 - `ORD_BIN`：ord 可执行文件
 - `BTC_RPC_PORT`、`BTC_P2P_PORT`
 - `BH_RPC_PORT`
-- `USDB_RPC_PORT`
+- `USDB_INDEXER_RPC_PORT`
 - `ORD_SERVER_PORT`
 
 ### 钱包与链参数
@@ -275,7 +275,7 @@ src/btc/usdb-indexer/scripts/regtest_world_sim_determinism.sh
 - `WORK_DIR`：双跑总工作目录
 - `RUN1_WORK_DIR`、`RUN2_WORK_DIR`：单次运行工作目录
 - `RUN1_REPORT_FILE`、`RUN2_REPORT_FILE`：两次报告路径
-- `BASE_BTC_RPC_PORT`、`BASE_BTC_P2P_PORT`、`BASE_BH_RPC_PORT`、`BASE_USDB_RPC_PORT`、`BASE_ORD_SERVER_PORT`：双跑的起始端口组
+- `BASE_BTC_RPC_PORT`、`BASE_BTC_P2P_PORT`、`BASE_BH_RPC_PORT`、`BASE_USDB_INDEXER_RPC_PORT`、`BASE_ORD_SERVER_PORT`：双跑的起始端口组
 - `PORT_STRIDE`：`run2` 相对 `run1` 的端口偏移，默认 `100`
 
 脚本会顺序运行两次 `regtest_world_sim.sh`，然后调用 `compare_world_sim_reports.py` 对比：

@@ -256,10 +256,10 @@ pub fn calc_difficulty_factor_bps_from_effective_energy(effective_energy: Energy
     calc_difficulty_factor_bps(calc_level_from_effective_energy(effective_energy))
 }
 
-/// Calculate ETHW-side UIP-0005 real difficulty using integer ceil division.
+/// Calculate USDB-chain UIP-0005 real difficulty using integer ceil division.
 ///
 /// This helper is pure formula code only; usdb-indexer must not persist or
-/// query ETHW base difficulty as part of its BTC-side state.
+/// query USDB-chain base difficulty as part of its BTC-side state.
 pub fn calc_real_difficulty(
     base_difficulty: Energy,
     difficulty_factor_bps: Energy,

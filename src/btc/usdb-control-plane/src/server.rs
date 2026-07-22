@@ -4,9 +4,9 @@ use crate::models::{
     BootstrapSummary, BtcMintExecuteRequest, BtcMintExecuteResponse,
     BtcMintPrepareActivePassSummary, BtcMintPrepareRequest, BtcMintPrepareResponse,
     BtcMintPrepareRuntimeSummary, BtcNodeServiceSummary, BtcWorldSimDevSignerResponse,
-    BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary,
-    EthwAddressStatusResponse, EthwDevIdentityResponse, EthwServiceSummary, ExplorerLinks,
+    BtcWorldSimIdentitiesResponse, BtcWorldSimIdentity, CapabilitiesSummary, ExplorerLinks,
     OrdServiceSummary, OverviewResponse, ServiceProbe, ServiceRpcRequest, ServicesSummary,
+    UsdbChainAddressStatusResponse, UsdbChainDevIdentityResponse, UsdbChainServiceSummary,
     UsdbEconomicStateViewCapabilitySummary, UsdbIndexerServiceSummary,
 };
 use crate::rpc_client::{RpcClient, decode_hex_quantity};
@@ -38,7 +38,7 @@ struct WorldSimBootstrapMarker {
     agent_wallets: Vec<String>,
     agent_addresses: Vec<String>,
     #[serde(default)]
-    usdb_miner_agent_id: Option<usize>,
+    usdb_chain_miner_agent_id: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,13 +47,13 @@ struct WorldSimDevSignerQuery {
 }
 
 #[derive(Debug, Deserialize)]
-struct EthwAddressStatusQuery {
+struct UsdbChainAddressStatusQuery {
     address: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct EthwDevIdentityMarker {
-    usdb_miner_address: String,
+struct UsdbChainDevIdentityMarker {
+    usdb_chain_miner_address: String,
     #[serde(default)]
     identity_mode: Option<String>,
     #[serde(default)]
@@ -201,8 +201,14 @@ pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
             "/api/btc/world-sim/dev-signer",
             get(get_btc_world_sim_dev_signer),
         )
-        .route("/api/ethw/dev-sim/identity", get(get_ethw_dev_identity))
-        .route("/api/ethw/address-status", get(get_ethw_address_status))
+        .route(
+            "/api/usdb-chain/dev-sim/identity",
+            get(get_usdb_chain_dev_identity),
+        )
+        .route(
+            "/api/usdb-chain/address-status",
+            get(get_usdb_chain_address_status),
+        )
         .route("/api/btc/mint/prepare", post(post_prepare_btc_mint))
         .route("/api/btc/mint/execute", post(post_execute_btc_mint))
         .route(
@@ -465,30 +471,30 @@ async fn get_btc_world_sim_dev_signer(
     }
 }
 
-async fn get_ethw_dev_identity(
+async fn get_usdb_chain_dev_identity(
     State(state): State<AppState>,
-) -> Result<Json<EthwDevIdentityResponse>, StatusCode> {
+) -> Result<Json<UsdbChainDevIdentityResponse>, StatusCode> {
     let services = build_services_summary(&state).await;
-    let ethw_chain_id = services
-        .ethw
+    let usdb_chain_id = services
+        .usdb_chain
         .data
         .as_ref()
         .and_then(|summary| summary.chain_id.clone());
-    let ethw_network_id = services
-        .ethw
+    let usdb_network_id = services
+        .usdb_chain
         .data
         .as_ref()
         .and_then(|summary| summary.network_id.clone());
     let runtime_profile =
-        classify_ethw_runtime_profile(ethw_chain_id.as_deref(), ethw_network_id.as_deref())
+        classify_usdb_chain_runtime_profile(usdb_chain_id.as_deref(), usdb_network_id.as_deref())
             .to_string();
-    let marker = read_artifact_summary(&state.config, &state.config.bootstrap.ethw_identity_marker);
+    let marker = read_artifact_summary(&state.config, &state.config.bootstrap.usdb_identity_marker);
 
     if runtime_profile != "development" {
-        return Ok(Json(EthwDevIdentityResponse {
-            ethw_chain_id,
-            ethw_network_id,
-            ethw_runtime_profile: runtime_profile,
+        return Ok(Json(UsdbChainDevIdentityResponse {
+            usdb_chain_id,
+            usdb_network_id,
+            usdb_chain_runtime_profile: runtime_profile,
             available: false,
             marker_path: marker.path,
             address: None,
@@ -500,10 +506,10 @@ async fn get_ethw_dev_identity(
     }
 
     if !marker.exists {
-        return Ok(Json(EthwDevIdentityResponse {
-            ethw_chain_id,
-            ethw_network_id,
-            ethw_runtime_profile: runtime_profile,
+        return Ok(Json(UsdbChainDevIdentityResponse {
+            usdb_chain_id,
+            usdb_network_id,
+            usdb_chain_runtime_profile: runtime_profile,
             available: false,
             marker_path: marker.path,
             address: None,
@@ -515,39 +521,39 @@ async fn get_ethw_dev_identity(
     }
 
     let Some(marker_data) = marker.data else {
-        return Ok(Json(EthwDevIdentityResponse {
-            ethw_chain_id,
-            ethw_network_id,
-            ethw_runtime_profile: runtime_profile,
+        return Ok(Json(UsdbChainDevIdentityResponse {
+            usdb_chain_id,
+            usdb_network_id,
+            usdb_chain_runtime_profile: runtime_profile,
             available: false,
             marker_path: marker.path,
             address: None,
             identity_mode: None,
             identity_scheme: None,
             identity_fingerprint: None,
-            error: marker
-                .error
-                .or_else(|| Some("ETHW dev identity marker did not expose JSON data".to_string())),
+            error: marker.error.or_else(|| {
+                Some("USDB-chain dev identity marker did not expose JSON data".to_string())
+            }),
         }));
     };
 
-    match serde_json::from_value::<EthwDevIdentityMarker>(marker_data) {
-        Ok(identity) => Ok(Json(EthwDevIdentityResponse {
-            ethw_chain_id,
-            ethw_network_id,
-            ethw_runtime_profile: runtime_profile,
+    match serde_json::from_value::<UsdbChainDevIdentityMarker>(marker_data) {
+        Ok(identity) => Ok(Json(UsdbChainDevIdentityResponse {
+            usdb_chain_id,
+            usdb_network_id,
+            usdb_chain_runtime_profile: runtime_profile,
             available: true,
             marker_path: marker.path,
-            address: Some(identity.usdb_miner_address),
+            address: Some(identity.usdb_chain_miner_address),
             identity_mode: identity.identity_mode,
             identity_scheme: identity.identity_scheme,
             identity_fingerprint: identity.identity_fingerprint,
             error: None,
         })),
-        Err(error) => Ok(Json(EthwDevIdentityResponse {
-            ethw_chain_id,
-            ethw_network_id,
-            ethw_runtime_profile: runtime_profile,
+        Err(error) => Ok(Json(UsdbChainDevIdentityResponse {
+            usdb_chain_id,
+            usdb_network_id,
+            usdb_chain_runtime_profile: runtime_profile,
             available: false,
             marker_path: marker.path,
             address: None,
@@ -555,16 +561,16 @@ async fn get_ethw_dev_identity(
             identity_scheme: None,
             identity_fingerprint: None,
             error: Some(format!(
-                "Failed to decode ETHW dev identity marker: {}",
+                "Failed to decode USDB-chain dev identity marker: {}",
                 error
             )),
         })),
     }
 }
 
-async fn get_ethw_address_status(
+async fn get_usdb_chain_address_status(
     State(state): State<AppState>,
-    Query(query): Query<EthwAddressStatusQuery>,
+    Query(query): Query<UsdbChainAddressStatusQuery>,
 ) -> impl IntoResponse {
     let address = match normalize_evm_address("address", &query.address) {
         Ok(address) => address,
@@ -573,40 +579,40 @@ async fn get_ethw_address_status(
         }
     };
     let services = build_services_summary(&state).await;
-    let ethw_chain_id = services
-        .ethw
+    let usdb_chain_id = services
+        .usdb_chain
         .data
         .as_ref()
         .and_then(|summary| summary.chain_id.clone());
-    let ethw_network_id = services
-        .ethw
+    let usdb_network_id = services
+        .usdb_chain
         .data
         .as_ref()
         .and_then(|summary| summary.network_id.clone());
     let runtime_profile =
-        classify_ethw_runtime_profile(ethw_chain_id.as_deref(), ethw_network_id.as_deref())
+        classify_usdb_chain_runtime_profile(usdb_chain_id.as_deref(), usdb_network_id.as_deref())
             .to_string();
     let latest_block_number = services
-        .ethw
+        .usdb_chain
         .data
         .as_ref()
         .and_then(|summary| summary.block_number.map(|value| value.to_string()));
 
     let balance_result = state
         .rpc_client
-        .ethw_balance(&state.config.rpc.ethw_url, &address)
+        .usdb_chain_balance(&state.config.rpc.usdb_chain_url, &address)
         .await;
-    let (available, balance_wei, error) = match balance_result {
-        Ok(balance_wei) => (true, Some(balance_wei), None),
+    let (available, balance_atoms_hex, error) = match balance_result {
+        Ok(balance_atoms_hex) => (true, Some(balance_atoms_hex), None),
         Err(error) => (false, None, Some(error)),
     };
 
-    Json(EthwAddressStatusResponse {
-        ethw_chain_id,
-        ethw_network_id,
-        ethw_runtime_profile: runtime_profile,
+    Json(UsdbChainAddressStatusResponse {
+        usdb_chain_id,
+        usdb_network_id,
+        usdb_chain_runtime_profile: runtime_profile,
         address,
-        balance_wei,
+        balance_atoms_hex,
         latest_block_number,
         available,
         error,
@@ -1061,10 +1067,10 @@ fn build_app_entries(
         app_status_from_service(&services.usdb_indexer, usdb_indexer_data);
 
     let sourcedao_available =
-        services.ethw.reachable && bootstrap.sourcedao_bootstrap_marker.exists;
+        services.usdb_chain.reachable && bootstrap.sourcedao_bootstrap_marker.exists;
     let sourcedao_status = if sourcedao_available {
         "configured"
-    } else if services.ethw.reachable {
+    } else if services.usdb_chain.reachable {
         "pending"
     } else {
         "offline"
@@ -1074,7 +1080,7 @@ fn build_app_entries(
             "SourceDAO bootstrap is configured. Start the standalone web app with docker/scripts/tools/run_local_sourcedao_web.sh up before opening this URL."
                 .to_string(),
         )
-    } else if let Some(error) = services.ethw.error.clone() {
+    } else if let Some(error) = services.usdb_chain.error.clone() {
         Some(error)
     } else {
         Some("SourceDAO bootstrap marker is not available yet".to_string())
@@ -1132,17 +1138,17 @@ fn build_app_entries(
             kind: "external_web".to_string(),
             url: explorers.sourcedao_web.clone(),
             target: "external".to_string(),
-            runtime_profile: capabilities.ethw_runtime_profile.clone(),
+            runtime_profile: capabilities.usdb_chain_runtime_profile.clone(),
             network: services
-                .ethw
+                .usdb_chain
                 .data
                 .as_ref()
                 .and_then(|item| item.chain_id.clone()),
-            service_id: Some("ethw".to_string()),
+            service_id: Some("usdb-chain".to_string()),
             available: sourcedao_available,
             status: sourcedao_status.to_string(),
             status_message: sourcedao_message,
-            depends_on: vec!["ethw".to_string(), "sourcedao-bootstrap".to_string()],
+            depends_on: vec!["usdb-chain".to_string(), "sourcedao-bootstrap".to_string()],
         },
     ]
 }
@@ -1342,7 +1348,10 @@ fn classify_btc_runtime_profile(network: Option<&str>) -> &'static str {
     }
 }
 
-fn classify_ethw_runtime_profile(chain_id: Option<&str>, network_id: Option<&str>) -> &'static str {
+fn classify_usdb_chain_runtime_profile(
+    chain_id: Option<&str>,
+    network_id: Option<&str>,
+) -> &'static str {
     let normalized_chain_id = chain_id.map(|value| value.trim().to_ascii_lowercase());
     let normalized_network_id = network_id.map(|value| value.trim().to_ascii_lowercase());
     let is_local_full_sim = normalized_chain_id
@@ -1372,7 +1381,7 @@ fn classify_ethw_runtime_profile(chain_id: Option<&str>, network_id: Option<&str
 fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIdentity>, String> {
     let marker: WorldSimBootstrapMarker = serde_json::from_value(marker_data)
         .map_err(|error| format!("Failed to decode world-sim bootstrap marker: {}", error))?;
-    let usdb_miner_agent_id = marker.usdb_miner_agent_id;
+    let usdb_chain_miner_agent_id = marker.usdb_chain_miner_agent_id;
 
     if marker.agent_wallets.len() != marker.agent_addresses.len() {
         return Err(format!(
@@ -1384,11 +1393,11 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
     if marker.agent_wallets.is_empty() {
         return Err("World-sim bootstrap marker does not contain any agent identities".to_string());
     }
-    if let Some(agent_id) = usdb_miner_agent_id
+    if let Some(agent_id) = usdb_chain_miner_agent_id
         && agent_id >= marker.agent_wallets.len()
     {
         return Err(format!(
-            "World-sim bootstrap marker has out-of-range usdb_miner_agent_id {} for {} identities",
+            "World-sim bootstrap marker has out-of-range usdb_chain_miner_agent_id {} for {} identities",
             agent_id,
             marker.agent_wallets.len()
         ));
@@ -1420,7 +1429,7 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
                 agent_id,
                 wallet_name: wallet_name.to_string(),
                 owner_address: owner_address.to_string(),
-                is_usdb_miner_aligned: usdb_miner_agent_id == Some(agent_id),
+                is_usdb_chain_miner_aligned: usdb_chain_miner_agent_id == Some(agent_id),
             })
         })
         .collect()
@@ -1911,13 +1920,13 @@ async fn build_services_summary(state: &AppState) -> ServicesSummary {
     let btc_node = probe_btc_node(state).await;
     let balance_history = probe_balance_history(state).await;
     let usdb_indexer = probe_usdb_indexer(state).await;
-    let ethw = probe_ethw(state).await;
+    let usdb_chain = probe_usdb_chain(state).await;
     let ord = probe_ord(state).await;
     ServicesSummary {
         btc_node,
         balance_history,
         usdb_indexer,
-        ethw,
+        usdb_chain,
         ord,
     }
 }
@@ -1933,14 +1942,14 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
     let btc_runtime_profile =
         classify_btc_runtime_profile(resolve_runtime_btc_network_name(services).as_deref())
             .to_string();
-    let ethw_runtime_profile = classify_ethw_runtime_profile(
+    let usdb_chain_runtime_profile = classify_usdb_chain_runtime_profile(
         services
-            .ethw
+            .usdb_chain
             .data
             .as_ref()
             .and_then(|summary| summary.chain_id.as_deref()),
         services
-            .ethw
+            .usdb_chain
             .data
             .as_ref()
             .and_then(|summary| summary.network_id.as_deref()),
@@ -1952,7 +1961,7 @@ fn build_capabilities_summary(services: &ServicesSummary) -> CapabilitiesSummary
     CapabilitiesSummary {
         ord_available,
         btc_runtime_profile,
-        ethw_runtime_profile,
+        usdb_chain_runtime_profile,
         usdb_economic_state_view,
         btc_console_mode: if ord_available {
             "inscription_enabled".to_string()
@@ -2000,9 +2009,9 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
         read_artifact_summary(&state.config, &state.config.bootstrap.bootstrap_manifest);
     let snapshot_marker =
         read_artifact_summary(&state.config, &state.config.bootstrap.snapshot_marker);
-    let ethw_init_marker =
-        read_artifact_summary(&state.config, &state.config.bootstrap.ethw_init_marker);
-    let ethw_genesis = read_artifact_summary(&state.config, &state.config.bootstrap.ethw_genesis);
+    let usdb_init_marker =
+        read_artifact_summary(&state.config, &state.config.bootstrap.usdb_init_marker);
+    let usdb_genesis = read_artifact_summary(&state.config, &state.config.bootstrap.usdb_genesis);
     let sourcedao_bootstrap_state = read_artifact_summary(
         &state.config,
         &state.config.bootstrap.sourcedao_bootstrap_state,
@@ -2014,7 +2023,7 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
     let steps = vec![
         derive_snapshot_loader_step(&bootstrap_manifest, &snapshot_marker),
         derive_step_state("bootstrap-init", &bootstrap_manifest),
-        derive_step_state("ethw-init", &ethw_init_marker),
+        derive_step_state("ethw-init", &usdb_init_marker),
         derive_step_state("sourcedao-bootstrap", &sourcedao_bootstrap_marker),
     ];
     let overall_state = if steps.iter().any(|step| step.state == "error") {
@@ -2036,8 +2045,8 @@ fn build_bootstrap_summary(state: &AppState) -> BootstrapSummary {
     BootstrapSummary {
         bootstrap_manifest,
         snapshot_marker,
-        ethw_init_marker,
-        ethw_genesis,
+        usdb_init_marker,
+        usdb_genesis,
         sourcedao_bootstrap_state,
         sourcedao_bootstrap_marker,
         steps,
@@ -2214,16 +2223,16 @@ async fn probe_usdb_indexer(state: &AppState) -> ServiceProbe<UsdbIndexerService
     }
 }
 
-async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
-    let rpc_url = state.config.rpc.ethw_url.clone();
+async fn probe_usdb_chain(state: &AppState) -> ServiceProbe<UsdbChainServiceSummary> {
+    let rpc_url = state.config.rpc.usdb_chain_url.clone();
     let started = Instant::now();
     let (client_version, chain_id, network_id, block_number, latest_block, syncing) = tokio::join!(
-        state.rpc_client.ethw_client_version(&rpc_url),
-        state.rpc_client.ethw_chain_id(&rpc_url),
-        state.rpc_client.ethw_network_id(&rpc_url),
-        state.rpc_client.ethw_block_number(&rpc_url),
-        state.rpc_client.ethw_latest_block(&rpc_url),
-        state.rpc_client.ethw_syncing(&rpc_url)
+        state.rpc_client.usdb_client_version(&rpc_url),
+        state.rpc_client.usdb_chain_id(&rpc_url),
+        state.rpc_client.usdb_network_id(&rpc_url),
+        state.rpc_client.usdb_block_number(&rpc_url),
+        state.rpc_client.usdb_latest_block(&rpc_url),
+        state.rpc_client.usdb_syncing(&rpc_url)
     );
     let latency_ms = started.elapsed().as_millis() as u64;
     let client_version_error = client_version.as_ref().err().cloned();
@@ -2264,7 +2273,7 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
     };
 
     let data = if reachable {
-        Some(EthwServiceSummary {
+        Some(UsdbChainServiceSummary {
             client_version: client_version.ok(),
             chain_id: chain_id.ok(),
             network_id: network_id.ok(),
@@ -2280,7 +2289,7 @@ async fn probe_ethw(state: &AppState) -> ServiceProbe<EthwServiceSummary> {
     };
 
     ServiceProbe {
-        name: "ethw".to_string(),
+        name: "usdb-chain".to_string(),
         rpc_url,
         reachable,
         latency_ms: Some(latency_ms),
@@ -2839,18 +2848,24 @@ mod tests {
     }
 
     #[test]
-    fn classify_ethw_runtime_profile_matches_local_full_sim_chain() {
+    fn classify_usdb_chain_runtime_profile_matches_local_full_sim_chain() {
         assert_eq!(
-            classify_ethw_runtime_profile(Some("0x13525e3"), Some("20260323")),
+            classify_usdb_chain_runtime_profile(Some("0x13525e3"), Some("20260323")),
             "development"
         );
         assert_eq!(
-            classify_ethw_runtime_profile(Some("20260323"), None),
+            classify_usdb_chain_runtime_profile(Some("20260323"), None),
             "development"
         );
-        assert_eq!(classify_ethw_runtime_profile(Some("0x1"), None), "public");
-        assert_eq!(classify_ethw_runtime_profile(None, Some("10001")), "public");
-        assert_eq!(classify_ethw_runtime_profile(None, None), "unknown");
+        assert_eq!(
+            classify_usdb_chain_runtime_profile(Some("0x1"), None),
+            "public"
+        );
+        assert_eq!(
+            classify_usdb_chain_runtime_profile(None, Some("10001")),
+            "public"
+        );
+        assert_eq!(classify_usdb_chain_runtime_profile(None, None), "unknown");
     }
 
     #[test]
@@ -2858,7 +2873,7 @@ mod tests {
         let identities = decode_world_sim_identities(json!({
             "agent_wallets": ["usdb-world-agent-1", "usdb-world-agent-2"],
             "agent_addresses": ["bcrt1qa", "bcrt1qb"],
-            "usdb_miner_agent_id": 1
+            "usdb_chain_miner_agent_id": 1
         }))
         .unwrap();
 
@@ -2866,9 +2881,9 @@ mod tests {
         assert_eq!(identities[0].agent_id, 0);
         assert_eq!(identities[0].wallet_name, "usdb-world-agent-1");
         assert_eq!(identities[0].owner_address, "bcrt1qa");
-        assert!(!identities[0].is_usdb_miner_aligned);
+        assert!(!identities[0].is_usdb_chain_miner_aligned);
         assert_eq!(identities[1].agent_id, 1);
-        assert!(identities[1].is_usdb_miner_aligned);
+        assert!(identities[1].is_usdb_chain_miner_aligned);
     }
 
     #[test]

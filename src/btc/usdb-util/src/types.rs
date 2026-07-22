@@ -1,4 +1,4 @@
-use crate::USDBScriptHash;
+use crate::BtcScriptHash;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{OutPoint, Txid};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct UTXOEntry {
     pub outpoint: OutPoint,
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
     pub value: u64,
 }
 
@@ -20,31 +20,31 @@ impl UTXOEntry {
 
 #[derive(Debug, Clone)]
 pub struct UTXOValue {
-    pub script_hash: USDBScriptHash,
+    pub script_hash: BtcScriptHash,
     pub value: u64,
 }
 
 impl UTXOValue {
-    pub fn to_vec(&self) -> [u8; USDBScriptHash::LEN + 8] {
+    pub fn to_vec(&self) -> [u8; BtcScriptHash::LEN + 8] {
         Self::encode(&self.script_hash, self.value)
     }
 
-    pub fn encode(script_hash: &USDBScriptHash, value: u64) -> [u8; USDBScriptHash::LEN + 8] {
-        let mut data = [0u8; USDBScriptHash::LEN + 8];
-        data[..USDBScriptHash::LEN].copy_from_slice(script_hash.as_ref() as &[u8]);
-        data[USDBScriptHash::LEN..].copy_from_slice(&value.to_be_bytes());
+    pub fn encode(script_hash: &BtcScriptHash, value: u64) -> [u8; BtcScriptHash::LEN + 8] {
+        let mut data = [0u8; BtcScriptHash::LEN + 8];
+        data[..BtcScriptHash::LEN].copy_from_slice(script_hash.as_ref() as &[u8]);
+        data[BtcScriptHash::LEN..].copy_from_slice(&value.to_be_bytes());
         data
     }
 
     pub fn from_slice(data: &[u8]) -> Result<Self, String> {
-        if data.len() != USDBScriptHash::LEN + 8 {
+        if data.len() != BtcScriptHash::LEN + 8 {
             return Err("Invalid UTXOValue data length".to_string());
         }
 
-        let script_hash = USDBScriptHash::from_slice(&data[0..USDBScriptHash::LEN])
+        let script_hash = BtcScriptHash::from_slice(&data[0..BtcScriptHash::LEN])
             .map_err(|e| format!("Failed to parse script hash: {}", e))?;
         let value = u64::from_be_bytes(
-            data[USDBScriptHash::LEN..USDBScriptHash::LEN + 8]
+            data[BtcScriptHash::LEN..BtcScriptHash::LEN + 8]
                 .try_into()
                 .map_err(|_| "Failed to parse value".to_string())?,
         );
@@ -73,18 +73,10 @@ pub const CONSENSUS_SNAPSHOT_ID_HASH_ALGO: &str = "sha256";
 pub const CONSENSUS_SNAPSHOT_ID_VERSION: &str = "btc-consensus-snapshot:v1";
 /// Hash algorithm used by canonical usdb-index local-state commits.
 pub const LOCAL_STATE_COMMIT_HASH_ALGO: &str = "sha256";
-/// Version tag of the canonical usdb-index local-state commit serialization rule.
-pub const LOCAL_STATE_COMMIT_VERSION: &str = "usdb-local-state:v1";
 /// Hash algorithm used by canonical system-state ids consumed by downstream chains.
 pub const SYSTEM_STATE_ID_HASH_ALGO: &str = "sha256";
 /// Version tag of the canonical BTC-side system-state id serialization rule.
 pub const SYSTEM_STATE_ID_VERSION: &str = "btc-system-state:v1";
-/// Version of the usdb-index derived-state formula set that participates in
-/// BTC-side consensus snapshot identity calculation.
-pub const USDB_INDEX_FORMULA_VERSION: &str = "pass-energy-formula:v1";
-/// Version of the external usdb-index protocol contract shared across BTC-side
-/// services and downstream consumers such as ETHW.
-pub const USDB_INDEX_PROTOCOL_VERSION: &str = "1.0.0";
 /// Shared JSON-RPC error code returned when the requested height is not yet
 /// covered by the service's current durable or stable view.
 pub const CONSENSUS_RPC_ERR_HEIGHT_NOT_SYNCED: i64 = -32040;
@@ -118,12 +110,23 @@ pub const CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE: i64 = -32049;
 /// Shared JSON-RPC error code returned when an economic-state query requests an
 /// unsupported view contract version.
 pub const CONSENSUS_RPC_ERR_VIEW_VERSION_MISMATCH: i64 = -32050;
-/// Shared JSON-RPC error code returned when the expected usdb-index protocol
-/// version differs from the version recorded by the selected historical state.
-pub const CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH: i64 = -32051;
 /// Shared JSON-RPC error code returned when the expected usdb-index formula
 /// version differs from the version recorded by the selected historical state.
 pub const CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH: i64 = -32052;
+/// Shared JSON-RPC error code returned when no activation record covers the
+/// requested chain context.
+pub const CONSENSUS_RPC_ERR_ACTIVATION_RECORD_NOT_FOUND: i64 = -32053;
+/// Shared JSON-RPC error code returned when activation records conflict.
+pub const CONSENSUS_RPC_ERR_ACTIVATION_RECORD_CONFLICT: i64 = -32054;
+/// Shared JSON-RPC error code returned when an activated version has no local
+/// implementation.
+pub const CONSENSUS_RPC_ERR_VERSION_NOT_SUPPORTED: i64 = -32055;
+/// Shared JSON-RPC error code returned when a pinned active version-set id does
+/// not match the selected historical context.
+pub const CONSENSUS_RPC_ERR_ACTIVE_VERSION_SET_MISMATCH: i64 = -32056;
+/// Shared JSON-RPC error code returned when the local-state commit encoding
+/// version is not supported by this node.
+pub const CONSENSUS_RPC_ERR_COMMIT_PROTOCOL_VERSION_MISMATCH: i64 = -32057;
 
 /// Shared consensus-layer JSON-RPC error contract used by BTC-side services.
 ///
@@ -143,8 +146,12 @@ pub enum ConsensusRpcErrorCode {
     StateNotRetained,
     HistoryNotAvailable,
     ViewVersionMismatch,
-    ProtocolVersionMismatch,
     FormulaVersionMismatch,
+    ActivationRecordNotFound,
+    ActivationRecordConflict,
+    VersionNotSupported,
+    ActiveVersionSetMismatch,
+    CommitProtocolVersionMismatch,
 }
 
 impl ConsensusRpcErrorCode {
@@ -162,8 +169,14 @@ impl ConsensusRpcErrorCode {
             Self::StateNotRetained => CONSENSUS_RPC_ERR_STATE_NOT_RETAINED,
             Self::HistoryNotAvailable => CONSENSUS_RPC_ERR_HISTORY_NOT_AVAILABLE,
             Self::ViewVersionMismatch => CONSENSUS_RPC_ERR_VIEW_VERSION_MISMATCH,
-            Self::ProtocolVersionMismatch => CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH,
             Self::FormulaVersionMismatch => CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH,
+            Self::ActivationRecordNotFound => CONSENSUS_RPC_ERR_ACTIVATION_RECORD_NOT_FOUND,
+            Self::ActivationRecordConflict => CONSENSUS_RPC_ERR_ACTIVATION_RECORD_CONFLICT,
+            Self::VersionNotSupported => CONSENSUS_RPC_ERR_VERSION_NOT_SUPPORTED,
+            Self::ActiveVersionSetMismatch => CONSENSUS_RPC_ERR_ACTIVE_VERSION_SET_MISMATCH,
+            Self::CommitProtocolVersionMismatch => {
+                CONSENSUS_RPC_ERR_COMMIT_PROTOCOL_VERSION_MISMATCH
+            }
         }
     }
 
@@ -181,8 +194,12 @@ impl ConsensusRpcErrorCode {
             Self::StateNotRetained => "STATE_NOT_RETAINED",
             Self::HistoryNotAvailable => "HISTORY_NOT_AVAILABLE",
             Self::ViewVersionMismatch => "VIEW_VERSION_MISMATCH",
-            Self::ProtocolVersionMismatch => "PROTOCOL_VERSION_MISMATCH",
             Self::FormulaVersionMismatch => "FORMULA_VERSION_MISMATCH",
+            Self::ActivationRecordNotFound => "ACTIVATION_RECORD_NOT_FOUND",
+            Self::ActivationRecordConflict => "ACTIVATION_RECORD_CONFLICT",
+            Self::VersionNotSupported => "VERSION_NOT_SUPPORTED",
+            Self::ActiveVersionSetMismatch => "ACTIVE_VERSION_SET_MISMATCH",
+            Self::CommitProtocolVersionMismatch => "COMMIT_PROTOCOL_VERSION_MISMATCH",
         }
     }
 }
@@ -204,10 +221,10 @@ pub struct ConsensusStateReference {
     pub balance_history_api_version: Option<String>,
     /// Expected balance-history query semantics version.
     pub balance_history_semantics_version: Option<String>,
-    /// Expected usdb-index public protocol version.
-    pub usdb_index_protocol_version: Option<String>,
-    /// Expected usdb-index formula version used for historical derived fields.
-    pub usdb_index_formula_version: Option<String>,
+    /// Expected activation-registry identity used by the service binary.
+    pub activation_registry_id: Option<String>,
+    /// Expected active-version-set identity at the selected historical context.
+    pub active_version_set_id: Option<String>,
     /// Expected local-state commit from usdb-indexer.
     pub local_state_commit: Option<String>,
     /// Expected top-level system-state id from usdb-indexer.
@@ -222,8 +239,8 @@ impl ConsensusStateReference {
             && self.stable_block_hash.is_none()
             && self.balance_history_api_version.is_none()
             && self.balance_history_semantics_version.is_none()
-            && self.usdb_index_protocol_version.is_none()
-            && self.usdb_index_formula_version.is_none()
+            && self.activation_registry_id.is_none()
+            && self.active_version_set_id.is_none()
             && self.local_state_commit.is_none()
             && self.system_state_id.is_none()
     }
@@ -302,10 +319,6 @@ pub struct ConsensusSnapshotIdentity {
     pub balance_history_api_version: String,
     /// Historical query semantics version of balance-history.
     pub balance_history_semantics_version: String,
-    /// Version of the usdb-index derived-state formula set.
-    pub usdb_index_formula_version: String,
-    /// Version of the usdb-index external protocol contract.
-    pub usdb_index_protocol_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -332,16 +345,18 @@ pub struct LocalStateActiveBalanceSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalStateCommitIdentity {
+    /// Version of the canonical local-state commit encoding.
+    pub commit_protocol_version: String,
     /// Upstream consensus snapshot id adopted by the local node.
     pub upstream_snapshot_id: String,
+    /// Canonical identity of the active version set selected at this height.
+    pub active_version_set_id: String,
     /// Latest local durable height committed by usdb-indexer.
     pub local_synced_block_height: u32,
     /// Latest local pass commit at or before `local_synced_block_height`.
     pub latest_pass_block_commit: Option<LocalStatePassCommitIdentity>,
     /// Exact active-balance snapshot at `local_synced_block_height`, when present.
     pub latest_active_balance_snapshot: Option<LocalStateActiveBalanceSnapshot>,
-    /// Version of the external usdb-index protocol contract.
-    pub usdb_index_protocol_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -380,15 +395,15 @@ pub fn build_consensus_snapshot_id(identity: &ConsensusSnapshotIdentity) -> Stri
     hasher.update(identity.stable_lag.to_be_bytes());
     update_string_component(&mut hasher, &identity.balance_history_api_version);
     update_string_component(&mut hasher, &identity.balance_history_semantics_version);
-    update_string_component(&mut hasher, &identity.usdb_index_formula_version);
-    update_string_component(&mut hasher, &identity.usdb_index_protocol_version);
     encode_hex(&hasher.finalize())
 }
 
 /// Builds the canonical usdb-index local-state commit for one locally durable snapshot.
 ///
 /// The commit intentionally binds together:
+/// - the local-state commit protocol version
 /// - the adopted upstream consensus snapshot id
+/// - the active version-set id selected at the committed height
 /// - the local durable synced height
 /// - the latest pass commit at or before that height
 /// - the exact active-balance snapshot at that height
@@ -397,8 +412,9 @@ pub fn build_consensus_snapshot_id(identity: &ConsensusSnapshotIdentity) -> Stri
 /// answers "what locally derived usdb-index state is durable on this node right now".
 pub fn build_local_state_commit(identity: &LocalStateCommitIdentity) -> String {
     let mut hasher = Sha256::new();
-    update_string_component(&mut hasher, LOCAL_STATE_COMMIT_VERSION);
+    update_string_component(&mut hasher, &identity.commit_protocol_version);
     update_string_component(&mut hasher, &identity.upstream_snapshot_id);
+    update_string_component(&mut hasher, &identity.active_version_set_id);
     hasher.update(identity.local_synced_block_height.to_be_bytes());
 
     update_optional_marker(&mut hasher, identity.latest_pass_block_commit.is_some());
@@ -418,12 +434,10 @@ pub fn build_local_state_commit(identity: &LocalStateCommitIdentity) -> String {
         hasher.update(snapshot.total_balance.to_be_bytes());
         hasher.update(snapshot.active_address_count.to_be_bytes());
     }
-
-    update_string_component(&mut hasher, &identity.usdb_index_protocol_version);
     encode_hex(&hasher.finalize())
 }
 
-/// Builds the canonical BTC-side system-state id consumed by downstream users such as ETHW.
+/// Builds the canonical BTC-side system-state id consumed by USDB-chain validators.
 ///
 /// This intentionally stays minimal: downstream systems only need one stable hash that binds
 /// together the adopted upstream snapshot and the current local durable state derived from it.
@@ -476,8 +490,6 @@ mod tests {
             stable_lag: 0,
             balance_history_api_version: "1.0.0".to_string(),
             balance_history_semantics_version: "balance-snapshot-at-or-before:v1".to_string(),
-            usdb_index_formula_version: "pass-energy-formula:v1".to_string(),
-            usdb_index_protocol_version: "1.0.0".to_string(),
         };
 
         let a = build_consensus_snapshot_id(&identity);
@@ -489,7 +501,9 @@ mod tests {
     #[test]
     fn test_build_local_state_commit_changes_with_component_changes() {
         let base = LocalStateCommitIdentity {
+            commit_protocol_version: crate::COMMIT_PROTOCOL_VERSION_V1.to_string(),
             upstream_snapshot_id: "11".repeat(32),
+            active_version_set_id: "33".repeat(32),
             local_synced_block_height: 123,
             latest_pass_block_commit: Some(LocalStatePassCommitIdentity {
                 block_height: 120,
@@ -502,7 +516,6 @@ mod tests {
                 total_balance: 5_000,
                 active_address_count: 2,
             }),
-            usdb_index_protocol_version: "1.0.0".to_string(),
         };
 
         let mut changed = base.clone();
@@ -517,6 +530,10 @@ mod tests {
         assert_eq!(base_commit.len(), 64);
         assert_eq!(changed_commit.len(), 64);
         assert_ne!(base_commit, changed_commit);
+
+        changed = base.clone();
+        changed.active_version_set_id = "44".repeat(32);
+        assert_ne!(base_commit, build_local_state_commit(&changed));
     }
 
     #[test]
@@ -601,20 +618,32 @@ mod tests {
             "VIEW_VERSION_MISMATCH"
         );
         assert_eq!(
-            ConsensusRpcErrorCode::ProtocolVersionMismatch.code(),
-            CONSENSUS_RPC_ERR_PROTOCOL_VERSION_MISMATCH
-        );
-        assert_eq!(
-            ConsensusRpcErrorCode::ProtocolVersionMismatch.as_str(),
-            "PROTOCOL_VERSION_MISMATCH"
-        );
-        assert_eq!(
             ConsensusRpcErrorCode::FormulaVersionMismatch.code(),
             CONSENSUS_RPC_ERR_FORMULA_VERSION_MISMATCH
         );
         assert_eq!(
             ConsensusRpcErrorCode::FormulaVersionMismatch.as_str(),
             "FORMULA_VERSION_MISMATCH"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ActivationRecordNotFound.code(),
+            CONSENSUS_RPC_ERR_ACTIVATION_RECORD_NOT_FOUND
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ActivationRecordConflict.as_str(),
+            "ACTIVATION_RECORD_CONFLICT"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::VersionNotSupported.as_str(),
+            "VERSION_NOT_SUPPORTED"
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::ActiveVersionSetMismatch.code(),
+            CONSENSUS_RPC_ERR_ACTIVE_VERSION_SET_MISMATCH
+        );
+        assert_eq!(
+            ConsensusRpcErrorCode::CommitProtocolVersionMismatch.as_str(),
+            "COMMIT_PROTOCOL_VERSION_MISMATCH"
         );
     }
 
@@ -633,13 +662,13 @@ mod tests {
     #[test]
     fn test_consensus_rpc_error_data_new_sets_service() {
         let data = ConsensusRpcErrorData::new("balance-history")
-            .with_mismatch_field("usdb_index_formula_version");
+            .with_mismatch_field("active_version_set_id");
         assert_eq!(data.service, "balance-history");
         assert!(data.expected_state.is_empty());
         assert!(data.actual_state.is_empty());
         assert_eq!(
             data.mismatch_field.as_deref(),
-            Some("usdb_index_formula_version")
+            Some("active_version_set_id")
         );
     }
 }

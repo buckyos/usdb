@@ -18,7 +18,7 @@ Usage:
 
 This helper starts the ETHW-aligned local world-sim profile. It shares the same
 compose project and env file as run_local_world_sim.sh, but includes ethw-node
-and enables ETHW protocol alignment by default.
+and enables USDB-chain protocol alignment by default.
 
 Options for up:
   --foreground  Follow compose logs after startup diagnostics succeed.

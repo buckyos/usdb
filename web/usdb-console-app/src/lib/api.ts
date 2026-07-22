@@ -6,7 +6,7 @@ import type {
   BtcMintPrepareRequest,
   BtcWorldSimDevSignerResponse,
   BtcWorldSimIdentitiesResponse,
-  EthwAddressStatusResponse,
+  UsdbChainAddressStatusResponse,
   OverviewResponse,
   PassBlockCommitInfo,
   PassEnergyLeaderboardPage,
@@ -15,7 +15,7 @@ import type {
   PassHistoryPage,
   BtcMintPrepareResponse,
   PassSnapshot,
-  EthwDevIdentityResponse,
+  UsdbChainDevIdentityResponse,
   PassStatsAtHeight,
   RpcActiveBalanceSnapshot,
   UsdbIndexerSyncStatus,
@@ -269,30 +269,30 @@ export async function fetchBtcWorldSimDevSigner(
   return response.json() as Promise<BtcWorldSimDevSignerResponse>
 }
 
-export async function fetchEthwDevIdentity(): Promise<EthwDevIdentityResponse> {
-  const response = await fetch('/api/ethw/dev-sim/identity', {
+export async function fetchUsdbChainDevIdentity(): Promise<UsdbChainDevIdentityResponse> {
+  const response = await fetch('/api/usdb-chain/dev-sim/identity', {
     cache: 'no-store',
   })
 
   if (!response.ok) {
-    throw new Error(`Failed to load ETHW dev identity: HTTP ${response.status}`)
+    throw new Error(`Failed to load USDB dev identity: HTTP ${response.status}`)
   }
 
-  return response.json() as Promise<EthwDevIdentityResponse>
+  return response.json() as Promise<UsdbChainDevIdentityResponse>
 }
 
-export async function fetchEthwAddressStatus(
+export async function fetchUsdbChainAddressStatus(
   address: string,
-): Promise<EthwAddressStatusResponse> {
+): Promise<UsdbChainAddressStatusResponse> {
   const search = new URLSearchParams({ address })
-  const response = await fetch(`/api/ethw/address-status?${search.toString()}`, {
+  const response = await fetch(`/api/usdb-chain/address-status?${search.toString()}`, {
     cache: 'no-store',
   })
 
   if (!response.ok) {
     const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
-    throw new Error(errorPayload?.error ?? `Failed to load ETHW address status: HTTP ${response.status}`)
+    throw new Error(errorPayload?.error ?? `Failed to load USDB-chain address status: HTTP ${response.status}`)
   }
 
-  return response.json() as Promise<EthwAddressStatusResponse>
+  return response.json() as Promise<UsdbChainAddressStatusResponse>
 }

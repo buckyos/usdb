@@ -5,8 +5,8 @@ Balance History Explorer 的 React/Vite 版本。
 ## 功能
 
 - 查看 balance-history RPC 的网络、同步高度、同步阶段和延迟。
-- 查询单个 `USDBScriptHash` 的余额历史，并展示余额趋势和 delta 分布。
-- 批量查询多个 `USDBScriptHash`，汇总最新余额和区间净变化。
+- 查询单个 `BtcScriptHash` 的余额历史，并展示余额趋势和 delta 分布。
+- 批量查询多个 `BtcScriptHash`，汇总最新余额和区间净变化。
 - 支持 English / 简体中文，并通过 `lang` URL 参数和 localStorage 记忆语言。
 
 ## 本地开发

@@ -363,14 +363,14 @@ usdb-index 已经具备：
 - stable_lag：固定 lag N。
 - balance_history_api_version：balance-history 对外协议版本。
 - balance_history_semantics_version：balance-history 查询语义版本。
-- usdb_index_formula_version：usdb-index 派生公式版本。
-- usdb_index_protocol_version：usdb-index 对外协议版本。
 
 建议 snapshot_id 的生成规则也在 Phase 0 一起冻结，例如：
 
 - 对上述字段按固定顺序做 canonical serialization。
 - 再计算单一哈希作为 snapshot_id。
 - 所有服务只接受这一种生成规则，避免不同实现序列化差异导致同字段不同 id。
+
+UIP-0008 后续收敛：`snapshot_id` 保持为纯 balance-history identity；USDB 公式与状态机版本通过 `active_version_set_id` 由 `local_state_commit` / `system_state_id` 承诺，不再写入 upstream snapshot。
 
 #### P0-3. exact-height 与 at-or-before 的语义边界
 

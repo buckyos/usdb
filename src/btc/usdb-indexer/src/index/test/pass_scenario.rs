@@ -18,18 +18,18 @@ use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 enum ScenarioOp {
     Mint {
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         height: u32,
         prev: Vec<InscriptionId>,
     },
     Transfer {
         inscription_id: InscriptionId,
-        new_owner: USDBScriptHash,
+        new_owner: BtcScriptHash,
         height: u32,
         satpoint: SatPoint,
     },

@@ -41,7 +41,7 @@ bash src/btc/usdb-indexer/scripts/regtest_restart_multi_reorg_smoke.sh
 2. `BITCOIN_BIN_DIR`：Bitcoin Core 二进制目录。
 3. `BTC_RPC_PORT` / `BTC_P2P_PORT`：bitcoind 端口，默认 `32332 / 32333`。
 4. `BH_RPC_PORT`：balance-history RPC 端口，默认 `32310`。
-5. `USDB_RPC_PORT`：usdb-indexer RPC 端口，默认 `32320`。
+5. `USDB_INDEXER_RPC_PORT`：usdb-indexer RPC 端口，默认 `32320`。
 6. `TARGET_HEIGHT`：初始同步高度，默认 `40`。
 7. `REORG_ROUNDS`：重复 tip replacement 轮数，默认 `3`。
 8. `SYNC_TIMEOUT_SEC`：同步与 reorg 收敛超时，默认 `180`。

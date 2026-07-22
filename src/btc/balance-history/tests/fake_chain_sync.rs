@@ -11,7 +11,7 @@ use bitcoincore_rpc::bitcoin::{
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use usdb_util::ToUSDBScriptHash;
+use usdb_util::ToBtcScriptHash;
 
 #[derive(Clone)]
 struct FakeChain {
@@ -389,7 +389,7 @@ fn assert_balance(
     expected_delta: i64,
     expected_balance: u64,
 ) {
-    let script_hash = script_pubkey.to_usdb_script_hash();
+    let script_hash = script_pubkey.to_btc_script_hash();
     let actual = db
         .get_balance_at_block_height(&script_hash, height)
         .unwrap();
@@ -406,7 +406,7 @@ fn assert_empty_balance(
     script_pubkey: &ScriptBuf,
     height: u32,
 ) {
-    let script_hash = script_pubkey.to_usdb_script_hash();
+    let script_hash = script_pubkey.to_btc_script_hash();
     let actual = db
         .get_balance_at_block_height(&script_hash, height)
         .unwrap();
@@ -420,7 +420,7 @@ fn assert_registry(
     script_pubkey: &ScriptBuf,
     expected_present: bool,
 ) {
-    let script_hash = script_pubkey.to_usdb_script_hash();
+    let script_hash = script_pubkey.to_btc_script_hash();
     let actual = db.get_script_registry_entry(&script_hash).unwrap();
     assert_eq!(
         actual.is_some(),

@@ -16,7 +16,7 @@ WORLD_SIMULATOR="${WORLD_SIMULATOR:-$REPO_ROOT/src/btc/usdb-indexer/scripts/regt
 BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28130}"
 
 MINER_WALLET_NAME="${MINER_WALLET_NAME:-usdb-world-miner}"
@@ -111,7 +111,7 @@ print_failure_diagnostics() {
   DIAGNOSTIC_PRINTED=1
 
   log "Failure diagnostics: exit_code=${exit_code}, line=${line_no}, command=${command_text}"
-  log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_rpc_port=${USDB_RPC_PORT}"
+  log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_indexer_rpc_port=${USDB_INDEXER_RPC_PORT}"
 
   print_tail_if_exists "ord-server.log" "${WORK_DIR}/ord-server.log"
   print_tail_if_exists "balance-history.log" "${WORK_DIR}/balance-history.log"
@@ -327,7 +327,7 @@ cleanup() {
 
   if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+      -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1
     stop_process "$USDB_INDEXER_PID"
@@ -445,7 +445,7 @@ wait_until_usdb_synced() {
   start_ts="$(date +%s)"
   while true; do
     resp="$(curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${USDB_RPC_PORT}" -H 'content-type: application/json' \
+      -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"get_synced_block_height","params":[]}' || true)"
     synced="$(echo "$resp" | python3 -c 'import json,sys
 try:
@@ -457,7 +457,7 @@ res = d.get("result")
 print(int(res) if res is not None else 0)
 ' 2>/dev/null || true)"
     synced="${synced:-0}"
-    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_RPC_PORT}" 2>/dev/null || echo 0)"
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" 2>/dev/null || echo 0)"
     if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       return
     fi
@@ -546,7 +546,7 @@ create_usdb_indexer_config() {
     "inscription_fixture_file": null,
     "inscription_source_shadow_compare": false,
     "inscription_source_shadow_fail_fast": false,
-    "rpc_server_port": ${USDB_RPC_PORT},
+    "rpc_server_port": ${USDB_INDEXER_RPC_PORT},
     "rpc_server_enabled": true,
     "monitor_ord_enabled": false
   }
@@ -658,7 +658,7 @@ main() {
       --skip-process-lock
   ) >"${WORK_DIR}/usdb-indexer.log" 2>&1 &
   USDB_INDEXER_PID=$!
-  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
+  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
 
   local current_height
   current_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
@@ -728,7 +728,7 @@ main() {
     --agent-wallets "$agent_wallets_csv" \
     --agent-addresses "$agent_addresses_csv" \
     --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
-    --usdb-rpc-url "http://127.0.0.1:${USDB_RPC_PORT}" \
+    --usdb-indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
     --blocks "$SIM_BLOCKS" \
     --seed "$SIM_SEED" \

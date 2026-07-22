@@ -62,8 +62,8 @@ This table compares the runtime semantics instead of only listing services.
 | `run_local_runtime.sh` | `regtest` | `cookie` | long-running `ord-server` | local dev `geth` node, no bootstrap flow | none | no deterministic world-sim identity layer |
 | `run_local_world_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | not started | none | deterministic BTC ord wallets from `WORLD_SIM_IDENTITY_SEED` |
 | `run_local_world_sim_ethw.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | local dev `geth` node, protocol-aligned with world-sim | none | deterministic BTC ord wallets; optional ETHW deterministic alignment |
-| `run_local_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local ETHW chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and ETHW init inputs, not world-sim identities |
-| `run_local_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local ETHW chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and ETHW identity alignment |
+| `run_local_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local USDB chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and USDB-chain init inputs, not world-sim identities |
+| `run_local_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local USDB chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and USDB-chain identity alignment |
 
 Current status:
 

@@ -48,8 +48,12 @@
 - `STATE_NOT_RETAINED`
 - `HISTORY_NOT_AVAILABLE`
 - `VIEW_VERSION_MISMATCH`
-- `PROTOCOL_VERSION_MISMATCH`
 - `FORMULA_VERSION_MISMATCH`
+- `ACTIVATION_RECORD_NOT_FOUND`
+- `ACTIVATION_RECORD_CONFLICT`
+- `VERSION_NOT_SUPPORTED`
+- `ACTIVE_VERSION_SET_MISMATCH`
+- `COMMIT_PROTOCOL_VERSION_MISMATCH`
 
 其中：
 
@@ -69,7 +73,7 @@
 
 ## 3. 共享错误码区间
 
-当前统一放在 `-32040..-32052`：
+当前统一放在 `-32040..-32057`；已删除的旧 `PROTOCOL_VERSION_MISMATCH` 码位 `-32051` 不复用：
 
 | Name | Code | 含义 |
 | --- | ---: | --- |
@@ -84,8 +88,12 @@
 | `STATE_NOT_RETAINED` | `-32048` | 查询高度已落到该节点明确的历史保留窗口之外 |
 | `HISTORY_NOT_AVAILABLE` | `-32049` | 查询高度合法，但该节点当前无法重建所需历史状态 |
 | `VIEW_VERSION_MISMATCH` | `-32050` | UIP economic view 请求/响应契约版本不受支持 |
-| `PROTOCOL_VERSION_MISMATCH` | `-32051` | usdb-index protocol version 与目标历史 identity 不一致 |
-| `FORMULA_VERSION_MISMATCH` | `-32052` | usdb-index formula version 与目标历史 identity 不一致 |
+| `FORMULA_VERSION_MISMATCH` | `-32052` | active set identity 正确，但其中的 formula member 不受当前实现支持 |
+| `ACTIVATION_RECORD_NOT_FOUND` | `-32053` | 目标 chain context 没有覆盖它的 Active record |
+| `ACTIVATION_RECORD_CONFLICT` | `-32054` | registry/schema/同高记录冲突，无法确定唯一版本 |
+| `VERSION_NOT_SUPPORTED` | `-32055` | 已激活的非 formula version family 不受当前实现支持 |
+| `ACTIVE_VERSION_SET_MISMATCH` | `-32056` | 调用方 pin 的 registry/set identity 与目标历史 context 不一致 |
+| `COMMIT_PROTOCOL_VERSION_MISMATCH` | `-32057` | active commit protocol 不受本地 state commit encoder 支持 |
 
 ## 4. 共享请求上下文
 
@@ -104,8 +112,8 @@
 - `stable_block_hash`
 - `balance_history_api_version`
 - `balance_history_semantics_version`
-- `usdb_index_protocol_version`
-- `usdb_index_formula_version`
+- `activation_registry_id`
+- `active_version_set_id`
 - `local_state_commit`
 - `system_state_id`
 
@@ -181,7 +189,7 @@
 
 - `SNAPSHOT_NOT_READY`
   - 当前根本还不应该被下游消费
-- `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
+- `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / ACTIVE_VERSION_SET_MISMATCH / FORMULA_VERSION_MISMATCH`
   - 服务已经 ready，但和调用方 pin 的预期不一致
 
 ### 6.3 已区分“无法重建历史状态”与“历史状态不匹配”
@@ -305,10 +313,11 @@
   - `get_state_ref_at_height` 成功路径
   - future height -> `HEIGHT_NOT_SYNCED`
   - 缺 block commit -> `HISTORY_NOT_AVAILABLE`
-  - `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
+  - `SNAPSHOT_ID_MISMATCH / BLOCK_HASH_MISMATCH / VERSION_MISMATCH`
+  - 未列出网络与不支持 semantics 在写入前 fail closed
 - `usdb-indexer`
   - `get_state_ref_at_height` 成功路径
-  - `SNAPSHOT_ID_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH / VERSION_MISMATCH / PROTOCOL_VERSION_MISMATCH / FORMULA_VERSION_MISMATCH`
+  - `SNAPSHOT_ID_MISMATCH / LOCAL_STATE_COMMIT_MISMATCH / SYSTEM_STATE_ID_MISMATCH / VERSION_MISMATCH / ACTIVE_VERSION_SET_MISMATCH / FORMULA_VERSION_MISMATCH`
   - `get_pass_snapshot(context=...)`
   - `get_pass_energy(context=...)`
   - `STATE_NOT_RETAINED`

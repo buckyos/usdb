@@ -56,7 +56,7 @@ bash src/btc/usdb-indexer/scripts/regtest_live_ord_multi_block_reorg.sh
 4. `BTC_RPC_PORT` / `BTC_P2P_PORT`：bitcoind 端口，默认 `29732 / 29733`。
 5. `ORD_RPC_PORT`：ord HTTP 端口，默认 `29730`。
 6. `BH_RPC_PORT`：balance-history RPC 端口，默认 `29710`。
-7. `USDB_RPC_PORT`：usdb-indexer RPC 端口，默认 `29720`。
+7. `USDB_INDEXER_RPC_PORT`：usdb-indexer RPC 端口，默认 `29720`。
 8. `PREMINE_BLOCKS`：预挖矿块数，默认 `130`。
 9. `INSCRIBE_CONFIRM_BLOCKS`：首个 mint 的确认块数，默认 `2`。
 10. `TRANSFER_CONFIRM_BLOCKS` / `REMINT_CONFIRM_BLOCKS`：transfer 和 remint 的确认块数，默认都为 `1`。

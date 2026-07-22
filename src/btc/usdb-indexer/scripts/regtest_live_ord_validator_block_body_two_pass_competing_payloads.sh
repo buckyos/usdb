@@ -13,7 +13,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-29912}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-29913}"
 BH_RPC_PORT="${BH_RPC_PORT:-29910}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-29920}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-29920}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-29930}"
 WALLET_NAME="${WALLET_NAME:-usdbvalidatortwopasscompeting}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-validator-two-pass-competing-a}"
@@ -67,7 +67,7 @@ build_payload_context_with_requested_height() {
   local payload_file="$1"
   local requested_height="$2"
   local snapshot_id stable_block_hash local_state_commit system_state_id
-  local api_version semantics_version protocol_version formula_version
+  local api_version semantics_version activation_registry_id active_version_set_id
 
   snapshot_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['snapshot_id']")"
   stable_block_hash="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['stable_block_hash']")"
@@ -75,10 +75,10 @@ build_payload_context_with_requested_height() {
   system_state_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['system_state_id']")"
   api_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['balance_history_api_version']")"
   semantics_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['balance_history_semantics_version']")"
-  protocol_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['usdb_index_protocol_version']")"
-  formula_version="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['usdb_index_formula_version']")"
+  activation_registry_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['activation_registry_id']")"
+  active_version_set_id="$(regtest_validator_payload_expr "$payload_file" "data['external_state']['active_version_set_id']")"
 
-  python3 - "$requested_height" "$snapshot_id" "$stable_block_hash" "$local_state_commit" "$system_state_id" "$api_version" "$semantics_version" "$protocol_version" "$formula_version" <<'PY'
+  python3 - "$requested_height" "$snapshot_id" "$stable_block_hash" "$local_state_commit" "$system_state_id" "$api_version" "$semantics_version" "$activation_registry_id" "$active_version_set_id" <<'PY'
 import json
 import sys
 
@@ -92,8 +92,8 @@ print(json.dumps({
         "system_state_id": sys.argv[5],
         "balance_history_api_version": sys.argv[6],
         "balance_history_semantics_version": sys.argv[7],
-        "usdb_index_protocol_version": sys.argv[8],
-        "usdb_index_formula_version": sys.argv[9],
+        "activation_registry_id": sys.argv[8],
+        "active_version_set_id": sys.argv[9],
     },
 }))
 PY

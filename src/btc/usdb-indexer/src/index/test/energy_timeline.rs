@@ -14,14 +14,14 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 struct TimelineBalanceProvider {
-    timelines: HashMap<USDBScriptHash, Vec<AddressBalance>>,
+    timelines: HashMap<BtcScriptHash, Vec<AddressBalance>>,
 }
 
 impl TimelineBalanceProvider {
-    fn new(timelines: HashMap<USDBScriptHash, Vec<AddressBalance>>) -> Self {
+    fn new(timelines: HashMap<BtcScriptHash, Vec<AddressBalance>>) -> Self {
         let mut normalized = HashMap::new();
         for (address, mut points) in timelines {
             points.sort_unstable_by_key(|v| v.block_height);
@@ -37,7 +37,7 @@ impl TimelineBalanceProvider {
 impl BalanceProvider for TimelineBalanceProvider {
     fn get_balance_at_height<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_height: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>> {
         Box::pin(async move {
@@ -59,7 +59,7 @@ impl BalanceProvider for TimelineBalanceProvider {
 
     fn get_balance_at_range<'a>(
         &'a self,
-        address: USDBScriptHash,
+        address: BtcScriptHash,
         block_range: Range<u32>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<AddressBalance>, String>> + Send + 'a>> {
         Box::pin(async move {
@@ -129,7 +129,7 @@ fn expected_energy_by_formula(
 
 async fn setup_manager_with_timeline(
     test_name: &str,
-    owner: USDBScriptHash,
+    owner: BtcScriptHash,
     timeline_points: Vec<AddressBalance>,
     initial_height: u32,
     inherited_energy: Energy,

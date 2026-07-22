@@ -3,6 +3,7 @@ use super::{
     COMMIT_HASH_ALGO, COMMIT_PROTOCOL_VERSION,
     build_consensus_snapshot_identity as shared_build_consensus_snapshot_identity,
     build_historical_state_ref_at_height, encode_commit_hex as encode_hex,
+    resolve_balance_history_active_versions, resolve_balance_history_semantics_version,
 };
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
@@ -16,10 +17,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 use usdb_util::{
-    BALANCE_HISTORY_SERVICE_NAME, BalanceHistoryData, CONSENSUS_SNAPSHOT_ID_HASH_ALGO,
-    CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext, ConsensusRpcErrorCode,
-    ConsensusRpcErrorData, ConsensusSnapshotIdentity, ConsensusStateReference,
-    build_consensus_snapshot_id,
+    ActivationRegistryError, BALANCE_HISTORY_SERVICE_NAME, BalanceHistoryData,
+    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext,
+    ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusSnapshotIdentity,
+    ConsensusStateReference, build_consensus_snapshot_id,
 };
 
 const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
@@ -71,6 +72,14 @@ impl BalanceHistoryRpcServer {
                 log::error!("{}", msg);
                 msg
             })?;
+
+        let stable_height = db.get_btc_block_height()?;
+        resolve_balance_history_active_versions(&config, stable_height).map_err(|error| {
+            format!(
+                "Unsupported balance-history activation at BTC height {}: {}",
+                stable_height, error
+            )
+        })?;
 
         let ret = Self::new(config.clone(), addr, status, db, shutdown_tx.clone());
 
@@ -151,9 +160,33 @@ impl BalanceHistoryRpcServer {
         }
     }
 
+    fn to_activation_error(&self, block_height: u32, error: ActivationRegistryError) -> JsonError {
+        let code = match &error {
+            ActivationRegistryError::ActivationRecordNotFound(_) => {
+                ConsensusRpcErrorCode::ActivationRecordNotFound
+            }
+            ActivationRegistryError::VersionNotSupported { .. } => {
+                ConsensusRpcErrorCode::VersionNotSupported
+            }
+            ActivationRegistryError::ActivationRecordConflict(_)
+            | ActivationRegistryError::Parse(_)
+            | ActivationRegistryError::UnsupportedSchemaVersion(_)
+            | ActivationRegistryError::InvalidRecord(_) => {
+                ConsensusRpcErrorCode::ActivationRecordConflict
+            }
+        };
+        let mut data = ConsensusRpcErrorData::new(BALANCE_HISTORY_SERVICE_NAME);
+        data.requested_height = Some(block_height);
+        data.upstream_stable_height = self.db.get_btc_block_height().ok();
+        data.detail = Some(error.to_string());
+        Self::to_consensus_error(code, data)
+    }
+
     fn build_snapshot_info(&self) -> Result<SnapshotInfo, String> {
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
+        let semantics_version =
+            resolve_balance_history_semantics_version(&self.config, stable_height)?;
 
         Ok(SnapshotInfo {
             stable_height,
@@ -165,7 +198,7 @@ impl BalanceHistoryRpcServer {
                 .map(|entry| encode_hex(&entry.block_commit)),
             stable_lag: BALANCE_HISTORY_STABLE_LAG,
             balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
-            balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
+            balance_history_semantics_version: semantics_version,
             commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
             commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
         })
@@ -175,7 +208,7 @@ impl BalanceHistoryRpcServer {
         &self,
         stable_height: u32,
         stable_block_hash: &str,
-    ) -> ConsensusSnapshotIdentity {
+    ) -> Result<ConsensusSnapshotIdentity, String> {
         shared_build_consensus_snapshot_identity(&self.config, stable_height, stable_block_hash)
     }
 
@@ -184,6 +217,8 @@ impl BalanceHistoryRpcServer {
         block_height: u32,
     ) -> Result<HistoricalSnapshotStateRef, JsonError> {
         self.validate_requested_height(block_height)?;
+        resolve_balance_history_active_versions(&self.config, block_height)
+            .map_err(|error| self.to_activation_error(block_height, error))?;
 
         build_historical_state_ref_at_height(&self.config, &self.db, block_height)
             .map_err(|e| {
@@ -395,50 +430,6 @@ impl BalanceHistoryRpcServer {
             ));
         }
 
-        if let Some(expected_usdb_protocol_version) =
-            expected_state.usdb_index_protocol_version.as_ref()
-            && expected_usdb_protocol_version
-                != &state_ref.consensus_identity.usdb_index_protocol_version
-        {
-            return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::ProtocolVersionMismatch,
-                self.build_consensus_error_data_for_state(
-                    Some(block_height),
-                    expected_state.clone(),
-                    actual_state,
-                    Some(format!(
-                        "Expected usdb-index protocol version {} at height {}, got {}",
-                        expected_usdb_protocol_version,
-                        block_height,
-                        state_ref.consensus_identity.usdb_index_protocol_version
-                    )),
-                )
-                .with_mismatch_field("usdb_index_protocol_version"),
-            ));
-        }
-
-        if let Some(expected_usdb_formula_version) =
-            expected_state.usdb_index_formula_version.as_ref()
-            && expected_usdb_formula_version
-                != &state_ref.consensus_identity.usdb_index_formula_version
-        {
-            return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::FormulaVersionMismatch,
-                self.build_consensus_error_data_for_state(
-                    Some(block_height),
-                    expected_state.clone(),
-                    actual_state,
-                    Some(format!(
-                        "Expected usdb-index formula version {} at height {}, got {}",
-                        expected_usdb_formula_version,
-                        block_height,
-                        state_ref.consensus_identity.usdb_index_formula_version
-                    )),
-                )
-                .with_mismatch_field("usdb_index_formula_version"),
-            ));
-        }
-
         Ok(())
     }
 
@@ -578,7 +569,7 @@ impl BalanceHistoryRpcServer {
 
     fn get_balance_before_range(
         &self,
-        script_hash: &usdb_util::USDBScriptHash,
+        script_hash: &usdb_util::BtcScriptHash,
         range_start: u32,
     ) -> Result<BalanceHistoryData, JsonError> {
         if range_start == 0 {
@@ -601,7 +592,7 @@ impl BalanceHistoryRpcServer {
 
     fn get_balance_at_range_end(
         &self,
-        script_hash: &usdb_util::USDBScriptHash,
+        script_hash: &usdb_util::BtcScriptHash,
         range_end: u32,
     ) -> Result<BalanceHistoryData, JsonError> {
         self.db
@@ -616,7 +607,7 @@ impl BalanceHistoryRpcServer {
 
     fn get_range_balance_rows(
         &self,
-        script_hash: &usdb_util::USDBScriptHash,
+        script_hash: &usdb_util::BtcScriptHash,
         range: &std::ops::Range<u32>,
     ) -> Result<Vec<BalanceHistoryData>, JsonError> {
         self.db
@@ -631,7 +622,7 @@ impl BalanceHistoryRpcServer {
 
     fn build_address_balance_summary(
         &self,
-        script_hash: &usdb_util::USDBScriptHash,
+        script_hash: &usdb_util::BtcScriptHash,
         range: &std::ops::Range<u32>,
         rows: &[BalanceHistoryData],
     ) -> Result<AddressBalanceSummary, JsonError> {
@@ -1271,8 +1262,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
-        BALANCE_HISTORY_SERVICE_NAME, ConsensusQueryContext, ConsensusRpcErrorCode,
-        ConsensusRpcErrorData, ConsensusStateReference, ToUSDBScriptHash, USDBScriptHash,
+        BALANCE_HISTORY_SERVICE_NAME, BtcScriptHash, ConsensusQueryContext, ConsensusRpcErrorCode,
+        ConsensusRpcErrorData, ConsensusStateReference, ToBtcScriptHash,
     };
 
     fn make_test_server(tag: &str) -> BalanceHistoryRpcServer {
@@ -1301,8 +1292,8 @@ mod tests {
         )
     }
 
-    fn make_script_hash(byte: u8) -> USDBScriptHash {
-        USDBScriptHash::from_byte_array([byte; 32])
+    fn make_script_hash(byte: u8) -> BtcScriptHash {
+        BtcScriptHash::from_byte_array([byte; 32])
     }
 
     fn seed_balance_entries(server: &BalanceHistoryRpcServer, entries: &[BalanceHistoryEntry]) {
@@ -1516,6 +1507,7 @@ mod tests {
             Some(build_consensus_snapshot_id(
                 &server
                     .build_consensus_snapshot_identity(12, &format!("{:x}", commit.btc_block_hash))
+                    .unwrap()
             ))
         );
     }
@@ -1592,7 +1584,9 @@ mod tests {
         assert_eq!(
             data.actual_state.snapshot_id,
             Some(build_consensus_snapshot_id(
-                &server.build_consensus_snapshot_identity(12, &"09".repeat(32))
+                &server
+                    .build_consensus_snapshot_identity(12, &"09".repeat(32))
+                    .unwrap()
             ))
         );
     }
@@ -1671,56 +1665,20 @@ mod tests {
     }
 
     #[test]
-    fn test_get_state_ref_at_height_distinguishes_protocol_and_formula_mismatch() {
-        let server = make_test_server("state_ref_at_height_usdb_version_mismatch");
+    fn test_get_state_ref_at_height_does_not_claim_indexer_activation_identity() {
+        let server = make_test_server("state_ref_at_height_has_pure_upstream_identity");
         seed_stable_commit(&server, 12, 9);
 
-        let cases = [
-            (
-                ConsensusStateReference {
-                    usdb_index_protocol_version: Some("usdb-protocol:v999".to_string()),
-                    ..Default::default()
-                },
-                ConsensusRpcErrorCode::ProtocolVersionMismatch,
-                "usdb_index_protocol_version",
-            ),
-            (
-                ConsensusStateReference {
-                    usdb_index_formula_version: Some("pass-energy-formula:v999".to_string()),
-                    ..Default::default()
-                },
-                ConsensusRpcErrorCode::FormulaVersionMismatch,
-                "usdb_index_formula_version",
-            ),
-        ];
+        let state_ref = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 12,
+                context: None,
+            })
+            .unwrap();
+        let consensus_ref = ConsensusStateReference::from(&state_ref);
 
-        for (expected_state, expected_code, mismatch_field) in cases {
-            let err = server
-                .get_state_ref_at_height(GetStateRefAtHeightParams {
-                    block_height: 12,
-                    context: Some(ConsensusQueryContext {
-                        requested_height: Some(12),
-                        expected_state,
-                    }),
-                })
-                .unwrap_err();
-
-            match err.code {
-                JsonErrorCode::ServerError(code) => assert_eq!(code, expected_code.code()),
-                _ => panic!("unexpected error code: {:?}", err.code),
-            }
-            assert_eq!(err.message, expected_code.as_str());
-            let data = decode_consensus_error_data(&err);
-            assert_eq!(data.mismatch_field.as_deref(), Some(mismatch_field));
-            assert_eq!(
-                data.actual_state.usdb_index_protocol_version.as_deref(),
-                Some(usdb_util::USDB_INDEX_PROTOCOL_VERSION)
-            );
-            assert_eq!(
-                data.actual_state.usdb_index_formula_version.as_deref(),
-                Some(usdb_util::USDB_INDEX_FORMULA_VERSION)
-            );
-        }
+        assert!(consensus_ref.activation_registry_id.is_none());
+        assert!(consensus_ref.active_version_set_id.is_none());
     }
 
     #[test]
@@ -2392,7 +2350,7 @@ mod tests {
             txid: Txid::from_slice(&[7u8; 32]).unwrap(),
             vout: 3,
         };
-        let script_hash = USDBScriptHash::from_byte_array([3u8; 32]);
+        let script_hash = BtcScriptHash::from_byte_array([3u8; 32]);
         server.db.put_utxo(&outpoint, &script_hash, 12345).unwrap();
 
         let loaded = server.get_live_utxo(outpoint).unwrap().unwrap();
@@ -2406,7 +2364,7 @@ mod tests {
     fn test_resolve_script_hashes_returns_addresses_and_missing_rows() {
         let server = make_test_server("resolve_script_hashes");
         let script = make_p2tr_script(9);
-        let script_hash = script.to_usdb_script_hash();
+        let script_hash = script.to_btc_script_hash();
         let missing_hash = make_script_hash(88);
         server
             .db
@@ -2451,7 +2409,7 @@ mod tests {
     fn test_resolve_script_hashes_handles_non_address_scripts_and_limits_batch_size() {
         let server = make_test_server("resolve_nonstandard");
         let script = ScriptBuf::from(vec![0x6a, 0x01, 0x00]);
-        let script_hash = script.to_usdb_script_hash();
+        let script_hash = script.to_btc_script_hash();
         server
             .db
             .put_script_registry_entries(&[ScriptRegistryEntry {

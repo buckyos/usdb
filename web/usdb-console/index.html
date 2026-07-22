@@ -13,7 +13,7 @@
             <div class="hero-copy">
                 <p class="eyebrow">USDB CONTROL CONSOLE</p>
                 <h1>System Overview</h1>
-                <p class="subtitle" data-i18n="hero.subtitle">View BTC, USDB, and ETHW service health, bootstrap artifacts, and operational entry points in one place.</p>
+                <p class="subtitle" data-i18n="hero.subtitle">View BTC-side USDB services and USDB-chain health, bootstrap artifacts, and operational entry points in one place.</p>
             </div>
             <div class="hero-actions">
                 <label class="locale-picker" for="locale-select">
@@ -42,8 +42,8 @@
                 <p id="metric-btc-height" class="value">-</p>
             </article>
             <article class="card metric">
-                <h2 data-i18n="metrics.ethwHeight">ETHW Block Height</h2>
-                <p id="metric-ethw-height" class="value">-</p>
+                <h2 data-i18n="metrics.usdbHeight">USDB Block Height</h2>
+                <p id="metric-usdb-height" class="value">-</p>
             </article>
         </section>
 
@@ -80,9 +80,9 @@
                     <div class="kv" data-field="details"></div>
                     <p class="error" data-field="error"></p>
                 </article>
-                <article class="service-card" id="service-ethw">
+                <article class="service-card" id="service-usdb-chain">
                     <div class="service-head">
-                        <h3>ETHW / Geth</h3>
+                        <h3>USDB Chain / Geth</h3>
                         <span class="pill" data-kind="state">-</span>
                     </div>
                     <p class="rpc-url" data-field="rpc-url">-</p>
@@ -115,12 +115,12 @@
 
             <article class="card">
                 <div class="card-head">
-                    <h2 data-i18n="sections.ethwInitMarker">ETHW Init Marker</h2>
-                    <span id="ethw-marker-state" class="pill" data-kind="file">-</span>
+                    <h2 data-i18n="sections.usdbInitMarker">USDB Init Marker</h2>
+                    <span id="usdb-init-marker-state" class="pill" data-kind="file">-</span>
                 </div>
-                <p id="ethw-marker-path" class="path">-</p>
-                <div id="ethw-marker-details" class="detail-grid"></div>
-                <p id="ethw-marker-error" class="error"></p>
+                <p id="usdb-init-marker-path" class="path">-</p>
+                <div id="usdb-init-marker-details" class="detail-grid"></div>
+                <p id="usdb-init-marker-error" class="error"></p>
             </article>
         </section>
 

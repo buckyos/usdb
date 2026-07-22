@@ -3,7 +3,7 @@ use bitcoincore_rpc::bitcoin::{Amount, Txid};
 use ord::InscriptionId;
 use ordinals::SatPoint;
 use std::str::FromStr;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InscriptionOperation {
@@ -45,7 +45,7 @@ pub struct InscriptionNewItem {
     pub inscription_number: i32,
     pub block_height: u32,
     pub timestamp: u32,
-    pub address: USDBScriptHash, // The creator address
+    pub address: BtcScriptHash, // The creator address
     pub satpoint: SatPoint,
     pub value: Amount,
 
@@ -71,8 +71,8 @@ pub struct InscriptionTransferItem {
     pub satpoint: SatPoint,
 
     // When transfer, to_address is None means burn as fee
-    pub from_address: USDBScriptHash,
-    pub to_address: Option<USDBScriptHash>,
+    pub from_address: BtcScriptHash,
+    pub to_address: Option<BtcScriptHash>,
 }
 
 impl InscriptionTransferItem {

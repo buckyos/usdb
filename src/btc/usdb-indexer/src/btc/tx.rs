@@ -1,7 +1,7 @@
 use super::utxo::UTXOValueManager;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint, Transaction, Txid};
 use ordinals::SatPoint;
-use usdb_util::{ToUSDBScriptHash, USDBScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
 pub struct TxItem {
     pub txid: Txid,
@@ -11,7 +11,7 @@ pub struct TxItem {
 pub struct SatPointResult {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<USDBScriptHash>, // If address is None, it means the satpoint is spent as fee
+    pub address: Option<BtcScriptHash>, // If address is None, it means the satpoint is spent as fee
 }
 
 impl TxItem {
@@ -63,7 +63,7 @@ impl TxItem {
                     offset,
                 };
 
-                let address = vout_item.script_pubkey.to_usdb_script_hash();
+                let address = vout_item.script_pubkey.to_btc_script_hash();
                 info!(
                     "Found ordinal {} -> {}, address: {}",
                     satpoint, point, address

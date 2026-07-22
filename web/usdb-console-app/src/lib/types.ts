@@ -77,7 +77,7 @@ export interface UsdbIndexerSummary {
   blockers?: string[]
 }
 
-export interface EthwSummary {
+export interface UsdbChainSummary {
   client_version?: string | null
   chain_id?: string | null
   network_id?: string | null
@@ -102,7 +102,7 @@ export interface ServicesSummary {
   btc_node: ServiceProbe<BtcNodeSummary>
   balance_history: ServiceProbe<BalanceHistorySummary>
   usdb_indexer: ServiceProbe<UsdbIndexerSummary>
-  ethw: ServiceProbe<EthwSummary>
+  usdb_chain: ServiceProbe<UsdbChainSummary>
   ord: ServiceProbe<OrdSummary>
 }
 
@@ -110,7 +110,7 @@ export interface CapabilitiesSummary {
   ord_available: boolean
   btc_console_mode: string
   btc_runtime_profile: string
-  ethw_runtime_profile: string
+  usdb_chain_runtime_profile: string
   usdb_economic_state_view: UsdbEconomicStateViewCapabilitySummary
 }
 
@@ -125,8 +125,8 @@ export interface UsdbEconomicStateViewCapabilitySummary {
 export interface BootstrapSummary {
   bootstrap_manifest: ArtifactSummary
   snapshot_marker: ArtifactSummary
-  ethw_init_marker: ArtifactSummary
-  ethw_genesis: ArtifactSummary
+  usdb_init_marker: ArtifactSummary
+  usdb_genesis: ArtifactSummary
   sourcedao_bootstrap_state: ArtifactSummary
   sourcedao_bootstrap_marker: ArtifactSummary
   steps: BootstrapStepSummary[]
@@ -432,7 +432,7 @@ export interface BtcWorldSimIdentity {
   agent_id: number
   wallet_name: string
   owner_address: string
-  is_usdb_miner_aligned: boolean
+  is_usdb_chain_miner_aligned: boolean
 }
 
 export interface BtcWorldSimIdentitiesResponse {
@@ -454,10 +454,10 @@ export interface BtcWorldSimDevSignerResponse {
   error?: string | null
 }
 
-export interface EthwDevIdentityResponse {
-  ethw_chain_id?: string | null
-  ethw_network_id?: string | null
-  ethw_runtime_profile: string
+export interface UsdbChainDevIdentityResponse {
+  usdb_chain_id?: string | null
+  usdb_network_id?: string | null
+  usdb_chain_runtime_profile: string
   available: boolean
   marker_path: string
   address?: string | null
@@ -467,12 +467,12 @@ export interface EthwDevIdentityResponse {
   error?: string | null
 }
 
-export interface EthwAddressStatusResponse {
-  ethw_chain_id?: string | null
-  ethw_network_id?: string | null
-  ethw_runtime_profile: string
+export interface UsdbChainAddressStatusResponse {
+  usdb_chain_id?: string | null
+  usdb_network_id?: string | null
+  usdb_chain_runtime_profile: string
   address: string
-  balance_wei?: string | null
+  balance_atoms_hex?: string | null
   latest_block_number?: string | null
   available: boolean
   error?: string | null

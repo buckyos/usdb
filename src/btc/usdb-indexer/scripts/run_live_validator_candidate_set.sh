@@ -15,7 +15,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-28332}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-28333}"
 BH_RPC_PORT="${BH_RPC_PORT:-28310}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28320}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28320}"
 ORD_SERVER_PORT="${ORD_SERVER_PORT:-28330}"
 
 AGENT_COUNT="${AGENT_COUNT:-120}"
@@ -78,7 +78,7 @@ main() {
   fi
 
   log "Starting validator candidate-set soak with AGENT_COUNT=${AGENT_COUNT}, SIM_BLOCKS=${SIM_BLOCKS}, sample_interval=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}"
-  log "USDB RPC endpoint: http://127.0.0.1:${USDB_RPC_PORT}"
+  log "usdb-indexer RPC endpoint: http://127.0.0.1:${USDB_INDEXER_RPC_PORT}"
   log "Report file: ${SIM_REPORT_FILE}"
 
   exec env \
@@ -90,7 +90,7 @@ main() {
     BTC_RPC_PORT="${BTC_RPC_PORT}" \
     BTC_P2P_PORT="${BTC_P2P_PORT}" \
     BH_RPC_PORT="${BH_RPC_PORT}" \
-    USDB_RPC_PORT="${USDB_RPC_PORT}" \
+    USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT}" \
     ORD_SERVER_PORT="${ORD_SERVER_PORT}" \
     AGENT_COUNT="${AGENT_COUNT}" \
     PREMINE_BLOCKS="${PREMINE_BLOCKS}" \

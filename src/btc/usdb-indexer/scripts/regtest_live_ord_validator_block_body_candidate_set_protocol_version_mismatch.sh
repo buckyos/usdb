@@ -13,7 +13,7 @@ ORD_BIN="${ORD_BIN:-/home/bucky/ord/target/release/ord}"
 BTC_RPC_PORT="${BTC_RPC_PORT:-30432}"
 BTC_P2P_PORT="${BTC_P2P_PORT:-30433}"
 BH_RPC_PORT="${BH_RPC_PORT:-30410}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-30420}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-30420}"
 ORD_RPC_PORT="${ORD_RPC_PORT:-30430}"
 WALLET_NAME="${WALLET_NAME:-usdbvalidatorcandidatesetprotocolmismatch}"
 ORD_WALLET_NAME="${ORD_WALLET_NAME:-ord-validator-candidate-set-protocol-a}"
@@ -109,9 +109,9 @@ EOF
   regtest_write_validator_payload_tampered_external_state_field \
     "$valid_payload" \
     "$tampered_payload" \
-    "usdb_index_protocol_version" \
-    "9.9.9-phase-c"
-  regtest_validate_validator_candidate_set_payload_consensus_error "$tampered_payload" "-32051" "PROTOCOL_VERSION_MISMATCH"
+    "active_version_set_id" \
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  regtest_validate_validator_candidate_set_payload_consensus_error "$tampered_payload" "-32056" "ACTIVE_VERSION_SET_MISMATCH"
 
   regtest_log "USDB validator candidate-set protocol-version mismatch test succeeded."
   regtest_log "winner=${winner_id}, candidate_count=3, competition_height=${height_competition}"

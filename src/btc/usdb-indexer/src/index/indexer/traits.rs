@@ -14,7 +14,7 @@ use ordinals::SatPoint;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use usdb_util::{BTCRpcClientRef, USDBScriptHash};
+use usdb_util::{BTCRpcClientRef, BtcScriptHash};
 
 pub(crate) type TransferTrackerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub(crate) type BalanceHistoryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -53,7 +53,7 @@ pub(crate) trait TransferTrackerApi: Send + Sync {
     fn add_new_inscription<'a>(
         &'a self,
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         satpoint: SatPoint,
     ) -> TransferTrackerFuture<'a, Result<(), String>>;
 
@@ -94,7 +94,7 @@ impl TransferTrackerApi for InscriptionTransferTracker {
     fn add_new_inscription<'a>(
         &'a self,
         inscription_id: InscriptionId,
-        owner: USDBScriptHash,
+        owner: BtcScriptHash,
         satpoint: SatPoint,
     ) -> TransferTrackerFuture<'a, Result<(), String>> {
         Box::pin(async move {

@@ -1,26 +1,26 @@
 UIP: UIP-0009
-Title: ETHW Chain Config and USDB Bootstrap
+Title: USDB Chain Config and Bootstrap
 Status: Draft
 Type: Standards Track
-Layer: ETHW Chain Config / Genesis / Consensus
+Layer: USDB Chain Config / Genesis / Consensus
 Created: 2026-04-26
 Requires: UIP-0000, UIP-0005, UIP-0007, UIP-0008
-Activation: ETHW network activation matrix; first official networks activate v1 from genesis
+Activation: USDB-chain network activation matrix; first official networks activate v1 from genesis
 
 # 摘要
 
-本文定义 USDB ETHW 链的 chain config、genesis、PoW bootstrap 参数和 USDB 共识扩展版本字段。
+本文定义 USDB chain 的 chain config、genesis、PoW bootstrap 参数和共识扩展版本字段。
 
-UIP-0009 的目标是把 USDB 作为一条新的 ETHW-compatible PoW 链从 genesis 启动，而不是继续保留“从既有 Ethereum / ETHW 网络迁移”的历史语义。
+UIP-0009 的目标是把 USDB 作为一条新的 EVM-compatible PoW 链从 genesis 启动，而不是继续保留“从既有 Ethereum / ETHW 网络迁移”的历史语义。
 
-本文只定义 chain config 和 bootstrap 边界，不定义具体 reward、fee split、CoinBase emission、collab bonus 或 price 公式。SourceDAO / Dividend 冷启动由 UIP-0010 定义，相关经济公式由后续 UIP 定义，并通过本文定义的 version 字段在 ETHW chain config 中激活。
+本文只定义 chain config 和 bootstrap 边界，不定义具体 reward、fee split、CoinBase emission、collab bonus 或 price 公式。SourceDAO / Dividend 冷启动由 UIP-0010 定义，相关经济公式由后续 UIP 定义，并通过本文定义的 version 字段在 USDB chain config 中激活。
 
 # 动机
 
 当前 go-ethereum 代码基线来自 ETHW fork，仍保留大量历史迁移字段：
 
 - Merge / terminal total difficulty 过渡字段。
-- ETHW 从 Ethereum 分叉时使用的 fork block 和 chain id switch。
+- legacy ETHW 从 Ethereum 分叉时使用的 fork block 和 chain id switch。
 - 传统 Ethereum difficulty bomb 路径。
 - 主网历史 fork 高度。
 
@@ -48,19 +48,19 @@ USDB 目标是一条新的链：
 
 | 术语 | 含义 |
 | --- | --- |
-| `USDBChainConfig` | USDB ETHW 链专用 chain config。 |
-| `USDBGenesis` | USDB ETHW 链 genesis 配置。 |
+| `USDBChainConfig` | USDB chain 专用 chain config。 |
+| `USDBGenesis` | USDB chain genesis 配置。 |
 | `payload_version` | UIP-0007 `ProfileSelectorPayload` 二进制布局版本。 |
-| `difficulty_policy_version` | `level -> real difficulty` ETHW 共识算法版本。 |
-| `reward_rule_version` | ETHW reward 计算规则版本。 |
+| `difficulty_policy_version` | `level -> real difficulty` USDB chain 共识算法版本。 |
+| `reward_rule_version` | USDB chain reward 计算规则版本。 |
 | `coinbase_emission_policy_version` | UIP-0011 CoinBase emission 公式版本。 |
-| `fee_split_policy_version` | ETHW fee split / dividend pool 规则版本。 |
+| `fee_split_policy_version` | USDB chain fee split / dividend pool 规则版本。 |
 | `collaboration_efficiency_policy_version` | UIP-0012 协作效率系数 `K` 规则版本。 |
 | `price_policy_version` | UIP-0013 price state 和 price source 规则版本。 |
 | `quote_policy_version` | UIP-0014 Leader quote activity 和 candidate energy 规则版本。 |
 | `aux_pool_policy_version` | UIP-0015 辅助算力池规则版本；`0` 表示 disabled。 |
 | `genesis_activation` | 某规则从 genesis / block 0 起生效。 |
-| `legacy_ethw_migration_fields` | ETHW fork 旧链迁移字段，例如 `EthPoWForkBlock`、`ChainID_ALT`、`TerminalTotalDifficulty`。 |
+| `legacy_ethw_migration_fields` | 从 legacy ETHW fork 继承的迁移字段，例如 `EthPoWForkBlock`、`ChainID_ALT`、`TerminalTotalDifficulty`。 |
 
 # 规范关键词
 
@@ -68,7 +68,7 @@ USDB 目标是一条新的链：
 
 # Chain Identity
 
-USDB ETHW 链必须拥有独立身份：
+USDB chain 必须拥有独立身份：
 
 | 字段 | 要求 |
 | --- | --- |
@@ -109,7 +109,7 @@ USDB v1 genesis 应满足：
 
 # USDBGenesisHash 生成与作用
 
-`USDBGenesisHash` 是 USDB ETHW 网络的 genesis block hash。它不是人工指定的业务 id，而是由最终 genesis spec 生成 block 0 后得到的区块 hash。
+`USDBGenesisHash` 是 USDB chain 网络的 genesis block hash。它不是人工指定的业务 id，而是由最终 genesis spec 生成 block 0 后得到的区块 hash。
 
 当前 go-ethereum 原型中的生成口径等价于：
 
@@ -221,7 +221,7 @@ v1 应从 genesis 固定启用现代 EVM 规则集。当前 go-ethereum 原型�
 - `LondonBlock`
 - `ShanghaiBlock`
 
-未来如果需要启用新的 EVM fork，应通过 ETHW chain config 和 UIP-0008 activation matrix 显式定义。
+未来如果需要启用新的 EVM fork，应通过 USDB chain config 和 UIP-0008 activation matrix 显式定义。
 
 # PoW 与 Difficulty Bootstrap
 
@@ -231,8 +231,8 @@ USDB v1 必须长期使用 PoW，不使用 Merge / PoS transition 语义。
 
 - 禁止 difficulty bomb。
 - difficulty 从 genesis 起走无炸弹 PoW 路径。
-- 不使用 ETHW 从旧链 fork 时的 difficulty reset 特判。
-- `GenesisDifficulty` 和 `MinimumDifficulty` 必须显式低于传统 ETHW 默认值，以适应早期低算力网络。
+- 不使用 USDB chain 从旧链 fork 时的 difficulty reset 特判。
+- `GenesisDifficulty` 和 `MinimumDifficulty` 必须显式低于传统 USDB chain 默认值，以适应早期低算力网络。
 
 当前原型基线：
 
@@ -246,9 +246,9 @@ DurationLimit = 13
 说明：
 
 - `8192` 是开发期 bring-up 值，不是 public mainnet final 值。
-- 本地测试已经发现 `8192` 可能过低，虽然 ETHW difficulty 会自动调整，但从过低起点恢复到合理区间可能较慢。
+- 本地测试已经发现 `8192` 可能过低，虽然 USDB chain difficulty 会自动调整，但从过低起点恢复到合理区间可能较慢。
 - public testnet / mainnet 参数必须通过私链和测试网出块数据确认。
-- 若后续引入 level-based difficulty，`base_difficulty` 仍由 ETHW PoW difficulty policy 产生，USDB level 只参与折算。
+- 若后续引入 level-based difficulty，`base_difficulty` 仍由 USDB chain PoW difficulty policy 产生，USDB level 只参与折算。
 
 ## Difficulty Retarget 参数
 
@@ -263,7 +263,7 @@ DurationLimit = 13
 
 - `DifficultyBoundDivisor` 控制每个 block 难度调整步长，核心项是 `parent_difficulty / DifficultyBoundDivisor`。值越小，单块调整幅度越大；值越大，难度变化越平滑但响应更慢。
 - `DurationLimit` 是旧 Frontier difficulty 路径中的出块时间阈值：当新区块时间间隔低于该值时提高难度，否则降低难度。
-- 当前 USDB 使用的 ETHW no-bomb 路径主要采用 Byzantium 风格的时间项，其中核心公式包含 `((timestamp - parent.timestamp) // 9)` 和 `parent_difficulty / 2048`；因此 `DifficultyBoundDivisor` 仍直接影响调整速度，`DurationLimit` 主要保留为旧路径兼容参数。
+- 当前 USDB 使用的 USDB chain no-bomb 路径主要采用 Byzantium 风格的时间项，其中核心公式包含 `((timestamp - parent.timestamp) // 9)` 和 `parent_difficulty / 2048`；因此 `DifficultyBoundDivisor` 仍直接影响调整速度，`DurationLimit` 主要保留为旧路径兼容参数。
 
 v1 建议：
 
@@ -271,15 +271,15 @@ v1 建议：
 - 只有当测试网数据证明 difficulty retarget 曲线本身不合适时，才单独调整 `DifficultyBoundDivisor` 或 difficulty policy。
 - `GenesisDifficulty` / `MinimumDifficulty` 的正式值必须作为 public testnet / mainnet finalization 的待办事项。
 
-# Legacy ETHW Migration Fields
+# Legacy USDB chain Migration Fields
 
-USDB 不应依赖旧 ETHW 迁移语义。
+USDB 不应依赖旧 USDB chain 迁移语义。
 
 正式语义：
 
 - `TerminalTotalDifficulty` 必须为空或被忽略。
 - `TerminalTotalDifficultyPassed` 不得影响 USDB 链。
-- `EthPoWForkBlock` 不应表示“从旧链切换到 ETHW”的迁移点。
+- `EthPoWForkBlock` 不应表示“从旧链切换到 USDB chain”的迁移点。
 - `ChainID_ALT` 不应承载 USDB 链的第二套 replay protection id。
 
 如果当前 go-ethereum 代码结构仍要求这些字段存在，v1 可以使用兼容填充值：
@@ -291,13 +291,13 @@ ChainID_ALT = ChainID
 TerminalTotalDifficulty = nil
 ```
 
-这些值的含义是“USDB 从 genesis 就是单一 PoW 链”，不是 ETHW fork 迁移。
+这些值的含义是“USDB 从 genesis 就是单一 PoW 链”，不是 legacy ETHW fork 迁移。
 
 # Header Extra Capacity
 
 UIP-0007 `ProfileSelectorPayload` v1 固定长度为 `107 bytes`。
 
-ETHW chain config / protocol params 必须允许 `header.Extra` 容纳该 payload。v1 固定：
+USDB chain config / protocol params 必须允许 `header.Extra` 容纳该 payload。v1 固定：
 
 ```text
 MaximumExtraDataSize = 160
@@ -328,39 +328,41 @@ USDB chain config 必须显式包含或可确定以下版本：
 边界：
 
 - `payload_version` 只描述 `header.Extra` payload 编码。
-- `difficulty_policy_version` 描述 ETHW 如何把 UIP-0005 的 `difficulty_factor_bps` 应用到 PoW difficulty。
-- `reward_rule_version` 描述 ETHW reward 输入校验、recipient 校验和最终 state transition。
+- `difficulty_policy_version` 描述 USDB chain 如何把 UIP-0005 的 `difficulty_factor_bps` 应用到 PoW difficulty。
+- `reward_rule_version` 描述 USDB chain reward 输入校验、recipient 校验和最终 state transition。
 - `coinbase_emission_policy_version` 描述 UIP-0011 CoinBase emission 公式。
 - `fee_split_policy_version` 描述 UIP-0011 / UIP-0010 fee split 公式；是否生效还必须满足 `DividendFeeSplitBlock` 和 Dividend bootstrap 条件。
 - `collaboration_efficiency_policy_version` 描述 UIP-0012 的 `K` rolling window 和 state update。
 - `price_policy_version` 描述 UIP-0013 price state transition；v1 为 FixedPrice。
 - `quote_policy_version` 描述 UIP-0014 Leader quote activity 和 candidate energy。
-- `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过 activation registry 激活正整数版本。
+- `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过 USDB chain-config activation 激活正整数版本。
 
-首个正式 ETHW 网络必须从 genesis 启用 `difficulty_policy_version = 1`，不得使用 `0` 表示未启用。
+首个正式 USDB chain 网络必须从 genesis 启用 `difficulty_policy_version = 1`，不得使用 `0` 表示未启用。
 
 # USDB Companion Service 依赖
 
-USDB miner 和 validator 都依赖本地 USDB companion service。
+USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
 
 要求：
 
-- miner 没有 USDB state view 时，不得继续生产 USDB consensus block。
-- validator 无法按 payload 历史 context 重放 USDB profile 时，必须 fail closed。
+- miner 没有 BTC-side USDB state view 时，不得继续生产 USDB block。
+- validator 无法按 payload 历史 context 重放 pass economic profile 时，必须 fail closed。
 - validator 必须校验 `payload_version`、`difficulty_policy_version` 和 chain config expected version。
-- validator 不得查询 USDB current head 来验证旧块。
+- validator 不得查询 BTC-side USDB current head 来验证旧块。
 
 当前 go-ethereum 原型已有：
 
 - miner-side USDB payload builder。
 - miner/validator/reward 共用的 historical economic-profile resolver。
-- `ChainConfig.usdb.activations[]` 完整 version set 及按 ETHW block number 的 lookup；
+- `ChainConfig.usdb.activations[]` 完整 version set 及按 USDB block number 的 lookup；
   配置顺序/冲突校验、`CheckCompatible` 和 genesis JSON roundtrip 已覆盖。
-- miner-side `--miner.usdb.rpcurl / passid / timeout` 运行参数。
-- validator-side `--ethash.usdb.rpcurl / timeout` 运行参数。
+- miner-side `--miner.usdb-indexer.rpcurl` / `--miner.usdb.passid` /
+  `--miner.usdb-indexer.timeout` 运行参数。
+- validator-side `--ethash.usdb-indexer.rpcurl` /
+  `--ethash.usdb-indexer.timeout` 运行参数。
 
 当前实现已经迁移到 UIP-0007 `ProfileSelectorPayload` 107-byte 结构，并删除
-`--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
+legacy `--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
 的唯一来源；运行参数不能启用、关闭或覆盖共识规则。
 
 当前 development chain 只激活已经落地的 `payload_version=1` 和
@@ -375,10 +377,10 @@ price 和 quote 字段已进入完整 activation record，但在对应 UIP 实�
 
 推荐边界：
 
-- `difficulty_policy_version = 1`：由 ETHW 使用 UIP-0005 的 `difficulty_factor_bps` 折算 block difficulty。
+- `difficulty_policy_version = 1`：由 USDB chain 使用 UIP-0005 的 `difficulty_factor_bps` 折算 block difficulty。
 - `reward_rule_version = 1`：由 UIP-0011 定义 reward 输入校验和 state transition。
 - `coinbase_emission_policy_version = 1`：由 UIP-0011 定义 CoinBase emission。
-- `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / activation registry 固定。
+- `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / USDB chain-config activation 固定。
 - `collaboration_efficiency_policy_version = 1`：由 UIP-0012 定义 `K`。
 - `price_policy_version = 1`：由 UIP-0013 定义 FixedPrice v1。
 - `quote_policy_version = 1`：由 UIP-0014 定义 quote activity v1。
@@ -392,10 +394,10 @@ SourceDAO / dividend pool 与 fee split 是同一个冷启动问题，不应在 
 
 当前 docker / go-ethereum 原型已经形成开发期流程：
 
-1. `bootstrap-init` 复制并校验 ETHW genesis artifact、manifest、SourceDAO bootstrap config。
+1. `bootstrap-init` 复制并校验 USDB chain genesis artifact、manifest、SourceDAO bootstrap config。
 2. `ethw-init` 使用 canonical genesis 执行 `geth init`，并写入 genesis hash marker。
-3. `ethw-node` 启动 USDB ETHW 节点。
-4. `sourcedao-bootstrap` 等待 ETHW RPC ready 后，调用 SourceDAO 工作区脚本完成 `Dao` / `Dividend` bootstrap，并写入 state / marker。
+3. `ethw-node` 启动 USDB chain 节点。
+4. `sourcedao-bootstrap` 等待 USDB chain RPC ready 后，调用 SourceDAO 工作区脚本完成 `Dao` / `Dividend` bootstrap，并写入 state / marker。
 
 该流程说明：
 
@@ -426,7 +428,7 @@ fixed_system_addresses
 
 - public testnet / mainnet 必须定义稳定 bootnodes 或明确的发现机制。
 - network id、genesis hash 和 bootnodes 必须在 release artifact 中固定。
-- 节点不得自动连接 Ethereum / ETHW 默认 bootnodes。
+- 节点不得自动连接 Ethereum / legacy ETHW 默认 bootnodes。
 
 bootnodes / DNS discovery 与公开网络冷启动流程绑定，当前作为 public network finalization 待办事项。后续需要覆盖：
 
@@ -444,19 +446,20 @@ difficulty_policy_version = 1
 reward_rule_version = 1
 ```
 
-不需要保留 pre-standard ETHW 兼容窗口。
+不需要保留 pre-standard USDB chain 兼容窗口。
 
-未来升级必须通过 UIP-0008 activation matrix 和 ETHW chain config fork/version 字段定义。
+未来升级必须通过 UIP-0008 activation matrix 和 USDB chain config fork/version 字段定义。
 
 # 与 UIP-0008 Activation Registry 的关系
 
-UIP-0008 定义 activation registry 的通用机制。UIP-0009 定义 ETHW chain config 中必须进入 registry 或 chain config 的 USDB 字段。
+UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识所有权拆分：BTC-side 版本由 network-scoped BTC registry 拥有；USDB-chain 版本由 USDB chain genesis / chain config 拥有。
 
-建议：
+要求：
 
-- `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 ETHW chain config 或 activation registry。
-- `activation_registry_id` 可以先作为审计字段暴露。
-- 当 activation registry canonical encoding 固定后，ETHW 节点启动时应校验 expected registry id。
+- `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 `ChainConfig.usdb.activations[]`。
+- USDB chain miner、validator 和 reward transition 必须按待处理 USDB block number 调用本地 chain-config lookup；禁止通过 companion RPC、BTC registry 或 CLI 参数决定 expected version。
+- UIP-0006 profile 的 `activation_registry_id` 只标识其 BTC source network registry。USDB chain 验证该 identity 在同一次 historical replay 中稳定且与 profile/set 自洽，但不把它当作 USDB chain activation source。
+- audit-only cross-chain release manifest 可以关联 BTC registry ID 与 USDB chain `chain_id/genesis_hash/chain-config source`；manifest 不进入 header validation 或 runtime version lookup。
 
 # Chain Config 示例
 
@@ -508,7 +511,7 @@ go-ethereum:
 
 USDB:
 
-- UIP-0008 activation registry。
+- UIP-0008 network-scoped BTC activation registries 与 audit-only release manifest。
 - UIP-0006 state view registry / version exposure。
 - regtest / E2E scripts。
 
@@ -528,7 +531,7 @@ USDB:
 - `payload_version` mismatch fail closed。
 - `difficulty_policy_version` mismatch fail closed。
 - USDB reward / difficulty versions 从 genesis 生效。
-- bootnodes 默认不连接 Ethereum / ETHW 网络。
+- bootnodes 默认不连接 Ethereum / legacy ETHW 网络。
 - public network 缺少 bootnodes / network id / genesis hash 时不得发布。
 
 # 与旧 go-ethereum 备忘的关系
@@ -536,17 +539,17 @@ USDB:
 本文参考以下实现备忘，但以当前 UIP 结论为准：
 
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-chain-bootstrap-notes.md`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-ethw-reward-integration.md`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-ethw-reward-e2e-plan.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-integration.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-profile-and-difficulty-e2e-plan.md`
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-pass-level-difficulty-and-collab-bonus.md`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-ethw-fee-split-integration.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-fee-split-integration.md`
 
 其中已经被当前 UIP 更新的旧结论包括：
 
 - `RewardPayloadV1` 应迁移为 `ProfileSelectorPayload`。
 - payload v1 长度从原型 `105 bytes` 调整为 `107 bytes`。
 - `difficulty_policy_version` 进入 payload 作为显式承诺，但 expected version 来自 chain config。
-- level / real difficulty 由 UIP-0005 和 ETHW difficulty policy 定义。
+- level / real difficulty 由 UIP-0005 和 USDB chain difficulty policy 定义。
 
 # 待审计问题
 

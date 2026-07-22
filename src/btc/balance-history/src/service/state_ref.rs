@@ -1,13 +1,12 @@
 use crate::config::BalanceHistoryConfig;
 use crate::db::BalanceHistoryDB;
 use crate::service::{
-    BALANCE_HISTORY_API_VERSION, BALANCE_HISTORY_SEMANTICS_VERSION, BALANCE_HISTORY_STABLE_LAG,
-    HistoricalSnapshotStateRef,
+    BALANCE_HISTORY_API_VERSION, BALANCE_HISTORY_STABLE_LAG, HistoricalSnapshotStateRef,
 };
 use usdb_util::{
-    CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, CONSENSUS_SOURCE_CHAIN_BTC,
-    ConsensusSnapshotIdentity, USDB_INDEX_FORMULA_VERSION, USDB_INDEX_PROTOCOL_VERSION,
-    build_consensus_snapshot_id,
+    ActivationRegistryError, ActiveVersionSet, CONSENSUS_SNAPSHOT_ID_HASH_ALGO,
+    CONSENSUS_SNAPSHOT_ID_VERSION, CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity,
+    VersionFamily, build_consensus_snapshot_id, embedded_btc_activation_registry,
 };
 
 /// Public version string of the first balance-history block commit protocol.
@@ -25,23 +24,47 @@ pub fn encode_commit_hex(bytes: &[u8]) -> String {
     output
 }
 
+/// Resolves and validates the balance-history activation set at one exact BTC height.
+pub fn resolve_balance_history_active_versions(
+    config: &BalanceHistoryConfig,
+    block_height: u32,
+) -> Result<ActiveVersionSet, ActivationRegistryError> {
+    let registry = embedded_btc_activation_registry(config.btc.network())?;
+    let active_versions = registry.lookup_active_version_set(block_height)?;
+    active_versions.validate_balance_history_v1()?;
+    Ok(active_versions)
+}
+
+/// Resolves the balance-history query-semantics version at one exact BTC height.
+pub fn resolve_balance_history_semantics_version(
+    config: &BalanceHistoryConfig,
+    block_height: u32,
+) -> Result<String, String> {
+    let active_versions = resolve_balance_history_active_versions(config, block_height)
+        .map_err(|error| error.to_string())?;
+    active_versions
+        .require_string(VersionFamily::BalanceHistorySemanticsVersion)
+        .map(str::to_string)
+        .map_err(|error| error.to_string())
+}
+
 /// Builds the canonical consensus snapshot identity for one exact committed BTC height.
 pub fn build_consensus_snapshot_identity(
     config: &BalanceHistoryConfig,
     stable_height: u32,
     stable_block_hash: &str,
-) -> ConsensusSnapshotIdentity {
-    ConsensusSnapshotIdentity {
+) -> Result<ConsensusSnapshotIdentity, String> {
+    let semantics_version = resolve_balance_history_semantics_version(config, stable_height)?;
+
+    Ok(ConsensusSnapshotIdentity {
         source_chain: CONSENSUS_SOURCE_CHAIN_BTC.to_string(),
         network: config.btc.network().to_string(),
         stable_height,
         stable_block_hash: stable_block_hash.to_string(),
         stable_lag: BALANCE_HISTORY_STABLE_LAG,
         balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
-        balance_history_semantics_version: BALANCE_HISTORY_SEMANTICS_VERSION.to_string(),
-        usdb_index_formula_version: USDB_INDEX_FORMULA_VERSION.to_string(),
-        usdb_index_protocol_version: USDB_INDEX_PROTOCOL_VERSION.to_string(),
-    }
+        balance_history_semantics_version: semantics_version,
+    })
 }
 
 /// Reconstructs the exact historical state ref at one committed BTC height from local DB state.
@@ -57,7 +80,7 @@ pub fn build_historical_state_ref_at_height(
 
     let stable_block_hash = format!("{:x}", commit.btc_block_hash);
     let consensus_identity =
-        build_consensus_snapshot_identity(config, block_height, &stable_block_hash);
+        build_consensus_snapshot_identity(config, block_height, &stable_block_hash)?;
     let snapshot_id = build_consensus_snapshot_id(&consensus_identity);
 
     Ok(Some(HistoricalSnapshotStateRef {

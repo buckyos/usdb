@@ -2,14 +2,14 @@ UIP: UIP-0011
 Title: CoinBase Emission and Reward Split
 Status: Draft
 Type: Standards Track
-Layer: ETHW Reward / Economic Policy
+Layer: USDB chain Reward / Economic Policy
 Created: 2026-04-28
 Requires: UIP-0000, UIP-0006, UIP-0007, UIP-0008, UIP-0009, UIP-0010
-Activation: ETHW network activation matrix; first official networks define reward policy versions before public launch
+Activation: USDB-chain network activation matrix; first official networks define reward policy versions before public launch
 
 # 摘要
 
-本文定义 USDB ETHW 区块的 CoinBase 释放公式、手续费分账和奖励接收方校验边界。
+本文定义 USDB chain 区块的 CoinBase 释放公式、手续费分账和奖励接收方校验边界。
 
 UIP-0011 解决的问题是：
 
@@ -22,13 +22,13 @@ UIP-0011 解决的问题是：
 
 # 动机
 
-USDB 的发行目标是让 ETHW 区块奖励与 BTC 侧矿工资产和价格状态绑定，而不是继续使用固定静态 block reward。
+USDB 的发行目标是让 USDB chain 区块奖励与 BTC 侧矿工资产和价格状态绑定，而不是继续使用固定静态 block reward。
 
 同时，奖励计算必须可历史重放：
 
-- miner 出块时可以查询当前可用的 USDB / BTC 历史状态。
+- miner 出块时可以查询当前可用的 BTC-side USDB 历史状态。
 - validator 在未来重放旧块时，必须能通过区块头中的 selector 回到同一份历史状态。
-- reward 结果必须由 ETHW state transition 本地重算，不能信任 miner 提交的金额。
+- reward 结果必须由 USDB chain state transition 本地重算，不能信任 miner 提交的金额。
 
 因此，UIP-0011 只消费 UIP-0007 的最小链上 selector 和 UIP-0006 的历史经济状态视图，不在区块头中携带 reward amount、collab list 或价格证明明细。
 
@@ -48,17 +48,17 @@ USDB 的发行目标是让 ETHW 区块奖励与 BTC 侧矿工资产和价格状�
 
 | 术语 | 含义 |
 | --- | --- |
-| `CoinBase` | ETHW 区块新发行的 USDB native token 数量。本文用 `coinbase_emission_atoms` 表示最小单位。 |
+| `CoinBase` | USDB chain 区块新发行的 USDB native token 数量。本文用 `coinbase_emission_atoms` 表示最小单位。 |
 | `USDB atom` | USDB native token 最小单位。若执行层继承 EVM `wei` 语义，`1 USDB = 10^18 atoms`。 |
-| `tx_fees_atoms` | 一个 ETHW 区块中可分配的交易手续费总额，单位为 USDB atoms。 |
+| `tx_fees_atoms` | 一个 USDB chain 区块中可分配的交易手续费总额，单位为 USDB atoms。 |
 | `reward_recipient` | 当前区块 miner reward 的接收地址，v1 来自 standard pass 的 `usdb_main`。 |
 | `dao_fee_recipient` | DAO / Dividend 分红池手续费接收地址，来自 UIP-0010 `DividendAddress`。 |
 | `total_miner_btc_sats` | 参与发行目标计算的矿工 BTC 资产总量，单位为 sat。 |
 | `issued_usdb_atoms` | 当前区块执行前已经发行的 USDB native token 总量，单位为 atoms。 |
-| `issued_usdb_state_slot` | ETHW reserved system account storage 中记录 `issued_usdb_atoms` 的协议状态 slot。 |
+| `issued_usdb_state_slot` | USDB chain reserved system account storage 中记录 `issued_usdb_atoms` 的协议状态 slot。 |
 | `price_atoms_per_btc` | 1 BTC 对应的 USDB atoms 数量，由 UIP-0013 price state 提供。 |
 | `k_bps` | UIP-0012 定义的协作效率系数 `K`，basis points 表示，`10000` 表示 `K = 1.0`。 |
-| `reward_rule_version` | ETHW reward 公式和奖励接收方校验版本。 |
+| `reward_rule_version` | USDB chain reward 公式和奖励接收方校验版本。 |
 | `coinbase_emission_policy_version` | CoinBase emission 公式版本。 |
 | `fee_split_policy_version` | 交易手续费分账公式版本。 |
 
@@ -110,15 +110,15 @@ USDB validator 计算区块 `B` 的 reward 时，必须取得以下输入：
 
 | 输入 | 来源 | 说明 |
 | --- | --- | --- |
-| `ProfileSelectorPayload` | UIP-0007 `header.Extra` | 指向历史 USDB state 和 miner pass。 |
+| `ProfileSelectorPayload` | UIP-0007 `header.Extra` | 指向历史 BTC-side USDB state 和 miner pass。 |
 | `resolved_profile` | UIP-0006 state view | 按 payload selector 查询得到的 pass economic profile。 |
-| `header.Coinbase` | ETHW block header | 必须等于 reward recipient。 |
-| `tx_fees_atoms` | ETHW execution | 当前区块可分配交易手续费。 |
-| `DividendAddress` | UIP-0010 / ETHW chain config | DAO / Dividend 手续费接收方。 |
-| `DividendFeeSplitBlock` | UIP-0010 / ETHW chain config | fee split 生效高度。 |
+| `header.Coinbase` | USDB block header | 必须等于 reward recipient。 |
+| `tx_fees_atoms` | USDB chain execution | 当前区块可分配交易手续费。 |
+| `DividendAddress` | UIP-0010 / USDB chain config | DAO / Dividend 手续费接收方。 |
+| `DividendFeeSplitBlock` | UIP-0010 / USDB chain config | fee split 生效高度。 |
 | `price_atoms_per_btc` | UIP-0013 price state | 当前区块使用的 BTC 价格。 |
-| `total_miner_btc_sats` | USDB / BTC historical state | 当前发行目标的 BTC 资产总量。 |
-| `issued_usdb_atoms` | ETHW parent state reserved storage | 当前区块执行前已发行 USDB native token 总量。 |
+| `total_miner_btc_sats` | BTC-side USDB historical state | 当前发行目标的 BTC 资产总量。 |
+| `issued_usdb_atoms` | USDB chain parent state reserved storage | 当前区块执行前已发行 USDB native token 总量。 |
 | `k_bps` | UIP-0012 K policy | 协作效率系数。 |
 | `aux_pool_state` | UIP-0015 | 辅助算力池是否启用及接收方。 |
 
@@ -161,7 +161,7 @@ total_miner_btc_sats(h)
 - active valid miner pass 包含 `standard` 和 `collab` pass。
 - `Consumed`、`Dormant`、`Burned`、`Invalid` pass 不进入集合。
 - 同一个 `owner_script_hash` 即使因为实现缺陷或历史兼容产生多个 active pass，也只能计入一次，避免 BTC 余额重复计数。
-- `balance_sats` 必须来自与 payload selector 绑定的 BTC / USDB 历史状态，不得查询 current head。
+- `balance_sats` 必须来自与 payload selector 绑定的 BTC-side USDB 历史状态，不得查询 current head。
 
 是否只统计 standard pass，还是统计 standard + collab pass，是本文最重要的待审计问题之一。当前草案倾向统计 standard + collab，因为 collab pass 仍代表 BTC owner 锁定在矿工经济系统中的资产和能量贡献。
 
@@ -187,7 +187,7 @@ issued_usdb_atoms_before_block
 
 ## Reserved System Storage
 
-`issued_usdb_atoms` 必须存放在 ETHW reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
+`issued_usdb_atoms` 必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
 建议定义：
 
@@ -197,7 +197,7 @@ ISSUED_USDB_ATOMS_SLOT   = <TODO>
 ISSUED_USDB_ATOMS_TYPE   = uint256
 ```
 
-该 storage slot 是 ETHW reward state transition 的协议状态：
+该 storage slot 是 USDB chain reward state transition 的协议状态：
 
 - genesis 必须初始化 `ISSUED_USDB_ATOMS_SLOT = genesis_alloc_supply_atoms`。
 - 验证区块 `N` 时，validator 从 parent state 读取 `issued_usdb_atoms_before_block_N`。
@@ -210,7 +210,7 @@ ISSUED_USDB_ATOMS_TYPE   = uint256
 - 写入后的 storage root 必须进入区块 `stateRoot`。
 - 普通 EVM 交易、用户合约和 SourceDAO / Dividend 合约不得直接修改该 slot。
 
-该设计不是本地隐藏数据库。新节点同步区块时通过执行 state transition 重建该 storage；reorg 时该 storage 随 ETHW state 一起回滚；archive / snapshot 节点可按普通历史 state 查询该值。
+该设计不是本地隐藏数据库。新节点同步区块时通过执行 state transition 重建该 storage；reorg 时该 storage 随 USDB chain state 一起回滚；archive / snapshot 节点可按普通历史 state 查询该值。
 
 本文不要求把 `issued_usdb_atoms` 放入 block header 或 UIP-0007 `header.Extra`。如未来为了轻客户端或审计直观性需要显式 header commitment，应通过后续 payload / header UIP 单独定义。
 
@@ -352,12 +352,12 @@ distributed_fee_atoms == tx_fees_atoms
 
 # Uncle / Ommer Reward
 
-设计大纲要求“矿工的实际 CoinBase 收入在上述数值上应用 ETH 的叔块奖励规则”。
+设计大纲要求矿工实际 CoinBase 收入继续应用继承自 Ethereum 的 uncle reward 规则。
 
 当前草案不直接固定 uncle / ommer reward，原因是仍需明确：
 
-- USDB ETHW v1 是否保留 uncle / ommer 机制。
-- 采用哪一版 Ethereum / ETHW uncle reward 公式。
+- USDB chain v1 是否保留 uncle / ommer 机制。
+- 采用哪一版 Ethereum / legacy ETHW uncle reward 公式，或定义独立 USDB 公式。
 - uncle 区块是否也必须携带 UIP-0007 profile selector。
 - uncle reward 是否影响 `issued_usdb_atoms` system storage。
 - uncle 与 BTC 历史 state selector 的绑定方式。
@@ -366,13 +366,13 @@ distributed_fee_atoms == tx_fees_atoms
 
 # Reorg 语义
 
-ETHW reorg 时：
+USDB chain reorg 时：
 
-- `issued_usdb_atoms` reserved system storage 必须随 ETHW state 回滚。
-- fee split、DAO reward、aux pool reward 必须随 ETHW state 回滚。
-- 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 USDB state。
+- `issued_usdb_atoms` reserved system storage 必须随 USDB chain state 回滚。
+- fee split、DAO reward、aux pool reward 必须随 USDB chain state 回滚。
+- 区块引用的 UIP-0007 payload 不变，validator 重放时必须按该 payload 重新查询对应历史 BTC-side USDB state。
 
-BTC / USDB 侧 reorg 已由 UIP-0006 / UIP-0008 的历史 state selector 和 activation matrix 处理。USDB validator 不得用 USDB current head 替换旧块 payload 中的历史 state。
+BTC-side USDB reorg 已由 UIP-0006 / UIP-0008 的历史 state selector 和 activation matrix 处理。USDB validator 不得用 BTC-side USDB current head 替换旧块 payload 中的历史 state。
 
 # 实现影响
 
@@ -381,8 +381,8 @@ go-ethereum:
 - `/home/bucky/work/go-ethereum/core/state_transition.go`
 - `/home/bucky/work/go-ethereum/consensus/ethash/consensus.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-ethw-reward-integration.md`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-ethw-fee-split-integration.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-integration.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-fee-split-integration.md`
 
 USDB indexer / state view:
 
@@ -403,7 +403,7 @@ USDB indexer / state view:
 - reward payload selector 指向 active standard pass，`header.Coinbase == usdb_main` 时区块有效。
 - `header.Coinbase != usdb_main` 时区块无效。
 - collab pass 不能直接作为 reward pass。
-- missing / stale / current-head USDB state query 必须 fail closed。
+- missing / stale / current-head BTC-side USDB state query 必须 fail closed。
 - `target_supply_atoms <= issued_usdb_atoms` 时 CoinBase 为 0。
 - `total_miner_btc_sats = 0` 时 CoinBase 为 0。
 - genesis 初始化 `ISSUED_USDB_ATOMS_SLOT = genesis_alloc_supply_atoms`。
@@ -414,7 +414,7 @@ USDB indexer / state view:
 - aux pool 未激活时 CoinBase 100% 归 miner。
 - aux pool 激活后 75% / 25% 分账，rounding remainder 归 miner。
 - reorg 后 `issued_usdb_atoms` system storage 和 fee split state 正确回滚。
-- joiner 重放旧块时不能使用当前 USDB state 重新计算 reward。
+- joiner 重放旧块时不能使用当前 BTC-side USDB state 重新计算 reward。
 
 # 待审计问题
 
@@ -425,7 +425,7 @@ USDB indexer / state view:
 | `price_atoms_per_btc` 来源和 scale | 由 UIP-0013 定义；本文只消费 price state。 | UIP-0013 必须固定初始值、更新顺序和 decimal encoding。 |
 | 动态 `K` 是否进入首个 public network | 已拆分到 UIP-0012；v1 使用 `collab_contribution` 作为 `CE_N`。 | Review UIP-0012 rolling window、warmup 和整数 `compute_k_bps`。 |
 | aux pool split 如何激活 | 初始 `aux_pool_policy_version = 0`，UIP-0015 Final 前不启用。 | UIP-0015 定义证明格式、recipient、verifier code hash 后，通过 activation matrix 在指定高度激活。 |
-| uncle / ommer reward | 当前建议禁用或置 0，直到完整规则确定。 | 决定 USDB ETHW v1 是否保留 uncle 机制。 |
+| uncle / ommer reward | 当前建议禁用或置 0，直到完整规则确定。 | 决定 USDB chain v1 是否保留 uncle 机制。 |
 | miner income contract | 当前 v1 使用 `usdb_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
 | fee accounting 与 EVM fork 语义 | 本文只消费 `tx_fees_atoms`。 | 需要在 go-ethereum 实现中确认 EIP-1559 burn、tips、base fee 的具体路径。 |
 | UIP-0006 是否需要新增 reward fields | 当前需要 `usdb_main`、aggregate supply inputs 或可审计查询。 | 后续 review UIP-0006 state view 是否扩展。 |

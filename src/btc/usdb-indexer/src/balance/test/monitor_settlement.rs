@@ -4,13 +4,13 @@ use crate::balance::{
 };
 use crate::storage::MinerPassStorage;
 use std::sync::Arc;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 fn add_active_pass_with_history(
     storage: &MinerPassStorage,
     tag: u8,
     index: u32,
-    owner: USDBScriptHash,
+    owner: BtcScriptHash,
     mint_block_height: u32,
 ) {
     let pass = make_pass(tag, index, owner, mint_block_height);

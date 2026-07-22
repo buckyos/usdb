@@ -3,7 +3,7 @@ use crate::storage::{ActiveBalanceSnapshot, ActiveMinerPassInfo, MinerPassStorag
 use ord::InscriptionId;
 use std::sync::Arc;
 use std::time::Instant;
-use usdb_util::USDBScriptHash;
+use usdb_util::BtcScriptHash;
 
 use super::{
     BalanceHistoryBackend, BalanceRpcLoader, ConcurrentBalanceLoader, SerialBalanceLoader,
@@ -19,7 +19,7 @@ pub struct BalanceMonitor {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActivePassBalance {
     pub inscription_id: InscriptionId,
-    pub owner: USDBScriptHash,
+    pub owner: BtcScriptHash,
     pub block_height: u32,
     pub balance: u64,
     pub delta: i64,
@@ -98,7 +98,7 @@ impl BalanceMonitor {
 
     fn load_active_passes(&self, block_height: u32) -> Result<Vec<ActiveMinerPassInfo>, String> {
         let mut page = 0usize;
-        let mut owner_to_pass = std::collections::HashMap::<USDBScriptHash, InscriptionId>::new();
+        let mut owner_to_pass = std::collections::HashMap::<BtcScriptHash, InscriptionId>::new();
 
         loop {
             // Load active owners from pass history snapshot at target height.

@@ -13,7 +13,7 @@ SCENARIO_FILE="${SCENARIO_FILE:-}"
 
 BTC_RPC_PORT="${BTC_RPC_PORT:-28132}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
-USDB_RPC_PORT="${USDB_RPC_PORT:-28120}"
+USDB_INDEXER_RPC_PORT="${USDB_INDEXER_RPC_PORT:-28120}"
 
 WALLET_NAME="${WALLET_NAME:-usdbitest}"
 TARGET_HEIGHT="${TARGET_HEIGHT:-120}"
@@ -74,7 +74,7 @@ cleanup() {
   if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
     log "Stopping usdb-indexer process pid=$USDB_INDEXER_PID"
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+      -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
       -H 'content-type: application/json' \
       --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1
     for _ in $(seq 1 20); do
@@ -136,7 +136,7 @@ rpc_call_usdb_indexer() {
   local method="$1"
   local params="${2:-[]}"
   curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-    -X POST "http://127.0.0.1:${USDB_RPC_PORT}" \
+    -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     -H 'content-type: application/json' \
     --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
@@ -263,7 +263,7 @@ except Exception:
 r = d.get("result")
 print(0 if r is None else int(r))' 2>/dev/null || true)"
     synced="${synced:-0}"
-    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_RPC_PORT}" 2>/dev/null || echo 0)"
+    consensus_ready="$(rpc_consensus_ready "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" 2>/dev/null || echo 0)"
     if [[ "$synced" -ge "$target_height" ]] && [[ "$consensus_ready" == "1" ]]; then
       log "usdb-indexer synced height=${synced}, consensus_ready=true"
       return
@@ -336,7 +336,7 @@ create_usdb_indexer_config() {
     "inscription_fixture_file": ${fixture_json},
     "inscription_source_shadow_compare": false,
     "inscription_source_shadow_fail_fast": false,
-    "rpc_server_port": ${USDB_RPC_PORT},
+    "rpc_server_port": ${USDB_INDEXER_RPC_PORT},
     "rpc_server_enabled": true,
     "monitor_ord_enabled": false
   }
@@ -432,7 +432,7 @@ main() {
   ) >"${WORK_DIR}/usdb-indexer.log" 2>&1 &
   USDB_INDEXER_PID=$!
 
-  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_RPC_PORT}" "get_network_type" "[]"
+  wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
 
   local usdb_network_resp usdb_network
   if ! usdb_network_resp="$(must_rpc_call_usdb_indexer_json "get_network_type" "[]")"; then
@@ -467,7 +467,7 @@ main() {
     --btc-rpc-port "$BTC_RPC_PORT" \
     --wallet-name "$WALLET_NAME" \
     --balance-history-rpc-url "http://127.0.0.1:${BH_RPC_PORT}" \
-    --usdb-rpc-url "http://127.0.0.1:${USDB_RPC_PORT}" \
+    --usdb-indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
     --target-height "$TARGET_HEIGHT" \
     --sync-timeout-sec "$SYNC_TIMEOUT_SEC" \
     --send-amount-btc "$SEND_AMOUNT_BTC" \

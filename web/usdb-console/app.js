@@ -7,7 +7,7 @@ const els = {
     updatedAt: document.getElementById("metric-updated-at"),
     btcNetwork: document.getElementById("metric-btc-network"),
     btcHeight: document.getElementById("metric-btc-height"),
-    ethwHeight: document.getElementById("metric-ethw-height"),
+    usdbHeight: document.getElementById("metric-usdb-height"),
     servicesSummary: document.getElementById("services-summary"),
     bootstrapOverallState: document.getElementById("bootstrap-overall-state"),
     bootstrapSteps: document.getElementById("bootstrap-steps"),
@@ -15,12 +15,12 @@ const els = {
     linkUsdbIndexer: document.getElementById("link-usdb-indexer"),
     bootstrapManifest: makeArtifactEls("bootstrap-manifest"),
     snapshotMarker: makeArtifactEls("snapshot-marker"),
-    ethwMarker: makeArtifactEls("ethw-marker"),
+    usdbInitMarker: makeArtifactEls("usdb-init-marker"),
     services: {
         btcNode: makeServiceEls("service-btc-node"),
         balanceHistory: makeServiceEls("service-balance-history"),
         usdbIndexer: makeServiceEls("service-usdb-indexer"),
-        ethw: makeServiceEls("service-ethw"),
+        usdbChain: makeServiceEls("service-usdb-chain"),
     },
 };
 
@@ -155,14 +155,14 @@ function renderOverview(overview) {
         overview.services.usdb_indexer.data?.network ||
         t("common.none");
     els.btcHeight.textContent = fmtNum(overview.services.btc_node.data?.blocks);
-    els.ethwHeight.textContent = fmtNum(overview.services.ethw.data?.block_number);
+    els.usdbHeight.textContent = fmtNum(overview.services.usdb_chain.data?.block_number);
 
     const totalServices = 4;
     const readyCount = [
         overview.services.btc_node,
         overview.services.balance_history,
         overview.services.usdb_indexer,
-        overview.services.ethw,
+        overview.services.usdb_chain,
     ].filter((service) => service.reachable).length;
     els.servicesSummary.textContent = t("services.summary", {
         readyCount,
@@ -206,7 +206,7 @@ function renderOverview(overview) {
         [t("fields.blockers"), probe.data?.blockers?.join(", ") || t("common.none")],
     ]);
 
-    renderServiceCard(els.services.ethw, overview.services.ethw, (probe) => [
+    renderServiceCard(els.services.usdbChain, overview.services.usdb_chain, (probe) => [
         [t("fields.client"), probe.data?.client_version || t("common.none")],
         [t("fields.chainId"), probe.data?.chain_id || t("common.none")],
         [t("fields.networkId"), probe.data?.network_id || t("common.none")],
@@ -222,7 +222,7 @@ function renderOverview(overview) {
 
     renderArtifact(els.bootstrapManifest, overview.bootstrap.bootstrap_manifest);
     renderArtifact(els.snapshotMarker, overview.bootstrap.snapshot_marker);
-    renderArtifact(els.ethwMarker, overview.bootstrap.ethw_init_marker);
+    renderArtifact(els.usdbInitMarker, overview.bootstrap.usdb_init_marker);
     renderBootstrapSteps(overview.bootstrap);
 
     els.linkBalanceHistory.href = overview.explorers.balance_history;
