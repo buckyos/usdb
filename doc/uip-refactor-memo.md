@@ -609,24 +609,27 @@
 
 ## UIP-0007 Chain Config、Header Validation 与 CLI 边界
 
-状态：实现和聚焦测试已完成，改动尚未提交，等待 review；旧 reward live/E2E runner 的 payload/RPC 迁移仍单独保留。
+状态：UIP-0007 chain-config/CLI 基础批次已提交；UIP-0008/UIP-0009 activation、实际 difficulty、reward mock 清理和更新后的 live/E2E 改动尚未提交，等待 review。
 
 ### Chain Config 与 Miner
 
-- `params.ChainConfig` 新增嵌套 `usdb` 共识配置；当前 v1 固定 `payloadVersion=1`、`difficultyPolicyVersion=1`，配置存在即按 UIP-0009 从 genesis 激活。
-- 新增 `USDBConsensusAt(ethw_block)` 查询入口；当前返回 genesis 固定版本，但 builder、header validator 和 reward transition 都显式按待处理 ETHW block number 查询，为后续 UIP-0008 高度矩阵保留唯一入口。
+- `params.ChainConfig.usdb` 已由固定两个字段替换为按 ETHW block 严格排序的 `activations[]`；每条记录携带 UIP-0008/UIP-0009 完整 version set。
+- `USDBConsensusAt(ethw_block)` 返回目标高度最近生效版本；首次激活前返回 inactive，激活边界及之后按对应完整版本集合解释。
+- registry 增加空记录、乱序/同高冲突、必需版本和 reward 依赖校验；`CheckCompatible` 只允许修改尚未到达的未来激活，已生效差异返回最早安全回退高度。
+- built-in development chain 从 genesis 激活 payload/difficulty v1；UIP-0011 至 UIP-0015 尚未实现的版本字段显式为 `0`，非零未知 policy fail closed。
 - payload builder 删除构造期固定 policy version，`BuildCurrentPayload(ctx, blockNumber)` 从 chain config 取得 expected version；不支持的 payload version、无效共识配置、current system state/profile 不可用或 selected pass 非 candidate 均停止组块。
 - worker 在 USDB chain 上即使调用方请求 `noExtra` 也必须生成 selector；active chain 缺少 builder 或初始化失败时禁止回退到静态/空 extra-data。
 
 ### Validator 与运行参数
 
-- `VerifyHeader` 在 USDB 共识激活时执行纯二进制校验：精确 107 bytes、支持的 payload version，以及 payload `difficulty_policy_version` 与 chain config expected version 完全一致；该阶段不访问 USDB RPC。
-- reward state transition 在调用 historical profile RPC 前重复同一 binary/version guard，保证直接组块和状态转换路径也 fail closed。
-- ethash reward 选择、validator companion 初始化和 miner builder 初始化全部改由 chain config 是否激活 USDB 决定；非 USDB chain 即使配置 companion RPC 也继续使用 legacy reward。
+- `VerifyHeader` 先执行精确 107 bytes 与 expected version 的纯二进制 guard，再解析 historical profile 并按 UIP-0005 `ceil(base_difficulty * factor / 10000)` 重算 difficulty；畸形字段不会触发 RPC。
+- miner `Prepare` 使用相同 chain-config policy 和 profile resolver 计算 difficulty；miner 生成、validator 验证的交叉测试会拒绝未折算的 base difficulty。
+- reward state transition 重复 binary guard 并消费同一 selector-bound profile；旧 `0.5..2.0` level multiplier 和 mock reward policy 已删除，UIP-0011 未激活前保留既有 Ethash 静态奖励。
+- companion 服务不可用、historical state 不可保留、same-height state replacement 或 profile 字段不一致时均 fail closed；非 USDB chain 继续使用 legacy 行为。
 - 删除 `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留 validator/miner RPC URL、query timeout 和 selected pass id，不能启用、关闭或改写共识版本。
 
 ### 测试与后续
 
-- 新增 chain-config JSON roundtrip/版本查询、builder block-number 与 fail-closed、binary policy mismatch、header integration、worker mandatory payload、inactive-chain legacy reward 和 CLI operational flag 测试。
-- 已通过 `go test -count=1 ./params ./internal/usdb ./miner`、完整 `./consensus/ethash`、完整 `./cmd/geth ./cmd/utils ./eth/ethconfig`、USDB genesis 定向测试，以及相关包 `go vet`；shell runner 同步通过 `bash -n`。当前环境为 Go 1.26，旧 `fjl/memsize` linkname 检查需要对 CLI 测试使用 `-ldflags=-checklinkname=0`。
-- go-ethereum 内三条 shell runner 已移除旧 enable flags；其内部仍使用 105-byte offset、`get_pass_snapshot/get_pass_energy` 和旧 mint 字段，必须在集中 UIP-0007 live/E2E 阶段整体迁移到 107-byte `ProfileSelectorPayload` 与 `get_pass_economic_profile` 后再执行。
+- 新增完整 activation/version lookup、`CheckCompatible`、genesis JSON roundtrip、RPC error mapping、candidate boundary、codec、historical replay、same-height replacement、服务不可用、selector/profile 篡改和 miner/validator 交叉测试。
+- `params`、`internal/usdb`、`miner`、`core`、`consensus/ethash`、`cmd/geth` 全包测试及受影响包 `go vet` 已通过。当前环境为 Go 1.26，旧 `fjl/memsize` linkname 检查仍需对 CLI 测试使用 `-ldflags=-checklinkname=0`。
+- 三条 live runner 已统一迁移到 107-byte `ProfileSelectorPayload`、UIP-0001 `v=1/usdb_main` mint 和 `get_pass_economic_profile`。basic、energy growth（含 factor `9900`）和 BTC head 前进后的 fresh-validator historical replay 均已实跑通过。

@@ -345,8 +345,14 @@ UIP-0008 负责通用版本激活矩阵。ETHW 具体 chain config、genesis、U
   `payload_version / difficulty_policy_version`。
 - miner/validator CLI 只保留 companion RPC URL、timeout 和 selected pass 等运行参数；
   是否激活本规则及 expected version 只能由 chain config 决定。
-- `VerifyHeader` 已执行不访问 RPC 的固定长度和版本校验；historical profile 查询继续在
-  reward/difficulty state-transition 路径按本 UIP 的 selector 进行。
+- `VerifyHeader` 先执行不访问 RPC 的固定长度和版本校验，再按 selector 查询 historical
+  profile 并重算实际 difficulty；畸形 payload 不会进入 RPC 路径。
+- miner `Prepare`、validator `VerifyHeader` 与 reward state transition 均消费同一 selector
+  解析出的 UIP-0006 profile。development chain 在 UIP-0011 激活前仍使用既有 Ethash
+  静态奖励，不再使用旧 level/reward multiplier mock。
+- expected version 已由 UIP-0008/UIP-0009 的 chain-config activation registry 按 ETHW
+  block number 查询；历史 replay、same-height replacement、服务不可用、字段篡改和
+  miner/validator 交叉校验已有 Go 测试及 live E2E 覆盖。
 
 # 后续实现议题
 

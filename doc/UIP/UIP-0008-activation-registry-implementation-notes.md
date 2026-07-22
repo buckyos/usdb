@@ -317,6 +317,18 @@ UIP-0006 state view 后续应该暴露：
 - block validation 校验 `payload_version` 和 `difficulty_policy_version`。
 - 与 USDB state view 交叉校验 registry id / active version set id。
 
+当前进度：go-ethereum 已在 `ChainConfig.usdb.activations` 中实现按 ETHW block 排序的
+完整 version set、边界 lookup、冲突/顺序校验、`CheckCompatible` 回退高度以及 genesis
+JSON roundtrip。miner、header validator 和 reward transition 均只消费该 lookup 结果，
+CLI 不能覆盖版本。跨语言 machine-readable registry、canonical encoding、
+`activation_registry_id` 和 `active_version_set_id` 仍属于 Phase 2/3 依赖；在这些 schema
+冻结前，Go chain config 是 UIP-0008 允许的早期手写实现，不另建运行时 activation service。
+
+development chain 当前只激活已经实现的 `payload_version=1` 和
+`difficulty_policy_version=1`；其余完整字段显式保留为 `0`，以免在 UIP-0011 至 UIP-0015
+实现前误激活未定义 state transition。这是开发期 staging，不改变本文对首个正式网络
+version set 的要求。
+
 # 待定事项
 
 1. machine-readable registry 的最终路径。

@@ -353,15 +353,21 @@ USDB miner 和 validator 都依赖本地 USDB companion service。
 当前 go-ethereum 原型已有：
 
 - miner-side USDB payload builder。
-- validator-side USDB reward verifier。
-- `ChainConfig.usdb.payloadVersion / difficultyPolicyVersion` genesis 配置和按 ETHW block
-  number 的 lookup 入口。
+- miner/validator/reward 共用的 historical economic-profile resolver。
+- `ChainConfig.usdb.activations[]` 完整 version set 及按 ETHW block number 的 lookup；
+  配置顺序/冲突校验、`CheckCompatible` 和 genesis JSON roundtrip 已覆盖。
 - miner-side `--miner.usdb.rpcurl / passid / timeout` 运行参数。
 - validator-side `--ethash.usdb.rpcurl / timeout` 运行参数。
 
 当前实现已经迁移到 UIP-0007 `ProfileSelectorPayload` 107-byte 结构，并删除
 `--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
 的唯一来源；运行参数不能启用、关闭或覆盖共识规则。
+
+当前 development chain 只激活已经落地的 `payload_version=1` 和
+`difficulty_policy_version=1`。reward、CoinBase、fee split、collaboration efficiency、
+price 和 quote 字段已进入完整 activation record，但在对应 UIP 实现前保持 `0`；任何
+非零但本地未支持的 policy 都 fail closed。首个正式网络仍必须在相关实现完成后按本文
+的 v1 version set 从 genesis 激活。
 
 # Reward / Difficulty / Fee Split 边界
 
