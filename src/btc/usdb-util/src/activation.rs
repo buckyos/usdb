@@ -945,6 +945,19 @@ mod tests {
         }
     }
 
+    fn embedded_regtest_with_energy_v2_at(height: u64) -> BtcActivationRegistry {
+        let mut registry = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        registry.records.push(record(
+            VersionFamily::EnergyFormulaVersion,
+            VersionValue::String("uip-0003-pass-energy-formula:v2".to_string()),
+            height,
+            Some(VersionValue::String(ENERGY_FORMULA_VERSION_V1.to_string())),
+        ));
+        registry
+    }
+
     #[test]
     fn embedded_registries_resolve_supported_btc_versions() {
         for (network, expected_registry_id) in [
@@ -1012,6 +1025,33 @@ mod tests {
     }
 
     #[test]
+    fn public_registry_rejects_manual_activation_override() {
+        let json = format!(
+            r#"{{
+                "schema_version": "{}",
+                "scope": {{"network_type":"mainnet","network_id":"btc-mainnet"}},
+                "records": [{{
+                    "uip":"UIP-0003",
+                    "version_family":"energy_formula_version",
+                    "version_value":"{}",
+                    "activation_height":0,
+                    "activation_anchor":"manual",
+                    "status":"Active",
+                    "supersedes":null,
+                    "notes":"invalid public manual override"
+                }}]
+            }}"#,
+            ACTIVATION_REGISTRY_SCHEMA_VERSION, ENERGY_FORMULA_VERSION_V1
+        );
+        match BtcActivationRegistry::from_json(&json) {
+            Err(ActivationRegistryError::Parse(message)) => {
+                assert!(message.contains("activation_anchor"));
+            }
+            result => panic!("expected public manual override to fail parsing: {result:?}"),
+        }
+    }
+
+    #[test]
     fn btc_indexer_rejects_extra_active_family() {
         let registry = embedded_btc_activation_registry(Network::Regtest).unwrap();
         let mut versions = registry.lookup_active_version_set(0).unwrap();
@@ -1044,8 +1084,79 @@ mod tests {
         registry.validate().unwrap();
         let before = registry.lookup_active_version_set(99).unwrap();
         let at = registry.lookup_active_version_set(100).unwrap();
+        let after = registry.lookup_active_version_set(101).unwrap();
         assert_eq!(before.get(VersionFamily::EnergyFormulaVersion), Some(&v1));
         assert_eq!(at.get(VersionFamily::EnergyFormulaVersion), Some(&v2));
+        assert_eq!(after.get(VersionFamily::EnergyFormulaVersion), Some(&v2));
+    }
+
+    #[test]
+    fn unsupported_formula_version_fails_closed_at_activation_boundary() {
+        let registry = embedded_regtest_with_energy_v2_at(100);
+        registry.validate().unwrap();
+
+        registry
+            .lookup_active_version_set(99)
+            .unwrap()
+            .validate_btc_indexer_v1()
+            .unwrap();
+        assert!(matches!(
+            registry
+                .lookup_active_version_set(100)
+                .unwrap()
+                .validate_btc_indexer_v1(),
+            Err(ActivationRegistryError::VersionNotSupported {
+                family: VersionFamily::EnergyFormulaVersion,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cross_activation_reorg_and_restart_preserve_version_and_commit_identity() {
+        let registry = embedded_regtest_with_energy_v2_at(100);
+        registry.validate().unwrap();
+        let encoded = serde_json::to_string(&registry).unwrap();
+        let reloaded = BtcActivationRegistry::from_json(&encoded).unwrap();
+
+        let before_id = reloaded
+            .lookup_active_version_set(99)
+            .unwrap()
+            .active_version_set_id();
+        let at_id = reloaded
+            .lookup_active_version_set(100)
+            .unwrap()
+            .active_version_set_id();
+        let after_id = reloaded
+            .lookup_active_version_set(101)
+            .unwrap()
+            .active_version_set_id();
+        assert_ne!(before_id, at_id);
+        assert_eq!(after_id, at_id);
+
+        let rollback_id = reloaded
+            .lookup_active_version_set(99)
+            .unwrap()
+            .active_version_set_id();
+        let replay_id = reloaded
+            .lookup_active_version_set(100)
+            .unwrap()
+            .active_version_set_id();
+        assert_eq!(rollback_id, before_id);
+        assert_eq!(replay_id, at_id);
+
+        let mut identity = crate::LocalStateCommitIdentity {
+            commit_protocol_version: COMMIT_PROTOCOL_VERSION_V1.to_string(),
+            upstream_snapshot_id: "11".repeat(32),
+            active_version_set_id: before_id,
+            local_synced_block_height: 100,
+            latest_pass_block_commit: None,
+            latest_active_balance_snapshot: None,
+        };
+        let before_commit = crate::build_local_state_commit(&identity);
+        identity.active_version_set_id = at_id;
+        let activated_commit = crate::build_local_state_commit(&identity);
+        assert_ne!(before_commit, activated_commit);
     }
 
     #[test]

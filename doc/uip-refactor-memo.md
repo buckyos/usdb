@@ -636,7 +636,7 @@
 
 ## UIP-0008 Activation Registry 与 State Identity
 
-状态：机器可读 registry、canonical identity、Rust 历史解析链路和初始 Go codec 已提交；Go 跨语言 registry binding/height lookup 批次已实现，尚未提交，等待 review。
+状态：机器可读 registry、canonical identity、Rust 历史解析链路和 Go 跨语言 registry binding/height lookup 已分别通过 `ed6287c`、`9295df636` 提交；集中测试补充尚未提交，等待 review。
 
 ### Registry Contract
 
@@ -666,7 +666,21 @@
 
 ### 已验证与后续边界
 
-- Go 聚焦测试已覆盖 generated registry/set golden、payload-height boundary lookup、unknown/tampered registry、chain-config binding compatibility、historical query pinning和未知 formula dispatch；`internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` 当前测试通过。
+- Rust activation matrix 新增 public `manual` override 拒绝、before/at/after、unsupported v2、跨激活 rollback/replay、registry JSON reload 及 active-set 引起 local commit ID 变化测试；`usdb-util` 为 28 passed、1 个既有 Electrs live test ignored。
+- Go 聚焦测试覆盖 generated registry/set golden、payload-height boundary lookup、unknown/tampered registry、chain-config binding compatibility、historical query pinning、未知 formula dispatch，以及 synthetic golden reload 后的跨激活 rollback/replay；`internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` 当前测试通过。
+- `usdb-indexer` 全量回归为 282 passed、5 ignored；`balance-history` 排除依赖本机 height-900000 snapshot fixture 后为 101 passed，其中包含 2 个 fake-chain sync tests 和 1 个 library export integration test。
+- Rust generator `--check` 已确认提交的 Go golden artifact 与 `btc-mainnet`、`btc-regtest` registry 完全一致。
+- devnet/regtest 基础跨进程 E2E 使用当前源码 geth，通过真实 `bitcoind -> ord -> balance-history -> usdb-indexer -> geth` 链路验证 13 个 USDB block 的 selector、registry/set golden、profile、difficulty 和 reward。
+- fresh-validator historical E2E 验证 node 1 在 BTC height 134 生成的 12 个 USDB block，在 BTC head 前进到 137 且 pass raw energy 从 0 变为 2000 后，仍可由全新 node 2 同步到相同 head 并按旧高度完整重放。
+- 当前只有 v1 是受支持版本，因此真实跨 activation-height live 测试尚无合法的第二版本可激活；现阶段使用 synthetic registry 覆盖跨边界 reorg/restart，并要求未知 v2 fail closed。第二个受支持版本落地后再升级为 live 场景。
+
+### TODO：接入正式 CI
+
+- 当前 USDB 项目尚未配置正式 CI，本批不新增 CI provider/workflow 文件。
+- 建立 CI 后，将 `cargo fmt --all -- --check`、`cargo clippy -p usdb-util --all-targets -- -D warnings`、`cargo test -p usdb-util`、`cargo test -p usdb-indexer` 和 balance-history 自动化测试作为 Rust gate。
+- CI 必须运行 `generate_go_btc_activation_golden -- --check <go-artifact>`，防止 Rust registry 与 Go 内嵌 artifact 漂移。
+- Go gate 使用项目冻结的 Go toolchain 运行 `internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` tests 和 vet，并检查 Python verifier compile 与 live shell syntax。
+- 基础和 fresh-validator 跨进程 E2E 初期作为手工或定时任务；运行资源、端口隔离和稳定时长明确后再决定是否进入每次提交的 blocking gate。
 
 ## USDB Chain 命名与系统边界收口
 
