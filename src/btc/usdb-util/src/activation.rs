@@ -585,6 +585,12 @@ impl BtcActivationRegistry {
                 record
             )));
         }
+        if record.activation_height > u64::from(u32::MAX) {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "BTC activation height {} exceeds the payload uint32 range",
+                record.activation_height
+            )));
+        }
         if !BTC_INDEXER_V1_FAMILIES.contains(&record.version_family) {
             return Err(ActivationRegistryError::InvalidRecord(format!(
                 "BTC registry {} cannot contain USDB-chain family {}",
@@ -640,6 +646,8 @@ pub struct UsdbChainConfigReleaseBinding {
     pub chain_id: u64,
     /// Canonical 32-byte USDB genesis block hash in lowercase hexadecimal.
     pub genesis_hash: String,
+    /// BTC registry identity committed by this USDB chain config.
+    pub btc_activation_registry_id: String,
     /// Repository source that owns the USDB-chain activation schedule.
     pub source: String,
     /// Machine-readable declaration that USDB chain config is authoritative.
@@ -689,11 +697,13 @@ impl CrossChainReleaseManifest {
         }
 
         let mut btc_network_ids = BTreeSet::new();
+        let mut btc_registry_ids = BTreeSet::new();
         for binding in &self.btc_activation_registries {
             if binding.network_id.is_empty()
                 || binding.artifact.is_empty()
                 || !is_canonical_hex_32(&binding.activation_registry_id)
                 || !btc_network_ids.insert(binding.network_id.clone())
+                || !btc_registry_ids.insert(binding.activation_registry_id.clone())
             {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
                     "invalid BTC release binding for network {}",
@@ -707,6 +717,7 @@ impl CrossChainReleaseManifest {
             if binding.network_id.is_empty()
                 || binding.chain_id == 0
                 || !is_canonical_hex_32(&binding.genesis_hash)
+                || !btc_registry_ids.contains(&binding.btc_activation_registry_id)
                 || binding.source.is_empty()
                 || binding.activation_authority != "chain_config.usdb.activations"
                 || !usdb_network_ids.insert(binding.network_id.clone())
@@ -1123,6 +1134,20 @@ mod tests {
     }
 
     #[test]
+    fn activation_height_must_fit_payload_btc_height() {
+        let registry = registry(vec![record(
+            VersionFamily::EnergyFormulaVersion,
+            VersionValue::String("v1".to_string()),
+            u64::from(u32::MAX) + 1,
+            None,
+        )]);
+        assert!(matches!(
+            registry.validate(),
+            Err(ActivationRegistryError::InvalidRecord(_))
+        ));
+    }
+
+    #[test]
     fn usdb_chain_family_is_rejected_by_btc_registry() {
         let registry = registry(vec![record(
             VersionFamily::PayloadVersion,
@@ -1209,6 +1234,12 @@ mod tests {
         assert_eq!(
             usdb_chain.activation_authority,
             "chain_config.usdb.activations"
+        );
+        assert_eq!(
+            usdb_chain.btc_activation_registry_id,
+            embedded_btc_activation_registry(Network::Regtest)
+                .unwrap()
+                .activation_registry_id()
         );
     }
 

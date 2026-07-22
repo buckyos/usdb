@@ -354,8 +354,10 @@ USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
 
 - miner-side USDB payload builder。
 - miner/validator/reward 共用的 historical economic-profile resolver。
-- `ChainConfig.usdb.activations[]` 完整 version set 及按 USDB block number 的 lookup；
-  配置顺序/冲突校验、`CheckCompatible` 和 genesis JSON roundtrip 已覆盖。
+- `ChainConfig.usdb.btcActivationRegistryId + activations[]`、按 USDB block number 的
+  version lookup、registry binding/配置顺序/冲突校验、`CheckCompatible` 和 genesis JSON roundtrip。
+- validator 使用 chain-config binding 和 payload BTC height 查询 Rust registry 生成的本地 Go
+  golden set，再校验 companion 返回的 registry/set identity 并按 formula version 分派。
 - miner-side `--miner.usdb-indexer.rpcurl` / `--miner.usdb.passid` /
   `--miner.usdb-indexer.timeout` 运行参数。
 - validator-side `--ethash.usdb-indexer.rpcurl` /
@@ -457,8 +459,9 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
 要求：
 
 - `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 `ChainConfig.usdb.activations[]`。
+- `ChainConfig.usdb.btcActivationRegistryId` 必须绑定本 USDB network 接受的 BTC source registry；它是 historical profile 的辅助共识条件，不替代 `activations[]`。
 - USDB chain miner、validator 和 reward transition 必须按待处理 USDB block number 调用本地 chain-config lookup；禁止通过 companion RPC、BTC registry 或 CLI 参数决定 expected version。
-- UIP-0006 profile 的 `activation_registry_id` 只标识其 BTC source network registry。USDB chain 验证该 identity 在同一次 historical replay 中稳定且与 profile/set 自洽，但不把它当作 USDB chain activation source。
+- UIP-0006 profile 的 `activation_registry_id` 只标识其 BTC source network registry。USDB chain 必须要求它等于 chain-config binding，并按 payload BTC 高度与本地 Go golden set 交叉校验，但不把它当作 USDB chain activation source。
 - audit-only cross-chain release manifest 可以关联 BTC registry ID 与 USDB chain `chain_id/genesis_hash/chain-config source`；manifest 不进入 header validation 或 runtime version lookup。
 
 # Chain Config 示例
@@ -485,12 +488,21 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
   "chainIdAlt": 20260323,
   "terminalTotalDifficulty": null,
   "usdb": {
-    "payloadVersion": 1,
-    "difficultyPolicyVersion": 1,
-    "rewardRuleVersion": 1,
-    "maximumExtraDataSize": 160,
-    "genesisDifficulty": "8192",
-    "minimumDifficulty": "8192"
+    "btcActivationRegistryId": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d",
+    "activations": [{
+      "block": 0,
+      "versions": {
+        "payloadVersion": 1,
+        "difficultyPolicyVersion": 1,
+        "rewardRuleVersion": 0,
+        "coinbaseEmissionPolicyVersion": 0,
+        "feeSplitPolicyVersion": 0,
+        "collaborationEfficiencyPolicyVersion": 0,
+        "pricePolicyVersion": 0,
+        "quotePolicyVersion": 0,
+        "auxPoolPolicyVersion": 0
+      }
+    }]
   }
 }
 ```
@@ -530,6 +542,8 @@ USDB:
 - 当前 payload 精确长度校验为 `107`。
 - `payload_version` mismatch fail closed。
 - `difficulty_policy_version` mismatch fail closed。
+- chain config 缺少、修改或绑定本地未知的 BTC `activation_registry_id` 时 fail closed。
+- validator 按 payload BTC 高度校验 generated golden active set，且未知 BTC-side formula version fail closed。
 - USDB reward / difficulty versions 从 genesis 生效。
 - bootnodes 默认不连接 Ethereum / legacy ETHW 网络。
 - public network 缺少 bootnodes / network id / genesis hash 时不得发布。

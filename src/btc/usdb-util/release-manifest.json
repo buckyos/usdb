@@ -21,9 +21,10 @@
       "network_id": "usdb-devnet-20260323",
       "chain_id": 20260323,
       "genesis_hash": "4548fb39b8a73ab3f3d997a6d8c2869f83fadbc9e0d84ac198d6424fbbab90b4",
+      "btc_activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d",
       "source": "go-ethereum/params/config.go:USDBChainConfig",
       "activation_authority": "chain_config.usdb.activations"
     }
   ],
-  "notes": "Audit-only release binding. BTC services load only their selected network registry; USDB nodes resolve consensus activation exclusively from genesis and ChainConfig.usdb.activations."
+  "notes": "Audit-only release binding. BTC services load only their selected network registry; each USDB chain config commits its expected BTC registry identity while resolving USDB-chain policy versions exclusively from ChainConfig.usdb.activations."
 }

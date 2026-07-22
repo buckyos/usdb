@@ -609,7 +609,7 @@
 
 ## UIP-0007 Chain Config、Header Validation 与 CLI 边界
 
-状态：UIP-0007 chain-config/CLI 基础批次已提交；UIP-0008/UIP-0009 activation、实际 difficulty、reward mock 清理和更新后的 live/E2E 改动尚未提交，等待 review。
+状态：UIP-0007 chain-config/CLI、UIP-0008 初始 activation ownership 和 USDB 命名批次已提交；本节保留实现边界记录。
 
 ### Chain Config 与 Miner
 
@@ -636,15 +636,15 @@
 
 ## UIP-0008 Activation Registry 与 State Identity
 
-状态：机器可读 registry、canonical identity 和 Rust 历史解析链路已完成；改动尚未提交，等待 review。
+状态：机器可读 registry、canonical identity、Rust 历史解析链路和初始 Go codec 已提交；Go 跨语言 registry binding/height lookup 批次已实现，尚未提交，等待 review。
 
 ### Registry Contract
 
 - 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 `activation-registry/btc-mainnet.json` 与 `btc-regtest.json`；每个 artifact 在顶层固定一个 BTC network scope，record 只允许 BTC-side family 和 `activation_height`。
 - Rust API 改为先按配置的 `bitcoin::Network` 选择唯一内嵌 registry，再按目标高度 lookup；testnet3/testnet4/signet 在没有独立 artifact 时 fail closed，不能回退或混用其他 network。
 - `activation_registry_id` 改为 network-scoped canonical encoding，固定 golden：`btc-mainnet=bb751626...a7d39e`、`btc-regtest=22d820e6...aaf83d`；两者当前 active set 相同，继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
-- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 只由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 解析。
-- 新增 audit-only `release-manifest.json`，关联 BTC registry IDs 与 USDB `chain_id/genesis_hash/chain-config authority`；manifest 不参与 BTC identity、USDB header validation 或 runtime activation lookup。
+- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 只由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 解析。`ChainConfig.usdb.btcActivationRegistryId` 仅绑定可接受的 BTC historical-profile registry identity。
+- audit-only `release-manifest.json` 关联 BTC registry IDs 与 USDB `chain_id/genesis_hash/chain-config authority/btc registry binding`；manifest 自身不参与 BTC identity、USDB header validation 或 runtime activation lookup。
 - 当前 `btc-mainnet` height 0 只定义 BTC source history 的 v1 解释，不代表 USDB public mainnet 已发布；正式网络的 indexing origin 和 USDB genesis 仍需分别冻结。
 
 ### State Identity Boundary
@@ -659,11 +659,14 @@
 - balance-history 在 indexer/RPC 启动时校验当前 durable height，并在每个 batch 写入前逐高度校验 semantics activation；历史 state-ref lookup 将 activation 失败映射为结构化共识错误。
 - historical RPC 以请求冻结高度解析 active set，重算 set ID 后再构造 local/system state；expected state 与 cursor 对 registry/set identity 做精确匹配。
 - 新增 activation record、supported version、active set identity 和 commit protocol 的结构化 RPC 错误码；formula member 不支持继续映射到专用 formula mismatch。旧 `PROTOCOL_VERSION_MISMATCH/-32051` 随全局 protocol 字段删除，不保留 client 兼容映射。
-- Go client/verifier/builder 同步使用严格 active-set decoder 和 canonical ID 校验；builder 还会检查 current state 与 historical profile 两次读取之间的 registry/set identity 漂移。
+- Rust 新增确定性 `generate_go_btc_activation_golden` 工具，将两个 registry 的 active 高度边界展开为 Go 内嵌 artifact；`--check` 可以在 CI/release 中直接拒绝跨仓库 artifact 漂移。
+- `ChainConfig.usdb.btcActivationRegistryId` 进入 genesis JSON 与 `CheckCompatible`；built-in development chain 固定绑定 `btc-regtest` registry。Go builder/verifier 对未知 binding 启动失败，并使用 `binding + payload BTC height` 解析本地 expected set。
+- historical profile query 现在主动携带 expected registry/set ID；返回值必须同时通过 chain-config registry equality、canonical set ID 重算及本地 height lookup。builder 继续检查 current state 与 historical profile 两次读取之间的 identity 漂移。
+- verifier 从 expected active set 解析 `energy_formula_version`、`effective_energy_formula_version`、`level_formula_version` 后分别分派公式；当前只实现 v1，任何未知版本均 fail closed，而不是隐式复用最新公式。
 
 ### 已验证与后续边界
 
-- `usdb-util` activation 16 个聚焦测试通过（新增 network scope、未配置 network、非法 BTC network class、USDB-chain family rejection、registry ID golden 与 release manifest 防篡改）；`cargo test -p usdb-indexer`：282 passed、0 failed、5 ignored。
+- Go 聚焦测试已覆盖 generated registry/set golden、payload-height boundary lookup、unknown/tampered registry、chain-config binding compatibility、historical query pinning和未知 formula dispatch；`internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` 当前测试通过。
 
 ## USDB Chain 命名与系统边界收口
 

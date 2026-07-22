@@ -25,6 +25,7 @@ Created: 2026-04-26
 
 - BTC 服务只加载配置 network 对应的一个 registry 文件。
 - USDB chain 节点只从本地 chain config 取得 expected USDB chain versions。
+- USDB chain config 还固定一个 `btcActivationRegistryId`，只用于约束 payload 引用的 BTC historical profile identity。
 - companion RPC 只返回 payload 指向的历史 BTC economic state，不回答 USDB chain 规则是否激活。
 - control-plane 可以汇总和审计这些 identity，但不能成为共识路径上的 activation service。
 
@@ -64,12 +65,15 @@ testnet3、testnet4 和 signet 尚无独立 artifact，配置这些 network 时�
 
 go-ethereum 的 `ChainConfig.usdb.activations[]` 是 USDB chain activation 的唯一运行时来源。
 
+`ChainConfig.usdb.btcActivationRegistryId` 独立绑定允许引用的 BTC registry。它不向 `activations[]` 注入任何 USDB-chain version，但 miner/validator 必须用它在内嵌 Go golden artifact 中按 payload BTC 高度查询 expected set。
+
 当前实现已覆盖：
 
 - activation record 严格按 USDB block 排序且禁止同高冲突。
 - `USDBConsensusAt(blockNumber)` 返回目标高度最新的完整 version set。
 - `CheckCompatible` 拒绝修改已生效 activation，并给出 rewind height。
 - genesis JSON roundtrip 保留完整 activation records。
+- genesis JSON roundtrip 保留 `btcActivationRegistryId`，`CheckCompatible` 拒绝修改已经生效的 binding。
 - miner、validator 和 reward transition 消费同一个 resolved chain-config profile。
 - CLI 仅提供 RPC URL、timeout、selected pass 等运行参数，不能启用或覆盖共识规则。
 
@@ -87,7 +91,7 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 边界：
 
 - `snapshot_id` 只承诺 upstream balance-history state。
-- `activation_registry_id` 是 BTC source-network registry 的审计 identity。
+- `activation_registry_id` 是 BTC source-network registry identity；BTC service 本地选择它，USDB chain config 则绑定 validator 允许接受的具体 identity。
 - `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则。
 - USDB chain-config activation identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
 
@@ -102,7 +106,7 @@ src/btc/usdb-util/release-manifest.json
 它记录：
 
 - BTC registry artifact path、network scope 和 canonical ID。
-- USDB-chain network ID、chain ID、genesis hash、chain-config source 和 activation authority。
+- USDB-chain network ID、chain ID、genesis hash、chain-config source、activation authority 和绑定的 BTC registry ID。
 
 manifest 用于 release review、CI 和部署审计。它不得：
 
@@ -128,7 +132,9 @@ manifest 用于 release review、CI 和部署审计。它不得：
 ## go-ethereum
 
 - 本地 chain config 决定 expected USDB chain versions。
-- historical profile resolver 校验 BTC registry/set identity 的格式、自洽性及同一次 replay 内稳定性。
+- Rust generator 从同一 network-scoped registry 生成 Go golden artifact；`--check` 模式用于 CI/release drift 检查。
+- historical profile resolver 使用 `chain config registry ID + payload BTC height` 本地解析 expected set，再校验 RPC registry/set identity、canonical set hash 和历史状态选择器。
+- profile resolver 按 expected set 中的 raw-energy、effective-energy 和 level formula version 显式分派；本地未支持版本 fail closed。
 - BTC registry identity 漂移、profile 字段篡改或 companion service 不可用时停止组块或拒绝区块。
 
 # 测试状态
@@ -143,7 +149,7 @@ Rust registry tests 覆盖：
 - canonical record ordering、network-scoped registry ID golden。
 - release manifest 重算 BTC registry ID，并固定 USDB chain ID / genesis hash / authority。
 
-Go tests继续覆盖 active-version-set codec/golden、chain-config activation boundary、`CheckCompatible`、genesis roundtrip、miner/validator version guard 和 RPC failure mapping。
+Go tests 覆盖 generated registry/set golden、payload-height lookup、unknown/tampered registry、active-version-set codec、chain-config binding/activation boundary、`CheckCompatible`、genesis roundtrip、formula dispatch、miner/validator version guard 和 RPC failure mapping。
 
 # 后续事项
 
