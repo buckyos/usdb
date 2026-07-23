@@ -636,7 +636,7 @@
 
 ## UIP-0008 Activation Registry 与 State Identity
 
-状态：机器可读 registry、canonical identity、Rust 历史解析链路和 Go 跨语言 registry binding/height lookup 已分别通过 `ed6287c`、`9295df636` 提交；immutable revision catalog / historical replay 已通过 `7f90c6b` 提交，per-checkpoint binding / second-version conformance / cross-process upgrade E2E 已通过 `74f2aa545` 提交。本轮术语收口尚未提交，等待 review。
+状态：机器可读 registry、canonical identity、Rust 历史解析链路和 Go 跨语言 registry binding/height lookup 已分别通过 `ed6287c`、`9295df636` 提交；immutable revision catalog / historical replay 已通过 `7f90c6b` 提交，per-checkpoint binding / second-version conformance / cross-process upgrade E2E 已通过 `74f2aa545` 提交，activation schedule 术语收口已通过 `0cb67a8` 提交。
 
 ### Activation 术语边界
 
@@ -681,7 +681,17 @@
 - devnet/regtest 基础跨进程 E2E 使用当前源码 geth，通过真实 `bitcoind -> ord -> balance-history -> usdb-indexer -> geth` 链路验证 13 个 USDB block 的 selector、registry/set golden、profile、difficulty 和 reward。
 - fresh-validator historical E2E 验证 node 1 在 BTC height 134 生成的 12 个 USDB block，在 BTC head 前进到 137 且 pass raw energy 从 0 变为 2000 后，仍可由全新 node 2 同步到相同 head 并按旧高度完整重放。
 - production 仍只支持 difficulty policy v1；测试构建通过 `usdb_activation_conformance` tag 启用保留 policy `65535 = v1 result + 1`，不赋予未来正式 v2 语义。默认二进制在激活点 fail closed，tagged 二进制用于验证第二版本分派。
-- 真实跨进程升级 E2E 已验证默认 geth 仅产出 block 1-3 并在 block 4 停止，tagged geth 复用同一 datadir 后继续到 block 13；逐块 profile replay 确认 H 前使用 registry revision 1 / policy 1，H 起使用 revision 2 / policy 65535，difficulty 与 reward 重算一致。
+- 真实跨进程升级 E2E 已验证默认 geth 仅产出 block 1-3 并在 block 4 停止，tagged geth 复用同一 datadir 后继续跨越激活点；逐块 profile replay 确认 H 前使用 registry revision 1 / policy 1，H 起使用 revision 2 / policy 65535，difficulty 与 reward 重算一致。
+
+### 集中 live/regtest 故障与重放测试（2026-07-23）
+
+- basic、energy growth、BTC head 前进后的 historical replay 和 activation upgrade 四条既有跨进程基线重新实跑通过；selector、registry/set golden、profile、difficulty 和 UIP-0011 激活前静态 reward 均逐块交叉重算。
+- indexer outage/recovery 场景确认共识依赖下线后 miner 停止出块、fresh validator 保持 genesis；服务恢复后 miner 继续出块，validator 追平相同 height/head hash。
+- selector tamper matrix 先导入未修改 block fixture 作为 control，再分别篡改 `payload_version`、`difficulty_policy_version`、`btc_height`、`snapshot_id`、`system_state_id`、`pass_id`；六项均按预期共识错误拒绝。
+- same-height BTC replacement 场景确认 BTC 高度不变但 block hash/snapshot identity 改变时，fresh validator 以 `SNAPSHOT_ID_MISMATCH` 拒绝旧 USDB selector 链并保持 genesis。
+- test-only 第二版本激活场景增加独立 tagged validator；其从 genesis 完整重放跨激活链并接受与 miner 相同的 block 19 head，验证结果不依赖复用 miner datadir。
+- live 测试暴露离线 `geth import/export` 未应用 `--ethash.usdb-indexer.*` 配置，以及 `import --nocompaction` 吞掉 import error 的问题；Go 侧已直接修复并增加命令 flags/config 单元测试，不保留旧行为。
+- normal 与 `usdb_activation_conformance` 两套 Go 回归通过；本批脚本、CLI 修复和文档改动尚未提交，等待 review。
 
 ### TODO：接入正式 CI
 
