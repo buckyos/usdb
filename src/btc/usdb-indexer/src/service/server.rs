@@ -431,11 +431,13 @@ impl UsdbIndexerRpcServer {
         }
 
         if let Some(local_state) = local_state {
+            reference.activation_registry_id = Some(local_state.activation_registry_id.clone());
             reference.active_version_set_id = Some(local_state.active_version_set_id.clone());
             reference.local_state_commit = Some(local_state.local_state_commit.clone());
         }
 
         if let Some(system_state) = system_state {
+            reference.activation_registry_id = Some(system_state.activation_registry_id.clone());
             reference.active_version_set_id = Some(system_state.active_version_set_id.clone());
             reference.system_state_id = Some(system_state.system_state_id.clone());
             reference.local_state_commit = Some(system_state.local_state_commit.clone());
@@ -758,7 +760,10 @@ impl UsdbIndexerRpcServer {
             return Ok(resolved_height);
         }
 
-        let state_ref = self.build_historical_state_ref_info(resolved_height)?;
+        let state_ref = self.build_historical_state_ref_info_with_registry(
+            resolved_height,
+            context.expected_state.activation_registry_id.as_deref(),
+        )?;
         self.validate_historical_state_ref_expected_state(
             resolved_height,
             &state_ref,
@@ -814,7 +819,10 @@ impl UsdbIndexerRpcServer {
         self.validate_economic_view_version(view_version, requested_height, context)?;
         let resolved_height = self.resolve_contextual_query_height(requested_height, context)?;
         self.ensure_history_height_retained(resolved_height, "historical state")?;
-        let state_ref = self.build_historical_state_ref_info(resolved_height)?;
+        let registry_id =
+            context.and_then(|value| value.expected_state.activation_registry_id.as_deref());
+        let state_ref =
+            self.build_historical_state_ref_info_with_registry(resolved_height, registry_id)?;
         if let Some(context) = context
             && !context.expected_state.is_empty()
         {
@@ -858,7 +866,15 @@ impl UsdbIndexerRpcServer {
         query_height: u32,
         initial_state_ref: &HistoricalStateRefInfo,
     ) -> Result<HistoricalStateRefInfo, JsonError> {
-        let revalidated_state_ref = self.build_historical_state_ref_info(query_height)?;
+        let revalidated_state_ref = self.build_historical_state_ref_info_with_registry(
+            query_height,
+            Some(
+                initial_state_ref
+                    .local_state_commit_info
+                    .activation_registry_id
+                    .as_str(),
+            ),
+        )?;
         let expected_state = ConsensusStateReference::from(initial_state_ref);
         if let Err(err) = self.validate_historical_state_ref_expected_state(
             query_height,
@@ -1067,8 +1083,31 @@ impl UsdbIndexerRpcServer {
         snapshot: &IndexerSnapshotInfo,
         require_latest_balance_snapshot_consistency: bool,
     ) -> Result<LocalStateCommitInfo, JsonError> {
+        self.build_local_state_commit_info_at_height_with_registry(
+            snapshot,
+            require_latest_balance_snapshot_consistency,
+            None,
+        )
+    }
+
+    fn build_local_state_commit_info_at_height_with_registry(
+        &self,
+        snapshot: &IndexerSnapshotInfo,
+        require_latest_balance_snapshot_consistency: bool,
+        requested_registry_id: Option<&str>,
+    ) -> Result<LocalStateCommitInfo, JsonError> {
         let synced_height = snapshot.local_synced_block_height;
-        let active_version_set = self.active_version_set_at(synced_height)?;
+        let registry_id = requested_registry_id
+            .unwrap_or_else(|| {
+                self.indexer
+                    .activation_registry_catalog()
+                    .current_registry_id()
+            })
+            .to_string();
+        let active_version_set = self
+            .indexer
+            .active_version_set_at_with_registry(&registry_id, synced_height)
+            .map_err(|error| self.to_activation_error(synced_height, error))?;
         let commit_protocol_version = active_version_set
             .require_string(VersionFamily::CommitProtocolVersion)
             .map_err(|error| self.to_activation_error(synced_height, error))?
@@ -1143,7 +1182,7 @@ impl UsdbIndexerRpcServer {
         };
 
         Ok(LocalStateCommitInfo::from(LocalStateCommitInfoSeed {
-            activation_registry_id: self.indexer.activation_registry().activation_registry_id(),
+            activation_registry_id: registry_id,
             active_version_set,
             commit_protocol_version,
             local_synced_block_height: synced_height,
@@ -1192,9 +1231,20 @@ impl UsdbIndexerRpcServer {
         &self,
         block_height: u32,
     ) -> Result<HistoricalStateRefInfo, JsonError> {
+        self.build_historical_state_ref_info_with_registry(block_height, None)
+    }
+
+    fn build_historical_state_ref_info_with_registry(
+        &self,
+        block_height: u32,
+        requested_registry_id: Option<&str>,
+    ) -> Result<HistoricalStateRefInfo, JsonError> {
         let snapshot_info = self.upstream_snapshot_info_at_height(block_height)?;
-        let local_state_commit_info =
-            self.build_local_state_commit_info_at_height(&snapshot_info, false)?;
+        let local_state_commit_info = self.build_local_state_commit_info_at_height_with_registry(
+            &snapshot_info,
+            false,
+            requested_registry_id,
+        )?;
         let system_state_info =
             self.build_system_state_info_from_local_state(&local_state_commit_info);
 
@@ -2212,7 +2262,10 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         self.ensure_consensus_query_ready(Some(params.block_height), "historical state ref query")?;
         let requested_height =
             self.resolve_height_with_consensus_error(Some(params.block_height))?;
-        let state_ref = self.build_historical_state_ref_info(requested_height)?;
+        let state_ref = self.build_historical_state_ref_info_with_registry(
+            requested_height,
+            expected_state.activation_registry_id.as_deref(),
+        )?;
         self.validate_historical_state_ref_expected_state(
             requested_height,
             &state_ref,
@@ -3229,17 +3282,19 @@ mod tests {
     use crate::status::StatusManager;
     use crate::storage::{MinerPassInfo, PassEnergyRecord};
     use bitcoincore_rpc::bitcoin::hashes::Hash;
-    use bitcoincore_rpc::bitcoin::{OutPoint, ScriptBuf, Txid};
+    use bitcoincore_rpc::bitcoin::{Network, OutPoint, ScriptBuf, Txid};
     use ord::InscriptionId;
     use ordinals::SatPoint;
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
-        BtcScriptHash, ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
-        ConsensusStateReference, LocalStateActiveBalanceSnapshot, LocalStateCommitIdentity,
-        LocalStatePassCommitIdentity, SystemStateIdentity, ToBtcScriptHash, VersionFamily,
-        address_string_to_script_hash, build_local_state_commit, build_system_state_id,
+        ActivationStatus, BtcActivationRecord, BtcActivationRegistryCatalog, BtcScriptHash,
+        ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
+        ConsensusStateReference, ENERGY_FORMULA_VERSION_V1, LocalStateActiveBalanceSnapshot,
+        LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
+        ToBtcScriptHash, VersionFamily, VersionValue, address_string_to_script_hash,
+        build_local_state_commit, build_system_state_id, embedded_btc_activation_registry,
     };
 
     mod economic_scale;
@@ -3440,6 +3495,22 @@ mod tests {
     }
 
     fn build_server(tag: &str, synced_height: u32) -> (UsdbIndexerRpcServer, PathBuf) {
+        build_server_with_optional_catalog(tag, synced_height, None)
+    }
+
+    fn build_server_with_catalog(
+        tag: &str,
+        synced_height: u32,
+        catalog: BtcActivationRegistryCatalog,
+    ) -> (UsdbIndexerRpcServer, PathBuf) {
+        build_server_with_optional_catalog(tag, synced_height, Some(catalog))
+    }
+
+    fn build_server_with_optional_catalog(
+        tag: &str,
+        synced_height: u32,
+        catalog: Option<BtcActivationRegistryCatalog>,
+    ) -> (UsdbIndexerRpcServer, PathBuf) {
         let root_dir = test_root_dir(tag);
         let mut config_file = IndexerConfig::default();
         // Test helpers that use synthetic low BTC heights should not inherit the
@@ -3455,7 +3526,11 @@ mod tests {
         let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
-        let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
+        let mut indexer = InscriptionIndexer::new(config.clone(), status.clone()).unwrap();
+        if let Some(catalog) = catalog {
+            indexer.replace_activation_registry_catalog_for_test(catalog);
+        }
+        let indexer = Arc::new(indexer);
 
         indexer
             .miner_pass_storage()
@@ -3471,6 +3546,29 @@ mod tests {
             shutdown_tx,
         );
         (server, root_dir)
+    }
+
+    fn test_registry_revision_catalog() -> (BtcActivationRegistryCatalog, String, String) {
+        let previous = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        let mut current = previous.clone();
+        current.records.push(BtcActivationRecord {
+            uip: "UIP-0008".to_string(),
+            version_family: VersionFamily::EnergyFormulaVersion,
+            version_value: VersionValue::String(
+                "uip-0003-pass-energy-formula:planned-v2".to_string(),
+            ),
+            activation_height: 1_000,
+            status: ActivationStatus::Planned,
+            supersedes: Some(VersionValue::String(ENERGY_FORMULA_VERSION_V1.to_string())),
+            notes: "Test-only future revision marker".to_string(),
+        });
+        let previous_id = previous.activation_registry_id();
+        let current_id = current.activation_registry_id();
+        let catalog =
+            BtcActivationRegistryCatalog::from_revisions(vec![previous, current]).unwrap();
+        (catalog, previous_id, current_id)
     }
 
     fn build_server_with_genesis(
@@ -5528,6 +5626,63 @@ mod tests {
         assert_eq!(
             rpc_info.economic_page_max_limit,
             USDB_ECONOMIC_PAGE_MAX_LIMIT
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_pass_economic_profile_replays_an_older_registry_revision() {
+        let (catalog, previous_registry_id, current_registry_id) = test_registry_revision_catalog();
+        let (server, root_dir) =
+            build_server_with_catalog("economic_profile_registry_revision", 130, catalog);
+        seed_state_ref_context(&server, 120);
+
+        let pass = make_active_pass(149, 229, 100);
+        server
+            .indexer
+            .miner_pass_storage()
+            .add_new_mint_pass_at_height(&pass, pass.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &pass, 120, LEVEL_E0);
+
+        let current = get_pass_economic_profile_for_test(&server, &pass, 120);
+        assert_eq!(
+            current.external_state.activation_registry_id,
+            current_registry_id
+        );
+
+        let mut context = ConsensusQueryContext::from(&current.external_state);
+        context.expected_state.activation_registry_id = Some(previous_registry_id.clone());
+        let replay = server
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(context),
+            })
+            .unwrap();
+
+        assert_eq!(
+            replay.external_state.activation_registry_id,
+            previous_registry_id
+        );
+        assert_eq!(
+            replay.external_state.active_version_set_id,
+            current.external_state.active_version_set_id
+        );
+        assert_eq!(
+            replay.external_state.local_state_commit,
+            current.external_state.local_state_commit
+        );
+        assert_eq!(
+            replay.external_state.system_state_id,
+            current.external_state.system_state_id
+        );
+        assert_eq!(
+            serde_json::to_value(&replay.pass).unwrap(),
+            serde_json::to_value(&current.pass).unwrap()
         );
 
         drop(server);

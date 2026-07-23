@@ -14,7 +14,7 @@ pub const ACTIVE_VERSION_SET_HASH_DOMAIN: &str = "usdb-active-version-set:v1";
 /// Hash algorithm used by registry and active-version-set identifiers.
 pub const ACTIVATION_ID_HASH_ALGO: &str = "sha256";
 /// Schema identifier for the audit-only cross-chain release manifest.
-pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v1";
+pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v2";
 
 /// UIP-0001 inscription schema implemented by the current BTC indexer.
 pub const INSCRIPTION_SCHEMA_VERSION_V1: &str = "uip-0001-miner-pass-inscription:v1";
@@ -49,13 +49,15 @@ const EMBEDDED_BTC_MAINNET_REGISTRY_JSON: &str =
     include_str!("../activation-registry/btc-mainnet.json");
 const EMBEDDED_BTC_REGTEST_REGISTRY_JSON: &str =
     include_str!("../activation-registry/btc-regtest.json");
+const EMBEDDED_BTC_REGTEST_REGISTRY_REVISION_2_JSON: &str =
+    include_str!("../activation-registry/btc-regtest-revision-2.json");
 const EMBEDDED_RELEASE_MANIFEST_JSON: &str = include_str!("../release-manifest.json");
 
-static EMBEDDED_BTC_MAINNET_REGISTRY: OnceLock<
-    Result<BtcActivationRegistry, ActivationRegistryError>,
+static EMBEDDED_BTC_MAINNET_CATALOG: OnceLock<
+    Result<BtcActivationRegistryCatalog, ActivationRegistryError>,
 > = OnceLock::new();
-static EMBEDDED_BTC_REGTEST_REGISTRY: OnceLock<
-    Result<BtcActivationRegistry, ActivationRegistryError>,
+static EMBEDDED_BTC_REGTEST_CATALOG: OnceLock<
+    Result<BtcActivationRegistryCatalog, ActivationRegistryError>,
 > = OnceLock::new();
 static EMBEDDED_RELEASE_MANIFEST: OnceLock<
     Result<CrossChainReleaseManifest, ActivationRegistryError>,
@@ -620,6 +622,161 @@ impl BtcActivationRegistry {
     }
 }
 
+/// Immutable revision catalog for one BTC network activation registry.
+///
+/// Revisions are ordered oldest to newest. A later revision must preserve every
+/// earlier record exactly, and newly active records must extend their version
+/// family beyond the previous activation height. This keeps historical lookups
+/// reproducible while allowing a future activation to be announced before it
+/// becomes active.
+#[derive(Debug, Clone)]
+pub struct BtcActivationRegistryCatalog {
+    current_registry_id: String,
+    registry_ids: Vec<String>,
+    registries: BTreeMap<String, BtcActivationRegistry>,
+}
+
+impl BtcActivationRegistryCatalog {
+    /// Builds and validates an ordered catalog whose final revision is current.
+    pub fn from_revisions(
+        revisions: Vec<BtcActivationRegistry>,
+    ) -> Result<Self, ActivationRegistryError> {
+        let current_registry_id = revisions
+            .last()
+            .map(BtcActivationRegistry::activation_registry_id)
+            .ok_or_else(|| {
+                ActivationRegistryError::InvalidRecord(
+                    "BTC activation registry catalog has no revisions".to_string(),
+                )
+            })?;
+        Self::from_revisions_with_current(revisions, &current_registry_id)
+    }
+
+    /// Builds a catalog with an explicitly selected default revision.
+    pub fn from_revisions_with_current(
+        revisions: Vec<BtcActivationRegistry>,
+        current_registry_id: &str,
+    ) -> Result<Self, ActivationRegistryError> {
+        if revisions.is_empty() {
+            return Err(ActivationRegistryError::InvalidRecord(
+                "BTC activation registry catalog has no revisions".to_string(),
+            ));
+        }
+
+        let expected_scope = revisions[0].scope.clone();
+        let mut registry_ids = Vec::with_capacity(revisions.len());
+        let mut registries = BTreeMap::new();
+        let mut previous_records: Option<BTreeSet<CanonicalRecordSortKey>> = None;
+        let mut previous_active_heights = BTreeMap::<VersionFamily, u64>::new();
+
+        for revision in revisions {
+            revision.validate()?;
+            if revision.scope != expected_scope {
+                return Err(ActivationRegistryError::InvalidRecord(format!(
+                    "BTC activation registry catalog mixes scopes {} and {}",
+                    expected_scope.network_id, revision.scope.network_id
+                )));
+            }
+
+            let registry_id = revision.activation_registry_id();
+            if registries.contains_key(&registry_id) {
+                return Err(ActivationRegistryError::ActivationRecordConflict(format!(
+                    "duplicate BTC activation registry revision {}",
+                    registry_id
+                )));
+            }
+
+            let current_records = revision
+                .records
+                .iter()
+                .map(canonical_record_sort_key)
+                .collect::<BTreeSet<_>>();
+            if let Some(previous_records) = previous_records.as_ref() {
+                if !previous_records.is_subset(&current_records) {
+                    return Err(ActivationRegistryError::InvalidRecord(format!(
+                        "BTC activation registry revision {} rewrites prior records",
+                        registry_id
+                    )));
+                }
+                for record in &revision.records {
+                    let key = canonical_record_sort_key(record);
+                    if previous_records.contains(&key) || record.status != ActivationStatus::Active
+                    {
+                        continue;
+                    }
+                    if let Some(previous_height) =
+                        previous_active_heights.get(&record.version_family)
+                        && record.activation_height <= *previous_height
+                    {
+                        return Err(ActivationRegistryError::InvalidRecord(format!(
+                            "BTC activation registry revision {} inserts historical {} activation at height {}",
+                            registry_id,
+                            record.version_family.as_str(),
+                            record.activation_height
+                        )));
+                    }
+                }
+            }
+
+            previous_active_heights.clear();
+            for record in &revision.records {
+                if record.status == ActivationStatus::Active {
+                    previous_active_heights
+                        .entry(record.version_family)
+                        .and_modify(|height| *height = (*height).max(record.activation_height))
+                        .or_insert(record.activation_height);
+                }
+            }
+            previous_records = Some(current_records);
+            registry_ids.push(registry_id.clone());
+            registries.insert(registry_id, revision);
+        }
+
+        if !registries.contains_key(current_registry_id) {
+            return Err(ActivationRegistryError::ActivationRecordNotFound(format!(
+                "BTC activation registry catalog does not contain current revision {}",
+                current_registry_id
+            )));
+        }
+        Ok(Self {
+            current_registry_id: current_registry_id.to_string(),
+            registry_ids,
+            registries,
+        })
+    }
+
+    /// Returns the explicitly selected current revision for unpinned local queries.
+    pub fn current_registry(&self) -> &BtcActivationRegistry {
+        self.registries
+            .get(&self.current_registry_id)
+            .expect("validated catalog must contain its current registry")
+    }
+
+    /// Returns the canonical identity of the selected current revision.
+    pub fn current_registry_id(&self) -> &str {
+        &self.current_registry_id
+    }
+
+    /// Returns one immutable revision by canonical registry ID.
+    pub fn registry_by_id(
+        &self,
+        registry_id: &str,
+    ) -> Result<&BtcActivationRegistry, ActivationRegistryError> {
+        self.registries.get(registry_id).ok_or_else(|| {
+            ActivationRegistryError::ActivationRecordNotFound(format!(
+                "BTC activation registry catalog {} does not contain revision {}",
+                self.current_registry().scope.network_id,
+                registry_id
+            ))
+        })
+    }
+
+    /// Returns registry IDs in immutable revision order, oldest first.
+    pub fn registry_ids(&self) -> &[String] {
+        &self.registry_ids
+    }
+}
+
 /// BTC registry identity recorded in the audit-only cross-chain release manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -630,8 +787,22 @@ pub struct BtcRegistryReleaseBinding {
     pub network_id: String,
     /// Repository-relative path of the referenced registry artifact.
     pub artifact: String,
+    /// Monotonic immutable revision number within this BTC network catalog.
+    pub revision: u32,
+    /// Whether this revision is the BTC service's current default.
+    pub current: bool,
     /// Canonical network-scoped activation registry ID.
     pub activation_registry_id: String,
+}
+
+/// One USDB-chain activation's BTC registry binding recorded for release auditing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UsdbChainActivationReleaseBinding {
+    /// USDB block where this binding becomes active.
+    pub block: u64,
+    /// Immutable BTC registry revision selected from this USDB block onward.
+    pub btc_activation_registry_id: String,
 }
 
 /// USDB chain-config identity recorded for release auditing, never runtime lookup.
@@ -646,8 +817,8 @@ pub struct UsdbChainConfigReleaseBinding {
     pub chain_id: u64,
     /// Canonical 32-byte USDB genesis block hash in lowercase hexadecimal.
     pub genesis_hash: String,
-    /// BTC registry identity committed by this USDB chain config.
-    pub btc_activation_registry_id: String,
+    /// Height-indexed BTC registry bindings committed by this USDB chain config.
+    pub activations: Vec<UsdbChainActivationReleaseBinding>,
     /// Repository source that owns the USDB-chain activation schedule.
     pub source: String,
     /// Machine-readable declaration that USDB chain config is authoritative.
@@ -696,18 +867,42 @@ impl CrossChainReleaseManifest {
             ));
         }
 
-        let mut btc_network_ids = BTreeSet::new();
+        let mut btc_registry_keys = BTreeSet::new();
         let mut btc_registry_ids = BTreeSet::new();
+        let mut btc_revisions: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+        let mut btc_current_networks = BTreeSet::new();
         for binding in &self.btc_activation_registries {
             if binding.network_id.is_empty()
                 || binding.artifact.is_empty()
+                || binding.revision == 0
                 || !is_canonical_hex_32(&binding.activation_registry_id)
-                || !btc_network_ids.insert(binding.network_id.clone())
+                || !btc_registry_keys.insert((binding.network_id.clone(), binding.revision))
                 || !btc_registry_ids.insert(binding.activation_registry_id.clone())
+                || (binding.current && !btc_current_networks.insert(binding.network_id.as_str()))
             {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
                     "invalid BTC release binding for network {}",
                     binding.network_id
+                )));
+            }
+            btc_revisions
+                .entry(binding.network_id.as_str())
+                .or_default()
+                .insert(binding.revision);
+        }
+        for (network_id, revisions) in &btc_revisions {
+            if !btc_current_networks.contains(network_id)
+                || revisions
+                    .iter()
+                    .copied()
+                    .ne(1..=u32::try_from(revisions.len()).map_err(|_| {
+                        ActivationRegistryError::InvalidRecord(format!(
+                            "too many BTC registry revisions for network {network_id}"
+                        ))
+                    })?)
+            {
+                return Err(ActivationRegistryError::InvalidRecord(format!(
+                    "invalid BTC registry revision sequence for network {network_id}"
                 )));
             }
         }
@@ -717,7 +912,7 @@ impl CrossChainReleaseManifest {
             if binding.network_id.is_empty()
                 || binding.chain_id == 0
                 || !is_canonical_hex_32(&binding.genesis_hash)
-                || !btc_registry_ids.contains(&binding.btc_activation_registry_id)
+                || binding.activations.is_empty()
                 || binding.source.is_empty()
                 || binding.activation_authority != "chain_config.usdb.activations"
                 || !usdb_network_ids.insert(binding.network_id.clone())
@@ -727,43 +922,76 @@ impl CrossChainReleaseManifest {
                     binding.network_id
                 )));
             }
+            let mut previous_block = None;
+            for activation in &binding.activations {
+                if !btc_registry_ids.contains(&activation.btc_activation_registry_id)
+                    || previous_block.is_some_and(|block| activation.block <= block)
+                {
+                    return Err(ActivationRegistryError::InvalidRecord(format!(
+                        "invalid USDB-chain activation binding for network {} at block {}",
+                        binding.network_id, activation.block
+                    )));
+                }
+                previous_block = Some(activation.block);
+            }
         }
         Ok(())
     }
 
     fn validate_embedded_btc_bindings(&self) -> Result<(), ActivationRegistryError> {
-        for (network, expected_artifact) in [
-            (Network::Bitcoin, "activation-registry/btc-mainnet.json"),
-            (Network::Regtest, "activation-registry/btc-regtest.json"),
+        for (network, expected_artifacts) in [
+            (
+                Network::Bitcoin,
+                &["activation-registry/btc-mainnet.json"][..],
+            ),
+            (
+                Network::Regtest,
+                &[
+                    "activation-registry/btc-regtest.json",
+                    "activation-registry/btc-regtest-revision-2.json",
+                ][..],
+            ),
         ] {
-            let registry = embedded_btc_activation_registry(network)?;
-            let binding = self
-                .btc_activation_registries
-                .iter()
-                .find(|binding| binding.network_id == registry.scope.network_id)
-                .ok_or_else(|| {
-                    ActivationRegistryError::InvalidRecord(format!(
-                        "release manifest is missing BTC registry {}",
-                        registry.scope.network_id
-                    ))
-                })?;
-            if binding.network_type != registry.scope.network_type
-                || binding.artifact != expected_artifact
-                || binding.activation_registry_id != registry.activation_registry_id()
-            {
+            let catalog = embedded_btc_activation_registry_catalog(network)?;
+            if catalog.registry_ids().len() != expected_artifacts.len() {
                 return Err(ActivationRegistryError::InvalidRecord(format!(
-                    "release manifest BTC registry identity mismatch for {}: manifest_type={}, registry_type={}, manifest_artifact={}, expected_artifact={}, manifest_id={}, registry_id={}",
-                    registry.scope.network_id,
-                    binding.network_type.as_str(),
-                    registry.scope.network_type.as_str(),
-                    binding.artifact,
-                    expected_artifact,
-                    binding.activation_registry_id,
-                    registry.activation_registry_id()
+                    "release manifest artifact list does not cover BTC registry catalog {}",
+                    catalog.current_registry().scope.network_id
                 )));
             }
+            for (index, registry_id) in catalog.registry_ids().iter().enumerate() {
+                let registry = catalog.registry_by_id(registry_id)?;
+                let revision = u32::try_from(index + 1).map_err(|_| {
+                    ActivationRegistryError::InvalidRecord(
+                        "BTC registry revision number overflow".to_string(),
+                    )
+                })?;
+                let binding = self
+                    .btc_activation_registries
+                    .iter()
+                    .find(|binding| {
+                        binding.network_id == registry.scope.network_id
+                            && binding.revision == revision
+                    })
+                    .ok_or_else(|| {
+                        ActivationRegistryError::InvalidRecord(format!(
+                            "release manifest is missing BTC registry {} revision {}",
+                            registry.scope.network_id, revision
+                        ))
+                    })?;
+                if binding.network_type != registry.scope.network_type
+                    || binding.artifact != expected_artifacts[index]
+                    || binding.current != (registry_id == catalog.current_registry_id())
+                    || binding.activation_registry_id.as_str() != registry_id
+                {
+                    return Err(ActivationRegistryError::InvalidRecord(format!(
+                        "release manifest BTC registry identity mismatch for {} revision {}",
+                        registry.scope.network_id, revision
+                    )));
+                }
+            }
         }
-        if self.btc_activation_registries.len() != 2 {
+        if self.btc_activation_registries.len() != 3 {
             return Err(ActivationRegistryError::InvalidRecord(
                 "release manifest contains a BTC registry not embedded by this binary".to_string(),
             ));
@@ -809,21 +1037,27 @@ impl Display for ActivationRegistryError {
 
 impl std::error::Error for ActivationRegistryError {}
 
-/// Returns the immutable BTC registry embedded for the selected Bitcoin network.
+/// Returns the immutable BTC registry revision catalog embedded for a network.
 ///
 /// Testnet, testnet4, and signet deliberately fail closed until their own
 /// network-scoped registry artifacts are added and reviewed.
-pub fn embedded_btc_activation_registry(
+pub fn embedded_btc_activation_registry_catalog(
     network: Network,
-) -> Result<&'static BtcActivationRegistry, ActivationRegistryError> {
-    let (cell, json) = match network {
+) -> Result<&'static BtcActivationRegistryCatalog, ActivationRegistryError> {
+    let (cell, json_revisions): (
+        &OnceLock<Result<BtcActivationRegistryCatalog, ActivationRegistryError>>,
+        &[&str],
+    ) = match network {
         Network::Bitcoin => (
-            &EMBEDDED_BTC_MAINNET_REGISTRY,
-            EMBEDDED_BTC_MAINNET_REGISTRY_JSON,
+            &EMBEDDED_BTC_MAINNET_CATALOG,
+            &[EMBEDDED_BTC_MAINNET_REGISTRY_JSON],
         ),
         Network::Regtest => (
-            &EMBEDDED_BTC_REGTEST_REGISTRY,
-            EMBEDDED_BTC_REGTEST_REGISTRY_JSON,
+            &EMBEDDED_BTC_REGTEST_CATALOG,
+            &[
+                EMBEDDED_BTC_REGTEST_REGISTRY_JSON,
+                EMBEDDED_BTC_REGTEST_REGISTRY_REVISION_2_JSON,
+            ],
         ),
         Network::Testnet | Network::Testnet4 | Network::Signet => {
             return Err(ActivationRegistryError::ActivationRecordNotFound(format!(
@@ -833,12 +1067,26 @@ pub fn embedded_btc_activation_registry(
         }
     };
     cell.get_or_init(|| {
-        let registry = BtcActivationRegistry::from_json(json)?;
-        registry.validate_network(network)?;
-        Ok(registry)
+        let revisions = json_revisions
+            .iter()
+            .map(|json| {
+                let registry = BtcActivationRegistry::from_json(json)?;
+                registry.validate_network(network)?;
+                Ok(registry)
+            })
+            .collect::<Result<Vec<_>, ActivationRegistryError>>()?;
+        let current_registry_id = revisions[0].activation_registry_id();
+        BtcActivationRegistryCatalog::from_revisions_with_current(revisions, &current_registry_id)
     })
     .as_ref()
     .map_err(Clone::clone)
+}
+
+/// Returns the current embedded registry revision for the selected network.
+pub fn embedded_btc_activation_registry(
+    network: Network,
+) -> Result<&'static BtcActivationRegistry, ActivationRegistryError> {
+    embedded_btc_activation_registry_catalog(network).map(|catalog| catalog.current_registry())
 }
 
 /// Returns the audit-only manifest that binds BTC registry IDs to USDB chain configs.
@@ -988,6 +1236,58 @@ mod tests {
                 .unwrap()
                 .activation_registry_id()
         );
+    }
+
+    #[test]
+    fn registry_catalog_preserves_old_revision_and_selects_current_revision() {
+        let previous = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        let current = embedded_regtest_with_energy_v2_at(100);
+        let previous_id = previous.activation_registry_id();
+        let current_id = current.activation_registry_id();
+
+        let catalog =
+            BtcActivationRegistryCatalog::from_revisions(vec![previous, current]).unwrap();
+        assert_eq!(
+            catalog.registry_ids(),
+            &[previous_id.clone(), current_id.clone()]
+        );
+        assert_eq!(catalog.current_registry_id(), current_id);
+        assert_eq!(
+            catalog
+                .registry_by_id(&previous_id)
+                .unwrap()
+                .lookup_active_version_set(100)
+                .unwrap()
+                .require_string(VersionFamily::EnergyFormulaVersion)
+                .unwrap(),
+            ENERGY_FORMULA_VERSION_V1
+        );
+        assert_eq!(
+            catalog
+                .current_registry()
+                .lookup_active_version_set(100)
+                .unwrap()
+                .require_string(VersionFamily::EnergyFormulaVersion)
+                .unwrap(),
+            "uip-0003-pass-energy-formula:v2"
+        );
+    }
+
+    #[test]
+    fn registry_catalog_rejects_revision_that_rewrites_prior_record() {
+        let previous = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        let mut rewritten = previous.clone();
+        rewritten.records[0].notes = "rewritten historical record".to_string();
+
+        assert!(matches!(
+            BtcActivationRegistryCatalog::from_revisions(vec![previous, rewritten]),
+            Err(ActivationRegistryError::InvalidRecord(detail))
+                if detail.contains("rewrites prior records")
+        ));
     }
 
     #[test]
@@ -1334,7 +1634,7 @@ mod tests {
     #[test]
     fn release_manifest_matches_embedded_btc_registries() {
         let manifest = embedded_cross_chain_release_manifest().unwrap();
-        assert_eq!(manifest.btc_activation_registries.len(), 2);
+        assert_eq!(manifest.btc_activation_registries.len(), 3);
         assert_eq!(manifest.usdb_chain_configs.len(), 1);
         let usdb_chain = &manifest.usdb_chain_configs[0];
         assert_eq!(usdb_chain.chain_id, 20_260_323);
@@ -1346,8 +1646,10 @@ mod tests {
             usdb_chain.activation_authority,
             "chain_config.usdb.activations"
         );
+        assert_eq!(usdb_chain.activations.len(), 1);
+        assert_eq!(usdb_chain.activations[0].block, 0);
         assert_eq!(
-            usdb_chain.btc_activation_registry_id,
+            usdb_chain.activations[0].btc_activation_registry_id,
             embedded_btc_activation_registry(Network::Regtest)
                 .unwrap()
                 .activation_registry_id()
@@ -1371,6 +1673,15 @@ mod tests {
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
         assert!(matches!(
             invalid_registry_id.validate_embedded_btc_bindings(),
+            Err(ActivationRegistryError::InvalidRecord(_))
+        ));
+
+        let mut invalid_chain_activation =
+            CrossChainReleaseManifest::from_json(EMBEDDED_RELEASE_MANIFEST_JSON).unwrap();
+        invalid_chain_activation.usdb_chain_configs[0].activations[0].btc_activation_registry_id =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        assert!(matches!(
+            invalid_chain_activation.validate(),
             Err(ActivationRegistryError::InvalidRecord(_))
         ));
     }

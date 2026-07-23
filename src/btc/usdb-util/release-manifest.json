@@ -1,18 +1,30 @@
 {
-  "schema_version": "uip-0008-cross-chain-release-manifest:v1",
+  "schema_version": "uip-0008-cross-chain-release-manifest:v2",
   "release_id": "usdb-development-v1",
   "btc_activation_registries": [
     {
       "network_type": "mainnet",
       "network_id": "btc-mainnet",
       "artifact": "activation-registry/btc-mainnet.json",
+      "revision": 1,
+      "current": true,
       "activation_registry_id": "bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e"
     },
     {
       "network_type": "regtest",
       "network_id": "btc-regtest",
       "artifact": "activation-registry/btc-regtest.json",
+      "revision": 1,
+      "current": true,
       "activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d"
+    },
+    {
+      "network_type": "regtest",
+      "network_id": "btc-regtest",
+      "artifact": "activation-registry/btc-regtest-revision-2.json",
+      "revision": 2,
+      "current": false,
+      "activation_registry_id": "25a39e8022e8351a40f59736b86cf81321c08042121cdb74b85a8f3918a2b973"
     }
   ],
   "usdb_chain_configs": [
@@ -21,10 +33,15 @@
       "network_id": "usdb-devnet-20260323",
       "chain_id": 20260323,
       "genesis_hash": "4548fb39b8a73ab3f3d997a6d8c2869f83fadbc9e0d84ac198d6424fbbab90b4",
-      "btc_activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d",
+      "activations": [
+        {
+          "block": 0,
+          "btc_activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d"
+        }
+      ],
       "source": "go-ethereum/params/config.go:USDBChainConfig",
       "activation_authority": "chain_config.usdb.activations"
     }
   ],
-  "notes": "Audit-only release binding. BTC services load only their selected network registry; each USDB chain config commits its expected BTC registry identity while resolving USDB-chain policy versions exclusively from ChainConfig.usdb.activations."
+  "notes": "Audit-only release binding. BTC services load their selected network revision catalog; each USDB chain activation commits its expected BTC registry revision while resolving USDB-chain policy versions exclusively from ChainConfig.usdb.activations."
 }

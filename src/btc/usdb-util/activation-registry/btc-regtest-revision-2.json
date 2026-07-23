@@ -1,0 +1,99 @@
+{
+  "schema_version": "uip-0008-btc-activation-registry:v1",
+  "scope": {
+    "network_type": "regtest",
+    "network_id": "btc-regtest"
+  },
+  "records": [
+    {
+      "uip": "UIP-0001",
+      "version_family": "inscription_schema_version",
+      "version_value": "uip-0001-miner-pass-inscription:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates the implemented inscription schema v1 from genesis."
+    },
+    {
+      "uip": "UIP-0002",
+      "version_family": "pass_state_machine_version",
+      "version_value": "uip-0002-pass-state-machine:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates pass state machine v1 from genesis."
+    },
+    {
+      "uip": "UIP-0003",
+      "version_family": "energy_formula_version",
+      "version_value": "uip-0003-pass-energy-formula:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates raw energy formula v1 from genesis."
+    },
+    {
+      "uip": "UIP-0008",
+      "version_family": "energy_formula_version",
+      "version_value": "uip-0003-pass-energy-formula:planned-v2",
+      "activation_height": 100000,
+      "status": "Planned",
+      "supersedes": "uip-0003-pass-energy-formula:v1",
+      "notes": "Staged regtest revision marker for registry rollout conformance; it does not activate a formula."
+    },
+    {
+      "uip": "UIP-0004",
+      "version_family": "effective_energy_formula_version",
+      "version_value": "uip-0004-collab-leader-effective-energy:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates effective energy formula v1 from genesis."
+    },
+    {
+      "uip": "UIP-0005",
+      "version_family": "level_formula_version",
+      "version_value": "uip-0005-level-and-real-difficulty:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates level and difficulty-factor formula v1 from genesis."
+    },
+    {
+      "uip": "UIP-0006",
+      "version_family": "query_semantics_version",
+      "version_value": "uip-0006-economic-query-semantics:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest activates historical economic query semantics v1 from genesis."
+    },
+    {
+      "uip": "UIP-0006",
+      "version_family": "state_view_version",
+      "version_value": "uip-0006-usdb-economic-state-view:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest exposes economic state view v1 from genesis."
+    },
+    {
+      "uip": "UIP-0008",
+      "version_family": "commit_protocol_version",
+      "version_value": "uip-0008-usdb-local-state-commit:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest local-state commits bind the active version set from genesis."
+    },
+    {
+      "uip": "UIP-0008",
+      "version_family": "balance_history_semantics_version",
+      "version_value": "balance-snapshot-at-or-before:v1",
+      "activation_height": 0,
+      "status": "Active",
+      "supersedes": null,
+      "notes": "Regtest balance history uses snapshot-at-or-before semantics from genesis."
+    }
+  ]
+}

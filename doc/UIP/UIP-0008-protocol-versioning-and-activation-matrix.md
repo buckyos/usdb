@@ -189,14 +189,15 @@ BTC record 固定以 `btc_height` 为 anchor，不再逐条重复 chain/network/
 
 ## USDB Chain Config
 
-USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConfig.usdb.activations[]`。每条 chain-config activation 以 `usdb_block` 为 anchor，并携带该高度完整的 USDB chain version set。USDB chain 节点不得读取 BTC registry 或调用 companion RPC 来决定 expected USDB chain version。
+USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConfig.usdb.activations[]`。每条 chain-config activation 以 `usdb_block` 为 anchor，并携带该高度完整的 USDB chain version set 与 `btcActivationRegistryId`。USDB chain 节点不得读取 BTC registry 或调用 companion RPC 来决定 expected USDB chain version。
 
-`ChainConfig.usdb.btcActivationRegistryId` 必须同时绑定本 USDB network 允许引用的 BTC source-network registry identity。该字段是 cross-chain historical profile 的辅助共识条件，不是 USDB-chain version activation source：
+每条 `ChainConfig.usdb.activations[i].btcActivationRegistryId` 绑定从该 USDB block 起允许引用的 immutable BTC source-network registry revision。该字段是 cross-chain historical profile 的辅助共识条件，不是 USDB-chain version activation source：
 
 - miner/validator 必须在本地 Go golden artifact 中找到该 registry ID，否则 fail closed。
 - payload 的 `btc_height` 必须在该 registry 的高度表中解析 expected `active_version_set`。
 - companion RPC 返回的 `activation_registry_id + active_version_set + active_version_set_id` 必须与本地 lookup 精确一致。
-- 已生效后的 registry ID 变更必须进入 `CheckCompatible`，不能由 CLI、RPC 或普通配置热更新覆盖。
+- 后续 activation 可以切换到同一 BTC network catalog 的新 revision；旧 revision 必须继续保留以便历史 replay。
+- 已生效 activation 的 registry ID 变更必须进入 `CheckCompatible`，不能由 CLI、RPC 或普通配置热更新覆盖。
 
 # 激活矩阵规则
 
@@ -208,6 +209,8 @@ USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConf
 - 后激活的版本必须显式 `supersedes` 被替代版本，除非该 family 之前没有 active version。
 - `Planned` 记录不得影响 validator、indexer 或 RPC 查询结果。
 - `Deferred` 和 `Superseded` 记录只能用于审计和历史说明。
+- 同一 BTC network 的 registry revision 必须从 1 连续递增；每个新 revision 必须逐条保留旧 revision 的记录，禁止改写历史。
+- catalog 必须显式指定一个 current revision；historical request 可以按 registry ID 读取任何保留 revision。
 
 若两个 active 记录在同一高度冲突，节点必须拒绝启动公开网络服务，不能任选其一。
 
@@ -218,7 +221,7 @@ USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConf
 输入：
 
 ```text
-btc_context  = selected_btc_registry + btc_height
+btc_context  = selected_btc_registry_revision + btc_height
 usdb_chain_context = local_chain_config + usdb_block
 ```
 
@@ -250,7 +253,7 @@ active_version_set =
 
 - BTC-side pass、balance、state 和 energy 派生必须先按配置的 BTC network 选择唯一 registry，再使用 `btc_height` 选择版本。
 - USDB-chain payload、difficulty、reward 和执行规则必须使用本地 genesis / chain config 按 `usdb_block` 选择版本。
-- USDB chain validator 必须使用 `ChainConfig.usdb.btcActivationRegistryId + payload.btc_height` 在本地 golden artifact 中选择 BTC active set，再与 companion historical response 交叉校验。
+- USDB chain validator 必须使用目标 USDB block 的 `activations[]` record 所绑定的 `btcActivationRegistryId + payload.btc_height` 在本地 golden catalog 中选择 BTC active set，再与 companion historical response 交叉校验。
 - CrossChain 规则必须明确主锚点和辅助条件。
 - 查询历史 BTC 高度时，禁止用当前 BTC head 的版本解释旧高度。
 - 校验历史 USDB block 时，禁止用当前 USDB chain head 的版本解释旧块。
@@ -301,7 +304,7 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 
 ## Canonical Encoding v1
 
-BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<network-id>.json`，当前内嵌 `btc-mainnet.json` 和 `btc-regtest.json`，schema 为 `uip-0008-btc-activation-registry:v1`。JSON parser 必须拒绝未知字段、重复字段、类型错误、scope 不匹配、USDB-chain family 和同 family/height 的 active 冲突。没有独立文件的网络不得回退到其他网络 registry。
+BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<network-id>[-revision-N].json`，当前内嵌 `btc-mainnet.json`、`btc-regtest.json` 和 staged `btc-regtest-revision-2.json`，单 revision schema 为 `uip-0008-btc-activation-registry:v1`。JSON parser 必须拒绝未知字段、重复字段、类型错误、scope 不匹配、USDB-chain family 和同 family/height 的 active 冲突；catalog parser 还必须拒绝 revision 缺口、重复 identity 和历史 record 改写。没有独立 catalog 的网络不得回退到其他网络 registry。
 
 所有 string 使用 `u32 big-endian byte_length || UTF-8 bytes`。所有 integer 使用 `u64 big-endian`。string/integer union 使用 `0x00` / `0x01` tag；optional value 使用 `0x00` absent 或 `0x01 || encoded_value`。hash 输出为 lowercase 64-character hex text。
 
@@ -322,7 +325,8 @@ BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<netw
 
 ```text
 btc-mainnet = bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e
-btc-regtest = 22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d
+btc-regtest revision 1 (current) = 22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d
+btc-regtest revision 2 (staged)  = 25a39e8022e8351a40f59736b86cf81321c08042121cdb74b85a8f3918a2b973
 ```
 
 两个网络当前激活相同的 BTC v1 九 family，因此跨实现 golden `active_version_set_id` 相同：
@@ -335,10 +339,10 @@ UIP-0006 state view 必须返回 `activation_registry_id`、完整 `active_versi
 
 ## Cross-chain Release Manifest
 
-`src/btc/usdb-util/release-manifest.json` 可以在发布时关联：
+`src/btc/usdb-util/release-manifest.json` 的 v2 schema 可以在发布时关联：
 
-- 每个 BTC network 的 registry artifact 与 `activation_registry_id`。
-- USDB network 的 `chain_id`、genesis hash、chain-config source，以及 chain config 绑定的 BTC registry ID。
+- 每个 BTC network catalog 的 revision、current marker、artifact 与 `activation_registry_id`。
+- USDB network 的 `chain_id`、genesis hash、chain-config source，以及按 USDB block 排序的 BTC registry bindings。
 
 manifest 仅用于 release review、部署审计和 CI 一致性检查。它不得参与 BTC registry ID、BTC `active_version_set_id`、USDB chain header validation 或 USDB chain expected version lookup；修改一个网络的配置不得改变另一个网络的 runtime activation identity。
 
@@ -436,7 +440,8 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 - reorg 跨激活高度后重新选择版本。
 - `active_version_set_id` mismatch。
 - chain config 绑定未知或错误的 `activation_registry_id` 时 fail closed。
-- Rust generator `--check` 可以证明提交的 Go golden artifact 与两个 BTC registry 文件完全一致。
+- registry catalog 拒绝 revision 缺口、多个 current、旧 record 改写和历史 active record 插入。
+- Rust generator `--check` 可以证明提交的 Go golden artifact 与全部 BTC registry revisions 完全一致。
 - validator 按 payload BTC 高度选择 expected set，并按 `energy/effective-energy/level` version 分派公式；未知版本 fail closed。
 - `prev` 跨版本继承测试。
 - USDB chain `difficulty_policy_version` mismatch。
@@ -450,7 +455,8 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 | Owner | Network | Anchor | Active configuration |
 | --- | --- | --- | --- |
 | BTC registry | `btc-mainnet` | BTC height 0 | UIP-0001 至 UIP-0006 的九个 BTC v1 family，包括 commit protocol 与 balance-history semantics。 |
-| BTC registry | `btc-regtest` | BTC height 0 | 与 `btc-mainnet` 相同的九个 BTC v1 family，但使用独立 registry artifact 和 ID。 |
+| BTC registry | `btc-regtest` revision 1 | BTC height 0 | 当前 revision；与 `btc-mainnet` 相同的九个 BTC v1 family，但使用独立 registry artifact 和 ID。 |
+| BTC registry | `btc-regtest` revision 2 | BTC height 100000 | staged revision；只增加一个 `Planned` formula marker，因此不改变任何高度的 active set，也不作为 BTC 服务 current revision。 |
 | USDB chain config | `usdb-devnet-20260323` | USDB block 0 | 绑定 `btc-regtest` registry ID；`payload_version=1`、`difficulty_policy_version=1`；尚未实现的 reward/coinbase/fee/collaboration/price/quote policy 为 development staging `0`，`aux_pool_policy_version=0` 表示 disabled。 |
 
 正式 USDB chain testnet/mainnet 的 genesis、chain ID 和具体 activation block 必须在进入 Review / Last Call 前冻结。BTC source-network registry 与 USDB-chain network 发布矩阵必须分别 review，再由 release manifest 关联 artifact identity。
@@ -462,6 +468,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 ```text
 src/btc/usdb-util/activation-registry/btc-mainnet.json
 src/btc/usdb-util/activation-registry/btc-regtest.json
+src/btc/usdb-util/activation-registry/btc-regtest-revision-2.json
 src/btc/usdb-util/release-manifest.json
 src/btc/usdb-util/src/bin/generate_go_btc_activation_golden.rs
 go-ethereum/internal/usdb/btc_activation_golden.json
@@ -470,7 +477,7 @@ go-ethereum params.ChainConfig.USDB
 
 BTC JSON 与 Markdown 表格表达同一组 BTC-side activation records，并由 Rust 服务在构建时嵌入二进制。启动、扫块和 historical RPC lookup 共用同一 network-scoped 解析与校验实现，不允许 runtime flag 覆盖。
 
-Rust generator 将每个 registry 的 active 高度边界、完整 set、registry ID 和 set ID 确定性展开到 Go golden artifact。Go validator 不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从 chain config 取得绑定的 registry ID，按 payload BTC 高度查询内嵌 golden，随后重算 RPC profile 的 set ID 并精确比较。USDB chain expected versions 始终来自本地 `activations[]`。
+Rust generator 将每个 catalog revision 的 active 高度边界、完整 set、registry ID、revision/current metadata 和 set ID 确定性展开到 Go golden artifact。Go validator 不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从目标 USDB block 的 activation record 取得绑定的 registry ID，按 payload BTC 高度查询内嵌 golden，随后重算 RPC profile 的 set ID 并精确比较。USDB chain expected versions 始终来自同一条本地 `activations[]` record。
 
 # 待审计问题
 

@@ -7,10 +7,10 @@ use std::fs;
 use std::io::{Error as IoError, ErrorKind};
 use usdb_util::{
     ACTIVATION_REGISTRY_SCHEMA_VERSION, ActivationStatus, ActiveVersionSet, BtcActivationRegistry,
-    embedded_btc_activation_registry,
+    embedded_btc_activation_registry_catalog,
 };
 
-const GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v1";
+const GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v2";
 
 #[derive(Serialize)]
 struct GoActivationGoldenArtifact {
@@ -22,6 +22,8 @@ struct GoActivationGoldenArtifact {
 #[derive(Serialize)]
 struct GoRegistryGolden {
     network_id: &'static str,
+    revision: u32,
+    current: bool,
     activation_registry_id: String,
     activations: Vec<GoActivationGolden>,
 }
@@ -33,11 +35,32 @@ struct GoActivationGolden {
     active_version_set_id: String,
 }
 
-fn registry_golden(
+fn registry_goldens(
     network: Network,
     network_id: &'static str,
+) -> Result<Vec<GoRegistryGolden>, Box<dyn Error>> {
+    let catalog = embedded_btc_activation_registry_catalog(network)?;
+    catalog
+        .registry_ids()
+        .iter()
+        .enumerate()
+        .map(|(index, registry_id)| {
+            registry_golden(
+                catalog.registry_by_id(registry_id)?,
+                network_id,
+                u32::try_from(index + 1)?,
+                registry_id == catalog.current_registry_id(),
+            )
+        })
+        .collect()
+}
+
+fn registry_golden(
+    registry: &BtcActivationRegistry,
+    network_id: &'static str,
+    revision: u32,
+    current: bool,
 ) -> Result<GoRegistryGolden, Box<dyn Error>> {
-    let registry = embedded_btc_activation_registry(network)?;
     let heights = active_heights(registry)?;
     let activations = heights
         .into_iter()
@@ -54,6 +77,8 @@ fn registry_golden(
 
     Ok(GoRegistryGolden {
         network_id,
+        revision,
+        current,
         activation_registry_id: registry.activation_registry_id(),
         activations,
     })
@@ -70,13 +95,12 @@ fn active_heights(registry: &BtcActivationRegistry) -> Result<Vec<u32>, Box<dyn 
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let mut registries = registry_goldens(Network::Bitcoin, "btc-mainnet")?;
+    registries.extend(registry_goldens(Network::Regtest, "btc-regtest")?);
     let artifact = GoActivationGoldenArtifact {
         schema_version: GO_GOLDEN_SCHEMA_VERSION,
         source_registry_schema_version: ACTIVATION_REGISTRY_SCHEMA_VERSION,
-        registries: vec![
-            registry_golden(Network::Bitcoin, "btc-mainnet")?,
-            registry_golden(Network::Regtest, "btc-regtest")?,
-        ],
+        registries,
     };
     let output = format!("{}\n", serde_json::to_string_pretty(&artifact)?);
 

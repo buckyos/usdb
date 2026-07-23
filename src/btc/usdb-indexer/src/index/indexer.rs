@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use usdb_util::{
     ActivationRegistryError, ActiveVersionSet, BTCRpcClient, BTCRpcClientRef,
-    BtcActivationRegistry, embedded_btc_activation_registry,
+    BtcActivationRegistry, BtcActivationRegistryCatalog, embedded_btc_activation_registry_catalog,
 };
 
 #[path = "indexer/block_events.rs"]
@@ -141,7 +141,7 @@ impl ReorgRecoveryFaultInjector {
 
 pub struct InscriptionIndexer {
     config: ConfigManagerRef,
-    activation_registry: BtcActivationRegistry,
+    activation_registry_catalog: BtcActivationRegistryCatalog,
     block_hint_provider: Arc<dyn BlockHintProvider>,
     inscription_source: Arc<dyn InscriptionSource>,
 
@@ -204,10 +204,11 @@ impl Drop for BlockMutationCollectionGuard<'_> {
 
 impl InscriptionIndexer {
     pub fn new(config: ConfigManagerRef, status: StatusManagerRef) -> Result<Self, String> {
-        let activation_registry =
-            embedded_btc_activation_registry(config.config().bitcoin.network())
+        let activation_registry_catalog =
+            embedded_btc_activation_registry_catalog(config.config().bitcoin.network())
                 .map_err(|error| error.to_string())?
                 .clone();
+        let activation_registry = activation_registry_catalog.current_registry();
         let startup_versions = activation_registry
             .lookup_active_version_set(config.config().usdb.genesis_block_height)
             .map_err(|error| error.to_string())?;
@@ -278,7 +279,7 @@ impl InscriptionIndexer {
 
         let ret = Self {
             config,
-            activation_registry,
+            activation_registry_catalog,
             block_hint_provider,
             inscription_source,
 
@@ -319,13 +320,13 @@ impl InscriptionIndexer {
             config.config().bitcoin.network(),
             config.config().usdb.active_address_page_size,
         ));
-        let activation_registry =
-            embedded_btc_activation_registry(config.config().bitcoin.network())
+        let activation_registry_catalog =
+            embedded_btc_activation_registry_catalog(config.config().bitcoin.network())
                 .expect("embedded activation registry must be valid")
                 .clone();
         Self {
             config,
-            activation_registry,
+            activation_registry_catalog,
             block_hint_provider,
             inscription_source,
             transfer_tracker,
@@ -424,7 +425,20 @@ impl InscriptionIndexer {
 
     /// Returns the immutable activation registry embedded in this node binary.
     pub fn activation_registry(&self) -> &BtcActivationRegistry {
-        &self.activation_registry
+        self.activation_registry_catalog.current_registry()
+    }
+
+    /// Returns the immutable registry revision catalog embedded in this node.
+    pub fn activation_registry_catalog(&self) -> &BtcActivationRegistryCatalog {
+        &self.activation_registry_catalog
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_activation_registry_catalog_for_test(
+        &mut self,
+        catalog: BtcActivationRegistryCatalog,
+    ) {
+        self.activation_registry_catalog = catalog;
     }
 
     /// Resolves and validates the exact BTC-side version set active at one height.
@@ -433,8 +447,22 @@ impl InscriptionIndexer {
         block_height: u32,
     ) -> Result<ActiveVersionSet, ActivationRegistryError> {
         let active_versions = self
-            .activation_registry
+            .activation_registry()
             .lookup_active_version_set(block_height)?;
+        active_versions.validate_btc_indexer_v1()?;
+        Ok(active_versions)
+    }
+
+    /// Resolves one exact registry revision and validates its active version set.
+    pub fn active_version_set_at_with_registry(
+        &self,
+        registry_id: &str,
+        block_height: u32,
+    ) -> Result<ActiveVersionSet, ActivationRegistryError> {
+        let registry = self
+            .activation_registry_catalog
+            .registry_by_id(registry_id)?;
+        let active_versions = registry.lookup_active_version_set(block_height)?;
         active_versions.validate_btc_indexer_v1()?;
         Ok(active_versions)
     }

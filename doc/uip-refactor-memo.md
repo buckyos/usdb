@@ -640,11 +640,11 @@
 
 ### Registry Contract
 
-- 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 `activation-registry/btc-mainnet.json` 与 `btc-regtest.json`；每个 artifact 在顶层固定一个 BTC network scope，record 只允许 BTC-side family 和 `activation_height`。
-- Rust API 改为先按配置的 `bitcoin::Network` 选择唯一内嵌 registry，再按目标高度 lookup；testnet3/testnet4/signet 在没有独立 artifact 时 fail closed，不能回退或混用其他 network。
+- 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 network-scoped immutable revision catalog；当前包含 `btc-mainnet.json`、`btc-regtest.json` 与 staged `btc-regtest-revision-2.json`，record 只允许 BTC-side family 和 `activation_height`。
+- Rust API 改为先按配置的 `bitcoin::Network` 选择内嵌 catalog，再按 current 或显式 registry ID 与目标高度 lookup；testnet3/testnet4/signet 在没有独立 catalog 时 fail closed，不能回退或混用其他 network。
 - `activation_registry_id` 改为 network-scoped canonical encoding，固定 golden：`btc-mainnet=bb751626...a7d39e`、`btc-regtest=22d820e6...aaf83d`；两者当前 active set 相同，继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
-- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 只由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 解析。`ChainConfig.usdb.btcActivationRegistryId` 仅绑定可接受的 BTC historical-profile registry identity。
-- audit-only `release-manifest.json` 关联 BTC registry IDs 与 USDB `chain_id/genesis_hash/chain-config authority/btc registry binding`；manifest 自身不参与 BTC identity、USDB header validation 或 runtime activation lookup。
+- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 与 BTC historical-profile registry binding 均由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 联合解析。
+- audit-only `release-manifest.json` 升级为 v2，关联 BTC revision/current 与 USDB `chain_id/genesis_hash/chain-config authority/height-indexed bindings`；manifest 自身不参与 BTC identity、USDB header validation 或 runtime activation lookup。
 - 当前 `btc-mainnet` height 0 只定义 BTC source history 的 v1 解释，不代表 USDB public mainnet 已发布；正式网络的 indexing origin 和 USDB genesis 仍需分别冻结。
 
 ### State Identity Boundary
@@ -659,20 +659,21 @@
 - balance-history 在 indexer/RPC 启动时校验当前 durable height，并在每个 batch 写入前逐高度校验 semantics activation；历史 state-ref lookup 将 activation 失败映射为结构化共识错误。
 - historical RPC 以请求冻结高度解析 active set，重算 set ID 后再构造 local/system state；expected state 与 cursor 对 registry/set identity 做精确匹配。
 - 新增 activation record、supported version、active set identity 和 commit protocol 的结构化 RPC 错误码；formula member 不支持继续映射到专用 formula mismatch。旧 `PROTOCOL_VERSION_MISMATCH/-32051` 随全局 protocol 字段删除，不保留 client 兼容映射。
-- Rust 新增确定性 `generate_go_btc_activation_golden` 工具，将两个 registry 的 active 高度边界展开为 Go 内嵌 artifact；`--check` 可以在 CI/release 中直接拒绝跨仓库 artifact 漂移。
-- `ChainConfig.usdb.btcActivationRegistryId` 进入 genesis JSON 与 `CheckCompatible`；built-in development chain 固定绑定 `btc-regtest` registry。Go builder/verifier 对未知 binding 启动失败，并使用 `binding + payload BTC height` 解析本地 expected set。
+- Rust 新增确定性 `generate_go_btc_activation_golden` 工具，将全部 catalog revisions 的 active 高度边界和 revision/current metadata 展开为 Go 内嵌 artifact；`--check` 可以在 CI/release 中直接拒绝跨仓库 artifact 漂移。
+- 每条 `ChainConfig.usdb.activations[]` 的 `btcActivationRegistryId` 进入 genesis JSON 与 `CheckCompatible`；built-in development chain block 0 固定绑定 `btc-regtest` revision 1。Go builder/verifier 在每个 USDB block 联合选择 versions 与 registry，并使用 `binding + payload BTC height` 解析本地 expected set。
 - historical profile query 现在主动携带 expected registry/set ID；返回值必须同时通过 chain-config registry equality、canonical set ID 重算及本地 height lookup。builder 继续检查 current state 与 historical profile 两次读取之间的 identity 漂移。
 - verifier 从 expected active set 解析 `energy_formula_version`、`effective_energy_formula_version`、`level_formula_version` 后分别分派公式；当前只实现 v1，任何未知版本均 fail closed，而不是隐式复用最新公式。
 
 ### 已验证与后续边界
 
-- Rust activation matrix 新增 public `manual` override 拒绝、before/at/after、unsupported v2、跨激活 rollback/replay、registry JSON reload 及 active-set 引起 local commit ID 变化测试；`usdb-util` 为 28 passed、1 个既有 Electrs live test ignored。
+- Rust activation matrix 新增 public `manual` override 拒绝、before/at/after、unsupported v2、跨激活 rollback/replay、registry JSON reload 及 active-set 引起 local commit ID 变化测试；`usdb-util` 为 30 passed、1 个既有 Electrs live test ignored。
 - Go 聚焦测试覆盖 generated registry/set golden、payload-height boundary lookup、unknown/tampered registry、chain-config binding compatibility、historical query pinning、未知 formula dispatch，以及 synthetic golden reload 后的跨激活 rollback/replay；`internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` 当前测试通过。
-- `usdb-indexer` 全量回归为 282 passed、5 ignored；`balance-history` 排除依赖本机 height-900000 snapshot fixture 后为 101 passed，其中包含 2 个 fake-chain sync tests 和 1 个 library export integration test。
-- Rust generator `--check` 已确认提交的 Go golden artifact 与 `btc-mainnet`、`btc-regtest` registry 完全一致。
+- `usdb-indexer` 全量回归为 283 passed、5 ignored；`balance-history` 排除依赖本机 height-900000 snapshot fixture 后为 101 passed，其中包含 2 个 fake-chain sync tests 和 1 个 library export integration test。
+- Rust generator `--check` 已确认提交的 Go golden artifact 与 `btc-mainnet` 及 `btc-regtest` 全部 revisions 完全一致。
 - devnet/regtest 基础跨进程 E2E 使用当前源码 geth，通过真实 `bitcoind -> ord -> balance-history -> usdb-indexer -> geth` 链路验证 13 个 USDB block 的 selector、registry/set golden、profile、difficulty 和 reward。
 - fresh-validator historical E2E 验证 node 1 在 BTC height 134 生成的 12 个 USDB block，在 BTC head 前进到 137 且 pass raw energy 从 0 变为 2000 后，仍可由全新 node 2 同步到相同 head 并按旧高度完整重放。
-- 当前只有 v1 是受支持版本，因此真实跨 activation-height live 测试尚无合法的第二版本可激活；现阶段使用 synthetic registry 覆盖跨边界 reorg/restart，并要求未知 v2 fail closed。第二个受支持版本落地后再升级为 live 场景。
+- production 仍只支持 difficulty policy v1；测试构建通过 `usdb_activation_conformance` tag 启用保留 policy `65535 = v1 result + 1`，不赋予未来正式 v2 语义。默认二进制在激活点 fail closed，tagged 二进制用于验证第二版本分派。
+- 真实跨进程升级 E2E 已验证默认 geth 仅产出 block 1-3 并在 block 4 停止，tagged geth 复用同一 datadir 后继续到 block 13；逐块 profile replay 确认 H 前使用 registry revision 1 / policy 1，H 起使用 revision 2 / policy 65535，difficulty 与 reward 重算一致。
 
 ### TODO：接入正式 CI
 
