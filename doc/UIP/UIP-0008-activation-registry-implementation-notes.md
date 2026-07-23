@@ -13,19 +13,31 @@ Created: 2026-04-26
 
 不再维护同时包含 BTC、USDB chain 和多个网络的全局 runtime registry。
 
+# 术语映射
+
+| 实现对象 | 规范术语 | 含义 |
+| --- | --- | --- |
+| BTC JSON `records[]` item | BTC activation record | 一个 BTC-side version family 在指定 BTC 高度的记录。 |
+| `BtcActivationRegistryCatalog` 中一个 revision | BTC registry revision | 单个 BTC network registry 的完整不可变快照；numeric revision 只表示 catalog 顺序。 |
+| `activation_registry_id` | BTC registry identity | 完整 registry revision canonical encoding 的哈希，也是 USDB checkpoint 实际绑定的值。 |
+| `ChainConfig.usdb.activations[]` item / `USDBConsensusActivation` | USDB activation checkpoint | 一个 USDB block 起生效的完整 USDB version set 和 BTC registry binding。 |
+| `ChainConfig.usdb.activations[]` | USDB activation schedule | 同一 USDB network 按 block 严格排序的全部 checkpoints。 |
+
+本文不使用裸“每条 activation”描述实现要求。BTC record、BTC registry revision 和 USDB checkpoint 是三个不同层级，不能互换。
+
 # 配置所有权
 
 | 配置 | 权威来源 | Lookup context | 消费方 |
 | --- | --- | --- | --- |
 | BTC pass / energy / state-view versions | network-scoped BTC registry | BTC network + `btc_height` | balance-history、usdb-indexer |
-| USDB chain payload / difficulty / reward policy versions | USDB chain genesis / `ChainConfig.usdb.activations[]` | USDB chain + `usdb_block` | miner、header validator、reward transition |
+| USDB chain payload / difficulty / reward policy versions | USDB chain genesis / activation schedule | USDB chain + `usdb_block` | miner、header validator、reward transition |
 | 跨链 release 关联 | audit-only release manifest | release artifact identity | CI、部署工具、reviewer |
 
 核心约束：
 
 - BTC 服务加载配置 network 对应的 immutable revision catalog，并显式选择 current revision；历史查询可以按 ID 读取旧 revision。
 - USDB chain 节点只从本地 chain config 取得 expected USDB chain versions。
-- USDB chain config 的每条 `activations[]` record 固定一个 `btcActivationRegistryId`，只用于约束该 USDB 高度起 payload 引用的 BTC historical profile identity。
+- USDB chain config 的每个 activation checkpoint 固定一个 `btcActivationRegistryId`，只用于约束该 USDB 高度起 payload 引用的 BTC historical profile identity。
 - companion RPC 只返回 payload 指向的历史 BTC economic state，不回答 USDB chain 规则是否激活。
 - control-plane 可以汇总和审计这些 identity，但不能成为共识路径上的 activation service。
 
@@ -45,7 +57,7 @@ schema：
 uip-0008-btc-activation-registry:v1
 ```
 
-每个文件包含一个顶层 `scope = network_type + network_id`，record 只包含 BTC-side version family 和 `activation_height`。文件内不得出现其他 BTC network 或 USDB-chain family。
+每个文件包含一个顶层 `scope = network_type + network_id`，BTC activation record 只包含一个 BTC-side version family 和 `activation_height`。文件内不得出现其他 BTC network 或 USDB-chain family。
 
 当前 canonical ID：
 
@@ -65,17 +77,17 @@ testnet3、testnet4 和 signet 尚无独立 artifact，配置这些 network 时�
 
 # USDB Chain Config
 
-go-ethereum 的 `ChainConfig.usdb.activations[]` 是 USDB chain activation 的唯一运行时来源。
+go-ethereum 的 `ChainConfig.usdb.activations[]` 是 USDB activation schedule，也是 USDB chain activation 的唯一运行时来源。
 
-`ChainConfig.usdb.activations[].btcActivationRegistryId` 绑定该 USDB activation 允许引用的 BTC registry revision。它不提供 USDB-chain version，但 miner/validator 必须与同一 record 的 versions 一起解析，并在内嵌 Go golden catalog 中按 payload BTC 高度查询 expected set。
+schedule 中每个 `USDBConsensusActivation` 都是完整 activation checkpoint，不是单项 policy delta。`btcActivationRegistryId` 绑定该 checkpoint 允许引用的 BTC registry revision；它不提供 USDB-chain version，但 miner/validator 必须与同一 checkpoint 的完整 `versions` 一起解析，并在内嵌 Go golden catalog 中按 payload BTC 高度查询 expected set。
 
 当前实现已覆盖：
 
-- activation record 严格按 USDB block 排序且禁止同高冲突。
+- activation checkpoints 严格按 USDB block 排序且禁止同高冲突。
 - `USDBConsensusAt(blockNumber)` 返回目标高度最新的完整 version set。
-- `CheckCompatible` 拒绝修改已生效 activation，并给出 rewind height。
-- genesis JSON roundtrip 保留完整 activation records。
-- genesis JSON roundtrip 保留每条 activation 的 `btcActivationRegistryId`；`CheckCompatible` 允许修改尚未生效的 future binding，并拒绝修改已经生效的 binding。
+- `CheckCompatible` 拒绝修改已生效 checkpoint，并给出 rewind height。
+- genesis JSON roundtrip 保留完整 activation schedule。
+- genesis JSON roundtrip 保留每个 checkpoint 的 `btcActivationRegistryId`；`CheckCompatible` 允许修改尚未生效的 future binding，并拒绝修改已经生效的 binding。
 - miner、validator 和 reward transition 消费同一个 resolved chain-config profile。
 - CLI 仅提供 RPC URL、timeout、selected pass 等运行参数，不能启用或覆盖共识规则。
 
@@ -95,7 +107,7 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 - `snapshot_id` 只承诺 upstream balance-history state。
 - `activation_registry_id` 是 BTC source-network registry revision identity；BTC service current query 使用 catalog current，historical query 和 USDB chain config 可以固定具体旧/新 revision。
 - `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则。
-- USDB chain-config activation identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
+- USDB activation schedule/checkpoint identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
 
 # Cross-chain Release Manifest
 
@@ -135,7 +147,7 @@ manifest 用于 release review、CI 和部署审计。它不得：
 
 - 本地 chain config 决定 expected USDB chain versions。
 - Rust generator 从同一 network-scoped revision catalog 生成 Go golden artifact；`--check` 模式用于 CI/release drift 检查。
-- historical profile resolver 使用 `target USDB activation registry ID + payload BTC height` 本地解析 expected set，再校验 RPC registry/set identity、canonical set hash 和历史状态选择器。
+- historical profile resolver 使用 `target USDB activation checkpoint 的 BTC registry ID + payload BTC height` 本地解析 expected set，再校验 RPC registry/set identity、canonical set hash 和历史状态选择器。
 - profile resolver 按 expected set 中的 raw-energy、effective-energy 和 level formula version 显式分派；本地未支持版本 fail closed。
 - BTC registry identity 漂移、profile 字段篡改或 companion service 不可用时停止组块或拒绝区块。
 
@@ -151,12 +163,12 @@ Rust registry tests 覆盖：
 - canonical record ordering、network-scoped registry ID golden。
 - release manifest v2 重算全部 BTC revision ID，并固定 revision/current、USDB chain ID / genesis hash / authority / activation bindings。
 
-Go tests 覆盖 generated multi-revision registry/set golden、payload-height lookup、unknown/tampered registry、active-version-set codec、per-activation binding boundary、`CheckCompatible`、genesis roundtrip、formula dispatch、miner/validator version guard 和 RPC failure mapping。`usdb_activation_conformance` build tag 额外提供保留 policy `65535`，只用于验证真实第二版本分派、restart/reorg 和旧二进制 fail closed，不定义未来 production v2 公式。
+Go tests 覆盖 generated multi-revision registry/set golden、payload-height lookup、unknown/tampered registry、active-version-set codec、per-checkpoint binding boundary、`CheckCompatible`、genesis roundtrip、formula dispatch、miner/validator version guard 和 RPC failure mapping。`usdb_activation_conformance` build tag 额外提供保留 policy `65535`，只用于验证真实第二版本分派、restart/reorg 和旧二进制 fail closed，不定义未来 production v2 公式。
 
 # 后续事项
 
 1. 正式 BTC source network registry 的 indexing origin / activation height review。
 2. 正式 USDB chain testnet/mainnet genesis、chain ID 和 activation blocks 冻结。
 3. release manifest 签名和发布流程。
-4. UIP-0011 至 UIP-0015 实现后，将 USDB chain staging `0` policy 替换为正式 activation records。
+4. UIP-0011 至 UIP-0015 实现后，通过新的完整 USDB activation checkpoints 将 staging `0` policy 替换为正式版本。
 5. 如增加 BTC testnet3/testnet4/signet，必须分别新增 registry 文件、golden ID 和 live replay matrix。

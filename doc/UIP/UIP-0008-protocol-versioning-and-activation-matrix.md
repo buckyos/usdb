@@ -5,7 +5,7 @@ Type: Process / Standards Track
 Layer: Process / Consensus / Indexer / Validator
 Created: 2026-04-26
 Requires: UIP-0000, UIP-0001, UIP-0002, UIP-0003, UIP-0004, UIP-0005, UIP-0006, UIP-0007
-Activation: See network activation matrix
+Activation: See owner-scoped BTC registries and USDB activation schedules
 
 # 摘要
 
@@ -45,30 +45,46 @@ UIP-0008 不直接定义新的 pass schema、energy 公式或 USDB chain reward 
 
 | 术语 | 含义 |
 | --- | --- |
-| `activation_record` | 描述某个版本在一个已确定网络作用域内、某高度生效的记录。 |
-| `activation_matrix` | 一组属于同一共识所有者和网络的 `activation_record`。 |
-| `activation_registry_id` | 单个 BTC network registry canonical encoding 的哈希；不得覆盖其他 BTC 网络或 USDB chain config。 |
-| `active_version_set` | 在指定 chain context 下生效的一组版本字段和值。 |
-| `active_version_set_id` | `active_version_set` canonical encoding 的哈希。 |
+| `btc_activation_record` | BTC registry `records[]` 中的一项；描述一个 `version_family` 在某个 BTC 高度的状态和版本值。 |
+| `btc_registry_revision` | 单个 BTC network registry 的一次完整、不可变快照；包含该 revision 之前的全部历史记录，不是某个协议的版本号。 |
+| `activation_registry_id` | 一个 `btc_registry_revision` canonical encoding 的哈希；不得覆盖其他 BTC 网络或 USDB chain config。 |
+| `usdb_activation_checkpoint` | `ChainConfig.usdb.activations[]` 中的一项；以 USDB block 为锚点，完整携带全部 USDB version fields 和一个 BTC registry binding。 |
+| `usdb_activation_schedule` | 同一 USDB network 按 block 严格排序的全部 `usdb_activation_checkpoint`；代码中的 `activations[]` 即该 schedule。 |
+| `activation_matrix` | 对按 chain/network/height 选择规则这一机制的总称。具体讨论时必须明确是 BTC registry records，还是 USDB activation schedule。 |
+| `active_version_set` | 在指定 BTC registry revision 和 BTC 高度下派生出的 BTC-side version fields；由 UIP-0006 external state 暴露。 |
+| `active_version_set_id` | BTC-side `active_version_set` canonical encoding 的哈希。 |
+| `resolved_usdb_versions` | 按 USDB block 从最近一个 `usdb_activation_checkpoint` 取得的完整 USDB-chain version fields。 |
 | `version_family` | 一类版本字段，例如 `energy_formula_version`、`payload_version`。 |
 | `chain_context` | 进行版本选择所需的链、网络和高度信息。 |
 | `cross_chain_release_manifest` | 将独立的 BTC registry ID 与 USDB chain genesis / chain config 身份关联起来的发布审计文件；不参与任一链的运行时版本选择。 |
+
+为避免歧义，本文不使用未限定所有者的“每条 activation”表达规范要求：
+
+- “BTC activation record”始终指 registry `records[]` 中的单版本族记录。
+- “USDB activation checkpoint”始终指 `ChainConfig.usdb.activations[]` 中的完整检查点。
+- “registry revision”始终指 BTC registry 的完整快照，不指单条记录，也不指 USDB activation checkpoint。
 
 # 激活机制概念
 
 激活机制用于回答一个问题：在某条链、某个网络、某个高度，系统应该使用哪一组协议规则。
 
-它不是代码发布机制，也不是运行时开关。代码可以同时支持多个版本，但只有 activation matrix 中已经对目标网络和目标高度生效的版本，才可以用于共识、历史查询和 validator replay。
+它不是代码发布机制，也不是运行时开关。代码可以同时支持多个版本，但只有对应 BTC registry 或 USDB activation schedule 已经对目标网络和目标高度激活的版本，才可以用于共识、历史查询和 validator replay。
 
-核心关系如下：
+BTC registry 和 USDB chain config 使用同一套高度选择原则，但数据形状不同：
 
 ```text
-activation_record  = 某一网络激活配置的一行
-activation_matrix  = 同一网络内的多行 activation_record
-active_version_set = 在该网络/高度查出来的当前生效版本集合
+BTC:
+    btc_registry_revision = 一个 BTC network 的完整 registry 快照
+    btc_activation_record = records[] 中一个 version family 的激活记录
+    active_version_set    = 在指定 registry revision / BTC height 下派生出的版本集合
+
+USDB:
+    usdb_activation_schedule   = ChainConfig.usdb.activations[]
+    usdb_activation_checkpoint = schedule 中一个完整版本快照和 BTC registry binding
+    resolved_usdb_versions     = 目标 USDB block 最近一个已生效 checkpoint 的完整 versions
 ```
 
-例如：
+BTC 示例：
 
 ```text
 registry scope:
@@ -76,7 +92,7 @@ registry scope:
     network_id = btc-regtest
     anchor = btc_height
 
-activation_matrix:
+btc_activation_records:
     btc_height >= 0 -> energy_formula_version = uip-0003-pass-energy-formula:v1
     btc_height >= 0 -> level_formula_version = uip-0005-level-and-real-difficulty:v1
 
@@ -95,6 +111,24 @@ active_version_set:
 - 查询 `btc_height = 199_999` 必须使用 v1。
 - 查询 `btc_height = 200_000` 必须使用 v2。
 - reorg 后必须按新 canonical 分支上的高度重新判断版本。
+
+USDB activation schedule 示例：
+
+```text
+USDB block 0:
+    btc_registry = R1
+    versions = { payload=1, difficulty=1, reward=0, ... }
+
+USDB block 100:
+    btc_registry = R2
+    versions = { payload=1, difficulty=1, reward=0, ... }
+
+USDB block 200:
+    btc_registry = R2
+    versions = { payload=1, difficulty=1, reward=1, ... }
+```
+
+block 100 是 registry-only checkpoint：USDB version fields 没有变化，但从该高度起绑定新的 BTC registry revision。block 200 是 policy checkpoint：只改变 `reward_rule_version`，但记录仍必须重复完整 USDB version set。若多个 USDB policy 在同一 block 生效，必须合并到同一个 checkpoint，不能创建同高多条记录。
 
 # 规范关键词
 
@@ -135,15 +169,15 @@ uip-0004-collab-leader-effective-energy:v1
 uip-0006-usdb-economic-state-view:v1
 ```
 
-进入 USDB block header、chain config、activation matrix 或 reserved system state 的版本字段应该使用固定宽度整数。首个启用版本必须使用正整数版本号，例如 `payload_version = 1`、`difficulty_policy_version = 1`。
+进入 USDB block header、chain config、USDB activation schedule 或 reserved system state 的版本字段应该使用固定宽度整数。首个启用版本必须使用正整数版本号，例如 `payload_version = 1`、`difficulty_policy_version = 1`。
 
 首个正式 USDB-chain 网络必须启用 level-based difficulty policy，不定义 `difficulty_policy_version = 0` 作为“未启用”保留值。若未来某个独立测试网络确实需要无 difficulty policy 模式，必须由后续 UIP 单独定义，不得复用正式网络语义。
 
 可选经济组件如果需要 disabled 状态，必须由对应 UIP 明确允许 `0` 的含义。例如 UIP-0015 当前草案允许 `aux_pool_policy_version = 0` 表示辅助算力池未启用；这不代表其他 version family 自动允许 `0`。
 
-# 激活记录与所有权
+# 两类激活记录与所有权
 
-BTC 和 USDB chain 的激活记录由不同的本地共识配置拥有，禁止合并成一个运行时 registry。
+BTC activation records 和 USDB activation checkpoints 由不同的本地共识配置拥有，禁止合并成一个运行时 registry。
 
 ## BTC Network Registry
 
@@ -189,21 +223,23 @@ BTC record 固定以 `btc_height` 为 anchor，不再逐条重复 chain/network/
 
 ## USDB Chain Config
 
-USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConfig.usdb.activations[]`。每条 chain-config activation 以 `usdb_block` 为 anchor，并携带该高度完整的 USDB chain version set 与 `btcActivationRegistryId`。USDB chain 节点不得读取 BTC registry 或调用 companion RPC 来决定 expected USDB chain version。
+USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConfig.usdb.activations[]`。数组中的每个 USDB activation checkpoint 以 `usdb_block` 为 anchor，并携带该高度完整的 USDB chain version set 与 `btcActivationRegistryId`。Go 类型名 `USDBConsensusActivation` 和 JSON 字段名 `activations[]` 保持不变，但其元素语义是完整 checkpoint，不是单个 version family 的增量记录。USDB chain 节点不得读取 BTC registry 或调用 companion RPC 来决定 expected USDB chain version。
 
-每条 `ChainConfig.usdb.activations[i].btcActivationRegistryId` 绑定从该 USDB block 起允许引用的 immutable BTC source-network registry revision。该字段是 cross-chain historical profile 的辅助共识条件，不是 USDB-chain version activation source：
+每个 `ChainConfig.usdb.activations[i]` checkpoint 的 `btcActivationRegistryId` 绑定从该 USDB block 起允许引用的 immutable BTC source-network registry revision。该字段是 cross-chain historical profile 的辅助共识条件，不是 USDB-chain version activation source：
 
 - miner/validator 必须在本地 Go golden artifact 中找到该 registry ID，否则 fail closed。
 - payload 的 `btc_height` 必须在该 registry 的高度表中解析 expected `active_version_set`。
 - companion RPC 返回的 `activation_registry_id + active_version_set + active_version_set_id` 必须与本地 lookup 精确一致。
-- 后续 activation 可以切换到同一 BTC network catalog 的新 revision；旧 revision 必须继续保留以便历史 replay。
-- 已生效 activation 的 registry ID 变更必须进入 `CheckCompatible`，不能由 CLI、RPC 或普通配置热更新覆盖。
+- 后续 USDB activation checkpoint 可以切换到同一 BTC network catalog 的新 revision；旧 revision 必须继续保留以便历史 replay。
+- 已生效 checkpoint 的 registry ID 变更必须进入 `CheckCompatible`，不能由 CLI、RPC 或普通配置热更新覆盖。
 
 # 激活矩阵规则
 
-激活矩阵必须遵循：
+## BTC Registry 规则
 
-- 未列出的网络不得默认激活；缺少对应 BTC registry 文件或 USDB chain config 时必须 fail closed。
+BTC registry 必须遵循：
+
+- 未列出的 BTC network 不得默认激活；缺少对应 BTC registry artifact 时必须 fail closed。
 - 单个 BTC registry 文件不得包含其他 BTC network 或任何 USDB-chain family。
 - 同一 `version_family`、同一 network、同一高度只能有一个 active version。
 - 后激活的版本必须显式 `supersedes` 被替代版本，除非该 family 之前没有 active version。
@@ -213,6 +249,18 @@ USDB-chain integer version families 必须写入 USDB chain genesis / `ChainConf
 - catalog 必须显式指定一个 current revision；historical request 可以按 registry ID 读取任何保留 revision。
 
 若两个 active 记录在同一高度冲突，节点必须拒绝启动公开网络服务，不能任选其一。
+
+## USDB Activation Schedule 规则
+
+USDB activation schedule 必须遵循：
+
+- 未配置的 USDB network 不得默认激活；缺少本地 genesis / chain config schedule 时必须 fail closed。
+- checkpoint 必须按 `block` 严格递增，同一 USDB block 只能有一个 checkpoint。
+- 每个 checkpoint 必须完整携带所有 USDB chain version fields 和 `btcActivationRegistryId`；不得把缺失字段解释为继承上一条。
+- 查询目标 USDB block 时，选择 `block <= target` 的最后一个 checkpoint；首次 checkpoint 之前 USDB consensus inactive。
+- 单个或多个 USDB policy 在同一 block 变化时，都必须生成一个新的完整 checkpoint。
+- 仅切换 BTC registry revision 也必须生成一个新的完整 checkpoint，并重复不变的 USDB version fields。
+- 已生效 checkpoint 的 versions 或 registry binding 都属于 chain compatibility 边界；未来 checkpoint 只可在生效前更新。
 
 # Version Lookup
 
@@ -225,10 +273,10 @@ btc_context  = selected_btc_registry_revision + btc_height
 usdb_chain_context = local_chain_config + usdb_block
 ```
 
-输出：
+输出分属两个共识所有者，禁止合并为一个运行时 set：
 
 ```text
-active_version_set =
+btc_active_version_set =
     inscription_schema_version?
     pass_state_machine_version?
     energy_formula_version?
@@ -236,24 +284,26 @@ active_version_set =
     level_formula_version?
     query_semantics_version?
     state_view_version?
-    payload_version?
-    difficulty_policy_version?
-    reward_rule_version?
-    coinbase_emission_policy_version?
-    fee_split_policy_version?
-    collaboration_efficiency_policy_version?
-    price_policy_version?
-    quote_policy_version?
-    aux_pool_policy_version?
     commit_protocol_version?
     balance_history_semantics_version?
+
+resolved_usdb_versions =
+    payload_version
+    difficulty_policy_version
+    reward_rule_version
+    coinbase_emission_policy_version
+    fee_split_policy_version
+    collaboration_efficiency_policy_version
+    price_policy_version
+    quote_policy_version
+    aux_pool_policy_version
 ```
 
 规则：
 
 - BTC-side pass、balance、state 和 energy 派生必须先按配置的 BTC network 选择唯一 registry，再使用 `btc_height` 选择版本。
-- USDB-chain payload、difficulty、reward 和执行规则必须使用本地 genesis / chain config 按 `usdb_block` 选择版本。
-- USDB chain validator 必须使用目标 USDB block 的 `activations[]` record 所绑定的 `btcActivationRegistryId + payload.btc_height` 在本地 golden catalog 中选择 BTC active set，再与 companion historical response 交叉校验。
+- USDB-chain payload、difficulty、reward 和执行规则必须使用本地 genesis / chain config 按 `usdb_block` 选择完整 checkpoint 和 `resolved_usdb_versions`。
+- USDB chain validator 必须使用目标 USDB block 的 activation checkpoint 所绑定的 `btcActivationRegistryId + payload.btc_height` 在本地 golden catalog 中选择 BTC active set，再与 companion historical response 交叉校验。
 - CrossChain 规则必须明确主锚点和辅助条件。
 - 查询历史 BTC 高度时，禁止用当前 BTC head 的版本解释旧高度。
 - 校验历史 USDB block 时，禁止用当前 USDB chain head 的版本解释旧块。
@@ -276,7 +326,7 @@ active_if =
 这意味着：
 
 - USDB block 的 `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 只由 USDB chain genesis / chain config 决定。
-- payload 指向的 BTC-side USDB state 由 `btc_height` 对应的 BTC-side activation matrix 决定。
+- payload 指向的 BTC-side USDB state 由选定 BTC registry revision 中 `btc_height` 对应的 BTC activation records 决定。
 - USDB chain config 绑定可接受的 BTC registry identity，防止两个格式正确但内容不同的 registry 被不同 validator 接受。
 - 两者都必须可重放，且不得互相覆盖。
 
@@ -291,7 +341,7 @@ USDB 的 `system_state_id` / `local_state_commit` 必须绑定足够信息，使
 - 当前 context 下的 `active_version_set_id`。
 - 影响派生状态的输入数据 commit。
 
-`local_state_commit` 不需要直接包含完整 `active_version_set`。它只需要承诺 `active_version_set_id`，前提是节点、validator 和审计工具可以通过稳定的 activation registry 查询到该 id 对应的完整 version set。
+`local_state_commit` 不需要直接包含完整 `active_version_set`。它只需要承诺 `active_version_set_id`，前提是节点、validator 和审计工具可以通过稳定的 BTC registry revision 查询到该 id 对应的完整 version set。
 
 推荐定义：
 
@@ -376,7 +426,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 
 - `network_type` 必须是 `regtest`、`devnet` 或 `local`。
 - `network_id` 不得伪装成 mainnet / public testnet。
-- local override 不得写入 public network activation matrix。
+- local override 不得写入 public BTC registry 或 public USDB activation schedule。
 - 开发期数据迁移不构成主网兼容承诺。
 
 这里的 public/development 分类描述 USDB protocol network 的发布状态。`btc-mainnet` registry 只表示 indexer 读取的 BTC source network，并不等价于 USDB chain/USDB public mainnet 已激活；当前 height 0 记录使配置的 USDB indexing origin 之后统一使用 v1 解释。
@@ -409,7 +459,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 
 一旦某个 public network 进入 `Active`：
 
-- 后续变更必须新增 version 或 activation record。
+- BTC-side 后续变更必须新增 version 和对应 BTC activation record；USDB-chain 后续变更必须新增完整 activation checkpoint。
 - 不得通过代码发布直接改变旧高度解释。
 - 若无法双版本重放，必须提供一次性迁移和冻结高度说明。
 
@@ -435,7 +485,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 - mainnet/regtest 使用各自文件且 registry ID 不同。
 - registry scope 与配置 network 不匹配时 fail closed。
 - BTC registry 拒绝 USDB-chain version family。
-- conflicting activation records fail closed。
+- conflicting BTC activation records fail closed。
 - historical RPC 按目标高度选择版本。
 - reorg 跨激活高度后重新选择版本。
 - `active_version_set_id` mismatch。
@@ -448,7 +498,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 - release manifest 中的 BTC registry ID 可由 artifact 重算。
 - USDB chain validator 在 companion RPC 不可用时停止，但 expected USDB chain version 仍只来自本地 chain config。
 
-# 初始激活矩阵草案
+# 初始激活配置草案
 
 当前 reference artifacts 为开发期状态，不代表 USDB chain public network 激活：
 
@@ -477,7 +527,7 @@ go-ethereum params.ChainConfig.USDB
 
 BTC JSON 与 Markdown 表格表达同一组 BTC-side activation records，并由 Rust 服务在构建时嵌入二进制。启动、扫块和 historical RPC lookup 共用同一 network-scoped 解析与校验实现，不允许 runtime flag 覆盖。
 
-Rust generator 将每个 catalog revision 的 active 高度边界、完整 set、registry ID、revision/current metadata 和 set ID 确定性展开到 Go golden artifact。Go validator 不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从目标 USDB block 的 activation record 取得绑定的 registry ID，按 payload BTC 高度查询内嵌 golden，随后重算 RPC profile 的 set ID 并精确比较。USDB chain expected versions 始终来自同一条本地 `activations[]` record。
+Rust generator 将每个 catalog revision 的 active 高度边界、完整 set、registry ID、revision/current metadata 和 set ID 确定性展开到 Go golden artifact。Go validator 不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从目标 USDB block 的 activation checkpoint 取得绑定的 registry ID，按 payload BTC 高度查询内嵌 golden，随后重算 RPC profile 的 set ID 并精确比较。USDB chain expected versions 始终来自同一个本地 checkpoint。
 
 # 待审计问题
 

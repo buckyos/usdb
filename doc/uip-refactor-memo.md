@@ -4,7 +4,7 @@
 
 ## UIP-0001 Miner Pass Inscription Schema
 
-状态：当前 dev schema/storage/RPC/test/script surface 已对齐；activation matrix 和后续 collab/effective energy 语义转入后续 UIP。
+状态：当前 dev schema/storage/RPC/test/script surface 已对齐；BTC-side schema activation 和后续 collab/effective energy 语义转入后续 UIP。
 
 ### 已对接内容
 
@@ -73,7 +73,7 @@
 
 ### 暂缓事项
 
-- activation matrix 尚未接入；当前实现直接按 v1 strict schema 解析 USDB mint。
+- BTC activation registry 尚未接入；当前实现直接按 v1 strict schema 解析 USDB mint。
 - `leader_pass_id` 引用对象是否必须在 mint 时已存在，留给 UIP-0002 状态机处理。
 - `leader_btc_addr` 在历史高度解析 active standard leader 的逻辑，留给 UIP-0002 / UIP-0004。
 - collab pass 的 raw energy、effective energy、防双计数和 candidate set 过滤，留给 UIP-0003 / UIP-0004。
@@ -295,7 +295,7 @@
 ### 当时后续项（当前状态）
 
 - UIP-0006 economic state view、candidate/profile 版本字段和审计查询口径已完成，详见后续章节。
-- UIP-0008：统一 formula version、历史高度 activation matrix 与参数版本重放。
+- UIP-0008：统一 BTC registry formula version、历史高度 lookup 与参数版本重放。
 - UIP-0009：明确 USDB-chain `base_difficulty` / `real_difficulty` 类型、来源和重算 policy。
 - UIP-0005 / UIP-0006 已对齐，现进入集中 live/regtest 复核和大数据性能阶段。
 - UIP-0014 的 quote activity / candidate energy 口径：quote stale 时 USDB chain 侧 candidate energy 回落为 raw/self energy；不反向修改 USDB indexer 的 effective energy。
@@ -636,14 +636,22 @@
 
 ## UIP-0008 Activation Registry 与 State Identity
 
-状态：机器可读 registry、canonical identity、Rust 历史解析链路和 Go 跨语言 registry binding/height lookup 已分别通过 `ed6287c`、`9295df636` 提交；集中测试补充尚未提交，等待 review。
+状态：机器可读 registry、canonical identity、Rust 历史解析链路和 Go 跨语言 registry binding/height lookup 已分别通过 `ed6287c`、`9295df636` 提交；immutable revision catalog / historical replay 已通过 `7f90c6b` 提交，per-checkpoint binding / second-version conformance / cross-process upgrade E2E 已通过 `74f2aa545` 提交。本轮术语收口尚未提交，等待 review。
+
+### Activation 术语边界
+
+- BTC registry `records[]` 的一项称为 BTC activation record，只描述一个 version family 在某个 BTC 高度的记录。
+- 同一 BTC network 的一个完整不可变 registry 快照称为 BTC registry revision；numeric revision 是 catalog 顺序，`activation_registry_id` 才是该快照的 canonical identity。
+- `ChainConfig.usdb.activations[]` 的一项称为 USDB activation checkpoint，完整携带 USDB version set 和一个 BTC registry binding，不是单 policy delta。
+- 整个 `activations[]` 称为 USDB activation schedule。仅切换 BTC revision 或仅改变一个 policy，也必须增加完整 checkpoint；同高多项变化合并为一个 checkpoint。
+- `active_version_set` / `active_version_set_id` 专指按 BTC registry revision 和 BTC height 派生的 BTC-side set；USDB chain 版本称为 checkpoint 的 `resolved_usdb_versions`，两者不合并。
 
 ### Registry Contract
 
 - 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 network-scoped immutable revision catalog；当前包含 `btc-mainnet.json`、`btc-regtest.json` 与 staged `btc-regtest-revision-2.json`，record 只允许 BTC-side family 和 `activation_height`。
 - Rust API 改为先按配置的 `bitcoin::Network` 选择内嵌 catalog，再按 current 或显式 registry ID 与目标高度 lookup；testnet3/testnet4/signet 在没有独立 catalog 时 fail closed，不能回退或混用其他 network。
 - `activation_registry_id` 改为 network-scoped canonical encoding，固定 golden：`btc-mainnet=bb751626...a7d39e`、`btc-regtest=22d820e6...aaf83d`；两者当前 active set 相同，继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
-- Rust registry 类型不再表达 USDB-chain activation record，并显式拒绝 USDB-chain family；USDB expected versions 与 BTC historical-profile registry binding 均由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 联合解析。
+- Rust registry 类型不再表达 USDB activation checkpoint，并显式拒绝 USDB-chain family；USDB expected versions 与 BTC historical-profile registry binding 均由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 联合解析。
 - audit-only `release-manifest.json` 升级为 v2，关联 BTC revision/current 与 USDB `chain_id/genesis_hash/chain-config authority/height-indexed bindings`；manifest 自身不参与 BTC identity、USDB header validation 或 runtime activation lookup。
 - 当前 `btc-mainnet` height 0 只定义 BTC source history 的 v1 解释，不代表 USDB public mainnet 已发布；正式网络的 indexing origin 和 USDB genesis 仍需分别冻结。
 
@@ -658,15 +666,15 @@
 - indexer 启动时同时校验配置 genesis height 和 DB durable synced height 的 registry/v1 支持面，每次 `sync_block` 在写入前再按该 BTC 高度解析；未知、缺失、冲突、不支持版本以及降级二进制跨 activation 重启均不会产生部分状态。
 - balance-history 在 indexer/RPC 启动时校验当前 durable height，并在每个 batch 写入前逐高度校验 semantics activation；历史 state-ref lookup 将 activation 失败映射为结构化共识错误。
 - historical RPC 以请求冻结高度解析 active set，重算 set ID 后再构造 local/system state；expected state 与 cursor 对 registry/set identity 做精确匹配。
-- 新增 activation record、supported version、active set identity 和 commit protocol 的结构化 RPC 错误码；formula member 不支持继续映射到专用 formula mismatch。旧 `PROTOCOL_VERSION_MISMATCH/-32051` 随全局 protocol 字段删除，不保留 client 兼容映射。
+- 新增 BTC activation record、supported version、active set identity 和 commit protocol 的结构化 RPC 错误码；formula member 不支持继续映射到专用 formula mismatch。旧 `PROTOCOL_VERSION_MISMATCH/-32051` 随全局 protocol 字段删除，不保留 client 兼容映射。
 - Rust 新增确定性 `generate_go_btc_activation_golden` 工具，将全部 catalog revisions 的 active 高度边界和 revision/current metadata 展开为 Go 内嵌 artifact；`--check` 可以在 CI/release 中直接拒绝跨仓库 artifact 漂移。
-- 每条 `ChainConfig.usdb.activations[]` 的 `btcActivationRegistryId` 进入 genesis JSON 与 `CheckCompatible`；built-in development chain block 0 固定绑定 `btc-regtest` revision 1。Go builder/verifier 在每个 USDB block 联合选择 versions 与 registry，并使用 `binding + payload BTC height` 解析本地 expected set。
+- 每个 `ChainConfig.usdb.activations[]` checkpoint 的 `btcActivationRegistryId` 进入 genesis JSON 与 `CheckCompatible`；built-in development chain block 0 固定绑定 `btc-regtest` revision 1。Go builder/verifier 在每个 USDB block 联合选择 versions 与 registry，并使用 `binding + payload BTC height` 解析本地 expected set。
 - historical profile query 现在主动携带 expected registry/set ID；返回值必须同时通过 chain-config registry equality、canonical set ID 重算及本地 height lookup。builder 继续检查 current state 与 historical profile 两次读取之间的 identity 漂移。
 - verifier 从 expected active set 解析 `energy_formula_version`、`effective_energy_formula_version`、`level_formula_version` 后分别分派公式；当前只实现 v1，任何未知版本均 fail closed，而不是隐式复用最新公式。
 
 ### 已验证与后续边界
 
-- Rust activation matrix 新增 public `manual` override 拒绝、before/at/after、unsupported v2、跨激活 rollback/replay、registry JSON reload 及 active-set 引起 local commit ID 变化测试；`usdb-util` 为 30 passed、1 个既有 Electrs live test ignored。
+- Rust BTC registry 新增 public `manual` override 拒绝、before/at/after、unsupported v2、跨激活 rollback/replay、registry JSON reload 及 active-set 引起 local commit ID 变化测试；`usdb-util` 为 30 passed、1 个既有 Electrs live test ignored。
 - Go 聚焦测试覆盖 generated registry/set golden、payload-height boundary lookup、unknown/tampered registry、chain-config binding compatibility、historical query pinning、未知 formula dispatch，以及 synthetic golden reload 后的跨激活 rollback/replay；`internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` 当前测试通过。
 - `usdb-indexer` 全量回归为 283 passed、5 ignored；`balance-history` 排除依赖本机 height-900000 snapshot fixture 后为 101 passed，其中包含 2 个 fake-chain sync tests 和 1 个 library export integration test。
 - Rust generator `--check` 已确认提交的 Go golden artifact 与 `btc-mainnet` 及 `btc-regtest` 全部 revisions 完全一致。
@@ -685,7 +693,7 @@
 
 ## USDB Chain 命名与系统边界收口
 
-状态：协议、实现和开发入口已按当前链身份收敛；改动尚未提交，等待 review。
+状态：协议、实现和开发入口已按当前链身份收敛并提交；后续继续按 USDB protocol、USDB chain、BTC-side USDB service 三层边界维护命名。
 
 ### 统一口径
 
@@ -697,7 +705,7 @@
 
 ### 实现与文档
 
-- UIP-0007/UIP-0009 文件名、标题、激活锚点和 network id 改为 USDB chain；release manifest 使用 `usdb_chain_configs`，USDB activation 继续只由本地 genesis/chain config 决定，不依赖 BTC RPC。
+- UIP-0007/UIP-0009 文件名、标题、激活锚点和 network id 改为 USDB chain；release manifest 使用 `usdb_chain_configs`，USDB activation schedule 继续只由本地 genesis/chain config 决定，不依赖 BTC RPC。
 - BTC Electrum-compatible script hash 类型从易歧义的 `USDBScriptHash` 改为 `BtcScriptHash`；字节/数据库编码不变，RPC 文档明确其为反转字节序的 `SHA-256(scriptPubKey)`。
 - control-plane 链 RPC 配置使用 `usdb_chain_url`，链账户接口使用 `/api/usdb-chain/...` 和 `UsdbChain*` 类型；console 展示区分 USDB 链账户地址、BTC owner 与 USDB 原生资产余额，原生最小单位字段使用 `balance_atoms_hex`。Docker 生成的 TOML 和保留的静态 console 基线同步使用新 schema，不保留 `ethw_*` API 字段。
 - 消除裸 `USDB_RPC_*` 歧义：BTC-side 测试框架和 world simulator 改为 `USDB_INDEXER_RPC_PORT` / `USDB_INDEXER_RPC_URL` / `--usdb-indexer-rpc-url`，USDB chain 节点使用 `USDB_CHAIN_RPC_URL`。geth 访问 indexer 的运行参数改为 `--miner.usdb-indexer.*` / `--ethash.usdb-indexer.*`，而 `--miner.usdb.passid` 仍表示 USDB protocol selector。

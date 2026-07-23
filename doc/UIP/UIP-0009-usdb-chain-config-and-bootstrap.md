@@ -5,7 +5,7 @@ Type: Standards Track
 Layer: USDB Chain Config / Genesis / Consensus
 Created: 2026-04-26
 Requires: UIP-0000, UIP-0005, UIP-0007, UIP-0008
-Activation: USDB-chain network activation matrix; first official networks activate v1 from genesis
+Activation: USDB-chain activation schedule; first official networks activate v1 from genesis
 
 # 摘要
 
@@ -221,7 +221,7 @@ v1 应从 genesis 固定启用现代 EVM 规则集。当前 go-ethereum 原型�
 - `LondonBlock`
 - `ShanghaiBlock`
 
-未来如果需要启用新的 EVM fork，应通过 USDB chain config 和 UIP-0008 activation matrix 显式定义。
+未来如果需要启用新的 EVM fork，应通过 USDB chain config 和 UIP-0008 activation schedule 显式定义。
 
 # PoW 与 Difficulty Bootstrap
 
@@ -311,6 +311,17 @@ v1 规则：
 
 # USDB Consensus Version Fields
 
+`ChainConfig.usdb.activations[]` 是 USDB activation schedule。数组中的每个元素是一个 USDB activation checkpoint，Go 类型名为 `USDBConsensusActivation`：
+
+```text
+usdb_activation_checkpoint =
+    activation USDB block
+    + complete USDB consensus version set
+    + one immutable BTC registry revision binding
+```
+
+checkpoint 不是单个 policy 的激活记录，也不是 BTC registry revision。即使只改变一个 policy version，或只切换 `btcActivationRegistryId`，也必须新增一个 checkpoint 并重复其余全部 version fields。多个 policy 在同一 USDB block 生效时必须合并到同一个 checkpoint。运行时按目标 block 选择 `block <= target` 的最后一个 checkpoint。
+
 USDB chain config 必须显式包含或可确定以下版本：
 
 | 字段 | 类型建议 | v1 值 | 激活 |
@@ -323,7 +334,7 @@ USDB chain config 必须显式包含或可确定以下版本：
 | `collaboration_efficiency_policy_version` | uint16 | `1` | genesis |
 | `price_policy_version` | uint32 | `1` | genesis |
 | `quote_policy_version` | uint16 | `1` | genesis |
-| `aux_pool_policy_version` | uint16 | `0` | genesis disabled；future activation |
+| `aux_pool_policy_version` | uint16 | `0` | genesis disabled；future checkpoint |
 
 边界：
 
@@ -335,7 +346,7 @@ USDB chain config 必须显式包含或可确定以下版本：
 - `collaboration_efficiency_policy_version` 描述 UIP-0012 的 `K` rolling window 和 state update。
 - `price_policy_version` 描述 UIP-0013 price state transition；v1 为 FixedPrice。
 - `quote_policy_version` 描述 UIP-0014 Leader quote activity 和 candidate energy。
-- `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过 USDB chain-config activation 激活正整数版本。
+- `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过新的 USDB activation checkpoint 激活正整数版本。
 
 首个正式 USDB chain 网络必须从 genesis 启用 `difficulty_policy_version = 1`，不得使用 `0` 表示未启用。
 
@@ -369,7 +380,7 @@ legacy `--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激�
 
 当前 development chain 只激活已经落地的 `payload_version=1` 和
 `difficulty_policy_version=1`。reward、CoinBase、fee split、collaboration efficiency、
-price 和 quote 字段已进入完整 activation record，但在对应 UIP 实现前保持 `0`；任何
+price 和 quote 字段已进入完整 USDB activation checkpoint，但在对应 UIP 实现前保持 `0`；任何
 非零但本地未支持的 policy 都 fail closed。首个正式网络仍必须在相关实现完成后按本文
 的 v1 version set 从 genesis 激活。
 
@@ -382,7 +393,7 @@ price 和 quote 字段已进入完整 activation record，但在对应 UIP 实�
 - `difficulty_policy_version = 1`：由 USDB chain 使用 UIP-0005 的 `difficulty_factor_bps` 折算 block difficulty。
 - `reward_rule_version = 1`：由 UIP-0011 定义 reward 输入校验和 state transition。
 - `coinbase_emission_policy_version = 1`：由 UIP-0011 定义 CoinBase emission。
-- `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / USDB chain-config activation 固定。
+- `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / USDB activation checkpoint 固定。
 - `collaboration_efficiency_policy_version = 1`：由 UIP-0012 定义 `K`。
 - `price_policy_version = 1`：由 UIP-0013 定义 FixedPrice v1。
 - `quote_policy_version = 1`：由 UIP-0014 定义 quote activity v1。
@@ -450,7 +461,7 @@ reward_rule_version = 1
 
 不需要保留 pre-standard USDB chain 兼容窗口。
 
-未来升级必须通过 UIP-0008 activation matrix 和 USDB chain config fork/version 字段定义。
+未来升级必须通过 UIP-0008 定义的 USDB activation schedule 和 chain config fork/version 字段定义。
 
 # 与 UIP-0008 Activation Registry 的关系
 
@@ -459,7 +470,7 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
 要求：
 
 - `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 `ChainConfig.usdb.activations[]`。
-- 每条 `ChainConfig.usdb.activations[]` record 必须绑定该高度起接受的 BTC source registry revision；它是 historical profile 的辅助共识条件，不替代同一 record 的 USDB version set。
+- 每个 `ChainConfig.usdb.activations[]` checkpoint 必须绑定该高度起接受的 BTC source registry revision；它是 historical profile 的辅助共识条件，不替代同一 checkpoint 的完整 USDB version set。
 - USDB chain miner、validator 和 reward transition 必须按待处理 USDB block number 调用本地 chain-config lookup；禁止通过 companion RPC、BTC registry 或 CLI 参数决定 expected version。
 - UIP-0006 profile 的 `activation_registry_id` 只标识其 BTC source network registry。USDB chain 必须要求它等于 chain-config binding，并按 payload BTC 高度与本地 Go golden set 交叉校验，但不把它当作 USDB chain activation source。
 - audit-only cross-chain release manifest 可以关联 BTC registry ID 与 USDB chain `chain_id/genesis_hash/chain-config source`；manifest 不进入 header validation 或 runtime version lookup。
@@ -542,7 +553,7 @@ USDB:
 - 当前 payload 精确长度校验为 `107`。
 - `payload_version` mismatch fail closed。
 - `difficulty_policy_version` mismatch fail closed。
-- chain-config activation 缺少、修改已生效或绑定本地未知的 BTC `activation_registry_id` 时 fail closed；future activation 可在生效前更新。
+- USDB activation schedule 缺少、已生效 checkpoint 被修改或 checkpoint 绑定本地未知的 BTC `activation_registry_id` 时 fail closed；future checkpoint 可在生效前更新。
 - validator 按 payload BTC 高度校验 generated golden active set，且未知 BTC-side formula version fail closed。
 - USDB reward / difficulty versions 从 genesis 生效。
 - bootnodes 默认不连接 Ethereum / legacy ETHW 网络。
