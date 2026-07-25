@@ -531,10 +531,17 @@ docker/scripts/tools/run_local_bootstrap.sh up
 2. 初始化 `docker/local/bootstrap/manifests/ethw-bootstrap-config.json`
 3. 初始化 `docker/local/bootstrap/manifests/sourcedao-bootstrap-config.json`
 4. 生成 `docker/local/bootstrap/manifests/ethw-genesis.json`
-4. 启动：
+5. 启动：
    - `compose.base.yml`
    - `compose.dev-sim.yml`
    - `compose.bootstrap.yml`
+
+链级 genesis config 是不含 secret 的 versioned public spec，SourceDAO signer 私钥只能通过
+`SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY` 在运行时注入。`dev-full-sim.env.example` 中的固定私钥只适用于
+本地开发；公开网络必须改为部署环境的 secret。
+
+旧的本地 manifest 如果仍包含 `bootstrapAdminPrivateKey` 或缺少 `schemaVersion`，helper 会直接
+拒绝，不做兼容迁移。删除 `docker/local/bootstrap/manifests/` 下对应开发文件后重新执行 `up` 即可。
 
 查看状态：
 
@@ -584,6 +591,7 @@ docker compose \
 - 等待 ETHW RPC ready
 - 消费 `/bootstrap/sourcedao-bootstrap-config.json`
 - 链级 genesis 输入来自 `/bootstrap/ethw-bootstrap-config.json`
+- 从 runtime secret `SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY` 取得 signer，并校验其地址与公开配置一致
 - 调用 `SourceDAO` 仓库里的部署脚本
 - 产出：
   - `sourcedao-bootstrap-state.json`

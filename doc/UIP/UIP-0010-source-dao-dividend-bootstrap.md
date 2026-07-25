@@ -182,14 +182,18 @@ public network release 必须能审计以下 artifact：
 | `bootstrap_state` | 必须 | bootstrap job 输出的完整状态。 |
 | `bootstrap_marker` | 必须 | bootstrap 完成的最小状态标记。 |
 
-建议 code hash 使用 `keccak256(runtime_code)`，manifest 文件完整性使用 `sha256(file)`。具体 canonical encoding 可以在实现阶段固定，稳定后回写本 UIP。
+code hash 固定使用 `keccak256(runtime_code)`，artifact 文件完整性固定使用原始文件 bytes 的
+`sha256(file)`。artifact JSON 不做重新排序或 canonicalize；release commitment 指向被发布的精确
+bytes，因此字段排序或空白变化会产生新的 artifact SHA-256。
 
 v1 建议的实现方向：
 
 - `runtime_code` 来自 SourceDAO artifact 的 deployed bytecode，而不是 creation bytecode。
 - `runtime_code_hash = keccak256(runtime_code_bytes)`，用于证明 genesis predeploy 的 EVM code identity。
 - `artifact_file_sha256 = sha256(artifact_file_bytes)`，用于证明 release artifact 文件完整性。
-- JSON artifact canonical encoding、字段排序、hex 大小写和 `0x` 前缀规范先保留为 `TODO`，待实现稳定后再固定。
+- public spec 中 hash 必须使用 lowercase hex；runtime code hash 必须带 `0x` 前缀，artifact
+  SHA-256 不带前缀。loader 必须先验证 artifact 原始 bytes SHA-256，再解析唯一
+  `deployedBytecode` 并验证 runtime keccak256。
 
 # Release Manifest Signature
 
@@ -262,29 +266,48 @@ ChainConfig.IsDividendFeeSplit(block_number)
 
 # Bootstrap Config
 
-开发期 genesis 生成配置当前使用：
+开发期 genesis 生成使用 versioned public spec：
 
 ```json
 {
+  "schemaVersion": 1,
   "chainId": 20260323,
-  "artifactsDir": "../../SourceDAO/artifacts-usdb",
-  "daoAddress": "0x0000000000000000000000000000000000001001",
-  "dividendAddress": "0x0000000000000000000000000000000000001002",
-  "bootstrapAdminPrivateKey": "<dev-only>",
-  "bootstrapAdminBalanceWei": "10000000000000000000",
+  "predeploys": {
+    "dao": {
+      "address": "0x0000000000000000000000000000000000001001",
+      "artifact": "contracts/Dao.sol/SourceDao.json",
+      "runtimeCodeHash": "<0x-prefixed-keccak256>",
+      "artifactSha256": "<lowercase-sha256>"
+    },
+    "dividend": {
+      "address": "0x0000000000000000000000000000000000001002",
+      "artifact": "contracts/Dividend.sol/DividendContract.json",
+      "runtimeCodeHash": "<0x-prefixed-keccak256>",
+      "artifactSha256": "<lowercase-sha256>"
+    }
+  },
+  "bootstrapAdmin": {
+    "address": "<canonical-EIP-55-address>",
+    "balanceWei": "10000000000000000000"
+  },
   "genesisDifficulty": "0x180000",
   "minimumDifficulty": "0x100000",
   "dividendFeeSplitBlock": 16
 }
 ```
 
-以上 JSON 只描述当前 dev runner 的实现基线，不是 public release 的 canonical secret schema；后续实现必须把 signer secret 与公开配置拆开。
+artifact root 通过独立的 `--usdb.bootstrap.artifacts <dir>` CLI 参数传入，不进入 public spec 或
+genesis hash。loader 必须校验 artifact 相对路径不能逃逸 root，并同时校验 artifact SHA-256 与
+runtime code keccak256。
 
-canonical public network 配置必须与开发期 signer 配置分离：
+public spec 与 bootstrap signer 必须分离：
 
-- 禁止在公开 release artifact 中发布 `bootstrapAdminPrivateKey`。
+- public spec 禁止出现 `bootstrapAdminPrivateKey`、keystore path、signer endpoint 或 credential。
 - `canonical_genesis` 和 `source_dao_bootstrap_config` 只记录 `bootstrapAdminAddress`、初始余额和公开初始化参数。
-- 私钥、keystore 路径、signer endpoint 或 credential 只能通过部署环境的 secret/runtime config 注入，不参与 canonical config hash。
+- 私钥、keystore 或 signer credential 只能通过部署环境的 secret/runtime config 注入，不参与
+  canonical config hash；当前开发脚本使用 `SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY`。
+- bootstrap job 必须校验 runtime signer 派生地址与 public config 中的 `bootstrapAdminAddress`
+  完全一致。
 - public release 必须发布 `bootstrapAdmin` 地址和长期 custody 说明，可以附带公钥或多签治理信息。
 - `genesisDifficulty`、`minimumDifficulty` 与 UIP-0009 的 final 参数必须一致。
 - `dividendFeeSplitBlock` 必须大于预计 bootstrap 完成高度，并留出审计和恢复窗口。
@@ -292,6 +315,10 @@ canonical public network 配置必须与开发期 signer 配置分离：
 ## 参数化初始化
 
 `source_dao_bootstrap_config` 可以按 release scope 包含以下公开参数：
+
+SourceDAO bootstrap config v1 必须包含 `schemaVersion = 1`。`scope = full` 时下表中的模块配置和
+字段都必须显式提供，不允许从脚本内 legacy defaults 回填；配置缺失、版本不支持或旧私钥字段存在
+时必须在发送交易前失败。
 
 | 模块 | 初始化参数 | v1 结果 |
 | --- | --- | --- |
@@ -311,6 +338,8 @@ canonical public network 配置必须与开发期 signer 配置分离：
 - 初始分配数量之和不得超过 `totalSupply`。
 - committee 成员非零、不得重复且列表非空。
 - `cycleMinLength` 和各必需 cursor / ratio / version 参数满足对应合约约束。
+- Committee 必须暴露只读 `proposalCursor()`，返回下一笔 proposal 将使用的 ID；bootstrap 后
+  strict 校验必须与 `initProposalId` 精确一致，治理运行后的 relaxed 校验只允许 cursor 单调增加。
 - `daoAddress`、`dividendAddress`、`chainId` 和 `bootstrapAdminAddress` 与 genesis / release manifest 完全一致。
 - canonical config 不得包含 source chain、source block、snapshot root、migration proof 或 import mode 字段。
 
@@ -549,7 +578,8 @@ USDB docker:
 
 至少需要覆盖：
 
-- `geth dumpgenesis --usdb --usdb.bootstrap.config` 生成 deterministic genesis。
+- `geth dumpgenesis --usdb --usdb.bootstrap.config --usdb.bootstrap.artifacts` 生成 deterministic
+  genesis；相同 spec/artifact bytes 位于不同绝对路径时结果相同。
 - `DaoAddress` 和 `DividendAddress` 的 runtime code 非空。
 - generated genesis 的 `alloc` 包含 Dao / Dividend code 和 bootstrap admin balance。
 - Dao / Dividend code 与 committed implementation runtime code hash 完全一致。
@@ -565,6 +595,8 @@ USDB docker:
 - 重复地址、数组长度不一致、超额 supply、空 committee 和 config/genesis 字段冲突会失败。
 - bootstrap 在没有 OP Mainnet 或其他 source-chain RPC 的环境中产生相同结果。
 - bootstrap state / marker 可解析且字段一致。
+- full bootstrap 的每笔成功初始化、implementation/proxy deployment 和 DAO wiring operation 都
+  记录 tx hash 与 block number；preflight/链上状态冲突会写出 `status = error` 和对应 operation。
 - bootstrap 后重启节点仍保持状态。
 - joiner 使用同一 genesis 后可重放 bootstrap 历史并验证最终状态。
 - fee split 激活前 `DividendAddress` 不收取协议分账。
@@ -575,7 +607,7 @@ USDB docker:
 | 问题 | 当前结论 | 后续动作 |
 | --- | --- | --- |
 | public testnet / mainnet 的最终 `DaoAddress` 和 `DividendAddress` | 当前 `0x...1001` / `0x...1002` 可以作为候选预留地址。 | public release 前做 address conflict preflight 并写入 release manifest。 |
-| SourceDAO artifact / runtime code hash canonical encoding | 方向是 `keccak256(deployedBytecode)`，artifact 文件用 `sha256(file)`。 | JSON / hex canonical encoding 等实现稳定后回写本 UIP。 |
+| SourceDAO artifact / runtime code hash encoding | 已固定为 runtime bytes 的 `keccak256` 和 artifact 原始文件 bytes 的 `sha256`；public spec hash 使用 lowercase 固定前缀规则。 | release pipeline 继续校验 committed hashes 与 clean build 完全一致。 |
 | `bootstrapAdmin` 使用单一临时账户、多签账户或治理合约 | local dev 可用临时 EOA；public network 不应长期依赖单一私钥。 | 讨论多签 / threshold / governance handoff，并决定是否拆独立 UIP。 |
 | `bootstrapAdmin` 权限是否需要 finalization 或撤权 | 当前 SourceDAO 有 `onlySetOnce` 和 `transferBootstrapAdmin`，但无协议级 finalize。 | 评估是否为 SourceDAO 增加 `finalizeBootstrap()`。 |
 | `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |

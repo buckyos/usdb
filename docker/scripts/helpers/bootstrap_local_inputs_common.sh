@@ -105,27 +105,27 @@ ensure_ethw_chain_config() {
     echo "Initialized ${config_file} from ${source_template}"
   fi
 
-  ETHW_CHAIN_SOURCE_TEMPLATE="${source_template}" \
-  ETHW_CHAIN_TARGET_CONFIG="${config_file}" \
+  USDB_GENESIS_SOURCE_TEMPLATE="${source_template}" \
+  USDB_GENESIS_TARGET_CONFIG="${config_file}" \
   node <<'NODE'
 const fs = require("node:fs");
 
-const sourceTemplate = process.env.ETHW_CHAIN_SOURCE_TEMPLATE;
-const targetConfig = process.env.ETHW_CHAIN_TARGET_CONFIG;
+const sourceTemplate = process.env.USDB_GENESIS_SOURCE_TEMPLATE;
+const targetConfig = process.env.USDB_GENESIS_TARGET_CONFIG;
 const source = JSON.parse(fs.readFileSync(sourceTemplate, "utf8"));
 const target = JSON.parse(fs.readFileSync(targetConfig, "utf8"));
 
-let updated = false;
-for (const field of ["genesisDifficulty", "minimumDifficulty"]) {
-  if ((target[field] === undefined || target[field] === "") && source[field] !== undefined && source[field] !== "") {
-    target[field] = source[field];
-    updated = true;
-  }
+if (target.schemaVersion !== source.schemaVersion) {
+  console.error(
+    `Unsupported USDB genesis config schema in ${targetConfig}: ` +
+    `have ${JSON.stringify(target.schemaVersion)}, expected ${JSON.stringify(source.schemaVersion)}. ` +
+    "Delete the development config and run prepare again.",
+  );
+  process.exit(1);
 }
-
-if (updated) {
-  fs.writeFileSync(targetConfig, `${JSON.stringify(target, null, 2)}\n`);
-  console.log(`Backfilled USDB-chain difficulty defaults in ${targetConfig}`);
+if (Object.prototype.hasOwnProperty.call(target, "bootstrapAdminPrivateKey")) {
+  console.error(`USDB genesis config must not contain bootstrapAdminPrivateKey: ${targetConfig}`);
+  process.exit(1);
 }
 NODE
 }
@@ -152,13 +152,35 @@ ensure_source_dao_config() {
     cp "${source_template}" "${config_file}"
     echo "Initialized ${config_file} from ${source_template}"
   fi
-  
+
   SOURCE_DAO_TARGET_CONFIG="${config_file}" \
+  SOURCE_DAO_SOURCE_TEMPLATE="${source_template}" \
   node <<'NODE'
 const fs = require("node:fs");
 
 const targetConfig = process.env.SOURCE_DAO_TARGET_CONFIG;
+const sourceTemplate = process.env.SOURCE_DAO_SOURCE_TEMPLATE;
 const target = JSON.parse(fs.readFileSync(targetConfig, "utf8"));
+const source = JSON.parse(fs.readFileSync(sourceTemplate, "utf8"));
+if (target.schemaVersion !== source.schemaVersion) {
+  console.error(
+    `Unsupported SourceDAO bootstrap config schema in ${targetConfig}: ` +
+    `have ${JSON.stringify(target.schemaVersion)}, expected ${JSON.stringify(source.schemaVersion)}. ` +
+    "Delete the development config and run prepare again.",
+  );
+  process.exit(1);
+}
+if (Object.prototype.hasOwnProperty.call(target, "bootstrapAdminPrivateKey")) {
+  console.error(
+    `SourceDAO bootstrap config must not contain bootstrapAdminPrivateKey: ${targetConfig}. ` +
+    "Delete the development config and run prepare again.",
+  );
+  process.exit(1);
+}
+if (typeof target.bootstrapAdminAddress !== "string" || target.bootstrapAdminAddress.length === 0) {
+  console.error(`SourceDAO bootstrap config requires bootstrapAdminAddress: ${targetConfig}`);
+  process.exit(1);
+}
 const chainOnlyFields = [
   "genesisDifficulty",
   "minimumDifficulty",
@@ -212,16 +234,14 @@ const ethw = JSON.parse(fs.readFileSync(ethwPath, "utf8"));
 const sourceDao = JSON.parse(fs.readFileSync(sourceDaoPath, "utf8"));
 
 const sharedFields = [
-  "chainId",
-  "daoAddress",
-  "dividendAddress",
-  "bootstrapAdminPrivateKey",
+  ["chainId", ethw.chainId, sourceDao.chainId],
+  ["daoAddress", ethw.predeploys?.dao?.address, sourceDao.daoAddress],
+  ["dividendAddress", ethw.predeploys?.dividend?.address, sourceDao.dividendAddress],
+  ["bootstrapAdminAddress", ethw.bootstrapAdmin?.address, sourceDao.bootstrapAdminAddress],
 ];
 
 const mismatches = [];
-for (const field of sharedFields) {
-  const a = ethw[field];
-  const b = sourceDao[field];
+for (const [field, a, b] of sharedFields) {
   if (a !== b) {
     mismatches.push(`${field}: ethw=${JSON.stringify(a)} sourcedao=${JSON.stringify(b)}`);
   }
@@ -267,28 +287,6 @@ ensure_source_dao_artifacts() {
   )
 }
 
-write_genesis_runtime_config() {
-  local source_config="${1:?source config is required}"
-  local runtime_config="${2:?runtime config is required}"
-  local runtime_artifacts_dir
-
-  runtime_artifacts_dir="$(genesis_runtime_artifacts_dir)"
-
-  SOURCE_DAO_SOURCE_CONFIG="${source_config}" \
-  SOURCE_DAO_RUNTIME_CONFIG="${runtime_config}" \
-  SOURCE_DAO_RUNTIME_ARTIFACTS="${runtime_artifacts_dir}" \
-  node <<'NODE'
-const fs = require("node:fs");
-const sourceConfig = process.env.SOURCE_DAO_SOURCE_CONFIG;
-const runtimeConfig = process.env.SOURCE_DAO_RUNTIME_CONFIG;
-const artifactsDir = process.env.SOURCE_DAO_RUNTIME_ARTIFACTS;
-
-const data = JSON.parse(fs.readFileSync(sourceConfig, "utf8"));
-data.artifactsDir = artifactsDir;
-fs.writeFileSync(runtimeConfig, `${JSON.stringify(data, null, 2)}\n`);
-NODE
-}
-
 ensure_ethw_image_exists() {
   local image
   image="$(env_get ETHW_IMAGE usdb-ethw:local)"
@@ -306,7 +304,6 @@ ensure_ethw_genesis() {
   local manifests_dir
   local genesis_file
   local chain_config_file
-  local runtime_config_file
   local artifacts_dir
   local ethw_image
   local tmp_genesis_file
@@ -314,7 +311,6 @@ ensure_ethw_genesis() {
   manifests_dir="$(bootstrap_manifests_dir)"
   genesis_file="${manifests_dir}/ethw-genesis.json"
   chain_config_file="${manifests_dir}/ethw-bootstrap-config.json"
-  runtime_config_file="${manifests_dir}/ethw-bootstrap.runtime.json"
   artifacts_dir="$(source_dao_artifacts_dir)"
   ethw_image="$(env_get ETHW_IMAGE usdb-ethw:local)"
 
@@ -325,55 +321,6 @@ ensure_ethw_genesis() {
     exit 1
   }
 
-  write_genesis_runtime_config "${chain_config_file}" "${runtime_config_file}"
-
-  if [[ -f "${genesis_file}" ]]; then
-    if python3 -m json.tool "${genesis_file}" >/dev/null 2>&1; then
-      if ETHW_CHAIN_BOOTSTRAP_CONFIG="${chain_config_file}" ETHW_GENESIS_FILE="${genesis_file}" node <<'NODE'
-const fs = require("node:fs");
-
-const configPath = process.env.ETHW_CHAIN_BOOTSTRAP_CONFIG;
-const genesisPath = process.env.ETHW_GENESIS_FILE;
-const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-const genesis = JSON.parse(fs.readFileSync(genesisPath, "utf8"));
-
-const parseBigInt = (value) => {
-  if (value === undefined || value === null || value === "") {
-    return null;
-  }
-  if (typeof value === "number") {
-    return BigInt(value);
-  }
-  if (typeof value === "string") {
-    return BigInt(value);
-  }
-  throw new Error(`unsupported difficulty value: ${value}`);
-};
-
-const expectedGenesisDifficulty = parseBigInt(config.genesisDifficulty);
-const expectedMinimumDifficulty = parseBigInt(config.minimumDifficulty);
-const actualGenesisDifficulty = parseBigInt(genesis.difficulty);
-const actualMinimumDifficulty = parseBigInt(genesis.config?.ethPoWMinimumDifficulty);
-
-if (expectedGenesisDifficulty !== null && actualGenesisDifficulty !== expectedGenesisDifficulty) {
-  process.exit(1);
-}
-if (expectedMinimumDifficulty !== null && actualMinimumDifficulty !== expectedMinimumDifficulty) {
-  process.exit(1);
-}
-NODE
-      then
-        return
-      fi
-
-      echo "Existing ${genesis_file} does not match current difficulty config; regenerating"
-      rm -f "${genesis_file}"
-    else
-      echo "Existing ${genesis_file} is invalid JSON; regenerating"
-      rm -f "${genesis_file}"
-    fi
-  fi
-
   tmp_genesis_file="$(mktemp "${manifests_dir}/ethw-genesis.json.tmp.XXXXXX")"
   echo "Generating ${genesis_file} from ${chain_config_file}"
   if ! docker run --rm \
@@ -382,7 +329,8 @@ NODE
     "${ethw_image}" \
     dumpgenesis \
     --usdb \
-    --usdb.bootstrap.config /workspace/bootstrap/ethw-bootstrap.runtime.json \
+    --usdb.bootstrap.config /workspace/bootstrap/ethw-bootstrap-config.json \
+    --usdb.bootstrap.artifacts "$(genesis_runtime_artifacts_dir)" \
     > "${tmp_genesis_file}"; then
     rm -f "${tmp_genesis_file}"
     echo "Failed to generate ETHW genesis from ${chain_config_file}" >&2
@@ -395,6 +343,10 @@ NODE
     exit 1
   fi
 
+  if [[ -f "${genesis_file}" ]] && cmp -s "${tmp_genesis_file}" "${genesis_file}"; then
+    rm -f "${tmp_genesis_file}"
+    return
+  fi
   mv "${tmp_genesis_file}" "${genesis_file}"
 }
 

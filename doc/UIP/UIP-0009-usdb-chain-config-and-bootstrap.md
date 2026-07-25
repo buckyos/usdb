@@ -78,7 +78,7 @@ USDB chain 必须拥有独立身份：
 | `NetworkName` | 应使用 `usdb` 或后续确认的公开网络名。 |
 | `Bootnodes` | 开发期可以为空；公开网络必须显式定义。 |
 
-当前 go-ethereum 原型使用：
+当前 go-ethereum 内置、无 system-contract predeploy 的原型使用：
 
 ```text
 USDBNetworkID = 20260323
@@ -90,7 +90,11 @@ USDBBootnodes = []
 USDBV5Bootnodes = []
 ```
 
-这些值是当前实现基线。`ChainID`、`NetworkId` 和 network name 可以沿用当前原型命名继续开发，但不自动等同于 public mainnet final 参数。进入 public testnet / mainnet 前必须重新核实并冻结。
+SourceDAO bootstrap 开发 profile 通过 versioned genesis spec 将 difficulty 显式覆盖为
+`0x180000 / 0x100000`。当前没有与这组值绑定的正式 calibration report，因此只能把它视为已在
+现有测试机器上可运行的临时占位值，不能表述为已完成测算。两组数值都只是当前实现基线；
+`ChainID`、`NetworkId`、network name 和 PoW 参数均不自动等同于 public mainnet final 参数。
+进入 public testnet / mainnet 前必须重新测算、核实并冻结。
 
 # Genesis Policy
 
@@ -234,21 +238,43 @@ USDB v1 必须长期使用 PoW，不使用 Merge / PoS transition 语义。
 - 不使用 USDB chain 从旧链 fork 时的 difficulty reset 特判。
 - `GenesisDifficulty` 和 `MinimumDifficulty` 必须显式低于传统 USDB chain 默认值，以适应早期低算力网络。
 
-当前原型基线：
+当前开发期存在两层参数：
 
 ```text
-USDBGenesisDifficulty = 8192
-USDBMinimumDifficulty = 8192
+bare built-in genesis = 8192 / 8192
+SourceDAO bootstrap profile = 0x180000 / 0x100000
 DifficultyBoundDivisor = 2048
 DurationLimit = 13
 ```
 
 说明：
 
-- `8192` 是开发期 bring-up 值，不是 public mainnet final 值。
-- 本地测试已经发现 `8192` 可能过低，虽然 USDB chain difficulty 会自动调整，但从过低起点恢复到合理区间可能较慢。
-- public testnet / mainnet 参数必须通过私链和测试网出块数据确认。
+- `8192` 是未经专项标定的最早期 bring-up 值，当前测试已经证明它可能过低。
+- `0x180000 / 0x100000` 是当前测试机器可运行的暂定开发 profile；在补齐可审计报告前，不应视为
+  已经过硬件测算，同样不是 public mainnet final 值。
+- public testnet / mainnet 参数必须通过候选矿工硬件和测试网出块数据重新测算。
+- 测算是发布前离线流程；禁止节点根据本机性能动态选择 genesis/minimum difficulty，否则会造成
+  共识配置分裂。
 - 若后续引入 level-based difficulty，`base_difficulty` 仍由 USDB chain PoW difficulty policy 产生，USDB level 只参与折算。
+
+## 上线前 PoW Calibration
+
+每次 public network 参数冻结前必须执行：
+
+1. 明确目标 block interval、候选 miner 版本、硬件分布、并发矿工数和最低存活算力。
+2. 在低/标称/高算力及矿工掉线场景运行足够长的测试，覆盖 DAG warm-up、difficulty retarget、
+   restart 和 reorg。
+3. 记录连续 block header 的 hash、parent hash、timestamp 和 difficulty，以
+   `sum(difficulty) / elapsed_seconds` 估算区间有效 hashrate，并统计 block interval p50/p95/p99。
+4. 由目标间隔和标称 hashrate 产生 `GenesisDifficulty` 候选，由最低存活算力场景确定
+   `MinimumDifficulty` 候选。
+5. 将候选值写入 versioned genesis spec 后重跑 multi-node、restart、reorg 和长稳测试。
+6. 评审通过后，原子冻结 UIP、Go chain params、public genesis spec、canonical genesis hash 和
+   release manifest。
+
+单次测量只能生成候选值，不能直接成为正式参数。Go 仓库中的
+`scripts/usdb/calibrate_pow_difficulty.py` 负责输出可重放的区间采样报告；发布评审必须比较多轮、
+多硬件报告。
 
 ## Difficulty Retarget 参数
 
@@ -269,7 +295,8 @@ v1 建议：
 
 - 优先调参 `GenesisDifficulty` 和 `MinimumDifficulty`，不要先修改 `DifficultyBoundDivisor` 或 `DurationLimit`。
 - 只有当测试网数据证明 difficulty retarget 曲线本身不合适时，才单独调整 `DifficultyBoundDivisor` 或 difficulty policy。
-- `GenesisDifficulty` / `MinimumDifficulty` 的正式值必须作为 public testnet / mainnet finalization 的待办事项。
+- `GenesisDifficulty` / `MinimumDifficulty` 的正式值必须按上述 calibration 流程作为 public
+  testnet / mainnet finalization 的待办事项。
 
 # Legacy USDB chain Migration Fields
 
@@ -564,6 +591,7 @@ USDB:
 本文参考以下实现备忘，但以当前 UIP 结论为准：
 
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-chain-bootstrap-notes.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-pow-difficulty-calibration.md`
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-integration.md`
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-profile-and-difficulty-e2e-plan.md`
 - `/home/bucky/work/go-ethereum/docs/usdb/usdb-pass-level-difficulty-and-collab-bonus.md`
@@ -579,7 +607,9 @@ USDB:
 # 待审计问题
 
 1. public testnet / mainnet 的最终 `ChainID`、`NetworkId` 和 network name。当前可延续原型命名，正式上线前必须复核。
-2. public testnet / mainnet 的最终 `GenesisDifficulty` 和 `MinimumDifficulty`。当前 `8192` 是开发期值，且本地测试显示可能过低，需要专项调参。
+2. public testnet / mainnet 的最终 `GenesisDifficulty` 和 `MinimumDifficulty`。当前
+   `0x180000 / 0x100000` 没有绑定正式 calibration evidence，只能作为现有开发环境占位值，必须按
+   上线前 calibration 流程专项测算。
 3. `DifficultyBoundDivisor` 和 `DurationLimit` 是否沿用当前值。v1 暂建议优先不改，除非测试网数据证明 retarget 曲线需要调整。
 4. `USDBGenesisHash` 必须在 chain config、genesis、system contract predeploy 和 bootstrap 参数 finalization 后更新。
 5. bootnodes / DNS discovery 何时进入内置配置，何时作为 release artifact 分发。

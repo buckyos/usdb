@@ -232,6 +232,10 @@ esac
 
 validate_workspace
 
+if [[ -z "${SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY:-}" ]]; then
+  fail_with_state "SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY is required when SourceDAO bootstrap is enabled"
+fi
+
 if ! wait_for_ethw_rpc; then
   fail_with_state "ETHW RPC did not become ready within ${wait_seconds} seconds at ${rpc_url}"
 fi

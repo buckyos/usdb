@@ -728,7 +728,9 @@
 
 ## UIP-0010 SourceDAO Fresh Bootstrap 范围收敛
 
-状态：协议范围和参数化初始化口径已收敛；genesis/bootstrap schema、release artifact 和测试实现待后续批次对齐，本批不提交。
+状态：协议范围和参数化初始化口径已收敛；本批已对齐 genesis public spec、artifact commitment、
+runtime signer 边界和基础测试，完整 full-bootstrap/live recovery 矩阵仍待后续批次。本批改动不提交，
+等待 review。
 
 ### 范围决策
 
@@ -751,10 +753,55 @@
 - TokenLockup、Project、Acquired 从空业务状态和显式初始 cursor/版本参数启动。
 - canonical config 禁止 source chain/block、snapshot root、migration proof 和 import mode 字段。
 
+### Genesis 与 Signer 对齐
+
+- Go `dumpgenesis` 改用 `schemaVersion = 1` 的严格 public spec；地址、余额、difficulty、fee-split
+  height、artifact 相对路径、artifact SHA-256 和 runtime code keccak256 均为必填项，未知字段、
+  duplicate key、非 canonical 数字/地址、路径或 symlink 逃逸全部 fail closed。
+- public spec 只记录 `bootstrapAdmin.address / balanceWei`。SourceDAO smoke/full 脚本仅从
+  `SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY` 取得 signer，并验证派生地址；旧
+  `bootstrapAdminPrivateKey` 配置直接拒绝，不保留兼容双栈。
+- core genesis overlay 改为完整深拷贝、保留 base alloc，并校验地址冲突、code/balance、difficulty
+  pair、minimum floor 和 fee-split activation；DAO / Dividend 的 ERC1967 implementation slot
+  必须为空，direct-predeploy 上的 UUPS upgrade call 必须 revert。
+- Docker 每次从 public spec 和只读 artifact root 重新物化候选 genesis，并以 byte-for-byte 比较决定
+  是否替换旧文件；不再只比较 difficulty 后复用可能 stale 的 genesis。旧 schema 开发 manifest
+  要求删除后重建。
+- SourceDAO USDB profile 已完整重建 29 个 Solidity 文件；重建后的 DAO / Dividend artifact
+  SHA-256 与 genesis spec 一致，前后生成的 genesis JSON 逐字节一致。
+- standalone SourceDAO smoke 使用明确的 test-only UIP-0006 fixture 和 fake PoW；真实 Go
+  builder/verifier 仍校验 selector、registry、profile 和 difficulty metadata。DAO/Dividend 初始化、
+  DAO wiring、native deposit 与余额增量回读已完整实跑通过；该入口不作为真实 BTC-side state 或
+  Ethash calibration 证据。
+- two-node smoke 同样接入 miner/verifier profile 依赖，并在 network-ready 和 post-bootstrap 两个
+  checkpoint 比较固定高度 block hash，确认跟随节点实际导入并验证包含 bootstrap 交易的同一条链。
+- SourceDAO full config 固定为 `schemaVersion = 1`，所有模块参数显式必填；重复/零地址、数组长度、
+  canonical uint、初始 supply 总量、ratio/version/cursor 等在 RPC 前校验，不再回落 legacy defaults。
+- Committee 新增无 storage layout 变化的只读 `proposalCursor()`；full bootstrap 和独立 validator
+  在刚部署时精确比对 `initProposalId`，治理运行后的 relaxed 检查要求 cursor 不得回退。
+- full bootstrap operation 对初始化、implementation/proxy deployment 和 DAO wiring 记录 tx hash /
+  block number；preflight 和链上冲突会落盘 error state。参数化 full bootstrap、strict validator、
+  全量幂等重放、缺 secret 和 `cycleMinLength` 冲突路径均已实跑。
+
+### PoW 参数标定
+
+- 当前 SourceDAO bootstrap 开发 profile 保留 `GenesisDifficulty = 0x180000`、
+  `MinimumDifficulty = 0x100000`；当前没有绑定正式 calibration report，只能说明它在现有测试机器
+  可运行，不能视为已完成硬件测算或 testnet/mainnet final。
+- 新增离线 calibration 工具，从连续 confirmed headers 计算 total work、effective hashrate、block
+  interval p50/p95/p99 和目标间隔候选 difficulty；报告内嵌 headers，可离线重算并拒绝篡改。
+- public network 必须分别采集 minimum-viable、nominal、high-load、miner-loss 场景，覆盖 DAG
+  warm-up、retarget、restart/reorg，再原子冻结 UIP、Go params、public spec、canonical genesis/hash
+  和 release manifest。
+- 禁止节点按本机硬件在运行时动态选择 genesis/minimum difficulty；“动态测算”只表示发布前的
+  多硬件离线标定。
+
 ### 后续实现与测试
 
-- Go genesis config 改为 address-only bootstrap admin，并增加地址冲突、exact runtime code hash 和 deterministic genesis 校验。
-- SourceDAO full bootstrap config/validator 收敛到上述参数 schema；补齐 operation block number、status/error、冲突失败和 admin handoff。
-- Docker 增加 public-release artifact、code/config/state hash commitment 和 joiner validation。
-- 测试覆盖参数化 token/committee 初始化、非法参数、重复/部分 bootstrap、restart/replay、artifact tamper，以及无 source-chain RPC 的确定性结果。
+- SourceDAO full bootstrap 继续补齐更完整的非法参数自动化矩阵、restart/joiner replay，以及 public
+  network 的 admin handoff/finalization。
+- Docker/public release 继续增加 canonical genesis/config/state commitment、签名和 joiner
+  validation；runtime env 适用于开发，公开网络应接入专用 signer/secret manager。
+- 测试继续覆盖参数化 token/committee 的细粒度负向组合、restart/joiner replay、artifact tamper，
+  以及无 source-chain RPC 的确定性结果。
 - fee split 公式和实际余额分账继续由 UIP-0011 承接；UIP-0010 只保证地址、code、初始化状态和 activation 前置条件。
