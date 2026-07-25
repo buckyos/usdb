@@ -492,6 +492,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - 定义固定系统地址、genesis predeploy runtime code、bootstrap admin、bootstrap 交易顺序和 fee split activation height。
 - 定义 canonical genesis artifact、SourceDAO bootstrap config、bootstrap state marker 和后续 joiner 审计方式。
 - 明确 fee split activation 的启动条件，但不定义手续费比例和 CoinBase 释放公式。
+- 只定义 USDB chain fresh bootstrap，不定义 OP Mainnet 或其他既有链的 SourceDAO 状态迁移。
 
 当前草案：
 
@@ -503,6 +504,7 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - SourceDAO artifact hash / runtime code hash 的 canonical encoding。
 - bootstrap admin 的权限生命周期和私钥治理。
 - `DividendFeeSplitBlock` 是否必须大于 bootstrap 完成高度，以及最小安全间隔。
+- direct-predeploy DAO / Dividend 的未来升级边界。
 - SourceDAO full bootstrap 中其他模块是否进入本 UIP，还是只把 Dao / Dividend 作为 fee split 前置条件。
 
 实现影响：

@@ -16,6 +16,7 @@ UIP-0010 解决的问题是：
 - `DividendAddress` 必须在共识层预先确定。
 - `Dividend` 合约不能在未初始化状态下直接承接 fee split。
 - 新节点加入网络时必须能验证自己使用了同一份 genesis、同一套系统合约 code 和同一条 bootstrap 历史。
+- SourceDAO 必须能在 USDB chain 上从空状态按冻结参数完成确定性初始化，不依赖任何既有链状态。
 
 本文只定义系统合约冷启动、bootstrap artifact、初始化交易顺序和 fee split activation 边界，不定义 CoinBase 释放公式、手续费比例、矿工奖励比例或 price / real price 规则。
 
@@ -40,6 +41,10 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 - SourceDAO 业务模块的完整治理规则。
 - SourceDAO 前端、后端或非共识部署流程。
 - 未来系统合约升级机制。
+- OP Mainnet 或其他既有链上 SourceDAO 的 storage、token balance、committee history、proposal、Dividend、lockup、project、investment 等状态迁移。
+- 既有链 snapshot、migration root、跨链 claim、旧链 freeze 或资产 bridge。
+
+本文定义的 bootstrap 是 `fresh bootstrap`：USDB chain 只消费本网络冻结的初始化参数，不读取既有链 RPC、区块、合约或状态。既有 SourceDAO 部署可以作为参数讨论和人工审计参考，但不构成 USDB bootstrap 的协议输入。未来如果需要迁移既有链状态，必须由独立 UIP 定义迁移范围、状态承诺和激活流程。
 
 # 术语
 
@@ -48,6 +53,7 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 | `DaoAddress` | SourceDAO 主合约系统地址。 |
 | `DividendAddress` | Dividend 分红池系统地址，也是 fee split 的目标地址。 |
 | `bootstrapAdmin` | genesis 预置余额的启动账户，用于发送初始化交易。 |
+| `fresh bootstrap` | 只按 USDB network release 冻结参数初始化新合约状态，不复制或导入既有链状态。 |
 | `canonical_genesis` | 包含系统合约 runtime code 的确定性 genesis JSON。 |
 | `source_dao_bootstrap_config` | 启动后初始化 SourceDAO / Dividend 所需的配置。 |
 | `bootstrap_state` | SourceDAO bootstrap job 写出的状态快照。 |
@@ -140,13 +146,23 @@ canonical genesis 必须预置：
 - `DividendAddress` 的 runtime code。
 - `bootstrapAdmin` 的初始余额。
 
+USDB v1 固定采用 direct predeploy：
+
+- `DaoAddress` 与 `DividendAddress` 直接保存对应 SourceDAO implementation artifact 的 deployed runtime code。
+- 这两个 system address 不保存 ERC1967 proxy runtime，也不预置 implementation slot。
+- `Dao.initialize()` 与 `Dividend.initialize(...)` 直接修改各自 system address 的 storage。
+- 即使当前 Solidity implementation 继承 UUPS 基类，`DaoAddress` 与 `DividendAddress` 也不是 proxy instance，不能通过 `onlyProxy` upgrade 入口升级。
+- DAO / Dividend system contract 的未来升级不属于本 UIP；如需升级，必须通过后续 UIP 明确新 code、地址或 USDB-chain activation 方案。
+
+full bootstrap 动态部署的其他 SourceDAO 模块可以继续使用各自的 proxy / governance 升级流程；该行为不改变 DAO / Dividend 的 direct-predeploy 语义。
+
 v1 不建议在 genesis 中预置初始化后的复杂 storage。原因是：
 
 - SourceDAO / Dividend 使用 initializer 语义，storage layout 审计成本更高。
 - 初始化交易更容易审计和回放。
 - 后续新节点可通过链上历史交易重放得到相同状态。
 
-如果未来选择把初始化后的 storage 写入 genesis，则这些 storage 必须进入 canonical genesis `alloc.storage`，并改变 `USDBGenesisHash`。
+本 UIP 不允许通过 genesis `alloc.storage` 导入既有链业务状态。未来如果选择在 genesis 中预置本网络初始化 storage，则这些 storage 必须由独立协议变更定义、进入 canonical genesis `alloc.storage`，并改变 `USDBGenesisHash`。
 
 # Artifact Commitments
 
@@ -262,12 +278,43 @@ ChainConfig.IsDividendFeeSplit(block_number)
 }
 ```
 
-public network 配置必须与开发期配置分离：
+以上 JSON 只描述当前 dev runner 的实现基线，不是 public release 的 canonical secret schema；后续实现必须把 signer secret 与公开配置拆开。
+
+canonical public network 配置必须与开发期 signer 配置分离：
 
 - 禁止在公开 release artifact 中发布 `bootstrapAdminPrivateKey`。
-- public release 可以发布 `bootstrapAdmin` 地址、公钥或多签治理说明。
+- `canonical_genesis` 和 `source_dao_bootstrap_config` 只记录 `bootstrapAdminAddress`、初始余额和公开初始化参数。
+- 私钥、keystore 路径、signer endpoint 或 credential 只能通过部署环境的 secret/runtime config 注入，不参与 canonical config hash。
+- public release 必须发布 `bootstrapAdmin` 地址和长期 custody 说明，可以附带公钥或多签治理信息。
 - `genesisDifficulty`、`minimumDifficulty` 与 UIP-0009 的 final 参数必须一致。
 - `dividendFeeSplitBlock` 必须大于预计 bootstrap 完成高度，并留出审计和恢复窗口。
+
+## 参数化初始化
+
+`source_dao_bootstrap_config` 可以按 release scope 包含以下公开参数：
+
+| 模块 | 初始化参数 | v1 结果 |
+| --- | --- | --- |
+| Dao | `bootstrapAdminAddress` | `Dao.initialize()` 将发送者固定为 `bootstrapAdmin`。 |
+| Dividend | `cycleMinLength`、`DaoAddress` | 创建 cycle `0` 并绑定固定 DAO system address。 |
+| DevToken | `name`、`symbol`、`totalSupply`、`initAddresses[]`、`initAmounts[]` | 按数组执行初始分配，剩余 supply 保留在 DevToken 自身。 |
+| NormalToken | `name`、`symbol` | fresh bootstrap 后 `totalSupply = 0`；后续只按合约规则由 DevToken 转换产生。 |
+| Committee | `initialMembers[]`、`initProposalId`、`initDevRatio`、`mainProjectName`、`finalVersion`、`finalDevRatio` | 创建本网络初始委员会和 proposal cursor，不导入历史 proposal 或 vote。 |
+| TokenLockup | `unlockProjectName`、`unlockVersion` | 创建空 lockup 状态。 |
+| Project | `initProjectIdCounter` | 创建空 project 状态并固定初始 cursor。 |
+| Acquired | `initInvestmentCount` | 创建空 investment 状态并固定初始 cursor。 |
+
+参数校验至少包括：
+
+- `initAddresses` 与 `initAmounts` 长度相同。
+- 初始分配地址非零且不得重复。
+- 初始分配数量之和不得超过 `totalSupply`。
+- committee 成员非零、不得重复且列表非空。
+- `cycleMinLength` 和各必需 cursor / ratio / version 参数满足对应合约约束。
+- `daoAddress`、`dividendAddress`、`chainId` 和 `bootstrapAdminAddress` 与 genesis / release manifest 完全一致。
+- canonical config 不得包含 source chain、source block、snapshot root、migration proof 或 import mode 字段。
+
+同一份 canonical config 必须确定唯一预期初始化结果。bootstrap job 可以把参数转换为 ABI calldata，但不得根据既有链状态或当前外部 RPC 动态改写参数。
 
 # Bootstrap Admin 管理
 
@@ -312,6 +359,7 @@ v1 最小初始化顺序：
 - 每笔交易的 tx hash、block number、status 和错误信息必须进入 `bootstrap_state`。
 - 如果脚本发现目标状态已经完成，允许跳过交易，但必须校验链上状态与 config 一致。
 - 如果链上已有状态与 config 冲突，bootstrap 必须失败，不得继续。
+- bootstrap 只能从本网络空状态或与 config 完全一致的部分完成状态继续，不得从既有链导入业务状态。
 
 SourceDAO full bootstrap 可以继续初始化其他模块，例如 committee、token、project、lockup、acquired 等。但对 fee split 来说，最小完成条件是：
 
@@ -334,7 +382,7 @@ public network 如果把 SourceDAO 作为首个 release 的完整治理系统，
 - committee、dev token、normal token、token lockup、project、acquired 等 release manifest 声明的 SourceDAO 模块已经完成部署和 wiring。
 - `bootstrap_state.final_wiring` 中所有必填模块地址非零，且与链上状态一致。
 
-后续 SourceDAO 模块升级不属于本 UIP 冷启动范围，应走 SourceDAO / proxy / governance 自身升级流程。
+后续动态 SourceDAO 模块升级不属于本 UIP 冷启动范围，应走 SourceDAO / proxy / governance 自身升级流程；direct-predeploy 的 DAO / Dividend 升级必须由后续 UIP 单独定义。
 
 # Fee Split Activation
 
@@ -504,12 +552,18 @@ USDB docker:
 - `geth dumpgenesis --usdb --usdb.bootstrap.config` 生成 deterministic genesis。
 - `DaoAddress` 和 `DividendAddress` 的 runtime code 非空。
 - generated genesis 的 `alloc` 包含 Dao / Dividend code 和 bootstrap admin balance。
+- Dao / Dividend code 与 committed implementation runtime code hash 完全一致。
+- Dao / Dividend 的 ERC1967 implementation slot 保持为空，且不能通过 UUPS `onlyProxy` 入口升级。
 - `USDBGenesisHash` 与 generated genesis 一致。
 - `DividendAddress` / `DividendFeeSplitBlock` 进入 chain config。
 - `IsDividendFeeSplit` 在 `nil`、zero address、激活前、激活后路径正确。
 - `Dao.initialize()` 成功。
 - `Dividend.initialize(cycleMinLength, DaoAddress)` 成功。
 - `Dao.setTokenDividendAddress(DividendAddress)` 成功。
+- 参数化 DevToken 初始分配、剩余 supply 和 NormalToken zero-supply 结果正确。
+- 参数化 committee 成员、proposal cursor 和治理参数正确。
+- 重复地址、数组长度不一致、超额 supply、空 committee 和 config/genesis 字段冲突会失败。
+- bootstrap 在没有 OP Mainnet 或其他 source-chain RPC 的环境中产生相同结果。
 - bootstrap state / marker 可解析且字段一致。
 - bootstrap 后重启节点仍保持状态。
 - joiner 使用同一 genesis 后可重放 bootstrap 历史并验证最终状态。

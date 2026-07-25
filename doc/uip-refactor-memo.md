@@ -725,3 +725,36 @@
 - `balance-history` 排除手工 snapshot fixture 后为 101 passed、0 failed；未过滤执行时唯一失败仍是既有 `db::snapshot::tests::test_load` 依赖本机预置 height 900000 snapshot，与本批 identity 改动无关。
 - `cargo fmt --check`、`usdb-control-plane` test/clippy 和 `usdb-util` activation/hash test 通过；Go `params`、`internal/usdb`、`consensus/ethash`、`miner`、`cmd/utils`、`cmd/geth`、`eth/ethconfig` 测试与 vet 通过，Rust/Go canonical active-set golden vector 一致。console type-check/build、Python compile/help、regtest shell syntax和 dev/bootstrap Compose config 均已复核。
 - 正式网络的具体 activation 高度、签名/发布流程以及未来 v2 dispatch 仍需随 UIP-0008/UIP-0009 冻结；开发期数据库不做迁移兼容，测试时删除旧库重建。
+
+## UIP-0010 SourceDAO Fresh Bootstrap 范围收敛
+
+状态：协议范围和参数化初始化口径已收敛；genesis/bootstrap schema、release artifact 和测试实现待后续批次对齐，本批不提交。
+
+### 范围决策
+
+- UIP-0010 只定义 SourceDAO / Dividend 在 USDB chain 上的 fresh bootstrap。
+- OP Mainnet 和其他既有链上的 storage、token distribution、committee history、proposal、Dividend、lockup、project、investment 不进入 USDB bootstrap。
+- bootstrap 不依赖 source-chain RPC、snapshot、migration root、claim/import 或旧链 freeze；未来确有状态迁移需求时另立 UIP。
+- 该决策不属于开发数据库兼容策略，而是协议输入边界：USDB SourceDAO 状态只由 canonical genesis、冻结初始化参数和 bootstrap 交易历史决定。
+
+### System Contract 模型
+
+- v1 保留当前 fixed-address direct-predeploy：DAO / Dividend system address 直接承载 implementation deployed runtime code，不使用 ERC1967 proxy runtime 或 implementation slot。
+- DAO / Dividend 直接执行 initializer；继承的 UUPS `onlyProxy` 入口不构成当前 system instance 的升级路径。
+- DAO / Dividend 的未来升级需要后续 UIP 定义 code/address/activation；full bootstrap 动态部署的其他 SourceDAO 模块可以继续使用 proxy/governance 升级。
+
+### 参数化初始化
+
+- canonical public config 只记录 `bootstrapAdminAddress`、初始余额和公开初始化参数；private key、keystore、signer endpoint 等只通过 runtime secret 注入。
+- DevToken 按 `initAddresses[] / initAmounts[]` 初始分配，剩余 supply 保留在 token 自身；NormalToken 从 zero supply 启动。
+- Committee 只建立本网络 initial members、proposal cursor 和治理参数，不导入历史 proposal/vote。
+- TokenLockup、Project、Acquired 从空业务状态和显式初始 cursor/版本参数启动。
+- canonical config 禁止 source chain/block、snapshot root、migration proof 和 import mode 字段。
+
+### 后续实现与测试
+
+- Go genesis config 改为 address-only bootstrap admin，并增加地址冲突、exact runtime code hash 和 deterministic genesis 校验。
+- SourceDAO full bootstrap config/validator 收敛到上述参数 schema；补齐 operation block number、status/error、冲突失败和 admin handoff。
+- Docker 增加 public-release artifact、code/config/state hash commitment 和 joiner validation。
+- 测试覆盖参数化 token/committee 初始化、非法参数、重复/部分 bootstrap、restart/replay、artifact tamper，以及无 source-chain RPC 的确定性结果。
+- fee split 公式和实际余额分账继续由 UIP-0011 承接；UIP-0010 只保证地址、code、初始化状态和 activation 前置条件。
