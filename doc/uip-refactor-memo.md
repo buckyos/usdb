@@ -728,9 +728,9 @@
 
 ## UIP-0010 SourceDAO Fresh Bootstrap 范围收敛
 
-状态：协议范围和参数化初始化口径已收敛；本批已对齐 genesis public spec、artifact commitment、
-runtime signer 边界和基础测试，完整 full-bootstrap/live recovery 矩阵仍待后续批次。本批改动不提交，
-等待 review。
+状态：协议范围、参数化初始化、genesis public spec、artifact commitment、runtime signer 和
+full-bootstrap restart/joiner 开发期生命周期测试均已对齐。public release 参数/签名冻结以及
+UIP-0011 fee split 联动仍留后续批次；当前改动不提交，等待 review。
 
 ### 范围决策
 
@@ -764,6 +764,10 @@ runtime signer 边界和基础测试，完整 full-bootstrap/live recovery 矩�
 - core genesis overlay 改为完整深拷贝、保留 base alloc，并校验地址冲突、code/balance、difficulty
   pair、minimum floor 和 fee-split activation；DAO / Dividend 的 ERC1967 implementation slot
   必须为空，direct-predeploy 上的 UUPS upgrade call 必须 revert。
+- genesis identity 明确区分 development 与 public release：开发期严格 spec/artifact overlay 必须
+  byte-for-byte deterministic，所有测试节点共享其 generated hash，但不要求等于当前内置开发链
+  `USDBGenesisHash`；public release 冻结后必须把最终 generated hash 原子绑定到该网络
+  `USDBGenesisHash`、chain config 和 release manifest。
 - Docker 每次从 public spec 和只读 artifact root 重新物化候选 genesis，并以 byte-for-byte 比较决定
   是否替换旧文件；不再只比较 difficulty 后复用可能 stale 的 genesis。旧 schema 开发 manifest
   要求删除后重建。
@@ -782,6 +786,11 @@ runtime signer 边界和基础测试，完整 full-bootstrap/live recovery 矩�
 - full bootstrap operation 对初始化、implementation/proxy deployment 和 DAO wiring 记录 tx hash /
   block number；preflight 和链上冲突会落盘 error state。参数化 full bootstrap、strict validator、
   全量幂等重放、缺 secret 和 `cycleMinLength` 冲突路径均已实跑。
+- 新增 `run_local_full_bootstrap_restart_joiner.sh`，复用现有双节点、full bootstrap 和 strict validator
+  入口：仅启动 node1 完成 full bootstrap，在固定完成高度记录 block hash/state root，重启 node1
+  后精确复核，再启动全新 node2 从相同 genesis 重放历史。2026-07-25 实跑在高度 `0x1b` 完成该
+  检查；两端完整模块 strict validation 摘要一致，第二次 full bootstrap 为全 skipped，零
+  completed/error operation，测试完成后两节点固定高度 block hash/state root 一致。
 
 ### PoW 参数标定
 
@@ -798,10 +807,10 @@ runtime signer 边界和基础测试，完整 full-bootstrap/live recovery 矩�
 
 ### 后续实现与测试
 
-- SourceDAO full bootstrap 继续补齐更完整的非法参数自动化矩阵、restart/joiner replay，以及 public
-  network 的 admin handoff/finalization。
+- SourceDAO full bootstrap 继续补齐更完整的非法参数自动化矩阵，以及 public network 的 admin
+  handoff/finalization；开发期 restart/joiner replay 已完成。
 - Docker/public release 继续增加 canonical genesis/config/state commitment、签名和 joiner
   validation；runtime env 适用于开发，公开网络应接入专用 signer/secret manager。
-- 测试继续覆盖参数化 token/committee 的细粒度负向组合、restart/joiner replay、artifact tamper，
-  以及无 source-chain RPC 的确定性结果。
+- 测试继续覆盖参数化 token/committee 的细粒度负向组合、artifact tamper，以及无 source-chain
+  RPC 的确定性结果。
 - fee split 公式和实际余额分账继续由 UIP-0011 承接；UIP-0010 只保证地址、code、初始化状态和 activation 前置条件。

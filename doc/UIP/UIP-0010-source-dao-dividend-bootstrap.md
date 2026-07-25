@@ -55,6 +55,8 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 | `bootstrapAdmin` | genesis 预置余额的启动账户，用于发送初始化交易。 |
 | `fresh bootstrap` | 只按 USDB network release 冻结参数初始化新合约状态，不复制或导入既有链状态。 |
 | `canonical_genesis` | 包含系统合约 runtime code 的确定性 genesis JSON。 |
+| `development bootstrap genesis` | 开发期由严格 spec/artifact 生成的确定性 overlay genesis；同一测试中的节点必须使用相同结果，但不绑定当前内置开发链的 `USDBGenesisHash`。 |
+| `public release canonical genesis` | public network 参数和 artifacts 冻结后的网络 genesis；其计算结果必须与该网络发布的 `USDBGenesisHash` 完全一致。 |
 | `source_dao_bootstrap_config` | 启动后初始化 SourceDAO / Dividend 所需的配置。 |
 | `bootstrap_state` | SourceDAO bootstrap job 写出的状态快照。 |
 | `bootstrap_marker` | 表示 bootstrap 已完成的最小 marker。 |
@@ -163,6 +165,26 @@ v1 不建议在 genesis 中预置初始化后的复杂 storage。原因是：
 - 后续新节点可通过链上历史交易重放得到相同状态。
 
 本 UIP 不允许通过 genesis `alloc.storage` 导入既有链业务状态。未来如果选择在 genesis 中预置本网络初始化 storage，则这些 storage 必须由独立协议变更定义、进入 canonical genesis `alloc.storage`，并改变 `USDBGenesisHash`。
+
+# Development and Public Genesis Identity
+
+开发期与 public release 使用同一套严格生成和校验逻辑，但不共享同一个 hash 冻结要求：
+
+- development bootstrap genesis 必须由确定的 spec 与精确 artifact bytes 生成；相同输入必须得到
+  byte-for-byte 相同的 genesis JSON 和相同 genesis hash。
+- 同一开发测试、双节点或 joiner 场景必须使用同一份 generated genesis，不允许各节点按本地松散
+  默认值独立生成。
+- SourceDAO code、地址和 bootstrap 参数仍在开发时，generated overlay hash 可以与当前内置开发链
+  `params.USDBGenesisHash` 不同；该差异不构成协议兼容层，也不允许节点在已经初始化的 datadir 上
+  混用两个 genesis。
+- public network 发布前必须冻结 system address、runtime code、bootstrap alloc、difficulty 和 chain
+  config，并把 generated canonical genesis hash 原子写入该网络的 `USDBGenesisHash`、release
+  manifest 和所有发布配置。
+- public release 冻结后，任何会改变 genesis hash 的 spec、artifact 或 alloc 修改都定义新网络身份；
+  不能继续沿用原 `USDBGenesisHash`。
+
+因此，开发期测试验证“严格输入得到确定性 hash，并且所有节点共享该 hash”；public release gate
+额外验证“该 hash 等于已发布的 `USDBGenesisHash`”。
 
 # Artifact Commitments
 
@@ -494,7 +516,8 @@ bootstrap job 必须输出可审计状态。
 1. release manifest signature 有效，或者当前网络明确处于 unsigned dev mode。
 2. release manifest 中引用的文件 hash 与本地文件一致。
 3. 使用同一份 canonical genesis。
-4. `USDBGenesisHash` 与 release manifest 一致。
+4. public release 的 `USDBGenesisHash` 与 release manifest 一致；unsigned dev mode 则验证本地
+   generated genesis hash 与当前 datadir 和其他测试节点一致。
 5. system contract runtime code hash 与 manifest 一致。
 6. `ChainConfig.DividendAddress` 与 `DividendAddress` 一致。
 7. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
@@ -502,6 +525,13 @@ bootstrap job 必须输出可审计状态。
 9. 当前链上状态满足最小完成条件。
 
 joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史并审计最终状态。
+
+当前开发期自动化入口
+`go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh` 会在 full bootstrap 后固定
+block hash/state root，重启出块节点，再启动全新 joiner 重放历史；随后在两端执行 strict validation、
+比较完整模块摘要，并断言 full bootstrap 重放没有新的 completed/error operation。该入口使用
+unsigned development genesis、fake PoW 和 test-only UIP-0006 indexer fixture，不替代 public release
+manifest signature、真实 BTC-side state 或 PoW calibration。
 
 # Trusted Bootstrap Manifest Key
 
@@ -534,7 +564,9 @@ UIP-0010 在 UIP-0009 基础上进一步定义：
 - 哪些 post-start bootstrap 交易必须执行。
 - `DividendFeeSplitBlock` 的激活前置条件。
 
-如果 UIP-0010 修改 canonical genesis，必须重新生成 UIP-0009 中记录的 `USDBGenesisHash`。
+如果 UIP-0010 修改 public release canonical genesis，必须重新生成 UIP-0009 中记录的
+`USDBGenesisHash`。尚未冻结的 development bootstrap overlay 只更新自己的 generated hash，不
+改写当前内置开发链 hash。
 
 # 与 UIP-0011 的关系
 
@@ -558,6 +590,8 @@ go-ethereum:
 - `/home/bucky/work/go-ethereum/core/genesis.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
 - `/home/bucky/work/go-ethereum/core/state_transition.go`
+- `/home/bucky/work/go-ethereum/scripts/usdb/run_local_two_node_network.sh`
+- `/home/bucky/work/go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh`
 
 SourceDAO:
 
@@ -584,7 +618,10 @@ USDB docker:
 - generated genesis 的 `alloc` 包含 Dao / Dividend code 和 bootstrap admin balance。
 - Dao / Dividend code 与 committed implementation runtime code hash 完全一致。
 - Dao / Dividend 的 ERC1967 implementation slot 保持为空，且不能通过 UUPS `onlyProxy` 入口升级。
-- `USDBGenesisHash` 与 generated genesis 一致。
+- development bootstrap：相同 spec/artifact bytes 生成相同 genesis hash，所有测试节点共享该
+  generated genesis；不要求它等于当前内置开发链的 `USDBGenesisHash`。
+- public release：冻结后的 generated canonical genesis hash 与该网络 `USDBGenesisHash`、chain
+  config 和 release manifest 完全一致。
 - `DividendAddress` / `DividendFeeSplitBlock` 进入 chain config。
 - `IsDividendFeeSplit` 在 `nil`、zero address、激活前、激活后路径正确。
 - `Dao.initialize()` 成功。
