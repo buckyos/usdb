@@ -637,6 +637,9 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 
 当前草案倾向：
 
+- 首个 public network 使用 `quote_policy_version = 0`，不携带 quote payload、不写
+  quote activity state，difficulty 和 K 直接使用 UIP-0006 nominal profile。
+- 下列 v1 quote activity 规则属于 future activation 草案，不在首发网络启用。
 - `LEADER_QUOTE_WINDOW_BLOCKS = 50400`，按 12 秒平均出块间隔对应 1 周。
 - `candidate_energy = effective_energy` if leader quote active，否则 `candidate_energy = raw_energy`。
 - `candidate_level` 从 `candidate_energy` 派生，USDB chain difficulty policy 使用 `candidate_level`。
@@ -674,6 +677,8 @@ real_difficulty = ceil(base_difficulty * difficulty_factor_bps / 10000)
 - BTC reference validation 不得依赖 live BTC RPC，必须选择可历史重放的 BTC header / state commitment / proof segment 方案。
 - 当前倾向使用 active miner pass `pass_id` 作为辅助算力提交绑定 subject。
 - 75% 门槛、最近 2 个 BTC 高度窗口、多提交者竞争和无有效提交时 aux share 处理仍是待审计问题。
+- quote/aux 的 fake v2/v3 只允许存在于 build-tagged activation conformance 测试，
+  reserved ID 和测试分流参数不具有 production 协议含义。
 
 建议延后原因：
 

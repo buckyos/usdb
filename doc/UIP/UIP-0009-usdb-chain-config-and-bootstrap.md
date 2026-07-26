@@ -360,7 +360,7 @@ USDB chain config 必须显式包含或可确定以下版本：
 | `fee_split_policy_version` | uint16 | `1` | `DividendFeeSplitBlock` |
 | `collaboration_efficiency_policy_version` | uint16 | `1` | genesis |
 | `price_policy_version` | uint32 | `1` | genesis |
-| `quote_policy_version` | uint16 | `1` | genesis |
+| `quote_policy_version` | uint16 | `0` | genesis disabled；future checkpoint |
 | `aux_pool_policy_version` | uint16 | `0` | genesis disabled；future checkpoint |
 
 边界：
@@ -372,7 +372,8 @@ USDB chain config 必须显式包含或可确定以下版本：
 - `fee_split_policy_version` 描述 UIP-0011 / UIP-0010 fee split 公式；是否生效还必须满足 `DividendFeeSplitBlock` 和 Dividend bootstrap 条件。
 - `collaboration_efficiency_policy_version` 描述 UIP-0012 的 `K` rolling window 和 state update。
 - `price_policy_version` 描述 UIP-0013 price state transition；v1 为 FixedPrice。
-- `quote_policy_version` 描述 UIP-0014 Leader quote activity 和 candidate energy。
+- `quote_policy_version = 0` 表示 UIP-0014 quote activity 未启用，difficulty / K 使用
+  nominal profile；后续启用必须通过新的 checkpoint 激活已实现的正整数版本。
 - `aux_pool_policy_version = 0` 表示 UIP-0015 辅助算力池未启用；后续启用必须通过新的 USDB activation checkpoint 激活正整数版本。
 
 首个正式 USDB chain 网络必须从 genesis 启用 `difficulty_policy_version = 1`，不得使用 `0` 表示未启用。
@@ -405,11 +406,12 @@ USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
 legacy `--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
 的唯一来源；运行参数不能启用、关闭或覆盖共识规则。
 
-当前 development chain 只激活已经落地的 `payload_version=1` 和
-`difficulty_policy_version=1`。reward、CoinBase、fee split、collaboration efficiency、
-price 和 quote 字段已进入完整 USDB activation checkpoint，但在对应 UIP 实现前保持 `0`；任何
-非零但本地未支持的 policy 都 fail closed。首个正式网络仍必须在相关实现完成后按本文
-的 v1 version set 从 genesis 激活。
+当前 development chain 已激活 `payload_version=1`、`difficulty_policy_version=1`、
+`reward_rule_version=1`、`coinbase_emission_policy_version=1`、
+`collaboration_efficiency_policy_version=1` 和 `price_policy_version=1`。
+`fee_split_policy_version=0` 使用 UIP-0010/UIP-0011 启动窗口规则；
+`quote_policy_version=0` 和 `aux_pool_policy_version=0` 分别表示 UIP-0014/UIP-0015
+未启用。任何非零但本地未支持的 policy 都 fail closed。
 
 # Reward / Difficulty / Fee Split 边界
 
@@ -423,8 +425,12 @@ price 和 quote 字段已进入完整 USDB activation checkpoint，但在对应 
 - `fee_split_policy_version = 1`：由 UIP-0011 / UIP-0010 定义 fee split，实际生效高度由 `DividendFeeSplitBlock` / USDB activation checkpoint 固定。
 - `collaboration_efficiency_policy_version = 1`：由 UIP-0012 定义 `K`。
 - `price_policy_version = 1`：由 UIP-0013 定义 FixedPrice v1。
-- `quote_policy_version = 1`：由 UIP-0014 定义 quote activity v1。
+- `quote_policy_version = 0`：UIP-0014 quote activity disabled；future 非零版本必须
+  由新 checkpoint 激活。
 - `aux_pool_policy_version = 0`：由 UIP-0015 定义 disabled 初始状态。
+
+build-tagged conformance checkpoint 可以使用文档化的 reserved ID 测试多版本 dispatch，
+但不得成为正式网络 chain config、genesis 或 release manifest 的输入。
 
 旧 go-ethereum 备忘中的 reward-only、mock level、`0.5..2.0` multiplier 等设计，只能作为实现历史参考。正式规则以后续 UIP 为准。
 

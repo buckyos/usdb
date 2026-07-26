@@ -173,7 +173,14 @@ uip-0006-usdb-economic-state-view:v1
 
 首个正式 USDB-chain 网络必须启用 level-based difficulty policy，不定义 `difficulty_policy_version = 0` 作为“未启用”保留值。若未来某个独立测试网络确实需要无 difficulty policy 模式，必须由后续 UIP 单独定义，不得复用正式网络语义。
 
-可选经济组件如果需要 disabled 状态，必须由对应 UIP 明确允许 `0` 的含义。例如 UIP-0015 当前草案允许 `aux_pool_policy_version = 0` 表示辅助算力池未启用；这不代表其他 version family 自动允许 `0`。
+可选经济组件如果需要 disabled 状态，必须由对应 UIP 明确允许 `0` 的含义。UIP-0014
+允许 `quote_policy_version = 0` 表示不启用 quote activity、直接使用 nominal
+effective energy；UIP-0015 允许 `aux_pool_policy_version = 0` 表示辅助算力池未启用。
+这不代表其他 version family 自动允许 `0`。
+
+实现测试可以占用高位 reserved version ID 做 activation conformance，但这些 ID
+不得进入 public genesis、release manifest 或 production artifact。默认构建必须
+拒绝 reserved test ID；测试结果不能冻结 future production policy 的版本号或语义。
 
 # 两类激活记录与所有权
 
@@ -507,7 +514,7 @@ manifest 仅用于 release review、部署审计和 CI 一致性检查。它不�
 | BTC registry | `btc-mainnet` | BTC height 0 | UIP-0001 至 UIP-0006 的九个 BTC v1 family，包括 commit protocol 与 balance-history semantics。 |
 | BTC registry | `btc-regtest` revision 1 | BTC height 0 | 当前 revision；与 `btc-mainnet` 相同的九个 BTC v1 family，但使用独立 registry artifact 和 ID。 |
 | BTC registry | `btc-regtest` revision 2 | BTC height 100000 | staged revision；只增加一个 `Planned` formula marker，因此不改变任何高度的 active set，也不作为 BTC 服务 current revision。 |
-| USDB chain config | `usdb-devnet-20260323` | USDB block 0 | 绑定 `btc-regtest` registry ID；`payload_version=1`、`difficulty_policy_version=1`；尚未实现的 reward/coinbase/fee/collaboration/price/quote policy 为 development staging `0`，`aux_pool_policy_version=0` 表示 disabled。 |
+| USDB chain config | `usdb-devnet-20260323` | USDB block 0 | 绑定 `btc-regtest` registry ID；`payload_version=1`、`difficulty_policy_version=1`、`reward_rule_version=1`、`coinbase_emission_policy_version=1`、`collaboration_efficiency_policy_version=1`、`price_policy_version=1`；`fee_split_policy_version=0` 使用启动窗口规则，`quote_policy_version=0` 与 `aux_pool_policy_version=0` 表示 disabled。 |
 
 正式 USDB chain testnet/mainnet 的 genesis、chain ID 和具体 activation block 必须在进入 Review / Last Call 前冻结。BTC source-network registry 与 USDB-chain network 发布矩阵必须分别 review，再由 release manifest 关联 artifact identity。
 

@@ -24,6 +24,11 @@ miner_coinbase_atoms = coinbase_emission_atoms
 
 只有在 UIP-0015 进入 Final、证明格式和分配规则完成审计、并通过 UIP-0008 activation matrix 在指定 USDB chain 高度激活 `aux_pool_policy_version > 0` 后，才允许启用辅助算力池分账。
 
+实现可以提供 build-tagged fake v2 / fake v3 conformance policy，专门验证
+activation dispatch、reward 原子分账、restart、reorg 和历史重放。reserved
+conformance ID 及其测试收款地址、比例都没有 production 协议含义，不得进入
+public genesis、release manifest 或默认二进制；默认二进制必须 fail closed。
+
 # 动机
 
 经济模型设计大纲为辅助算力池预留了 25% CoinBase 份额：
@@ -326,6 +331,7 @@ aux pool accepted submission 必须进入 USDB chain state，并随 `stateRoot` 
 Final 前至少需要覆盖：
 
 - aux pool 未启用时 CoinBase 100% 归 miner。
+- 默认生产构建对任意未知非零 aux pool policy fail closed。
 - aux pool 启用后 75% / 25% 分账，rounding remainder 归 miner。
 - proof BTC reference 超出最近 2 个 BTC 高度时被拒绝。
 - proof work 低于门槛时被拒绝。
@@ -336,6 +342,16 @@ Final 前至少需要覆盖：
 - USDB chain reorg 后 accepted submissions 和分配状态正确回滚。
 - 历史区块重放不依赖 live BTC RPC。
 - `header.Extra` 不包含完整 proof，仍符合 UIP-0007 payload 长度约束。
+
+在最终 proof / recipient 规则冻结前，activation conformance 测试还应覆盖：
+
+- fake v2 与 fake v3 使用不同的 deterministic split / recipient，使版本分派可观测。
+- miner 与 aux credit 总和严格等于 CoinBase emission，整除余数归 miner。
+- split 校验失败时 issued supply、miner balance、aux balance 和其他 system state
+  均不发生部分写入。
+- default -> fake v2 -> fake v3 三阶段跨进程接力；旧二进制分别在第一个不支持的
+  checkpoint 停止，新二进制可从同一 datadir 重放并继续。
+- fake v3 fresh validator 可从 genesis 重放 fake v2 历史并接受 fake v3 head。
 
 # 待审计问题
 

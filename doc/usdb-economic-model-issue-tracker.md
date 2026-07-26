@@ -61,10 +61,10 @@
 | ECO-005 | P0 | Done | 明确并实现 energy penalty v2 公式 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `energy_formula.rs`, `energy.rs` |
 | ECO-006 | P1 | Done | 明确并实现继承折损规则 | `doc/UIP/UIP-0003-pass-energy-formula.md`, `pass.rs`, `energy.rs` |
 | ECO-007 | P1 | Done | 定义并实现 collab pass 与 leader 绑定协议 | `doc/UIP/UIP-0001-miner-pass-inscription.md`, `doc/UIP/UIP-0004-collab-leader-effective-energy.md` |
-| ECO-008 | P1 | In Progress | BTC effective_energy / level 已完成，USDB-chain real_difficulty 待后续 UIP | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, USDB-chain payload |
+| ECO-008 | P1 | Done | effective_energy / level / real_difficulty 已实现并完成跨语言与 live 验证 | `doc/UIP/UIP-0004-collab-leader-effective-energy.md`, `doc/UIP/UIP-0005-level-and-real-difficulty.md`, RPC, state view, USDB-chain payload |
 | ECO-009 | P1 | In Progress | 建立经济公式版本与激活高度治理 | `doc/UIP/UIP-0008-protocol-versioning-and-activation-matrix.md`, `usdb-util`, state ref |
 | ECO-010 | P2 | In Progress | CoinBase、K、分账、price / real_price、辅助算力池拆分 | `doc/UIP/UIP-0011-*` 及后续 economic UIP |
-| ECO-011 | P1 | In Progress | 拆分 USDB 经济状态视图与 USDB 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md`, validator block-body docs/tests |
+| ECO-011 | P1 | Done | 拆分并实现 USDB 经济状态视图与 USDB 链上 payload | `doc/UIP/UIP-0006-usdb-economic-state-view.md`, `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md`, validator block-body docs/tests |
 | ECO-012 | P1 | Done | 明确 JSON schema、content-type、重复 key 和未知字段策略 | inscription source/content parser |
 | ECO-013 | P1 | In Progress | 标准化 SourceDAO / Dividend / fee split 冷启动流程 | `doc/UIP/UIP-0010-source-dao-dividend-bootstrap.md`, `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md` |
 
@@ -201,12 +201,13 @@
 ### ECO-008. 定义并实现 effective_energy / level / real_difficulty
 
 - 优先级：`P1`
-- 状态：`In Progress`
+- 状态：`Done`
 - 当前现状：
   - UIP-0004 derived resolver、breakdown 和 candidate set 已实现 `effective_energy` 聚合、审计和排序。
   - UIP-0005 公式与 profile/candidate 查询已动态派生 `level` 和 `difficulty_factor_bps`，不写入 energy DB。
   - validator JSON payload 使用 raw/collab/effective 三字段，winner 使用 `effective_energy`；`MAX_LEVEL = 50`，最大 difficulty discount = 50%。
-  - BTC/indexer 侧已完成；usdb-indexer 不读取 ETHW `base_difficulty`，ETHW `real_difficulty` policy 尚待后续 UIP。
+  - USDB chain 已从本地 chain config 选择 difficulty policy，miner/validator 使用同一历史
+    profile 计算 real difficulty；header payload/version mismatch 和服务不可用均 fail closed。
   - 相关 GitHub 讨论：[#27](https://github.com/buckyos/usdb/issues/27)。
 - 目标：
   - 定义 `level(effective_energy)` 的整数或定点计算方式。
@@ -214,8 +215,8 @@
   - 明确 RPC 与 validator payload 同时返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level` 和 `difficulty_factor_bps`。
   - 明确 ETHW 侧基于 `base_difficulty` 和 `difficulty_factor_bps` 计算 `real_difficulty`。
 - 下一步：
-  - 在 UIP-0007/UIP-0009 或后续 ETHW policy 中固定 `base_difficulty / real_difficulty` 来源、编码和 mismatch 校验。
-  - 集中 live/regtest 继续复核 candidate/profile/breakdown 的历史与 reorg 一致性。
+  - public network 发布前完成 PoW difficulty 多硬件离线标定。
+  - UIP-0014 future quote policy 激活后复核 candidate difficulty 输入切换。
 - 验收：
   - 单元测试覆盖 level 边界、rounding、最大折扣。
   - candidate set 选择规则使用协议指定字段。
@@ -249,7 +250,8 @@
 - 状态：`In Progress`
 - 当前现状：
   - 目标经济模型已经写出方向，但大量参数和证明格式仍是 `<TODO>`。
-  - 当前代码侧尚未完整实现这些机制。
+  - UIP-0011 CoinBase/fee、UIP-0012 K 和 UIP-0013 FixedPrice 已实现并完成
+    reward/reorg/restart/joiner/live 验证。
   - SourceDAO / Dividend bootstrap 已拆到 `UIP-0010` 优先处理。
   - CoinBase emission 与 reward / fee split 公式后移到 `UIP-0011` 及后续 economic UIP。
   - `doc/UIP/UIP-0011-coinbase-emission-and-reward-split.md` 已进入 Draft。
@@ -261,26 +263,25 @@
   - 将发行、分账、价格、辅助算力池拆成独立 UIP。
   - 每个 UIP 必须有确定性输入、整数公式、验证路径和 reorg 语义。
 - 下一步：
-  - Review UIP-0011 中 `total_miner_btc_sats`、`issued_usdb_atoms`、`K`、fee split、aux pool 和 uncle reward 边界。
-  - Review UIP-0012 中 `compute_k_bps`、warmup activation delay 和 `K_LAST_*` 审计 slots。
-  - Review UIP-0013 中 price policy range、fixed price 升级、parent state price 和 dynamic source policy 边界。
-  - Review UIP-0014 中 quote window、quote subject、candidate energy 和 quote payload encoding。
-  - Review UIP-0015 中 BTC reference validation、proof encoding、pass binding、多提交者分配和无有效提交时 aux share 处理。
+  - 保持 UIP-0014/UIP-0015 首发 disabled，并用 fake v2/v3 conformance 覆盖未来激活框架。
+  - future quote/aux 启用前完成 payload/proof、授权、recipient、分配和参数审计。
+  - public network 发布前冻结 fixed price、difficulty、fee gate 和 canonical genesis。
 - 验收：
   - 每个机制都有独立协议文档、实现计划和测试计划。
 
 ### ECO-011. 拆分 USDB 经济状态视图与 USDB 链上 payload
 
 - 优先级：`P1`
-- 状态：`In Progress`
+- 状态：`Done`
 - 当前现状：
   - UIP-0006 已实现 historical `external_state`、economic profile、candidate set、collab breakdown、opaque cursor、version/rule 校验和 typed client/CLI/control-plane capability。
   - validator JSON 测试 payload 已从 UIP-0006 profile/candidate view 构造，不再使用旧 raw `energy` 拼装路径。
-  - BTC-side USDB state view 与 USDB-chain on-chain payload 已明确分层；UIP-0006 indexer scope 完成，UIP-0007/UIP-0009 USDB-chain scope 仍待对齐。
+  - BTC-side USDB state view 与 USDB-chain on-chain payload 已明确分层；UIP-0006
+    indexer scope 与 UIP-0007/UIP-0009 chain scope 已实现。
   - `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md` 已进入 Draft。
   - 已确认 `stable_block_hash` 不进入 UIP-0007 v1 header payload，由 UIP-0006 state view 返回。
   - 已确认 reward rule 与 future difficulty policy 复用同一 profile selector。
-  - 已确认 `ProfileSelectorPayload` 是正式 payload 命名；当前 go-ethereum 原型中的 `RewardPayloadV1` 应在正式实现前重命名。
+  - Go 使用固定 107-byte `ProfileSelectorPayload`，miner/validator/reward 共用 selector-bound resolver。
   - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 USDB chain config / fork policy 的 expected version。
   - 已确认 collab bonus 不在 header 中携带全量 `collab_pass_id`。
   - `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md` 已进入 Draft，用于承接 USDB chain config、genesis 和 consensus version 激活。
@@ -290,9 +291,8 @@
   - 明确哪些字段由 validator 通过 UIP-0006 本地重算，不需要进入 USDB 链上 payload。
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
-  - Review UIP-0007 中 profile selector 二进制布局和 validator replay 流程。
-  - Review UIP-0009 中 USDB chain config、payload version、reward rule version 和 expected difficulty policy version 的激活规则。
-  - 执行完整 UIP-0001-0006 live/regtest，并基于大规模数据集评估 `contribution_desc_pass_id_asc` 的数据库索引成本。
+  - public release 冻结 chain ID、activation schedule、registry binding 和 manifest。
+  - 继续进行 100K+、长时间 soak 与多 Leader 分布性能评估。
 - 验收：
   - USDB state view 可在历史 context 下重放。
   - USDB profile selector 只用最小字段即可重放 reward input，并可供 future difficulty policy 复用。

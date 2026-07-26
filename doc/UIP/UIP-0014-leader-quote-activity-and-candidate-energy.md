@@ -5,11 +5,23 @@ Type: Standards Track
 Layer: USDB Validator / Economic Policy
 Created: 2026-05-08
 Requires: UIP-0000, UIP-0004, UIP-0005, UIP-0006, UIP-0007, UIP-0008, UIP-0013
-Activation: USDB-chain network activation matrix; first official networks enable v1 quote activity policy from genesis
+Activation: Disabled on first public networks with `quote_policy_version = 0`; a future non-zero policy requires a USDB-chain activation checkpoint
 
 # 摘要
 
 本文定义 Leader 主动报价活跃性如何影响 USDB 链出块候选能量。
+
+首个 public network 不启用本草案描述的 quote activity state machine：
+
+```text
+quote_policy_version = 0
+```
+
+该禁用状态下不携带 quote payload、不更新 quote storage，difficulty 使用 UIP-0006
+profile 的名义 `difficulty_factor_bps`，UIP-0012 的 `CE_N` 使用名义
+`collab_contribution`。本文后续描述的 `quote_policy_version = 1` 仍是 future
+activation 候选规则；只有 payload 编码、授权和 public 参数完成审计并通过
+UIP-0008 activation checkpoint 后才允许启用。
 
 核心规则：
 
@@ -79,9 +91,28 @@ candidate_energy
 
 本文中的“必须”、“禁止”、“应该”、“可以”遵循 UIP-0000 的规范关键词含义。
 
-# 常量
+# 禁用策略
 
-v1 固定：
+`quote_policy_version = 0` 的共识语义固定为：
+
+```text
+leader_quote_active = not_applicable
+candidate_energy = nominal_effective_energy
+candidate_level = level(candidate_energy)
+candidate_difficulty_factor_bps = difficulty_factor_bps(candidate_level)
+CE_N = collab_contribution
+```
+
+规则：
+
+- header、system transaction 和普通 transaction 均不要求携带 quote payload。
+- `QUOTE_POLICY_VERSION_SLOT` 保持 `0`，不创建 per-Leader quote activity state。
+- 不允许使用本地 CLI 或运行时开关模拟 quote active / stale。
+- 任何未由当前二进制实现的非零 `quote_policy_version` 必须 fail closed。
+
+# Future v1 常量
+
+以下参数属于 future `quote_policy_version = 1` 草案：
 
 | 参数 | 值 | 状态 | 说明 |
 | --- | --- | --- | --- |
@@ -506,6 +537,8 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 
 至少需要覆盖：
 
+- `quote_policy_version = 0` 时使用名义 effective energy / factor / CE，且不写 quote activity state。
+- 默认生产构建对任意未知非零 quote policy fail closed。
 - 无 `last_valid_quote_block` 时，`candidate_energy` 只使用 `raw_energy`。
 - quote active 时，`candidate_energy` 使用 `raw_energy + collab_contribution`。
 - quote stale 后，`candidate_energy` 回落到 `raw_energy`。
@@ -518,6 +551,14 @@ UIP-0013 v1 的 fixed price 不会被 quote 修改。
 - 仅完成 future `quote_source_update` 不刷新 `last_valid_quote_block`；必须被成功出块引用后才刷新。
 - pass remint 后，新 pass 不继承旧 pass 的 quote activity。
 - reorg 后 `last_valid_quote_block` 回滚，`candidate_level` 重算。
+
+实现可以保留 build-tagged activation conformance policy，用于验证
+default -> fake v2 -> fake v3 的版本分派、重启、reorg 和历史重放。测试 policy
+必须使用 reserved ID，且：
+
+- 不得进入 public genesis、release manifest 或 production binary。
+- 不得声明其窗口、分流比例或状态转换是 future UIP-0014 的协议语义。
+- 默认构建必须拒绝这些 reserved ID。
 
 # 待审计问题
 

@@ -831,8 +831,9 @@ on-chain readiness、UIP-0011 fee split 和 full-bootstrap restart/joiner 开发
 ## UIP-0011 至 UIP-0013 Reward State 对齐
 
 状态：2026-07-25 的 system-state/BTC aggregate 基础分别以 go-ethereum `18bf93bf6`
-和 usdb `bd75c1a` 提交。2026-07-26 已在其上完成 CoinBase emission、fee split、
-UIP-0012 K、UIP-0013 FixedPrice 和集中 live 测试；本轮新增改动未提交，等待 review。
+和 usdb `bd75c1a` 提交。2026-07-26 的 CoinBase emission、fee split、
+UIP-0012 K、UIP-0013 FixedPrice 和集中 live 测试已分别提交为 go-ethereum
+`0b0aae42b`、usdb `d957c48` 和 SourceDAO `3afd6b1`。
 
 ### 共识决策与存储布局
 
@@ -923,8 +924,49 @@ UIP-0012 K、UIP-0013 FixedPrice 和集中 live 测试；本轮新增改动未�
 
 - public testnet/mainnet 仍需冻结最终 fixed price、difficulty calibration、fee gate、
   DAO/Dividend artifact/code hash、canonical genesis/hash 和 release manifest。
-- UIP-0012 当前在 UIP-0014 quote policy 未激活时直接使用 nominal
-  `collab_contribution`；quote policy 非零后的 stale Leader `CE=0` 路径随 UIP-0014 对齐。
+- 首个 public network 固定 `quote_policy_version=0`：difficulty 使用 nominal
+  `difficulty_factor_bps`，UIP-0012 使用 nominal `collab_contribution`，不写 quote
+  activity state。UIP-0014 future v1 仍需先冻结 payload/授权和 public 参数。
 - fixed price 调整、dynamic real price 和 price report 不在 v1；必须新增 UIP-0013
   policy version 和 activation/golden/replay 覆盖。
 - aux pool 在 UIP-0015 非零 policy 激活前保持关闭；首版 CoinBase 100% 归 reward recipient。
+
+## UIP-0014 / UIP-0015 Activation Conformance
+
+状态：首发 production policy 均保持 disabled；build-tagged fake v2/v3
+conformance、三阶段跨进程激活和 fresh-validator replay 已完成，改动尚未提交，等待
+review；本批不冻结 future quote/aux 正式语义。
+
+### 固定边界
+
+- production / 默认构建只接受 `quote_policy_version=0` 和
+  `aux_pool_policy_version=0`，任何未知非零版本 fail closed。
+- `0xfffe`、`0xffff` 作为测试专用 fake v2/v3 reserved ID；不得进入 public
+  genesis、release manifest 或 production artifact。
+- fake quote v2 模拟 stale：difficulty 从 raw energy 派生，UIP-0012 `CE=0`。
+- fake quote v3 模拟 active：difficulty 从 effective energy 派生，UIP-0012 使用
+  nominal collab contribution。
+- fake aux v2/v3 使用不同的固定测试 recipient 和 10%/20% split，仅用于让 dispatch
+  与 state transition 可观测；不代表 UIP-0015 future policy。
+
+### 验收
+
+- 默认、v2、v3 三类构建分别只接受其能力范围内的 reserved version。
+- reward prepare 阶段完成 issued/K/price/quote/split 的全量校验，再原子写 state 和
+  balance；错误不得留下部分状态。
+- 同一 datadir 按 default -> v2 -> v3 接力：旧二进制在首个不支持 checkpoint
+  停止，新二进制重启后继续。
+- v3 fresh validator 从 genesis 重放 v2 历史并接受 v3 head；历史 block/state、
+  miner/aux balance 和 issued supply 可独立重算。
+
+### 2026-07-26 执行结果
+
+- default build 在 fake v2 block `3` 前 fail closed；v2 build 从同一 datadir 恢复，
+  在 fake v3 block `6` 前 fail closed；v3 build 继续到 block `19`。
+- clean BTC regtest 高度 `137`，profile 为单一 active owner、raw energy `2000`。
+- archive-state 逐块审计覆盖 difficulty、quote policy slot、price range、K ring、
+  issued supply、miner/aux credits；最终 issued 为 `12050238112406886121`。
+- 最终 miner `10084167546742082013`、fake-v2 aux `190274157602036399`、
+  fake-v3 aux `1775796408062767709`，三者之和精确等于 issued。
+- fresh v3 validator 从 genesis 重放 default/v2/v3 全部历史并到达相同 block `19`
+  和 head hash。
