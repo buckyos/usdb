@@ -934,8 +934,9 @@ UIP-0012 K、UIP-0013 FixedPrice 和集中 live 测试已分别提交为 go-ethe
 ## UIP-0014 / UIP-0015 Activation Conformance
 
 状态：首发 production policy 均保持 disabled；build-tagged fake v2/v3
-conformance、三阶段跨进程激活和 fresh-validator replay 已完成，改动尚未提交，等待
-review；本批不冻结 future quote/aux 正式语义。
+conformance、三阶段跨进程激活和 fresh-validator replay 已分别提交为 go-ethereum
+`cdfc1a5c0` 和 usdb `a5d6197`。后续 quote decision 通用化和 UIP-0014 语义清理正在
+review，尚未提交；本批不冻结 future quote/aux 正式语义。
 
 ### 固定边界
 
@@ -944,10 +945,26 @@ review；本批不冻结 future quote/aux 正式语义。
 - `0xfffe`、`0xffff` 作为测试专用 fake v2/v3 reserved ID；不得进入 public
   genesis、release manifest 或 production artifact。
 - fake quote v2 模拟 stale：difficulty 从 raw energy 派生，UIP-0012 `CE=0`。
-- fake quote v3 模拟 active：difficulty 从 effective energy 派生，UIP-0012 使用
-  nominal collab contribution。
+- fake quote v3 模拟 current-block implicit FixedPriceHeartbeat：现有 selector、
+  reward recipient 和 active FixedPrice v1 在 PoW 前共同构成测试 heartbeat；
+  difficulty 从 effective energy 派生，UIP-0012 使用 nominal collab contribution。
 - fake aux v2/v3 使用不同的固定测试 recipient 和 10%/20% split，仅用于让 dispatch
   与 state transition 可观测；不代表 UIP-0015 future policy。
+
+### Quote Policy 通用化
+
+- `quote_policy_version=0` 明确为完全禁用，不得解释为系统认可了一条默认矿工报价。
+- 正式 `quote_policy_version=1` 保留给未来第一个具有实际 per-Leader 报价证据的
+  policy；public activation 不需要经过 FixedPriceHeartbeat 中间阶段。
+- Go 新增纯 `QuotePolicyContext -> QuotePolicyDecision`：统一输出 candidate
+  energy/level/factor、UIP-0012 collaboration energy 和 current-block accepted 标志。
+  miner difficulty、validator difficulty 和 reward/K 必须消费同一决策语义。
+- FixedPriceHeartbeat 只保留为 build-tagged fake v3；它对当前块生效，不写
+  `last_valid_quote_block`，不使用 quote window，也不冻结未来 v1 payload、授权或
+  state machine。
+- default binary 继续拒绝正式 v1 和全部 reserved fake ID。future v1 可以复用
+  activation dispatch、context/decision、difficulty/K/reward 接线和原子 state writes，
+  但仍需新增正式 evidence codec、authorization 和 source proof。
 
 ### 验收
 
@@ -961,12 +978,15 @@ review；本批不冻结 future quote/aux 正式语义。
 
 ### 2026-07-26 执行结果
 
-- default build 在 fake v2 block `3` 前 fail closed；v2 build 从同一 datadir 恢复，
-  在 fake v3 block `6` 前 fail closed；v3 build 继续到 block `19`。
+- quote decision 通用化后重新执行：default build 在 fake v2 block `3` 前 fail
+  closed；v2 build 从同一 datadir 恢复，在 fake v3 block `6` 前 fail closed；v3
+  build 继续到 block `15`。
 - clean BTC regtest 高度 `137`，profile 为单一 active owner、raw energy `2000`。
 - archive-state 逐块审计覆盖 difficulty、quote policy slot、price range、K ring、
-  issued supply、miner/aux credits；最终 issued 为 `12050238112406886121`。
-- 最终 miner `10084167546742082013`、fake-v2 aux `190274157602036399`、
-  fake-v3 aux `1775796408062767709`，三者之和精确等于 issued。
-- fresh v3 validator 从 genesis 重放 default/v2/v3 全部历史并到达相同 block `19`
-  和 head hash。
+  issued supply、miner/aux credits；最终 issued 为 `9513466543683129189`。
+- 最终 miner `8054750291763076466`、fake-v2 aux `190274157602036399`、
+  fake-v3 aux `1268442094318016324`，三者之和精确等于 issued。
+- fresh v3 validator 从 genesis 重放 default/v2/v3 全部历史并到达相同 block `15`
+  和 head hash。该次 live profile 的 collab contribution 为 `0`；另由 non-zero
+  collab 的 tagged resolver 和 miner/validator engine 测试交叉验证 raw/effective
+  quote decision 差异。

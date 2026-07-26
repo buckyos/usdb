@@ -5,387 +5,251 @@ Type: Standards Track
 Layer: USDB Validator / Economic Policy
 Created: 2026-05-08
 Requires: UIP-0000, UIP-0004, UIP-0005, UIP-0006, UIP-0007, UIP-0008, UIP-0013
-Activation: Disabled on first public networks with `quote_policy_version = 0`; a future non-zero policy requires a USDB-chain activation checkpoint
+Activation: Disabled on first public networks with `quote_policy_version = 0`; formal v1 requires a future USDB-chain activation checkpoint
 
 # 摘要
 
-本文定义 Leader 主动报价活跃性如何影响 USDB 链出块候选能量。
+本文定义 USDB chain 如何把 Leader 报价证据转换为出块候选能量、难度折算和
+UIP-0012 协作能量输入。
 
-首个 public network 不启用本草案描述的 quote activity state machine：
+首个 public network 完全禁用报价机制：
 
 ```text
 quote_policy_version = 0
 ```
 
-该禁用状态下不携带 quote payload、不更新 quote storage，difficulty 使用 UIP-0006
-profile 的名义 `difficulty_factor_bps`，UIP-0012 的 `CE_N` 使用名义
-`collab_contribution`。本文后续描述的 `quote_policy_version = 1` 仍是 future
-activation 候选规则；只有 payload 编码、授权和 public 参数完成审计并通过
-UIP-0008 activation checkpoint 后才允许启用。
+禁用状态下：
 
-核心规则：
+- 不携带 quote payload。
+- 不解析或认可隐含的矿工报价。
+- 不创建 per-Leader quote activity state。
+- difficulty 使用 UIP-0006 profile 的名义 `effective_energy` / `difficulty_factor_bps`。
+- UIP-0012 `CE_N` 使用名义 `collab_contribution`。
 
-- UIP-0004 的 `raw_energy`、`collab_contribution`、`effective_energy` 仍由 USDB indexer 按 BTC 历史状态派生。
-- USDB chain 侧单独维护 Leader quote activity state。
-- Leader 超过一周没有有效主动报价时，仍可作为普通 standard pass 出块，但不得使用协作者能量。
-- v1 使用 `FixedPrice` 时，主动报价是 activity heartbeat，不改变 UIP-0013 的 fixed price。
-- `candidate_energy` 和 `candidate_level` 必须使用 parent USDB chain state 中已经生效的 quote activity。
-- block `N` 内的有效 quote 最早影响 block `N+1` 的 `candidate_energy`。
+`quote_policy_version = 1` 保留给未来第一个正式、可验证、由 Leader 实际参与的报价
+policy。FixedPrice 阶段不要求先激活一个形式化 heartbeat 中间版本；activation matrix
+可以在正式 v1 完成后直接从 `0` 升级到 `1`。
+
+实现可以保留 build-tagged `FixedPriceHeartbeat` conformance policy，验证 quote
+version 分派、current-block 决策、difficulty、reward、restart、reorg 和历史重放。
+该测试 policy 不属于 public protocol，也不占用正式 v1 的版本号或语义。
 
 # 动机
 
-经济模型设计要求 Leader 持续参与报价。如果一个 Leader 长期不主动报价，却仍能长期使用协作者能量降低出块难度，会削弱协作机制对 Leader 行为的约束。
-
-同时，USDB indexer 不应反向依赖 USDB 链出块历史。UIP-0004 已明确：
+UIP-0004 已定义 BTC 历史状态派生的：
 
 ```text
-raw_energy(pass, h)
-collab_contribution(pass, h)
-effective_energy(pass, h)
+raw_energy
+collab_contribution
+effective_energy = raw_energy + collab_contribution
 ```
 
-这些值只依赖 BTC 侧历史状态。Leader 是否最近主动报价，属于 USDB chain 侧本地可验证规则。
+未来如果 Leader 需要提交自己的挂单、报价或可验证 quote source reference，USDB
+chain 必须确定：
 
-因此，本文把“名义有效能量”和“实际候选能量”分离：
+- 当前区块是否包含有效报价证据。
+- 该证据是否绑定 UIP-0007 选中的 standard pass。
+- 当前区块 difficulty 是否允许使用 `collab_contribution`。
+- UIP-0012 当前样本 `CE_N` 是否使用同一份协作能量。
+- 报价状态如何随 restart、历史重放和 reorg 保持确定性。
 
-```text
-nominal_effective_energy
-    = raw_energy + collab_contribution
-
-candidate_energy
-    = nominal_effective_energy, if leader_quote_active
-    = raw_energy, otherwise
-```
+FixedPrice v1 已由 UIP-0013 作为共识常量固定。矿工成功产生有效区块本身就表示遵守
+固定价格，因此没有必要为了形式完整而在 public network 启用无实际价格输入的
+heartbeat policy。
 
 # 非目标
 
 本文不定义：
 
-- `raw_energy`、`collab_contribution` 或 `effective_energy` 的 BTC 侧计算公式。
-- `level` 阈值表和 `difficulty_factor_bps` 公式。
-- `price_atoms_per_btc` 或 `real_price_atoms_per_btc` 更新规则。
-- 动态 price source、DeFi 证明或双边挂单机制。
-- CoinBase emission、fee split 或辅助算力池。
-- USDB indexer 持久化 quote activity。
+- UIP-0003 至 UIP-0005 的 energy、level 或 factor 公式。
+- UIP-0013 的 fixed/dynamic price 更新公式。
+- 第一个正式动态 quote source 的 payload、签名或 proof 格式。
+- 外部 Ethereum DeFi proof、USDB native orderbook 或 BTC bridge。
+- CoinBase emission、fee split 或 auxiliary hashpower pool。
+- USDB indexer 持久化 USDB-chain quote activity。
 
 # 术语
 
 | 术语 | 含义 |
 | --- | --- |
-| `leader_quote` | Leader 在 USDB chain 区块中提交的主动报价 heartbeat。 |
-| `quote_source_update` | 建立或更新一个可验证报价来源状态的操作。 |
-| `block_quote_reference` | 出块时引用某个已存在、可验证、未过期报价来源状态的 payload。 |
-| `leader_quote_active` | Leader 在最近窗口内存在有效 quote 的状态。 |
-| `last_valid_quote_block` | USDB chain state 中记录的某个 Leader 最近一次有效 quote 所在区块高度。 |
-| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 为当前 USDB chain 区块声明的 UIP-0006 `candidate_pass`。 |
-| `self_energy` | standard pass 自身的 `raw_energy`。 |
-| `nominal_effective_energy` | UIP-0004 `effective_energy` 在 USDB chain policy 中的明确别名，即 `raw_energy + collab_contribution`。 |
-| `candidate_energy` | 对当前 `selected_pass` 应用 quote activity 后，USDB chain difficulty policy 实际使用的能量；不改变 UIP-0006 `candidate_set_view` 成员资格。 |
-| `self_level` | `level(self_energy)`。 |
-| `nominal_leader_level` | `level(nominal_effective_energy)`。 |
-| `candidate_level` | `level(candidate_energy)`。 |
-| `candidate_difficulty_factor_bps` | 按 UIP-0005 从 `candidate_level` 派生、供当前 USDB chain 区块 difficulty 校验使用的 factor。 |
-| `quote_policy_version` | 本文定义的 quote activity 规则版本。 |
+| `selected_pass` | UIP-0007 `ProfileSelectorPayload` 选择并经 UIP-0006 验证的 active standard pass。 |
+| `nominal_effective_energy` | UIP-0004 `effective_energy`，即 `raw_energy + collab_contribution`。 |
+| `quote_evidence` | 当前区块中可供 validator 在 PoW 校验前确定性验证的正式报价证据。 |
+| `quote_policy_version` | 把 profile、当前区块输入和 quote evidence 转换为 quote decision 的规则版本。 |
+| `candidate_energy` | 当前 USDB 区块 difficulty 实际使用的能量。 |
+| `candidate_level` | UIP-0005 `level(candidate_energy)`。 |
+| `candidate_difficulty_factor_bps` | UIP-0005 从 `candidate_level` 派生的 difficulty factor。 |
+| `collaboration_energy_for_k` | 同一 quote decision 提供给 UIP-0012 当前样本的协作能量。 |
+| `current_block_quote_accepted` | 当前区块 quote evidence 已通过 active policy 验证。 |
+| `FixedPriceHeartbeat` | 仅用于 build-tagged activation conformance 的隐含固定价格 heartbeat，不是正式 public policy。 |
 
-# 规范关键词
+# 版本模型
 
-本文中的“必须”、“禁止”、“应该”、“可以”遵循 UIP-0000 的规范关键词含义。
+| Version | 状态 | 语义 |
+| --- | --- | --- |
+| `0` | 首版正式启用 | quote 机制完全禁用，使用 nominal effective energy / CE。 |
+| `1` | 保留、未实现 | 未来第一个正式 evidence-backed Leader quote policy。 |
+| `0xfffe` | 测试专用 | fake v2，无有效 quote，使用 raw energy / `CE=0`。 |
+| `0xffff` | 测试专用 | fake v3，当前块隐含 FixedPriceHeartbeat，使用 effective energy / nominal CE。 |
+
+规则：
+
+- 默认 production build 必须拒绝所有未知非零版本，包括尚未实现的正式 v1。
+- reserved test ID 只能存在于 build-tagged binary 和测试 genesis。
+- public genesis、release manifest 和 production activation matrix 禁止使用 reserved ID。
+- public activation 不要求依次经过测试版本或 FixedPriceHeartbeat。
+- 正式 v1 必须定义从 `0 -> 1` 的直接 activation、初始化和历史重放规则。
 
 # 禁用策略
 
 `quote_policy_version = 0` 的共识语义固定为：
 
 ```text
-leader_quote_active = not_applicable
+current_block_quote_accepted = false
 candidate_energy = nominal_effective_energy
 candidate_level = level(candidate_energy)
 candidate_difficulty_factor_bps = difficulty_factor_bps(candidate_level)
-CE_N = collab_contribution
+collaboration_energy_for_k = collab_contribution
 ```
+
+该状态中的 `false` 表示 quote 不适用，不表示 Leader quote stale。
 
 规则：
 
-- header、system transaction 和普通 transaction 均不要求携带 quote payload。
-- `QUOTE_POLICY_VERSION_SLOT` 保持 `0`，不创建 per-Leader quote activity state。
-- 不允许使用本地 CLI 或运行时开关模拟 quote active / stale。
-- 任何未由当前二进制实现的非零 `quote_policy_version` 必须 fail closed。
+- header、system transaction 和普通 transaction 均不要求 quote evidence。
+- `QUOTE_POLICY_VERSION_SLOT` 保持 `0`。
+- `LEADER_LAST_VALID_QUOTE_BLOCK_MAP` 不创建记录。
+- 不允许使用 CLI 或本地运行时开关模拟 quote active / stale。
+- 不能把名义 effective energy 解释为 validator 认可了一条矿工报价。
 
-# Future v1 常量
+# Quote Policy Decision
 
-以下参数属于 future `quote_policy_version = 1` 草案：
-
-| 参数 | 值 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| `QUOTE_POLICY_VERSION` | `1` | v1 固定 | Leader quote activity policy 版本。 |
-| `LEADER_QUOTE_WINDOW_BLOCKS` | `50400` | v1 固定 | 以 12 秒平均出块间隔计算，目标对应约 1 周。 |
-| `QUOTE_SOURCE_KIND` | `FixedPriceHeartbeat` | v1 固定 | 固定价格阶段的 quote 只作为 heartbeat。 |
-
-窗口计算：
+miner 与 validator 必须使用同一个纯派生接口：
 
 ```text
-7 days * 24 hours * 60 minutes * 60 seconds / 12 seconds = 50400 blocks
-```
-
-`LEADER_QUOTE_WINDOW_BLOCKS` 不应使用 wall-clock 动态计算。public network 必须在 activation matrix 或 chain config 中固定精确 block 数量。
-
-# Leader Quote Subject
-
-v1 固定以 active standard pass 的 `pass_id` 作为 quote subject：
-
-```text
-leader_quote_subject = resolved_profile.pass_id
-```
-
-原因：
-
-- UIP-0007 payload 已显式选择出块 pass。
-- USDB 的能量、继承和 remint 语义都围绕 pass 生命周期定义，quote activity 使用同一主键最直接。
-- pass remint 后，新 pass 必须重新建立 quote activity，避免旧 pass quote 自动继承到新 pass。
-- quote 频率应显著高于 pass remint / pass 更新频率。矿工 remint 出新 pass 后，可以在下一次出块时提交新的 `block_quote_reference`。
-- 协作者通过 `leader_btc_addr` 自动跟随新 active pass 时，collab contribution 仍会进入该新 pass 的 `nominal_effective_energy`，但该新 pass 必须先完成有效 quote，才能把 collab contribution 用于 `candidate_energy`。
-
-v1 不支持按 `owner_script_hash`、BTC address 或 USDB-chain account address 继承 quote activity。
-
-如果未来希望 quote activity 按 owner / address 继承，必须升级 quote policy version，并审计 remint、转移和多 active pass 异常路径。
-
-# Quote Source 与 Block Reference
-
-本文把主动报价拆成两段：
-
-```text
-1. quote_source_update
-   建立或更新一个可验证的报价来源状态
-
-2. block_quote_reference
-   出块时引用某个已存在、可验证、未过期的报价来源状态
-```
-
-规则：
-
-- `quote_source_update` 可以与出块解耦。
-- `block_quote_reference` 必须进入 USDB chain 共识可见数据。
-- 只有成功出块并携带有效 `block_quote_reference`，才更新 `last_valid_quote_block`。
-- 仅完成 `quote_source_update` 不会刷新 Leader quote activity。
-- `block_quote_reference` 必须绑定当前 UIP-0007 payload 选择的 standard pass。
-
-不同 source kind 的解释：
-
-| Source kind | `quote_source_update` | `block_quote_reference` |
-| --- | --- | --- |
-| `FixedPriceHeartbeat` | 省略；报价来源就是 parent `PRICE_ATOMS_PER_BTC_SLOT`。 | 出块时声明当前 Leader 接受 parent fixed price。 |
-| `ExternalEthereumDefiReference` | 后续 UIP 定义，例如外部链 proof / header registry / price source state。 | 出块时引用对应 proof / source ref。 |
-| `UsdbNativeDefiOrderBacked` | 后续 UIP 定义，例如 Leader 在本链 DeFi 合约中挂单或更新 quote。 | 出块时引用对应 quote id / order id / contract state。 |
-
-因此，FixedPrice v1 并不是省略主动报价，而是省略外部报价来源更新，只保留出块时的 quote reference / heartbeat。
-
-# Quote Authorization
-
-quote authorization 可以由 quote source 自身证明，也可以由 USDB chain payload / 系统交易额外证明。
-
-通用规则：
-
-```text
-quote_owner == selected_pass.usdb_main or selected_pass.quote_key
-```
-
-如果某个 future quote source 已经能在自身状态中证明 `quote_owner` 与当前 selected Leader 绑定，则 USDB chain payload 不需要重复携带签名。
-
-如果某个 future quote source 不能证明 quote owner 绑定，则该 policy 必须在 USDB chain payload 或系统交易中提供额外签名 / 授权证明，否则不得启用。
-
-FixedPrice v1 的授权边界：
-
-```text
-payload.pass_id = selected standard pass
-header.Coinbase = selected_pass.usdb_main
-quote_source_kind = FixedPriceHeartbeat
-quoted price = parent PRICE_ATOMS_PER_BTC_SLOT
-```
-
-FixedPrice v1 不要求额外 quote signature。该 unsigned heartbeat 不严格证明 Leader 私钥主动签名，只证明该区块以该 Leader pass 出块，且 reward recipient 是该 Leader 的 `usdb_main`。
-
-该取舍基于：
-
-- fixed price quote 不改变价格。
-- 模拟他人 Leader 出块时，reward 也必须发给该 Leader 的 `usdb_main`。
-- 当前 UIP-0009 固定 `MaximumExtraDataSize = 160`，而 UIP-0007 `ProfileSelectorPayload` v1 已占 `107 bytes`，剩余空间不足以舒适容纳 64/65 bytes 签名。
-
-如果委员会要求 FixedPrice v1 也必须证明 Leader 私钥主动签名，则必须升级 payload 容量、改用系统交易，或重新设计更紧凑的 payload 编码。
-
-# 能量视图
-
-给定 UIP-0006 返回的 profile：
-
-```text
-raw_energy
-collab_contribution
-effective_energy
-```
-
-本文定义：
-
-```text
-self_energy(leader, h)
-    = raw_energy(leader, h)
-
-nominal_effective_energy(leader, h)
-    = raw_energy(leader, h) + collab_contribution(leader, h)
-```
-
-对于 collab pass：
-
-```text
-candidate_energy(collab, h) = 0
-```
-
-collab pass 不能成为 UIP-0006 `candidate_pass`，也不能成为 UIP-0007 `selected_pass`。本文只决定一个已选 standard pass 实际使用多少协作能量，不重新定义 `candidate_set_view` 成员资格或排序。
-
-# Quote Active 规则
-
-验证 USDB chain 区块 `N` 时，validator 从 parent state 读取：
-
-```text
-last_valid_quote_block(leader)
-```
-
-如果不存在记录：
-
-```text
-leader_quote_active_N = false
-```
-
-如果存在记录：
-
-```text
-leader_quote_active_N
-    = (N - last_valid_quote_block(leader)) <= LEADER_QUOTE_WINDOW_BLOCKS
-```
-
-所有计算必须使用 unsigned integer，并在 underflow / overflow 时 fail closed。
-
-quote active 状态不修改 USDB indexer 里的 `effective_energy`。它只决定 USDB chain 侧 `candidate_energy` 如何从 USDB indexer 返回的能量视图中选取。
-
-# Candidate Energy
-
-验证区块 `N` 时：
-
-```text
-if leader_quote_active_N:
-    candidate_energy_N = nominal_effective_energy
-else:
-    candidate_energy_N = self_energy
-```
-
-这意味着：
-
-- quote active 时，Leader 可以使用协作者能量。
-- quote stale 时，Leader 仍可作为普通 standard pass 出块。
-- quote stale 时，协作者能量不计入该 Leader 的出块难度折算和候选能量。
-- quote stale 不改变 collab pass 的 BTC 侧绑定，也不销毁协作者自身 raw energy。
-
-# Candidate Level
-
-UIP-0005 的 `level` 公式保持不变。本文只定义 USDB chain 侧应把哪个 energy 作为输入。
-
-派生视图：
-
-```text
-self_level
-    = level_from_energy(self_energy)
-
-nominal_leader_level
-    = level_from_energy(nominal_effective_energy)
-
-candidate_level
-    = level_from_energy(candidate_energy)
-```
-
-USDB chain difficulty policy 必须使用：
-
-```text
-candidate_level
-candidate_difficulty_factor_bps
-```
-
-而不是无条件使用 `nominal_leader_level`。
-
-USDB indexer 可以继续返回 `raw_energy`、`collab_contribution`、`effective_energy` 和按 `effective_energy` 派生的 nominal `level` 作为审计视图。USDB validator 必须按本文规则自行计算 `candidate_energy`、`candidate_level` 和 `candidate_difficulty_factor_bps`。
-
-# FixedPrice V1 Quote
-
-UIP-0013 v1 使用 `FixedPrice`，价格不会被 miner quote 修改。
-
-因此，v1 `leader_quote` 只作为 heartbeat：
-
-```text
-leader_quote {
-    quote_policy_version = 1
-    price_policy_version = active UIP-0013 price policy version
-    price_source_kind = FixedPrice
-    quoted_price_atoms_per_btc = parent PRICE_ATOMS_PER_BTC_SLOT  // logical value; may be derived instead of encoded
+QuotePolicyContext {
+    resolved_profile
+    block_number
+    reward_recipient
+    active_price_policy_version
+    current_block_quote_evidence
+}
+
+QuotePolicyDecision {
+    policy_version
+    candidate_energy
+    candidate_level
+    candidate_difficulty_factor_bps
+    collaboration_energy_for_k
+    current_block_quote_accepted
 }
 ```
 
-有效 quote 必须满足：
+决策必须在修改 state 前完成。difficulty、UIP-0012 `K` 和 reward transition 必须消费
+同一个 decision，禁止各自重新解释 quote 状态。
 
-- block 的 `resolved_profile.pass_kind` 是 `standard`。
-- block 的 `resolved_profile.pass.state` 是 `active`。
-- block reward recipient 校验通过。
-- `quote_policy_version == 1`。
-- `price_source_kind == FixedPrice`。
-- `quoted_price_atoms_per_btc` 等于 parent state 中的 `PRICE_ATOMS_PER_BTC_SLOT`。
-- 当前 active `PricePolicyRange` 允许 `FixedPriceHeartbeat` quote。
-- 不要求额外 quote signature。
+输入必须满足：
 
-如果 quote payload 缺失：
+- `raw_energy`、`collab_contribution`、`effective_energy` 都是合法 `uint128`。
+- `effective_energy = saturating_u128(raw_energy + collab_contribution)`。
+- selected pass 已通过 UIP-0006 active standard candidate 校验。
+- reward recipient 与 quote evidence 中声明的主体满足 active policy。
+- 未知 policy、损坏 evidence 或不一致 profile 必须 fail closed。
 
-```text
-last_valid_quote_block 不更新
-```
+# Header Verification Boundary
 
-如果 quote payload 存在但无效：
+只要 quote 会改变当前块 difficulty，validator 就必须在验证 header difficulty 和 PoW
+之前获得完整 quote evidence。
 
-```text
-block invalid
-```
+允许的 carrier 必须由正式 v1 冻结，例如：
 
-该规则避免 miner 提交看似报价但不可验证的 payload。
+- UIP-0007 payload 的新 canonical 版本。
+- header 中对 quote body/system transaction 的 commitment，并配套可用于 header
+  validation 的确定性规则。
 
-为了适配 UIP-0009 的 `MaximumExtraDataSize = 160`，FixedPrice v1 的链上编码应该尽量小。实现可以只编码：
+不能只把影响 difficulty 的 quote 放入普通 transaction body，同时仍要求独立
+`VerifyHeader` 在看不到 body 时完成 difficulty 校验。
 
-```text
-quote_present
-quote_policy_version
-quote_source_kind = FixedPriceHeartbeat
-```
-
-并从 parent state 推导 `quoted_price_atoms_per_btc`。
-
-# Parent State 语义
-
-为了避免同一区块内先 quote 恢复 Leader 活跃性，再立即使用协作者能量降低本块难度，本文采用 parent state 语义。
-
-验证区块 `N` 时：
+builder 的顺序必须是：
 
 ```text
-leader_quote_active_N
-    = compute from parent state last_valid_quote_block
-
-candidate_energy_N
-    = compute from leader_quote_active_N
-
-validate block difficulty using candidate_level_N
-
-if block N contains valid leader_quote:
-    write last_valid_quote_block(leader) = N into child state
+build selector and quote evidence
+resolve QuotePolicyDecision
+set candidate difficulty
+seal block
 ```
 
-因此，block `N` 的有效 quote 最早影响 block `N+1`。
+validator 必须从 block 自身重建同一 decision。
+
+# Future Formal V1
+
+`quote_policy_version = 1` 只保留版本号，不在本 Draft 中冻结具体 source、window、
+payload 或授权方式。
+
+正式 v1 激活前必须由 UIP 或本 UIP 后续修订冻结：
+
+- 至少一种具有实际经济含义的 per-Leader quote source。
+- quote subject 与 active standard pass 的绑定。
+- canonical payload / commitment encoding。
+- quote owner、signature 或 source-state authorization。
+- 当前块 quote 是否影响当前块或下一块。
+- quote 缺失、无效和过期的 candidate energy / CE 语义。
+- activation bootstrap、grace period 和 stale Leader 恢复路径。
+- per-Leader state 的容量上限、清理和 state-sync 成本。
+- reorg、restart、historical replay 和 CheckCompatible 行为。
+
+如果未来 price 仅来自一个全局 oracle 或统一 DeFi 状态，而 miner 不提交自己的报价，
+则不应仅为形式完整而激活 UIP-0014 v1。
+
+# Test-only FixedPriceHeartbeat
+
+FixedPriceHeartbeat 仅用于验证未来正式 v1 会复用的共识接线，不作为 public economic
+policy。
+
+测试 current-block 语义：
+
+```text
+implicit_fixed_price_heartbeat_valid =
+    resolved_profile.pass is active standard
+    AND header.Coinbase == resolved_profile.reward_recipient
+    AND active price_policy_version == UIP-0013 FixedPrice v1
+    AND explicit quote evidence is empty
+```
+
+该 heartbeat 在 builder 开始 PoW 前由现有 selector、Coinbase 和 active price policy
+隐含派生。validator 在校验 difficulty 前重建，因此不需要先挖一个只用于恢复状态的
+“报价 block”。
+
+fake v2：
+
+```text
+current_block_quote_accepted = false
+candidate_energy = raw_energy
+collaboration_energy_for_k = 0
+```
+
+fake v3：
+
+```text
+current_block_quote_accepted = true
+candidate_energy = effective_energy
+collaboration_energy_for_k = collab_contribution
+```
+
+测试 FixedPriceHeartbeat：
+
+- 不编码额外 quote payload。
+- 不写 `last_valid_quote_block`。
+- 不使用 quote window。
+- 不宣称矿工提交了真实市场价格。
+- 不冻结未来正式 v1 的 source、authorization 或 state semantics。
+
+它的价值是让 fake v2/fake v3 产生可观察的 difficulty、K 和 reward 差异，并验证版本
+升级、进程切换和历史重放。
 
 # Reserved System Storage
 
-Leader quote activity state 必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
-
-v1 固定定义：
+以下 slot 地址已为 UIP-0014 预留，避免后续与其他经济状态冲突：
 
 ```text
 USDB_SYSTEM_STATE_ADDRESS
@@ -399,178 +263,102 @@ LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE
   = 0x9f4c948c72431d7f43911f1f1231509866c87a43729568fdf10a86f9291b9cba
 ```
 
-`LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE` 使用 Solidity-compatible mapping
-slot。v1 key 和最终 slot 固定为：
+预留 slot 不表示对应正式 v1 状态转换已经冻结：
 
-```text
-txid[32] = canonical display txid hex decoded left-to-right
-           (no Bitcoin internal-byte-order reversal)
-pass_id_bytes = txid[32] || inscription_index_u32_be
-quote_subject_key = keccak256(pass_id_bytes)
-slot = keccak256(quote_subject_key || LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE)
-```
-
-完整 domain derivation 与 golden vector 见
-`UIP-0011-system-state-layout-implementation-notes.md`。
-
-普通 EVM 交易、用户合约和 SourceDAO / Dividend 合约不得直接修改 quote activity storage。
-
-# Genesis 初始化
-
-v1 genesis 默认不预置任何 Leader 的 `last_valid_quote_block`：
-
-```text
-LEADER_LAST_VALID_QUOTE_BLOCK_MAP = empty
-```
-
-因此，网络启动初期所有 Leader 默认只能按 `self_energy` 出块。某个 Leader 在出块中提交有效 quote 后，其协作者能量最早从下一块开始进入 `candidate_energy`。
-
-如果 public network 希望为特定 genesis Leader 预置 quote activity，必须在 genesis config / activation registry 中显式列出，并进入 `USDBGenesisHash` 或等价 bootstrap commitment。v1 草案不建议默认预置。
-
-# State Transition
-
-验证区块 `N` 时：
-
-```text
-parent_quote_state = read quote activity storage from parent state
-resolved_profile = resolve UIP-0007 selector through UIP-0006
-
-self_energy = resolved_profile.raw_energy
-nominal_effective_energy = resolved_profile.raw_energy
-                           + resolved_profile.collab_contribution
-
-leader_quote_active = compute from parent_quote_state
-
-candidate_energy = leader_quote_active
-    ? nominal_effective_energy
-    : self_energy
-
-candidate_level = UIP-0005.level(candidate_energy)
-candidate_difficulty_factor_bps
-    = UIP-0005.difficulty_factor_bps(candidate_level)
-
-validate block difficulty / reward policy using candidate_energy and candidate_level
-
-if block contains valid leader_quote:
-    write last_valid_quote_block(leader) = N into child state
-```
-
-如果 validator 计算出的 `candidate_level` 与 block / payload 中任何声明值不一致，必须以本地重算值为准；若协议要求携带声明值，则不一致时区块无效。
-
-UIP-0012 的当前区块 `CE_N` 使用相同的 quote activity 边界：
-
-```text
-if quote_policy_version > 0 AND leader_quote_active == false:
-    CE_N = 0
-else:
-    CE_N = resolved_profile.collab_contribution
-```
-
-因此 stale Leader 既不能用协作者能量降低 difficulty，也不能用同一份
-协作者能量提高 UIP-0011 的 `K` reward boost。
+- policy `0` 只要求 `QUOTE_POLICY_VERSION_SLOT = 0`。
+- test-only FixedPriceHeartbeat 只审计 active policy version，不写 per-Leader map。
+- 正式 v1 必须在激活前重新审计 window、mapping key、容量和清理规则。
+- 普通 EVM transaction 和用户合约不得直接修改 reserved system storage。
 
 # 历史重放
 
-历史区块重放必须只依赖：
+历史重放必须只使用：
 
-- UIP-0007 profile selector。
-- UIP-0006 在对应历史 context 下返回的 USDB economic profile。
-- parent USDB chain state 中的 quote activity storage。
-- 当前区块中携带的 quote payload。
-- quote source 自身或 payload 提供的授权证明。
-- 当时 active 的 quote policy version / activation matrix。
+- 对应高度的 UIP-0008 USDB activation checkpoint。
+- checkpoint 绑定的 BTC activation registry revision。
+- UIP-0007 selector 和 UIP-0006 historical profile。
+- header 中的 current-block quote evidence 或可验证 commitment。
+- parent USDB state 中正式 policy 明确定义的 quote state。
 
-禁止通过 RPC 查询当前 head 的 Leader 报价状态来验证历史区块。
+禁止查询当前 head 的 quote 状态或实时外部 RPC 来验证历史区块。
 
-USDB chain reorg 时：
+升级后的 binary 必须继续支持链历史中所有曾正式激活的 quote policy。reserved
+conformance binary 只需按测试计划支持 fake history，例如 fake v3 binary 必须能重放
+fake v2 区块。
 
-- `last_valid_quote_block` 必须随 USDB chain state 回滚。
-- `candidate_energy` 和 `candidate_level` 必须按回滚后的 parent state 重算。
-- quote payload 本身随区块历史重放。
+# 与其他 UIP 的关系
 
-# 与 UIP-0004 的关系
+UIP-0004：
 
-UIP-0004 定义：
+- nominal `effective_energy` 定义不变。
+- quote policy 只决定 USDB chain 当前块实际使用哪个 energy。
 
-```text
-effective_energy = raw_energy + collab_contribution
-```
+UIP-0005：
 
-本文不修改该定义。
+- level thresholds 和 difficulty factor 公式不变。
+- 输入改为 `QuotePolicyDecision.candidate_energy`。
 
-本文只规定 USDB 链出块时何时允许使用 `collab_contribution`：
+UIP-0006/UIP-0007：
 
-```text
-candidate_energy = effective_energy, if leader_quote_active
-candidate_energy = raw_energy, otherwise
-```
+- selected pass 和 historical profile 仍是 quote subject 的基础。
+- 正式 quote evidence 必须绑定 selector，不能选择另一个 pass。
 
-因此，Leader quote stale 不会改变 BTC 侧 pass 状态，也不会改变 USDB indexer 的 energy ledger。
+UIP-0012：
 
-# 与 UIP-0005 的关系
+- 当前样本必须使用 `QuotePolicyDecision.collaboration_energy_for_k`。
+- difficulty 和 K 不得使用不同 quote 解释。
 
-UIP-0005 的 level 阈值表和 difficulty 折算公式保持不变。
+UIP-0013：
 
-本文新增：
+- FixedPrice v1 不接受 miner price report。
+- test-only FixedPriceHeartbeat 不改变 fixed price。
+- 正式 v1 是否与 dynamic price update 合并，由后续 price source 设计冻结。
 
-```text
-candidate_level = level(candidate_energy)
-```
+# 实现影响
 
-USDB 链出块难度必须使用 `candidate_level`，而不是直接使用 USDB indexer 返回的 nominal effective level。
+go-ethereum：
 
-# 与 UIP-0013 的关系
+- `internal/usdb/quote_policy.go`
+- `internal/usdb/economic_activation_conformance*.go`
+- `consensus/ethash/consensus.go`
+- `consensus/ethash/usdb_reward.go`
+- `core/usdbstate/state.go`
+- `params/config.go`
 
-UIP-0013 v1 的 fixed price 不会被 quote 修改。
+实现必须保持：
 
-本文 v1 quote 必须引用 parent state 中的 fixed price，只作为 Leader activity heartbeat。
-
-未来 dynamic price source UIP 可以把 leader quote 与真实价格更新合并，但必须显式定义：
-
-- price update 是否也是 activity quote。
-- quote source update 和 block quote reference 是否分离。
-- quote source 如何证明 quote owner 绑定 selected Leader。
-- price update 和 activity quote 的失败语义是否一致。
-- price update 是否仍采用 parent state / one-block delay。
+- 公共 quote context / decision 不依赖 build tag。
+- fake policy 语义只在 conformance build tag 下编译。
+- default binary 对正式 v1 和 reserved ID 都 fail closed。
+- 所有 state writes 在完整验证后原子应用。
 
 # 测试要求
 
-至少需要覆盖：
+至少覆盖：
 
-- `quote_policy_version = 0` 时使用名义 effective energy / factor / CE，且不写 quote activity state。
-- 默认生产构建对任意未知非零 quote policy fail closed。
-- 无 `last_valid_quote_block` 时，`candidate_energy` 只使用 `raw_energy`。
-- quote active 时，`candidate_energy` 使用 `raw_energy + collab_contribution`。
-- quote stale 后，`candidate_energy` 回落到 `raw_energy`。
-- `LEADER_QUOTE_WINDOW_BLOCKS = 50400` 边界高度。
-- block `N` 的有效 quote 只影响 block `N+1`。
-- FixedPrice v1 中 quoted price 必须等于 parent `PRICE_ATOMS_PER_BTC_SLOT`。
-- FixedPrice v1 不要求额外 quote signature。
-- quote payload 缺失时不更新 activity state。
-- quote payload 存在但无效时区块无效。
-- 仅完成 future `quote_source_update` 不刷新 `last_valid_quote_block`；必须被成功出块引用后才刷新。
-- pass remint 后，新 pass 不继承旧 pass 的 quote activity。
-- reorg 后 `last_valid_quote_block` 回滚，`candidate_level` 重算。
-
-实现可以保留 build-tagged activation conformance policy，用于验证
-default -> fake v2 -> fake v3 的版本分派、重启、reorg 和历史重放。测试 policy
-必须使用 reserved ID，且：
-
-- 不得进入 public genesis、release manifest 或 production binary。
-- 不得声明其窗口、分流比例或状态转换是 future UIP-0014 的协议语义。
-- 默认构建必须拒绝这些 reserved ID。
+- policy `0` 使用 nominal effective energy / CE，且不认可 quote。
+- policy `0` decision 不引用可变 profile big integer。
+- 正式 v1 未实现时 fail closed。
+- default binary 拒绝 reserved fake ID。
+- fake v2 使用 raw energy / `CE=0`。
+- fake v3 的 current-block implicit FixedPriceHeartbeat 使用 effective energy / nominal CE。
+- fake v3 拒绝错误 price policy、错误 reward recipient 和显式伪造 evidence。
+- builder 与 validator 对同一 header 得到相同 decision 和 difficulty。
+- reward/K 与 difficulty 使用同一 policy decision。
+- decision version 与 activation 不一致时不产生 state writes。
+- default -> fake v2 -> fake v3 restart/replay。
+- same-parent replay 得到相同 state root。
+- reorg 后按 replacement branch 的 activation 和 decision 重算。
+- conformance binary 和 reserved ID 不进入 production artifact。
 
 # 待审计问题
 
-| 问题 | 当前草案结论 | 后续动作 |
+| 问题 | 当前结论 | 后续动作 |
 | --- | --- | --- |
-| quote window 长度 | v1 使用 `50400` USDB blocks，约 1 周。 | 与 public network block time 一起复核。 |
-| quote subject | v1 固定使用 active standard pass `pass_id`，不支持 owner / address 继承。 | future owner / address 继承必须升级 quote policy version。 |
-| quote payload 编码位置 | 必须进入共识可见数据。 | 在 UIP-0007 payload 扩展或系统交易中固定 canonical encoding。 |
-| FixedPrice quote 是否需要签名 | 当前草案不要求额外签名。 | 委员会确认 unsigned heartbeat 是否可接受；若不可接受，需要扩容或改系统交易。 |
-| future quote source 授权 | 可由 quote source 自身证明，也可由 USDB chain payload 证明。 | 后续 dynamic price source UIP 必须固定 owner binding / signature 规则。 |
-| quote source update 与 block reference | 当前草案采用两段模型，只有 block reference 刷新 activity。 | 后续 DeFi price source UIP 定义 source update 细节。 |
-| quote 是否每块必填 | 不强制；缺失则不更新 activity。 | 评估是否对 public network 强制每个 standard block 携带 quote。 |
-| stale 后是否完全失去 Leader 资格 | 当前草案为仅失去 collab energy，仍可按 self energy 出块。 | 委员会确认是否需要更严厉处罚。 |
-| quote update 激励 | v1 没有额外奖励。 | 如果活跃性不足，考虑后续奖励或义务机制。 |
-| 与 dynamic price update 的合并 | 本文只定义 FixedPrice heartbeat。 | 后续 dynamic price source UIP 决定是否合并。 |
+| 首版 public policy | `quote_policy_version = 0`，完全禁用。 | 保持 nominal energy / CE 回归测试。 |
+| FixedPriceHeartbeat | 仅作 build-tagged conformance，不是正式 v1。 | 禁止进入 public activation。 |
+| 正式 v1 source | 尚未冻结，必须有实际 per-Leader 报价意义。 | 与 dynamic price source UIP 一并设计。 |
+| 当前块还是下一块生效 | conformance heartbeat 当前块生效；不约束正式 v1。 | 正式 v1 按 evidence carrier 和抗操纵要求冻结。 |
+| quote authorization | 未冻结。 | 明确 pass owner、quote key、signature 或 source proof。 |
+| quote state/window | slot 地址预留，语义未冻结。 | 激活前评估容量、清理、bootstrap 和恢复路径。 |
+| 是否需要 UIP0014 | 只有 miner 实际参与报价或明确需要 activity gate 时才启用。 | 全局 oracle 模式下允许长期保持 policy `0`。 |
