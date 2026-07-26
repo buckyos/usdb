@@ -442,9 +442,19 @@ public network 如果把 SourceDAO 作为首个 release 的完整治理系统，
 规则：
 
 - `DividendFeeSplitBlock` 之前，USDB chain 不得把 fee split 金额记入 `DividendAddress`。
-- `DividendFeeSplitBlock` 之后，USDB chain 可以按 `fee_split_policy_version` 对交易手续费执行分账。
+- `DividendFeeSplitBlock` 之后，只有 active checkpoint 的
+  `fee_split_policy_version` 非零且共识可读的 bootstrap readiness predicate
+  已满足时，USDB chain 才可以执行分账。
 - `DividendFeeSplitBlock` 必须配置为 bootstrap 初始化完成之后的高度。
 - 如果节点在到达 `DividendFeeSplitBlock` 时无法确认 `DividendAddress` 已预置 code，必须 fail closed。
+- `bootstrap_state`、`bootstrap_marker`、本地文件和运维 API 都不是共识输入，不能作为
+  readiness predicate。
+
+当前 SourceDAO 合约没有冻结的 `bootstrapFinalized` 状态，也没有一组已冻结的 storage slot
+足以让所有 validator 无歧义证明 full bootstrap 已完成。因此在该 predicate 由后续
+SourceDAO/UIP 改动冻结前，所有 development/public checkpoint 必须保持
+`fee_split_policy_version = 0`；即使已到 `DividendFeeSplitBlock`，手续费仍全部归 miner。
+节点看到非零、但本地不支持或无法验证 readiness 的 fee-split policy 必须 fail closed。
 
 当前开发期原型使用：
 
@@ -647,6 +657,7 @@ USDB docker:
 | SourceDAO artifact / runtime code hash encoding | 已固定为 runtime bytes 的 `keccak256` 和 artifact 原始文件 bytes 的 `sha256`；public spec hash 使用 lowercase 固定前缀规则。 | release pipeline 继续校验 committed hashes 与 clean build 完全一致。 |
 | `bootstrapAdmin` 使用单一临时账户、多签账户或治理合约 | local dev 可用临时 EOA；public network 不应长期依赖单一私钥。 | 讨论多签 / threshold / governance handoff，并决定是否拆独立 UIP。 |
 | `bootstrapAdmin` 权限是否需要 finalization 或撤权 | 当前 SourceDAO 有 `onlySetOnce` 和 `transferBootstrapAdmin`，但无协议级 finalize。 | 评估是否为 SourceDAO 增加 `finalizeBootstrap()`。 |
+| fee split 的 on-chain bootstrap readiness predicate | 本地 marker 不参与共识；当前 SourceDAO 尚无冻结 predicate，因此 policy 必须保持 `0`。 | 优先评估显式 `bootstrapFinalized()`；若改用 code hash + 固定 storage slots，必须先冻结完整 storage layout 和校验公式。 |
 | `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |
 | SourceDAO full bootstrap 是否进入 public network 首次 release 强制状态 | 若首个 release 需要完整 SourceDAO 治理系统，则 `scope = full` 应成为完成条件。 | 确认 public testnet / mainnet 的 required module set。 |
 | `bootstrap_state` / `bootstrap_marker` 是否需要签名 | marker 本身不是共识输入；public release 应签 manifest，并由 manifest 引用 state/marker hash。 | 设计 release signing key / signer set。 |

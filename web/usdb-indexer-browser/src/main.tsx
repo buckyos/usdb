@@ -48,8 +48,11 @@ interface PassStatsAtHeight {
   invalid_count: number
 }
 
-interface RpcActiveBalanceSnapshot {
-  total_balance: number
+interface MinerEconomicAggregateView {
+  miner_aggregate: {
+    total_miner_btc_sats: string
+    active_miner_owner_count: number
+  }
 }
 
 interface PassBlockCommitInfo {
@@ -227,7 +230,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     consumedPasses: 'Consumed Passes',
     burnedPasses: 'Burned Passes',
     invalidPasses: 'Invalid Passes',
-    activeBalance: 'Active BTC Balance',
+    activeBalance: 'Miner BTC Aggregate',
     passOverview: 'Miner Pass Overview',
     recentMints: 'Recent Minted Passes',
     topEnergyPasses: 'Top Energy Passes',
@@ -323,7 +326,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     consumedPasses: 'Consumed 矿工证',
     burnedPasses: 'Burned 矿工证',
     invalidPasses: 'Invalid 矿工证',
-    activeBalance: '活跃地址 BTC 总额',
+    activeBalance: '矿工 BTC 资产总额',
     passOverview: '矿工证概览',
     recentMints: '最近铸造的矿工证',
     topEnergyPasses: '能量 Top 矿工证',
@@ -484,7 +487,7 @@ function buildResolutionMap(items: ScriptHashResolution[] = []) {
   return Object.fromEntries(items.map((item) => [item.script_hash, item])) as Record<string, ScriptHashResolution>
 }
 
-function formatBtc(value: number | null | undefined, nf: Intl.NumberFormat) {
+function formatBtc(value: string | number | null | undefined, nf: Intl.NumberFormat) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '-'
   const sat = Number(value)
   if (Math.abs(sat) >= 100_000_000) return `${(sat / 100_000_000).toFixed(8).replace(/\.?0+$/, '')} BTC`
@@ -542,7 +545,7 @@ function App() {
   const [syncStatus, setSyncStatus] = React.useState<UsdbIndexerSyncStatus | null>(null)
   const [readiness, setReadiness] = React.useState<UsdbIndexerReadiness | null>(null)
   const [passStats, setPassStats] = React.useState<PassStatsAtHeight | null>(null)
-  const [activeBalance, setActiveBalance] = React.useState<RpcActiveBalanceSnapshot | null>(null)
+  const [minerAggregate, setMinerAggregate] = React.useState<MinerEconomicAggregateView | null>(null)
   const [latestCommit, setLatestCommit] = React.useState<PassBlockCommitInfo | null>(null)
   const [recentPasses, setRecentPasses] = React.useState<RecentPassesPage | null>(null)
   const [overviewLeaderboard, setOverviewLeaderboard] = React.useState<PassEnergyLeaderboardPage | null>(null)
@@ -646,7 +649,7 @@ function App() {
         nextSyncStatus,
         nextReadiness,
         nextPassStats,
-        nextActiveBalance,
+        nextMinerAggregate,
         nextCommit,
         nextRecentPasses,
         nextOverviewLeaderboard,
@@ -655,7 +658,13 @@ function App() {
         rpcCall<UsdbIndexerSyncStatus>('get_sync_status'),
         rpcCall<UsdbIndexerReadiness>('get_readiness'),
         rpcCall<PassStatsAtHeight>('get_pass_stats_at_height', [{ at_height: null }]),
-        rpcCall<RpcActiveBalanceSnapshot | null>('get_latest_active_balance_snapshot'),
+        rpcCall<MinerEconomicAggregateView>('get_miner_economic_aggregate', [
+          {
+            view_version: 'uip-0006-usdb-economic-state-view:v1',
+            block_height: null,
+            context: null,
+          },
+        ]),
         rpcCall<PassBlockCommitInfo | null>('get_pass_block_commit', [{ block_height: null }]),
         rpcCall<RecentPassesPage>('get_recent_passes', [
           { at_height: null, states: undefined, order: 'desc', page: 0, page_size: 8 },
@@ -668,7 +677,7 @@ function App() {
       setSyncStatus(nextSyncStatus)
       setReadiness(nextReadiness)
       setPassStats(nextPassStats)
-      setActiveBalance(nextActiveBalance)
+      setMinerAggregate(nextMinerAggregate)
       setLatestCommit(nextCommit)
       setRecentPasses(nextRecentPasses)
       setOverviewLeaderboard(nextOverviewLeaderboard)
@@ -993,7 +1002,11 @@ function App() {
           <section className="metric-grid three">
             <Metric icon={<Badge size={18} />} label={dict.activePasses} value={nf.format(passStats?.active_count ?? 0)} />
             <Metric icon={<Badge size={18} />} label={dict.totalPasses} value={nf.format(passStats?.total_count ?? 0)} />
-            <Metric icon={<Zap size={18} />} label={dict.activeBalance} value={formatBtc(activeBalance?.total_balance, nf)} />
+            <Metric
+              icon={<Zap size={18} />}
+              label={dict.activeBalance}
+              value={formatBtc(minerAggregate?.miner_aggregate.total_miner_btc_sats, nf)}
+            />
           </section>
           <section className="metric-grid">
             <Metric icon={<Badge size={18} />} label={dict.dormantPasses} value={nf.format(passStats?.dormant_count ?? 0)} />

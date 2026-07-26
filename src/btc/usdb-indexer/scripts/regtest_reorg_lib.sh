@@ -2410,25 +2410,25 @@ regtest_assert_usdb_pass_stats() {
   regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('invalid_count')" "$invalid_count"
 }
 
-regtest_assert_usdb_active_balance_snapshot_positive() {
+regtest_assert_usdb_miner_economic_aggregate_positive() {
   local block_height="$1"
   local resp
 
-  resp="$(regtest_rpc_call_usdb_indexer "get_active_balance_snapshot" "[{\"block_height\":${block_height}}]")"
+  resp="$(regtest_rpc_call_usdb_indexer "get_miner_economic_aggregate" "[{\"view_version\":\"uip-0006-usdb-economic-state-view:v1\",\"block_height\":${block_height},\"context\":null}]")"
   regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('block_height')" "$block_height"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('active_address_count', 0) > 0" "True"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('total_balance', 0) > 0" "True"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('external_state') or {}).get('btc_height')" "$block_height"
+  regtest_assert_json_expr "$resp" "int(((data.get('result') or {}).get('miner_aggregate') or {}).get('active_miner_owner_count', 0)) > 0" "True"
+  regtest_assert_json_expr "$resp" "int(((data.get('result') or {}).get('miner_aggregate') or {}).get('total_miner_btc_sats', '0')) > 0" "True"
 }
 
-regtest_assert_usdb_active_balance_snapshot_zero() {
+regtest_assert_usdb_miner_economic_aggregate_zero() {
   local block_height="$1"
   local resp
-  resp="$(regtest_rpc_call_usdb_indexer "get_active_balance_snapshot" "[{\"block_height\":${block_height}}]")"
+  resp="$(regtest_rpc_call_usdb_indexer "get_miner_economic_aggregate" "[{\"view_version\":\"uip-0006-usdb-economic-state-view:v1\",\"block_height\":${block_height},\"context\":null}]")"
   regtest_assert_json_expr "$resp" "data.get('error') is None" "True"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('block_height')" "$block_height"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('total_balance')" "0"
-  regtest_assert_json_expr "$resp" "(data.get('result') or {}).get('active_address_count')" "0"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('external_state') or {}).get('btc_height')" "$block_height"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('miner_aggregate') or {}).get('total_miner_btc_sats')" "0"
+  regtest_assert_json_expr "$resp" "((data.get('result') or {}).get('miner_aggregate') or {}).get('active_miner_owner_count')" "0"
 }
 
 regtest_assert_usdb_pass_stats_zero() {

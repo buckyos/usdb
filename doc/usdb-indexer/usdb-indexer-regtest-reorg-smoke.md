@@ -18,7 +18,7 @@
 1. 初始同步到 `TARGET_HEIGHT` 时：
    - `get_sync_status.synced_block_height == TARGET_HEIGHT`
    - `get_snapshot_info` adopted anchor 对齐当前 upstream stable hash / latest commit
-   - 空系统下 `get_active_balance_snapshot(TARGET_HEIGHT)` 为 `0/0`
+   - 空系统下 `get_miner_economic_aggregate(TARGET_HEIGHT)` 的总额/owner 数为 `0/0`
 2. 使 tip `H` 失效但暂不立即挖 replacement block：
    - `balance-history` synced height 回到 `H-1`
    - `usdb-indexer` synced height 也回到 `H-1`

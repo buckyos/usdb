@@ -295,7 +295,7 @@
      - `get_snapshot_info`
      - `get_local_state_commit_info`
      - `get_system_state_info`
-     - `get_active_balance_snapshot`
+     - `get_miner_economic_aggregate`
    - 已实现：
      - `get_state_ref_at_height`
      - `get_pass_snapshot(context=...)`

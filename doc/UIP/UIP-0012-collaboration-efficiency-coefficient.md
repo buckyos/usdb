@@ -68,7 +68,7 @@ AE = 过去 1 周有效 Leader 出块时的协作矿工能量平均值
 
 # 版本
 
-首版建议版本：
+v1 激活时固定版本：
 
 ```text
 collaboration_efficiency_policy_version = 1
@@ -80,12 +80,12 @@ collaboration_efficiency_policy_version = 1
 
 # 常量
 
-首版草案使用以下参数名：
+v1 固定以下参数：
 
 | 参数 | 值 | 状态 | 说明 |
 | --- | --- | --- | --- |
 | `K_BPS_BASE` | `10000` | 固定 | `K = 1.0`。 |
-| `K_BPS_MIN` | `8001` | 建议固定 | 整数 bps 下满足 `K > 0.8` 的最小值。 |
+| `K_BPS_MIN` | `8001` | v1 固定 | 整数 bps 下满足 `K > 0.8` 的最小值。 |
 | `K_BPS_MAX` | `20000` | 固定 | `K <= 2.0`。 |
 | `K_WINDOW_BLOCKS` | `50400` | v1 固定 | 以 12 秒平均出块间隔计算，目标对应约 1 周。 |
 | `K_SAMPLE_KIND` | `collab_contribution` | v1 固定 | 当前区块 `CE_N` 的样本口径。 |
@@ -100,13 +100,23 @@ public network 必须在 activation matrix 或 chain config 中固定精确 bloc
 
 # CE Sample 口径
 
-v1 固定：
+v1 的基础样本来自 UIP-0006：
 
 ```text
-CE_N = resolved_profile.pass.collab_contribution
+nominal_collab_contribution_N
+    = resolved_profile.pass.collab_contribution
+
+if quote_policy_version == 0:
+    CE_N = nominal_collab_contribution_N
+else if leader_quote_active_N:
+    CE_N = nominal_collab_contribution_N
+else:
+    CE_N = 0
 ```
 
-其中 `resolved_profile` 来自区块 `N` 的 UIP-0007 `ProfileSelectorPayload`，并按 UIP-0006 查询。
+其中 `resolved_profile` 来自区块 `N` 的 UIP-0007
+`ProfileSelectorPayload`，并按 UIP-0006 查询。quote policy 激活后，
+`leader_quote_active_N` 必须按 UIP-0014 从 parent USDB state 计算。
 
 选择 `collab_contribution` 的原因：
 
@@ -114,6 +124,10 @@ CE_N = resolved_profile.pass.collab_contribution
 - 它与 Leader `effective_energy` 使用同一套权重和历史解析规则。
 - 当前 `COLLAB_WEIGHT_BPS` 是固定线性折算，用于 `CE / AE` 比值时不会改变相对增长趋势。
 - 不需要在 UIP-0006 额外引入 `collab_raw_energy_sum` 才能实现 v1。
+
+quote activity 同时约束 difficulty 和 reward boost。否则 stale Leader
+虽然不能把协作者能量用于 candidate difficulty，却仍能通过同一份
+协作贡献提高 `K`，形成两套不一致的激励口径。
 
 未来如果希望 `K` 衡量未折算的协作规模，可以新增 `K_SAMPLE_KIND = collab_raw_energy_sum`，但必须先在 UIP-0006 增加可历史重放的 aggregate 字段，并升级 policy version。
 
@@ -148,20 +162,30 @@ k_bps_N = K_BPS_BASE
 
 `K` rolling window 状态必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
-建议定义：
+v1 固定定义：
 
 ```text
-USDB_SYSTEM_STATE_ADDRESS = <TODO>
+USDB_SYSTEM_STATE_ADDRESS = 0x0000000000000000000000000000000000001000
 
-K_WINDOW_SUM_SLOT         = <TODO>  // uint256
-K_WINDOW_COUNT_SLOT       = <TODO>  // uint64 encoded as uint256
-K_WINDOW_CURSOR_SLOT      = <TODO>  // uint64 encoded as uint256
-K_CE_RING_SLOT_BASE       = <TODO>  // CE sample ring base slot
+K_WINDOW_SUM_SLOT
+  = 0xa05125c861ef555402b28fe982e4e36ddd9572a49576081d06ad23fbdcd9a3ae
+K_WINDOW_COUNT_SLOT
+  = 0x40db96c2e761efb468bcae40739cb9d71d15e53f4b46a977d213476493a0ecea
+K_WINDOW_CURSOR_SLOT
+  = 0xc71798c59dae3ab826f28ffa3db501face181bd2d88225baadcb87ea950c53b2
+K_CE_RING_SLOT_BASE
+  = 0x0c0b1b7c7641949e2f45575f48d889a70298842709e50c1070010b910fb3bc31
 
-K_LAST_CE_SLOT            = <TODO>  // optional audit slot
-K_LAST_AE_SLOT            = <TODO>  // optional audit slot
-K_LAST_K_BPS_SLOT         = <TODO>  // optional audit slot
+K_LAST_CE_SLOT
+  = 0x1d2465ef2bfb872650e27eeb6a1327cb569d58e4fd2c4867eb4b8f38b922905c
+K_LAST_AE_SLOT
+  = 0xb4d89df049af3068c7073e80bf4918d5606bffb9df517e96c1f996f942c38f58
+K_LAST_K_BPS_SLOT
+  = 0x53264b8f3aab69de54c5a4ecadabdbff09c07064034e8fcfdb79056a55dd9954
 ```
+
+slot domain、动态 ring slot 派生和 golden vectors 见
+`UIP-0011-system-state-layout-implementation-notes.md`。
 
 必填状态：
 
@@ -187,7 +211,7 @@ sum_before    = read(K_WINDOW_SUM_SLOT from parent state)
 count_before  = read(K_WINDOW_COUNT_SLOT from parent state)
 cursor_before = read(K_WINDOW_CURSOR_SLOT from parent state)
 
-CE_N = resolved_profile.pass.collab_contribution
+CE_N = resolve according to quote-policy rule above
 
 if count_before < K_WINDOW_BLOCKS:
     AE_N = unavailable
@@ -313,6 +337,7 @@ USDB indexer:
 | 问题 | 当前草案结论 | 后续动作 |
 | --- | --- | --- |
 | `CE_N` 使用 raw collab energy 还是 `collab_contribution` | v1 使用 `collab_contribution`。 | 审计 `COLLAB_WEIGHT_BPS` 变化是否需要同步升级 K policy。 |
+| quote stale 是否仍进入 `CE_N` | quote policy 未激活时沿用 nominal contribution；激活后 stale/inactive Leader 的 `CE_N = 0`。 | 已与 UIP-0014 candidate-energy 口径收敛。 |
 | `K_WINDOW_BLOCKS` 精确值 | v1 固定为 `50400`，按 12 秒平均出块间隔对应 1 周。 | 若未来调整目标出块间隔，升级 K policy version。 |
 | warmup 阶段策略 | 窗口未填满时固定 `k_bps = 10000`。 | 审计冷启动阶段是否需要单独的 activation delay。 |
 | `compute_k_bps` 公式 | 使用整数候选公式。 | 做参数表、边界测试和经济攻击审计。 |

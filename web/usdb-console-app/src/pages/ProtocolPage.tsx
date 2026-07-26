@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { FieldValueList } from '../components/FieldValueList'
 import {
-  fetchUsdbLatestActiveBalanceSnapshot,
+  fetchUsdbMinerEconomicAggregate,
   fetchUsdbPassBlockCommit,
   fetchUsdbPassEnergy,
   fetchUsdbPassEnergyLeaderboard,
@@ -28,7 +28,7 @@ import type {
   PassHistoryPage,
   PassSnapshot,
   PassStatsAtHeight,
-  RpcActiveBalanceSnapshot,
+  MinerEconomicAggregateView,
   UsdbIndexerSummary,
   UsdbIndexerSyncStatus,
   UsdbRpcInfo,
@@ -49,8 +49,8 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
   const [rpcInfo, setRpcInfo] = useState<UsdbRpcInfo | null>(null)
   const [syncStatus, setSyncStatus] = useState<UsdbIndexerSyncStatus | null>(null)
   const [passStats, setPassStats] = useState<PassStatsAtHeight | null>(null)
-  const [activeBalanceSnapshot, setActiveBalanceSnapshot] =
-    useState<RpcActiveBalanceSnapshot | null>(null)
+  const [minerEconomicAggregate, setMinerEconomicAggregate] =
+    useState<MinerEconomicAggregateView | null>(null)
   const [homeError, setHomeError] = useState<string | null>(null)
 
   const [leaderboardScope, setLeaderboardScope] = useState<EnergyScope>('active')
@@ -82,14 +82,14 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
       fetchUsdbRpcInfo(),
       fetchUsdbSyncStatus(),
       fetchUsdbPassStats(null),
-      fetchUsdbLatestActiveBalanceSnapshot(),
+      fetchUsdbMinerEconomicAggregate(),
     ])
-      .then(([rpcInfoResult, syncStatusResult, passStatsResult, activeBalanceResult]) => {
+      .then(([rpcInfoResult, syncStatusResult, passStatsResult, aggregateResult]) => {
         if (cancelled) return
         setRpcInfo(rpcInfoResult)
         setSyncStatus(syncStatusResult)
         setPassStats(passStatsResult)
-        setActiveBalanceSnapshot(activeBalanceResult)
+        setMinerEconomicAggregate(aggregateResult)
         setHomeError(null)
       })
       .catch((error: Error) => {
@@ -347,7 +347,7 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
                       label: t('services.usdbIndexer.activeAddresses'),
                       value: displayNumber(
                         locale,
-                        activeBalanceSnapshot?.active_address_count ?? null,
+                        minerEconomicAggregate?.miner_aggregate.active_miner_owner_count ?? null,
                         t,
                       ),
                     },
@@ -355,7 +355,7 @@ export function ProtocolPage({ data, locale, t }: ProtocolPageProps) {
                       label: t('services.usdbIndexer.activeBalance'),
                       value: displayBalanceSmart(
                         locale,
-                        activeBalanceSnapshot?.total_balance ?? null,
+                        minerEconomicAggregate?.miner_aggregate.total_miner_btc_sats ?? null,
                         t,
                       ),
                     },

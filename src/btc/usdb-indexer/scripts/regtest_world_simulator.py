@@ -4555,20 +4555,33 @@ class RegtestWorldSimulator:
         top_n = max(1, self.args.global_cross_check_leaderboard_top_n)
         owner_sample_size = self.args.global_cross_check_owner_sample_size
 
-        exact_snapshot = self.rpc_usdb(
-            "get_active_balance_snapshot", [{"block_height": block_height}]
+        aggregate_view = self.rpc_usdb(
+            "get_miner_economic_aggregate",
+            [
+                {
+                    "view_version": self.ECONOMIC_VIEW_VERSION,
+                    "block_height": block_height,
+                    "context": None,
+                }
+            ],
         )
-        if not isinstance(exact_snapshot, dict):
+        if not isinstance(aggregate_view, dict):
             raise WorldSimError(
-                "global cross-check missing exact active balance snapshot: "
-                f"tick={tick}, block_height={block_height}, payload={exact_snapshot}"
+                "global cross-check missing exact miner economic aggregate: "
+                f"tick={tick}, block_height={block_height}, payload={aggregate_view}"
             )
-        snapshot_height = int(exact_snapshot.get("block_height", -1))
-        snapshot_total_balance = int(exact_snapshot.get("total_balance", 0))
-        snapshot_active_count = int(exact_snapshot.get("active_address_count", 0))
+        aggregate_state = aggregate_view.get("external_state") or {}
+        miner_aggregate = aggregate_view.get("miner_aggregate") or {}
+        snapshot_height = int(aggregate_state.get("btc_height", -1))
+        snapshot_total_balance = int(
+            miner_aggregate.get("total_miner_btc_sats", 0)
+        )
+        snapshot_active_count = int(
+            miner_aggregate.get("active_miner_owner_count", 0)
+        )
         if snapshot_height != block_height:
             raise WorldSimError(
-                "global cross-check snapshot height mismatch: "
+                "global cross-check aggregate height mismatch: "
                 f"tick={tick}, expected={block_height}, got={snapshot_height}"
             )
 
@@ -4779,7 +4792,16 @@ class RegtestWorldSimulator:
             "get_pass_stats_at_height",
             [{"at_height": block_height}],
         )
-        latest_balance = self.rpc_usdb("get_latest_active_balance_snapshot", [])
+        latest_aggregate = self.rpc_usdb(
+            "get_miner_economic_aggregate",
+            [
+                {
+                    "view_version": self.ECONOMIC_VIEW_VERSION,
+                    "block_height": None,
+                    "context": None,
+                }
+            ],
+        )
         leaderboard_top = self.rpc_usdb(
             "get_pass_energy_leaderboard",
             [{"at_height": block_height, "page": 0, "page_size": 1}],
@@ -4791,10 +4813,16 @@ class RegtestWorldSimulator:
             if items:
                 top_item = items[0]
 
-        exact_snapshot = self.rpc_call(
+        exact_aggregate = self.rpc_call(
             self.args.usdb_indexer_rpc_url,
-            "get_active_balance_snapshot",
-            [{"block_height": block_height}],
+            "get_miner_economic_aggregate",
+            [
+                {
+                    "view_version": self.ECONOMIC_VIEW_VERSION,
+                    "block_height": block_height,
+                    "context": None,
+                }
+            ],
             retries=1,
             sleep_sec=0.1,
         )
@@ -4802,10 +4830,10 @@ class RegtestWorldSimulator:
         return {
             "sync_status": sync_status,
             "pass_stats": pass_stats,
-            "latest_balance": latest_balance,
+            "latest_miner_aggregate": latest_aggregate,
             "top_item": top_item,
-            "active_balance_exact": exact_snapshot.get("result"),
-            "active_balance_error": exact_snapshot.get("error"),
+            "miner_aggregate_exact": exact_aggregate.get("result"),
+            "miner_aggregate_error": exact_aggregate.get("error"),
         }
 
     def format_top_energy(self, top_item: dict[str, Any] | None) -> str:
@@ -5690,14 +5718,17 @@ class RegtestWorldSimulator:
 
             summary = self.collect_summary(block_height)
             pass_stats = summary["pass_stats"] or {}
-            latest_balance = summary["latest_balance"] or {}
+            latest_aggregate_view = summary["latest_miner_aggregate"] or {}
+            latest_aggregate = latest_aggregate_view.get("miner_aggregate") or {}
             top_energy = self.format_top_energy(summary["top_item"])
             synced_height = (summary["sync_status"] or {}).get("synced_block_height")
             active_count = int(pass_stats.get("active_count", 0))
             total_count = int(pass_stats.get("total_count", 0))
             invalid_count = int(pass_stats.get("invalid_count", 0))
-            total_balance = int(latest_balance.get("total_balance", 0))
-            active_addresses = int(latest_balance.get("active_address_count", 0))
+            total_balance = int(latest_aggregate.get("total_miner_btc_sats", 0))
+            active_addresses = int(
+                latest_aggregate.get("active_miner_owner_count", 0)
+            )
 
             self.log(
                 "tick_summary: "
@@ -5763,14 +5794,19 @@ class RegtestWorldSimulator:
                 },
             )
 
-            exact_balance = summary["active_balance_exact"]
-            if isinstance(exact_balance, dict):
-                exact_active = int(exact_balance.get("active_address_count", 0))
+            exact_aggregate_view = summary["miner_aggregate_exact"]
+            if isinstance(exact_aggregate_view, dict):
+                exact_aggregate = (
+                    exact_aggregate_view.get("miner_aggregate") or {}
+                )
+                exact_active = int(
+                    exact_aggregate.get("active_miner_owner_count", 0)
+                )
                 if exact_active != active_count:
                     self.log(
                         "WARN invariant mismatch: "
                         f"block_height={block_height}, active_pass_count={active_count}, "
-                        f"active_balance_address_count={exact_active}"
+                        f"active_miner_owner_count={exact_active}"
                     )
 
             if self.args.sleep_ms_between_blocks > 0:

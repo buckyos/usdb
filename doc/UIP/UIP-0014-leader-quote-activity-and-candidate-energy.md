@@ -354,23 +354,33 @@ if block N contains valid leader_quote:
 
 Leader quote activity state 必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
-建议定义：
+v1 固定定义：
 
 ```text
-USDB_SYSTEM_STATE_ADDRESS             = <TODO>
+USDB_SYSTEM_STATE_ADDRESS
+  = 0x0000000000000000000000000000000000001000
 
-QUOTE_POLICY_VERSION_SLOT             = <TODO>  // uint32 encoded as uint256
-LEADER_QUOTE_WINDOW_BLOCKS_SLOT       = <TODO>  // uint64 encoded as uint256
-LEADER_LAST_VALID_QUOTE_BLOCK_MAP     = <TODO>  // mapping leader_quote_subject -> uint64
+QUOTE_POLICY_VERSION_SLOT
+  = 0x06ed1ff69c0a83234a648936403718a01fd0c0e6caabe4eea61d7735f63db832
+LEADER_QUOTE_WINDOW_BLOCKS_SLOT
+  = 0x34d422b9f7b2447c9ad568159320894837919eacfd196ee5c5ede41376c56358
+LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE
+  = 0x9f4c948c72431d7f43911f1f1231509866c87a43729568fdf10a86f9291b9cba
 ```
 
-`LEADER_LAST_VALID_QUOTE_BLOCK_MAP` 的 key canonical encoding 由实现规范固定。v1 建议：
+`LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE` 使用 Solidity-compatible mapping
+slot。v1 key 和最终 slot 固定为：
 
 ```text
-key = hash("usdb.leader_quote", quote_policy_version, pass_id)
+txid[32] = canonical display txid hex decoded left-to-right
+           (no Bitcoin internal-byte-order reversal)
+pass_id_bytes = txid[32] || inscription_index_u32_be
+quote_subject_key = keccak256(pass_id_bytes)
+slot = keccak256(quote_subject_key || LEADER_LAST_VALID_QUOTE_BLOCK_MAP_BASE)
 ```
 
-在 canonical encoding Final 前，本文保留 `<TODO>`。
+完整 domain derivation 与 golden vector 见
+`UIP-0011-system-state-layout-implementation-notes.md`。
 
 普通 EVM 交易、用户合约和 SourceDAO / Dividend 合约不得直接修改 quote activity storage。
 
@@ -415,6 +425,18 @@ if block contains valid leader_quote:
 ```
 
 如果 validator 计算出的 `candidate_level` 与 block / payload 中任何声明值不一致，必须以本地重算值为准；若协议要求携带声明值，则不一致时区块无效。
+
+UIP-0012 的当前区块 `CE_N` 使用相同的 quote activity 边界：
+
+```text
+if quote_policy_version > 0 AND leader_quote_active == false:
+    CE_N = 0
+else:
+    CE_N = resolved_profile.collab_contribution
+```
+
+因此 stale Leader 既不能用协作者能量降低 difficulty，也不能用同一份
+协作者能量提高 UIP-0011 的 `K` reward boost。
 
 # 历史重放
 

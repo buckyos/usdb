@@ -814,3 +814,74 @@ UIP-0011 fee split 联动仍留后续批次；当前改动不提交，等待 rev
 - 测试继续覆盖参数化 token/committee 的细粒度负向组合、artifact tamper，以及无 source-chain
   RPC 的确定性结果。
 - fee split 公式和实际余额分账继续由 UIP-0011 承接；UIP-0010 只保证地址、code、初始化状态和 activation 前置条件。
+
+## UIP-0011 System State 与 BTC Reward Inputs 基础批次
+
+状态：2026-07-25 已完成协议冻结、genesis system state 和 BTC-side aggregate/profile
+接口改造，当前未提交，等待 review。实际 CoinBase emission、fee split、UIP-0012 K 和
+UIP-0013 price 状态转换仍属于后续批次。
+
+### 共识决策与存储布局
+
+- v1 `total_miner_btc_sats` 固定统计同一 BTC 历史高度全部 Active Standard 和
+  Active Collab pass 的唯一 owner；Dormant/Consumed/Burned/Invalid 不计入。
+- one-owner-one-active 被视为跨 pass kind 的硬不变量；历史重复 owner 和 aggregate
+  `u64` 溢出均停止结算，不做静默去重或饱和。
+- 新增 `UIP-0011-system-state-layout-implementation-notes.md`，冻结
+  `0x0000000000000000000000000000000000001000`、nonce `1`、empty code 以及
+  UIP-0011 至 UIP-0014 的 keccak domain slots、ring/map derivation 和 golden vectors。
+- `ISSUED_USDB_ATOMS_SLOT` 初值固定为 genesis alloc 全部余额的 checked uint256 sum；
+  burn 不回减。其余未激活 policy slot 保持 canonical zero。
+- fee split 固定按每笔退款后 `gas_used * effective_gas_price` 计算，60%/40%，余数归
+  miner；不叠加 legacy ETHW `MinerDAOAddress` 路径。
+- 本地 bootstrap marker 不属于共识。SourceDAO 尚无冻结的 on-chain readiness
+  predicate，因此当前 checkpoint 必须保持 `fee_split_policy_version = 0`；非零未知/
+  不可验证 policy fail closed。
+
+### Go Genesis 与共识消费
+
+- go-ethereum 新增 `core/usdbstate`，实现静态/dynamic slot helper、uint256 编码和
+  genesis storage；golden tests 固定全部 slot 及 pass-id byte order。
+- built-in USDB genesis 和 SourceDAO bootstrap overlay 都创建保留 system account，
+  写入 schema version 和 issued supply；nil、negative、overflow、保留地址冲突均拒绝。
+- system account 改变了 development built-in genesis，`USDBGenesisHash` 已同步更新；
+  public release 仍需按最终 alloc/config 重新冻结 canonical hash。
+- Go UIP-0006 profile codec 增加 `pass.usdb_main` 和原子
+  `miner_aggregate`。miner/validator 共用 resolver，校验 reward address、canonical
+  decimal、uint64 边界和非零 active owner count，任何篡改 fail closed。
+
+### Rust RPC 与调用方
+
+- `usdb-indexer` 新增 versioned `get_miner_economic_aggregate`，返回同一
+  `external_state` 下的 decimal-string `total_miner_btc_sats` 和
+  `active_miner_owner_count`；`get_pass_economic_profile` 原子嵌入同一 aggregate。
+- 能力声明增加 `miner_economic_aggregate`。旧
+  `get_active_balance_snapshot` / `get_latest_active_balance_snapshot` 外部 RPC、
+  client、CLI 和 control-plane route 已删除，不保留兼容双栈。
+- 内部 `active_balance_snapshots` 表继续作为 exact-height aggregate 持久化和
+  local-state commit 输入；reorg/retention 测试仍直接检查该内部表。
+- regtest scenario/reorg/world-simulator 和两个 Web 客户端已切换到新版 view，
+  按 `external_state.btc_height` 校验高度并按 decimal string 读取总额。
+
+### 本批验证
+
+- Rust workspace 受影响包测试通过：`usdb-control-plane` 25 项、
+  `usdb-indexer` 285 项（5 项 ignored）、`usdb-indexer-cli` 4 项、
+  `usdb-util` 30 项（1 项 ignored）。
+- Rust workspace `cargo fmt --all -- --check` 和受影响包
+  `cargo clippy --all-targets -- -D warnings` 通过。
+- Go `core/usdbstate`、`core`、`params`、`internal/usdb` 测试与 `go vet`
+  通过；覆盖 slot golden vectors、uint256 边界、genesis issued supply、
+  system policy slot 保留、不兼容 schema 拒绝及 profile reward input 篡改。
+- 两个 Web 客户端的 type-check/build 通过；console build 仅保留既有 Vite
+  chunk-size warning。修改过的 shell 脚本通过 `bash -n`，Python runner/simulator
+  通过语法编译。
+
+### 后续边界
+
+- UIP-0011 reward state transition 仍需消费同一个 resolved profile，实现 target
+  supply、emission、`issued_usdb_atoms` 累加、coinbase recipient 和 reorg/replay。
+- UIP-0012/UIP-0013 仍需实现 K/price 的初始化与逐块 system-storage 更新；本批只冻结
+  shared layout。
+- fee split 实现前必须先在 UIP-0010/SourceDAO 冻结 consensus-readable bootstrap
+  readiness predicate；aux pool 在 UIP-0015 非零 policy 激活前保持关闭。

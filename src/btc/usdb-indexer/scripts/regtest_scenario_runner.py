@@ -44,12 +44,12 @@ class RunnerArgs:
 
 
 class RegtestScenarioRunner:
+    ECONOMIC_STATE_VIEW_VERSION = "uip-0006-usdb-economic-state-view:v1"
     REQUIRED_USDB_FEATURES = {
         "pass_snapshot",
         "active_passes_at_height",
         "invalid_passes",
-        "active_balance_snapshot",
-        "latest_active_balance_snapshot",
+        "miner_economic_aggregate",
         "energy_snapshot",
     }
 
@@ -554,6 +554,17 @@ class RegtestScenarioRunner:
                 detail = f"{message}: {detail}"
             raise ScenarioError(detail)
 
+    def assert_decimal_gt(
+        self, left: Any, right: Any, message: str | None = None
+    ) -> None:
+        left_int = self.to_int(left, "assert_decimal_gt.left")
+        right_int = self.to_int(right, "assert_decimal_gt.right")
+        if left_int <= right_int:
+            detail = f"assert_decimal_gt failed: left={left}, right={right}"
+            if message:
+                detail = f"{message}: {detail}"
+            raise ScenarioError(detail)
+
     def assert_len(self, value: Any, expected_len: int, message: str | None = None) -> None:
         try:
             actual_len = len(value)
@@ -728,46 +739,62 @@ class RegtestScenarioRunner:
                 f"Expected no invalid passes at height {expected_height}, got={len(invalid_items)}"
             )
 
-        latest_snapshot = self.rpc_result(
+        latest_view = self.rpc_result(
             self.rpc_call(
-                self.args.usdb_indexer_rpc_url, "get_latest_active_balance_snapshot", []
+                self.args.usdb_indexer_rpc_url,
+                "get_miner_economic_aggregate",
+                [
+                    {
+                        "view_version": self.ECONOMIC_STATE_VIEW_VERSION,
+                        "block_height": None,
+                        "context": None,
+                    }
+                ],
             ),
-            "get_latest_active_balance_snapshot",
+            "get_miner_economic_aggregate",
         )
-        if latest_snapshot is None:
-            raise ScenarioError("Expected latest active balance snapshot, got null")
-        latest_height = int(latest_snapshot.get("block_height", -1))
-        latest_total = int(latest_snapshot.get("total_balance", -1))
-        latest_count = int(latest_snapshot.get("active_address_count", -1))
+        latest_state = (latest_view or {}).get("external_state") or {}
+        latest_aggregate = (latest_view or {}).get("miner_aggregate") or {}
+        latest_height = int(latest_state.get("btc_height", -1))
+        latest_total = int(latest_aggregate.get("total_miner_btc_sats", -1))
+        latest_count = int(latest_aggregate.get("active_miner_owner_count", -1))
         if latest_height < expected_height:
             raise ScenarioError(
-                f"Latest snapshot height too low: got={latest_height}, expected_at_least={expected_height}"
+                f"Latest aggregate height too low: got={latest_height}, expected_at_least={expected_height}"
             )
         if latest_total != expected_total_balance or latest_count != expected_active_count:
             raise ScenarioError(
-                "Unexpected latest snapshot values: "
+                "Unexpected latest miner aggregate values: "
                 f"got_total={latest_total}, expected_total={expected_total_balance}, "
                 f"got_count={latest_count}, expected_count={expected_active_count}"
             )
 
-        exact_snapshot = self.rpc_result(
+        exact_view = self.rpc_result(
             self.rpc_call(
                 self.args.usdb_indexer_rpc_url,
-                "get_active_balance_snapshot",
-                [{"block_height": expected_height}],
+                "get_miner_economic_aggregate",
+                [
+                    {
+                        "view_version": self.ECONOMIC_STATE_VIEW_VERSION,
+                        "block_height": expected_height,
+                        "context": None,
+                    }
+                ],
             ),
-            "get_active_balance_snapshot",
+            "get_miner_economic_aggregate",
         )
-        exact_height = int((exact_snapshot or {}).get("block_height", -1))
-        exact_total = int((exact_snapshot or {}).get("total_balance", -1))
-        exact_count = int((exact_snapshot or {}).get("active_address_count", -1))
+        exact_state = (exact_view or {}).get("external_state") or {}
+        exact_aggregate = (exact_view or {}).get("miner_aggregate") or {}
+        exact_height = int(exact_state.get("btc_height", -1))
+        exact_total = int(exact_aggregate.get("total_miner_btc_sats", -1))
+        exact_count = int(exact_aggregate.get("active_miner_owner_count", -1))
         if (
             exact_height != expected_height
             or exact_total != expected_total_balance
             or exact_count != expected_active_count
         ):
             raise ScenarioError(
-                "Unexpected exact snapshot values: "
+                "Unexpected exact miner aggregate values: "
                 f"height={exact_height}, total={exact_total}, count={exact_count}, "
                 f"expected_height={expected_height}, expected_total={expected_total_balance}, expected_count={expected_active_count}"
             )
@@ -992,6 +1019,18 @@ class RegtestScenarioRunner:
                 )
                 self.log(f"scenario-step[{idx}] assert_ge")
                 self.assert_ge(left, right, message)
+                continue
+
+            if step_type == "assert_decimal_gt":
+                left = self.resolve_value(step.get("left"))
+                right = self.resolve_value(step.get("right"))
+                message = (
+                    str(self.resolve_value(step.get("message")))
+                    if step.get("message") is not None
+                    else None
+                )
+                self.log(f"scenario-step[{idx}] assert_decimal_gt")
+                self.assert_decimal_gt(left, right, message)
                 continue
 
             if step_type == "assert_mul_div_floor":

@@ -817,7 +817,11 @@ impl UsdbIndexerRpcServer {
         context: Option<&ConsensusQueryContext>,
     ) -> Result<(u32, HistoricalStateRefInfo), JsonError> {
         self.validate_economic_view_version(view_version, requested_height, context)?;
-        let resolved_height = self.resolve_contextual_query_height(requested_height, context)?;
+        let resolved_height = if context.is_some() {
+            self.resolve_contextual_query_height(requested_height, context)?
+        } else {
+            self.resolve_height_with_consensus_error(requested_height)?
+        };
         self.ensure_history_height_retained(resolved_height, "historical state")?;
         let registry_id =
             context.and_then(|value| value.expected_state.activation_registry_id.as_deref());
@@ -2158,6 +2162,44 @@ impl UsdbIndexerRpcServer {
 
         Ok((total, ranked))
     }
+
+    fn load_miner_economic_aggregate(
+        &self,
+        resolved_height: u32,
+    ) -> JsonResult<MinerEconomicAggregate> {
+        let snapshot = self
+            .indexer
+            .miner_pass_storage()
+            .get_active_balance_snapshot(resolved_height)
+            .map_err(Self::to_internal_error)?;
+        let Some(snapshot) = snapshot else {
+            let upstream_snapshot = self.upstream_snapshot_info()?;
+            let local_state = upstream_snapshot.as_ref().and_then(|upstream| {
+                self.build_local_state_commit_info_from_snapshot(upstream)
+                    .ok()
+            });
+            let system_state = local_state
+                .as_ref()
+                .map(|local| self.build_system_state_info_from_local_state(local));
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::HistoryNotAvailable,
+                self.build_consensus_error_data(
+                    Some(resolved_height),
+                    upstream_snapshot.as_ref(),
+                    local_state.as_ref(),
+                    system_state.as_ref(),
+                    Some(format!(
+                        "No miner economic aggregate recorded at exact height {}",
+                        resolved_height
+                    )),
+                ),
+            ));
+        };
+        Ok(MinerEconomicAggregate {
+            total_miner_btc_sats: snapshot.total_balance.to_string(),
+            active_miner_owner_count: u64::from(snapshot.active_address_count),
+        })
+    }
 }
 
 impl UsdbIndexerRpc for UsdbIndexerRpcServer {
@@ -2186,9 +2228,8 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE.to_string(),
                 USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW.to_string(),
                 USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN.to_string(),
+                USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE.to_string(),
                 "invalid_passes".to_string(),
-                "active_balance_snapshot".to_string(),
-                "latest_active_balance_snapshot".to_string(),
                 "stop".to_string(),
             ],
             economic_state_view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
@@ -3008,6 +3049,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
 
         let level = calc_level_from_effective_energy(effective_energy);
         let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        let miner_aggregate = self.load_miner_economic_aggregate(query_height)?;
         let state_ref = self.revalidate_economic_query_context(query_height, &state_ref)?;
 
         Ok(PassEconomicProfileView {
@@ -3019,6 +3061,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 owner_btc_addr: None,
                 state: pass.state.as_str().to_string(),
                 pass_kind: pass.pass_kind.as_str().to_string(),
+                usdb_main: (!pass.usdb_main.is_empty()).then_some(pass.usdb_main),
                 raw_energy: encode_energy_decimal(raw_energy),
                 collab_contribution: encode_energy_decimal(collab_contribution),
                 effective_energy: encode_energy_decimal(effective_energy),
@@ -3026,6 +3069,26 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 difficulty_factor_bps: difficulty_factor_bps as u64,
                 collab_breakdown_count,
             },
+            miner_aggregate,
+        })
+    }
+
+    fn get_miner_economic_aggregate(
+        &self,
+        params: GetMinerEconomicAggregateParams,
+    ) -> JsonResult<MinerEconomicAggregateView> {
+        let (query_height, state_ref) = self.resolve_economic_query_context(
+            &params.view_version,
+            params.block_height,
+            params.context.as_ref(),
+        )?;
+        let miner_aggregate = self.load_miner_economic_aggregate(query_height)?;
+        let state_ref = self.revalidate_economic_query_context(query_height, &state_ref)?;
+
+        Ok(MinerEconomicAggregateView {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            external_state: EconomicExternalState::from(&state_ref),
+            miner_aggregate,
         })
     }
 
@@ -3192,63 +3255,6 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 })
                 .collect(),
         })
-    }
-
-    fn get_active_balance_snapshot(
-        &self,
-        params: GetActiveBalanceSnapshotParams,
-    ) -> JsonResult<RpcActiveBalanceSnapshot> {
-        let upstream_snapshot = self.upstream_snapshot_info()?;
-        let local_state = upstream_snapshot.as_ref().and_then(|snapshot| {
-            self.build_local_state_commit_info_from_snapshot(snapshot)
-                .ok()
-        });
-        let system_state = local_state
-            .as_ref()
-            .map(|local_state| self.build_system_state_info_from_local_state(local_state));
-        let requested_height =
-            self.resolve_height_with_consensus_error(Some(params.block_height))?;
-        let active_balance_snapshot = self
-            .indexer
-            .miner_pass_storage()
-            .get_active_balance_snapshot(requested_height)
-            .map_err(Self::to_internal_error)?;
-
-        let Some(snapshot) = active_balance_snapshot else {
-            return Err(Self::to_consensus_error(
-                ConsensusRpcErrorCode::NoRecord,
-                self.build_consensus_error_data(
-                    Some(requested_height),
-                    upstream_snapshot.as_ref(),
-                    local_state.as_ref(),
-                    system_state.as_ref(),
-                    Some(format!(
-                        "No active balance snapshot recorded at exact height {}",
-                        requested_height
-                    )),
-                ),
-            ));
-        };
-
-        Ok(RpcActiveBalanceSnapshot {
-            block_height: snapshot.block_height,
-            total_balance: snapshot.total_balance,
-            active_address_count: snapshot.active_address_count,
-        })
-    }
-
-    fn get_latest_active_balance_snapshot(&self) -> JsonResult<Option<RpcActiveBalanceSnapshot>> {
-        let snapshot = self
-            .indexer
-            .miner_pass_storage()
-            .get_latest_active_balance_snapshot()
-            .map_err(Self::to_internal_error)?;
-
-        Ok(snapshot.map(|v| RpcActiveBalanceSnapshot {
-            block_height: v.block_height,
-            total_balance: v.total_balance,
-            active_address_count: v.active_address_count,
-        }))
     }
 
     fn stop(&self) -> JsonResult<()> {
@@ -4841,9 +4847,9 @@ mod tests {
     }
 
     #[test]
-    fn test_get_active_balance_snapshot_returns_height_not_synced_for_future_height() {
+    fn test_get_miner_economic_aggregate_returns_height_not_synced_for_future_height() {
         let (server, root_dir) =
-            build_server_with_genesis("active_balance_future_height", 120, 100);
+            build_server_with_genesis("miner_aggregate_future_height", 120, 100);
         seed_upstream_anchor(&server, 120);
         server
             .indexer
@@ -4852,7 +4858,11 @@ mod tests {
             .unwrap();
 
         let err = server
-            .get_active_balance_snapshot(GetActiveBalanceSnapshotParams { block_height: 121 })
+            .get_miner_economic_aggregate(GetMinerEconomicAggregateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(121),
+                context: None,
+            })
             .unwrap_err();
         match err.code {
             ErrorCode::ServerError(code) => {
@@ -4872,20 +4882,27 @@ mod tests {
     }
 
     #[test]
-    fn test_get_active_balance_snapshot_returns_no_record_at_valid_height() {
-        let (server, root_dir) = build_server_with_genesis("active_balance_no_record", 120, 100);
+    fn test_get_miner_economic_aggregate_returns_history_not_available_at_missing_height() {
+        let (server, root_dir) = build_server_with_genesis("miner_aggregate_no_record", 120, 100);
         seed_upstream_anchor(&server, 120);
 
         let err = server
-            .get_active_balance_snapshot(GetActiveBalanceSnapshotParams { block_height: 120 })
+            .get_miner_economic_aggregate(GetMinerEconomicAggregateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(120),
+                context: None,
+            })
             .unwrap_err();
         match err.code {
             ErrorCode::ServerError(code) => {
-                assert_eq!(code, ConsensusRpcErrorCode::NoRecord.code())
+                assert_eq!(code, ConsensusRpcErrorCode::HistoryNotAvailable.code())
             }
             _ => panic!("unexpected error code: {:?}", err.code),
         }
-        assert_eq!(err.message, ConsensusRpcErrorCode::NoRecord.as_str());
+        assert_eq!(
+            err.message,
+            ConsensusRpcErrorCode::HistoryNotAvailable.as_str()
+        );
         let data = decode_consensus_error_data(&err);
         assert_eq!(data.service, USDB_INDEXER_SERVICE_NAME);
         assert_eq!(data.requested_height, Some(120));
@@ -5573,6 +5590,7 @@ mod tests {
         assert_eq!(profile.pass.owner_btc_addr, None);
         assert_eq!(profile.pass.state, MinerPassState::Active.as_str());
         assert_eq!(profile.pass.pass_kind, MinerPassKind::Standard.as_str());
+        assert_eq!(profile.pass.usdb_main, Some(leader.usdb_main.clone()));
         assert_eq!(profile.pass.raw_energy, raw_energy.to_string());
         assert_eq!(
             profile.pass.collab_contribution,
@@ -5585,6 +5603,23 @@ mod tests {
         assert_eq!(profile.pass.level, 1);
         assert_eq!(profile.pass.difficulty_factor_bps, 9_900);
         assert_eq!(profile.pass.collab_breakdown_count, 2);
+        assert_eq!(
+            profile.miner_aggregate,
+            MinerEconomicAggregate {
+                total_miner_btc_sats: "5000".to_string(),
+                active_miner_owner_count: 2,
+            }
+        );
+
+        let aggregate = server
+            .get_miner_economic_aggregate(GetMinerEconomicAggregateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: Some(ConsensusQueryContext::from(&profile.external_state)),
+            })
+            .unwrap();
+        assert_eq!(aggregate.external_state, profile.external_state);
+        assert_eq!(aggregate.miner_aggregate, profile.miner_aggregate);
 
         let breakdown = get_collab_breakdown_for_test(&server, &leader, 120);
         let recomputed_contribution = breakdown.items.iter().fold(0u128, |total, item| {
@@ -5609,6 +5644,7 @@ mod tests {
         assert_eq!(replay.external_state, profile.external_state);
         assert_eq!(replay.pass.effective_energy, profile.pass.effective_energy);
         assert_eq!(replay.pass.collab_breakdown_count, 2);
+        assert_eq!(replay.miner_aggregate, profile.miner_aggregate);
 
         let rpc_info = server.get_rpc_info().unwrap();
         assert_eq!(rpc_info.api_version, USDB_INDEXER_API_VERSION);

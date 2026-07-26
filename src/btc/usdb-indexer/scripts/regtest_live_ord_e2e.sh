@@ -665,10 +665,12 @@ build_live_transfer_remint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_mint}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_mint},
+          "context": null
         }
       ],
       "result_only": true,
@@ -676,12 +678,12 @@ build_live_transfer_remint_scenario() {
     },
     {
       "type": "assert_ge",
-      "left": "\$snapshot_mint.active_address_count",
+      "left": "\$snapshot_mint.miner_aggregate.active_miner_owner_count",
       "right": 1
     },
     {
-      "type": "assert_gt",
-      "left": "\$snapshot_mint.total_balance",
+      "type": "assert_decimal_gt",
+      "left": "\$snapshot_mint.miner_aggregate.total_miner_btc_sats",
       "right": 0
     },
     {
@@ -736,10 +738,12 @@ build_live_transfer_remint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_transfer}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_transfer},
+          "context": null
         }
       ],
       "result_only": true,
@@ -747,13 +751,13 @@ build_live_transfer_remint_scenario() {
     },
     {
       "type": "assert_eq",
-      "left": "\$snapshot_transfer.active_address_count",
+      "left": "\$snapshot_transfer.miner_aggregate.active_miner_owner_count",
       "right": 0
     },
     {
       "type": "assert_eq",
-      "left": "\$snapshot_transfer.total_balance",
-      "right": 0
+      "left": "\$snapshot_transfer.miner_aggregate.total_miner_btc_sats",
+      "right": "0"
     },
     {
       "type": "log",
@@ -854,10 +858,12 @@ build_live_transfer_remint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_remint}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_remint},
+          "context": null
         }
       ],
       "result_only": true,
@@ -865,12 +871,12 @@ build_live_transfer_remint_scenario() {
     },
     {
       "type": "assert_ge",
-      "left": "\$snapshot_remint.active_address_count",
+      "left": "\$snapshot_remint.miner_aggregate.active_miner_owner_count",
       "right": 1
     },
     {
-      "type": "assert_gt",
-      "left": "\$snapshot_remint.total_balance",
+      "type": "assert_decimal_gt",
+      "left": "\$snapshot_remint.miner_aggregate.total_miner_btc_sats",
       "right": 0
     },
     {
@@ -985,10 +991,12 @@ build_live_invalid_mint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${block_height}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${block_height},
+          "context": null
         }
       ],
       "result_only": true,
@@ -996,13 +1004,13 @@ build_live_invalid_mint_scenario() {
     },
     {
       "type": "assert_eq",
-      "left": "\$balance_snapshot.active_address_count",
+      "left": "\$balance_snapshot.miner_aggregate.active_miner_owner_count",
       "right": 0
     },
     {
       "type": "assert_eq",
-      "left": "\$balance_snapshot.total_balance",
-      "right": 0
+      "left": "\$balance_snapshot.miner_aggregate.total_miner_btc_sats",
+      "right": "0"
     }
   ]
 }
@@ -1157,10 +1165,12 @@ build_live_passive_transfer_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_transfer}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_transfer},
+          "context": null
         }
       ],
       "result_only": true,
@@ -1168,12 +1178,12 @@ build_live_passive_transfer_scenario() {
     },
     {
       "type": "assert_eq",
-      "left": "\$balance_snapshot.active_address_count",
+      "left": "\$balance_snapshot.miner_aggregate.active_miner_owner_count",
       "right": 1
     },
     {
-      "type": "assert_gt",
-      "left": "\$balance_snapshot.total_balance",
+      "type": "assert_decimal_gt",
+      "left": "\$balance_snapshot.miner_aggregate.total_miner_btc_sats",
       "right": 0
     },
     {
@@ -1349,10 +1359,12 @@ build_live_same_owner_multi_mint_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_mint_2}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_mint_2},
+          "context": null
         }
       ],
       "result_only": true,
@@ -1360,12 +1372,12 @@ build_live_same_owner_multi_mint_scenario() {
     },
     {
       "type": "assert_eq",
-      "left": "\$balance_snapshot.active_address_count",
+      "left": "\$balance_snapshot.miner_aggregate.active_miner_owner_count",
       "right": 1
     },
     {
-      "type": "assert_gt",
-      "left": "\$balance_snapshot.total_balance",
+      "type": "assert_decimal_gt",
+      "left": "\$balance_snapshot.miner_aggregate.total_miner_btc_sats",
       "right": 0
     },
     {
@@ -1671,10 +1683,12 @@ build_live_duplicate_prev_inherit_scenario() {
     {
       "type": "rpc_call",
       "service": "usdb",
-      "method": "get_active_balance_snapshot",
+      "method": "get_miner_economic_aggregate",
       "params": [
         {
-          "block_height": ${height_remint_2}
+          "view_version": "uip-0006-usdb-economic-state-view:v1",
+          "block_height": ${height_remint_2},
+          "context": null
         }
       ],
       "result_only": true,
@@ -1682,12 +1696,12 @@ build_live_duplicate_prev_inherit_scenario() {
     },
     {
       "type": "assert_eq",
-      "left": "\$balance_snapshot.active_address_count",
+      "left": "\$balance_snapshot.miner_aggregate.active_miner_owner_count",
       "right": 1
     },
     {
-      "type": "assert_gt",
-      "left": "\$balance_snapshot.total_balance",
+      "type": "assert_decimal_gt",
+      "left": "\$balance_snapshot.miner_aggregate.total_miner_btc_sats",
       "right": 0
     },
     {

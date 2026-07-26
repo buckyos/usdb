@@ -10,7 +10,7 @@
 
 1. 两个 RPC 服务都返回 `regtest`
 2. `balance-history` 稳定高度与 `usdb-indexer` 本地 durable 高度都达到目标高度
-3. `usdb-indexer` RPC 语义断言（`get_rpc_info`、`get_sync_status`、`get_active_passes_at_height`、`get_invalid_passes`、`get_active_balance_snapshot`）
+3. `usdb-indexer` RPC 语义断言（`get_rpc_info`、`get_sync_status`、`get_active_passes_at_height`、`get_invalid_passes`、`get_miner_economic_aggregate`）
 4. 可选转账断言：`get_address_balance` 返回值与发送金额一致
 
 `get_sync_status` 的完整字段语义见：[usdb-indexer-sync-status-model.md](./usdb-indexer-sync-status-model.md)。

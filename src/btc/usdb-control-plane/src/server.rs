@@ -159,8 +159,7 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_pass_economic_profile",
     "get_candidate_set_view",
     "get_collab_breakdown",
-    "get_active_balance_snapshot",
-    "get_latest_active_balance_snapshot",
+    "get_miner_economic_aggregate",
 ];
 
 pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
@@ -2647,6 +2646,14 @@ mod tests {
                     "limit": 100
                 }]),
             ),
+            (
+                "get_miner_economic_aggregate",
+                json!([{
+                    "view_version": USDB_ECONOMIC_STATE_VIEW_VERSION,
+                    "block_height": 120,
+                    "context": null
+                }]),
+            ),
         ] {
             assert!(USDB_INDEXER_PROXY_METHODS.contains(&method));
             let normalized =
@@ -2694,19 +2701,14 @@ mod tests {
         assert!(capability.available);
         assert!(capability.missing_features.is_empty());
 
-        summary.features.pop();
+        let removed_feature = summary.features.pop().unwrap();
         probe.data = Some(summary);
         let capability = build_usdb_economic_state_view_capability(&probe);
         assert!(!capability.available);
-        assert_eq!(
-            capability.missing_features,
-            vec![USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES[3].to_string()]
-        );
+        assert_eq!(capability.missing_features, vec![removed_feature.clone()]);
 
         let mut summary = probe.data.take().unwrap();
-        summary
-            .features
-            .push(USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES[3].to_string());
+        summary.features.push(removed_feature);
         summary.economic_state_view_version = Some("unsupported-view".to_string());
         probe.data = Some(summary.clone());
         let capability = build_usdb_economic_state_view_capability(&probe);

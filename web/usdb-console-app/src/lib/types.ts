@@ -245,10 +245,15 @@ export interface PassStatsAtHeight {
   invalid_count: number
 }
 
-export interface RpcActiveBalanceSnapshot {
-  block_height: number
-  total_balance: number
-  active_address_count: number
+export interface MinerEconomicAggregateView {
+  view_version: string
+  external_state: {
+    btc_height: number
+  }
+  miner_aggregate: {
+    total_miner_btc_sats: string
+    active_miner_owner_count: number
+  }
 }
 
 export interface PassBlockCommitInfo {

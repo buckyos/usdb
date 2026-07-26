@@ -159,17 +159,26 @@ PricePolicyRange {
 
 价格状态必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
-建议定义：
+v1 固定定义：
 
 ```text
-USDB_SYSTEM_STATE_ADDRESS       = <TODO>
+USDB_SYSTEM_STATE_ADDRESS
+  = 0x0000000000000000000000000000000000001000
 
-PRICE_ATOMS_PER_BTC_SLOT       = <TODO>  // uint256
-REAL_PRICE_ATOMS_PER_BTC_SLOT  = <TODO>  // uint256
-PRICE_POLICY_VERSION_SLOT      = <TODO>  // uint32 encoded as uint256
-PRICE_SOURCE_KIND_SLOT         = <TODO>  // uint32 encoded as uint256
-PRICE_POLICY_RANGE_ID_SLOT     = <TODO>  // bytes32 encoded / referenced as uint256-compatible commitment
+PRICE_ATOMS_PER_BTC_SLOT
+  = 0xdf22b00cd5b1ebfe143e44347701e86394b9867790d8d631d43ef36dd099f884
+REAL_PRICE_ATOMS_PER_BTC_SLOT
+  = 0xca9c2c48cf84f8c36afc338940b0e06484e790e7190e255a57245056399bb792
+PRICE_POLICY_VERSION_SLOT
+  = 0xc65fb6e80dc7887c39c44824450f50076c21ffb398bc3abc8ec122d277f7ce03
+PRICE_SOURCE_KIND_SLOT
+  = 0x93fbc84343f98a946b33b6067ae017273d92029de3e58c3b3c6d37fb033cac9a
+PRICE_POLICY_RANGE_ID_SLOT
+  = 0xc3faa41e87f1db8d882f1a24fd36bf5f7f873e141845019088d03d0e2f487697
 ```
+
+各 slot 的 domain derivation 和 golden vectors 见
+`UIP-0011-system-state-layout-implementation-notes.md`。
 
 必填状态：
 
@@ -235,7 +244,9 @@ PRICE_SOURCE_KIND_SLOT        = 1
 PRICE_POLICY_RANGE_ID_SLOT    = active fixed-price range id
 ```
 
-`PRICE_POLICY_RANGE_ID_SLOT` 的 canonical encoding 由 activation registry 实现规范固定。在该规范 Final 前，本文保留 `<TODO>`。
+`PRICE_POLICY_RANGE_ID_SLOT` 的值必须是 active `PricePolicyRange` canonical
+encoding 的 32-byte hash。range encoding 与 chain-config binding 仍需在
+UIP-0013 实现批次中冻结，但不得改变本节已固定的 storage slot。
 
 # State Transition
 

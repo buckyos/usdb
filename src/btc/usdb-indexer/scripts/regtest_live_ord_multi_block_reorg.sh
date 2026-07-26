@@ -113,7 +113,7 @@ assert_old_chain_state() {
   regtest_assert_usdb_pass_energy_state "$pass2" "$block_height" "at_or_before" "active"
   regtest_assert_usdb_pass_snapshot_state "$pass3" "$block_height" "invalid"
   regtest_assert_usdb_pass_energy_not_found "$pass3" "$block_height" "at_or_before"
-  regtest_assert_usdb_active_balance_snapshot_positive "$block_height"
+  regtest_assert_usdb_miner_economic_aggregate_positive "$block_height"
   regtest_assert_usdb_pass_stats "$block_height" "3" "1" "0" "1" "0" "1"
   assert_leaderboard_top1_matches_pass_energy "$block_height" "active" "1" "$pass2" "active"
 }
@@ -130,7 +130,7 @@ assert_replacement_chain_state() {
   regtest_assert_usdb_pass_energy_state "$pass2" "$block_height" "at_or_before" "active"
   regtest_assert_usdb_pass_snapshot_missing "$pass3" "$block_height"
   regtest_assert_usdb_pass_energy_not_found "$pass3" "$block_height" "at_or_before"
-  regtest_assert_usdb_active_balance_snapshot_positive "$block_height"
+  regtest_assert_usdb_miner_economic_aggregate_positive "$block_height"
   regtest_assert_usdb_pass_stats "$block_height" "2" "1" "0" "1" "0" "0"
   assert_leaderboard_top1_matches_pass_energy "$block_height" "active" "1" "$pass2" "active"
 }

@@ -22,13 +22,13 @@
 3. 启动 `balance-history` 和 `usdb-indexer`，先验证旧链业务态：
    - `pass_old` 在 remint height 为 `dormant`
    - `pass_new` 在 remint height 为 `active`
-   - `get_active_balance_snapshot(remint_height)` 为正值
+   - `get_miner_economic_aggregate(remint_height)` 的总额/owner 数为正值
 4. invalidate remint 所在 tip，等待高度回退到 transfer height。
 5. 验证 rollback 后业务态：
    - `pass_old` 恢复为 `dormant`
    - `pass_new` 不再存在
    - `get_pass_energy(pass_new, at_or_before)` 返回 `ENERGY_NOT_FOUND`
-   - `get_active_balance_snapshot(transfer_height)` 变为 `0/0`
+   - `get_miner_economic_aggregate(transfer_height)` 的总额/owner 数变为 `0/0`
 6. 再挖一个空 replacement block 回到原高度，确认 replacement 链继续保持 “只有 transfer，没有 remint” 的状态。
 7. 最后再挖一个空块，验证服务还能继续同步。
 

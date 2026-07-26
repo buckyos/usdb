@@ -225,14 +225,18 @@ pub enum Commands {
         view_version: String,
     },
 
-    /// Get active balance snapshot at exact block height.
-    ActiveBalanceSnapshot {
+    /// Get the UIP-0006 miner BTC aggregate at one historical context.
+    MinerEconomicAggregate {
         #[arg(long)]
-        block_height: u32,
-    },
+        block_height: Option<u32>,
 
-    /// Get latest active balance snapshot.
-    LatestActiveBalanceSnapshot,
+        /// Optional `ConsensusQueryContext` JSON object.
+        #[arg(long, value_name = "JSON")]
+        context: Option<String>,
+
+        #[arg(long, default_value = USDB_ECONOMIC_STATE_VIEW_VERSION)]
+        view_version: String,
+    },
 
     /// Get invalid pass list in a closed height range.
     InvalidPasses {

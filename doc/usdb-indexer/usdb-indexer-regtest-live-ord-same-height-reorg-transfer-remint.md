@@ -21,7 +21,7 @@
 2. 启动 `balance-history` 和 `usdb-indexer`，确认旧链上：
    - `pass_old` 为 `dormant`
    - `pass_new` 为 `active`
-   - `get_active_balance_snapshot(H)` 为正值
+   - `get_miner_economic_aggregate(H)` 的总额/owner 数为正值
 3. 记录旧链 `snapshot_id`、`latest_block_commit` 和本地 `pass_block_commit` anchor。
 4. invalidate 旧 tip，并立即挖一个空 replacement block，使链高重新回到 `H`。
 5. 验证 replacement 后：
@@ -30,7 +30,7 @@
    - `get_pass_block_commit(H).balance_history_block_commit` 变化
    - `pass_old` 仍为 `dormant`
    - `pass_new` 不再存在
-   - `get_active_balance_snapshot(H)` 为 `0/0`
+   - `get_miner_economic_aggregate(H)` 的总额/owner 数为 `0/0`
 6. 再继续挖一个空块，确认服务可继续同步到 `H+1`。
 
 ## 运行示例

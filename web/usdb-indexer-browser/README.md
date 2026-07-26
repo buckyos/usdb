@@ -70,7 +70,7 @@ web/usdb-indexer-browser/dist
 - `get_rpc_info`
 - `get_sync_status`
 - `get_pass_stats_at_height`
-- `get_latest_active_balance_snapshot`
+- `get_miner_economic_aggregate`
 - `get_pass_snapshot`
 - `get_pass_history`
 - `get_pass_energy_leaderboard`

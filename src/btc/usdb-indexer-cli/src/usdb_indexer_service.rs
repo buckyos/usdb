@@ -298,22 +298,22 @@ impl UsdbIndexerService {
                     .await?;
                 print_pretty_json(&result)?;
             }
-            Commands::ActiveBalanceSnapshot { block_height } => {
+            Commands::MinerEconomicAggregate {
+                block_height,
+                context,
+                view_version,
+            } => {
+                let context = parse_consensus_context(context.as_deref())?;
                 let result = self
                     .client
                     .call(
-                        "get_active_balance_snapshot",
+                        "get_miner_economic_aggregate",
                         json!([{
+                            "view_version": view_version,
                             "block_height": block_height,
+                            "context": context,
                         }]),
                     )
-                    .await?;
-                print_pretty_json(&result)?;
-            }
-            Commands::LatestActiveBalanceSnapshot => {
-                let result = self
-                    .client
-                    .call("get_latest_active_balance_snapshot", json!([]))
                     .await?;
                 print_pretty_json(&result)?;
             }

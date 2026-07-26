@@ -106,6 +106,9 @@ aux_pool_recipient = 0x0000000000000000000000000000000000000000
 aux_pool_verifier_code_hash = 0x0000000000000000000000000000000000000000000000000000000000000000
 ```
 
+该禁用状态不占用 UIP-0011 reserved system account 的额外 storage slot，
+也不在 genesis 部署 aux pool code。
+
 在该状态下，UIP-0011 的 CoinBase split 必须按未启用辅助算力池执行：
 
 ```text
@@ -338,7 +341,7 @@ Final 前至少需要覆盖：
 
 | 问题 | 当前倾向 | 需要确认 |
 | --- | --- | --- |
-| aux pool 是否在 v1 public network 启用 | 不启用，初始 `aux_pool_policy_version = 0`。 | activation matrix 是否显式记录 disabled version，还是只记录后续启用版本。 |
+| aux pool 是否在 v1 public network 启用 | 不启用，初始 `aux_pool_policy_version = 0`，CoinBase 100% 归当前 miner。 | 已收敛；未来只通过 activation matrix 的非零 policy version 启用。 |
 | 有效算力证明格式 | 通过 system contract / system tx 提交，不进 `header.Extra`。 | 具体 proof ABI、canonical encoding 和 test vector。 |
 | BTC reference validation | 不允许 live BTC RPC。 | 选择 BTC header relay、BTC-side USDB state commitment 或 proof 自带 header segment。 |
 | 最近 2 个 BTC 高度窗口 | 保留设计大纲口径。 | 以 BTC height、BTC hash 还是 USDB chain 已知 BTC state 计算窗口。 |

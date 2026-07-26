@@ -57,6 +57,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0009-usdb-chain-config-and-bootstrap.md](./UIP-0009-usdb-chain-config-and-bootstrap.md)：USDB chain config、genesis、PoW bootstrap 和共识版本字段。
 - [UIP-0010-source-dao-dividend-bootstrap.md](./UIP-0010-source-dao-dividend-bootstrap.md)：SourceDAO / Dividend system contract 冷启动、genesis predeploy、bootstrap 交易和 fee split activation 边界。
 - [UIP-0011-coinbase-emission-and-reward-split.md](./UIP-0011-coinbase-emission-and-reward-split.md)：CoinBase 释放公式、手续费分账、reward recipient 校验和 reward policy 版本边界。
+- [UIP-0011-system-state-layout-implementation-notes.md](./UIP-0011-system-state-layout-implementation-notes.md)：UIP-0011 至 UIP-0014 共用 reserved system account、storage domains、dynamic slots 和 golden vectors。
 - [UIP-0012-collaboration-efficiency-coefficient.md](./UIP-0012-collaboration-efficiency-coefficient.md)：协作效率系数 `K`、rolling window、warmup 和 reserved system storage 状态。
 - [UIP-0013-price-and-real-price-update-rules.md](./UIP-0013-price-and-real-price-update-rules.md)：BTC 算法价格状态、固定价格启动策略和动态 price source 升级边界。
 - [UIP-0014-leader-quote-activity-and-candidate-energy.md](./UIP-0014-leader-quote-activity-and-candidate-energy.md)：Leader 主动报价活跃窗口、candidate energy 和 candidate level 策略。

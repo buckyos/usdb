@@ -512,41 +512,13 @@ impl RpcClient {
             .await
     }
 
-    /// Returns active-balance snapshot exactly at `block_height`.
-    ///
-    /// # Arguments
-    /// * `block_height` - Exact snapshot height.
-    ///
-    /// # Returns
-    /// * `Ok(RpcActiveBalanceSnapshot)` when snapshot exists.
-    /// * `Err(String)` if snapshot does not exist or request fails.
-    pub async fn get_active_balance_snapshot(
+    /// Returns the versioned miner BTC aggregate at one historical context.
+    pub async fn get_miner_economic_aggregate(
         &self,
-        block_height: u32,
-    ) -> Result<RpcActiveBalanceSnapshot, String> {
-        self.rpc_call::<RpcActiveBalanceSnapshot>(
-            "get_active_balance_snapshot",
-            json!([{
-                "block_height": block_height,
-            }]),
-        )
-        .await
-    }
-
-    /// Returns the latest persisted active-balance snapshot.
-    ///
-    /// # Returns
-    /// * `Ok(Some(RpcActiveBalanceSnapshot))` when at least one snapshot exists.
-    /// * `Ok(None)` when snapshot table is empty.
-    /// * `Err(String)` if the request fails.
-    pub async fn get_latest_active_balance_snapshot(
-        &self,
-    ) -> Result<Option<RpcActiveBalanceSnapshot>, String> {
-        self.rpc_call::<Option<RpcActiveBalanceSnapshot>>(
-            "get_latest_active_balance_snapshot",
-            json!([]),
-        )
-        .await
+        params: GetMinerEconomicAggregateParams,
+    ) -> Result<MinerEconomicAggregateView, String> {
+        self.rpc_call::<MinerEconomicAggregateView>("get_miner_economic_aggregate", json!([params]))
+            .await
     }
 
     /// Returns invalid mint passes in a closed height range with pagination.
@@ -719,7 +691,7 @@ mod tests {
             client: Client::new(),
         };
         let msg = client.format_rpc_error(
-            "get_active_balance_snapshot",
+            "get_miner_economic_aggregate",
             &RpcErrorPayload {
                 code: -32047,
                 message: "NO_RECORD".to_string(),
@@ -727,7 +699,7 @@ mod tests {
             },
         );
 
-        assert!(msg.contains("method=get_active_balance_snapshot"));
+        assert!(msg.contains("method=get_miner_economic_aggregate"));
         assert!(msg.contains("data={\"foo\":\"bar\"}"));
     }
 }

@@ -50,7 +50,8 @@ USDB 的发行目标是让 USDB chain 区块奖励与 BTC 侧矿工资产和价�
 | --- | --- |
 | `CoinBase` | USDB chain 区块新发行的 USDB native token 数量。本文用 `coinbase_emission_atoms` 表示最小单位。 |
 | `USDB atom` | USDB native token 最小单位。若执行层继承 EVM `wei` 语义，`1 USDB = 10^18 atoms`。 |
-| `tx_fees_atoms` | 一个 USDB chain 区块中可分配的交易手续费总额，单位为 USDB atoms。 |
+| `tx_fee_atoms` | 一笔交易在退款后实际支付的手续费，即 `gas_used * effective_gas_price`，单位为 USDB atoms。 |
+| `tx_fees_atoms` | 一个 USDB chain 区块中所有 `tx_fee_atoms` 的 checked sum。 |
 | `reward_recipient` | 当前区块 miner reward 的接收地址，v1 来自 standard pass 的 `usdb_main`。 |
 | `dao_fee_recipient` | DAO / Dividend 分红池手续费接收地址，来自 UIP-0010 `DividendAddress`。 |
 | `total_miner_btc_sats` | 参与发行目标计算的矿工 BTC 资产总量，单位为 sat。 |
@@ -68,7 +69,7 @@ USDB 的发行目标是让 USDB chain 区块奖励与 BTC 侧矿工资产和价�
 
 # 版本
 
-首版建议版本：
+v1 激活时固定版本：
 
 ```text
 reward_rule_version = 1
@@ -88,19 +89,19 @@ fee_split_policy_version = 1
 
 # 常量
 
-首版草案使用以下参数名：
+v1 固定以下参数：
 
 | 参数 | 值 | 状态 | 说明 |
 | --- | --- | --- | --- |
-| `USDB_ATOMS_PER_USDB` | `1_000_000_000_000_000_000` | 建议固定 | EVM native token 最小单位。 |
+| `USDB_ATOMS_PER_USDB` | `1_000_000_000_000_000_000` | v1 固定 | EVM native token 最小单位。 |
 | `BTC_SATS_PER_BTC` | `100_000_000` | 固定 | BTC sat 换算。 |
-| `EMISSION_BLOCKS` | `157_680` | 来自设计大纲 | 释放平滑窗口。 |
-| `MINER_FEE_BPS` | `6000` | 来自设计大纲 | fee split 激活后矿工手续费份额。 |
-| `DAO_FEE_BPS` | `4000` | 来自设计大纲 | fee split 激活后 DAO / Dividend 手续费份额。 |
+| `EMISSION_BLOCKS` | `157_680` | v1 固定 | 释放平滑窗口。 |
+| `MINER_FEE_BPS` | `6000` | v1 固定 | fee split 激活后矿工手续费份额。 |
+| `DAO_FEE_BPS` | `4000` | v1 固定 | fee split 激活后 DAO / Dividend 手续费份额。 |
 | `AUX_POOL_COINBASE_BPS` | `2500` | 等 UIP-0015 激活 | 辅助算力池启用后的 CoinBase 份额。 |
-| `K_BPS_BASE` | `10000` | 建议 v1 fallback | `K = 1.0`。 |
-| `K_BPS_MIN_EXCLUSIVE` | `8000` | 来自设计大纲 | `K > 0.8`。 |
-| `K_BPS_MAX` | `20000` | 来自设计大纲 | `K <= 2.0`。 |
+| `K_BPS_BASE` | `10000` | v1 固定 fallback | `K = 1.0`。 |
+| `K_BPS_MIN_EXCLUSIVE` | `8000` | v1 固定 | `K > 0.8`。 |
+| `K_BPS_MAX` | `20000` | v1 固定 | `K <= 2.0`。 |
 
 所有金额计算必须使用无符号整数。对外 JSON / RPC 中超出 JavaScript safe integer 的金额必须使用 canonical decimal string。
 
@@ -145,7 +146,7 @@ v1 的 `reward_recipient` 来自 standard pass 的 `usdb_main`。
 
 `total_miner_btc_sats` 是 CoinBase 目标供应量的 BTC 侧输入。
 
-首版建议口径：
+v1 固定口径：
 
 ```text
 active_miner_owner_set(h)
@@ -160,10 +161,10 @@ total_miner_btc_sats(h)
 
 - active valid miner pass 包含 `standard` 和 `collab` pass。
 - `Consumed`、`Dormant`、`Burned`、`Invalid` pass 不进入集合。
-- 同一个 `owner_script_hash` 即使因为实现缺陷或历史兼容产生多个 active pass，也只能计入一次，避免 BTC 余额重复计数。
+- UIP-0002 的 one-owner-one-active invariant 同时覆盖 standard 和 collab pass。
+- 若历史状态中出现同一个 `owner_script_hash` 对应多个 active pass，indexer 和 validator 必须 fail closed，不得用静默去重掩盖状态损坏。
 - `balance_sats` 必须来自与 payload selector 绑定的 BTC-side USDB 历史状态，不得查询 current head。
-
-是否只统计 standard pass，还是统计 standard + collab pass，是本文最重要的待审计问题之一。当前草案倾向统计 standard + collab，因为 collab pass 仍代表 BTC owner 锁定在矿工经济系统中的资产和能量贡献。
+- aggregate 必须与 `resolved_profile` 由同一个 UIP-0006 `external_state` 原子返回，validator 不得通过两次未绑定查询拼接输入。
 
 # `issued_usdb_atoms`
 
@@ -189,13 +190,18 @@ issued_usdb_atoms_before_block
 
 `issued_usdb_atoms` 必须存放在 USDB chain reserved system account storage 中，并由每个区块的 `stateRoot` 承诺。
 
-建议定义：
+v1 固定定义：
 
 ```text
-USDB_SYSTEM_STATE_ADDRESS = <TODO>
-ISSUED_USDB_ATOMS_SLOT   = <TODO>
+USDB_SYSTEM_STATE_ADDRESS = 0x0000000000000000000000000000000000001000
+ISSUED_USDB_ATOMS_SLOT
+    = keccak256(UTF8("usdb.system.state.v1/reward/issued-usdb-atoms"))
+    = 0xdd1651483272028cad87b8ab291a694a9deb1d7f6b60efe175f823c406233da2
 ISSUED_USDB_ATOMS_TYPE   = uint256
 ```
+
+完整 account invariant、schema slot 和 UIP-0012 至 UIP-0014 共享 slot
+registry 见 `UIP-0011-system-state-layout-implementation-notes.md`。
 
 该 storage slot 是 USDB chain reward state transition 的协议状态：
 
@@ -266,7 +272,7 @@ UIP-0011 不重新定义 `CE`、`AE`、rolling window、warmup 或 `compute_k_bp
 
 ## 辅助算力池未启用
 
-在 UIP-0015 未激活或 aux pool 未启用时：
+首个 public-network v1 固定 `aux_pool_policy_version = 0`，因此：
 
 ```text
 miner_coinbase_atoms = coinbase_emission_atoms
@@ -275,7 +281,8 @@ aux_pool_coinbase_atoms = 0
 
 ## 辅助算力池启用
 
-在 UIP-0015 激活且 aux pool 对当前区块有效时，使用设计大纲中的 75% / 25% 目标：
+未来 UIP-0015 Final 且通过 activation matrix 激活
+`aux_pool_policy_version > 0` 后，才允许使用设计大纲中的 75% / 25% 目标：
 
 ```text
 aux_pool_coinbase_atoms
@@ -295,32 +302,63 @@ miner_coinbase_atoms + aux_pool_coinbase_atoms == coinbase_emission_atoms
 
 # Fee Split
 
-fee split 只在 UIP-0010 `DividendFeeSplitBlock` 已到达，且 `DividendAddress != 0x0` 时启用。
+v1 对每笔交易独立计算 fee split。交易手续费基数固定为退款后实际支付值：
+
+```text
+tx_fee_atoms = gas_used * effective_gas_price
+```
+
+它包含 EIP-1559 tip 和 base-fee 部分。USDB v1 不继续叠加 legacy ETHW
+`MinerDAOAddress` 分账路径。
+
+fee split 仅在以下条件同时成立时启用：
+
+```text
+fee_split_policy_version == 1
+AND block_number >= DividendFeeSplitBlock
+AND DividendAddress != 0x0000000000000000000000000000000000000000
+AND Dividend bootstrap readiness predicate == true
+```
+
+readiness predicate 必须是 UIP-0010 冻结、可由所有 validator 从 USDB chain state
+确定性读取的共识状态。`bootstrap_state`、`bootstrap_marker`、本地文件或 RPC 健康状态
+都不能满足该条件。当前 SourceDAO 尚未提供该冻结 predicate，因此当前实现和所有开发
+checkpoint 必须保持 `fee_split_policy_version = 0`；收到非零 policy 时 fail closed。
+
+`DividendFeeSplitBlock` 之前的短暂冷启动窗口内，每笔手续费全部归 miner。
 
 未启用时：
 
 ```text
-miner_fee_atoms = tx_fees_atoms
-dao_fee_atoms = 0
+miner_fee_tx_atoms = tx_fee_atoms
+dao_fee_tx_atoms = 0
 ```
 
 启用后：
 
 ```text
-dao_fee_atoms
-    = floor(tx_fees_atoms * DAO_FEE_BPS / 10000)
+dao_fee_tx_atoms
+    = floor(tx_fee_atoms * DAO_FEE_BPS / 10000)
 
-miner_fee_atoms
-    = tx_fees_atoms - dao_fee_atoms
+miner_fee_tx_atoms
+    = tx_fee_atoms - dao_fee_tx_atoms
 ```
 
-整除余数归矿工，确保：
+每笔交易的整除余数归矿工。区块输出是所有交易结果的 checked sum：
 
 ```text
+miner_fee_atoms = sum(miner_fee_tx_atoms)
+dao_fee_atoms = sum(dao_fee_tx_atoms)
 miner_fee_atoms + dao_fee_atoms == tx_fees_atoms
 ```
 
-`dao_fee_atoms` 必须进入 UIP-0010 `DividendAddress`。如果 `DividendFeeSplitBlock` 已到达但 `DividendAddress` 无 code 或 bootstrap state 未完成，validator 必须 fail closed。
+`dao_fee_atoms` 由共识状态转换直接增加到 UIP-0010 `DividendAddress`
+的 native balance。该直接余额写入不会执行 Solidity `receive()`；Dividend
+内部 token/cycle ledger 必须由 UIP-0010 固定的 on-chain readiness 与
+keeper/sync 流程更新，不得假设共识层会调用可升级合约代码。
+
+如果 policy 和高度已经激活，但 `DividendAddress` 无预期 code 或
+bootstrap readiness 未完成，validator 必须 fail closed。
 
 # Final Reward Outputs
 
@@ -352,17 +390,14 @@ distributed_fee_atoms == tx_fees_atoms
 
 # Uncle / Ommer Reward
 
-设计大纲要求矿工实际 CoinBase 收入继续应用继承自 Ethereum 的 uncle reward 规则。
+USDB `reward_rule_version = 1` 固定禁用 uncle / ommer：
 
-当前草案不直接固定 uncle / ommer reward，原因是仍需明确：
+- builder 必须生成空 uncle list 和对应的 empty uncle hash。
+- validator 遇到任何 uncle / ommer 必须拒绝区块。
+- uncle reward 固定不存在，不进入 `issued_usdb_atoms`。
 
-- USDB chain v1 是否保留 uncle / ommer 机制。
-- 采用哪一版 Ethereum / legacy ETHW uncle reward 公式，或定义独立 USDB 公式。
-- uncle 区块是否也必须携带 UIP-0007 profile selector。
-- uncle reward 是否影响 `issued_usdb_atoms` system storage。
-- uncle 与 BTC 历史 state selector 的绑定方式。
-
-建议 v1 在未完成该审计前禁用 USDB-specific uncle reward，或将 uncle reward 固定为 `0`。如果 public network 需要 uncle reward，必须在本文 Final 前补充完整规则。
+这不是“接受叔块但奖励为 0”。未来如需启用 uncle，必须通过新的
+`reward_rule_version` 定义完整 header、selector、发行和重放规则。
 
 # Reorg 语义
 
@@ -410,22 +445,26 @@ USDB indexer / state view:
 - 每个区块执行后 `ISSUED_USDB_ATOMS_SLOT` 增加当前区块 `coinbase_emission_atoms`。
 - 用户、合约或官方合约 burn 不改变 `ISSUED_USDB_ATOMS_SLOT`。
 - fee split 未激活时所有 fee 归 miner。
-- fee split 激活后 60% / 40% 分账，rounding remainder 归 miner。
+- fee split 激活后按每笔退款后实际手续费进行 60% / 40% 分账，每笔 rounding remainder 归 miner。
+- legacy ETHW `MinerDAOAddress` 路径不会与 USDB fee split 重复执行。
+- 直接 credit Dividend native balance 不会隐式执行 `receive()`。
 - aux pool 未激活时 CoinBase 100% 归 miner。
 - aux pool 激活后 75% / 25% 分账，rounding remainder 归 miner。
+- reward v1 包含任何 uncle 时区块无效。
 - reorg 后 `issued_usdb_atoms` system storage 和 fee split state 正确回滚。
 - joiner 重放旧块时不能使用当前 BTC-side USDB state 重新计算 reward。
 
-# 待审计问题
+# 后续实现与审计
 
-| 问题 | 当前草案结论 | 后续动作 |
+| 问题 | 当前结论 | 后续动作 |
 | --- | --- | --- |
-| `total_miner_btc_sats` 是否统计 standard + collab pass | 当前倾向统计所有 active valid miner pass 的 unique owner balance。 | 需要审计是否会放大协作资产或产生重复计数。 |
-| `issued_usdb_atoms` 是否包含 genesis alloc | 包含 genesis alloc 和 prior CoinBase，不扣除 burn。 | 固定 reserved system account address / storage slot，并在 genesis 中初始化。 |
+| `total_miner_btc_sats` 是否统计 standard + collab pass | v1 固定统计所有 active standard + active collab pass owner；重复 active owner 是 invariant failure。 | 已收敛；由 UIP-0006 原子 profile 返回。 |
+| `issued_usdb_atoms` 是否包含 genesis alloc | 包含 genesis alloc 和 prior CoinBase，不扣除 burn。 | 地址、slot 和 genesis checked-sum 已冻结。 |
 | `price_atoms_per_btc` 来源和 scale | 由 UIP-0013 定义；本文只消费 price state。 | UIP-0013 必须固定初始值、更新顺序和 decimal encoding。 |
 | 动态 `K` 是否进入首个 public network | 已拆分到 UIP-0012；v1 使用 `collab_contribution` 作为 `CE_N`。 | Review UIP-0012 rolling window、warmup 和整数 `compute_k_bps`。 |
-| aux pool split 如何激活 | 初始 `aux_pool_policy_version = 0`，UIP-0015 Final 前不启用。 | UIP-0015 定义证明格式、recipient、verifier code hash 后，通过 activation matrix 在指定高度激活。 |
-| uncle / ommer reward | 当前建议禁用或置 0，直到完整规则确定。 | 决定 USDB chain v1 是否保留 uncle 机制。 |
+| aux pool split 如何激活 | v1 固定 `aux_pool_policy_version = 0`，CoinBase 100% 归 miner。 | UIP-0015 Final 后通过新 activation checkpoint 激活非零版本。 |
+| uncle / ommer reward | reward v1 完全禁用，含 uncle 的区块无效。 | 未来启用必须升级 `reward_rule_version`。 |
 | miner income contract | 当前 v1 使用 `usdb_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
-| fee accounting 与 EVM fork 语义 | 本文只消费 `tx_fees_atoms`。 | 需要在 go-ethereum 实现中确认 EIP-1559 burn、tips、base fee 的具体路径。 |
-| UIP-0006 是否需要新增 reward fields | 当前需要 `usdb_main`、aggregate supply inputs 或可审计查询。 | 后续 review UIP-0006 state view 是否扩展。 |
+| fee accounting 与 EVM fork 语义 | v1 按每笔退款后 `gas_used * effective_gas_price` 分账，包含 tip/base-fee；余数归 miner。 | 实现替换 legacy `MinerDAOAddress` 路径并补状态转换测试。 |
+| fee split bootstrap readiness | 本地 marker 不参与共识；当前 SourceDAO 尚无冻结的 on-chain predicate，所以非零 policy 暂不允许激活。 | UIP-0010/SourceDAO 冻结 `bootstrapFinalized()` 或等价确定性 state predicate 后再实现 policy v1。 |
+| UIP-0006 reward fields | profile 原子返回 `usdb_main` 和 `miner_aggregate`。 | 已收敛；Rust/Go codec 必须 fail closed 校验。 |

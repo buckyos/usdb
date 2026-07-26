@@ -22,12 +22,15 @@ pub const USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE: &str = "pass_economic_prof
 pub const USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW: &str = "candidate_set_view";
 /// `get_rpc_info.features` name for auditable collab contribution pages.
 pub const USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN: &str = "collab_breakdown";
+/// `get_rpc_info.features` name for the selector-bound miner BTC aggregate.
+pub const USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE: &str = "miner_economic_aggregate";
 /// Complete feature set required for UIP-0006 economic state view consumers.
-pub const USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES: [&str; 4] = [
+pub const USDB_INDEXER_ECONOMIC_STATE_VIEW_FEATURES: [&str; 5] = [
     USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF,
     USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
     USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW,
     USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN,
+    USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE,
 ];
 
 // Directory constants

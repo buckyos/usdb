@@ -16,7 +16,7 @@ Activation: USDB index protocol and formula version; development networks activa
 核心规则：
 
 - view 必须绑定一个可重放的 BTC-side USDB `external_state`。
-- view 可以返回 `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 和 `collab_breakdown_count`。
+- view 可以返回 `usdb_main`、`raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps`、`collab_breakdown_count` 和同一 context 的 `miner_aggregate`。
 - 完整 `collab_breakdown` 通过同一历史 context 下的确定性分页查询提供，不要求内联到主 profile。
 - energy 类字段必须使用 UIP-0003 的 `uint128` canonical decimal string。
 - `level` 和 `difficulty_factor_bps` 是基于 `effective_energy` 的查询时派生值，不要求持久化。
@@ -42,7 +42,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 # 当前实现状态
 
-参考实现已经完成 v1 historical context / version 校验基础、`get_pass_economic_profile`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑，以及 `candidate_set_view` / `collab_breakdown` 的 opaque `cursor + limit` 稳定分页。
+参考实现已经完成 v1 historical context / version 校验基础、`get_pass_economic_profile`、`get_miner_economic_aggregate`、`get_candidate_set_view` 和 `get_collab_breakdown` 的核心派生逻辑，以及 `candidate_set_view` / `collab_breakdown` 的 opaque `cursor + limit` 稳定分页。
 
 `get_pass_economic_profile` 当前已满足：
 
@@ -53,10 +53,11 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 - `PASS_NOT_FOUND` 与 non-invalid 缺 raw energy 的 `INTERNAL_INVARIANT_BROKEN` 错误边界。
 - BTC head 前进后按旧 `external_state` 重放同一 profile。
 - 派生前后重建并复验完整 historical state ref，同高度 reorg 期间不返回混合状态响应。
+- standard pass 的 `usdb_main` 与全网 `miner_aggregate` 在同一响应、同一 `external_state` 下返回。
 
 `candidate_set_view` / `collab_breakdown` 当前已直接使用本文固定的 `cursor + limit`，不保留旧 `page/page_size` 双栈。参考实现的 `max_limit` 为 500，cursor 绑定完整 external state、resource/query 条件、limit 和 continuation key。
 
-参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref、profile、`candidate_set_view` 和 `collab_breakdown`。`get_rpc_info` 现在显式声明 view version、`candidate_set_view` ordering rule、max limit 和四个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
+参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref、profile、miner aggregate、`candidate_set_view` 和 `collab_breakdown`。`get_rpc_info` 现在显式声明 view version、`candidate_set_view` ordering rule、max limit 和五个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
 
 happy path、same-height reorg、three-pass `candidate_set_view` 和 three-collab `collab_breakdown` 已通过真实 ord targeted smoke。deterministic live/regtest 与 `100 / 1K / 10K` 规模矩阵也已完成；后续容量工作集中在并发、冷缓存、100K 以上规模和长时 soak。
 
@@ -75,6 +76,7 @@ features contains:
   pass_economic_profile
   candidate_set_view
   collab_breakdown
+  miner_economic_aggregate
 ```
 
 `query_ready / consensus_ready` 描述当前运行状态；上述字段描述实现能力和契约版本。consumer 需要同时满足自身所需的 readiness 与协议能力条件。
@@ -102,6 +104,7 @@ features contains:
 | historical context | `query_context`、解析出的目标高度及其 `external_state` 的统称；规范字段必须使用前述精确名称，不能只写裸 `context`。 |
 | `economic_state_view` | `usdb-indexer` 在一个 `external_state` 下返回的经济状态视图。 |
 | `pass_economic_profile` | 某张 pass 在指定历史 context 下的 pass snapshot + energy profile。 |
+| `miner_economic_aggregate` | 同一 `external_state` 下所有 Active Standard 与 Active Collab pass unique owner 的 BTC balance aggregate。 |
 | `candidate_pass` | 在同一 `external_state` 下状态为 `Active` 且 `pass_kind = standard` 的 pass；成员资格与 energy 是否为零无关。 |
 | `candidate_set_view` | 同一 `external_state` 下全部 `candidate_pass` 的确定性分页审计排序；不等同于 USDB chain 上 payload 或最终出块选择。 |
 | `top_ranked_candidate` | 按 `candidate_set_view.selection_rule` 排序后的第一项；只表示审计排序首项。 |
@@ -129,6 +132,9 @@ view_version = "uip-0006-usdb-economic-state-view:v1"
 - 历史查询语义。
 - `candidate_set_view` 排序规则。
 - mismatch / history unavailable 错误语义。
+
+当前 v1 尚未在 public network 激活，因此本文把 reward fields 纳入 v1
+冻结面，不保留更早 development draft 的兼容响应。
 
 影响公式参数但不改变 view 结构时，应升级 `formula_version`，不一定升级 `view_version`。
 
@@ -224,12 +230,17 @@ RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `
     "owner_btc_addr": "bc1...",
     "state": "active",
     "pass_kind": "standard",
+    "usdb_main": "0x1111111111111111111111111111111111111111",
     "raw_energy": "1000000",
     "collab_contribution": "500000",
     "effective_energy": "1500000",
     "level": 1,
     "difficulty_factor_bps": 9900,
     "collab_breakdown_count": 3
+  },
+  "miner_aggregate": {
+    "total_miner_btc_sats": "2100000000000000",
+    "active_miner_owner_count": 42
   }
 }
 ```
@@ -243,12 +254,38 @@ RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `
 | `owner_btc_addr` | string | UIP-0001 / pass snapshot | 当前 historical context 下可展示的 BTC address；当实现能确定 address 时应该返回。 |
 | `state` | string | UIP-0002 | `active` / `dormant` / `consumed` / `burned` / `invalid`。 |
 | `pass_kind` | string | UIP-0001 | `standard` / `collab`。 |
+| `usdb_main` | string or null | UIP-0001 | standard pass 的 USDB reward address；collab pass 为 `null`。 |
 | `raw_energy` | decimal string | UIP-0003 | pass 自身 raw energy。 |
 | `collab_contribution` | decimal string | UIP-0004 | 作为 Leader 获得的协作贡献。 |
 | `effective_energy` | decimal string | UIP-0004 | BTC-side nominal 派生值；Active standard pass 返回饱和的 `raw_energy + collab_contribution`，collab 或 non-active pass 返回 `0`。 |
 | `level` | integer | UIP-0005 | 从 `effective_energy` 动态派生的 nominal level。 |
 | `difficulty_factor_bps` | integer | UIP-0005 | 从 nominal `level` 动态派生的 nominal factor。 |
 | `collab_breakdown_count` | integer | UIP-0004 | 当前 `external_state` 下贡献给该 `resolved_leader` 的 collab pass 数量。 |
+
+`miner_aggregate` 字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `total_miner_btc_sats` | canonical decimal string | 所有 Active Standard 与 Active Collab pass unique owner 的 BTC balance checked sum。 |
+| `active_miner_owner_count` | integer | 上述 unique owner 数量。 |
+
+UIP-0002 one-owner-one-active invariant 覆盖两类 pass。若同一 owner 在目标
+高度出现多个 Active pass，服务必须 fail closed，不得通过静默去重返回
+aggregate。profile 和 aggregate 必须在同一次查询的派生前后复验同一
+`external_state`。
+
+## Miner Economic Aggregate
+
+审计工具可以不指定 pass，直接查询：
+
+```text
+get_miner_economic_aggregate(view_version, block_height, context)
+```
+
+响应固定包含 `view_version`、完整 `external_state` 和与 profile 同结构的
+`miner_aggregate`。该接口替代未绑定 UIP-0006 context 的旧
+`get_active_balance_snapshot` / `get_latest_active_balance_snapshot`；当前
+项目没有 public compatibility 需求，不保留双栈。
 
 ## Owner 表示
 

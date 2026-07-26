@@ -11,7 +11,8 @@ use usdb_util::{
 pub use usdb_util::{
     USDB_ECONOMIC_PAGE_MAX_LIMIT, USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_API_VERSION,
     USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW, USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN,
-    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF, USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
+    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF, USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE,
+    USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -30,7 +31,6 @@ pub const ERR_INVALID_PAGINATION: i64 = -32015;
 pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 /// Business error code returned when internal state invariants are violated during RPC resolution.
 pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
-
 /// Deterministic candidate-set ordering rule for the first UIP-0006 view.
 pub const CANDIDATE_SET_SELECTION_RULE: &str = USDB_CANDIDATE_SET_SELECTION_RULE;
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
@@ -1040,6 +1040,8 @@ pub struct PassEconomicProfile {
     pub state: String,
     /// Pass kind at the resolved height.
     pub pass_kind: String,
+    /// Standard-pass USDB reward address; absent for collab passes.
+    pub usdb_main: Option<String>,
     /// UIP-0003 raw energy, encoded as canonical decimal string.
     pub raw_energy: String,
     /// UIP-0004 collab contribution, encoded as canonical decimal string.
@@ -1063,6 +1065,40 @@ pub struct PassEconomicProfileView {
     pub external_state: EconomicExternalState,
     /// Pass snapshot and derived economic fields at `external_state.btc_height`.
     pub pass: PassEconomicProfile,
+    /// Network-wide BTC miner aggregate from the same exact `external_state`.
+    pub miner_aggregate: MinerEconomicAggregate,
+}
+
+/// Network-wide BTC miner aggregate at one UIP-0006 historical context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MinerEconomicAggregate {
+    /// Sum of BTC balances for all unique Active Standard and Collab pass owners.
+    pub total_miner_btc_sats: String,
+    /// Number of unique Active Standard and Collab pass owners.
+    pub active_miner_owner_count: u64,
+}
+
+/// Parameters for `get_miner_economic_aggregate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetMinerEconomicAggregateParams {
+    /// Required UIP-0006 view contract version selector.
+    pub view_version: String,
+    /// Optional query height; `None` resolves from context or current local synced height.
+    pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by downstream validators.
+    pub context: Option<ConsensusQueryContext>,
+}
+
+/// UIP-0006 historical view of the network-wide miner BTC aggregate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinerEconomicAggregateView {
+    /// Economic state view version used by this response.
+    pub view_version: String,
+    /// Exact historical state identity used to derive the aggregate.
+    pub external_state: EconomicExternalState,
+    /// Aggregate committed by the same local state identity.
+    pub miner_aggregate: MinerEconomicAggregate,
 }
 
 /// Parameters for `get_candidate_set_view`.
@@ -1208,24 +1244,6 @@ pub struct CollabBreakdownPage {
     pub next_cursor: Option<String>,
     /// Breakdown rows in requested page.
     pub items: Vec<CollabBreakdownItem>,
-}
-
-/// Parameters for `get_active_balance_snapshot`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetActiveBalanceSnapshotParams {
-    /// Exact block height of the requested snapshot.
-    pub block_height: u32,
-}
-
-/// Active address total-balance snapshot at one height.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RpcActiveBalanceSnapshot {
-    /// Snapshot block height.
-    pub block_height: u32,
-    /// Sum of balances of all active owners in satoshis.
-    pub total_balance: u64,
-    /// Number of active owners included in the snapshot.
-    pub active_address_count: u32,
 }
 
 /// Parameters for `get_invalid_passes`.
@@ -1425,6 +1443,13 @@ pub trait UsdbIndexerRpc {
         params: GetPassEconomicProfileParams,
     ) -> JsonResult<PassEconomicProfileView>;
 
+    /// Returns the network-wide UIP-0006 miner BTC aggregate at a historical context.
+    #[rpc(name = "get_miner_economic_aggregate")]
+    fn get_miner_economic_aggregate(
+        &self,
+        params: GetMinerEconomicAggregateParams,
+    ) -> JsonResult<MinerEconomicAggregateView>;
+
     /// Returns the UIP-0006 USDB-side candidate-set audit view at a target height.
     #[rpc(name = "get_candidate_set_view")]
     fn get_candidate_set_view(
@@ -1442,21 +1467,6 @@ pub trait UsdbIndexerRpc {
     /// Returns invalid passes with optional code filter.
     #[rpc(name = "get_invalid_passes")]
     fn get_invalid_passes(&self, params: GetInvalidPassesParams) -> JsonResult<InvalidPassesPage>;
-
-    /// Returns active-balance snapshot at exact height.
-    ///
-    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when `block_height`
-    /// exceeds current local durable sync progress, and `NO_RECORD` when the
-    /// height is valid but no exact active-balance snapshot exists there.
-    #[rpc(name = "get_active_balance_snapshot")]
-    fn get_active_balance_snapshot(
-        &self,
-        params: GetActiveBalanceSnapshotParams,
-    ) -> JsonResult<RpcActiveBalanceSnapshot>;
-
-    /// Returns latest available active-balance snapshot.
-    #[rpc(name = "get_latest_active_balance_snapshot")]
-    fn get_latest_active_balance_snapshot(&self) -> JsonResult<Option<RpcActiveBalanceSnapshot>>;
 
     /// Triggers graceful shutdown of the indexer process.
     #[rpc(name = "stop")]

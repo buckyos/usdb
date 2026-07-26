@@ -239,7 +239,7 @@
     "pass_economic_profile",
     "candidate_set_view",
     "collab_breakdown",
-    "active_balance_snapshot"
+    "miner_economic_aggregate"
   ],
   "economic_state_view_version": "uip-0006-usdb-economic-state-view:v1",
   "candidate_set_selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
@@ -251,7 +251,7 @@
 UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 要求：
 
 - `service == "usdb-indexer"` 且 `api_version == "1.0.0"`。
-- `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`。
+- `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`、`miner_economic_aggregate`。
 - `economic_state_view_version` 与请求使用的 `view_version` 一致。
 - `candidate_set_selection_rule` 与 UIP-0006 `candidate_set_view` ordering contract 一致；该字段不声明 USDB block-selection policy。
 - `economic_page_max_limit > 0`；client 的首包 `limit` 不得超过该声明值。
@@ -691,12 +691,17 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
     "owner_btc_addr": null,
     "state": "active",
     "pass_kind": "standard",
+    "usdb_main": "0x1111111111111111111111111111111111111111",
     "raw_energy": "1000000",
     "collab_contribution": "500000",
     "effective_energy": "1500000",
     "level": 1,
     "difficulty_factor_bps": 9900,
     "collab_breakdown_count": 2
+  },
+  "miner_aggregate": {
+    "total_miner_btc_sats": "2100000000000000",
+    "active_miner_owner_count": 42
   }
 }
 ```
@@ -707,6 +712,8 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `block_height` 与 `context.requested_height` 同时存在时必须相等；未提供 `context` 时仍返回目标高度的完整 `external_state`。
 - profile 使用 `at_or_before` raw energy 记录并投影到 `external_state.btc_height`，不要求目标高度恰好存在一条 energy row。
 - active standard pass 返回 UIP-0004 聚合后的 contribution/effective energy；active collab 和所有 non-active pass 的 effective energy 为 `"0"`。
+- standard pass 返回 `usdb_main`，collab pass 返回 `null`。
+- `miner_aggregate` 与 pass/energy 字段绑定同一个 `external_state`，`total_miner_btc_sats` 是 Active Standard + Active Collab unique owner BTC balance 的 canonical decimal checked sum。
 - invalid pass 不要求 energy DB row，服务从 pass history 识别后合成 `raw/contribution/effective = "0"`、`level = 0`、`difficulty_factor_bps = 10000`、`collab_breakdown_count = 0`。
 - 目标 pass 在该历史 context 下不存在时返回 `PASS_NOT_FOUND`；non-invalid pass 存在但缺少 raw energy 时返回 `INTERNAL_INVARIANT_BROKEN`。
 - 当前实现没有 script hash -> BTC address 历史反查索引，因此 `owner_btc_addr` 为 `null`。
@@ -887,36 +894,64 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 ---
 
-## 5.4 活跃地址余额快照
+## 5.4 Miner Economic Aggregate
 
-### 20) `get_active_balance_snapshot`
+### 20) `get_miner_economic_aggregate`
 
-查询指定高度快照（精确高度）。
+查询与 UIP-0006 historical context 绑定的全网矿工 BTC aggregate。
 
 参数：
 
 ```json
 {
-  "block_height": 900123
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "block_height": 900123,
+  "context": {
+    "requested_height": 900123,
+    "expected_state": {
+      "snapshot_id": "snapshot-...",
+      "system_state_id": "system-..."
+    }
+  }
 }
 ```
 
-返回：`ActiveBalanceSnapshot`。
+返回：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "external_state": {
+    "btc_height": 900123,
+    "snapshot_id": "snapshot-...",
+    "stable_block_hash": "000000...",
+    "local_state_commit": "local-...",
+    "system_state_id": "system-...",
+    "balance_history_api_version": "1.0.0",
+    "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
+    "activation_registry_id": "...",
+    "active_version_set": {},
+    "active_version_set_id": "..."
+  },
+  "miner_aggregate": {
+    "total_miner_btc_sats": "2100000000000000",
+    "active_miner_owner_count": 42
+  }
+}
+```
 
 错误：
 
-- 若 `block_height > synced_block_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`
-- 若高度合法，但该高度没有 exact active balance snapshot，返回共享共识错误 `NO_RECORD`
-
-### 21) `get_latest_active_balance_snapshot`
-
-查询最近一次已落库快照。
+- 若 `block_height > synced_block_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`。
+- 若高度合法但缺少 exact aggregate，因完整 `external_state` 无法重建，返回共享共识错误
+  `HISTORY_NOT_AVAILABLE`。
+- context 或 state-ref 不一致时返回对应 UIP-0006 mismatch。
 
 ---
 
 ## 5.5 管理
 
-### 22) `stop`
+### 21) `stop`
 
 触发索引器优雅停止（建议默认仅 localhost 可访问）。
 
@@ -1055,10 +1090,9 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `get_pass_stats_at_height`
 - `get_pass_energy`
 - `get_pass_economic_profile`
+- `get_miner_economic_aggregate`
 - `get_candidate_set_view`
 - `get_collab_breakdown`
-- `get_active_balance_snapshot`
-- `get_latest_active_balance_snapshot`
 
 其中与 ETHW 强一致历史校验直接相关的主链路已经具备：
 
@@ -1066,6 +1100,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `get_pass_snapshot(context=...)`
 - `get_pass_energy(context=...)`
 - `get_pass_economic_profile`
+- `get_miner_economic_aggregate`
 - `get_candidate_set_view`
 - `get_collab_breakdown`
 - `STATE_NOT_RETAINED / HISTORY_NOT_AVAILABLE / *_MISMATCH`
@@ -1093,7 +1128,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 
 - `miner_passes`：静态字段主表（含 `invalid_code/reason`）  
 - `miner_pass_state_history`：历史事件与高度快照来源  
-- `active_balance_snapshots`：活跃地址总余额快照  
+- `active_balance_snapshots`：`miner_economic_aggregate` 的内部 exact-height 持久化来源
 - `pass_energy`（RocksDB）：能量记录  
 
 建议默认以 `history` 作为状态口径，避免“当前状态污染历史重放”的歧义。

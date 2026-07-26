@@ -229,7 +229,14 @@ impl BalanceMonitor {
                 owner_balance.delta
             };
 
-            total_balance = total_balance.saturating_add(owner_balance.balance);
+            total_balance = total_balance.checked_add(owner_balance.balance).ok_or_else(|| {
+                let msg = format!(
+                    "Active miner BTC aggregate overflow at height {} while adding owner {} balance {} to {}",
+                    block_height, pass.owner, owner_balance.balance, total_balance
+                );
+                error!("{}", msg);
+                msg
+            })?;
             active_pass_balances.push(ActivePassBalance {
                 inscription_id: pass.inscription_id,
                 owner: pass.owner,

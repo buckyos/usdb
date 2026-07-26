@@ -40,7 +40,7 @@ assert_old_chain_state() {
   regtest_assert_usdb_pass_energy_state "$pass_old" "$block_height" "at_or_before" "consumed" "0"
   regtest_assert_usdb_pass_snapshot_state "$pass_new" "$block_height" "active"
   regtest_assert_usdb_pass_energy_state "$pass_new" "$block_height" "at_or_before" "active"
-  regtest_assert_usdb_active_balance_snapshot_positive "$block_height"
+  regtest_assert_usdb_miner_economic_aggregate_positive "$block_height"
   regtest_assert_usdb_pass_stats "$block_height" "2" "1" "0" "1" "0" "0"
 }
 
@@ -53,7 +53,7 @@ assert_transfer_only_state() {
   regtest_assert_usdb_pass_energy_state "$pass_old" "$block_height" "at_or_before" "dormant"
   regtest_assert_usdb_pass_snapshot_missing "$pass_new" "$block_height"
   regtest_assert_usdb_pass_energy_not_found "$pass_new" "$block_height" "at_or_before"
-  regtest_assert_usdb_active_balance_snapshot_zero "$block_height"
+  regtest_assert_usdb_miner_economic_aggregate_zero "$block_height"
   regtest_assert_usdb_pass_stats "$block_height" "1" "0" "1" "0" "0" "0"
 }
 

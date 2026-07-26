@@ -193,7 +193,7 @@ EOF
 
   regtest_assert_usdb_pass_snapshot_state "$pass2" "$height_remint" "active"
   regtest_assert_usdb_pass_energy_state "$pass2" "$height_remint" "at_or_before" "active"
-  regtest_assert_usdb_active_balance_snapshot_positive "$height_remint"
+  regtest_assert_usdb_miner_economic_aggregate_positive "$height_remint"
   regtest_assert_usdb_pass_stats "$height_remint" "2" "1" "0" "1" "0" "0"
 
   continue_address="$(regtest_get_new_address)"

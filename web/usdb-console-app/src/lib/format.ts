@@ -108,7 +108,7 @@ export function displayPercent(
 
 export function displayBalanceSmart(
   locale: string,
-  valueSat: number | null | undefined,
+  valueSat: string | number | null | undefined,
   t: Translate,
   emptyKey = 'common.notYetAvailable',
 ) {

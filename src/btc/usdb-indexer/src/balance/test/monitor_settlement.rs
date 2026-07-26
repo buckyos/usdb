@@ -2,6 +2,7 @@ use super::common::{cleanup_data_dir, make_pass, script_hash, test_data_dir};
 use crate::balance::{
     BalanceMonitor, ConcurrentBalanceLoader, MockBalanceBackend, MockResponse, SerialBalanceLoader,
 };
+use crate::index::MinerPassKind;
 use crate::storage::MinerPassStorage;
 use std::sync::Arc;
 use usdb_util::BtcScriptHash;
@@ -76,6 +77,81 @@ async fn test_settle_active_balance_sum_and_snapshot_written() {
     let stored = storage.get_active_balance_snapshot(100).unwrap().unwrap();
     assert_eq!(stored.total_balance, 4_000);
     assert_eq!(stored.active_address_count, 2);
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}
+
+#[tokio::test]
+async fn test_settle_active_balance_includes_standard_and_collab_owners() {
+    let dir = test_data_dir("standard_and_collab");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+    let standard = make_pass(15, 0, script_hash(33), 90);
+    let mut collab = make_pass(16, 1, script_hash(34), 91);
+    collab.pass_kind = MinerPassKind::Collab;
+    collab.usdb_main.clear();
+    collab.leader_pass_id = Some(standard.inscription_id);
+    storage
+        .add_new_mint_pass_at_height(&standard, standard.mint_block_height)
+        .unwrap();
+    storage
+        .add_new_mint_pass_at_height(&collab, collab.mint_block_height)
+        .unwrap();
+
+    let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+        vec![
+            vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 1_000,
+                delta: 0,
+            }],
+            vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 2_000,
+                delta: 0,
+            }],
+        ],
+    ))]));
+    let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    let snapshot = monitor.settle_active_balance(100).await.unwrap();
+    assert_eq!(snapshot.active_address_count, 2);
+    assert_eq!(snapshot.total_balance, 3_000);
+
+    drop(monitor);
+    drop(storage);
+    cleanup_data_dir(&dir);
+}
+
+#[tokio::test]
+async fn test_settle_active_balance_rejects_total_overflow_without_snapshot() {
+    let dir = test_data_dir("sum_overflow");
+    let storage = Arc::new(MinerPassStorage::new(&dir).unwrap());
+    add_active_pass_with_history(&storage, 13, 0, script_hash(31), 90);
+    add_active_pass_with_history(&storage, 14, 1, script_hash(32), 91);
+
+    let backend = Arc::new(MockBalanceBackend::new(vec![MockResponse::Immediate(Ok(
+        vec![
+            vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: u64::MAX,
+                delta: 0,
+            }],
+            vec![balance_history::AddressBalance {
+                block_height: 100,
+                balance: 1,
+                delta: 0,
+            }],
+        ],
+    ))]));
+    let loader = Arc::new(SerialBalanceLoader::new(backend, 1024).unwrap());
+    let monitor = BalanceMonitor::new_with_loader(storage.clone(), loader, 1024, 1024);
+
+    let err = monitor.settle_active_balance(100).await.unwrap_err();
+    assert!(err.contains("Active miner BTC aggregate overflow"));
+    assert!(storage.get_active_balance_snapshot(100).unwrap().is_none());
 
     drop(monitor);
     drop(storage);
@@ -303,7 +379,10 @@ async fn test_settle_active_balance_fail_on_duplicate_owner_in_history_view() {
 
     let owner = script_hash(11);
     let pass1 = make_pass(91, 0, owner, 90);
-    let pass2 = make_pass(92, 1, script_hash(12), 91);
+    let mut pass2 = make_pass(92, 1, script_hash(12), 91);
+    pass2.pass_kind = MinerPassKind::Collab;
+    pass2.usdb_main.clear();
+    pass2.leader_pass_id = Some(pass1.inscription_id);
     storage
         .add_new_mint_pass_at_height(&pass1, pass1.mint_block_height)
         .unwrap();

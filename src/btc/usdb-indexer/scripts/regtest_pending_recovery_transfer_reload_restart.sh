@@ -26,7 +26,7 @@ source "${SCRIPT_DIR}/regtest_reorg_lib.sh"
 
 assert_empty_surface_state() {
   local block_height="$1"
-  regtest_assert_usdb_active_balance_snapshot_zero "$block_height"
+  regtest_assert_usdb_miner_economic_aggregate_zero "$block_height"
   regtest_assert_usdb_pass_stats_zero "$block_height"
 }
 

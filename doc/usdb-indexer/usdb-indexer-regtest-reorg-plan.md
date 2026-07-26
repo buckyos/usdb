@@ -140,7 +140,7 @@
   - 被 replacement 掉的新 pass 不再存在或不再 active
   - prev pass 状态恢复到 replacement 链对应状态
   - `get_pass_energy` 不保留旧链 remint 带来的能量结果
-  - `get_active_balance_snapshot` 与 replacement 链一致
+  - `get_miner_economic_aggregate` 与 replacement 链一致
 
 #### Case 4. live ord 同高度 transfer/remint reorg
 
@@ -231,7 +231,7 @@
 6. 如果场景有 pass，至少同时断言：
    - `get_pass_snapshot`
    - `get_pass_energy`
-   - `get_active_balance_snapshot`
+   - `get_miner_economic_aggregate`
 7. 如果场景有 pending recovery，必须断言 marker 生命周期：
    - 写入
    - 恢复前仍存在

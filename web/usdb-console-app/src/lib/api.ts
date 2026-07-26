@@ -17,7 +17,7 @@ import type {
   PassSnapshot,
   UsdbChainDevIdentityResponse,
   PassStatsAtHeight,
-  RpcActiveBalanceSnapshot,
+  MinerEconomicAggregateView,
   UsdbIndexerSyncStatus,
   UsdbRpcInfo,
 } from './types'
@@ -95,8 +95,14 @@ export function fetchUsdbPassStats(atHeight: number | null): Promise<PassStatsAt
   return callUsdbIndexerRpc('get_pass_stats_at_height', [{ at_height: atHeight }])
 }
 
-export function fetchUsdbLatestActiveBalanceSnapshot(): Promise<RpcActiveBalanceSnapshot | null> {
-  return callUsdbIndexerRpc('get_latest_active_balance_snapshot', [])
+export function fetchUsdbMinerEconomicAggregate(): Promise<MinerEconomicAggregateView> {
+  return callUsdbIndexerRpc('get_miner_economic_aggregate', [
+    {
+      view_version: 'uip-0006-usdb-economic-state-view:v1',
+      block_height: null,
+      context: null,
+    },
+  ])
 }
 
 export function fetchUsdbPassSnapshot(
