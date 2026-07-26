@@ -5237,10 +5237,12 @@ dependencies = [
  "is-docker",
  "log",
  "named-lock",
+ "num-bigint",
  "rayon",
  "serde",
  "serde_json",
  "sha2",
+ "sha3",
  "sysinfo",
  "tokio",
 ]

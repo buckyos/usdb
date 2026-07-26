@@ -267,6 +267,7 @@ UIP-0010 要求 USDB chain config 至少表达：
 
 ```text
 DividendAddress
+DividendCodeHash
 DividendFeeSplitBlock
 fee_split_policy_version
 ```
@@ -274,6 +275,7 @@ fee_split_policy_version
 语义：
 
 - `DividendAddress == 0x0` 时，fee split 必须视为未启用。
+- `DividendCodeHash == 0x0` 时，fee split 配置不完整，非零 policy 必须 fail closed。
 - `DividendFeeSplitBlock == nil` 时，fee split 必须视为未启用。
 - 只有 `DividendAddress != 0x0` 且 `DividendFeeSplitBlock` 已到达时，USDB chain 才能执行 fee split 状态转换。
 - `fee_split_policy_version` 描述后续 UIP-0011 定义的具体分账公式版本。
@@ -282,6 +284,7 @@ fee_split_policy_version
 
 ```text
 ChainConfig.DividendAddress
+ChainConfig.DividendCodeHash
 ChainConfig.DividendFeeSplitBlock
 ChainConfig.IsDividendFeeSplit(block_number)
 ```
@@ -314,7 +317,7 @@ ChainConfig.IsDividendFeeSplit(block_number)
   },
   "genesisDifficulty": "0x180000",
   "minimumDifficulty": "0x100000",
-  "dividendFeeSplitBlock": 16
+  "dividendFeeSplitBlock": 256
 }
 ```
 
@@ -371,14 +374,21 @@ SourceDAO bootstrap config v1 必须包含 `schemaVersion = 1`。`scope = full` 
 
 `bootstrapAdmin` 是冷启动阶段的临时权限主体，用于发送 SourceDAO / Dividend 初始化交易。
 
-当前 SourceDAO 原型具备以下约束：
+当前 SourceDAO development v1 具备以下约束：
 
 - `Dao.initialize()` 将 `bootstrapAdmin` 设置为初始化交易发送者。
 - SourceDAO 模块地址 setter 由 `onlyBootstrapAdmin` 控制。
 - 模块地址 setter 使用 `onlySetOnce` 语义，已配置模块不能被覆盖。
-- 当前原型提供 `transferBootstrapAdmin(address)`，但没有协议级 `finalizeBootstrap()` / revoke 语义。
+- 当前原型提供 `transferBootstrapAdmin(address)`。
+- `Dao.bootstrapReadyForDividend(expectedDividend)` 只在 bootstrap admin、全部必需模块和
+  Dividend wiring 均有效时返回 true。
+- `Dividend.finalizeBootstrap()` 仅允许当前 DAO bootstrap admin 调用，并要求
+  `Dao.bootstrapReadyForDividend(address(this)) == true`。
+- `Dividend.bootstrapFinalized()` 使用独立 unstructured storage marker；一旦写为 true
+  不可清除或重复 finalization。
 
-因此，public network 不应把单一开发 EOA 作为长期 `bootstrapAdmin`。推荐策略：
+`bootstrapFinalized` 是 fee gate readiness，不等于撤销或冻结 DAO 的 `bootstrapAdmin`。
+public network 不应把单一开发 EOA 作为长期 `bootstrapAdmin`。推荐策略：
 
 | 网络类型 | 推荐 `bootstrapAdmin` |
 | --- | --- |
@@ -389,8 +399,9 @@ SourceDAO bootstrap config v1 必须包含 `schemaVersion = 1`。`scope = full` 
 public network bootstrap 完成后，必须明确长期权限归属：
 
 - 可以把 `bootstrapAdmin` 转移给治理多签或治理合约。
-- 如果 SourceDAO 最终实现 `finalizeBootstrap()` / `bootstrapFinalized`，可以在 full bootstrap 完成后关闭 bootstrap 权限。
-- 在未实现显式 finalization 前，release manifest 必须记录 bootstrap 完成后的 `bootstrapAdmin` 最终地址和管理策略。
+- full bootstrap 必须执行 `Dividend.finalizeBootstrap()`，以允许 fee policy 在 gate 后启用。
+- finalization 不关闭 bootstrap 权限；release manifest 仍必须记录 bootstrap 完成后的
+  `bootstrapAdmin` 最终地址和管理策略。
 
 是否新增独立 `Bootstrap Admin Governance` UIP 暂不强制。若后续需要定义 key ceremony、签名门限、撤权流程、事故恢复和治理交接，则应该拆成独立 Process / Operational UIP；当前 UIP-0010 只要求 public release 不得依赖未托管的单一私钥长期持有权限。
 
@@ -402,6 +413,8 @@ v1 最小初始化顺序：
 1. Dao.initialize()
 2. Dividend.initialize(cycleMinLength, DaoAddress)
 3. Dao.setTokenDividendAddress(DividendAddress)
+4. deploy and wire all required SourceDAO modules
+5. Dividend.finalizeBootstrap()
 ```
 
 要求：
@@ -412,12 +425,15 @@ v1 最小初始化顺序：
 - 如果链上已有状态与 config 冲突，bootstrap 必须失败，不得继续。
 - bootstrap 只能从本网络空状态或与 config 完全一致的部分完成状态继续，不得从既有链导入业务状态。
 
-SourceDAO full bootstrap 可以继续初始化其他模块，例如 committee、token、project、lockup、acquired 等。但对 fee split 来说，最小完成条件是：
+SourceDAO full bootstrap 必须初始化 committee、token、project、lockup、acquired 等 required
+modules。fee policy v1 的完成条件是：
 
 ```text
 Dao.bootstrapAdmin == bootstrapAdmin
 Dividend.cycleMinLength == cycleMinLength
 Dao.dividend == DividendAddress
+Dao.bootstrapReadyForDividend(DividendAddress) == true
+Dividend.bootstrapFinalized() == true
 code(DaoAddress) != empty
 code(DividendAddress) != empty
 ```
@@ -431,6 +447,7 @@ public network 如果把 SourceDAO 作为首个 release 的完整治理系统，
 - `Dividend.initialize(cycleMinLength, DaoAddress)` 已成功。
 - `Dao.setTokenDividendAddress(DividendAddress)` 已成功。
 - committee、dev token、normal token、token lockup、project、acquired 等 release manifest 声明的 SourceDAO 模块已经完成部署和 wiring。
+- `Dividend.finalizeBootstrap()` 已成功，且 finalized marker 精确等于 `1`。
 - `bootstrap_state.final_wiring` 中所有必填模块地址非零，且与链上状态一致。
 
 后续动态 SourceDAO 模块升级不属于本 UIP 冷启动范围，应走 SourceDAO / proxy / governance 自身升级流程；direct-predeploy 的 DAO / Dividend 升级必须由后续 UIP 单独定义。
@@ -447,19 +464,32 @@ public network 如果把 SourceDAO 作为首个 release 的完整治理系统，
   已满足时，USDB chain 才可以执行分账。
 - `DividendFeeSplitBlock` 必须配置为 bootstrap 初始化完成之后的高度。
 - 如果节点在到达 `DividendFeeSplitBlock` 时无法确认 `DividendAddress` 已预置 code，必须 fail closed。
+- 到达 gate 后，validator 必须确认 Dividend runtime code hash 精确等于
+  `ChainConfig.DividendCodeHash`。
+- 到达 gate 后，validator 必须确认 Dividend storage
+  `keccak256("sourcedao.dividend.bootstrap-finalized:v1") == uint256(1)`。
 - `bootstrap_state`、`bootstrap_marker`、本地文件和运维 API 都不是共识输入，不能作为
   readiness predicate。
 
-当前 SourceDAO 合约没有冻结的 `bootstrapFinalized` 状态，也没有一组已冻结的 storage slot
-足以让所有 validator 无歧义证明 full bootstrap 已完成。因此在该 predicate 由后续
-SourceDAO/UIP 改动冻结前，所有 development/public checkpoint 必须保持
-`fee_split_policy_version = 0`；即使已到 `DividendFeeSplitBlock`，手续费仍全部归 miner。
-节点看到非零、但本地不支持或无法验证 readiness 的 fee-split policy 必须 fail closed。
-
-当前开发期原型使用：
+v1 readiness 固定为 exact runtime code hash 和以下单向 marker 的 conjunction：
 
 ```text
-DividendFeeSplitBlock = 16
+DIVIDEND_BOOTSTRAP_FINALIZED_SLOT
+  = keccak256(UTF8("sourcedao.dividend.bootstrap-finalized:v1"))
+  = 0x7d8bb76c5e489191d3f481f0b7ade016df922a8ec91d3eb9c93c07ee5a337054
+
+readiness =
+  codehash(DividendAddress) == DividendCodeHash
+  AND storage(DividendAddress, DIVIDEND_BOOTSTRAP_FINALIZED_SLOT) == 1
+```
+
+marker 写入前，policy v1 在 gate 前仍把全部手续费给 miner；如果已到 gate 但 readiness
+不满足，builder 和 validator 都必须 fail closed。
+
+当前开发期 public spec 使用：
+
+```text
+DividendFeeSplitBlock = 256
 ```
 
 该值只用于本地测试，不是 public network final 参数。
@@ -530,18 +560,20 @@ bootstrap job 必须输出可审计状态。
    generated genesis hash 与当前 datadir 和其他测试节点一致。
 5. system contract runtime code hash 与 manifest 一致。
 6. `ChainConfig.DividendAddress` 与 `DividendAddress` 一致。
-7. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
-8. 链上 bootstrap 交易已执行并成功。
-9. 当前链上状态满足最小完成条件。
+7. `ChainConfig.DividendCodeHash` 与链上 Dividend runtime code 一致。
+8. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
+9. 链上 bootstrap 交易已执行并成功。
+10. 当前链上状态满足最小完成条件和 `bootstrapFinalized` readiness。
 
 joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史并审计最终状态。
 
 当前开发期自动化入口
 `go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh` 会在 full bootstrap 后固定
-block hash/state root，重启出块节点，再启动全新 joiner 重放历史；随后在两端执行 strict validation、
-比较完整模块摘要，并断言 full bootstrap 重放没有新的 completed/error operation。该入口使用
-unsigned development genesis、fake PoW 和 test-only UIP-0006 indexer fixture，不替代 public release
-manifest signature、真实 BTC-side state 或 PoW calibration。
+readiness，跨 fee gate 校验 UIP-0011 分账和 Dividend ledger sync，再固定 block hash/state root，
+重启出块节点，并启动 `full` sync 的全新 joiner 重放历史；随后在两端执行 strict validation、
+比较完整模块摘要，并断言 full bootstrap 重放没有新的 completed/error operation。fake PoW 使用
+1 秒 seal interval，避免生成墙钟未来块。该入口不替代 public release manifest signature、
+真实 BTC-side state 或 PoW calibration。
 
 # Trusted Bootstrap Manifest Key
 
@@ -580,7 +612,7 @@ UIP-0010 在 UIP-0009 基础上进一步定义：
 
 # 与 UIP-0011 的关系
 
-UIP-0011 将定义 CoinBase emission、reward split 和 fee split 公式。
+UIP-0011 定义 CoinBase emission、reward split 和 fee split 公式。
 
 UIP-0010 只提供：
 
@@ -632,11 +664,14 @@ USDB docker:
   generated genesis；不要求它等于当前内置开发链的 `USDBGenesisHash`。
 - public release：冻结后的 generated canonical genesis hash 与该网络 `USDBGenesisHash`、chain
   config 和 release manifest 完全一致。
-- `DividendAddress` / `DividendFeeSplitBlock` 进入 chain config。
+- `DividendAddress` / `DividendCodeHash` / `DividendFeeSplitBlock` 进入 chain config。
 - `IsDividendFeeSplit` 在 `nil`、zero address、激活前、激活后路径正确。
 - `Dao.initialize()` 成功。
 - `Dividend.initialize(cycleMinLength, DaoAddress)` 成功。
 - `Dao.setTokenDividendAddress(DividendAddress)` 成功。
+- required modules 未完成前 `Dividend.finalizeBootstrap()` 失败；完成后只允许 bootstrap admin
+  成功执行一次。
+- strict validation 要求 `Dividend.bootstrapFinalized() == true`。
 - 参数化 DevToken 初始分配、剩余 supply 和 NormalToken zero-supply 结果正确。
 - 参数化 committee 成员、proposal cursor 和治理参数正确。
 - 重复地址、数组长度不一致、超额 supply、空 committee 和 config/genesis 字段冲突会失败。
@@ -648,6 +683,8 @@ USDB docker:
 - joiner 使用同一 genesis 后可重放 bootstrap 历史并验证最终状态。
 - fee split 激活前 `DividendAddress` 不收取协议分账。
 - fee split 激活后按 UIP-0011 的规则进入 `DividendAddress`。
+- runtime code hash 或 finalized marker 被篡改时，gate 后出块和验证 fail closed。
+- Dividend ledger sync 吸收同步前 pending native balance，同步交易自身产生的新 fee 留到下一轮。
 
 # 待审计问题
 
@@ -656,8 +693,8 @@ USDB docker:
 | public testnet / mainnet 的最终 `DaoAddress` 和 `DividendAddress` | 当前 `0x...1001` / `0x...1002` 可以作为候选预留地址。 | public release 前做 address conflict preflight 并写入 release manifest。 |
 | SourceDAO artifact / runtime code hash encoding | 已固定为 runtime bytes 的 `keccak256` 和 artifact 原始文件 bytes 的 `sha256`；public spec hash 使用 lowercase 固定前缀规则。 | release pipeline 继续校验 committed hashes 与 clean build 完全一致。 |
 | `bootstrapAdmin` 使用单一临时账户、多签账户或治理合约 | local dev 可用临时 EOA；public network 不应长期依赖单一私钥。 | 讨论多签 / threshold / governance handoff，并决定是否拆独立 UIP。 |
-| `bootstrapAdmin` 权限是否需要 finalization 或撤权 | 当前 SourceDAO 有 `onlySetOnce` 和 `transferBootstrapAdmin`，但无协议级 finalize。 | 评估是否为 SourceDAO 增加 `finalizeBootstrap()`。 |
-| fee split 的 on-chain bootstrap readiness predicate | 本地 marker 不参与共识；当前 SourceDAO 尚无冻结 predicate，因此 policy 必须保持 `0`。 | 优先评估显式 `bootstrapFinalized()`；若改用 code hash + 固定 storage slots，必须先冻结完整 storage layout 和校验公式。 |
+| `bootstrapAdmin` 权限是否需要撤权 | Dividend readiness 已 final，但不撤销 DAO bootstrap admin；当前仍可 transfer。 | public release 前冻结多签/治理 handoff 和事故恢复流程。 |
+| fee split 的 on-chain bootstrap readiness predicate | v1 已冻结 exact Dividend runtime code hash + unstructured `bootstrapFinalized == 1`。 | public release 绑定最终 artifact/code hash，并保留 gate 后 fail-closed 测试。 |
 | `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |
 | SourceDAO full bootstrap 是否进入 public network 首次 release 强制状态 | 若首个 release 需要完整 SourceDAO 治理系统，则 `scope = full` 应成为完成条件。 | 确认 public testnet / mainnet 的 required module set。 |
 | `bootstrap_state` / `bootstrap_marker` 是否需要签名 | marker 本身不是共识输入；public release 应签 manifest，并由 manifest 引用 state/marker hash。 | 设计 release signing key / signer set。 |

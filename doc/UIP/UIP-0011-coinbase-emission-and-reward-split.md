@@ -322,8 +322,19 @@ AND Dividend bootstrap readiness predicate == true
 
 readiness predicate 必须是 UIP-0010 冻结、可由所有 validator 从 USDB chain state
 确定性读取的共识状态。`bootstrap_state`、`bootstrap_marker`、本地文件或 RPC 健康状态
-都不能满足该条件。当前 SourceDAO 尚未提供该冻结 predicate，因此当前实现和所有开发
-checkpoint 必须保持 `fee_split_policy_version = 0`；收到非零 policy 时 fail closed。
+都不能满足该条件。v1 readiness 固定为：
+
+```text
+codehash(DividendAddress) == ChainConfig.DividendCodeHash
+AND storage(
+      DividendAddress,
+      keccak256("sourcedao.dividend.bootstrap-finalized:v1")
+    ) == uint256(1)
+```
+
+`Dividend.finalizeBootstrap()` 只有在 DAO 全部必需模块完成 wiring 后才允许由
+bootstrap admin 调用。policy、高度或 readiness 任一不满足时不得执行 60%/40% 分账；
+如果已经到达 gate 但 code/marker 不匹配，区块必须 fail closed。
 
 `DividendFeeSplitBlock` 之前的短暂冷启动窗口内，每笔手续费全部归 miner。
 
@@ -415,9 +426,12 @@ go-ethereum:
 
 - `/home/bucky/work/go-ethereum/core/state_transition.go`
 - `/home/bucky/work/go-ethereum/consensus/ethash/consensus.go`
+- `/home/bucky/work/go-ethereum/consensus/ethash/usdb_reward.go`
+- `/home/bucky/work/go-ethereum/core/usdbstate/state.go`
+- `/home/bucky/work/go-ethereum/internal/usdb/reward_formula.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-integration.md`
-- `/home/bucky/work/go-ethereum/docs/usdb/usdb-fee-split-integration.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-state-implementation.md`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-dividend-bootstrap-implementation.md`
 
 USDB indexer / state view:
 
@@ -425,11 +439,28 @@ USDB indexer / state view:
 - `src/btc/usdb-indexer/src/service/client.rs`
 - `src/btc/usdb-indexer/src/index/*`
 
-需要确认 UIP-0006 是否要在 `pass_economic_profile` 中显式返回：
+UIP-0006 `pass_economic_profile` 已原子返回：
 
 - `usdb_main` / `reward_recipient`。
-- `total_miner_btc_sats` 或可审计的 aggregate view。
-- `price_state_id` 或与 UIP-0013 绑定的 price state reference。
+- `miner_aggregate.total_miner_btc_sats` 和 active owner count。
+
+price 不由 BTC-side profile 返回；UIP-0013 price state 由 USDB parent `stateRoot`
+承诺并由本地 validator 读取。
+
+# Development v1 实现状态
+
+当前 development 实现已经：
+
+- 用同一个 resolved profile 驱动 miner recipient、validator reward、difficulty 和 K sample。
+- 在 reserved system storage 中逐块更新 issued supply、UIP-0012 K 和 UIP-0013 price range。
+- 用 Rust/Go golden vectors 交叉固定 emission、fee、K 和 fixed-price range ID。
+- 以 policy `0/1`、height gate、exact Dividend code hash 和 finalized marker 控制 fee split。
+- 禁用 uncle/ommer，并在 header、body 和 finalization 三层拒绝。
+- 通过 parent-root reorg、restart、fresh joiner、same-height BTC replacement 和 live fee/ledger
+  测试验证历史重放。
+
+实现说明见
+`/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-state-implementation.md`。
 
 # 测试要求
 
@@ -460,11 +491,11 @@ USDB indexer / state view:
 | --- | --- | --- |
 | `total_miner_btc_sats` 是否统计 standard + collab pass | v1 固定统计所有 active standard + active collab pass owner；重复 active owner 是 invariant failure。 | 已收敛；由 UIP-0006 原子 profile 返回。 |
 | `issued_usdb_atoms` 是否包含 genesis alloc | 包含 genesis alloc 和 prior CoinBase，不扣除 burn。 | 地址、slot 和 genesis checked-sum 已冻结。 |
-| `price_atoms_per_btc` 来源和 scale | 由 UIP-0013 定义；本文只消费 price state。 | UIP-0013 必须固定初始值、更新顺序和 decimal encoding。 |
-| 动态 `K` 是否进入首个 public network | 已拆分到 UIP-0012；v1 使用 `collab_contribution` 作为 `CE_N`。 | Review UIP-0012 rolling window、warmup 和整数 `compute_k_bps`。 |
+| `price_atoms_per_btc` 来源和 scale | UIP-0013 v1 固定 `100_000 USDB/BTC`，reward 读取 parent price state。 | public release 前复核经济参数；换价必须升级 price policy。 |
+| 动态 `K` 是否进入首个 public network | UIP-0012 v1 已实现 50,400-block rolling window，使用 `collab_contribution` 作为 `CE_N`。 | public release 前继续经济攻击和长窗口性能审计。 |
 | aux pool split 如何激活 | v1 固定 `aux_pool_policy_version = 0`，CoinBase 100% 归 miner。 | UIP-0015 Final 后通过新 activation checkpoint 激活非零版本。 |
 | uncle / ommer reward | reward v1 完全禁用，含 uncle 的区块无效。 | 未来启用必须升级 `reward_rule_version`。 |
 | miner income contract | 当前 v1 使用 `usdb_main` / `header.Coinbase`。 | 若要独立收益合约，需新增铭文字段或治理配置。 |
-| fee accounting 与 EVM fork 语义 | v1 按每笔退款后 `gas_used * effective_gas_price` 分账，包含 tip/base-fee；余数归 miner。 | 实现替换 legacy `MinerDAOAddress` 路径并补状态转换测试。 |
-| fee split bootstrap readiness | 本地 marker 不参与共识；当前 SourceDAO 尚无冻结的 on-chain predicate，所以非零 policy 暂不允许激活。 | UIP-0010/SourceDAO 冻结 `bootstrapFinalized()` 或等价确定性 state predicate 后再实现 policy v1。 |
+| fee accounting 与 EVM fork 语义 | v1 已按每笔退款后 `gas_used * effective_gas_price` 分账，包含 tip/base-fee；余数归 miner，且绕过 legacy `MinerDAOAddress`。 | public release 前继续覆盖后续 EVM fork 的 fee 语义。 |
+| fee split bootstrap readiness | 已冻结 exact Dividend code hash + one-way `bootstrapFinalized == 1`，本地 marker 不参与共识。 | public release 绑定最终 artifact/code hash 和 gate 高度。 |
 | UIP-0006 reward fields | profile 原子返回 `usdb_main` 和 `miner_aggregate`。 | 已收敛；Rust/Go codec 必须 fail closed 校验。 |

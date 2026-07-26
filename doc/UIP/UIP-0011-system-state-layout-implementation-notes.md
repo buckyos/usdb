@@ -107,6 +107,47 @@ LEADER_LAST_VALID_QUOTE_BLOCK_SLOT(pass_id)
   = 0x50bdd3b511e9a1d9f70ca8cc57c354965ef411fcac0be5754bf0eca94ce0de25
 ```
 
+# UIP-0013 Fixed-Price Range Identity
+
+The v1 range ID stored in `PRICE_POLICY_RANGE_ID_SLOT` is:
+
+```text
+keccak256(
+  UTF8("usdb.price.policy.range:v1") || 0x00 ||
+  uint256_be(chain_id) ||
+  uint64_be(start_block) ||
+  uint32_be(price_policy_version) ||
+  uint32_be(price_source_kind) ||
+  uint256_be(const_price_atoms_per_btc)
+)
+```
+
+For development chain ID `20260323`, start block `0`, policy/source `1`, and
+`100000000000000000000000` atoms/BTC:
+
+```text
+PRICE_POLICY_RANGE_ID
+  = 0x2ae45cafae84cc892d1d4354f02a0869f97dfd6ca2c757ba511c57680b8bfaf4
+```
+
+The v1 constant is part of the policy implementation. A different fixed price
+requires a new price policy version and must not reuse the v1 identity.
+
+# Dividend Readiness Slot
+
+UIP-0010 readiness is intentionally stored in the Dividend system contract,
+not in `USDB_SYSTEM_STATE_ADDRESS`:
+
+```text
+DIVIDEND_BOOTSTRAP_FINALIZED_SLOT
+  = keccak256(UTF8("sourcedao.dividend.bootstrap-finalized:v1"))
+  = 0x7d8bb76c5e489191d3f481f0b7ade016df922a8ec91d3eb9c93c07ee5a337054
+```
+
+Fee policy v1 requires both the chain-config `DividendCodeHash` and this slot to
+equal `uint256(1)`. Local bootstrap files and service readiness are not
+consensus inputs.
+
 # Genesis
 
 Every USDB genesis must create the reserved account and initialize:
@@ -121,9 +162,9 @@ other genesis-funded account. It uses unsigned 256-bit arithmetic and genesis
 construction fails on a negative, missing or overflowing balance.
 
 Policy slots whose policy version is `0` remain canonical zero and may be absent
-from the storage trie. When UIP-0012, UIP-0013 or UIP-0014 is active from
-genesis, its defining UIP and chain config must provide the corresponding
-non-zero initial values.
+from the storage trie. Development v1 initializes the UIP-0013 fixed-price
+slots from genesis. UIP-0012 K slots start at canonical zero and are populated
+one sample per reward block. UIP-0014 remains zero until its policy activates.
 
 # Upgrade Rule
 

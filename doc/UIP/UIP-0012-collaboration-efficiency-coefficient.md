@@ -194,13 +194,15 @@ slot domain、动态 ring slot 派生和 golden vectors 见
 - `K_WINDOW_CURSOR_SLOT`
 - `K_CE_RING_SLOT_BASE[i]` for `0 <= i < K_WINDOW_BLOCKS`
 
-可选审计状态：
+v1 审计状态：
 
 - `K_LAST_CE_SLOT`
 - `K_LAST_AE_SLOT`
 - `K_LAST_K_BPS_SLOT`
 
-可选审计 slot 只保存当前 canonical head 对应的 last values。历史高度的 `last` 值仍由 archive / snapshot state 查询。
+v1 必须同步写入上述三个 audit slot；否则同一 policy version 会产生不同 state root。
+它们只保存当前 canonical head 对应的 last values。历史高度的 `last` 值仍由 archive /
+snapshot state 查询。
 
 # State Transition
 
@@ -233,7 +235,9 @@ write(K_CE_RING_SLOT_BASE[cursor_before], CE_N)
 write(K_WINDOW_SUM_SLOT, sum_before - old_sample + CE_N)
 write(K_WINDOW_COUNT_SLOT, min(count_before + 1, K_WINDOW_BLOCKS))
 write(K_WINDOW_CURSOR_SLOT, (cursor_before + 1) % K_WINDOW_BLOCKS)
-write(optional last slots)
+write(K_LAST_CE_SLOT, CE_N)
+write(K_LAST_AE_SLOT, AE_N or 0 during warmup)
+write(K_LAST_K_BPS_SLOT, k_bps_N)
 ```
 
 当前区块 `CE_N` 必须在计算 `k_bps_N` 之后再写入窗口。否则当前区块会同时影响分子和分母，削弱 `K` 的激励语义。
@@ -247,7 +251,7 @@ write(optional last slots)
 K 随 CE / AE 单调不减
 ```
 
-v1 候选整数公式：
+v1 固定整数公式：
 
 ```text
 if AE == 0:
@@ -267,7 +271,8 @@ else:
 - 全程只使用整数运算。
 - 所有乘法和加法必须使用足够宽的 unsigned integer，并在溢出时 fail closed。
 
-该公式仍需重点审计。本文 Draft 阶段不排除替换为更平滑或更保守的整数函数。
+该公式仍需重点做经济攻击和参数审计，但同一 policy v1 下不得就地替换。未来采用更平滑或
+更保守的函数必须升级 `collaboration_efficiency_policy_version`。
 
 # Reorg 语义
 
@@ -304,13 +309,25 @@ resolved_profile.pass.collab_contribution
 
 v1 不要求 UIP-0006 返回 `collab_raw_energy_sum`。如果后续 policy 改用 raw collab energy，则必须先升级 UIP-0006 state view。
 
+# Development v1 实现状态
+
+当前 Go 共识实现已接入 policy `0/1` dispatch、50,400-slot ring、checked sum、warmup、
+full-window replacement 和三个 audit slots；Rust/Go 纯公式测试使用相同边界向量。
+parent-root reorg 会同时恢复 ring、sum/count/cursor 和 last slots。
+
+当前 activation 的 UIP-0014 quote policy 为 `0`，因此 `CE_N` 使用 nominal
+`collab_contribution`。quote policy 非零时的 stale Leader gating 仍由 UIP-0014
+落地后接入，不在 UIP-0012 中平行实现。
+
 # 实现影响
 
 go-ethereum:
 
-- `/home/bucky/work/go-ethereum/core/state_transition.go`
+- `/home/bucky/work/go-ethereum/consensus/ethash/usdb_reward.go`
+- `/home/bucky/work/go-ethereum/core/usdbstate/state.go`
+- `/home/bucky/work/go-ethereum/internal/usdb/reward_formula.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
-- reward verifier / BTC-side `usdb-indexer` integration
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-state-implementation.md`
 
 USDB indexer:
 
@@ -340,5 +357,5 @@ USDB indexer:
 | quote stale 是否仍进入 `CE_N` | quote policy 未激活时沿用 nominal contribution；激活后 stale/inactive Leader 的 `CE_N = 0`。 | 已与 UIP-0014 candidate-energy 口径收敛。 |
 | `K_WINDOW_BLOCKS` 精确值 | v1 固定为 `50400`，按 12 秒平均出块间隔对应 1 周。 | 若未来调整目标出块间隔，升级 K policy version。 |
 | warmup 阶段策略 | 窗口未填满时固定 `k_bps = 10000`。 | 审计冷启动阶段是否需要单独的 activation delay。 |
-| `compute_k_bps` 公式 | 使用整数候选公式。 | 做参数表、边界测试和经济攻击审计。 |
-| 是否保存 `K_LAST_*` slots | 建议作为审计便利字段，但不是计算必需。 | 实现阶段评估 storage 成本和 RPC 查询需求。 |
+| `compute_k_bps` 公式 | v1 已固定整数公式，并由 Rust/Go golden vectors 和边界测试交叉验证。 | 继续做经济攻击审计；修改公式必须升级 policy version。 |
+| 是否保存 `K_LAST_*` slots | v1 固定写入，便于按 canonical state 审计。 | 后续 RPC 如需暴露，使用 decimal string，不改变共识存储。 |

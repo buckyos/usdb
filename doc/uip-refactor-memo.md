@@ -616,7 +616,9 @@
 - `params.ChainConfig.usdb` 已由固定两个字段替换为按 USDB block 严格排序的 `activations[]`；每条记录携带 UIP-0008/UIP-0009 完整 version set。
 - `USDBConsensusAt(usdb_block)` 返回目标高度最近生效版本；首次激活前返回 inactive，激活边界及之后按对应完整版本集合解释。
 - registry 增加空记录、乱序/同高冲突、必需版本和 reward 依赖校验；`CheckCompatible` 只允许修改尚未到达的未来激活，已生效差异返回最早安全回退高度。
-- built-in development chain 从 genesis 激活 payload/difficulty v1；UIP-0011 至 UIP-0015 尚未实现的版本字段显式为 `0`，非零未知 policy fail closed。
+- built-in development chain 从 genesis 激活 payload/difficulty、reward、coinbase emission、
+  collaboration efficiency 和 fixed-price policy v1；fee split 由 bootstrap overlay 激活。
+  尚未实现的 UIP-0014 quote 与 UIP-0015 aux-pool 字段显式为 `0`，非零未知 policy fail closed。
 - payload builder 删除构造期固定 policy version，`BuildCurrentPayload(ctx, blockNumber)` 从 chain config 取得 expected version；不支持的 payload version、无效共识配置、current system state/profile 不可用或 selected pass 非 candidate 均停止组块。
 - worker 在 USDB chain 上即使调用方请求 `noExtra` 也必须生成 selector；active chain 缺少 builder 或初始化失败时禁止回退到静态/空 extra-data。
 
@@ -624,7 +626,9 @@
 
 - `VerifyHeader` 先执行精确 107 bytes 与 expected version 的纯二进制 guard，再解析 historical profile 并按 UIP-0005 `ceil(base_difficulty * factor / 10000)` 重算 difficulty；畸形字段不会触发 RPC。
 - miner `Prepare` 使用相同 chain-config policy 和 profile resolver 计算 difficulty；miner 生成、validator 验证的交叉测试会拒绝未折算的 base difficulty。
-- reward state transition 重复 binary guard 并消费同一 selector-bound profile；旧 `0.5..2.0` level multiplier 和 mock reward policy 已删除，UIP-0011 未激活前保留既有 Ethash 静态奖励。
+- reward state transition 重复 binary guard 并消费同一 selector-bound profile；旧 `0.5..2.0`
+  level multiplier 和 mock reward policy 已删除。UIP-0011 激活后执行 emission、CoinBase
+  recipient、reserved system state 与 uncle 禁用规则，激活前才保留既有 Ethash 静态奖励。
 - BTC-side `usdb-indexer` 服务不可用、historical state 不可保留、same-height state replacement 或 profile 字段不一致时均 fail closed；非 USDB chain 继续使用 legacy 行为。
 - 删除 legacy `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留显式的 `--ethash.usdb-indexer.*` / `--miner.usdb-indexer.*` 访问参数、`--miner.usdb.passid` 和 query timeout，不能启用、关闭或改写共识版本。
 
@@ -728,9 +732,9 @@
 
 ## UIP-0010 SourceDAO Fresh Bootstrap 范围收敛
 
-状态：协议范围、参数化初始化、genesis public spec、artifact commitment、runtime signer 和
-full-bootstrap restart/joiner 开发期生命周期测试均已对齐。public release 参数/签名冻结以及
-UIP-0011 fee split 联动仍留后续批次；当前改动不提交，等待 review。
+状态：协议范围、参数化初始化、genesis public spec、artifact commitment、runtime signer、
+on-chain readiness、UIP-0011 fee split 和 full-bootstrap restart/joiner 开发期生命周期测试
+均已对齐。public release 参数/签名/管理员托管仍待冻结；当前改动不提交，等待 review。
 
 ### 范围决策
 
@@ -786,11 +790,19 @@ UIP-0011 fee split 联动仍留后续批次；当前改动不提交，等待 rev
 - full bootstrap operation 对初始化、implementation/proxy deployment 和 DAO wiring 记录 tx hash /
   block number；preflight 和链上冲突会落盘 error state。参数化 full bootstrap、strict validator、
   全量幂等重放、缺 secret 和 `cycleMinLength` 冲突路径均已实跑。
+- DAO 新增 `bootstrapReadyForDividend(expectedDividend)`；Dividend 使用
+  `keccak256("sourcedao.dividend.bootstrap-finalized:v1")` unstructured slot 保存 one-way
+  readiness。只有 bootstrap admin 且全部必需模块完成 wiring 后才能 final，strict validator
+  要求 marker 为 true。该 marker 不撤销 DAO bootstrap admin 权限。
 - 新增 `run_local_full_bootstrap_restart_joiner.sh`，复用现有双节点、full bootstrap 和 strict validator
   入口：仅启动 node1 完成 full bootstrap，在固定完成高度记录 block hash/state root，重启 node1
   后精确复核，再启动全新 node2 从相同 genesis 重放历史。2026-07-25 实跑在高度 `0x1b` 完成该
   检查；两端完整模块 strict validation 摘要一致，第二次 full bootstrap 为全 skipped，零
   completed/error operation，测试完成后两节点固定高度 block hash/state root 一致。
+- 2026-07-26 在 development gate `256` 上补跑 reward/fee 生命周期：区块 `258` 精确核对
+  emission + miner 60% fee、Dividend 40% fee；区块 `262` 的 ledger sync 吸收同步前 pending，
+  并把同步交易自身 DAO fee 留给下一轮。高度 `0x109` 的 restart 和 fresh `full` sync joiner
+  block hash/state root 完全一致，随后全量 bootstrap 重放零 completed/error。
 
 ### PoW 参数标定
 
@@ -808,18 +820,19 @@ UIP-0011 fee split 联动仍留后续批次；当前改动不提交，等待 rev
 ### 后续实现与测试
 
 - SourceDAO full bootstrap 继续补齐更完整的非法参数自动化矩阵，以及 public network 的 admin
-  handoff/finalization；开发期 restart/joiner replay 已完成。
+  handoff/custody；开发期 finalization、fee gate 和 restart/joiner replay 已完成。
 - Docker/public release 继续增加 canonical genesis/config/state commitment、签名和 joiner
   validation；runtime env 适用于开发，公开网络应接入专用 signer/secret manager。
 - 测试继续覆盖参数化 token/committee 的细粒度负向组合、artifact tamper，以及无 source-chain
   RPC 的确定性结果。
-- fee split 公式和实际余额分账继续由 UIP-0011 承接；UIP-0010 只保证地址、code、初始化状态和 activation 前置条件。
+- UIP-0010 已向 UIP-0011 提供固定地址、code hash 和 consensus-readable readiness；具体
+  60%/40% 公式仍由 UIP-0011 所有。
 
-## UIP-0011 System State 与 BTC Reward Inputs 基础批次
+## UIP-0011 至 UIP-0013 Reward State 对齐
 
-状态：2026-07-25 已完成协议冻结、genesis system state 和 BTC-side aggregate/profile
-接口改造，当前未提交，等待 review。实际 CoinBase emission、fee split、UIP-0012 K 和
-UIP-0013 price 状态转换仍属于后续批次。
+状态：2026-07-25 的 system-state/BTC aggregate 基础分别以 go-ethereum `18bf93bf6`
+和 usdb `bd75c1a` 提交。2026-07-26 已在其上完成 CoinBase emission、fee split、
+UIP-0012 K、UIP-0013 FixedPrice 和集中 live 测试；本轮新增改动未提交，等待 review。
 
 ### 共识决策与存储布局
 
@@ -834,9 +847,10 @@ UIP-0013 price 状态转换仍属于后续批次。
   burn 不回减。其余未激活 policy slot 保持 canonical zero。
 - fee split 固定按每笔退款后 `gas_used * effective_gas_price` 计算，60%/40%，余数归
   miner；不叠加 legacy ETHW `MinerDAOAddress` 路径。
-- 本地 bootstrap marker 不属于共识。SourceDAO 尚无冻结的 on-chain readiness
-  predicate，因此当前 checkpoint 必须保持 `fee_split_policy_version = 0`；非零未知/
-  不可验证 policy fail closed。
+- 本地 bootstrap marker 不属于共识。fee policy v1 readiness 固定为
+  `DividendCodeHash` 精确匹配和
+  `keccak256("sourcedao.dividend.bootstrap-finalized:v1") == 1`；到达 gate 后任一不匹配
+  均 fail closed。
 
 ### Go Genesis 与共识消费
 
@@ -849,6 +863,20 @@ UIP-0013 price 状态转换仍属于后续批次。
 - Go UIP-0006 profile codec 增加 `pass.usdb_main` 和原子
   `miner_aggregate`。miner/validator 共用 resolver，校验 reward address、canonical
   decimal、uint64 边界和非零 active owner count，任何篡改 fail closed。
+- 新增 `internal/usdb/reward_formula.go` 和 Rust `usdb-util::reward_formula`，交叉实现
+  UIP-0011 emission/fee、UIP-0012 K 和 UIP-0013 fixed-range ID；Rust/Go golden vectors
+  固定 range encoding、公式边界和 overflow。
+- `consensus/ethash/usdb_reward.go` 在修改 state 前完整准备所有 writes：校验
+  `header.Coinbase == profile.usdb_main`，读取 parent price/K/issued，计算 emission，
+  再原子写入 issued、K ring/audit 和 child price range。reward v1 builder/validator
+  完全禁用 uncle/ommer。
+- miner 在构造 header 时使用 resolved profile reward recipient，不再由 CLI etherbase 决定
+  共识收款方；validator 使用相同 profile 重算。
+- UIP-0012 v1 固定 50,400-block window、warmup `10000`、完整窗口先算后写和
+  `8001..20000` 整数 K。损坏 count/cursor/sum/ring 全部 fail closed。
+- UIP-0013 v1 固定 `100000000000000000000000 atoms/BTC`，reward 使用 parent price，
+  activation 写 child range；v1 range ID encoding/golden 已冻结。不同 fixed constant
+  必须升级 price policy version，当前不支持 v2。
 
 ### Rust RPC 与调用方
 
@@ -876,12 +904,27 @@ UIP-0013 price 状态转换仍属于后续批次。
 - 两个 Web 客户端的 type-check/build 通过；console build 仅保留既有 Vite
   chunk-size warning。修改过的 shell 脚本通过 `bash -n`，Python runner/simulator
   通过语法编译。
+- Go reward/fee/K/price 单元测试覆盖 target exhausted、zero BTC、recipient mismatch
+  原子失败、uint 边界、full-window replacement、corrupt K、parent/child price 和 uncle
+  拒绝。parent-root reorg 测试确认 balance、issued、K 和 price range 全部恢复。
+- SourceDAO targeted Hardhat 测试覆盖 DAO readiness、Dividend one-way marker 和
+  consensus-credit ledger sync；USDB 29-file build 与 42-artifact opcode audit 通过。
+- selector-bound real BTC regtest reward smoke 连续验证 10 个块的 emission、issued、
+  K、price 和 empty uncle；同高度 BTC replacement 使 snapshot ID 改变，fresh validator
+  以 `SNAPSHOT_ID_MISMATCH` 拒绝旧 selector 链并保持 genesis。
+- development gate `256` 的 full-bootstrap live E2E 精确核对 fee/ledger，随后验证
+  restart、fresh full-sync joiner、历史 block hash/state root、双节点 strict validation
+  和全量 bootstrap 幂等重放。
+- 为本地测试补齐 `--fakepow` 到节点 Ethash config 的传递，并增加仅运行期
+  `--fakepow.delay`；full lifecycle 使用 1 秒间隔和关闭 preseal，避免 sibling work 与
+  墙钟未来块。该参数不进入 ChainConfig/genesis/共识 payload。
 
 ### 后续边界
 
-- UIP-0011 reward state transition 仍需消费同一个 resolved profile，实现 target
-  supply、emission、`issued_usdb_atoms` 累加、coinbase recipient 和 reorg/replay。
-- UIP-0012/UIP-0013 仍需实现 K/price 的初始化与逐块 system-storage 更新；本批只冻结
-  shared layout。
-- fee split 实现前必须先在 UIP-0010/SourceDAO 冻结 consensus-readable bootstrap
-  readiness predicate；aux pool 在 UIP-0015 非零 policy 激活前保持关闭。
+- public testnet/mainnet 仍需冻结最终 fixed price、difficulty calibration、fee gate、
+  DAO/Dividend artifact/code hash、canonical genesis/hash 和 release manifest。
+- UIP-0012 当前在 UIP-0014 quote policy 未激活时直接使用 nominal
+  `collab_contribution`；quote policy 非零后的 stale Leader `CE=0` 路径随 UIP-0014 对齐。
+- fixed price 调整、dynamic real price 和 price report 不在 v1；必须新增 UIP-0013
+  policy version 和 activation/golden/replay 覆盖。
+- aux pool 在 UIP-0015 非零 policy 激活前保持关闭；首版 CoinBase 100% 归 reward recipient。

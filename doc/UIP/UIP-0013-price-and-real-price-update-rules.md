@@ -146,6 +146,7 @@ PricePolicyRange {
 
 [H1, H2):
     price_source_kind = FixedPrice
+    price_policy_version = 2
     const_price_atoms_per_btc = 120_000_000_000_000_000_000_000
 
 [H2, ...):
@@ -153,7 +154,9 @@ PricePolicyRange {
     price_source_policy_ref = <future UIP / policy id>
 ```
 
-该模型允许启动期先固定价格，必要时通过后续升级调整固定价格，也允许跳过外部以太坊 DeFi 方案，直接进入 USDB 自有 DeFi 方案。
+该模型允许启动期先固定价格，必要时通过后续 policy version 调整固定价格，也允许跳过外部
+以太坊 DeFi 方案，直接进入 USDB 自有 DeFi 方案。v1 的 constant 编译进 policy implementation；
+不得创建“仍为 v1、但 constant 不同”的 range。
 
 # Reserved System Storage
 
@@ -227,10 +230,12 @@ old range [A, B):
     const_price_atoms_per_btc = 100_000 * USDB_ATOMS_PER_USDB
 
 new range [B, C):
+    price_policy_version = 2
     const_price_atoms_per_btc = 120_000 * USDB_ATOMS_PER_USDB
 ```
 
-旧区块必须继续按旧 range 重放。
+旧区块必须继续按旧 range 重放。新的 fixed-price version 必须同时提供公式实现、range-ID
+encoding、Rust/Go golden vector 和 activation compatibility test；当前二进制只支持 v1。
 
 # Genesis 初始化
 
@@ -244,9 +249,24 @@ PRICE_SOURCE_KIND_SLOT        = 1
 PRICE_POLICY_RANGE_ID_SLOT    = active fixed-price range id
 ```
 
-`PRICE_POLICY_RANGE_ID_SLOT` 的值必须是 active `PricePolicyRange` canonical
-encoding 的 32-byte hash。range encoding 与 chain-config binding 仍需在
-UIP-0013 实现批次中冻结，但不得改变本节已固定的 storage slot。
+`PRICE_POLICY_RANGE_ID_SLOT` 的 v1 canonical encoding 固定为：
+
+```text
+keccak256(
+  UTF8("usdb.price.policy.range:v1") || 0x00 ||
+  uint256_be(usdb_chain_id) ||
+  uint64_be(start_block) ||
+  uint32_be(price_policy_version) ||
+  uint32_be(price_source_kind) ||
+  uint256_be(const_price_atoms_per_btc)
+)
+```
+
+chain ID `20260323`、`start_block = 0` 的 v1 golden value：
+
+```text
+0x2ae45cafae84cc892d1d4354f02a0869f97dfd6ca2c757ba511c57680b8bfaf4
+```
 
 # State Transition
 
@@ -291,7 +311,8 @@ write PRICE_ATOMS_PER_BTC_SLOT for child state
 
 如果在 activation 边界上需要切换 `FixedPrice` 常量，则新常量从边界区块执行后的 child state 开始可见，最早影响下一个区块的 UIP-0011 reward。
 
-该 one-block delay 是 v1 推荐语义。实现阶段如果选择让 activation 边界区块立即使用新 price，必须在 USDB chain reward transition 中明确定义，并补充边界测试。本文 Draft 阶段倾向 one-block delay，以避免 parent state / child state 语义混淆。
+该 one-block delay 是 v1 固定语义。activation 边界区块仍使用 parent price，并把当前 range
+写入 child state；边界测试必须同时校验 reward price 和 child range ID。
 
 # Dynamic Price Policy 接入边界
 
@@ -406,6 +427,19 @@ Price policy range 是 activation matrix 的一类记录。
 
 如果 `price_policy_version`、`price_source_kind`、fixed price constant 或动态 source policy 发生变化，必须新增 activation record，不得就地修改历史记录。
 
+# 实现影响
+
+go-ethereum:
+
+- `/home/bucky/work/go-ethereum/consensus/ethash/usdb_reward.go`
+- `/home/bucky/work/go-ethereum/core/usdbstate/state.go`
+- `/home/bucky/work/go-ethereum/internal/usdb/reward_formula.go`
+- `/home/bucky/work/go-ethereum/params/config.go`
+- `/home/bucky/work/go-ethereum/docs/usdb/usdb-reward-state-implementation.md`
+
+Rust/Go 的 `FixedPriceRangeIDV1` golden vector 必须一致。当前实现只支持
+`price_policy_version = 1` / `price_source_kind = FixedPrice`，其他版本 fail closed。
+
 # 测试要求
 
 至少需要覆盖：
@@ -414,7 +448,8 @@ Price policy range 是 activation matrix 的一类记录。
 - `FixedPrice` range 内 `price == real_price == const_price`。
 - miner price report 在 `FixedPrice` range 内无效或被忽略。
 - UIP-0011 reward 使用 parent state price，而不是同一区块内更新后的 child state price。
-- 固定价格升级后，旧区块按旧 range 重放，新区块按新 range 重放。
+- 新 v1 activation range 保持相同 constant，但写入按新 `start_block` 派生的 child range ID。
+- 未来固定价格升级必须先增加 v2 实现，并覆盖旧 v1 区块和新 v2 区块的交叉重放。
 - activation range 缺失、重叠或不连续时 fail closed。
 - `price_atoms_per_btc == 0` 时区块无效。
 - reorg 后 price slots 回滚。
@@ -427,12 +462,12 @@ Price policy range 是 activation matrix 的一类记录。
 | --- | --- | --- |
 | 启动期价格 | v1 固定 `100_000 USDB native units / BTC`。 | 与 public testnet / mainnet 经济参数一起复核。 |
 | `PRICE_REPORT_START_HEIGHT` | 不预先定义；由后续 activation range 决定。 | 在动态 price source UIP Final 后再激活。 |
-| 固定价格是否可升级 | 可以，通过新增 `FixedPrice` range 调整。 | 定义治理/activation 操作流程和公告窗口。 |
-| reward 是否使用 parent price | 当前草案倾向使用 parent state price，price update 影响下一块。 | 与 go-ethereum reward transition 实现一起审计。 |
+| 固定价格是否可升级 | 可以，但不同 constant 必须使用新的 price policy version；当前只实现 v1。 | v2 定义治理/activation 操作流程、range encoding 和公告窗口。 |
+| reward 是否使用 parent price | v1 已固定使用 parent price，child update 最早影响下一块。 | 保留 activation 边界与 reorg 回归。 |
 | 动态阶段是否每块必须更新 price | 本文不固定；`FixedPrice` v1 不需要 miner update。 | 后续 dynamic price source UIP 必须定义 mandatory / optional / scheduled update 规则。 |
 | 未提交有效 price update 时是否延续旧 price | 本文不固定；`FixedPrice` v1 恒定延续。 | 后续 dynamic price source UIP 必须定义 carry-forward 或 fail-closed 规则。 |
 | price update 是否需要额外激励 | 本文不固定。 | 后续 dynamic price source UIP 评估更新激励、惩罚或强制义务。 |
-| `PRICE_POLICY_RANGE_ID_SLOT` canonical encoding | `<TODO>`。 | 等 activation registry 实现规范固定。 |
+| `PRICE_POLICY_RANGE_ID_SLOT` canonical encoding | v1 domain、字段宽度/字节序和 golden value 已冻结。 | 新 policy version 使用独立 encoding/golden vector，不修改 v1。 |
 | Ethereum DeFi 与 USDB native DeFi 顺序 | 二者都是可选后续 policy，不强制阶段二再阶段三。 | 独立 UIP 评估成熟度和实现成本。 |
 | 双边挂单参数 | 不在本文固定。 | 后续 DeFi price source UIP 统一 `0.8/1.2` 与 `0.9/1.1` 差异。 |
 | `price` 向 `real_price` 的动态收敛 | `FixedPrice` 下禁用。 | 动态 price source UIP 再固定整数收敛公式。 |
