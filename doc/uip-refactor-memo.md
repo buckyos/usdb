@@ -499,7 +499,8 @@
 
 ## World-Sim UIP-0001 至 UIP-0006 经济机制扩展
 
-状态：核心实现、聚焦 live smoke 和 2026-07-26 的 300-tick 随机 soak 已完成。
+状态：核心实现、聚焦 live smoke、2026-07-26 的 300-tick 随机 soak 和
+2026-07-27 的三 seed × 2500-tick 矩阵已完成。
 
 ### 改动事项
 
@@ -513,7 +514,7 @@
 
 ### 已验证
 
-- `python3 src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py`：18 个纯测试通过。
+- `python3 src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py`：19 个纯测试通过。
 - 新增/调整 shell 脚本全部通过 `bash -n`，Python 入口通过 `py_compile`，`git diff --check` 通过。
 - 独立 regtest smoke 于 2026-07-18 通过：bootstrap 完成 8 个业务步骤和 1 个 energy-growth block，随后运行 3 个 tick；最终 2 张 active standard、2 张 active collab，完成 2 次 historical candidate/profile/breakdown replay。
 - smoke 最终指标：`verify_fail=0`、`global_cross_check_fail=0`、`validator_sample_fail=0`、`global_cross_check_ok=11`、`validator_sample_ok=2`。
@@ -521,11 +522,16 @@
 
 ### 后续边界
 
-- 120-agent / 300-tick world-sim 和两次 depth-3 reorg 已完成；2500-tick、多 seed 和故障注入继续作为更长时 soak。candidate/breakdown 大数据量评估见下一节，后续容量工作保留 cold cache、并发和更高容量点。
+- 120-agent / 300-tick world-sim 和两次 depth-3 reorg 已完成；三 seed ×
+  2500-tick 又累计完成 7500 tick、12 次 depth-3 reorg、17388 次 agent self-check、
+  174 次 global cross-check 和 72 次 candidate replay/tamper，全部 fail 指标为 0。
+  seed 41 为 clean full run；seed 73/109 为故障修正后的 recovery qualification
+  run，发布前仍需在合并后的 clean commit 上重复完整矩阵。
 
 ## UIP-0004 至 UIP-0006 Economic View 规模评估
 
-状态：`100 / 1K / 10K` deterministic release v3 矩阵已完成；改动尚未提交，等待 review。
+状态：`100 / 1K / 10K / 100K` deterministic release v4、cold-cache、物理 I/O、
+multi-leader 和并发矩阵已完成；改动尚未提交，等待 review。
 
 ### 实现与测试入口
 
@@ -550,7 +556,8 @@
 
 ### 后续边界
 
-- 仍需 cold cache/物理 I/O、并发与 cache eviction、collab 多 Leader 分布、100K 以上容量点和 2500-tick/multi-seed 长时 soak。
+- 仍需 cold-start 并发首次派生、多 historical context cache eviction、100K 以上
+  容量点，以及目标部署磁盘上的隔离 I/O 重复测试。
 - 这些属于容量与运维评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐。
 
 ## 跨 UIP 术语收口
@@ -1028,7 +1035,22 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
 
 ### 后续边界
 
-- 继续保留 cold OS/RocksDB cache、物理 I/O、多客户端并发、cache eviction、
-  多 Leader topology、100K 数据点和 2500-tick/multi-seed soak。
+- release v4 已补 100K 单 Leader/1,000 Leader topology、cold OS file-cache
+  eviction、`/proc/self/io` physical read 和 8-client cache-hit 并发分页。
+- 100K 单 Leader candidate warm/restart/cold 约为 22.23/22.18/27.85 秒，
+  cold physical read 约 224.07 MiB；breakdown warm/restart/cold 约为
+  7.26/7.28/12.30 秒，cold physical read 约 218.00 MiB。
+- 100K、1,000 Leaders 下每个 Leader 100 collab；热点 breakdown 约 258 毫秒。
+  8 client x 2 traversal wall time 约 1.23 秒，candidate p95 约 624 毫秒，
+  digest 全部一致且 cache-hit RocksDB seek 为 0。
+- 三 seed × 2500-tick runner 已完成：总计 7500 tick、12 次 reorg，全部失败
+  指标为 0；runner v2 显式区分 clean full run 与 recovery-stage qualification。
+- 长跑暴露并修正 wallet rescan transient、recovery wallet load、indexer restart
+  未重建 transfer tracker 和 residual bitcoind 清理问题。
+- cold-start 并发首次派生、多 historical-context cache eviction 和 100K 以上容量点继续保留。
 - public testnet/mainnet 仍需正式 difficulty/fixed-price calibration、canonical
   genesis/release manifest 和真实第二 production policy 激活 E2E。
+- Go 新增真实 Ethash calibration report v4 和 pilot ladder。`0x2000` 的 256-block
+  样本全部受一秒时间戳下限影响；升至 `0x13237c` 后，16 个区间总计 195 秒，
+  候选为 `0x136f7d`。该次运行使用 dirty source 且与 world-sim 并行，只证明流程和
+  本机数量级，不作为 public 参数。

@@ -276,6 +276,12 @@ DurationLimit = 13
 `scripts/usdb/calibrate_pow_difficulty.py` 负责输出可重放的区间采样报告；发布评审必须比较多轮、
 多硬件报告。
 
+若低难度样本大量落在一秒 header timestamp 下限，必须先运行
+`scripts/usdb/run_usdb_pow_calibration_ladder.sh`，逐轮提高隔离 genesis difficulty，
+直到一秒间隔占比低于质量门禁。报告必须记录 source/artifact、hardware、thread、
+warm-up、genesis/minimum difficulty，并对 dirty source 或 timestamp-resolution-limited
+样本标记为不可用于 release freeze。
+
 ## Difficulty Retarget 参数
 
 当前 go-ethereum 原型继续沿用：

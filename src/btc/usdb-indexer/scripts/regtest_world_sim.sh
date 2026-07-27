@@ -183,6 +183,45 @@ EOF
   fi
 }
 
+start_bitcoind() {
+  local max_attempts=60
+  local attempt
+  local output
+
+  if "$BITCOIN_CLI_BIN" \
+    -regtest \
+    -datadir="$BITCOIN_DIR" \
+    -rpcport="$BTC_RPC_PORT" \
+    getblockcount >/dev/null 2>&1; then
+    log "Reusing healthy bitcoind process: rpc_port=${BTC_RPC_PORT}"
+    return
+  fi
+
+  for attempt in $(seq 1 "$max_attempts"); do
+    if output="$(
+      "$BITCOIND_BIN" \
+        -regtest \
+        -server=1 \
+        -port="$BTC_P2P_PORT" \
+        -txindex=1 \
+        -fallbackfee=0.0001 \
+        -datadir="$BITCOIN_DIR" \
+        -rpcport="$BTC_RPC_PORT" \
+        -daemonwait 2>&1
+    )"; then
+      return
+    fi
+    if [[ "${output,,}" == *"cannot obtain a lock on data directory"* ]] &&
+      ((attempt < max_attempts)); then
+      log "Waiting for prior bitcoind shutdown: attempt=${attempt}/${max_attempts}"
+      sleep 1
+      continue
+    fi
+    printf '%s\n' "$output" >&2
+    return 1
+  done
+}
+
 ensure_ord_binary() {
   if [[ "$ORD_BIN" == */* ]]; then
     if [[ ! -x "$ORD_BIN" ]]; then
@@ -327,8 +366,8 @@ stop_process() {
 }
 
 list_workspace_bitcoind_pids() {
-  ps -eo pid=,comm=,args= | awk -v data_dir="$BITCOIN_DIR" '
-    $2 == "bitcoind" {
+  ps -eo pid=,args= | awk -v data_dir="$BITCOIN_DIR" '
+    $2 ~ /(^|\/)bitcoind$/ {
       target = "-datadir=" data_dir
       for (field = 3; field <= NF; field++) {
         if ($field == target) {
@@ -610,16 +649,14 @@ main() {
   mkdir -p "$WORK_DIR" "$BITCOIN_DIR" "$ORD_DATA_DIR" "$BALANCE_HISTORY_ROOT" "$USDB_INDEXER_ROOT"
   log "Workspace directory: $WORK_DIR"
 
+  local resuming_existing_state=0
+  if [[ "$SIM_RECOVERY_ENABLED" == "1" && -f "$SIM_RECOVERY_STATE_FILE" ]]; then
+    resuming_existing_state=1
+    log "Resuming existing world-sim state: recovery_state=${SIM_RECOVERY_STATE_FILE}"
+  fi
+
   log "Starting bitcoind: rpc_port=${BTC_RPC_PORT}, p2p_port=${BTC_P2P_PORT}"
-  "$BITCOIND_BIN" \
-    -regtest \
-    -server=1 \
-    -port="$BTC_P2P_PORT" \
-    -txindex=1 \
-    -fallbackfee=0.0001 \
-    -datadir="$BITCOIN_DIR" \
-    -rpcport="$BTC_RPC_PORT" \
-    -daemonwait
+  start_bitcoind
 
   BITCOIND_PID="$(pgrep -f "bitcoind.*-datadir=${BITCOIN_DIR}" | head -n 1 || true)"
   if [[ -z "$BITCOIND_PID" ]]; then
@@ -637,9 +674,11 @@ main() {
 
   local mining_address
   mining_address="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" getnewaddress)"
-  log "Premining ${PREMINE_BLOCKS} blocks: address=${mining_address}"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    generatetoaddress "$PREMINE_BLOCKS" "$mining_address" >/dev/null
+  if [[ "$resuming_existing_state" == "0" ]]; then
+    log "Premining ${PREMINE_BLOCKS} blocks: address=${mining_address}"
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$PREMINE_BLOCKS" "$mining_address" >/dev/null
+  fi
 
   log "Starting ord server: port=${ORD_SERVER_PORT}"
   run_ord --index-addresses --index-transactions server --address 127.0.0.1 --http --http-port "$ORD_SERVER_PORT" \
@@ -647,29 +686,69 @@ main() {
   ORD_SERVER_PID=$!
   wait_until_ord_server_synced_to_bitcoind
 
-  log "Creating ${AGENT_COUNT} agent wallets"
-  for i in $(seq 1 "$AGENT_COUNT"); do
-    local wallet_name="${ORD_WALLET_PREFIX}-${i}"
-    AGENT_WALLETS+=("$wallet_name")
-    run_ord_wallet_named "$wallet_name" create >/dev/null 2>&1 || true
+  if [[ "$resuming_existing_state" == "1" ]]; then
+    log "Restoring ${AGENT_COUNT} agent identities from recovery state"
+    while IFS=$'\t' read -r wallet_name receive_address; do
+      if ! "$BITCOIN_CLI_BIN" \
+        -regtest \
+        -datadir="$BITCOIN_DIR" \
+        -rpcport="$BTC_RPC_PORT" \
+        -rpcwallet="$wallet_name" \
+        getwalletinfo >/dev/null 2>&1; then
+        local load_output
+        if ! load_output="$(
+          "$BITCOIN_CLI_BIN" \
+            -regtest \
+            -datadir="$BITCOIN_DIR" \
+            -rpcport="$BTC_RPC_PORT" \
+            -named loadwallet filename="$wallet_name" load_on_startup=true 2>&1
+        )"; then
+          log "Failed to load recovery wallet: wallet=${wallet_name}, output=${load_output}"
+          exit 1
+        fi
+      fi
+      AGENT_WALLETS+=("$wallet_name")
+      AGENT_ADDRESSES+=("$receive_address")
+    done < <(
+      python3 - "$SIM_RECOVERY_STATE_FILE" <<'PY'
+import json
+import pathlib
+import sys
 
-    local receive_output receive_address
-    receive_output="$(run_ord_wallet_named "$wallet_name" receive 2>&1 || true)"
-    receive_address="$(extract_bech32_address "$receive_output")"
-    if [[ -z "$receive_address" ]]; then
-      log "Failed to parse receive address: wallet=${wallet_name}, output=${receive_output}"
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for agent in payload.get("agents") or []:
+    print(f"{agent['wallet_name']}\t{agent['receive_address']}")
+PY
+    )
+    if ((${#AGENT_WALLETS[@]} != AGENT_COUNT)); then
+      log "Recovery agent count mismatch: expected=${AGENT_COUNT}, got=${#AGENT_WALLETS[@]}"
       exit 1
     fi
-    AGENT_ADDRESSES+=("$receive_address")
+  else
+    log "Creating ${AGENT_COUNT} agent wallets"
+    for i in $(seq 1 "$AGENT_COUNT"); do
+      local wallet_name="${ORD_WALLET_PREFIX}-${i}"
+      AGENT_WALLETS+=("$wallet_name")
+      run_ord_wallet_named "$wallet_name" create >/dev/null 2>&1 || true
 
+      local receive_output receive_address
+      receive_output="$(run_ord_wallet_named "$wallet_name" receive 2>&1 || true)"
+      receive_address="$(extract_bech32_address "$receive_output")"
+      if [[ -z "$receive_address" ]]; then
+        log "Failed to parse receive address: wallet=${wallet_name}, output=${receive_output}"
+        exit 1
+      fi
+      AGENT_ADDRESSES+=("$receive_address")
+
+      "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+        sendtoaddress "$receive_address" "$FUND_AGENT_AMOUNT_BTC" >/dev/null
+    done
+
+    log "Funding agent wallets confirmed by ${FUND_CONFIRM_BLOCKS} blocks"
     "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-      sendtoaddress "$receive_address" "$FUND_AGENT_AMOUNT_BTC" >/dev/null
-  done
-
-  log "Funding agent wallets confirmed by ${FUND_CONFIRM_BLOCKS} blocks"
-  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
-    generatetoaddress "$FUND_CONFIRM_BLOCKS" "$mining_address" >/dev/null
-  wait_until_ord_server_synced_to_bitcoind
+      generatetoaddress "$FUND_CONFIRM_BLOCKS" "$mining_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
+  fi
 
   create_balance_history_config
   create_usdb_indexer_config

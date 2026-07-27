@@ -48,7 +48,13 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 - version-matrix 暴露并修正了 head advance 后仍等待旧高度的测试竞态；修正后版本组合在 head 前进前后结果一致。
 - aggregate runner 曾因残留 ord 进程占用单个测试端口中断；确认环境原因后，该场景及后续场景均使用空闲独立端口完成。
 
-上述确定性矩阵当时不包含完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak。后续已经完成 `100 / 1K / 10K` 经济视图容量基线和 10K 跨页长 digest 复核，并完成 `120 agents / 300 ticks / 2 次 depth-3 reorg` 的真实服务栈 world-sim；并发/冷缓存、100K 和 2500-tick 级长跑继续归入 Next Wave。
+上述确定性矩阵当时不包含完整 300-block 随机 world-sim、扩大 candidate set
+的性能评估或长时 soak。后续已经完成 `100 / 1K / 10K / 100K` 经济视图容量
+基线、10K 跨页长 digest、100K cold-cache/物理 I/O、8-client 并发分页和
+single/multi-leader topology，并完成 `120 agents / 300 ticks / 2 次 depth-3
+reorg` 的真实服务栈 world-sim。2026-07-27 又完成三 seed、每 seed 2500 tick、
+每 seed 4 次 depth-3 reorg 的矩阵；一条为 clean full run，两条为故障修正后的
+recovery qualification run，最终所有 fail 指标为 0。
 
 ## 3. 分阶段计划
 
@@ -200,17 +206,19 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 
 1. `world-sim × candidate-set` 更深组合
    - 已完成 120-agent、300-tick sampled soak，19 次 candidate-set replay/tamper 与两次 reorg 均为零失败
-   - 继续运行默认 2500-tick soak，增加多 seed 与故障注入矩阵
+   - 已完成 3 seed × 2500 tick，共 12 次 depth-3 reorg、72 次 candidate replay/tamper，全部失败指标为 0
+   - 发布前仍需在合并后的 clean commit 上重复三 seed 全程无恢复矩阵
    - 更复杂 winner 选择逻辑
    - 更贴近真实 USDB validator 的 sampled payload 结构
 2. 更贴近最终 USDB block body 的选择证明
    - 不只是明文 `winner + candidate_passes`
    - 而是更接近 `candidate_set_commit / selection proof` 一类结构
 3. 更大规模和更长时段的性能 / 稳定性矩阵
-   - 已完成 `100 / 1K / 10K` standard + collab 的 candidate/profile/breakdown 首轮容量基线与 restart replay
+   - 已完成 `100 / 1K / 10K / 100K` standard + collab 的 candidate/profile/breakdown 容量基线与 restart replay
    - 已完成 10K 下 `limit=20/100/500` 的 cursor 分页敏感性评估
-   - 待补 cold cache/物理 I/O、多客户端并发、多 historical context cache eviction 和 100K 以上容量点
-   - 300-tick validator replay/query soak 已完成；仍待 2500-tick、多 seed、并发与 cold-cache 长跑
+   - 已完成 100K cold-cache/物理 I/O、1,000-Leader topology 和 8-client cache-hit 并发分页
+   - 待补多 historical context cache eviction、cold-start 并发首次派生和 100K 以上容量点
+   - 300-tick 与 2500-tick 三 seed validator replay/query soak 均已完成
 4. 未来真实 prune / retention feature 上线后的新专项
    - 真实 retention floor
    - floor bump 后的历史 payload 行为

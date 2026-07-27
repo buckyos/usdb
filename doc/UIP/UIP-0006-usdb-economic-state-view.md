@@ -552,9 +552,9 @@ USDB Economic State View
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
-参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放和 restart 重放；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim、并发/冷缓存与长时 soak 仍属于后续容量评估。
+参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K / 100K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放、restart 重放、cold-cache 物理 I/O、cache-hit 并发分页和 single/multi-leader topology；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim 已通过；2500-tick 多 seed 长时 soak、cold-start 并发和多 historical-context cache eviction 仍属于后续容量评估。
 
 # 后续实现议题
 
-1. cold cache、并发、多个 historical context 和 100K 以上规模下的物理 I/O/缓存容量评估。
+1. cold-start 并发、多个 historical context 和 100K 以上规模下的 cache eviction/容量评估。
 2. script hash -> BTC address 反向索引是否作为后续独立能力实现。

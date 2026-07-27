@@ -259,7 +259,16 @@ class RegtestWorldSimulator:
     ADDRESS_COLLAB_ACTIONS = {"address_collab_mint", "address_collab_remint"}
     ORD_TRANSIENT_ERROR_PATTERNS = (
         "output in wallet but not in ord server",
+        "wallet is currently rescanning",
     )
+
+    @classmethod
+    def is_ord_transient_error(cls, output: str) -> bool:
+        """Classify only known ord/Bitcoin Core errors that are safe to retry."""
+        output_lower = output.lower()
+        return any(
+            pattern in output_lower for pattern in cls.ORD_TRANSIENT_ERROR_PATTERNS
+        )
 
     @staticmethod
     def choose_candidate_set_winner(
@@ -1734,11 +1743,7 @@ class RegtestWorldSimulator:
             if proc.returncode == 0:
                 return output
 
-            output_lower = output.lower()
-            transient = any(
-                pattern in output_lower
-                for pattern in self.ORD_TRANSIENT_ERROR_PATTERNS
-            )
+            transient = self.is_ord_transient_error(output)
             if transient and attempt < max_attempts:
                 backoff_sec = 0.3 * attempt
                 self.log(

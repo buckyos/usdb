@@ -210,6 +210,26 @@ class RegtestWorldSimulatorEconomicViewTests(unittest.TestCase):
 
 
 class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
+    def test_ord_transient_error_classifier_is_strict_and_case_insensitive(
+        self,
+    ) -> None:
+        self.assertTrue(
+            RegtestWorldSimulator.is_ord_transient_error(
+                'error code: -4\nerror message:\nWallet is currently rescanning. '
+                "Abort existing rescan or wait."
+            )
+        )
+        self.assertTrue(
+            RegtestWorldSimulator.is_ord_transient_error(
+                "output in wallet but not in ord server"
+            )
+        )
+        self.assertFalse(
+            RegtestWorldSimulator.is_ord_transient_error(
+                "mandatory-script-verify-flag-failed"
+            )
+        )
+
     @staticmethod
     def make_agent(agent_id: int, owner: str) -> Agent:
         return Agent(

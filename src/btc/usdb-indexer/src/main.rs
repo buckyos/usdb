@@ -94,6 +94,15 @@ async fn main() {
         })
         .unwrap();
     let indexer = Arc::new(indexer);
+    indexer
+        .init()
+        .await
+        .map_err(|e| {
+            error!("Failed to restore indexer runtime state: {}", e);
+            println!("Failed to restore indexer runtime state: {}", e);
+            std::process::exit(1);
+        })
+        .unwrap();
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
     let rpc_server = if config.config().usdb.rpc_server_enabled {
