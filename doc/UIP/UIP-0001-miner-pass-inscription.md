@@ -265,6 +265,10 @@ v1 schema 应该采用严格解析。
 - 未定义字段必须导致 invalid mint。
 - 重复 JSON key 必须导致 invalid mint。
 - 字段类型不匹配必须导致 invalid mint。
+- 实现必须在依据 `p` / `op` 进行协议分类前扫描顶层 key。duplicate `p` / `op`
+  中只要任一 `p` 为 `usdb` 且任一 `op` 为 `mint`，该 payload 就属于 USDB
+  mint candidate，并必须因重复字段判 invalid；禁止使用 first-value 或
+  last-value 结果将其降级为非 USDB inscription。
 
 严格解析的目标是避免不同 JSON parser 对重复字段或未知字段产生不同解释。
 

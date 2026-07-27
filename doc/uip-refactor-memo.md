@@ -22,7 +22,9 @@
   - v1 禁止 `usdb_collab`。
   - `prev` 缺省等价于空数组，并校验 inscription id 与重复项。
   - unknown field 判 invalid。
-  - string parser 增加 top-level duplicate JSON key 检测。
+  - string parser 在 `p/op` 分类前扫描全部 top-level key；只要任一 `p=usdb`
+    与任一 `op=mint` 同时出现，重复 key 就按 v1 invalid mint 处理，不受重复
+    字段顺序或普通 JSON parser 的 last-value 行为影响。
   - content-type 接受 `application/json;charset=utf-8`，并保留 text/plain UTF-8 兼容。
 - `src/btc/usdb-indexer/src/index/indexer.rs`
   - 将 `mint_version`、`pass_kind`、`leader_pass_id`、`leader_btc_addr` 从解析结果传递到 pass manager。
@@ -54,7 +56,9 @@
 - v1 同时缺失 `usdb_main`、`leader_pass_id` 和 `leader_btc_addr` invalid。
 - v1 包含 `usdb_collab` invalid。
 - v1 unknown field invalid。
-- v1 duplicate key invalid。
+- v1 duplicate key invalid，包括 duplicate `p` / `op` 分别以 USDB/mint 或
+  非 USDB/非 mint 值结尾的两种顺序；source batch 必须记录为 invalid mint，
+  不能降级成非 USDB inscription 忽略。
 - pre-standard payload 不作为正式 v1 解析。
 - source 层分类使用传入的 BTC network 校验 `leader_btc_addr`，覆盖 regtest 地址路径。
 - regtest/live 脚本中的 USDB mint payload 覆盖 v1 `v` 字段。

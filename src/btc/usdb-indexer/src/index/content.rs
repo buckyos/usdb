@@ -391,35 +391,36 @@ impl InscriptionContentLoader {
         content: &str,
         network: Network,
     ) -> Result<ParsedMintContent, String> {
-        let value = match serde_json::from_str::<serde_json::Value>(content) {
-            Ok(v) => v,
+        let scan = match Self::scan_top_level_object(content) {
+            Ok(scan) => scan,
             Err(e) => {
                 debug!(
-                    "Skipping non-JSON inscription content: module=content_loader, inscription_id={}, error={}",
+                    "Skipping non-object or malformed JSON inscription content: module=content_loader, inscription_id={}, error={}",
                     inscription_id, e
                 );
                 return Ok(ParsedMintContent::NotUsdbMint);
             }
         };
 
-        if !Self::looks_like_usdb_mint(&value) {
+        if !scan.looks_like_usdb_mint() {
             return Ok(ParsedMintContent::NotUsdbMint);
         }
 
-        let strict_object = match Self::parse_top_level_object_strict(content) {
-            Ok(object) => object,
-            Err(e) => {
-                return Ok(ParsedMintContent::Invalid(MintValidationError {
-                    code: MintValidationErrorCode::InvalidSchema,
-                    reason: format!(
-                        "Failed to strictly parse USDB mint payload for inscription {}: {}",
-                        inscription_id, e
-                    ),
-                }));
-            }
-        };
+        if !scan.duplicate_keys.is_empty() {
+            return Ok(ParsedMintContent::Invalid(MintValidationError {
+                code: MintValidationErrorCode::InvalidSchema,
+                reason: format!(
+                    "Duplicate top-level JSON keys in USDB mint payload for inscription {}: {}",
+                    inscription_id,
+                    scan.duplicate_keys
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }));
+        }
 
-        Self::classify_mint_object(inscription_id, &strict_object, network)
+        Self::classify_mint_object(inscription_id, &scan.object, network)
     }
 
     pub fn parse_content(
@@ -468,23 +469,6 @@ impl InscriptionContentLoader {
         }
 
         Self::classify_mint_object(inscription_id, content, network)
-    }
-
-    fn looks_like_usdb_mint(content: &serde_json::Value) -> bool {
-        let Some(content) = content.as_object() else {
-            return false;
-        };
-
-        let p = content
-            .get("p")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let op = content
-            .get("op")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-
-        p == USDB_PROTOCOL_ID && op == USDB_MINT_OP
     }
 
     fn classify_mint_object(
@@ -725,38 +709,49 @@ impl InscriptionContentLoader {
         Ok(prev)
     }
 
-    fn parse_top_level_object_strict(
-        content: &str,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, StrictJsonObjectError> {
+    fn scan_top_level_object(content: &str) -> Result<TopLevelObjectScan, TopLevelObjectError> {
         let mut deserializer = serde_json::Deserializer::from_str(content);
-        let object = deserializer.deserialize_any(StrictJsonObjectVisitor)?;
+        let scan = deserializer.deserialize_any(TopLevelObjectVisitor)?;
         deserializer.end()?;
-        Ok(object)
+        Ok(scan)
     }
 }
 
 #[derive(Debug)]
-struct StrictJsonObjectError(String);
+struct TopLevelObjectError(String);
 
-impl fmt::Display for StrictJsonObjectError {
+impl fmt::Display for TopLevelObjectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl From<serde_json::Error> for StrictJsonObjectError {
+impl From<serde_json::Error> for TopLevelObjectError {
     fn from(value: serde_json::Error) -> Self {
-        StrictJsonObjectError(value.to_string())
+        TopLevelObjectError(value.to_string())
     }
 }
 
-struct StrictJsonObjectVisitor;
+struct TopLevelObjectScan {
+    object: serde_json::Map<String, serde_json::Value>,
+    duplicate_keys: BTreeSet<String>,
+    has_usdb_protocol: bool,
+    has_mint_operation: bool,
+}
 
-impl<'de> serde::de::Visitor<'de> for StrictJsonObjectVisitor {
-    type Value = serde_json::Map<String, serde_json::Value>;
+impl TopLevelObjectScan {
+    fn looks_like_usdb_mint(&self) -> bool {
+        self.has_usdb_protocol && self.has_mint_operation
+    }
+}
+
+struct TopLevelObjectVisitor;
+
+impl<'de> serde::de::Visitor<'de> for TopLevelObjectVisitor {
+    type Value = TopLevelObjectScan;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a JSON object without duplicate top-level keys")
+        formatter.write_str("a top-level JSON object")
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -764,20 +759,34 @@ impl<'de> serde::de::Visitor<'de> for StrictJsonObjectVisitor {
         A: serde::de::MapAccess<'de>,
     {
         let mut seen = BTreeSet::new();
+        let mut duplicate_keys = BTreeSet::new();
         let mut out = serde_json::Map::new();
+        let mut has_usdb_protocol = false;
+        let mut has_mint_operation = false;
 
         while let Some(key) = map.next_key::<String>()? {
-            if !seen.insert(key.clone()) {
-                return Err(serde::de::Error::custom(format!(
-                    "duplicate JSON key {}",
-                    key
-                )));
-            }
             let value = map.next_value::<serde_json::Value>()?;
+            if !seen.insert(key.clone()) {
+                duplicate_keys.insert(key.clone());
+            }
+            match key.as_str() {
+                "p" => {
+                    has_usdb_protocol |= value.as_str() == Some(USDB_PROTOCOL_ID);
+                }
+                "op" => {
+                    has_mint_operation |= value.as_str() == Some(USDB_MINT_OP);
+                }
+                _ => {}
+            }
             out.insert(key, value);
         }
 
-        Ok(out)
+        Ok(TopLevelObjectScan {
+            object: out,
+            duplicate_keys,
+            has_usdb_protocol,
+            has_mint_operation,
+        })
     }
 }
 
@@ -1106,8 +1115,69 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_mint_content_str_pre_standard_payload_invalid() {
+    fn test_classify_mint_content_str_duplicate_protocol_key_invalid_in_both_orders() {
         let inscription_id = test_inscription_id(16, 0);
+        let payloads = [
+            r#"{"p":"usdb","p":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"other","p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+        ];
+
+        for content in payloads {
+            let result =
+                InscriptionContentLoader::classify_mint_content_str(&inscription_id, content)
+                    .unwrap();
+            match result {
+                ParsedMintContent::Invalid(err) => {
+                    assert_eq!(err.code, MintValidationErrorCode::InvalidSchema)
+                }
+                _ => panic!("expected duplicate p to be invalid: {content}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_classify_mint_content_str_duplicate_operation_key_invalid_in_both_orders() {
+        let inscription_id = test_inscription_id(17, 0);
+        let payloads = [
+            r#"{"p":"usdb","op":"mint","op":"other","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","op":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+        ];
+
+        for content in payloads {
+            let result =
+                InscriptionContentLoader::classify_mint_content_str(&inscription_id, content)
+                    .unwrap();
+            match result {
+                ParsedMintContent::Invalid(err) => {
+                    assert_eq!(err.code, MintValidationErrorCode::InvalidSchema)
+                }
+                _ => panic!("expected duplicate op to be invalid: {content}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_classify_mint_content_str_non_usdb_duplicate_key_is_not_a_mint() {
+        let inscription_id = test_inscription_id(18, 0);
+        let payloads = [
+            r#"{"p":"other","op":"mint","other":1,"other":2}"#,
+            r#"{"p":"usdb","op":"other","other":1,"other":2}"#,
+        ];
+
+        for content in payloads {
+            let result =
+                InscriptionContentLoader::classify_mint_content_str(&inscription_id, content)
+                    .unwrap();
+            assert!(
+                matches!(result, ParsedMintContent::NotUsdbMint),
+                "non-USDB payload must not create an invalid pass: {content}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_classify_mint_content_str_pre_standard_payload_invalid() {
+        let inscription_id = test_inscription_id(19, 0);
         let content = r#"{"p":"usdb","op":"mint","usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#;
 
         let result =

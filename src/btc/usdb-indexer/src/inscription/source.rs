@@ -204,4 +204,36 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn classify_usdb_mints_records_duplicate_protocol_and_operation_as_invalid() {
+        let payloads = [
+            r#"{"p":"usdb","p":"other","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+            r#"{"p":"usdb","op":"mint","op":"other","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#,
+        ];
+        let inscriptions = payloads
+            .into_iter()
+            .enumerate()
+            .map(|(index, content_string)| DiscoveredInscription {
+                inscription_id: test_inscription_id(index as u8 + 2),
+                inscription_number: index as i32 + 2,
+                block_height: 10,
+                timestamp: 100,
+                satpoint: None,
+                content_type: Some("application/json".to_string()),
+                content_string: Some(content_string.to_string()),
+            })
+            .collect();
+
+        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+
+        assert!(batch.valid_mints.is_empty());
+        assert_eq!(batch.invalid_mints.len(), 2);
+        assert!(
+            batch
+                .invalid_mints
+                .iter()
+                .all(|mint| mint.error_code == MintValidationErrorCode::InvalidSchema)
+        );
+    }
 }
