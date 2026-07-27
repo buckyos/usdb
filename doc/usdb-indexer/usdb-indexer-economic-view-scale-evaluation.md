@@ -1,6 +1,6 @@
 # USDB Economic View 规模评估
 
-状态：2026-07-20 已完成首轮 `100 / 1K / 10K` deterministic release 评估。
+状态：2026-07-26 已完成 `100 / 1K / 10K` deterministic release v3 复核。
 
 ## 1. 目标与范围
 
@@ -24,6 +24,7 @@
 - fixed/address collab 数量与 fixture 一致。
 - Leader profile、candidate item、breakdown aggregate/count 交叉一致。
 - 同一冻结 `external_state` 重放的有序摘要完全一致。
+- 有序摘要按 item 长度分帧编码，不依赖分页边界；10K 数据在 `limit=20/100/500` 下得到相同 candidate/breakdown digest。
 - 关闭并重新打开 SQLite/RocksDB 后，candidate 与 breakdown 摘要仍完全一致。
 
 ## 3. 观测口径
@@ -41,7 +42,7 @@ SQLite/RocksDB 计数均为逻辑操作或 VM 工作量，不等价于物理磁�
 - Linux `6.1.0-26-amd64`，x86_64 虚拟化环境
 - Intel Core i7-13700KF，12 个可见逻辑 CPU
 - Rust `1.91.0`
-- base commit：`66cf27a`
+- base commit：`697c349`
 - profile：Cargo `--release`
 
 ## 5. 首轮结果
@@ -50,9 +51,9 @@ SQLite/RocksDB 计数均为逻辑操作或 VM 工作量，不等价于物理磁�
 
 | N | 总 pass | DB MiB | fixture ms | candidate 首次全分页 ms | candidate cache replay ms | breakdown 首次全分页 ms | breakdown cache replay ms | profile ms | restart candidate ms | restart breakdown ms | peak RSS MiB |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 200 | 0.43 | 13 | 1.47 | 0.21 | 1.06 | 0.26 | 0.92 | 1.73 | 1.14 | 21.87 |
-| 1,000 | 2,000 | 2.95 | 44 | 13.02 | 1.89 | 9.86 | 3.78 | 5.48 | 13.74 | 9.96 | 27.08 |
-| 10,000 | 20,000 | 27.96 | 369 | 323.55 | 23.29 | 247.51 | 147.04 | 95.45 | 331.69 | 256.07 | 50.94 |
+| 100 | 200 | 0.43 | 20 | 1.50 | 0.23 | 1.05 | 0.42 | 1.04 | 1.69 | 1.13 | 22.35 |
+| 1,000 | 2,000 | 2.95 | 43 | 12.72 | 2.28 | 9.35 | 3.72 | 5.40 | 13.85 | 10.01 | 27.82 |
+| 10,000 | 20,000 | 27.96 | 380 | 327.52 | 24.64 | 238.99 | 142.57 | 95.65 | 323.12 | 242.89 | 50.76 |
 
 10K 首次 candidate 派生读取 20K 条 raw-energy record，首次 breakdown 读取 10K 条；相应 cache replay 的 RocksDB 读取均为 0。10K candidate 首次派生额外 RSS 约 10.20 MiB。
 
@@ -64,11 +65,18 @@ SQLite/RocksDB 计数均为逻辑操作或 VM 工作量，不等价于物理磁�
 
 | limit | 页数 | candidate 首次 ms | candidate replay ms | replay SQLite statements | breakdown 首次 ms | breakdown replay ms |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 20 | 500 | 391.02 | 86.25 | 14,500 | 790.54 | 704.26 |
-| 100 | 100 | 322.92 | 21.66 | 2,900 | 250.71 | 148.34 |
-| 500 | 20 | 310.29 | 8.47 | 580 | 139.90 | 38.64 |
+| 20 | 500 | 382.71 | 91.32 | 14,500 | 762.02 | 658.59 |
+| 100 | 100 | 327.52 | 24.64 | 2,900 | 238.99 | 142.57 |
+| 500 | 20 | 297.19 | 10.95 | 580 | 133.01 | 37.54 |
 
 页数增加时，cache replay 仍需逐页验证 cursor 绑定的完整 external state，因此 statement 数和延迟随页数增长。这是 fail-closed historical consistency 的预期成本；服务没有重新派生完整 candidate/breakdown 数据集。
+
+10K 三种页长共同得到：
+
+- candidate ordered digest：`96607fd1889b8d0658c589ab8ef309f8120e226d9b1b1ee450af657d18e5f271`
+- breakdown ordered digest：`be90af588f03ab48fac27333c5bf9ffb571eb3b87594c39a19f8384046c65b63`
+- breakdown canonical digest：`5a5311954206af4723c0b9eb906e562595f223b0834b5f56f0fb94cd7a4c6154`
+- aggregate contribution：`50005000`
 
 ## 7. 本轮发现与修正
 
@@ -107,7 +115,7 @@ JSON 默认写入 `src/btc/target/economic-scale/`。测试本身标记为 ignor
 
 ## 9. 后续评估边界
 
-首轮容量基线已经建立，但生产容量结论仍需要补充：
+容量基线和跨页长重放一致性已经建立，但生产容量结论仍需要补充：
 
 1. cold OS page cache、RocksDB block cache 统计和物理 I/O（`perf stat` / RocksDB statistics）。
 2. 多客户端并发翻页、cache eviction 和多个 historical height/Leader 交错查询。

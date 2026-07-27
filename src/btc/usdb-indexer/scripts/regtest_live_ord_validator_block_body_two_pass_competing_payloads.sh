@@ -173,7 +173,7 @@ main() {
   local miner_address ord_receive_address_a ord_receive_address_b
   local mint_a_file mint_b_file pass1 pass2
   local height_h height_h1 winner_h loser_h
-  local pass1_energy_h pass2_energy_h pass1_energy_h1 pass2_energy_h1
+  local pass1_energy_h pass2_energy_h
   local payload_h payload_h1 continue_address
 
   miner_address="$(regtest_get_new_address)"

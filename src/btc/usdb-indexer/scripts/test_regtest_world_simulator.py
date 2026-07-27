@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from regtest_world_simulator import (
+    ActionExpectation,
+    Agent,
     PassIdentity,
+    PlannedAction,
     RegtestWorldSimulator,
     ValidatorSampleCandidate,
+    WorldSimError,
 )
 
 
@@ -202,6 +207,312 @@ class RegtestWorldSimulatorEconomicViewTests(unittest.TestCase):
         self.assertNotIn("block_height", calls[1])
         self.assertNotIn("context", calls[1])
         self.assertEqual(calls[1]["cursor"], "cursor-2")
+
+
+class RegtestWorldSimulatorResilienceTests(unittest.TestCase):
+    @staticmethod
+    def make_agent(agent_id: int, owner: str) -> Agent:
+        return Agent(
+            agent_id=agent_id,
+            wallet_name=f"agent-{agent_id}",
+            receive_address=f"address-{agent_id}",
+            usdb_main_address="0x" + f"{agent_id + 1:02x}" * 20,
+            owner_script_hash=owner,
+            persona="holder",
+        )
+
+    def setUp(self) -> None:
+        self.simulator = RegtestWorldSimulator.__new__(RegtestWorldSimulator)
+        self.simulator.agents = [
+            self.make_agent(0, "owner-a"),
+            self.make_agent(1, "owner-b"),
+        ]
+        self.simulator.pass_owner_by_id = {}
+        self.simulator.pass_identity_by_id = {}
+
+    def test_rebuild_tracks_agent_rows_and_audits_external_non_active_rows(self) -> None:
+        rows = [
+            {
+                "inscription_id": "active-a",
+                "owner": "owner-a",
+                "state": "active",
+            },
+            {
+                "inscription_id": "consumed-b",
+                "owner": "owner-b",
+                "state": "consumed",
+            },
+            {
+                "inscription_id": "dormant-external",
+                "owner": "external-change",
+                "state": "dormant",
+            },
+            {
+                "inscription_id": "burned-external",
+                "owner": "external-recipient",
+                "state": "burned",
+            },
+        ]
+        snapshots = {
+            "active-a": {
+                "inscription_id": "active-a",
+                "pass_kind": "standard",
+            },
+            "consumed-b": {
+                "inscription_id": "consumed-b",
+                "pass_kind": "collab",
+                "leader_pass_id": "leader",
+            },
+        }
+        self.simulator.load_pass_energy_leaderboard_at_height = lambda *_: rows
+        self.simulator.get_pass_snapshot = (
+            lambda inscription_id, _height: snapshots.get(inscription_id)
+        )
+
+        result = self.simulator.rebuild_local_chain_view_from_height(120)
+
+        self.assertEqual(result["loaded_pass_rows"], 4)
+        self.assertEqual(result["tracked_pass_rows"], 2)
+        self.assertEqual(result["external_owner_rows"], 2)
+        self.assertEqual(result["external_dormant_owner_rows"], 1)
+        self.assertEqual(result["external_terminal_owner_rows"], 1)
+        self.assertEqual(result["unknown_active_owner_rows"], 0)
+        self.assertEqual(result["active_owner_rows"], 1)
+        self.assertEqual(self.simulator.agents[0].active_pass_id, "active-a")
+        self.assertEqual(self.simulator.agents[0].owned_passes, {"active-a"})
+        self.assertEqual(self.simulator.agents[1].owned_passes, {"consumed-b"})
+        self.assertNotIn("dormant-external", self.simulator.pass_owner_by_id)
+
+    def test_rebuild_rejects_external_active_owner(self) -> None:
+        self.simulator.load_pass_energy_leaderboard_at_height = lambda *_: [
+            {
+                "inscription_id": "active-external",
+                "owner": "external-owner",
+                "state": "active",
+            }
+        ]
+        self.simulator.get_pass_snapshot = lambda *_: None
+
+        with self.assertRaisesRegex(
+            WorldSimError, "active rows owned by unknown script hashes"
+        ):
+            self.simulator.rebuild_local_chain_view_from_height(120)
+
+    def test_snapshot_not_ready_is_retryable_only_for_exact_consensus_error(self) -> None:
+        retryable = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": RegtestWorldSimulator.SNAPSHOT_NOT_READY_RPC_CODE,
+                "message": RegtestWorldSimulator.SNAPSHOT_NOT_READY_RPC_MESSAGE,
+            },
+        }
+        self.assertIsNone(
+            RegtestWorldSimulator.snapshot_rpc_result_if_ready(
+                retryable, "get_snapshot_info"
+            )
+        )
+
+        wrong_message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": RegtestWorldSimulator.SNAPSHOT_NOT_READY_RPC_CODE,
+                "message": "DIFFERENT_ERROR",
+            },
+        }
+        with self.assertRaisesRegex(WorldSimError, "returned error"):
+            RegtestWorldSimulator.snapshot_rpc_result_if_ready(
+                wrong_message, "get_snapshot_info"
+            )
+
+    def test_snapshot_ready_requires_an_object_result(self) -> None:
+        snapshot = {"stable_height": 120, "stable_block_hash": "block-120"}
+        self.assertEqual(
+            RegtestWorldSimulator.snapshot_rpc_result_if_ready(
+                {"result": snapshot}, "get_snapshot_info"
+            ),
+            snapshot,
+        )
+        with self.assertRaisesRegex(WorldSimError, "non-object snapshot result"):
+            RegtestWorldSimulator.snapshot_rpc_result_if_ready(
+                {"result": 120}, "get_snapshot_info"
+            )
+
+    def test_replacement_blocks_replay_disconnected_mempool_before_empty_blocks(
+        self,
+    ) -> None:
+        mempool_results = iter([["tx-a", "tx-b"], []])
+        mined: list[str] = []
+        self.simulator.get_mempool_txids = lambda: next(mempool_results)
+        self.simulator.mine_one_mempool_block = lambda: mined.append("mempool") or 1
+        self.simulator.mine_one_empty_block = lambda: mined.append("empty") or 1
+
+        result = self.simulator.mine_replacement_blocks(3)
+
+        self.assertEqual(mined, ["mempool", "empty", "empty"])
+        self.assertEqual(result["replacement_replayed_tx_count"], 2)
+        self.assertEqual(result["replacement_remaining_mempool_tx_count"], 0)
+
+    def test_replacement_blocks_reject_remaining_mempool(self) -> None:
+        mempool_results = iter([["tx-a"], ["tx-a"]])
+        self.simulator.get_mempool_txids = lambda: next(mempool_results)
+        self.simulator.mine_one_mempool_block = lambda: 1
+        self.simulator.mine_one_empty_block = lambda: 1
+
+        with self.assertRaisesRegex(
+            WorldSimError, "left disconnected transactions in mempool"
+        ):
+            self.simulator.mine_replacement_blocks(2)
+
+    def test_recovery_json_write_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "recovery.json"
+
+            RegtestWorldSimulator.write_json_atomic(path, {"version": 1})
+            RegtestWorldSimulator.write_json_atomic(path, {"version": 2})
+
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8")),
+                {"version": 2},
+            )
+            self.assertEqual(list(path.parent.glob(f".{path.name}.*.tmp")), [])
+
+    def test_recovery_rejects_changed_agent_identity(self) -> None:
+        self.simulator.active_agent_count = 2
+        self.simulator.metrics = {}
+        self.simulator.reorg_events_applied = 0
+        self.simulator.validator_samples = []
+        agent_payloads = [
+            self.simulator.serialize_agent(agent) for agent in self.simulator.agents
+        ]
+        agent_payloads[1]["receive_address"] = "different-address"
+
+        with self.assertRaisesRegex(
+            WorldSimError, "recovery snapshot agent identity mismatch"
+        ):
+            self.simulator.apply_recovery_snapshot(
+                {
+                    "active_agent_count": 2,
+                    "metrics": {},
+                    "reorg_events_applied": 0,
+                    "pass_owner_by_id": {},
+                    "pass_identity_by_id": {},
+                    "agents": agent_payloads,
+                    "validator_samples": [],
+                }
+            )
+
+    def test_select_spendable_owner_output_uses_largest_plain_owner_utxo(self) -> None:
+        txid_a = "a" * 64
+        txid_b = "b" * 64
+        selected = RegtestWorldSimulator.select_spendable_owner_output(
+            [
+                {
+                    "output": f"{txid_a}:0",
+                    "address": "owner",
+                    "amount": 900_000,
+                    "inscriptions": ["pass"],
+                },
+                {
+                    "output": f"{txid_a}:1",
+                    "address": "other",
+                    "amount": 2_000_000,
+                    "inscriptions": [],
+                },
+                {
+                    "output": f"{txid_a}:2",
+                    "address": "owner",
+                    "amount": 600_000,
+                    "inscriptions": [],
+                },
+                {
+                    "output": f"{txid_b}:3",
+                    "address": "owner",
+                    "amount": 800_000,
+                    "inscriptions": [],
+                },
+            ],
+            "owner",
+        )
+
+        self.assertEqual(selected, (txid_b, 3, 800_000))
+
+    def test_spend_balance_uses_explicit_plain_owner_input(self) -> None:
+        actor = self.make_agent(0, "owner-a")
+        actor.receive_address = "owner-address"
+        self.simulator.args = SimpleNamespace(
+            fee_rate=1,
+            mining_address="miner-address",
+            miner_wallet="miner-wallet",
+        )
+        self.simulator.metrics = {"skip": 0, "spend_ok": 0}
+        self.simulator.get_balance_at_height = lambda *_: 1_000_000
+        self.simulator.load_spendable_owner_output = lambda *_: (
+            "c" * 64,
+            2,
+            800_000,
+        )
+        calls: list[tuple[str | None, list[str]]] = []
+
+        def run_btc_cli(wallet: str | None, args: list[str]) -> str:
+            calls.append((wallet, args))
+            return json.dumps({"complete": True, "txid": "d" * 64})
+
+        self.simulator.run_btc_cli = run_btc_cli
+        self.simulator.write_external_action_result = lambda **_: None
+
+        detail, expectation = self.simulator.op_spend_balance(
+            actor, "action-1", 120, random.Random(1)
+        )
+
+        self.assertIn("spend_balance:", detail)
+        self.assertEqual(expectation.actor_pre_balance, 1_000_000)
+        self.assertGreaterEqual(expectation.amount_sat or 0, 100_000)
+        self.assertEqual(calls[0][0], actor.wallet_name)
+        self.assertEqual(calls[0][1][0], "send")
+        options = json.loads(calls[0][1][5])
+        self.assertFalse(options["add_inputs"])
+        self.assertEqual(options["inputs"], [{"txid": "c" * 64, "vout": 2}])
+        self.assertEqual(options["change_address"], actor.receive_address)
+
+    def test_spend_balance_requires_tracked_owner_delta(self) -> None:
+        actor = self.make_agent(0, "owner-a")
+        self.simulator.agents = [actor]
+        expectation = ActionExpectation(
+            action="spend_balance",
+            actor_id=0,
+            actor_pre_balance=1_000_000,
+            amount_sat=100_000,
+        )
+        self.simulator.get_balance_at_height = lambda *_: 900_000
+        self.simulator.verify_expectation(expectation, 121)
+
+        self.simulator.get_balance_at_height = lambda *_: 900_001
+        with self.assertRaisesRegex(
+            WorldSimError, "spend_balance verification failed"
+        ):
+            self.simulator.verify_expectation(expectation, 121)
+
+    def test_spend_recovery_probes_new_explicit_input_transaction(self) -> None:
+        self.simulator.find_wallet_transaction_by_comment = lambda *_: None
+        self.simulator.find_new_wallet_transaction = lambda *_: {"txid": "e" * 64}
+        result = self.simulator.probe_inflight_external_action_result(
+            plan=PlannedAction(
+                slot_index=0,
+                actor_id=0,
+                action="spend_balance",
+                action_id="action-1",
+                probe_state={"wallet_name": "agent-0", "wallet_txids": ["old"]},
+            ),
+            pre_height=120,
+            available_ids={0},
+            tick=1,
+            slot_index=0,
+        )
+
+        self.assertEqual(result["source"], "bitcoin-wallet-explicit-input")
+        self.assertEqual(result["raw_output"], "e" * 64)
 
 
 if __name__ == "__main__":

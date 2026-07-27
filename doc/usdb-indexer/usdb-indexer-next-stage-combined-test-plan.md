@@ -48,7 +48,7 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 - version-matrix 暴露并修正了 head advance 后仍等待旧高度的测试竞态；修正后版本组合在 head 前进前后结果一致。
 - aggregate runner 曾因残留 ord 进程占用单个测试端口中断；确认环境原因后，该场景及后续场景均使用空闲独立端口完成。
 
-上述确定性矩阵当时不包含完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak。后续已经完成 `100 / 1K / 10K` 首轮经济视图容量基线；300-block 随机 world-sim、并发/冷缓存和长时 soak 继续归入 Next Wave。
+上述确定性矩阵当时不包含完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak。后续已经完成 `100 / 1K / 10K` 经济视图容量基线和 10K 跨页长 digest 复核，并完成 `120 agents / 300 ticks / 2 次 depth-3 reorg` 的真实服务栈 world-sim；并发/冷缓存、100K 和 2500-tick 级长跑继续归入 Next Wave。
 
 ## 3. 分阶段计划
 
@@ -199,7 +199,8 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
 如果继续补充，下一轮更值得投入的方向是：
 
 1. `world-sim × candidate-set` 更深组合
-   - 更大规模 `candidate_set sampled soak`
+   - 已完成 120-agent、300-tick sampled soak，19 次 candidate-set replay/tamper 与两次 reorg 均为零失败
+   - 继续运行默认 2500-tick soak，增加多 seed 与故障注入矩阵
    - 更复杂 winner 选择逻辑
    - 更贴近真实 USDB validator 的 sampled payload 结构
 2. 更贴近最终 USDB block body 的选择证明
@@ -209,7 +210,7 @@ UIP-0001 至 UIP-0006 已完成一次实际 deterministic live/regtest 矩阵执
    - 已完成 `100 / 1K / 10K` standard + collab 的 candidate/profile/breakdown 首轮容量基线与 restart replay
    - 已完成 10K 下 `limit=20/100/500` 的 cursor 分页敏感性评估
    - 待补 cold cache/物理 I/O、多客户端并发、多 historical context cache eviction 和 100K 以上容量点
-   - 待补长时 validator replay / query soak
+   - 300-tick validator replay/query soak 已完成；仍待 2500-tick、多 seed、并发与 cold-cache 长跑
 4. 未来真实 prune / retention feature 上线后的新专项
    - 真实 retention floor
    - floor bump 后的历史 payload 行为

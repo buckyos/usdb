@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 const QUERY_HEIGHT: u32 = 120;
 const MINT_HEIGHT: u32 = 100;
 const MAINNET_LEADER_ADDRESS: &str = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
-const REPORT_VERSION: &str = "usdb-economic-view-scale:v2";
+const REPORT_VERSION: &str = "usdb-economic-view-scale:v3";
 
 static SQLITE_STATEMENTS: AtomicU64 = AtomicU64::new(0);
 static SQLITE_READ_STATEMENTS: AtomicU64 = AtomicU64::new(0);
@@ -208,6 +208,12 @@ fn signed_delta(after: u64, before: u64) -> i64 {
     i128::from(after)
         .saturating_sub(i128::from(before))
         .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn update_ordered_digest<T: Serialize>(hasher: &mut Sha256, item: &T) {
+    let encoded = serde_json::to_vec(item).unwrap();
+    hasher.update(u64::try_from(encoded.len()).unwrap().to_be_bytes());
+    hasher.update(encoded);
 }
 
 fn process_memory_kib() -> (u64, u64) {
@@ -435,6 +441,7 @@ fn collect_candidate_pages(
     let mut hasher = Sha256::new();
     let mut external_state = None;
     let mut leader_item = None;
+    let mut previous_item: Option<(Energy, InscriptionId)> = None;
 
     loop {
         let page_started = Instant::now();
@@ -466,10 +473,21 @@ fn collect_candidate_pages(
                 .iter()
                 .all(|item| { item.state == "active" && item.pass_kind == "standard" })
         );
-        if let Some(item) = page.items.iter().find(|item| item.pass_id == leader_id) {
-            leader_item = Some(item.clone());
+        for item in &page.items {
+            let effective_energy = item.effective_energy.parse::<Energy>().unwrap();
+            let pass_id = item.pass_id.parse::<InscriptionId>().unwrap();
+            if let Some((previous_energy, previous_pass_id)) = previous_item {
+                assert!(
+                    previous_energy > effective_energy
+                        || (previous_energy == effective_energy && previous_pass_id <= pass_id)
+                );
+            }
+            previous_item = Some((effective_energy, pass_id));
+            if item.pass_id == leader_id {
+                leader_item = Some(item.clone());
+            }
+            update_ordered_digest(&mut hasher, item);
         }
-        hasher.update(serde_json::to_vec(&page.items).unwrap());
         item_count = item_count.saturating_add(page.items.len());
         page_count = page_count.saturating_add(1);
         cursor = page.next_cursor;
@@ -576,7 +594,9 @@ fn collect_breakdown_pages(
                     .is_none()
             );
         }
-        ordered_hasher.update(serde_json::to_vec(&page.items).unwrap());
+        for item in &page.items {
+            update_ordered_digest(&mut ordered_hasher, item);
+        }
         item_count = item_count.saturating_add(page.items.len());
         page_count = page_count.saturating_add(1);
         cursor = page.next_cursor;

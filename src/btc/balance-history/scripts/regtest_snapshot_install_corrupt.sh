@@ -73,7 +73,7 @@ main() {
   regtest_ensure_workspace_dirs
   mkdir -p "$TARGET_BALANCE_HISTORY_ROOT"
 
-  local source_root source_log source_rpc
+  local source_root source_log
   local target_root target_log target_rpc
   local mining_address target_address target_script_hash
   local txid_old txid_new vout_old vout_new
@@ -82,7 +82,6 @@ main() {
 
   source_root="$BALANCE_HISTORY_ROOT"
   source_log="$BALANCE_HISTORY_LOG_FILE"
-  source_rpc="$BH_RPC_PORT"
   target_root="$TARGET_BALANCE_HISTORY_ROOT"
   target_log="$TARGET_BALANCE_HISTORY_LOG_FILE"
   target_rpc="$TARGET_BH_RPC_PORT"

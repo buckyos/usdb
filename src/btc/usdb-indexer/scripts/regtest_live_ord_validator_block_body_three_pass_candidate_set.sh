@@ -50,7 +50,7 @@ main() {
   regtest_ensure_wallet
 
   local miner_address ord_receive_address_a ord_receive_address_b
-  local mint_receive_address winner_receive_address
+  local mint_receive_address
   local mint1_file mint2_file mint3_file
   local pass1 pass2 pass3 height_competition height_after_transfer
   local candidate_entries_json winner_id payload_file continue_address

@@ -49,6 +49,9 @@ SIM_SCRIPTED_CYCLE="${SIM_SCRIPTED_CYCLE:-standard_mint,fixed_collab_mint,addres
 SIM_REPORT_ENABLED="${SIM_REPORT_ENABLED:-1}"
 SIM_REPORT_FILE="${SIM_REPORT_FILE:-$WORK_DIR/world-sim-report.jsonl}"
 SIM_REPORT_FLUSH_EVERY="${SIM_REPORT_FLUSH_EVERY:-1}"
+SIM_LOG_FILE="${SIM_LOG_FILE:-$WORK_DIR/world-simulator.log}"
+SIM_RECOVERY_ENABLED="${SIM_RECOVERY_ENABLED:-1}"
+SIM_RECOVERY_STATE_FILE="${SIM_RECOVERY_STATE_FILE:-$WORK_DIR/world-sim-recovery-state.json}"
 SIM_AGENT_SELF_CHECK_ENABLED="${SIM_AGENT_SELF_CHECK_ENABLED:-1}"
 SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS="${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS:-1}"
 SIM_AGENT_SELF_CHECK_SAMPLE_SIZE="${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE:-0}"
@@ -113,6 +116,7 @@ print_failure_diagnostics() {
   log "Failure diagnostics: exit_code=${exit_code}, line=${line_no}, command=${command_text}"
   log "Runtime context: work_dir=${WORK_DIR}, btc_rpc_port=${BTC_RPC_PORT}, btc_p2p_port=${BTC_P2P_PORT}, ord_server_port=${ORD_SERVER_PORT}, bh_rpc_port=${BH_RPC_PORT}, usdb_indexer_rpc_port=${USDB_INDEXER_RPC_PORT}"
 
+  print_tail_if_exists "world-simulator.log" "$SIM_LOG_FILE"
   print_tail_if_exists "ord-server.log" "${WORK_DIR}/ord-server.log"
   print_tail_if_exists "balance-history.log" "${WORK_DIR}/balance-history.log"
   print_tail_if_exists "usdb-indexer.log" "${WORK_DIR}/usdb-indexer.log"
@@ -322,6 +326,39 @@ stop_process() {
   wait "$pid" >/dev/null 2>&1 || true
 }
 
+list_workspace_bitcoind_pids() {
+  ps -eo pid=,comm=,args= | awk -v data_dir="$BITCOIN_DIR" '
+    $2 == "bitcoind" {
+      target = "-datadir=" data_dir
+      for (field = 3; field <= NF; field++) {
+        if ($field == target) {
+          print $1
+          break
+        }
+      }
+    }
+  '
+}
+
+stop_workspace_bitcoind() {
+  if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
+  fi
+
+  for _ in $(seq 1 100); do
+    if [[ -z "$(list_workspace_bitcoind_pids)" ]]; then
+      return
+    fi
+    sleep 0.1
+  done
+
+  while IFS= read -r pid; do
+    if [[ -n "$pid" ]]; then
+      stop_process "$pid"
+    fi
+  done < <(list_workspace_bitcoind_pids)
+}
+
 cleanup() {
   set +e
 
@@ -343,12 +380,7 @@ cleanup() {
 
   stop_ord_server
 
-  if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
-    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$BITCOIND_PID" ]]; then
-    stop_process "$BITCOIND_PID"
-  fi
+  stop_workspace_bitcoind
 }
 
 stop_ord_server() {
@@ -670,7 +702,7 @@ main() {
   agent_wallets_csv="$(join_by_comma "${AGENT_WALLETS[@]}")"
   agent_addresses_csv="$(join_by_comma "${AGENT_ADDRESSES[@]}")"
 
-  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, economic_page_limit=${SIM_ECONOMIC_PAGE_LIMIT}, economic_bootstrap_enabled=${SIM_ECONOMIC_BOOTSTRAP_ENABLED}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}"
+  log "Launching world simulator: blocks=${SIM_BLOCKS}, seed=${SIM_SEED}, agents=${AGENT_COUNT}, max_actions_per_block=${SIM_MAX_ACTIONS_PER_BLOCK}, standard_mint_probability=${SIM_STANDARD_MINT_PROBABILITY}, fixed_collab_mint_probability=${SIM_FIXED_COLLAB_MINT_PROBABILITY}, address_collab_mint_probability=${SIM_ADDRESS_COLLAB_MINT_PROBABILITY}, invalid_mint_probability=${SIM_INVALID_MINT_PROBABILITY}, transfer_probability=${SIM_TRANSFER_PROBABILITY}, remint_probability=${SIM_REMINT_PROBABILITY}, send_probability=${SIM_SEND_PROBABILITY}, spend_probability=${SIM_SPEND_PROBABILITY}, fail_fast=${SIM_FAIL_FAST}, initial_active_agents=${SIM_INITIAL_ACTIVE_AGENTS}, agent_growth_interval_blocks=${SIM_AGENT_GROWTH_INTERVAL_BLOCKS}, agent_growth_step=${SIM_AGENT_GROWTH_STEP}, agent_self_check_enabled=${SIM_AGENT_SELF_CHECK_ENABLED}, agent_self_check_interval_blocks=${SIM_AGENT_SELF_CHECK_INTERVAL_BLOCKS}, agent_self_check_sample_size=${SIM_AGENT_SELF_CHECK_SAMPLE_SIZE}, global_cross_check_enabled=${SIM_GLOBAL_CROSS_CHECK_ENABLED}, global_cross_check_interval_blocks=${SIM_GLOBAL_CROSS_CHECK_INTERVAL_BLOCKS}, global_cross_check_leaderboard_top_n=${SIM_GLOBAL_CROSS_CHECK_LEADERBOARD_TOP_N}, global_cross_check_owner_sample_size=${SIM_GLOBAL_CROSS_CHECK_OWNER_SAMPLE_SIZE}, economic_page_limit=${SIM_ECONOMIC_PAGE_LIMIT}, economic_bootstrap_enabled=${SIM_ECONOMIC_BOOTSTRAP_ENABLED}, validator_sample_enabled=${SIM_VALIDATOR_SAMPLE_ENABLED}, validator_sample_mode=${SIM_VALIDATOR_SAMPLE_MODE}, validator_sample_tamper_enabled=${SIM_VALIDATOR_SAMPLE_TAMPER_ENABLED}, validator_sample_interval_blocks=${SIM_VALIDATOR_SAMPLE_INTERVAL_BLOCKS}, validator_sample_size=${SIM_VALIDATOR_SAMPLE_SIZE}, validator_sample_min_head_advance=${SIM_VALIDATOR_SAMPLE_MIN_HEAD_ADVANCE}, reorg_interval_blocks=${SIM_REORG_INTERVAL_BLOCKS}, reorg_depth=${SIM_REORG_DEPTH}, reorg_max_events=${SIM_REORG_MAX_EVENTS}, recovery_enabled=${SIM_RECOVERY_ENABLED}"
   local fail_fast_arg=()
   if [[ "$SIM_FAIL_FAST" == "1" ]]; then
     fail_fast_arg+=(--fail-fast)
@@ -679,6 +711,10 @@ main() {
   if [[ "$SIM_REPORT_ENABLED" == "1" ]]; then
     report_args+=(--report-file "$SIM_REPORT_FILE")
     report_args+=(--report-flush-every "$SIM_REPORT_FLUSH_EVERY")
+  fi
+  local recovery_args=()
+  if [[ "$SIM_RECOVERY_ENABLED" == "1" ]]; then
+    recovery_args+=(--recovery-state-file "$SIM_RECOVERY_STATE_FILE")
   fi
   local self_check_args=()
   if [[ "$SIM_AGENT_SELF_CHECK_ENABLED" != "1" ]]; then
@@ -754,11 +790,13 @@ main() {
     "${global_cross_check_args[@]}" \
     "${validator_sample_args[@]}" \
     "${report_args[@]}" \
+    "${recovery_args[@]}" \
     --reorg-interval-blocks "$SIM_REORG_INTERVAL_BLOCKS" \
     --reorg-depth "$SIM_REORG_DEPTH" \
     --reorg-max-events "$SIM_REORG_MAX_EVENTS" \
     --temp-dir "$WORK_DIR" \
-    "${fail_fast_arg[@]}"
+    "${fail_fast_arg[@]}" \
+    2>&1 | tee -a "$SIM_LOG_FILE"
 
   log "World simulation finished successfully."
   log "Logs: ${WORK_DIR}/ord-server.log, ${WORK_DIR}/balance-history.log, ${WORK_DIR}/usdb-indexer.log"

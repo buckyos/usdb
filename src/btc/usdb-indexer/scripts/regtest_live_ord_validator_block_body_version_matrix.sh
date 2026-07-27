@@ -49,7 +49,7 @@ main() {
   local miner_address ord_receive_address mint_content_file pass_id
   local current_tip_height historical_height continue_height continue_address
   local state_ref_resp pass_snapshot_resp pass_energy_resp payload_file
-  local protocol_payload semantics_payload api_payload
+  local active_set_payload semantics_payload api_payload
 
   miner_address="$(regtest_get_new_address)"
   regtest_mine_blocks "$PREMINE_BLOCKS" "$miner_address"

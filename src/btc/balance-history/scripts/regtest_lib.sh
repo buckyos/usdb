@@ -373,7 +373,7 @@ regtest_ensure_mature_funds() {
 regtest_start_balance_history() {
   regtest_log "Starting balance-history service (root=${BALANCE_HISTORY_ROOT}, rpc=${BH_RPC_PORT})"
   (
-    cd "$REPO_ROOT"
+    cd "$REPO_ROOT" || exit 1
     cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
       --root-dir "$BALANCE_HISTORY_ROOT" \
       --skip-process-lock
@@ -386,7 +386,7 @@ regtest_run_balance_history_cli() {
   shift
 
   (
-    cd "$REPO_ROOT"
+    cd "$REPO_ROOT" || exit 1
     cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
       --root-dir "$root_dir" \
       "$@"
@@ -435,7 +435,7 @@ regtest_wait_until_block_commit_hash() {
   while true; do
     resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${block_height}]")"
     got_hash="$(echo "$resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))')"
-    current_height="$(echo "$(regtest_rpc_call_balance_history "get_block_height" "[]")" | regtest_parse_json_number_result)"
+    current_height="$(regtest_rpc_call_balance_history "get_block_height" "[]" | regtest_parse_json_number_result)"
     current_height="${current_height:-0}"
     if [[ "$got_hash" == "$expected_hash" ]] && [[ "$current_height" -ge "$block_height" ]]; then
       regtest_log "Service observed new canonical hash at height=${block_height}"

@@ -116,7 +116,7 @@ main() {
 
   warmup_target_height=$((stable_prefix_height + PRUNE_ADVANCE_BLOCKS))
   regtest_log "Advancing canonical tip online to height=${warmup_target_height} so old undo entries are pruned"
-  for round in $(seq 1 "$PRUNE_ADVANCE_BLOCKS"); do
+  for ((round = 0; round < PRUNE_ADVANCE_BLOCKS; round++)); do
     replacement_address="$(regtest_get_new_address)"
     regtest_mine_empty_block "$replacement_address"
   done

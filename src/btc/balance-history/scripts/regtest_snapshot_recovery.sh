@@ -57,11 +57,10 @@ main() {
   local height_1 height_2 height_3 height_4 height_5
   local snapshot_height snapshot_file snapshot_hash snapshot_block_hash snapshot_commit
   local resp expected_a_latest_sat expected_b_latest_sat expected_b_post_restore_sat
-  local source_root source_log source_rpc restore_root restore_log restore_rpc
+  local source_root source_log restore_root restore_log restore_rpc
 
   source_root="$BALANCE_HISTORY_ROOT"
   source_log="$BALANCE_HISTORY_LOG_FILE"
-  source_rpc="$BH_RPC_PORT"
   restore_root="$RESTORE_BALANCE_HISTORY_ROOT"
   restore_log="$RESTORE_BALANCE_HISTORY_LOG_FILE"
   restore_rpc="$RESTORE_BH_RPC_PORT"

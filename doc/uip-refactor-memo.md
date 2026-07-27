@@ -427,7 +427,7 @@
 ### 待继续对齐
 
 - 在大规模数据集上评估 `contribution_desc_pass_id_asc` continuation 的查询/索引成本。
-- 执行 300-block 随机 world-sim、扩大 candidate set 规模并进行长时 soak；这些非确定性/性能项目不计入本轮协议矩阵完成结论。
+- 300-tick 随机 world-sim、candidate-set 长跑和大数据规模评估已于 2026-07-26 完成；结果见文末“大粒度 Soak、容量与真实服务链路复核”。
 
 ## UIP-0001 至 UIP-0006 测试入口与文档状态收口
 
@@ -478,7 +478,7 @@
 ### 环境说明
 
 - validator aggregate runner 在 protocol-version mismatch slot 首次遇到一个残留 ord 进程占用端口；确认非协议失败后，使用空闲独立端口重跑该项，并按原顺序完成其余场景。
-- 本轮没有运行完整 300-block 随机 world-sim 或长时 soak；这两项属于后续规模/稳定性评估，不影响 UIP-0001 至 UIP-0006 确定性协议矩阵结论。
+- 本轮当时没有运行完整 300-block 随机 world-sim 或长时 soak；后续已于 2026-07-26 完成，不改变这里的确定性协议矩阵结论。
 
 ## UIP-0001 至 UIP-0006 Reorg/Cursor/Historical Context 集中复核
 
@@ -495,11 +495,11 @@
 
 ### 后续边界
 
-- 本轮是确定性功能复核，没有重复执行完整 300-block 随机 world-sim、扩大 candidate set 的性能评估或长时 soak；这些继续作为规模与稳定性阶段任务。
+- 本轮当时只做确定性功能复核；300-tick world-sim 和 candidate-set 规模评估后续已于 2026-07-26 完成。
 
 ## World-Sim UIP-0001 至 UIP-0006 经济机制扩展
 
-状态：核心实现和聚焦 live smoke 已完成；未执行 300-block 随机 soak。
+状态：核心实现、聚焦 live smoke 和 2026-07-26 的 300-tick 随机 soak 已完成。
 
 ### 改动事项
 
@@ -513,7 +513,7 @@
 
 ### 已验证
 
-- `python3 src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py`：6 个纯测试通过。
+- `python3 src/btc/usdb-indexer/scripts/test_regtest_world_simulator.py`：18 个纯测试通过。
 - 新增/调整 shell 脚本全部通过 `bash -n`，Python 入口通过 `py_compile`，`git diff --check` 通过。
 - 独立 regtest smoke 于 2026-07-18 通过：bootstrap 完成 8 个业务步骤和 1 个 energy-growth block，随后运行 3 个 tick；最终 2 张 active standard、2 张 active collab，完成 2 次 historical candidate/profile/breakdown replay。
 - smoke 最终指标：`verify_fail=0`、`global_cross_check_fail=0`、`validator_sample_fail=0`、`global_cross_check_ok=11`、`validator_sample_ok=2`。
@@ -521,17 +521,17 @@
 
 ### 后续边界
 
-- 继续保留 300-block 随机 world-sim 和更长 reorg 组合作为后续 soak；candidate/breakdown 首轮大数据量评估见下一节，后续只保留 cold cache、并发和更高容量点。
+- 120-agent / 300-tick world-sim 和两次 depth-3 reorg 已完成；2500-tick、多 seed 和故障注入继续作为更长时 soak。candidate/breakdown 大数据量评估见下一节，后续容量工作保留 cold cache、并发和更高容量点。
 
 ## UIP-0004 至 UIP-0006 Economic View 规模评估
 
-状态：首轮 `100 / 1K / 10K` deterministic release 矩阵已完成；改动尚未提交，等待 review。
+状态：`100 / 1K / 10K` deterministic release v3 矩阵已完成；改动尚未提交，等待 review。
 
 ### 实现与测试入口
 
 - 新增 ignored release scale test 和 `run_economic_scale_eval.sh`，每档构造等量 active standard/collab；collab 一半固定 Leader、一半 address Leader，并集中到同一 Leader 形成 breakdown 大集合。
 - 使用真实 SQLite/RocksDB，记录 latency、RSS/VmHWM、DB size、SQLite statement/result-row/VM-step/fullscan/sort，以及 RocksDB get/seek/decode 逻辑操作。
-- 硬断言 candidate 排除 collab、两种 breakdown 排序集合/aggregate 一致、profile/candidate/breakdown 交叉一致、冻结 external state 重放和重启重放摘要一致。
+- 硬断言 candidate 排除 collab 且满足 `effective_energy DESC, pass_id ASC`、两种 breakdown 排序集合/aggregate 一致、profile/candidate/breakdown 交叉一致、冻结 external state 重放和重启重放摘要一致；item-framed digest 不依赖 cursor page boundary。
 - 原始 JSON 默认写入 `src/btc/target/economic-scale/`；详细方法和结果见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。
 
 ### 查询路径修正
@@ -545,12 +545,12 @@
 ### 结果摘要
 
 - 1K 原始 candidate 全分页约 `16.16s / 40,288 SQLite reads / 20K RocksDB seeks`；优化后约 `13.02ms / 270 statements / 2K seeks`。
-- 10K standard + 10K collab、`limit=100`：candidate 首次全分页约 `323.55ms`、cache replay `23.29ms`；breakdown 首次约 `247.51ms`、cache replay `147.04ms`；profile `95.45ms`；peak RSS 约 `50.94 MiB`，fixture DB 约 `27.96 MiB`。
+- 10K standard + 10K collab、`limit=100`：candidate 首次全分页约 `327.52ms`、cache replay `24.64ms`；breakdown 首次约 `238.99ms`、cache replay `142.57ms`；profile `95.65ms`；peak RSS 约 `50.76 MiB`，fixture DB 约 `27.96 MiB`。
 - 10K 的 `limit=20/100/500` 均通过相同 digest/aggregate；页数越多，逐页 external-state 校验成本按页数增长，但 RocksDB cache replay 读取保持为 0。
 
 ### 后续边界
 
-- 仍需 cold cache/物理 I/O、并发与 cache eviction、collab 多 Leader 分布、100K 以上容量点和长时 soak。
+- 仍需 cold cache/物理 I/O、并发与 cache eviction、collab 多 Leader 分布、100K 以上容量点和 2500-tick/multi-seed 长时 soak。
 - 这些属于容量与运维评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐。
 
 ## 跨 UIP 术语收口
@@ -980,13 +980,55 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
 
 - quote decision 通用化后重新执行：default build 在 fake v2 block `3` 前 fail
   closed；v2 build 从同一 datadir 恢复，在 fake v3 block `6` 前 fail closed；v3
-  build 继续到 block `15`。
+  build 继续到 block `30`。
 - clean BTC regtest 高度 `137`，profile 为单一 active owner、raw energy `2000`。
 - archive-state 逐块审计覆盖 difficulty、quote policy slot、price range、K ring、
-  issued supply、miner/aux credits；最终 issued 为 `9513466543683129189`。
-- 最终 miner `8054750291763076466`、fake-v2 aux `190274157602036399`、
-  fake-v3 aux `1268442094318016324`，三者之和精确等于 issued。
-- fresh v3 validator 从 genesis 重放 default/v2/v3 全部历史并到达相同 block `15`
+  issued supply、miner/aux credits；最终 issued 为 `19026028117406476574`。
+- 最终 miner `15664799550741754380`、fake-v2 aux `190274157602036399`、
+  fake-v3 aux `3170954409062685795`，三者之和精确等于 issued。
+- fresh v3 validator 从 genesis 重放 default/v2/v3 全部历史并到达相同 block `30`
   和 head hash。该次 live profile 的 collab contribution 为 `0`；另由 non-zero
   collab 的 tagged resolver 和 miner/validator engine 测试交叉验证 raw/effective
   quote decision 差异。
+
+## 大粒度 Soak、容量与真实服务链路复核
+
+状态：2026-07-26 本轮已完成，改动尚未提交，等待 review。
+
+### 测试框架修正
+
+- 三套 shell 目录全部通过 `shellcheck`：go-ethereum `scripts/usdb`、
+  `usdb-indexer/scripts` 和 `balance-history/scripts`。
+- world-sim 保存完整 stdout/stderr、结构化 `session_failure` 和原子 recovery
+  snapshot；`session_start` 记录全部 deterministic action/growth/fail-fast 参数，
+  recovery 对 agent wallet/address/script identity fail closed。
+- reorg rebuild 区分 agent-owned pass 与 external non-active audit row；external
+  Active 仍拒绝。replacement 首块重放断链 mempool，剩余 replacement block 挖空，
+  最终 mempool 必须为空。
+- same-height replacement 的 `SNAPSHOT_NOT_READY (-32041)` 只按精确 code/message
+  重试，其他 RPC error 不放宽。
+- `spend_balance` 改为选择 tracked owner 下无 inscription/rune 的 explicit UTXO，
+  change 返回同一 owner，确认后余额下降为硬断言；crash probe 可从 baseline wallet
+  txid 集合恢复无 comment 的 explicit-input transaction。
+
+### 执行结果
+
+- `100 / 1K / 10K` release v3 容量矩阵和 10K `limit=20/100/500` 全部通过；
+  candidate/breakdown digest、aggregate 和 restart replay 一致，SQLite fullscan 为 0。
+- default -> fake-v2 -> fake-v3 跨进程链路运行至 USDB block 30；逐块 reward、
+  difficulty、quote/aux、K、issued supply 审计和 fresh validator replay 全部通过。
+- 120-agent / 300-tick world-sim 用时约 1569 秒，完成 2 次 depth-3 reorg、
+  892 次动作结果验证、4050 次 agent oracle、23 次全局经济视图交叉校验、
+  19 次 candidate-set replay 和 19 次 tamper negative check；全部 fail 指标为 0。
+- strict-spend 聚焦 live smoke 完成 13 次 explicit owner spend、1 次 depth-3 reorg、
+  31 次结果验证和 108 次 agent oracle；全部 fail 指标为 0。
+- 300-tick 进程早于 strict owner-UTXO 改动启动，其中 112 次 spend 只作为随机负载；
+  owner delta 硬断言由改动后的独立 strict-spend live smoke 验证。
+- 所有测试均使用隔离 regtest datadir/port；本机正式网 bitcoind 未被修改或停止。
+
+### 后续边界
+
+- 继续保留 cold OS/RocksDB cache、物理 I/O、多客户端并发、cache eviction、
+  多 Leader topology、100K 数据点和 2500-tick/multi-seed soak。
+- public testnet/mainnet 仍需正式 difficulty/fixed-price calibration、canonical
+  genesis/release manifest 和真实第二 production policy 激活 E2E。

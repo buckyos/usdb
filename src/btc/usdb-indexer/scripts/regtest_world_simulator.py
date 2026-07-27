@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -228,6 +229,8 @@ class RegtestWorldSimulator:
     BPS_DENOMINATOR = 10_000
     ECONOMIC_VIEW_VERSION = "uip-0006-usdb-economic-state-view:v1"
     CANDIDATE_SELECTION_RULE = "uip-0006:effective-energy-desc-pass-id-asc:v1"
+    SNAPSHOT_NOT_READY_RPC_CODE = -32041
+    SNAPSHOT_NOT_READY_RPC_MESSAGE = "SNAPSHOT_NOT_READY"
     SUPPORTED_ACTIONS = {
         "standard_mint",
         "fixed_collab_mint",
@@ -438,11 +441,25 @@ class RegtestWorldSimulator:
                 "action_seed": self.action_seed,
                 "diagnostic_seed": self.diagnostic_seed,
                 "blocks": self.args.blocks,
+                "fee_rate": self.args.fee_rate,
+                "max_actions_per_block": self.args.max_actions_per_block,
+                "standard_mint_probability": self.args.standard_mint_probability,
+                "fixed_collab_mint_probability": self.args.fixed_collab_mint_probability,
+                "address_collab_mint_probability": self.args.address_collab_mint_probability,
+                "invalid_mint_probability": self.args.invalid_mint_probability,
+                "transfer_probability": self.args.transfer_probability,
+                "remint_probability": self.args.remint_probability,
+                "send_probability": self.args.send_probability,
+                "spend_probability": self.args.spend_probability,
+                "sleep_ms_between_blocks": self.args.sleep_ms_between_blocks,
+                "fail_fast": self.args.fail_fast,
                 "identity_seed": self.args.identity_seed,
                 "usdb_chain_miner_address": self.args.usdb_chain_miner_address,
                 "usdb_chain_miner_agent_id": self.args.usdb_chain_miner_agent_id,
                 "total_agents": self.total_agents,
                 "initial_active_agents": self.active_agent_count,
+                "agent_growth_interval_blocks": self.args.agent_growth_interval_blocks,
+                "agent_growth_step": self.args.agent_growth_step,
                 "policy_mode": self.args.policy_mode,
                 "scripted_cycle": self.args.scripted_cycle,
                 "agent_self_check_enabled": self.args.agent_self_check_enabled,
@@ -848,10 +865,22 @@ class RegtestWorldSimulator:
             return
         payload = dict(payload)
         payload["updated_at"] = int(time.time())
-        self.recovery_state_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        self.write_json_atomic(self.recovery_state_path, payload)
+
+    @staticmethod
+    def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            with temp_path.open("w", encoding="utf-8") as fp:
+                fp.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(temp_path, path)
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def clear_recovery_state(self) -> None:
         if self.recovery_state_path is None:
@@ -883,10 +912,7 @@ class RegtestWorldSimulator:
             "raw_output": raw_output,
             "updated_at": int(time.time()),
         }
-        result_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        self.write_json_atomic(result_path, payload)
 
     def list_wallet_transactions(
         self, wallet: str, limit: int = 200
@@ -954,6 +980,48 @@ class RegtestWorldSimulator:
                 inscription_ids.add(inscription_id)
         return inscription_ids
 
+    @staticmethod
+    def select_spendable_owner_output(
+        payload: Any, owner_address: str
+    ) -> tuple[str, int, int] | None:
+        if not isinstance(payload, list):
+            raise WorldSimError(
+                f"ord wallet outputs returned non-list payload: {payload}"
+            )
+
+        candidates: list[tuple[int, str, int]] = []
+        for entry in payload:
+            if not isinstance(entry, dict) or entry.get("address") != owner_address:
+                continue
+            if entry.get("inscriptions") or entry.get("runes"):
+                continue
+
+            outpoint = str(entry.get("output", ""))
+            txid, separator, vout_text = outpoint.rpartition(":")
+            if (
+                separator != ":"
+                or RegtestWorldSimulator.TXID_PATTERN.fullmatch(txid) is None
+                or not vout_text.isdigit()
+            ):
+                raise WorldSimError(
+                    f"ord wallet outputs returned invalid outpoint: {outpoint}"
+                )
+            amount_sat = int(entry.get("amount", 0))
+            if amount_sat <= 0:
+                continue
+            candidates.append((amount_sat, txid, int(vout_text)))
+
+        if not candidates:
+            return None
+        amount_sat, txid, vout = max(candidates)
+        return txid, vout, amount_sat
+
+    def load_spendable_owner_output(
+        self, actor: Agent
+    ) -> tuple[str, int, int] | None:
+        payload = json.loads(self.run_ord_wallet(actor.wallet_name, ["outputs"]))
+        return self.select_spendable_owner_output(payload, actor.receive_address)
+
     def build_action_probe_state(self, actor: Agent, action: str) -> dict[str, Any] | None:
         if action in self.MINT_ACTIONS | self.REMINT_ACTIONS | {"transfer"}:
             return {
@@ -994,6 +1062,15 @@ class RegtestWorldSimulator:
                 wallet_name,
                 f"usdb-world-sim:{plan.action_id}",
             )
+            source = "bitcoin-wallet-comment"
+            if entry is None and plan.action == "spend_balance":
+                baseline_txids = {
+                    str(txid)
+                    for txid in (probe_state.get("wallet_txids") or [])
+                    if isinstance(txid, str) and txid
+                }
+                entry = self.find_new_wallet_transaction(wallet_name, baseline_txids)
+                source = "bitcoin-wallet-explicit-input"
             if entry is None:
                 return None
             txid = entry.get("txid")
@@ -1003,7 +1080,7 @@ class RegtestWorldSimulator:
                     f"wallet={wallet_name}, action_id={plan.action_id}, entry={entry}"
                 )
             return {
-                "source": "bitcoin-wallet-comment",
+                "source": source,
                 "raw_output": txid,
             }
 
@@ -1178,6 +1255,23 @@ class RegtestWorldSimulator:
                 f"expected={len(self.agents)}, got={len(agent_payloads)}"
             )
         for agent, agent_payload in zip(self.agents, agent_payloads, strict=True):
+            snapshot_identity = (
+                int(agent_payload.get("agent_id", -1)),
+                str(agent_payload.get("wallet_name", "")),
+                str(agent_payload.get("receive_address", "")),
+                str(agent_payload.get("owner_script_hash", "")),
+            )
+            current_identity = (
+                agent.agent_id,
+                agent.wallet_name,
+                agent.receive_address,
+                agent.owner_script_hash,
+            )
+            if snapshot_identity != current_identity:
+                raise WorldSimError(
+                    "recovery snapshot agent identity mismatch: "
+                    f"snapshot={snapshot_identity}, current={current_identity}"
+                )
             self.apply_agent_state(agent, agent_payload)
         self.validator_samples = [
             self.deserialize_validator_sample(sample)
@@ -1466,15 +1560,16 @@ class RegtestWorldSimulator:
 
         if plan.action == "spend_balance":
             pre_balance = self.get_balance_at_height(actor.owner_script_hash, pre_height)
-            max_sat = min(pre_balance // 2, 5_000_000)
-            min_sat = min(100_000, max_sat)
-            if max_sat <= 0 or min_sat <= 0:
-                raise WorldSimError(
-                    f"cannot rebuild spend receipt without positive spend amount for action_id={plan.action_id}"
-                )
-            amount_sat = max_sat if max_sat < min_sat else rng.randint(min_sat, max_sat)
-            amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
             txid = self.extract_txid(raw_output)
+            amount_sat = self.get_transaction_output_sats(
+                txid, self.args.mining_address
+            )
+            if amount_sat <= 0:
+                raise WorldSimError(
+                    "cannot rebuild spend receipt without a positive miner output: "
+                    f"action_id={plan.action_id}, txid={txid}"
+                )
+            amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
             expectation = ActionExpectation(
                 action="spend_balance",
                 actor_id=actor.agent_id,
@@ -1789,6 +1884,26 @@ class RegtestWorldSimulator:
             raise WorldSimError(f"{method} returned error: {error}")
         return payload.get("result")
 
+    @classmethod
+    def snapshot_rpc_result_if_ready(
+        cls, payload: dict[str, Any], method: str
+    ) -> dict[str, Any] | None:
+        error = payload.get("error")
+        if isinstance(error, dict) and (
+            error.get("code") == cls.SNAPSHOT_NOT_READY_RPC_CODE
+            and error.get("message") == cls.SNAPSHOT_NOT_READY_RPC_MESSAGE
+        ):
+            return None
+
+        result = cls.rpc_result(payload, method)
+        if result is None:
+            return None
+        if not isinstance(result, dict):
+            raise WorldSimError(
+                f"{method} returned a non-object snapshot result: {result}"
+            )
+        return result
+
     def rpc_usdb(self, method: str, params: Any) -> Any:
         return self.rpc_result(self.rpc_call(self.args.usdb_indexer_rpc_url, method, params), method)
 
@@ -1829,6 +1944,25 @@ class RegtestWorldSimulator:
     def btc_to_sat(amount_btc: str) -> int:
         amount = Decimal(amount_btc)
         return int((amount * Decimal("100000000")).to_integral_value())
+
+    def get_transaction_output_sats(self, txid: str, address: str) -> int:
+        payload = json.loads(
+            self.run_btc_cli(None, ["getrawtransaction", txid, "true"])
+        )
+        total_sat = 0
+        for output in payload.get("vout") or []:
+            if not isinstance(output, dict):
+                continue
+            script_pubkey = output.get("scriptPubKey") or {}
+            if not isinstance(script_pubkey, dict):
+                continue
+            output_addresses = [script_pubkey.get("address")]
+            extra_addresses = script_pubkey.get("addresses")
+            if isinstance(extra_addresses, list):
+                output_addresses.extend(extra_addresses)
+            if address in output_addresses:
+                total_sat += self.btc_to_sat(str(output.get("value", "0")))
+        return total_sat
 
     @classmethod
     def saturating_energy_add(cls, left: int, right: int) -> int:
@@ -2938,8 +3072,22 @@ class RegtestWorldSimulator:
     def wait_snapshot_hashes(self, target_height: int, target_hash: str) -> tuple[str, str]:
         start = time.time()
         while True:
-            bh_snapshot = self.rpc_balance_history("get_snapshot_info", [])
-            usdb_snapshot = self.rpc_usdb("get_snapshot_info", [])
+            bh_snapshot = self.snapshot_rpc_result_if_ready(
+                self.rpc_call(
+                    self.args.balance_history_rpc_url,
+                    "get_snapshot_info",
+                    [],
+                ),
+                "balance-history get_snapshot_info",
+            )
+            usdb_snapshot = self.snapshot_rpc_result_if_ready(
+                self.rpc_call(
+                    self.args.usdb_indexer_rpc_url,
+                    "get_snapshot_info",
+                    [],
+                ),
+                "usdb-indexer get_snapshot_info",
+            )
             bh_stable_hash = str((bh_snapshot or {}).get("stable_block_hash", ""))
             usdb_stable_hash = str((usdb_snapshot or {}).get("stable_block_hash", ""))
             bh_stable_height = int((bh_snapshot or {}).get("stable_height", -1))
@@ -2958,7 +3106,9 @@ class RegtestWorldSimulator:
                     "snapshot hash sync timeout after reorg: "
                     f"target_height={target_height}, target_hash={target_hash}, "
                     f"bh_stable_height={bh_stable_height}, bh_stable_hash={bh_stable_hash}, "
-                    f"usdb_stable_height={usdb_stable_height}, usdb_stable_hash={usdb_stable_hash}"
+                    f"bh_snapshot_ready={bh_snapshot is not None}, "
+                    f"usdb_stable_height={usdb_stable_height}, usdb_stable_hash={usdb_stable_hash}, "
+                    f"usdb_snapshot_ready={usdb_snapshot is not None}"
                 )
             time.sleep(0.8)
 
@@ -3621,8 +3771,20 @@ class RegtestWorldSimulator:
             self.metrics["skip"] += 1
             return None
 
-        # Cap spend amount by current balance with a conservative upper bound.
-        max_sat = min(pre_balance // 2, 5_000_000)
+        spendable_output = self.load_spendable_owner_output(actor)
+        if spendable_output is None:
+            self.metrics["skip"] += 1
+            return None
+        input_txid, input_vout, input_amount_sat = spendable_output
+
+        # Keep enough explicit-input change for Core to pay the fee and avoid
+        # dust while forcing the tracked owner script to fund this action.
+        fee_reserve_sat = max(1_000, self.args.fee_rate * 300)
+        max_sat = min(
+            pre_balance // 2,
+            5_000_000,
+            input_amount_sat - fee_reserve_sat,
+        )
         min_sat = min(100_000, max_sat)
         if max_sat <= 0 or min_sat <= 0:
             self.metrics["skip"] += 1
@@ -3633,16 +3795,37 @@ class RegtestWorldSimulator:
             amount_sat = rng.randint(min_sat, max_sat)
 
         amount_btc = f"{(Decimal(amount_sat) / Decimal('100000000')):.8f}"
-        txid = self.run_btc_cli(
-            actor.wallet_name,
-            [
-                "sendtoaddress",
-                self.args.mining_address,
-                amount_btc,
-                f"usdb-world-sim:{action_id}",
-                self.args.miner_wallet,
-            ],
+        send_result = json.loads(
+            self.run_btc_cli(
+                actor.wallet_name,
+                [
+                    "send",
+                    json.dumps({self.args.mining_address: amount_btc}),
+                    "null",
+                    "unset",
+                    str(self.args.fee_rate),
+                    json.dumps(
+                        {
+                            "add_inputs": False,
+                            "inputs": [
+                                {
+                                    "txid": input_txid,
+                                    "vout": input_vout,
+                                }
+                            ],
+                            "change_address": actor.receive_address,
+                        },
+                        separators=(",", ":"),
+                    ),
+                ],
+            )
         )
+        txid = send_result.get("txid")
+        if send_result.get("complete") is not True or not isinstance(txid, str):
+            raise WorldSimError(
+                "explicit owner spend did not return a complete transaction: "
+                f"actor={actor.wallet_name}, result={send_result}"
+            )
         self.write_external_action_result(
             action_id=action_id,
             action="spend_balance",
@@ -3696,7 +3879,7 @@ class RegtestWorldSimulator:
         if action == "spend_balance":
             result = self.op_spend_balance(actor, action_id, pre_height, rng)
             if result is None:
-                return "spend_balance:skip:low_balance", None, {actor.agent_id}
+                return "spend_balance:skip:not_viable", None, {actor.agent_id}
             detail, expectation = result
             return detail, expectation, {actor.agent_id}
 
@@ -3735,13 +3918,14 @@ class RegtestWorldSimulator:
         if expectation.action == "spend_balance":
             after_balance = self.get_balance_at_height(actor.owner_script_hash, block_height)
             pre_balance = int(expectation.actor_pre_balance or 0)
-            if after_balance >= pre_balance:
-                # A spend action can coincide with incoming transfers in the same block,
-                # or wallet coin selection can return change to the tracked address.
-                # In both cases, strict `after < pre` is not guaranteed.
-                self.log(
-                    "WARN spend_balance verification relaxed: "
-                    f"agent={actor.wallet_name}, pre={pre_balance}, after={after_balance}"
+            amount_sat = int(expectation.amount_sat or 0)
+            expected_max = pre_balance - amount_sat
+            if after_balance > expected_max:
+                raise WorldSimError(
+                    "spend_balance verification failed: "
+                    f"agent={actor.wallet_name}, pre={pre_balance}, "
+                    f"amount={amount_sat}, expected_max={expected_max}, "
+                    f"after={after_balance}"
                 )
             return
 
@@ -4393,7 +4577,11 @@ class RegtestWorldSimulator:
             agent.owner_script_hash: agent for agent in self.agents
         }
         rows = self.load_pass_energy_leaderboard_at_height(block_height, "all")
-        unknown_owner_rows = 0
+        external_owner_rows = 0
+        external_dormant_owner_rows = 0
+        external_terminal_owner_rows = 0
+        unknown_active_pass_ids: list[str] = []
+        tracked_pass_rows = 0
         active_owner_rows = 0
 
         for row in rows:
@@ -4407,9 +4595,24 @@ class RegtestWorldSimulator:
 
             agent = owner_to_agent.get(owner)
             if agent is None:
-                unknown_owner_rows += 1
+                external_owner_rows += 1
+                if state == "active":
+                    unknown_active_pass_ids.append(inscription_id)
+                elif state == "dormant":
+                    # A regular wallet spend can move a dormant inscription to
+                    # an unmodeled change or recipient script. It remains
+                    # auditable, but no simulator agent owns that script.
+                    external_dormant_owner_rows += 1
+                elif state in {"consumed", "burned", "invalid"}:
+                    external_terminal_owner_rows += 1
+                else:
+                    raise WorldSimError(
+                        "reorg rebuild found an unsupported pass state for an "
+                        f"external owner: pass={inscription_id}, state={state}"
+                    )
                 continue
 
+            tracked_pass_rows += 1
             agent.owned_passes.add(inscription_id)
             self.pass_owner_by_id[inscription_id] = agent.agent_id
             snapshot = self.get_pass_snapshot(inscription_id, block_height)
@@ -4433,15 +4636,20 @@ class RegtestWorldSimulator:
                 agent.active_pass_id = inscription_id
                 active_owner_rows += 1
 
-        if unknown_owner_rows > 0:
+        if unknown_active_pass_ids:
             raise WorldSimError(
-                "reorg rebuild found rows owned by unknown script hashes: "
-                f"block_height={block_height}, unknown_owner_rows={unknown_owner_rows}"
+                "reorg rebuild found active rows owned by unknown script hashes: "
+                f"block_height={block_height}, unknown_active_owner_rows="
+                f"{len(unknown_active_pass_ids)}, pass_ids={unknown_active_pass_ids[:5]}"
             )
 
         return {
             "loaded_pass_rows": len(rows),
-            "unknown_owner_rows": unknown_owner_rows,
+            "tracked_pass_rows": tracked_pass_rows,
+            "external_owner_rows": external_owner_rows,
+            "external_dormant_owner_rows": external_dormant_owner_rows,
+            "external_terminal_owner_rows": external_terminal_owner_rows,
+            "unknown_active_owner_rows": 0,
             "active_owner_rows": active_owner_rows,
         }
 
@@ -4459,6 +4667,49 @@ class RegtestWorldSimulator:
             ],
         )
         return int(self.run_btc_cli(None, ["getblockcount"]))
+
+    def get_mempool_txids(self) -> list[str]:
+        payload = json.loads(self.run_btc_cli(None, ["getrawmempool"]))
+        if not isinstance(payload, list) or not all(
+            isinstance(txid, str) for txid in payload
+        ):
+            raise WorldSimError(f"getrawmempool returned invalid payload: {payload}")
+        return payload
+
+    def mine_one_mempool_block(self) -> int:
+        self.run_btc_cli(
+            None,
+            [
+                "generatetoaddress",
+                "1",
+                self.args.mining_address,
+            ],
+        )
+        return int(self.run_btc_cli(None, ["getblockcount"]))
+
+    def mine_replacement_blocks(self, depth: int) -> dict[str, int]:
+        disconnected_txids = self.get_mempool_txids()
+        for replacement_index in range(depth):
+            if replacement_index == 0 and disconnected_txids:
+                # Re-include disconnected transactions before rebuilding the
+                # simulator view. Otherwise they leak into the next normal
+                # block and mutate state outside that tick's expectations.
+                self.mine_one_mempool_block()
+            else:
+                self.mine_one_empty_block()
+
+        remaining_txids = self.get_mempool_txids()
+        if remaining_txids:
+            raise WorldSimError(
+                "replacement chain left disconnected transactions in mempool: "
+                f"depth={depth}, disconnected_count={len(disconnected_txids)}, "
+                f"remaining_count={len(remaining_txids)}, "
+                f"remaining_txids={remaining_txids[:5]}"
+            )
+        return {
+            "replacement_replayed_tx_count": len(disconnected_txids),
+            "replacement_remaining_mempool_tx_count": 0,
+        }
 
     def should_trigger_reorg(self, tick: int, block_height: int) -> bool:
         if self.args.reorg_interval_blocks <= 0:
@@ -4493,8 +4744,7 @@ class RegtestWorldSimulator:
         # need the upstream rollback to be visible before mining the replacement chain.
         self.wait_balance_history_height_exact(rollback_target_height)
 
-        for _ in range(depth):
-            self.mine_one_empty_block()
+        replacement_mempool_info = self.mine_replacement_blocks(depth)
 
         self.wait_ord_server_synced()
         self.wait_service_synced(block_height)
@@ -4544,6 +4794,7 @@ class RegtestWorldSimulator:
             "balance_history_stable_hash": bh_stable_hash,
             "usdb_stable_hash": usdb_stable_hash,
         }
+        info.update(replacement_mempool_info)
         info.update(rebuild_info)
         info["global_cross_check_info"] = cross_check_info
         info["validator_sample_invalidated_ids"] = invalidated_sample_ids
@@ -6068,12 +6319,35 @@ def main() -> int:
         simulator.run()
     except KeyboardInterrupt:
         RegtestWorldSimulator.log("Interrupted by user.")
-        return 0
+        simulator.emit_report(
+            "session_failure",
+            {
+                "error_type": "KeyboardInterrupt",
+                "error": "interrupted by user",
+            },
+        )
+        return 130
     except WorldSimError as e:
         RegtestWorldSimulator.log(f"Simulation failed: {e}")
+        simulator.emit_report(
+            "session_failure",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+            },
+        )
         return 1
     except Exception as e:  # noqa: BLE001
-        RegtestWorldSimulator.log(f"Unexpected exception: {e}")
+        stack = traceback.format_exc()
+        RegtestWorldSimulator.log(f"Unexpected exception: {e}\n{stack}")
+        simulator.emit_report(
+            "session_failure",
+            {
+                "error_type": type(e).__name__,
+                "error": str(e),
+                "traceback": stack,
+            },
+        )
         return 1
     finally:
         simulator.close_report()

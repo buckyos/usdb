@@ -2039,7 +2039,7 @@ regtest_ord_send_inscription() {
 regtest_start_balance_history() {
   regtest_log "Starting balance-history service (root=${BALANCE_HISTORY_ROOT}, rpc=${BH_RPC_PORT})"
   (
-    cd "$REPO_ROOT"
+    cd "$REPO_ROOT" || exit 1
     cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
       --root-dir "$BALANCE_HISTORY_ROOT" \
       --skip-process-lock
@@ -2061,7 +2061,7 @@ regtest_start_usdb_indexer() {
     )
   fi
   (
-    cd "$REPO_ROOT"
+    cd "$REPO_ROOT" || exit 1
     env "${env_args[@]}" cargo run --manifest-path src/btc/Cargo.toml -p usdb-indexer -- \
       --root-dir "$USDB_INDEXER_ROOT" \
       --skip-process-lock
