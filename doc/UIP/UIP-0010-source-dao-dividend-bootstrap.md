@@ -60,6 +60,9 @@ USDB 需要把一部分交易手续费或后续经济收入导入 SourceDAO / Di
 | `source_dao_bootstrap_config` | 启动后初始化 SourceDAO / Dividend 所需的配置。 |
 | `bootstrap_state` | SourceDAO bootstrap job 写出的状态快照。 |
 | `bootstrap_marker` | 表示 bootstrap 已完成的最小 marker。 |
+| `bootstrap candidate chain` | 已使用 canonical genesis 启动并执行 bootstrap、但尚未通过发布验收的候选链；不得被外部系统视为正式 public network。 |
+| `bootstrap acceptance checkpoint` | strict validation 成功后冻结的高度、block hash、state root 和 release 输入承诺；用于把 candidate chain 提升为 accepted network。 |
+| `public activation` | acceptance checkpoint 完成审计并进入签名 release manifest 后，公开 RPC、bootnode、挖矿接入和外部经济承诺的发布边界。 |
 | `DividendFeeSplitBlock` | USDB chain 开始把 fee split 目标金额记入 `DividendAddress` 的激活高度。 |
 
 # 规范关键词
@@ -241,6 +244,8 @@ Dao runtime code hash
 Dividend runtime code hash
 SourceDAO bootstrap config hash
 bootstrap_state hash
+bootstrap_acceptance artifact hash
+bootstrap_acceptance checkpoint height / block hash / state root
 bootnodes / discovery config hash
 ```
 
@@ -251,7 +256,9 @@ verify release manifest signature
     -> verify release manifest 中记录的文件 hash
     -> init / start with canonical genesis
     -> sync USDB chain
-    -> verify on-chain SourceDAO / Dividend bootstrap state
+    -> run strict SourceDAO / Dividend validation
+    -> verify bootstrap acceptance checkpoint
+    -> enable public-facing services
 ```
 
 规则：
@@ -260,6 +267,8 @@ verify release manifest signature
 - public testnet 应支持 release manifest signature，可以通过启动参数、安装包配置或配置文件提供 trusted key。
 - mainnet 应提供明确的 release signing key 分发和轮换机制。
 - `trusted_release_signing_keys` 是供应链安全机制，不是共识规则；不同节点只要使用相同 genesis 和 chain config，最终仍由链同步和状态校验判断是否在同一网络。
+- acceptance artifact 必须由 release manifest 承诺；单独下载的未签名 acceptance artifact
+  不能建立 public network identity。
 
 # Chain Config Fields
 
@@ -336,6 +345,11 @@ public spec 与 bootstrap signer 必须分离：
 - public release 必须发布 `bootstrapAdmin` 地址和长期 custody 说明，可以附带公钥或多签治理信息。
 - `genesisDifficulty`、`minimumDifficulty` 与 UIP-0009 的 final 参数必须一致。
 - `dividendFeeSplitBlock` 必须大于预计 bootstrap 完成高度，并留出审计和恢复窗口。
+
+Genesis 预置 runtime code、bootstrap 交易与 public network 开放必须分成两个阶段。运行
+initializer 的链首先是 `bootstrap candidate chain`；仅在完成本文定义的 acceptance checkpoint
+后，才可以进入 `public activation`。因此 v1 不要求 initializer 在任意开放网络环境下都能抵抗
+首次调用抢跑，但禁止把尚未验收的 candidate chain 直接发布为正式网络。
 
 ## 参数化初始化
 
@@ -549,6 +563,66 @@ bootstrap job 必须输出可审计状态。
 
 签名的安全目标是 release artifact provenance 和供应链完整性，不是改变 USDB chain 共识。共识仍由 canonical genesis、chain config 和链上交易历史决定。
 
+# Bootstrap Candidate Acceptance
+
+`Dao.initialize()` 和 `Dividend.initialize()` 在 direct-predeploy 后通过普通交易执行，首次调用者可以
+决定 DAO admin 或 Dividend main address。因此 v1 public launch 必须采用受控 candidate
+ceremony，而不是从 block `0` 开始无条件开放 initializer 竞争。
+
+候选阶段要求：
+
+- candidate chain 使用最终 canonical genesis、chain config 和 public bootstrap config。
+- public RPC transaction submission、公开 bootnode、bridge、exchange deposit 和其他不可逆外部
+  承诺必须保持关闭。
+- bootstrap signer、候选矿工和审计节点由 release operator 控制；候选阶段允许失败和重试。
+- full bootstrap 完成后必须运行 strict validator，精确验证 bootstrap admin、DAO/Dividend
+  identity、全部 required module wiring、模块参数、token 分配、committee 状态和 finalized marker。
+- strict validator 不得只依赖 `bootstrapFinalized`；该 marker 只证明当前 DAO graph 自洽并满足
+  fee readiness，不证明该 graph 属于预期 release。
+
+strict validation 成功后必须生成：
+
+```text
+schema_version = "uip-0010-bootstrap-acceptance:v1"
+chain_id
+genesis.json_sha256
+genesis.block_hash
+checkpoint.number
+checkpoint.hash
+checkpoint.state_root
+confirmation_depth
+bootstrap.config_sha256
+bootstrap.state_sha256
+bootstrap.validation_identity_sha256
+bootstrap.max_operation_block
+bootstrap.operation_transactions
+bootstrap.validation
+```
+
+其中：
+
+- checkpoint 高度不得早于任意 completed bootstrap operation 的 block number。
+- checkpoint 之前的全部非-genesis transaction hash 必须与 completed bootstrap operation
+  transaction hash 集合精确相等；额外交易、缺失交易和重复 transaction evidence 均 invalid。
+- public network 必须冻结非零 confirmation depth；local dev / CI 可以使用 `0`。
+- `bootstrap.validation` 必须移除 RPC URL、本地路径和生成时间，只保留可由独立 joiner 重算的
+  chain ID、DAO/Dividend、bootstrap admin、module address 和 version。
+- acceptance parser 必须拒绝重复 JSON key、未知 schema、缺失 module、错误 operation、
+  文件 hash 不一致和 checkpoint replacement。
+- acceptance artifact 必须进入签名 release manifest；签名承诺发布方接受该精确链历史，
+  block hash/state root 则承诺 checkpoint 之前的链上状态和交易。
+
+验收失败时：
+
+- 当前 candidate chain 必须标记为 rejected。
+- 必须废弃 candidate datadir 并从 canonical genesis 重新执行 bootstrap。
+- 禁止修改冲突状态后继续沿用同一 acceptance artifact。
+- 如果 candidate 阶段存在未授权交易或 initializer 抢跑，即使最终 marker 为 `1` 也必须失败。
+
+`public activation` 只能发生在 acceptance artifact 已生成、审计并写入签名 release manifest
+之后。该模型把 candidate 阶段的攻击结果限制为启动失败或延迟，不允许其成为已接受网络的恶意
+初始状态。
+
 # Joiner Validation
 
 后续加入网络的节点必须验证：
@@ -562,10 +636,14 @@ bootstrap job 必须输出可审计状态。
 6. `ChainConfig.DividendAddress` 与 `DividendAddress` 一致。
 7. `ChainConfig.DividendCodeHash` 与链上 Dividend runtime code 一致。
 8. `ChainConfig.DividendFeeSplitBlock` 与 release manifest 一致。
-9. 链上 bootstrap 交易已执行并成功。
-10. 当前链上状态满足最小完成条件和 `bootstrapFinalized` readiness。
+9. release manifest 承诺的 acceptance artifact hash 正确。
+10. 同步高度达到 acceptance checkpoint，且 block hash/state root 完全一致。
+11. 链上 bootstrap 交易已执行并成功。
+12. joiner 独立 strict validation identity 与 acceptance artifact 完全一致。
+13. 当前链上状态满足最小完成条件和 `bootstrapFinalized` readiness。
 
-joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史并审计最终状态。
+joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史、重新执行 strict validation 并验证
+acceptance checkpoint。在验证成功前，joiner 必须保持未接受状态，不得对外提供正式网络服务。
 
 当前开发期自动化入口
 `go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh` 会在 full bootstrap 后固定
@@ -679,8 +757,15 @@ USDB docker:
 - bootstrap state / marker 可解析且字段一致。
 - full bootstrap 的每笔成功初始化、implementation/proxy deployment 和 DAO wiring operation 都
   记录 tx hash 与 block number；preflight/链上状态冲突会写出 `status = error` 和对应 operation。
+- strict validation 成功后可以生成 deterministic acceptance artifact；checkpoint 必须晚于所有
+  completed operation。
+- checkpoint block hash/state root、bootstrap admin、config/state bytes 或 validation identity
+  被篡改时，acceptance verification 必须失败。
+- initializer 抢跑或 unexpected bootstrap admin 即使能够写入 finalized marker，也不能生成有效
+  acceptance artifact。
 - bootstrap 后重启节点仍保持状态。
-- joiner 使用同一 genesis 后可重放 bootstrap 历史并验证最终状态。
+- joiner 使用同一 genesis 后可重放 bootstrap 历史、重算 strict validation identity 并验证同一
+  acceptance checkpoint。
 - fee split 激活前 `DividendAddress` 不收取协议分账。
 - fee split 激活后按 UIP-0011 的规则进入 `DividendAddress`。
 - runtime code hash 或 finalized marker 被篡改时，gate 后出块和验证 fail closed。
@@ -698,4 +783,5 @@ USDB docker:
 | `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |
 | SourceDAO full bootstrap 是否进入 public network 首次 release 强制状态 | 若首个 release 需要完整 SourceDAO 治理系统，则 `scope = full` 应成为完成条件。 | 确认 public testnet / mainnet 的 required module set。 |
 | `bootstrap_state` / `bootstrap_marker` 是否需要签名 | marker 本身不是共识输入；public release 应签 manifest，并由 manifest 引用 state/marker hash。 | 设计 release signing key / signer set。 |
-| public joiner 是否需要内置 trusted bootstrap manifest key | trusted key 是 artifact provenance 机制，不是共识规则。 | 放到后续 cold-start / joiner 流程中确定嵌入方式和轮换策略。 |
+| public joiner 是否需要内置 trusted bootstrap manifest key | trusted key 是 artifact provenance 机制，不是共识规则；joiner 还必须验证 manifest 承诺的 acceptance checkpoint。 | public release 前确定 key 嵌入方式、轮换策略和非零 confirmation depth。 |
+| direct-predeploy initializer 抢跑 | v1 使用受控 candidate ceremony；strict validation + signed acceptance checkpoint 成功前不承认 public activation。 | public release tooling 必须保持外部入口关闭，失败时废弃 candidate datadir；若未来要求 block 0 permissionless，再单独引入 authenticated initializer 或 genesis storage。 |

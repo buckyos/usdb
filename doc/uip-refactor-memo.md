@@ -1058,3 +1058,26 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
   样本全部受一秒时间戳下限影响；升至 `0x13237c` 后，16 个区间总计 195 秒，
   候选为 `0x136f7d`。该次运行使用 dirty source 且与 world-sim 并行，只证明流程和
   本机数量级，不作为 public 参数。
+
+## UIP-0010 Bootstrap Candidate Acceptance
+
+状态：实现和 full-bootstrap restart/joiner E2E 已通过，尚未提交，等待 review。
+
+- 冻结三阶段术语：`bootstrap candidate chain`、`bootstrap acceptance checkpoint` 和
+  `public activation`。v1 不要求 direct-predeploy initializer 在任意开放环境下抵抗抢跑，
+  但 acceptance 成功前禁止把 candidate chain 视为正式 public network。
+- Go 新增 `geth usdb-bootstrap-acceptance create|verify` 和
+  `uip-0010-bootstrap-acceptance:v1` artifact。artifact 固定 canonical genesis、
+  SourceDAO config/state、规范化 strict validation identity、completed operation 边界、
+  completed transaction hash 集合、checkpoint block hash/state root 和 confirmation depth。
+- acceptance 输入和 artifact parser 拒绝 duplicate JSON key；创建要求 full completed
+  bootstrap、strict validation、预期 admin、完整 module graph 和 transaction evidence
+  完全一致。
+- full-bootstrap restart/joiner E2E 已接入 artifact 创建和强制验证；node1 restart 与 fresh
+  joiner 必须重算相同 validation identity，并增加 checkpoint replacement 和 bootstrap-admin
+  pollution 拒绝路径。
+- 2026-07-27 live E2E 在 candidate block `94` 生成 acceptance artifact；node1 restart 和
+  fresh full-sync node2 均得到相同 block hash/state root，随后继续通过 fee split、
+  Dividend ledger sync、full-bootstrap idempotent replay 和 cross-node head 检查。
+- public release 后续仍需冻结非零 confirmation depth 和 release signing key；acceptance
+  artifact 必须由签名 release manifest 承诺。失败 candidate 直接废弃 datadir，不做链上修复。
