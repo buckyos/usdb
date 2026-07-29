@@ -1197,3 +1197,16 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
   snapshot、economic profile、candidate 首页面，并用重启前 cursor 继续下一页。
 - 默认隔离 regtest 矩阵和全部新增 Rust 定向测试已通过；没有访问或修改本机
   BTC mainnet 服务。
+- 新增独立 reorg 深度边界 suite：固定 `lag=5`，覆盖 `depth=4/5/6`，分别对应
+  `depth < lag`、`depth = lag`、`depth = lag + 1`。
+- 每个深度在同一次 BTC replacement 上交叉验证三种生命周期：
+  - 运行中 online 实例；
+  - reorg 前停机、reorg 后从已有 DB 重启；
+  - reorg 后从空 DB 启动的 fresh joiner。
+- tracked transfer 固定放在 stable frontier。depth `4/5` 要求 stable snapshot、
+  historical state-ref、block commit 和 `125000000 sat` 余额保持不变；depth `6`
+  要求 stable block 被替换、余额回滚为 `0`，三种生命周期最终逐字段一致。
+- 共享 regtest helper 增加显式 `root_dir` / RPC port 的多实例配置、启停、等待和
+  余额查询能力；旧单实例 wrapper 保留，现有脚本调用方式不变。
+- `run_regtest_suite.sh stable-lag-reorg` 已实跑通过，完整 3 深度 / 9 生命周期路径
+  用时约 137 秒；测试只使用隔离 Bitcoin Core 28.1 regtest。

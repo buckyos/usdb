@@ -2,7 +2,7 @@
 
 本目录包含 `balance-history` 的 shell 级端到端测试。每个场景会启动隔离的 Bitcoin Core regtest 节点，启动一个或多个 `balance-history` 服务实例，构造链上交易/区块，并通过 JSON-RPC 验证结果。
 
-当前已有最小版 `run_regtest_suite.sh` runner，先收敛 smoke 子集；更大的 reorg/snapshot 套件仍保留为手工入口。
+当前 `run_regtest_suite.sh` 支持 smoke 和 stable-lag reorg boundary 两个子集；更大的 reorg/snapshot 套件仍保留为手工入口。
 
 真实本地 BTC 数据测试使用单独入口 `run_real_btc_tests.sh`，它不会启动 bitcoind，而是连接调用者显式指定的本机节点和 blk datadir。
 
@@ -42,6 +42,12 @@ bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
 bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 ```
 
+Stable-lag reorg 深度边界矩阵：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
+```
+
 脚本默认在 `/tmp` 下创建临时工作目录，并在退出时清理。失败时会自动打印 bitcoind 和 balance-history 日志尾部。
 
 ## 常用环境变量
@@ -64,7 +70,7 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 
 | 脚本 | 分层 | 默认端口 `btc-rpc/p2p/bh-rpc` | 目标 |
 | --- | --- | --- | --- |
-| `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke` |
+| `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke`、`stable-lag-reorg` |
 | `run_real_btc_tests.sh` | Real BTC | N/A | 显式 `USDB_BH_REAL_BTC=1` 后运行本机真实 blk/RPC 测试 |
 | `regtest_smoke.sh` | Smoke | `28132/28133/28110` | 基础同步、网络类型、地址余额查询 |
 | `regtest_rpc_semantics.sh` | Smoke/query | `29032/29033/29010` | latest/exact/range balance、delta、batch 顺序、live UTXO 语义 |
@@ -75,6 +81,8 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 | `regtest_restart_multi_reorg_smoke.sh` | Reorg/restart | `28632/28633/28610` | 多轮离线 reorg |
 | `regtest_restart_hybrid_reorg_smoke.sh` | Reorg/restart | `28732/28733/28710` | 在线/离线混合 reorg |
 | `regtest_stable_lag_smoke.sh` | Readiness | `29832/29833/29810` | stable lag 和 consensus-ready 行为 |
+| `regtest_stable_lag_reorg_depth_case.sh` | Stable-lag/reorg | `30732/30733/30710-30712` | 单深度下 online、offline restart、fresh joiner 对拍 |
+| `regtest_stable_lag_reorg_depth_matrix.sh` | Stable-lag/reorg | `30710-30813` | `depth=lag-1/lag/lag+1` 完整边界矩阵 |
 | `regtest_history_balance_oracle.sh` | Oracle | `28932/28933/28910` | 用独立 Python oracle 对拍随机地址历史余额 |
 | `regtest_spend_graph_queries.sh` | Query | `30532/30533/30510` | 多地址 spend graph 查询一致性 |
 | `regtest_multi_input_same_block_queries.sh` | Query | `30632/30633/30610` | 同块多输入聚合和 batch delta 查询 |
@@ -121,6 +129,17 @@ bash src/btc/balance-history/scripts/regtest_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh
 bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```
+
+### Stable-Lag Reorg Boundary
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
+```
+
+该 suite 在三个隔离 regtest 上依次验证 `depth=lag-1`、`depth=lag` 和
+`depth=lag+1`。每个案例交叉比较 online、offline restart、fresh joiner 的 snapshot、
+historical state-ref、block commit 和 tracked address balance。详细说明见
+[balance-history-regtest-stable-lag-reorg-depth-matrix.md](/home/bucky/work/usdb/doc/balance-history/balance-history-regtest-stable-lag-reorg-depth-matrix.md)。
 
 ### Real BTC Data
 
@@ -256,7 +275,7 @@ $BITCOIN_DIR/regtest/debug.log
 
 ## 已知缺口
 
-- `run_regtest_suite.sh` 当前只支持 `smoke`，还未扩展 `core`、`reorg-full`、`snapshot-full`。
+- `run_regtest_suite.sh` 当前支持 `smoke`、`stable-lag-reorg`，还未扩展 `core`、`reorg-full`、`snapshot-full`。
 - 聚合 RPC `get_address_balance_summary`、`get_address_balance_timeseries`、`get_address_flow_buckets` 已有 Rust unit 覆盖，但还没有 regtest 脚本覆盖。
 - `resolve_script_hashes` 已有 Rust unit 覆盖，但还没有基于完整 indexed data 的 regtest 覆盖。
 - 多个脚本仍有本地 JSON assertion helper，后续应收敛到 `regtest_lib.sh`。

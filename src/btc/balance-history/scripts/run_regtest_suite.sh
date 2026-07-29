@@ -18,7 +18,8 @@ Usage:
   bash src/btc/balance-history/scripts/run_regtest_suite.sh [suite] [options]
 
 Suites:
-  smoke   Curated smoke suite covering sync, RPC semantics, reorg, snapshot repeat install, and oracle balance checks.
+  smoke              Curated smoke suite covering sync, RPC semantics, reorg, snapshot repeat install, and oracle balance checks.
+  stable-lag-reorg   Stable-lag reorg depth boundary matrix across online, restart, and fresh-joiner modes.
 
 Options:
   --list        Print scripts in the selected suite and exit.
@@ -29,6 +30,7 @@ Options:
 Examples:
   bash src/btc/balance-history/scripts/run_regtest_suite.sh
   bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
+  bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
   bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke --dry-run
 USAGE
 }
@@ -49,6 +51,11 @@ select_suite() {
         regtest_reorg_smoke.sh
         regtest_snapshot_install_repeat.sh
         regtest_history_balance_oracle.sh
+      )
+      ;;
+    stable-lag-reorg)
+      SUITE_SCRIPTS=(
+        regtest_stable_lag_reorg_depth_matrix.sh
       )
       ;;
     *)

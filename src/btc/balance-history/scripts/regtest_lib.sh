@@ -26,6 +26,7 @@ BALANCE_HISTORY_PID="${BALANCE_HISTORY_PID:-}"
 BITCOIND_BIN="${BITCOIND_BIN:-}"
 BITCOIN_CLI_BIN="${BITCOIN_CLI_BIN:-}"
 REGTEST_DIAGNOSTICS_PRINTED="${REGTEST_DIAGNOSTICS_PRINTED:-0}"
+REGTEST_LAST_BALANCE_HISTORY_PID="${REGTEST_LAST_BALANCE_HISTORY_PID:-}"
 
 regtest_log() {
   echo "${REGTEST_LOG_PREFIX:-[balance-history-regtest]} $*"
@@ -81,13 +82,20 @@ regtest_parse_json_string_result() {
   sed -n 's/.*"result"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
+regtest_rpc_call_balance_history_at_port() {
+  local rpc_port="$1"
+  local method="$2"
+  local params="${3:-[]}"
+  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
+    -X POST "http://127.0.0.1:${rpc_port}" \
+    -H 'content-type: application/json' \
+    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+}
+
 regtest_rpc_call_balance_history() {
   local method="$1"
   local params="${2:-[]}"
-  curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-    -X POST "http://127.0.0.1:${BH_RPC_PORT}" \
-    -H 'content-type: application/json' \
-    --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
+  regtest_rpc_call_balance_history_at_port "$BH_RPC_PORT" "$method" "$params"
 }
 
 regtest_get_balance_history_height() {
@@ -176,11 +184,13 @@ regtest_assert_utxo_missing() {
   fi
 }
 
-regtest_create_balance_history_config() {
-  mkdir -p "$BALANCE_HISTORY_ROOT"
+regtest_create_balance_history_config_at() {
+  local root_dir="$1"
+  local rpc_port="$2"
+  mkdir -p "$root_dir"
 
-  cat >"${BALANCE_HISTORY_ROOT}/config.toml" <<EOF
-root_dir = "${BALANCE_HISTORY_ROOT}"
+  cat >"${root_dir}/config.toml" <<EOF
+root_dir = "${root_dir}"
 
 [btc]
 network = "regtest"
@@ -199,8 +209,12 @@ batch_size = 32
 max_sync_block_height = 4294967295
 
 [rpc_server]
-port = ${BH_RPC_PORT}
+port = ${rpc_port}
 EOF
+}
+
+regtest_create_balance_history_config() {
+  regtest_create_balance_history_config_at "$BALANCE_HISTORY_ROOT" "$BH_RPC_PORT"
 }
 
 regtest_config_set_sync_value() {
@@ -238,27 +252,39 @@ regtest_config_set_max_sync_block_height() {
   regtest_config_set_sync_value "$config_path" "max_sync_block_height" "$max_sync_block_height"
 }
 
-regtest_wait_balance_history_rpc_ready() {
-  regtest_log "Waiting for balance-history RPC readiness"
+regtest_wait_balance_history_rpc_ready_at_port() {
+  local rpc_port="$1"
+  local log_file="$2"
+  local label="${3:-balance-history}"
+  regtest_log "Waiting for ${label} RPC readiness on port=${rpc_port}"
 
   for _ in $(seq 1 120); do
-    if regtest_rpc_call_balance_history "get_network_type" "[]" >/dev/null 2>&1; then
+    if regtest_rpc_call_balance_history_at_port "$rpc_port" "get_network_type" "[]" \
+      >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.5
   done
 
-  regtest_log "balance-history RPC not ready, see log: ${BALANCE_HISTORY_LOG_FILE}"
+  regtest_log "${label} RPC not ready, see log: ${log_file}"
   exit 1
 }
 
-regtest_wait_balance_history_consensus_ready() {
-  regtest_log "Waiting for balance-history consensus readiness"
+regtest_wait_balance_history_rpc_ready() {
+  regtest_wait_balance_history_rpc_ready_at_port \
+    "$BH_RPC_PORT" "$BALANCE_HISTORY_LOG_FILE" "balance-history"
+}
+
+regtest_wait_balance_history_consensus_ready_at_port() {
+  local rpc_port="$1"
+  local log_file="$2"
+  local label="${3:-balance-history}"
+  regtest_log "Waiting for ${label} consensus readiness on port=${rpc_port}"
 
   local start_ts now readiness_resp consensus_ready
   start_ts="$(date +%s)"
   while true; do
-    readiness_resp="$(regtest_rpc_call_balance_history "get_readiness" "[]")"
+    readiness_resp="$(regtest_rpc_call_balance_history_at_port "$rpc_port" "get_readiness" "[]")"
     consensus_ready="$(echo "$readiness_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print("1" if r.get("consensus_ready") else "0")')"
     if [[ "$consensus_ready" == "1" ]]; then
       return 0
@@ -266,12 +292,17 @@ regtest_wait_balance_history_consensus_ready() {
 
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      regtest_log "Consensus readiness timeout, last response: ${readiness_resp}"
-      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
+      regtest_log "${label} consensus readiness timeout, last response: ${readiness_resp}"
+      regtest_log "See log file: ${log_file}"
       exit 1
     fi
     sleep 1
   done
+}
+
+regtest_wait_balance_history_consensus_ready() {
+  regtest_wait_balance_history_consensus_ready_at_port \
+    "$BH_RPC_PORT" "$BALANCE_HISTORY_LOG_FILE" "balance-history"
 }
 
 regtest_start_bitcoind() {
@@ -370,15 +401,25 @@ regtest_ensure_mature_funds() {
   regtest_mine_blocks "$blocks_to_mine" "$address"
 }
 
-regtest_start_balance_history() {
-  regtest_log "Starting balance-history service (root=${BALANCE_HISTORY_ROOT}, rpc=${BH_RPC_PORT})"
+regtest_start_balance_history_instance() {
+  local root_dir="$1"
+  local rpc_port="$2"
+  local log_file="$3"
+  local label="${4:-balance-history}"
+  regtest_log "Starting ${label} service (root=${root_dir}, rpc=${rpc_port})"
   (
     cd "$REPO_ROOT" || exit 1
     cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
-      --root-dir "$BALANCE_HISTORY_ROOT" \
+      --root-dir "$root_dir" \
       --skip-process-lock
-  ) >"${BALANCE_HISTORY_LOG_FILE}" 2>&1 &
-  BALANCE_HISTORY_PID=$!
+  ) >"${log_file}" 2>&1 &
+  REGTEST_LAST_BALANCE_HISTORY_PID=$!
+}
+
+regtest_start_balance_history() {
+  regtest_start_balance_history_instance \
+    "$BALANCE_HISTORY_ROOT" "$BH_RPC_PORT" "$BALANCE_HISTORY_LOG_FILE" "balance-history"
+  BALANCE_HISTORY_PID="$REGTEST_LAST_BALANCE_HISTORY_PID"
 }
 
 regtest_run_balance_history_cli() {
@@ -400,25 +441,66 @@ regtest_restart_balance_history() {
   regtest_wait_balance_history_rpc_ready
 }
 
-regtest_wait_until_synced_height() {
-  local target_height="$1"
-  regtest_log "Waiting until synced block height >= ${target_height}"
+regtest_wait_until_synced_height_at_port() {
+  local rpc_port="$1"
+  local target_height="$2"
+  local log_file="$3"
+  local label="${4:-balance-history}"
+  regtest_log "Waiting until ${label} synced block height >= ${target_height}"
 
   local start_ts now synced height_resp
   start_ts="$(date +%s)"
   while true; do
-    height_resp="$(regtest_rpc_call_balance_history "get_block_height" "[]")"
+    height_resp="$(regtest_rpc_call_balance_history_at_port "$rpc_port" "get_block_height" "[]")"
     synced="$(echo "$height_resp" | regtest_parse_json_number_result)"
     synced="${synced:-0}"
     if [[ "$synced" -ge "$target_height" ]]; then
-      regtest_log "Sync reached height=${synced}"
+      regtest_log "${label} sync reached height=${synced}"
       return 0
     fi
 
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      regtest_log "Sync timeout, last response: ${height_resp}"
-      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
+      regtest_log "${label} sync timeout, last response: ${height_resp}"
+      regtest_log "See log file: ${log_file}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+regtest_wait_until_synced_height() {
+  regtest_wait_until_synced_height_at_port \
+    "$BH_RPC_PORT" "$1" "$BALANCE_HISTORY_LOG_FILE" "balance-history"
+}
+
+regtest_wait_until_block_commit_hash_at_port() {
+  local rpc_port="$1"
+  local block_height="$2"
+  local expected_hash="$3"
+  local log_file="$4"
+  local label="${5:-balance-history}"
+  regtest_log "Waiting until ${label} get_block_commit(${block_height}) reports hash=${expected_hash}"
+
+  local start_ts now resp got_hash current_height
+  start_ts="$(date +%s)"
+  while true; do
+    resp="$(regtest_rpc_call_balance_history_at_port "$rpc_port" "get_block_commit" "[${block_height}]")"
+    got_hash="$(echo "$resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))')"
+    current_height="$(
+      regtest_rpc_call_balance_history_at_port "$rpc_port" "get_block_height" "[]" \
+        | regtest_parse_json_number_result
+    )"
+    current_height="${current_height:-0}"
+    if [[ "$got_hash" == "$expected_hash" ]] && [[ "$current_height" -ge "$block_height" ]]; then
+      regtest_log "${label} observed canonical hash at height=${block_height}"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "${label} timed out waiting for block commit hash. last_commit_resp=${resp}, current_height=${current_height}"
+      regtest_log "See log file: ${log_file}"
       exit 1
     fi
     sleep 1
@@ -426,30 +508,8 @@ regtest_wait_until_synced_height() {
 }
 
 regtest_wait_until_block_commit_hash() {
-  local block_height="$1"
-  local expected_hash="$2"
-  regtest_log "Waiting until get_block_commit(${block_height}) reports hash=${expected_hash}"
-
-  local start_ts now resp got_hash current_height
-  start_ts="$(date +%s)"
-  while true; do
-    resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${block_height}]")"
-    got_hash="$(echo "$resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))')"
-    current_height="$(regtest_rpc_call_balance_history "get_block_height" "[]" | regtest_parse_json_number_result)"
-    current_height="${current_height:-0}"
-    if [[ "$got_hash" == "$expected_hash" ]] && [[ "$current_height" -ge "$block_height" ]]; then
-      regtest_log "Service observed new canonical hash at height=${block_height}"
-      return 0
-    fi
-
-    now="$(date +%s)"
-    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      regtest_log "Timed out waiting for new block commit hash. last_commit_resp=${resp}, current_height=${current_height}"
-      regtest_log "See log file: ${BALANCE_HISTORY_LOG_FILE}"
-      exit 1
-    fi
-    sleep 1
-  done
+  regtest_wait_until_block_commit_hash_at_port \
+    "$BH_RPC_PORT" "$1" "$2" "$BALANCE_HISTORY_LOG_FILE" "balance-history"
 }
 
 regtest_btc_amount_to_sat() {
@@ -481,13 +541,28 @@ print(digest)
 PY
 }
 
-regtest_get_address_balance_sat() {
-  local address="$1"
-  local block_height="$2"
+regtest_get_address_balance_sat_at_port() {
+  local rpc_port="$1"
+  local address="$2"
+  local block_height="$3"
   local script_hash
   script_hash="$(regtest_address_to_script_hash "$address")"
-  regtest_rpc_call_balance_history "get_address_balance" "[{\"script_hash\":\"${script_hash}\",\"block_height\":${block_height},\"block_range\":null}]" \
-    | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result", []); print(r[0]["balance"] if r else 0)'
+  regtest_rpc_call_balance_history_at_port \
+    "$rpc_port" \
+    "get_address_balance" \
+    "[{\"script_hash\":\"${script_hash}\",\"block_height\":${block_height},\"block_range\":null}]" \
+    | regtest_json_extract_python 'import json,sys
+d=json.load(sys.stdin)
+if d.get("error"):
+    raise SystemExit("get_address_balance RPC error: " + json.dumps(d["error"], sort_keys=True))
+if "result" not in d:
+    raise SystemExit("get_address_balance response is missing result")
+r=d["result"]
+print(r[0]["balance"] if r else 0)'
+}
+
+regtest_get_address_balance_sat() {
+  regtest_get_address_balance_sat_at_port "$BH_RPC_PORT" "$1" "$2"
 }
 
 regtest_assert_address_balance_btc() {
@@ -542,33 +617,35 @@ regtest_print_failure_diagnostics() {
   regtest_print_tail_if_exists "bitcoind debug log" "${BITCOIN_DIR}/regtest/debug.log"
 }
 
-regtest_stop_balance_history() {
-  if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
-    regtest_log "Stopping balance-history process pid=$BALANCE_HISTORY_PID"
-    curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
-      -X POST "http://127.0.0.1:${BH_RPC_PORT}" \
-      -H 'content-type: application/json' \
-      --data '{"jsonrpc":"2.0","id":1,"method":"stop","params":[]}' >/dev/null 2>&1 || true
+regtest_stop_balance_history_instance() {
+  local pid="${1:-}"
+  local rpc_port="$2"
+  local label="${3:-balance-history}"
+
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    regtest_log "Stopping ${label} process pid=${pid}"
+    regtest_rpc_call_balance_history_at_port "$rpc_port" "stop" "[]" >/dev/null 2>&1 || true
 
     for _ in $(seq 1 20); do
-      if [[ "$(ps -o stat= -p "$BALANCE_HISTORY_PID" 2>/dev/null | tr -d ' ')" == Z* ]]; then
-        wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
-        BALANCE_HISTORY_PID=""
+      if [[ "$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')" == Z* ]]; then
+        wait "$pid" 2>/dev/null || true
         return 0
       fi
 
-      if ! kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
-        wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
-        BALANCE_HISTORY_PID=""
+      if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null || true
         return 0
       fi
       sleep 0.5
     done
 
-    kill -9 "$BALANCE_HISTORY_PID" 2>/dev/null || true
-    wait "$BALANCE_HISTORY_PID" 2>/dev/null || true
+    kill -9 "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
   fi
+}
 
+regtest_stop_balance_history() {
+  regtest_stop_balance_history_instance "$BALANCE_HISTORY_PID" "$BH_RPC_PORT" "balance-history"
   BALANCE_HISTORY_PID=""
 }
 

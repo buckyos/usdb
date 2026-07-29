@@ -5,6 +5,7 @@
 ## 相关入口
 
 - 测试分层与推荐执行矩阵：[balance-history-test-matrix.md](./balance-history-test-matrix.md)
+- Stable-lag reorg 深度边界矩阵：[balance-history-regtest-stable-lag-reorg-depth-matrix.md](./balance-history-regtest-stable-lag-reorg-depth-matrix.md)
 - 脚本目录执行说明：[src/btc/balance-history/scripts/README.md](../../src/btc/balance-history/scripts/README.md)
 - 最小 suite runner：[src/btc/balance-history/scripts/run_regtest_suite.sh](../../src/btc/balance-history/scripts/run_regtest_suite.sh)
 
@@ -14,6 +15,7 @@
 - Suite runner：[src/btc/balance-history/scripts/run_regtest_suite.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/run_regtest_suite.sh)
 - 基础 smoke 场景：[src/btc/balance-history/scripts/regtest_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_smoke.sh)
 - stable lag smoke 场景：[src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh)
+- stable lag reorg 深度矩阵：[src/btc/balance-history/scripts/regtest_stable_lag_reorg_depth_matrix.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_stable_lag_reorg_depth_matrix.sh)
 - reorg smoke 场景：[src/btc/balance-history/scripts/regtest_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_reorg_smoke.sh)
 - 多次 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_multi_reorg_smoke.sh)
 - 深回滚 reorg smoke 场景：[src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh)
@@ -64,6 +66,7 @@
 15. 临时配置覆盖：可在测试生成的 config.toml 上覆盖任意 `[sync]` 配置项，例如 `max_sync_block_height`、`undo_retention_blocks`、`local_loader_threshold`。
 16. Snapshot 辅助读取：可直接读取 `stable_height`、`stable_block_hash`、`stable_lag`，方便校验协议层稳定视图。
 17. readiness 辅助等待：可显式等待 `get_readiness().consensus_ready = true`，避免把 RPC 可连接误当成快照已可用于共识。
+18. 多实例辅助：配置生成、RPC、同步/hash/readiness 等待、余额查询和服务启停均可显式传入 `root_dir` / RPC 端口，支持同一 BTC 分叉下对拍 online、restart 和 fresh joiner。
 
 ## 关闭与查询约束
 
@@ -115,6 +118,7 @@ main "$@"
 1. smoke：`28132 / 28133 / 28110`
 2. reorg：`28232 / 28233 / 28210`
 3. 新场景可继续用 `28332 / 28333 / 28310`
+4. stable-lag reorg 矩阵按案例使用独立端口段，并为三个 balance-history 实例分配连续 RPC 端口。
 
 ## 如何新增一个场景
 

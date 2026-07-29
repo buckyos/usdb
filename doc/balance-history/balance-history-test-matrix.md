@@ -26,7 +26,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Rust unit tests | `cargo test -p balance-history` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、readiness、script registry unit paths | 本地可运行并已通过 |
 | Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，支持 suite/size 切片 |
-| Regtest scripts | `bash src/btc/balance-history/scripts/regtest_*.sh` | 否 | 本机 bitcoind binary | 端到端 smoke、reorg、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已存在，但还没有统一 runner |
+| Regtest scripts | `bash src/btc/balance-history/scripts/run_regtest_suite.sh <suite>` | 否 | 本机 bitcoind binary | 端到端 smoke、stable-lag reorg boundary、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已有 `smoke` 和 `stable-lag-reorg` runner；更大套件仍为手工入口 |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
 | Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用，支持横向抽样 |
 
@@ -51,6 +51,7 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 
 ```bash
 cd /home/bucky/work/usdb
+bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 bash src/btc/balance-history/scripts/regtest_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh
 bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
@@ -62,6 +63,7 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 | --- | --- | --- |
 | Smoke | 普通服务/RPC 改动后的快速信心测试 | `regtest_smoke.sh`, `regtest_rpc_semantics.sh` |
 | Reorg smoke | canonical rollback 和 reorg detection 检查 | `regtest_reorg_smoke.sh`, `regtest_multi_reorg_smoke.sh`, `regtest_deep_reorg_smoke.sh` |
+| Stable-lag reorg boundary | `depth=lag-1/lag/lag+1` 下 online、offline restart、fresh joiner 收敛 | `regtest_stable_lag_reorg_depth_matrix.sh` |
 | Restart/recovery reorg | 服务离线或重启后的 reorg 恢复 | `regtest_restart_reorg_smoke.sh`, `regtest_restart_multi_reorg_smoke.sh`, `regtest_restart_hybrid_reorg_smoke.sh` |
 | Query semantics | balance、delta、batch query、spend graph、same-block aggregation | `regtest_spend_graph_queries.sh`, `regtest_multi_input_same_block_queries.sh`, `regtest_restart_same_block_aggregate_reorg.sh` |
 | Undo retention | retained undo window 内的 reorg 行为 | `regtest_undo_retention_reorg.sh`, `regtest_undo_retention_same_block_aggregate_reorg.sh` |
@@ -80,6 +82,19 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```bash
 bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 ```
+
+### `stable-lag-reorg`
+
+用于涉及 stable target、reorg wake-up、startup reconciliation、historical state-ref 或
+fresh bootstrap 的改动：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
+```
+
+该 suite 覆盖 `depth=lag-1/lag/lag+1`，每个深度交叉验证 online、offline restart 和
+fresh joiner。详细测试契约见
+[balance-history-regtest-stable-lag-reorg-depth-matrix.md](./balance-history-regtest-stable-lag-reorg-depth-matrix.md)。
 
 ### `core`
 
@@ -104,6 +119,7 @@ bash src/btc/balance-history/scripts/regtest_deep_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_restart_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_restart_multi_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_restart_hybrid_reorg_smoke.sh
+bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 bash src/btc/balance-history/scripts/regtest_undo_retention_reorg.sh
 bash src/btc/balance-history/scripts/regtest_undo_retention_same_block_aggregate_reorg.sh
 ```
@@ -160,7 +176,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 
 | 缺口 | 风险 | 建议修复 |
 | --- | --- | --- |
-| 统一 regtest runner 仍不完整 | 当前只收敛了 `smoke` 子集，更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
+| 统一 regtest runner 仍不完整 | 当前收敛了 `smoke` 和 `stable-lag-reorg`，其它更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
 | `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |
@@ -185,6 +201,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 
 - `cargo test -p balance-history` 仍然是默认快速检查。
 - `scripts/run_regtest_suite.sh smoke` 可以无手工端口编辑地执行文档化子集：`regtest_smoke.sh`、`regtest_rpc_semantics.sh`、`regtest_reorg_smoke.sh`、`regtest_snapshot_install_repeat.sh`、`regtest_history_balance_oracle.sh`。
+- `scripts/run_regtest_suite.sh stable-lag-reorg` 可以确定性覆盖 `depth=lag-1/lag/lag+1`，并要求 online、offline restart、fresh joiner 的最终状态一致。
 - `scripts/run_regtest_suite.sh core` 覆盖普通同步、RPC 语义、一次 reorg、一次 snapshot install 和 oracle balance comparison。
 - 每个新增 balance-history RPC 至少有一个 unit test 和一个 regtest-level consumer test。
 - 真实 BTC 数据测试必须显式 opt-in，不能意外依赖开发者默认配置。
