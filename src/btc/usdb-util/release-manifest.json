@@ -1,5 +1,5 @@
 {
-  "schema_version": "uip-0008-cross-chain-release-manifest:v2",
+  "schema_version": "uip-0008-cross-chain-release-manifest:v3",
   "release_id": "usdb-development-v1",
   "btc_activation_registries": [
     {
@@ -8,7 +8,7 @@
       "artifact": "activation-registry/btc-mainnet.json",
       "revision": 1,
       "current": true,
-      "activation_registry_id": "bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e"
+      "activation_registry_id": "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c"
     },
     {
       "network_type": "regtest",
@@ -16,7 +16,7 @@
       "artifact": "activation-registry/btc-regtest.json",
       "revision": 1,
       "current": true,
-      "activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d"
+      "activation_registry_id": "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9"
     },
     {
       "network_type": "regtest",
@@ -24,7 +24,7 @@
       "artifact": "activation-registry/btc-regtest-revision-2.json",
       "revision": 2,
       "current": false,
-      "activation_registry_id": "25a39e8022e8351a40f59736b86cf81321c08042121cdb74b85a8f3918a2b973"
+      "activation_registry_id": "cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497"
     }
   ],
   "usdb_chain_configs": [
@@ -32,11 +32,24 @@
       "network_type": "devnet",
       "network_id": "usdb-devnet-20260323",
       "chain_id": 20260323,
-      "genesis_hash": "4548fb39b8a73ab3f3d997a6d8c2869f83fadbc9e0d84ac198d6424fbbab90b4",
+      "genesis_hash": "2ddb7bab1cf85a02d71048927f42a99a8412d937d87b792c73949d967754d9ae",
       "activations": [
         {
           "block": 0,
-          "btc_activation_registry_id": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d"
+          "btc_activation_registry_id": "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9",
+          "btc_anchor_max_age_blocks": 6650,
+          "versions": {
+            "payload_version": 1,
+            "btc_anchor_policy_version": 1,
+            "difficulty_policy_version": 1,
+            "reward_rule_version": 1,
+            "coinbase_emission_policy_version": 1,
+            "fee_split_policy_version": 0,
+            "collaboration_efficiency_policy_version": 1,
+            "price_policy_version": 1,
+            "quote_policy_version": 0,
+            "aux_pool_policy_version": 0
+          }
         }
       ],
       "source": "go-ethereum/params/config.go:USDBChainConfig",

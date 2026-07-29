@@ -45,6 +45,7 @@ select_suite() {
       SUITE_SCRIPTS=(
         regtest_smoke.sh
         regtest_rpc_semantics.sh
+        regtest_stable_lag_smoke.sh
         regtest_reorg_smoke.sh
         regtest_snapshot_install_repeat.sh
         regtest_history_balance_oracle.sh

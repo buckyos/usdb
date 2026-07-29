@@ -4,6 +4,7 @@ use super::{
     build_consensus_snapshot_identity as shared_build_consensus_snapshot_identity,
     build_historical_state_ref_at_height, encode_commit_hex as encode_hex,
     resolve_balance_history_active_versions, resolve_balance_history_semantics_version,
+    resolve_balance_history_stable_lag,
 };
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::BalanceHistoryDBRef;
@@ -196,7 +197,8 @@ impl BalanceHistoryRpcServer {
             latest_block_commit: latest_commit
                 .as_ref()
                 .map(|entry| encode_hex(&entry.block_commit)),
-            stable_lag: BALANCE_HISTORY_STABLE_LAG,
+            stable_lag: resolve_balance_history_stable_lag(&self.config)
+                .map_err(|error| error.to_string())?,
             balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: semantics_version,
             commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
@@ -1392,7 +1394,10 @@ mod tests {
             snapshot.latest_block_commit,
             Some(encode_hex(&commit.block_commit))
         );
-        assert_eq!(snapshot.stable_lag, BALANCE_HISTORY_STABLE_LAG);
+        assert_eq!(
+            snapshot.stable_lag,
+            resolve_balance_history_stable_lag(&server.config).unwrap()
+        );
         assert_eq!(
             snapshot.balance_history_api_version,
             BALANCE_HISTORY_API_VERSION

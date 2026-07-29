@@ -3301,6 +3301,7 @@ mod tests {
         LocalStateCommitIdentity, LocalStatePassCommitIdentity, SystemStateIdentity,
         ToBtcScriptHash, VersionFamily, VersionValue, address_string_to_script_hash,
         build_local_state_commit, build_system_state_id, embedded_btc_activation_registry,
+        embedded_btc_stable_lag_blocks,
     };
 
     mod economic_scale;
@@ -3317,6 +3318,10 @@ mod tests {
 
     fn test_script_hash(tag: u8) -> BtcScriptHash {
         ScriptBuf::from(vec![tag; 32]).to_btc_script_hash()
+    }
+
+    fn regtest_stable_lag() -> u32 {
+        embedded_btc_stable_lag_blocks(Network::Regtest).unwrap()
     }
 
     fn test_inscription_id(tag: u8, index: u32) -> InscriptionId {
@@ -3616,7 +3621,7 @@ mod tests {
             stable_height,
             stable_block_hash: Some("aa".repeat(32)),
             latest_block_commit: Some("bb".repeat(32)),
-            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            stable_lag: regtest_stable_lag(),
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
@@ -3689,7 +3694,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -3713,7 +3718,7 @@ mod tests {
             snapshot.consensus_identity.stable_block_hash,
             "aa".repeat(32)
         );
-        assert_eq!(snapshot.consensus_identity.stable_lag, 0);
+        assert_eq!(snapshot.consensus_identity.stable_lag, regtest_stable_lag());
         assert_eq!(
             snapshot.consensus_identity.balance_history_api_version,
             balance_history::BALANCE_HISTORY_API_VERSION
@@ -3882,7 +3887,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -3900,7 +3905,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -4007,7 +4012,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -4103,7 +4108,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -4164,7 +4169,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("11".repeat(32)),
                 latest_block_commit: Some("22".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -4180,7 +4185,7 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("33".repeat(32)),
                 latest_block_commit: Some("44".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -4794,7 +4799,7 @@ mod tests {
                 stable_height: 125,
                 stable_block_hash: Some("11".repeat(32)),
                 latest_block_commit: Some("22".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:

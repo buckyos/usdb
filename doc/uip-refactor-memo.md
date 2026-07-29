@@ -665,7 +665,9 @@ multi-leader 和并发矩阵已完成；改动尚未提交，等待 review。
 
 - 原先同时包含 BTC/USDB-chain 和多个 network 的全局 `activation-registry.json` 已拆分为 network-scoped immutable revision catalog；当前包含 `btc-mainnet.json`、`btc-regtest.json` 与 staged `btc-regtest-revision-2.json`，record 只允许 BTC-side family 和 `activation_height`。
 - Rust API 改为先按配置的 `bitcoin::Network` 选择内嵌 catalog，再按 current 或显式 registry ID 与目标高度 lookup；testnet3/testnet4/signet 在没有独立 catalog 时 fail closed，不能回退或混用其他 network。
-- `activation_registry_id` 改为 network-scoped canonical encoding，固定 golden：`btc-mainnet=bb751626...a7d39e`、`btc-regtest=22d820e6...aaf83d`；两者当前 active set 相同，继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
+- `activation_registry_id` 改为 network-scoped canonical encoding；本条当时记录的 registry
+  v1 ID 已由后续包含 `stable_lag_blocks` 的 registry v2 取代。active set ID 未改变，
+  继续使用跨 Rust/Go golden set ID `01d1d45f...f94691`。
 - Rust registry 类型不再表达 USDB activation checkpoint，并显式拒绝 USDB-chain family；USDB expected versions 与 BTC historical-profile registry binding 均由 go-ethereum `ChainConfig.usdb.activations[]` 按 USDB block number 联合解析。
 - audit-only `release-manifest.json` 升级为 v2，关联 BTC revision/current 与 USDB `chain_id/genesis_hash/chain-config authority/height-indexed bindings`；manifest 自身不参与 BTC identity、USDB header validation 或 runtime activation lookup。
 - 当前 `btc-mainnet` height 0 只定义 BTC source history 的 v1 解释，不代表 USDB public mainnet 已发布；正式网络的 indexing origin 和 USDB genesis 仍需分别冻结。
@@ -712,7 +714,9 @@ multi-leader 和并发矩阵已完成；改动尚未提交，等待 review。
 
 - 当前 USDB 项目尚未配置正式 CI，本批不新增 CI provider/workflow 文件。
 - 建立 CI 后，将 `cargo fmt --all -- --check`、`cargo clippy -p usdb-util --all-targets -- -D warnings`、`cargo test -p usdb-util`、`cargo test -p usdb-indexer` 和 balance-history 自动化测试作为 Rust gate。
-- CI 必须运行 `generate_go_btc_activation_golden -- --check <go-artifact>`，防止 Rust registry 与 Go 内嵌 artifact 漂移。
+- CI 必须运行 `generate_go_btc_activation_golden -- --check <go-artifact>` 和
+  `generate_go_release_manifest_golden -- --check <go-release-artifact>`，防止 Rust
+  registry/release manifest 与 Go 内嵌 artifact 漂移。
 - Go gate 使用项目冻结的 Go toolchain 运行 `internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` tests 和 vet，并检查 Python verifier compile 与 live shell syntax。
 - 基础和 fresh-validator 跨进程 E2E 初期作为手工或定时任务；运行资源、端口隔离和稳定时长明确后再决定是否进入每次提交的 blocking gate。
 
@@ -1084,8 +1088,8 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
 
 ## UIP-0007 BTC Anchor Bounded-Reuse Guard
 
-状态：2026-07-28 完成 Go 实现、目标测试和 UIP-0007/0008/0009 文档对齐，尚未提交，
-等待 review。此前 threshold signer/publisher 方案仍只保存在各仓库 issue-linked stash，
+状态：2026-07-28 完成 Go 实现、目标测试和 UIP-0007/0008/0009 文档对齐，已分别提交
+Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只保存在各仓库 issue-linked stash，
 本批没有恢复或引入该治理依赖；讨论入口为
 [`buckyos/usdb#32`](https://github.com/buckyos/usdb/issues/32)。
 
@@ -1129,3 +1133,45 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
 - 全新隔离 regtest/geth 跨进程 smoke 在 BTC height `137` 下生成并验证 16 个 USDB
   block，`btc_anchor_age_blocks` 从 `0` 严格连续递增到 `15`；逐块 reward、issued
   supply 与最终 miner balance 交叉核算一致。
+
+## BTC Registry Stable Lag v2 与 Release Drift Guard
+
+状态：实现、目标回归和 stable-lag 跨进程 smoke 已完成，等待 review，尚未提交。
+
+- BTC registry schema/hash domain 升级为 v2，network scope 新增必填
+  `stable_lag_blocks`。mainnet/regtest 当前均固定为 `5`；balance-history 从 registry
+  解析 stable sync target，不再使用全局 `0` 常量或本地覆盖。
+- registry v2 canonical ID：
+  `btc-mainnet=cc47923f...c54c1c`、`btc-regtest revision 1=596728fd...330aa9`、
+  `revision 2=cdde4da4...c33497`；active-version-set ID 保持
+  `01d1d45f...f94691`。
+- UIP-0006 `external_state` 新增 `stable_lag`；Go validator 将其与目标 chain
+  checkpoint 绑定的本地 BTC registry golden 精确比较，不读取本机 BTC tip。
+- stable-lag live smoke 固定断言 lag `5`，增加 lag 窗口内 branch replacement、
+  restart 后 stable identity 不变，以及 replacement 越过 stable frontier 后正常推进。
+- release manifest 升级为 v3，修正 development canonical genesis hash，并记录完整
+  USDB activation checkpoint：registry binding、anchor max age 和全部 policy versions。
+- 新增 Rust `generate_go_release_manifest_golden --check` 和 Go manifest/config test；
+  两段校验共同拒绝 Rust manifest 与 Go `USDBChainConfig` / `USDBGenesisHash` 漂移。
+- `stable_lag=5` 仅缓冲普通短 BTC reorg，不解决越过 stable frontier 后既有 USDB
+  selector 的 orphan archive 或 deterministic rewind；该 public-network 边界继续保留。
+
+### 验证结果
+
+- Rust `cargo fmt --check`、目标 crate Clippy `-D warnings` 和完整
+  `usdb-util` / `balance-history` / `usdb-indexer` 测试通过。
+- Go `internal/usdb`、`params`、`core`、`miner`、`consensus/ethash`、
+  `scripts/usdb` 回归和全部 Python `scripts/usdb` 测试通过；BTC registry 与 release
+  manifest 两个 Rust -> Go generator `--check` 均通过。
+- balance-history 隔离 regtest smoke 验证 tip `20` / stable `15`、lag 窗口内
+  depth-3 branch replacement、restart identity 不变，以及 tip `23` / stable `18`
+  后 replacement branch 正常进入稳定视图。
+- profile 跨进程 E2E 在 mint/top-up 后分别补挖 5 个确认块，balance-history、
+  usdb-indexer 和 Go verifier 使用同一稳定高度，且 profile 明确返回
+  `external_state.stable_lag=5`。
+- 该 E2E 完成全部断言并产出 13 个连续 USDB blocks；进程清理日志仍复现既有
+  usdb-indexer HTTP worker 的 Tokio runtime drop panic。该问题在本批之前的大量 live
+  日志中已存在，不是 stable-lag 回归，但后续应单独修复并让 live harness 对 panic
+  fail closed。
+- 其余旧 live/regtest 场景仍有直接把 BTC tip/event height 当作 stable context 的入口；
+  后续需要按场景补确认块并调整 reorg 分叉点，不做机械减 5。

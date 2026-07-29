@@ -199,6 +199,7 @@ BTC activation records 和 USDB activation checkpoints 由不同的本地共识�
 | --- | --- | --- |
 | `network_type` | enum | `mainnet`、`testnet`、`signet` 或 `regtest`，必须与 Bitcoin Core network 对应。 |
 | `network_id` | string | 具体 BTC network ID，禁止省略。 |
+| `stable_lag_blocks` | uint32 | balance-history 从 BTC tip 排除的确认块数；必须为正数并进入 registry identity。 |
 
 BTC record 固定以 `btc_height` 为 anchor，不再逐条重复 chain/network/anchor：
 
@@ -216,10 +217,11 @@ BTC record 固定以 `btc_height` 为 anchor，不再逐条重复 chain/network/
 
 ```json
 {
-  "schema_version": "uip-0008-btc-activation-registry:v1",
+  "schema_version": "uip-0008-btc-activation-registry:v2",
   "scope": {
     "network_type": "regtest",
-    "network_id": "btc-regtest"
+    "network_id": "btc-regtest",
+    "stable_lag_blocks": 5
   },
   "records": [{
     "uip": "UIP-0003",
@@ -378,16 +380,21 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 
 ## Canonical Encoding v1
 
-BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<network-id>[-revision-N].json`，当前内嵌 `btc-mainnet.json`、`btc-regtest.json` 和 staged `btc-regtest-revision-2.json`，单 revision schema 为 `uip-0008-btc-activation-registry:v1`。JSON parser 必须拒绝未知字段、重复字段、类型错误、scope 不匹配、USDB-chain family 和同 family/height 的 active 冲突；catalog parser 还必须拒绝 revision 缺口、重复 identity 和历史 record 改写。没有独立 catalog 的网络不得回退到其他网络 registry。
+BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<network-id>[-revision-N].json`，当前内嵌 `btc-mainnet.json`、`btc-regtest.json` 和 staged `btc-regtest-revision-2.json`，单 revision schema 为 `uip-0008-btc-activation-registry:v2`。v2 scope 固定包含 `network_type + network_id + stable_lag_blocks`；`stable_lag_blocks` 必须为正数，是 balance-history stable frontier 的 network protocol value，不是运行参数。JSON parser 必须拒绝未知字段、重复字段、类型错误、scope 不匹配、零 lag、USDB-chain family 和同 family/height 的 active 冲突；catalog parser 还必须拒绝 revision 缺口、重复 identity、scope/lag 变化和历史 record 改写。没有独立 catalog 的网络不得回退到其他网络 registry。
 
-所有 string 使用 `u32 big-endian byte_length || UTF-8 bytes`。所有 integer 使用 `u64 big-endian`。string/integer union 使用 `0x00` / `0x01` tag；optional value 使用 `0x00` absent 或 `0x01 || encoded_value`。hash 输出为 lowercase 64-character hex text。
+v2 的 lag 在同一 network catalog 内不可升级。public freeze 前可以重写 draft artifact
+并原子重生成 registry ID、Go golden、USDB chain config binding 和 release manifest；
+public freeze 后若需调整，必须由新 schema 定义按高度可重放的 lag 语义，或发布新网络，
+不能把 scope 变化伪装成普通 revision。
+
+所有 string 使用 `u32 big-endian byte_length || UTF-8 bytes`。version value 和 activation height integer 使用 `u64 big-endian`；scope 的 `stable_lag_blocks` 使用 `u32 big-endian`。string/integer union 使用 `0x00` / `0x01` tag；optional value 使用 `0x00` absent 或 `0x01 || encoded_value`。hash 输出为 lowercase 64-character hex text。
 
 `activation_registry_id` 的 hash input 为：
 
-1. length-prefixed domain `usdb-btc-activation-registry:v1`。
+1. length-prefixed domain `usdb-btc-activation-registry:v2`。
 2. length-prefixed `schema_version`。
 3. length-prefixed fixed chain tag `BTC`。
-4. length-prefixed scope `network_type`、`network_id` 和 fixed anchor tag `btc_height`。
+4. length-prefixed scope `network_type`、`network_id`、fixed tag `stable_lag_blocks`、`u32 big-endian stable_lag_blocks` 和 fixed anchor tag `btc_height`。
 5. `u32 big-endian record_count`。
 6. canonical-sorted records。排序 key 固定为 `(version_family, activation_height, status, uip, version_value, supersedes, notes)`；每条 record 的编码字段顺序固定为 `(uip, version_family, version_value, activation_height, status, supersedes, notes)`。
 
@@ -398,9 +405,9 @@ BTC 机器可读 registry 固定在 `src/btc/usdb-util/activation-registry/<netw
 两种 id 都使用 SHA-256。当前网络作用域 registry golden ID 为：
 
 ```text
-btc-mainnet = bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e
-btc-regtest revision 1 (current) = 22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d
-btc-regtest revision 2 (staged)  = 25a39e8022e8351a40f59736b86cf81321c08042121cdb74b85a8f3918a2b973
+btc-mainnet (stable_lag_blocks=5) = cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c
+btc-regtest revision 1 (current, stable_lag_blocks=5) = 596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9
+btc-regtest revision 2 (staged, stable_lag_blocks=5)  = cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497
 ```
 
 两个网络当前激活相同的 BTC v1 九 family，因此跨实现 golden `active_version_set_id` 相同：
@@ -409,16 +416,20 @@ btc-regtest revision 2 (staged)  = 25a39e8022e8351a40f59736b86cf81321c08042121cd
 01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691
 ```
 
-UIP-0006 state view 必须返回 `activation_registry_id`、完整 `active_version_set` 和 `active_version_set_id`。`snapshot_id` 只表示 upstream balance-history state，不包含 USDB formula；`local_state_commit` 必须绑定目标高度的 `active_version_set_id`。
+UIP-0006 state view 必须返回 `stable_lag`、`activation_registry_id`、完整 `active_version_set` 和 `active_version_set_id`。`snapshot_id` 承诺 upstream balance-history identity，其中包含 `stable_lag`，但不包含 USDB formula；USDB validator 还必须把返回的 lag 与本地 registry scope 比较。`local_state_commit` 必须绑定目标高度的 `active_version_set_id`。
 
 ## Cross-chain Release Manifest
 
-`src/btc/usdb-util/release-manifest.json` 的 v2 schema 可以在发布时关联：
+`src/btc/usdb-util/release-manifest.json` 的 v3 schema 可以在发布时关联：
 
 - 每个 BTC network catalog 的 revision、current marker、artifact 与 `activation_registry_id`。
-- USDB network 的 `chain_id`、genesis hash、chain-config source，以及按 USDB block 排序的 BTC registry bindings。
+- USDB network 的 `chain_id`、genesis hash、chain-config source，以及按 USDB block 排序的完整 activation checkpoints；checkpoint 包括 BTC registry binding、BTC anchor max age 和全部 USDB policy versions。
 
 manifest 仅用于 release review、部署审计和 CI 一致性检查。它不得参与 BTC registry ID、BTC `active_version_set_id`、USDB chain header validation 或 USDB chain expected version lookup；修改一个网络的配置不得改变另一个网络的 runtime activation identity。
+
+Rust `generate_go_release_manifest_golden --check` 必须保证 manifest 与 Go 内嵌 golden
+一致；Go 测试必须再把该 golden 与 `params.USDBChainConfig`、`USDBGenesisHash` 逐字段
+比较。该两段校验用于发现发布物漂移，不改变任一运行时 lookup authority。
 
 # 历史重放规则
 
@@ -549,13 +560,21 @@ src/btc/usdb-util/activation-registry/btc-regtest.json
 src/btc/usdb-util/activation-registry/btc-regtest-revision-2.json
 src/btc/usdb-util/release-manifest.json
 src/btc/usdb-util/src/bin/generate_go_btc_activation_golden.rs
+src/btc/usdb-util/src/bin/generate_go_release_manifest_golden.rs
 go-ethereum/internal/usdb/btc_activation_golden.json
+go-ethereum/internal/usdb/cross_chain_release_manifest.json
 go-ethereum params.ChainConfig.USDB
 ```
 
 BTC JSON 与 Markdown 表格表达同一组 BTC-side activation records，并由 Rust 服务在构建时嵌入二进制。启动、扫块和 historical RPC lookup 共用同一 network-scoped 解析与校验实现，不允许 runtime flag 覆盖。
 
-Rust generator 将每个 catalog revision 的 active 高度边界、完整 set、registry ID、revision/current metadata 和 set ID 确定性展开到 Go golden artifact。Go validator 不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从目标 USDB block 的 activation checkpoint 取得绑定的 registry ID，按 payload BTC 高度查询内嵌 golden，随后重算 RPC profile 的 set ID 并精确比较。USDB chain expected versions 始终来自同一个本地 checkpoint。
+BTC generator 将每个 catalog revision 的 stable lag、active 高度边界、完整 set、registry
+ID、revision/current metadata 和 set ID 确定性展开到 Go golden artifact。Go validator
+不在运行时读取 Rust BTC JSON，也不使用它决定 USDB chain activation；它从目标 USDB
+block 的 activation checkpoint 取得绑定的 registry ID，按 payload BTC 高度查询内嵌
+golden，随后重算 RPC profile 的 set ID，并比较 profile stable lag。USDB chain
+expected versions 始终来自同一个本地 checkpoint。release generator 独立生成 audit-only
+manifest golden，Go 测试只用它检查发布物漂移，不把它接入 header validation。
 
 # 待审计问题
 

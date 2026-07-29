@@ -5,8 +5,8 @@ use balance_history::output::IndexOutput;
 use balance_history::status::SyncStatusManager;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{
-    Amount, Block, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
-    TxMerkleNode, TxOut, Witness, absolute, block, transaction,
+    Amount, Block, BlockHash, CompactTarget, Network, OutPoint, ScriptBuf, Sequence, Transaction,
+    TxIn, TxMerkleNode, TxOut, Witness, absolute, block, transaction,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -210,8 +210,9 @@ fn build_scenario() -> FakeScenario {
         vec![reorg_coinbase_3, reorg_spend_c],
     );
 
+    let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Bitcoin).unwrap();
     let chain = FakeChain::new(
-        5,
+        stable_lag + 3,
         BTreeMap::from([(1, block_1), (2, block_2), (3, original_block_3.clone())]),
     );
 

@@ -14,10 +14,14 @@ BH_RPC_PORT="${BH_RPC_PORT:-29810}"
 WALLET_NAME="${WALLET_NAME:-bhstablelag}"
 TARGET_TIP_HEIGHT="${TARGET_TIP_HEIGHT:-20}"
 EXTRA_BLOCKS="${EXTRA_BLOCKS:-3}"
+EXPECTED_STABLE_LAG="${EXPECTED_STABLE_LAG:-5}"
+REORG_DEPTH="${REORG_DEPTH:-3}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[stable-lag-smoke]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 assert_snapshot_matches_expected() {
@@ -82,12 +86,40 @@ main() {
   local stable_lag expected_stable_height
   stable_lag="$(regtest_get_snapshot_stable_lag)"
   regtest_log "Observed protocol stable_lag=${stable_lag}"
+  if [[ "$stable_lag" != "$EXPECTED_STABLE_LAG" ]]; then
+    regtest_log "Protocol stable_lag mismatch: expected=${EXPECTED_STABLE_LAG}, got=${stable_lag}"
+    exit 1
+  fi
+  if (( REORG_DEPTH <= 0 || REORG_DEPTH >= stable_lag )); then
+    regtest_log "REORG_DEPTH must be positive and strictly less than stable_lag"
+    exit 1
+  fi
   expected_stable_height=$((TARGET_TIP_HEIGHT - stable_lag))
   regtest_wait_until_synced_height "$expected_stable_height"
   regtest_wait_balance_history_consensus_ready
   assert_snapshot_matches_expected "$TARGET_TIP_HEIGHT" "$expected_stable_height" "$stable_lag"
 
-  regtest_log "Mining ${EXTRA_BLOCKS} extra blocks to verify the service keeps exposing tip-lag"
+  local replaced_height original_replaced_hash replacement_hash
+  replaced_height=$((TARGET_TIP_HEIGHT - REORG_DEPTH + 1))
+  original_replaced_hash="$(regtest_get_block_hash_by_height "$replaced_height")"
+  regtest_log "Replacing BTC heights ${replaced_height}-${TARGET_TIP_HEIGHT} while they remain above the stable frontier"
+  regtest_stop_balance_history
+  "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
+    invalidateblock "$original_replaced_hash"
+  regtest_mine_blocks "$REORG_DEPTH" "$mining_address"
+  replacement_hash="$(regtest_get_block_hash_by_height "$replaced_height")"
+  if [[ "$replacement_hash" == "$original_replaced_hash" ]]; then
+    regtest_log "Expected replacement hash at height=${replaced_height}, but canonical hash did not change"
+    exit 1
+  fi
+
+  regtest_start_balance_history
+  regtest_wait_balance_history_rpc_ready
+  regtest_wait_until_synced_height "$expected_stable_height"
+  regtest_wait_balance_history_consensus_ready
+  assert_snapshot_matches_expected "$TARGET_TIP_HEIGHT" "$expected_stable_height" "$stable_lag"
+
+  regtest_log "Mining ${EXTRA_BLOCKS} extra blocks so the replacement branch enters the stable view"
   regtest_mine_blocks "$EXTRA_BLOCKS" "$mining_address"
 
   local new_tip_height new_stable_height

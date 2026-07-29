@@ -2,10 +2,11 @@
 
 本文档说明 `balance-history` 的 `stable_lag` 专项 smoke 场景，目标是验证：
 
-1. `stable_lag` 是协议常量，不是本地运行时配置；
+1. `stable_lag` 来自 BTC network registry scope，不是本地运行时配置；
 2. `stable_lag` 不只是 RPC 元字段，而是真的参与索引推进上限计算；
 3. 当 BTC tip 继续前进时，`get_block_height` / `get_snapshot_info().stable_height` 始终等于 `tip - stable_lag`；
-4. `get_snapshot_info().stable_block_hash` 始终对应 `tip - stable_lag` 的 canonical block hash。
+4. `get_snapshot_info().stable_block_hash` 始终对应 `tip - stable_lag` 的 canonical block hash；
+5. lag 窗口内的 BTC branch replacement 不改变已暴露 stable snapshot，替代分支越过 stable frontier 后才进入新 snapshot。
 
 脚本位置：
 
@@ -36,10 +37,12 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 
 1. 挖到 BTC tip `20`；
 2. 启动真实 `balance-history`；
-3. 从 `get_snapshot_info().stable_lag` 读取当前协议 lag；
+3. 断言 `get_snapshot_info().stable_lag == 5`；
 4. 验证服务 stable height 收敛到 `tip - stable_lag`；
-5. 再继续挖 `3` 个块；
-6. 再次验证服务 stable height 仍然收敛到新的 `tip - stable_lag`。
+5. 停止服务并替换 stable frontier 之上的最后 `3` 个 BTC blocks；
+6. 重启后验证 stable snapshot identity 未改变；
+7. 再继续挖 `3` 个块，使替代分支进入 stable view；
+8. 再次验证服务 stable height 和 block hash 收敛到新的 `tip - stable_lag`。
 
 成功标志：
 
@@ -58,7 +61,9 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 6. `WALLET_NAME`：regtest 钱包名（默认 `bhstablelag`）
 7. `TARGET_TIP_HEIGHT`：初始 BTC tip 高度（默认 `20`）
 8. `EXTRA_BLOCKS`：初始断言后追加挖的区块数（默认 `3`）
-9. `SYNC_TIMEOUT_SEC`：等待稳定高度追平的超时秒数（默认 `120`）
+9. `EXPECTED_STABLE_LAG`：期望的 registry lag（默认 `5`）
+10. `REORG_DEPTH`：lag 窗口内替换的 BTC block 数，必须小于 lag（默认 `3`）
+11. `SYNC_TIMEOUT_SEC`：等待稳定高度追平的超时秒数（默认 `120`）
 
 示例：
 
@@ -76,5 +81,6 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 
 1. `balance-history` 本地 DB 高度本身就是 stable height，而不是先追 tip 再在 RPC 层做减法。
 2. `stable_lag` 进入 `SnapshotInfo` 后，元信息与实际索引行为保持一致。
-3. `stable_lag` 作为协议常量存在，不依赖本地配置文件。
+3. `stable_lag` 由当前 BTC registry identity 承诺，不依赖本地配置文件。
 4. 相同的 canonical tip 和相同的 `stable_lag` 必须导出相同的 stable snapshot identity。
+5. 本测试只验证 lag 窗口内 replacement 与越过 frontier 后的正常推进，不宣称解决深层 BTC reorg 后既有 USDB selector 的 archive/rewind。

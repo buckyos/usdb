@@ -136,6 +136,7 @@ mod tests {
             btc_height: 120,
             snapshot_id: "snapshot".to_string(),
             stable_block_hash: "block".to_string(),
+            stable_lag: registry.stable_lag_blocks(),
             local_state_commit: "local".to_string(),
             system_state_id: "system".to_string(),
             balance_history_api_version: "api".to_string(),

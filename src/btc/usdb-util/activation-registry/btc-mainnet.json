@@ -1,8 +1,9 @@
 {
-  "schema_version": "uip-0008-btc-activation-registry:v1",
+  "schema_version": "uip-0008-btc-activation-registry:v2",
   "scope": {
     "network_type": "mainnet",
-    "network_id": "btc-mainnet"
+    "network_id": "btc-mainnet",
+    "stable_lag_blocks": 5
   },
   "records": [
     {

@@ -159,6 +159,7 @@ v1 固定字段：
 | `btc_height` | integer | 是 | 查询对应的 BTC 高度。 |
 | `snapshot_id` | string | 是 | upstream balance-history consensus snapshot id。 |
 | `stable_block_hash` | string | 是 | `btc_height` 对应的 stable BTC block hash。 |
+| `stable_lag` | integer | 是 | upstream snapshot 使用的 BTC stable-view lag；该值同时由 `snapshot_id` 和 `activation_registry_id` 承诺。 |
 | `local_state_commit` | string | 是 | usdb-indexer local durable state commit。 |
 | `system_state_id` | string | 是 | 下游链消费的顶层 BTC-side USDB system state id。 |
 | `balance_history_api_version` | string | 是 | balance-history 对外 API 版本。 |
@@ -168,6 +169,12 @@ v1 固定字段：
 | `active_version_set_id` | string | 是 | `active_version_set` canonical encoding 的 hash，并由 `local_state_commit` 承诺。 |
 
 `external_state` 必须由目标高度的 durable historical state reference 构造，禁止拿 current-head version set 覆盖历史 identity。`active_version_set_id` 必须可由返回的 `active_version_set` 重算，并与 `local_state_commit` 使用的 id 一致。最小链上 payload 可以只携带 `btc_height`、`snapshot_id`、`system_state_id` 和业务对象 id；所有 UIP-0006 economic view 响应必须返回上表完整字段。只有后续协议明确声明为 selector-only 的轻量接口才可以省略字段。
+
+`stable_lag` 不需要作为 `ConsensusStateReference.expected_state` 的独立 selector 重复
+传递，因为 `snapshot_id` 已承诺该值；但是 USDB chain validator 必须把 profile 返回值
+与其本地 `activation_registry_id` 对应 registry scope 中的 `stable_lag_blocks` 精确比较。
+这项比较只依赖 payload、historical response 和本地 golden，不读取 validator 当前 BTC
+tip。
 
 # Pass Economic Profile
 
@@ -206,6 +213,7 @@ RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `
     "btc_height": 900123,
     "snapshot_id": "...",
     "stable_block_hash": "000000...",
+    "stable_lag": 5,
     "local_state_commit": "...",
     "system_state_id": "...",
     "balance_history_api_version": "1.0.0",

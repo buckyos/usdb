@@ -448,6 +448,8 @@ pub struct EconomicExternalState {
     pub snapshot_id: String,
     /// Stable BTC block hash committed by `snapshot_id`.
     pub stable_block_hash: String,
+    /// Stable-view lag committed by both `snapshot_id` and the BTC registry scope.
+    pub stable_lag: u32,
     /// Historical usdb-indexer local durable state commit.
     pub local_state_commit: String,
     /// Historical top-level system state id.
@@ -471,6 +473,7 @@ impl From<&HistoricalStateRefInfo> for EconomicExternalState {
             btc_height: state_ref.block_height,
             snapshot_id: state_ref.snapshot_info.snapshot_id.clone(),
             stable_block_hash: state_ref.snapshot_info.stable_block_hash.clone(),
+            stable_lag: identity.stable_lag,
             local_state_commit: state_ref.local_state_commit_info.local_state_commit.clone(),
             system_state_id: state_ref.system_state_info.system_state_id.clone(),
             balance_history_api_version: identity.balance_history_api_version.clone(),

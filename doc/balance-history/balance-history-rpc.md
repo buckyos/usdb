@@ -201,7 +201,7 @@
   "stable_height": 812345,
   "stable_block_hash": "000000...",
   "latest_block_commit": "4f7c...",
-  "stable_lag": 0,
+  "stable_lag": 5,
   "balance_history_api_version": "1.0.0",
   "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
   "commit_protocol_version": "1.0.0",
@@ -252,7 +252,7 @@
     "network": "regtest",
     "stable_height": 812345,
     "stable_block_hash": "000000...",
-    "stable_lag": 0,
+    "stable_lag": 5,
     "balance_history_api_version": "1.0.0",
     "balance_history_semantics_version": "balance-snapshot-at-or-before:v1"
   },

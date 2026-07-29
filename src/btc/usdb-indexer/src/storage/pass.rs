@@ -5169,11 +5169,11 @@ impl<'a> Drop for MinePassStorageSavePointGuard<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{Network, ScriptBuf};
     use std::collections::{HashMap, HashSet};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use usdb_util::ToBtcScriptHash;
+    use usdb_util::{ToBtcScriptHash, embedded_btc_stable_lag_blocks};
 
     fn test_data_dir(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -5183,6 +5183,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("usdb_pass_storage_{tag}_{nanos}"));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn regtest_stable_lag() -> u32 {
+        embedded_btc_stable_lag_blocks(Network::Regtest).unwrap()
     }
 
     fn script_hash(tag: u8) -> BtcScriptHash {
@@ -6959,7 +6963,7 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("ab".repeat(32)),
                 latest_block_commit: Some("cd".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -7072,7 +7076,7 @@ mod tests {
                 stable_height: 321,
                 stable_block_hash: Some("ab".repeat(32)),
                 latest_block_commit: Some("cd".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -7089,7 +7093,7 @@ mod tests {
         assert_eq!(anchor.stable_height, 321);
         assert_eq!(anchor.stable_block_hash, "ab".repeat(32));
         assert_eq!(anchor.latest_block_commit, "cd".repeat(32));
-        assert_eq!(anchor.stable_lag, 0);
+        assert_eq!(anchor.stable_lag, regtest_stable_lag());
         assert_eq!(anchor.commit_protocol_version, "1.0.0");
         assert_eq!(anchor.commit_hash_algo, "sha256");
 
@@ -7136,7 +7140,7 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("11".repeat(32)),
                 latest_block_commit: Some("22".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -7150,7 +7154,7 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("33".repeat(32)),
                 latest_block_commit: Some("44".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:
@@ -7339,7 +7343,7 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
-                stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+                stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
                 balance_history_semantics_version:

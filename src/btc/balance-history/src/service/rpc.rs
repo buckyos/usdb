@@ -23,13 +23,6 @@ pub const BALANCE_HISTORY_API_VERSION: &str = "1.0.0";
 /// - balance snapshot queries use at-or-before semantics
 /// - delta queries use exact-height semantics
 pub const BALANCE_HISTORY_SEMANTICS_VERSION: &str = usdb_util::BALANCE_HISTORY_SEMANTICS_VERSION_V1;
-/// Fixed protocol stable lag used by balance-history.
-///
-/// This is not a local tuning knob. Changing it changes the externally visible
-/// stable-view rule and therefore must be treated as a protocol/versioned
-/// change across all nodes on the same network.
-pub const BALANCE_HISTORY_STABLE_LAG: u32 = 0;
-
 /// Query parameters for a single script-hash balance request.
 ///
 /// The request supports exactly one of the optional selectors below in normal

@@ -56,17 +56,24 @@ src/btc/usdb-util/activation-registry/btc-regtest-revision-2.json
 schema：
 
 ```text
-uip-0008-btc-activation-registry:v1
+uip-0008-btc-activation-registry:v2
 ```
 
-每个文件包含一个顶层 `scope = network_type + network_id`，BTC activation record 只包含一个 BTC-side version family 和 `activation_height`。文件内不得出现其他 BTC network 或 USDB-chain family。
+每个文件包含一个顶层
+`scope = network_type + network_id + stable_lag_blocks`。当前 mainnet/regtest 固定
+`stable_lag_blocks = 5`；该值进入 registry canonical ID，balance-history 只能从 scope
+读取，禁止本地配置覆盖。同一 catalog 的后续 revision 必须保持整个 scope 不变。
+public freeze 前调整 lag 会重写 draft artifact 并重生成所有下游 identity；public freeze
+后则需要新的 versioned lag 语义或新网络，普通 registry revision 与 USDB activation
+checkpoint 不能单独改变该值。BTC activation record 只包含一个 BTC-side version family
+和 `activation_height`。文件内不得出现其他 BTC network 或 USDB-chain family。
 
 当前 canonical ID：
 
 ```text
-btc-mainnet = bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e
-btc-regtest revision 1 (current) = 22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d
-btc-regtest revision 2 (staged)  = 25a39e8022e8351a40f59736b86cf81321c08042121cdb74b85a8f3918a2b973
+btc-mainnet = cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c
+btc-regtest revision 1 (current) = 596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9
+btc-regtest revision 2 (staged)  = cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497
 ```
 
 两个 registry 当前激活相同的九个 BTC v1 family，所以 `active_version_set_id` 相同：
@@ -113,6 +120,8 @@ system_state_id        = hash(snapshot_id, local_state_commit)
 边界：
 
 - `snapshot_id` 只承诺 upstream balance-history state。
+- `snapshot_id` 的 canonical input 包含 `stable_lag`；UIP-0006 external state 显式返回
+  该值，Go validator 再与本地 BTC registry scope 交叉校验。
 - `activation_registry_id` 是 BTC source-network registry revision identity；BTC service current query 使用 catalog current，historical query 和 USDB chain config 可以固定具体旧/新 revision。
 - `active_version_set_id` 进入 local state commit，承诺目标 BTC 高度实际使用的规则。
 - USDB activation schedule/checkpoint identity 由 USDB chain genesis / chain config 自己承诺，不合并进 BTC registry ID。
@@ -128,7 +137,9 @@ src/btc/usdb-util/release-manifest.json
 它记录：
 
 - BTC registry artifact path、network scope、revision/current 和 canonical ID。
-- USDB-chain network ID、chain ID、genesis hash、chain-config source、activation authority 和按高度排序的 BTC registry bindings。
+- USDB-chain network ID、chain ID、genesis hash、chain-config source、activation authority
+  和按高度排序的完整 activation checkpoints，包括 registry binding、anchor max age 和
+  全部 policy versions。
 
 manifest 用于 release review、CI 和部署审计。它不得：
 
@@ -141,6 +152,8 @@ manifest 用于 release review、CI 和部署审计。它不得：
 ## balance-history
 
 - 按配置 BTC network 加载对应 revision catalog；未指定历史 ID 的本地路径使用 current revision。
+- stable sync target 固定为 `min(max_sync_height, observed_btc_tip - stable_lag_blocks)`；
+  lag 从 registry scope 读取，不再存在运行时全局 `0` 常量。
 - 启动、batch 写入和历史 state-ref 查询都按目标 BTC height 校验 `balance_history_semantics_version`。
 - 不解释 pass energy 或任何 USDB chain policy。
 
@@ -148,13 +161,17 @@ manifest 用于 release review、CI 和部署审计。它不得：
 
 - 启动时校验配置 genesis height 和 durable synced height。
 - 每个 block mutation 前按目标 BTC height 解析并校验完整 BTC v1 set。
-- UIP-0006 external state 返回 `activation_registry_id + active_version_set + active_version_set_id`。
+- UIP-0006 external state 返回
+  `stable_lag + activation_registry_id + active_version_set + active_version_set_id`。
 - historical profile、candidate、breakdown 和 cursor 必须冻结相同 external state。
 
 ## go-ethereum
 
 - 本地 chain config 决定 expected USDB chain versions。
-- Rust generator 从同一 network-scoped revision catalog 生成 Go golden artifact；`--check` 模式用于 CI/release drift 检查。
+- Rust generator 从同一 network-scoped revision catalog 生成含
+  `stable_lag_blocks` 的 Go golden artifact；`--check` 模式用于 CI/release drift 检查。
+- 第二个 Rust generator 将 release manifest 确定性展开为 Go golden；Go 测试把它与
+  `USDBChainConfig` 和 `USDBGenesisHash` 全字段比较。
 - historical profile resolver 使用 `target USDB activation checkpoint 的 BTC registry ID + payload BTC height` 本地解析 expected set，再校验 RPC registry/set identity、canonical set hash 和历史状态选择器。
 - profile resolver 按 expected set 中的 raw-energy、effective-energy 和 level formula version 显式分派；本地未支持版本 fail closed。
 - BTC registry identity 漂移、profile 字段篡改或 companion service 不可用时停止组块或拒绝区块。
@@ -169,7 +186,9 @@ Rust registry tests 覆盖：
 - BTC registry 拒绝 USDB chain family。
 - activation boundary、duplicate height、supersedes、planned record。
 - canonical record ordering、network-scoped registry ID golden。
-- release manifest v2 重算全部 BTC revision ID，并固定 revision/current、USDB chain ID / genesis hash / authority / activation bindings。
+- release manifest v3 重算全部 BTC revision ID，并固定 revision/current、USDB chain ID /
+  genesis hash / authority / 完整 activation checkpoints；Go golden test 自动拒绝
+  genesis、anchor age 或 policy version 漂移。
 
 Go tests 覆盖 generated multi-revision registry/set golden、payload-height lookup、
 unknown/tampered registry、active-version-set codec、per-checkpoint binding / anchor-max

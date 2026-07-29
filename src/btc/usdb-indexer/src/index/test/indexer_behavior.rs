@@ -41,6 +41,10 @@ use usdb_util::BtcScriptHash;
 
 type StatusUpdateRecord = (Option<u32>, Option<u32>, Option<String>);
 
+fn regtest_stable_lag() -> u32 {
+    usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap()
+}
+
 fn expected_balance_penalty(
     balance_before: u64,
     balance_after: u64,
@@ -91,7 +95,7 @@ impl MockStatus {
             stable_height: latest_height,
             stable_block_hash: Some("11".repeat(32)),
             latest_block_commit: Some("22".repeat(32)),
-            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            stable_lag: regtest_stable_lag(),
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
@@ -176,7 +180,7 @@ impl MockBalanceHistoryCommitProvider {
             network: "regtest".to_string(),
             stable_height: block_height,
             stable_block_hash: stable_block_hash.clone(),
-            stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+            stable_lag: regtest_stable_lag(),
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
                 .to_string(),
@@ -783,7 +787,7 @@ fn snapshot_from_commit(commit: &balance_history::BlockCommitInfo) -> BalanceHis
         stable_height: commit.block_height,
         stable_block_hash: Some(commit.btc_block_hash.clone()),
         latest_block_commit: Some(commit.block_commit.clone()),
-        stable_lag: balance_history::BALANCE_HISTORY_STABLE_LAG,
+        stable_lag: regtest_stable_lag(),
         balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
         balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
             .to_string(),

@@ -10,7 +10,7 @@ use usdb_util::{
     embedded_btc_activation_registry_catalog,
 };
 
-const GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v2";
+const GO_GOLDEN_SCHEMA_VERSION: &str = "uip-0008-go-btc-activation-golden:v3";
 
 #[derive(Serialize)]
 struct GoActivationGoldenArtifact {
@@ -24,6 +24,7 @@ struct GoRegistryGolden {
     network_id: &'static str,
     revision: u32,
     current: bool,
+    stable_lag_blocks: u32,
     activation_registry_id: String,
     activations: Vec<GoActivationGolden>,
 }
@@ -79,6 +80,7 @@ fn registry_golden(
         network_id,
         revision,
         current,
+        stable_lag_blocks: registry.stable_lag_blocks(),
         activation_registry_id: registry.activation_registry_id(),
         activations,
     })

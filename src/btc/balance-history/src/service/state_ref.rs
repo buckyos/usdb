@@ -1,12 +1,11 @@
 use crate::config::BalanceHistoryConfig;
 use crate::db::BalanceHistoryDB;
-use crate::service::{
-    BALANCE_HISTORY_API_VERSION, BALANCE_HISTORY_STABLE_LAG, HistoricalSnapshotStateRef,
-};
+use crate::service::{BALANCE_HISTORY_API_VERSION, HistoricalSnapshotStateRef};
 use usdb_util::{
     ActivationRegistryError, ActiveVersionSet, CONSENSUS_SNAPSHOT_ID_HASH_ALGO,
     CONSENSUS_SNAPSHOT_ID_VERSION, CONSENSUS_SOURCE_CHAIN_BTC, ConsensusSnapshotIdentity,
     VersionFamily, build_consensus_snapshot_id, embedded_btc_activation_registry,
+    embedded_btc_stable_lag_blocks,
 };
 
 /// Public version string of the first balance-history block commit protocol.
@@ -35,6 +34,13 @@ pub fn resolve_balance_history_active_versions(
     Ok(active_versions)
 }
 
+/// Resolves the immutable stable-view lag committed by the selected BTC registry.
+pub fn resolve_balance_history_stable_lag(
+    config: &BalanceHistoryConfig,
+) -> Result<u32, ActivationRegistryError> {
+    embedded_btc_stable_lag_blocks(config.btc.network())
+}
+
 /// Resolves the balance-history query-semantics version at one exact BTC height.
 pub fn resolve_balance_history_semantics_version(
     config: &BalanceHistoryConfig,
@@ -61,7 +67,8 @@ pub fn build_consensus_snapshot_identity(
         network: config.btc.network().to_string(),
         stable_height,
         stable_block_hash: stable_block_hash.to_string(),
-        stable_lag: BALANCE_HISTORY_STABLE_LAG,
+        stable_lag: resolve_balance_history_stable_lag(config)
+            .map_err(|error| error.to_string())?,
         balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
         balance_history_semantics_version: semantics_version,
     })

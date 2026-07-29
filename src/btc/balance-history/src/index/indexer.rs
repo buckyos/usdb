@@ -7,7 +7,7 @@ use crate::cache::{UTXOCache, UTXOCacheRef};
 use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
-use crate::service::{BALANCE_HISTORY_STABLE_LAG, resolve_balance_history_active_versions};
+use crate::service::{resolve_balance_history_active_versions, resolve_balance_history_stable_lag};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
@@ -164,10 +164,12 @@ impl BalanceHistoryIndexer {
             error!("{}", msg);
             msg
         })?;
+        let stable_lag =
+            resolve_balance_history_stable_lag(&config).map_err(|error| error.to_string())?;
         let latest_block_height = compute_stable_sync_target_height(
             rpc_latest_block_height,
             config.sync.max_sync_block_height,
-            BALANCE_HISTORY_STABLE_LAG,
+            stable_lag,
         );
 
         output.println(&format!(
@@ -316,10 +318,12 @@ impl BalanceHistoryIndexer {
 
     pub fn get_latest_block_height(&self) -> Result<u32, String> {
         let rpc_latest_block_height = self.btc_client.get_latest_block_height()?;
+        let stable_lag =
+            resolve_balance_history_stable_lag(&self.config).map_err(|error| error.to_string())?;
         let latest_block_height = compute_stable_sync_target_height(
             rpc_latest_block_height,
             self.config.sync.max_sync_block_height,
-            BALANCE_HISTORY_STABLE_LAG,
+            stable_lag,
         );
 
         Ok(latest_block_height)
@@ -876,14 +880,26 @@ mod tests {
 
     #[test]
     fn test_compute_stable_sync_target_height_applies_stable_lag() {
-        assert_eq!(compute_stable_sync_target_height(100, u32::MAX, 2), 98);
-        assert_eq!(compute_stable_sync_target_height(100, 95, 2), 95);
+        let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap();
+        assert_eq!(stable_lag, 5);
+        assert_eq!(
+            compute_stable_sync_target_height(100, u32::MAX, stable_lag),
+            95
+        );
+        assert_eq!(compute_stable_sync_target_height(100, 90, stable_lag), 90);
     }
 
     #[test]
     fn test_compute_stable_sync_target_height_saturates_at_zero() {
-        assert_eq!(compute_stable_sync_target_height(1, u32::MAX, 2), 0);
-        assert_eq!(compute_stable_sync_target_height(0, u32::MAX, 2), 0);
+        let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap();
+        assert_eq!(
+            compute_stable_sync_target_height(1, u32::MAX, stable_lag),
+            0
+        );
+        assert_eq!(
+            compute_stable_sync_target_height(0, u32::MAX, stable_lag),
+            0
+        );
     }
 
     #[test]

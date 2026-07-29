@@ -6,15 +6,15 @@ use std::fmt::{Display, Formatter};
 use std::sync::OnceLock;
 
 /// Schema identifier for one network-scoped UIP-0008 BTC activation registry.
-pub const ACTIVATION_REGISTRY_SCHEMA_VERSION: &str = "uip-0008-btc-activation-registry:v1";
+pub const ACTIVATION_REGISTRY_SCHEMA_VERSION: &str = "uip-0008-btc-activation-registry:v2";
 /// Hash domain used by the canonical network-scoped BTC registry encoding.
-pub const ACTIVATION_REGISTRY_HASH_DOMAIN: &str = "usdb-btc-activation-registry:v1";
+pub const ACTIVATION_REGISTRY_HASH_DOMAIN: &str = "usdb-btc-activation-registry:v2";
 /// Hash domain used by the canonical active-version-set encoding.
 pub const ACTIVE_VERSION_SET_HASH_DOMAIN: &str = "usdb-active-version-set:v1";
 /// Hash algorithm used by registry and active-version-set identifiers.
 pub const ACTIVATION_ID_HASH_ALGO: &str = "sha256";
 /// Schema identifier for the audit-only cross-chain release manifest.
-pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v2";
+pub const RELEASE_MANIFEST_SCHEMA_VERSION: &str = "uip-0008-cross-chain-release-manifest:v3";
 
 /// UIP-0001 inscription schema implemented by the current BTC indexer.
 pub const INSCRIPTION_SCHEMA_VERSION_V1: &str = "uip-0001-miner-pass-inscription:v1";
@@ -220,20 +220,21 @@ pub struct BtcActivationRegistryScope {
     pub network_type: ActivationNetworkType,
     /// Canonical network identifier, such as `btc-mainnet` or `btc-regtest`.
     pub network_id: String,
+    /// Number of canonical BTC confirmations excluded from the exposed stable view.
+    ///
+    /// This is a network protocol value committed by `activation_registry_id`,
+    /// not an operator tuning parameter.
+    pub stable_lag_blocks: u32,
 }
 
 impl BtcActivationRegistryScope {
-    fn from_network(network: Network) -> Self {
-        let (network_type, network_id) = match network {
+    fn network_identity(network: Network) -> (ActivationNetworkType, &'static str) {
+        match network {
             Network::Bitcoin => (ActivationNetworkType::Mainnet, "btc-mainnet"),
             Network::Testnet => (ActivationNetworkType::Testnet, "btc-testnet3"),
             Network::Testnet4 => (ActivationNetworkType::Testnet, "btc-testnet4"),
             Network::Signet => (ActivationNetworkType::Signet, "btc-signet"),
             Network::Regtest => (ActivationNetworkType::Regtest, "btc-regtest"),
-        };
-        Self {
-            network_type,
-            network_id: network_id.to_string(),
         }
     }
 }
@@ -423,6 +424,12 @@ impl BtcActivationRegistry {
                 "BTC activation registry has an empty network_id".to_string(),
             ));
         }
+        if self.scope.stable_lag_blocks == 0 {
+            return Err(ActivationRegistryError::InvalidRecord(format!(
+                "BTC activation registry {} has zero stable_lag_blocks",
+                self.scope.network_id
+            )));
+        }
         if matches!(
             self.scope.network_type,
             ActivationNetworkType::Devnet | ActivationNetworkType::Local
@@ -499,18 +506,23 @@ impl BtcActivationRegistry {
 
     /// Verifies that this registry is the embedded artifact selected for `network`.
     pub fn validate_network(&self, network: Network) -> Result<(), ActivationRegistryError> {
-        let expected = BtcActivationRegistryScope::from_network(network);
-        if self.scope != expected {
+        let (expected_type, expected_id) = BtcActivationRegistryScope::network_identity(network);
+        if self.scope.network_type != expected_type || self.scope.network_id != expected_id {
             return Err(ActivationRegistryError::InvalidRecord(format!(
                 "BTC activation registry scope mismatch: selected network={}, expected_type={}, expected_id={}, actual_type={}, actual_id={}",
                 network,
-                expected.network_type.as_str(),
-                expected.network_id,
+                expected_type.as_str(),
+                expected_id,
                 self.scope.network_type.as_str(),
                 self.scope.network_id
             )));
         }
         Ok(())
+    }
+
+    /// Returns the immutable stable-view lag committed by this registry revision.
+    pub const fn stable_lag_blocks(&self) -> u32 {
+        self.scope.stable_lag_blocks
     }
 
     /// Resolves all active BTC-side families at one exact historical BTC height.
@@ -560,6 +572,8 @@ impl BtcActivationRegistry {
         update_string(&mut hasher, "BTC");
         update_string(&mut hasher, self.scope.network_type.as_str());
         update_string(&mut hasher, &self.scope.network_id);
+        update_string(&mut hasher, "stable_lag_blocks");
+        hasher.update(self.scope.stable_lag_blocks.to_be_bytes());
         update_string(&mut hasher, "btc_height");
         hasher.update((records.len() as u32).to_be_bytes());
         for record in records {
@@ -803,6 +817,36 @@ pub struct UsdbChainActivationReleaseBinding {
     pub block: u64,
     /// Immutable BTC registry revision selected from this USDB block onward.
     pub btc_activation_registry_id: String,
+    /// Maximum consecutive USDB blocks allowed to reuse one exact BTC anchor.
+    pub btc_anchor_max_age_blocks: u32,
+    /// Complete USDB-chain policy versions selected by this activation.
+    pub versions: UsdbConsensusVersionsReleaseBinding,
+}
+
+/// Complete USDB-chain consensus policy versions recorded for release auditing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UsdbConsensusVersionsReleaseBinding {
+    /// Profile selector payload codec version.
+    pub payload_version: u8,
+    /// BTC-anchor parent/child transition policy version.
+    pub btc_anchor_policy_version: u16,
+    /// USDB PoW difficulty policy version.
+    pub difficulty_policy_version: u16,
+    /// Coinbase reward-allocation rule version.
+    pub reward_rule_version: u16,
+    /// Total coinbase emission policy version.
+    pub coinbase_emission_policy_version: u16,
+    /// Transaction-fee split policy version.
+    pub fee_split_policy_version: u16,
+    /// Collaboration efficiency/K policy version.
+    pub collaboration_efficiency_policy_version: u16,
+    /// Fixed or dynamic price policy version.
+    pub price_policy_version: u32,
+    /// Miner quote policy version.
+    pub quote_policy_version: u16,
+    /// Auxiliary hashpower-pool policy version.
+    pub aux_pool_policy_version: u16,
 }
 
 /// USDB chain-config identity recorded for release auditing, never runtime lookup.
@@ -925,6 +969,10 @@ impl CrossChainReleaseManifest {
             let mut previous_block = None;
             for activation in &binding.activations {
                 if !btc_registry_ids.contains(&activation.btc_activation_registry_id)
+                    || activation.btc_anchor_max_age_blocks == 0
+                    || activation.versions.payload_version == 0
+                    || activation.versions.btc_anchor_policy_version == 0
+                    || activation.versions.difficulty_policy_version == 0
                     || previous_block.is_some_and(|block| activation.block <= block)
                 {
                     return Err(ActivationRegistryError::InvalidRecord(format!(
@@ -933,6 +981,12 @@ impl CrossChainReleaseManifest {
                     )));
                 }
                 previous_block = Some(activation.block);
+            }
+            if binding.activations[0].block != 0 {
+                return Err(ActivationRegistryError::InvalidRecord(format!(
+                    "USDB-chain release binding {} does not activate from genesis",
+                    binding.network_id
+                )));
             }
         }
         Ok(())
@@ -1089,6 +1143,11 @@ pub fn embedded_btc_activation_registry(
     embedded_btc_activation_registry_catalog(network).map(|catalog| catalog.current_registry())
 }
 
+/// Returns the stable-view lag committed by the current registry for `network`.
+pub fn embedded_btc_stable_lag_blocks(network: Network) -> Result<u32, ActivationRegistryError> {
+    embedded_btc_activation_registry(network).map(BtcActivationRegistry::stable_lag_blocks)
+}
+
 /// Returns the audit-only manifest that binds BTC registry IDs to USDB chain configs.
 ///
 /// The manifest never resolves USDB-chain consensus versions. USDB nodes must use
@@ -1171,6 +1230,7 @@ mod tests {
             scope: BtcActivationRegistryScope {
                 network_type: ActivationNetworkType::Regtest,
                 network_id: "btc-regtest".to_string(),
+                stable_lag_blocks: 5,
             },
             records,
         }
@@ -1211,11 +1271,11 @@ mod tests {
         for (network, expected_registry_id) in [
             (
                 Network::Bitcoin,
-                "bb751626eb1415bbc349e77f58cb412908584842cbf7d786262b7bd1f6a7d39e",
+                "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c",
             ),
             (
                 Network::Regtest,
-                "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d",
+                "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9",
             ),
         ] {
             let registry = embedded_btc_activation_registry(network).unwrap();
@@ -1223,6 +1283,7 @@ mod tests {
             registry.validate_network(network).unwrap();
             versions.validate_btc_indexer_v1().unwrap();
             assert_eq!(registry.activation_registry_id(), expected_registry_id);
+            assert_eq!(registry.stable_lag_blocks(), 5);
             assert_eq!(
                 versions.active_version_set_id(),
                 "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
@@ -1291,12 +1352,51 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_zero_stable_lag() {
+        let mut registry = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        registry.scope.stable_lag_blocks = 0;
+        assert!(matches!(
+            registry.validate(),
+            Err(ActivationRegistryError::InvalidRecord(detail))
+                if detail.contains("zero stable_lag_blocks")
+        ));
+    }
+
+    #[test]
+    fn registry_catalog_rejects_stable_lag_change_between_revisions() {
+        let previous = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        let mut changed = embedded_regtest_with_energy_v2_at(100);
+        changed.scope.stable_lag_blocks = previous.scope.stable_lag_blocks + 1;
+
+        assert!(matches!(
+            BtcActivationRegistryCatalog::from_revisions(vec![previous, changed]),
+            Err(ActivationRegistryError::InvalidRecord(detail))
+                if detail.contains("mixes scopes")
+        ));
+    }
+
+    #[test]
+    fn registry_id_commits_stable_lag() {
+        let registry = embedded_btc_activation_registry(Network::Regtest)
+            .unwrap()
+            .clone();
+        let original_id = registry.activation_registry_id();
+        let mut changed = registry;
+        changed.scope.stable_lag_blocks += 1;
+        assert_ne!(changed.activation_registry_id(), original_id);
+    }
+
+    #[test]
     fn duplicate_registry_json_field_is_rejected() {
         let json = format!(
             r#"{{
                 "schema_version": "{0}",
                 "schema_version": "{0}",
-                "scope": {{"network_type":"regtest","network_id":"btc-regtest"}},
+                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":5}},
                 "records": []
             }}"#,
             ACTIVATION_REGISTRY_SCHEMA_VERSION
@@ -1312,7 +1412,7 @@ mod tests {
         let json = format!(
             r#"{{
                 "schema_version": "{}",
-                "scope": {{"network_type":"regtest","network_id":"btc-regtest"}},
+                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":5}},
                 "records": [],
                 "unexpected": true
             }}"#,
@@ -1329,7 +1429,7 @@ mod tests {
         let json = format!(
             r#"{{
                 "schema_version": "{}",
-                "scope": {{"network_type":"mainnet","network_id":"btc-mainnet"}},
+                "scope": {{"network_type":"mainnet","network_id":"btc-mainnet","stable_lag_blocks":5}},
                 "records": [{{
                     "uip":"UIP-0003",
                     "version_family":"energy_formula_version",
@@ -1576,8 +1676,8 @@ mod tests {
     fn networks_without_an_embedded_registry_fail_closed() {
         for network in [Network::Testnet, Network::Testnet4, Network::Signet] {
             assert!(
-                !BtcActivationRegistryScope::from_network(network)
-                    .network_id
+                !BtcActivationRegistryScope::network_identity(network)
+                    .1
                     .is_empty()
             );
             assert!(matches!(
@@ -1624,6 +1724,7 @@ mod tests {
         mainnet.scope = BtcActivationRegistryScope {
             network_type: ActivationNetworkType::Mainnet,
             network_id: "btc-mainnet".to_string(),
+            stable_lag_blocks: 5,
         };
         assert_ne!(
             regtest.activation_registry_id(),
@@ -1640,7 +1741,7 @@ mod tests {
         assert_eq!(usdb_chain.chain_id, 20_260_323);
         assert_eq!(
             usdb_chain.genesis_hash,
-            "4548fb39b8a73ab3f3d997a6d8c2869f83fadbc9e0d84ac198d6424fbbab90b4"
+            "2ddb7bab1cf85a02d71048927f42a99a8412d937d87b792c73949d967754d9ae"
         );
         assert_eq!(
             usdb_chain.activation_authority,
@@ -1648,6 +1749,12 @@ mod tests {
         );
         assert_eq!(usdb_chain.activations.len(), 1);
         assert_eq!(usdb_chain.activations[0].block, 0);
+        assert_eq!(usdb_chain.activations[0].btc_anchor_max_age_blocks, 6_650);
+        assert_eq!(usdb_chain.activations[0].versions.payload_version, 1);
+        assert_eq!(
+            usdb_chain.activations[0].versions.btc_anchor_policy_version,
+            1
+        );
         assert_eq!(
             usdb_chain.activations[0].btc_activation_registry_id,
             embedded_btc_activation_registry(Network::Regtest)
@@ -1682,6 +1789,24 @@ mod tests {
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
         assert!(matches!(
             invalid_chain_activation.validate(),
+            Err(ActivationRegistryError::InvalidRecord(_))
+        ));
+
+        let mut invalid_anchor_age =
+            CrossChainReleaseManifest::from_json(EMBEDDED_RELEASE_MANIFEST_JSON).unwrap();
+        invalid_anchor_age.usdb_chain_configs[0].activations[0].btc_anchor_max_age_blocks = 0;
+        assert!(matches!(
+            invalid_anchor_age.validate(),
+            Err(ActivationRegistryError::InvalidRecord(_))
+        ));
+
+        let mut invalid_versions =
+            CrossChainReleaseManifest::from_json(EMBEDDED_RELEASE_MANIFEST_JSON).unwrap();
+        invalid_versions.usdb_chain_configs[0].activations[0]
+            .versions
+            .btc_anchor_policy_version = 0;
+        assert!(matches!(
+            invalid_versions.validate(),
             Err(ActivationRegistryError::InvalidRecord(_))
         ));
     }
