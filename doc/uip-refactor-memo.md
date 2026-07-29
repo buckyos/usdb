@@ -1081,3 +1081,51 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
   Dividend ledger sync、full-bootstrap idempotent replay 和 cross-node head 检查。
 - public release 后续仍需冻结非零 confirmation depth 和 release signing key；acceptance
   artifact 必须由签名 release manifest 承诺。失败 candidate 直接废弃 datadir，不做链上修复。
+
+## UIP-0007 BTC Anchor Bounded-Reuse Guard
+
+状态：2026-07-28 完成 Go 实现、目标测试和 UIP-0007/0008/0009 文档对齐，尚未提交，
+等待 review。此前 threshold signer/publisher 方案仍只保存在各仓库 issue-linked stash，
+本批没有恢复或引入该治理依赖；讨论入口为
+[`buckyos/usdb#32`](https://github.com/buckyos/usdb/issues/32)。
+
+- Draft `ProfileSelectorPayload` v1 直接从 107 bytes 调整为 111 bytes，新增 big-endian
+  `btc_anchor_age_blocks`；开发阶段不保留旧 parser 双栈。
+- `ChainConfig.usdb.activations[]` 新增必填正数 `btcAnchorMaxAgeBlocks`，完整 versions
+  新增 `btcAnchorPolicyVersion`。development block-0 checkpoint 暂设 policy v1 /
+  max age `6650`；该值只表达约一天的量级，public 参数仍依赖最终 PoW timing calibration。
+- policy v1 要求 BTC height 不回退；高度前进时 age 归零；同高度时
+  `snapshot_id + system_state_id` 必须与父块完全一致且 age 严格 `+1`；首次 activation、
+  age 超限和 overflow 均 fail closed。
+- miner worker 将 parent `header.Extra` 传给 payload builder；builder 与
+  `Prepare / VerifyHeader` 共用纯 transition helper。validator 在任何 profile RPC
+  之前拒绝非法 transition，避免 builder-only 非共识约束。
+- legacy / non-USDB `MaximumExtraDataSize` 恢复为 32；USDB 使用独立
+  `MaximumUSDBExtraDataSize = 160`，当前 v1 仍只接受精确 111 bytes，剩余空间不是
+  opaque extension。
+- Go 测试覆盖 codec golden、first/reset/increment、height regression、same-height
+  replacement、age mismatch、exact max/max+1、overflow、builder fail-closed、
+  VerifyHeader RPC-before guard、activation/reorg/restart conformance 和 chain-config
+  JSON / `CheckCompatible`。tamper helper、Python replay validator 与 live 文档同步增加
+  age 字段。
+- `snapshot_id` 已承诺 `stable_block_hash`，所以 payload 不重复增加 block hash；
+  当前 111-byte payload 加一个 future 32-byte commitment 仍为 143 bytes。
+- 该 guard 只限制同一精确 anchor 的连续复用，不证明离真实 BTC tip 的距离。
+  本地 BTC lag 只能作为 soft monitoring，不能参与 validator 共识。
+- 深层 BTC reorg 的 public-network 终态仍需冻结：要么 archive 可按 committed
+  orphan snapshot 永久重放，要么提供 deterministic USDB rewind/restart/joiner 流程。
+  当前 same-height replacement 只证明 fresh validator 拒绝，运行中自动 detection /
+  rewind 尚未实现。在该 live E2E 完成前，policy v1 不能宣称提供完整 BTC finality；
+  future SPV/header-chain 使用新的 anchor policy version 激活。
+
+### 验证结果
+
+- Go 1.18.5 下 `internal/usdb`、`params`、`consensus/ethash`、`miner`、`core`、
+  `scripts/usdb` 和 `eth` 回归通过；activation、economic fake v2/v3 build-tag
+  conformance 均通过。
+- Python codec/transition 单元测试、`py_compile`、ShellCheck、Rust workspace
+  `cargo fmt --check`、`usdb-util` Clippy `-D warnings` 和 snapshot-id commitment
+  定向测试通过。
+- 全新隔离 regtest/geth 跨进程 smoke 在 BTC height `137` 下生成并验证 16 个 USDB
+  block，`btc_anchor_age_blocks` 从 `0` 严格连续递增到 `15`；逐块 reward、issued
+  supply 与最终 miner balance 交叉核算一致。

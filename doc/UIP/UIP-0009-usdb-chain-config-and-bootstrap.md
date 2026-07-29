@@ -84,7 +84,9 @@ USDB chain 必须拥有独立身份：
 USDBNetworkID = 20260323
 USDBGenesisDifficulty = 8192
 USDBMinimumDifficulty = 8192
-MaximumExtraDataSize = 160
+MaximumExtraDataSize = 32
+MaximumUSDBExtraDataSize = 160
+USDBDevelopmentBTCAnchorMaxAgeBlocks = 6650
 P2P default port for --usdb = 31303
 USDBBootnodes = []
 USDBV5Bootnodes = []
@@ -328,18 +330,21 @@ TerminalTotalDifficulty = nil
 
 # Header Extra Capacity
 
-UIP-0007 `ProfileSelectorPayload` v1 固定长度为 `107 bytes`。
+UIP-0007 `ProfileSelectorPayload` v1 固定长度为 `111 bytes`。
 
 USDB chain config / protocol params 必须允许 `header.Extra` 容纳该 payload。v1 固定：
 
 ```text
-MaximumExtraDataSize = 160
+MaximumExtraDataSize = 32
+MaximumUSDBExtraDataSize = 160
 ```
 
 v1 规则：
 
 - USDB reward / difficulty consensus 激活后，普通区块 `header.Extra` 必须正好等于 UIP-0007 payload。
-- `MaximumExtraDataSize` 固定为 `160`，作为当前 v1 的共识上限和未来小幅扩展余量。
+- legacy / non-USDB block 的 `MaximumExtraDataSize` 保持 `32`。
+- USDB block 使用独立 `MaximumUSDBExtraDataSize = 160`，作为 versioned selector
+  的 outer limit 和未来小幅扩展余量。
 - validator 必须按 UIP-0007 的精确 payload size 校验当前版本，不能因为上限是 `160` 就接受任意长度。
 
 # USDB Consensus Version Fields
@@ -351,6 +356,7 @@ usdb_activation_checkpoint =
     activation USDB block
     + complete USDB consensus version set
     + one immutable BTC registry revision binding
+    + btc_anchor_max_age_blocks
 ```
 
 checkpoint 不是单个 policy 的激活记录，也不是 BTC registry revision。即使只改变一个 policy version，或只切换 `btcActivationRegistryId`，也必须新增一个 checkpoint 并重复其余全部 version fields。多个 policy 在同一 USDB block 生效时必须合并到同一个 checkpoint。运行时按目标 block 选择 `block <= target` 的最后一个 checkpoint。
@@ -360,6 +366,7 @@ USDB chain config 必须显式包含或可确定以下版本：
 | 字段 | 类型建议 | v1 值 | 激活 |
 | --- | --- | --- | --- |
 | `payload_version` | uint8 | `1` | genesis |
+| `btc_anchor_policy_version` | uint16 | `1` | genesis |
 | `difficulty_policy_version` | uint16 | `1` | genesis |
 | `reward_rule_version` | uint16 | `1` | genesis |
 | `coinbase_emission_policy_version` | uint16 | `1` | genesis |
@@ -372,6 +379,11 @@ USDB chain config 必须显式包含或可确定以下版本：
 边界：
 
 - `payload_version` 只描述 `header.Extra` payload 编码。
+- `btc_anchor_policy_version` 描述 UIP-0007 parent/child BTC height、
+  same-height identity 和 anchor age transition。
+- `btcAnchorMaxAgeBlocks` 是每个 activation checkpoint 必须重复携带的正数参数；
+  它不是 version family。development 默认 `6650` 只表达约一天的量级，
+  public network 必须结合冻结后的 PoW timing calibration 单独确定。
 - `difficulty_policy_version` 描述 USDB chain 如何把 UIP-0005 的 `difficulty_factor_bps` 应用到 PoW difficulty。
 - `reward_rule_version` 描述 USDB chain reward 输入校验、recipient 校验和最终 state transition。
 - `coinbase_emission_policy_version` 描述 UIP-0011 CoinBase emission 公式。
@@ -393,6 +405,8 @@ USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
 - miner 没有 BTC-side USDB state view 时，不得继续生产 USDB block。
 - validator 无法按 payload 历史 context 重放 pass economic profile 时，必须 fail closed。
 - validator 必须校验 `payload_version`、`difficulty_policy_version` 和 chain config expected version。
+- validator 必须在 companion RPC 前，使用 parent selector 与 checkpoint 的
+  `btc_anchor_policy_version / btcAnchorMaxAgeBlocks` 校验 BTC anchor transition。
 - validator 不得查询 BTC-side USDB current head 来验证旧块。
 
 当前 go-ethereum 原型已有：
@@ -408,11 +422,12 @@ USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
 - validator-side `--ethash.usdb-indexer.rpcurl` /
   `--ethash.usdb-indexer.timeout` 运行参数。
 
-当前实现已经迁移到 UIP-0007 `ProfileSelectorPayload` 107-byte 结构，并删除
+当前实现已经迁移到 UIP-0007 `ProfileSelectorPayload` 111-byte 结构，并删除
 legacy `--miner.usdb / --ethash.usdb` enable flags。chain config 是共识激活和 expected version
 的唯一来源；运行参数不能启用、关闭或覆盖共识规则。
 
-当前 development chain 已激活 `payload_version=1`、`difficulty_policy_version=1`、
+当前 development chain 已激活 `payload_version=1`、`btc_anchor_policy_version=1`、
+`btcAnchorMaxAgeBlocks=6650`、`difficulty_policy_version=1`、
 `reward_rule_version=1`、`coinbase_emission_policy_version=1`、
 `collaboration_efficiency_policy_version=1` 和 `price_policy_version=1`。
 `fee_split_policy_version=0` 使用 UIP-0010/UIP-0011 启动窗口规则；
@@ -508,8 +523,14 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
 
 要求：
 
-- `payload_version`、`difficulty_policy_version`、`reward_rule_version`、`coinbase_emission_policy_version`、`fee_split_policy_version`、`collaboration_efficiency_policy_version`、`price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version` 必须进入 `ChainConfig.usdb.activations[]`。
-- 每个 `ChainConfig.usdb.activations[]` checkpoint 必须绑定该高度起接受的 BTC source registry revision；它是 historical profile 的辅助共识条件，不替代同一 checkpoint 的完整 USDB version set。
+- `payload_version`、`btc_anchor_policy_version`、`difficulty_policy_version`、
+  `reward_rule_version`、`coinbase_emission_policy_version`、
+  `fee_split_policy_version`、`collaboration_efficiency_policy_version`、
+  `price_policy_version`、`quote_policy_version` 和 `aux_pool_policy_version`
+  必须进入 `ChainConfig.usdb.activations[]`。
+- 每个 `ChainConfig.usdb.activations[]` checkpoint 必须绑定该高度起接受的
+  BTC source registry revision 与正数 `btcAnchorMaxAgeBlocks`；两者都不替代
+  同一 checkpoint 的完整 USDB version set。
 - USDB chain miner、validator 和 reward transition 必须按待处理 USDB block number 调用本地 chain-config lookup；禁止通过 companion RPC、BTC registry 或 CLI 参数决定 expected version。
 - UIP-0006 profile 的 `activation_registry_id` 只标识其 BTC source network registry。USDB chain 必须要求它等于 chain-config binding，并按 payload BTC 高度与本地 Go golden set 交叉校验，但不把它当作 USDB chain activation source。
 - audit-only cross-chain release manifest 可以关联 BTC registry ID 与 USDB chain `chain_id/genesis_hash/chain-config source`；manifest 不进入 header validation 或 runtime version lookup。
@@ -541,8 +562,10 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
     "activations": [{
       "block": 0,
       "btcActivationRegistryId": "22d820e6ec242b61f63473f279c41a4103af5cff13206b1925fd415cceaaf83d",
+      "btcAnchorMaxAgeBlocks": 6650,
       "versions": {
         "payloadVersion": 1,
+        "btcAnchorPolicyVersion": 1,
         "difficultyPolicyVersion": 1,
         "rewardRuleVersion": 0,
         "coinbaseEmissionPolicyVersion": 0,
@@ -588,11 +611,15 @@ USDB:
 - no Merge transition。
 - no difficulty bomb path。
 - USDB minimum difficulty 使用 `USDBMinimumDifficulty`。
-- `MaximumExtraDataSize == 160`。
-- 当前 payload 精确长度校验为 `107`。
+- legacy `MaximumExtraDataSize == 32`；USDB `MaximumUSDBExtraDataSize == 160`。
+- 当前 payload 精确长度校验为 `111`。
 - `payload_version` mismatch fail closed。
+- BTC anchor policy 未知、height regression、same-height identity mismatch、
+  age mismatch、exact max / max+1 和 counter overflow fail closed。
 - `difficulty_policy_version` mismatch fail closed。
-- USDB activation schedule 缺少、已生效 checkpoint 被修改或 checkpoint 绑定本地未知的 BTC `activation_registry_id` 时 fail closed；future checkpoint 可在生效前更新。
+- USDB activation schedule 缺少、`btcAnchorMaxAgeBlocks=0`、已生效 checkpoint
+  的 versions / registry / anchor max 被修改，或 checkpoint 绑定本地未知的 BTC
+  `activation_registry_id` 时 fail closed；future checkpoint 可在生效前更新。
 - validator 按 payload BTC 高度校验 generated golden active set，且未知 BTC-side formula version fail closed。
 - USDB reward / difficulty versions 从 genesis 生效。
 - bootnodes 默认不连接 Ethereum / legacy ETHW 网络。
@@ -612,7 +639,8 @@ USDB:
 其中已经被当前 UIP 更新的旧结论包括：
 
 - `RewardPayloadV1` 应迁移为 `ProfileSelectorPayload`。
-- payload v1 长度从原型 `105 bytes` 调整为 `107 bytes`。
+- payload v1 长度从早期 `105/107 bytes` development prototype 调整为
+  `111 bytes`，不保留旧 parser 双栈。
 - `difficulty_policy_version` 进入 payload 作为显式承诺，但 expected version 来自 chain config。
 - level / real difficulty 由 UIP-0005 和 USDB chain difficulty policy 定义。
 
@@ -626,3 +654,8 @@ USDB:
 4. `USDBGenesisHash` 必须在 chain config、genesis、system contract predeploy 和 bootstrap 参数 finalization 后更新。
 5. bootnodes / DNS discovery 何时进入内置配置，何时作为 release artifact 分发。
 6. UIP-0010 中 SourceDAO / dividend pool / fee split 冷启动流程是否采用固定地址、genesis predeploy、启动后初始化交易和激活高度的组合方案。
+7. public testnet/mainnet 的 `btcAnchorMaxAgeBlocks` 必须在最终 PoW timing calibration
+   后冻结；development `6650` 不得直接作为 public 参数证据。
+8. 深层 BTC reorg 后采用 orphan snapshot archive 还是 deterministic USDB rewind，
+   必须与 UIP-0007 一起完成 restart/joiner/live E2E；v1 不依赖 threshold
+   signer/publisher，future SPV/header-chain policy 另行激活。

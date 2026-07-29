@@ -302,6 +302,11 @@ UIP 必须声明自己影响哪些版本字段。
 - 影响某个链上 payload 字段或重放规则的变更必须升级该 payload 类型对应的 `payload_version`。
 - 影响 commit 哈希输入或序列化规则的变更必须升级 `commit_protocol_version`。
 
+上述 version bump 要求适用于已经冻结、进入 release artifact 或在任何需保留的网络上
+激活的版本。仍为 `Draft`、只存在于可删除开发数据且明确没有兼容要求的 prototype 可以
+直接修订其 v1 layout，但必须在 defining UIP 和重构备忘记录替换边界，并删除旧 parser，
+不得保留隐式双栈。首次 public activation 后不再适用该例外。
+
 ## 15. 历史重放规则
 
 已激活 UIP 必须支持历史重放。

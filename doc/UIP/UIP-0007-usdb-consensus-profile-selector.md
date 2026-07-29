@@ -16,6 +16,8 @@ Activation: USDB chain activation matrix; development chains may activate from g
 - payload 使用固定长度二进制编码。
 - payload 写入 `header.Extra`。
 - payload 携带历史状态 selector、`pass_id` 和 difficulty policy version commitment。
+- payload 携带 `btc_anchor_age_blocks`，使 validator 可以只依赖父块和本地
+  chain config 对 BTC anchor 推进关系做确定性校验。
 - payload 不直接携带 `energy`、`level`、`reward`、`owner`、`state` 或 collab 明细。
 - validator 必须使用 payload 里的 selector 查询 UIP-0006 定义的 USDB Economic State View，并本地重算 reward input。
 - future difficulty policy 如果依赖 pass level，也必须复用同一 selector 查询同一份 resolved profile。
@@ -52,6 +54,9 @@ USDB validator 验证旧块时，不能查询 BTC-side USDB state view 的 curre
 | `profile_selector` | 用于定位某个 BTC-side USDB historical state 下某张 pass profile 的最小字段集合。 |
 | `difficulty_policy_version` | 本区块声明使用的 `level -> difficulty` 算法版本。 |
 | `btc_height` | payload 锁定的 BTC 历史高度。 |
+| `btc_anchor_age_blocks` | 当前精确 BTC anchor 自首次引用后又被连续复用的 USDB 子块数；首次引用为 `0`。 |
+| `btc_anchor_policy_version` | USDB chain config 固定的父子 BTC anchor transition 规则版本。 |
+| `btc_anchor_max_age_blocks` | activation checkpoint 固定的同一 BTC anchor 最大 age；不是 wall-clock 时间或本地 BTC tip 距离。 |
 | `snapshot_id` | upstream balance-history consensus snapshot id。 |
 | `system_state_id` | BTC-side USDB system state id。 |
 | `pass_id` | UIP-0001 canonical pass inscription id；在本文 payload 中标识 `selected_pass`。 |
@@ -76,17 +81,18 @@ payload 编码或字段集合改变时必须升级 `payload_version`。reward �
 
 # Binary Layout
 
-`ProfileSelectorPayload` 固定长度为 107 bytes：
+`ProfileSelectorPayload` 固定长度为 111 bytes：
 
 | Offset | Size | 字段 | 类型 | 编码 |
 | --- | --- | --- | --- | --- |
 | 0 | 1 | `payload_version` | uint8 | 固定为 `1`。 |
 | 1 | 2 | `difficulty_policy_version` | uint16 | big-endian。必须匹配 USDB chain config 在该 block height 下的期望值。 |
 | 3 | 4 | `btc_height` | uint32 | big-endian。 |
-| 7 | 32 | `snapshot_id` | bytes32 | 32-byte hex id 的原始字节。 |
-| 39 | 32 | `system_state_id` | bytes32 | 32-byte hex id 的原始字节。 |
-| 71 | 32 | `pass_txid` | bytes32 | inscription outpoint txid。 |
-| 103 | 4 | `pass_index` | uint32 | inscription outpoint index，big-endian。 |
+| 7 | 4 | `btc_anchor_age_blocks` | uint32 | big-endian。按父子 transition 唯一派生。 |
+| 11 | 32 | `snapshot_id` | bytes32 | 32-byte hex id 的原始字节。 |
+| 43 | 32 | `system_state_id` | bytes32 | 32-byte hex id 的原始字节。 |
+| 75 | 32 | `pass_txid` | bytes32 | inscription outpoint txid。 |
+| 107 | 4 | `pass_index` | uint32 | inscription outpoint index，big-endian。 |
 
 等价结构：
 
@@ -95,6 +101,7 @@ ProfileSelectorPayload =
     uint8 payload_version
     uint16 difficulty_policy_version
     uint32 btc_height
+    uint32 btc_anchor_age_blocks
     bytes32 snapshot_id
     bytes32 system_state_id
     bytes32 pass_txid
@@ -112,12 +119,14 @@ pass_id = lowercase_hex(pass_txid) + "i" + decimal(pass_index)
 当 USDB-chain reward consensus rule 激活时：
 
 - `header.Extra` 必须正好等于一个 `ProfileSelectorPayload`。
-- `len(header.Extra)` 必须等于 `107`。
+- `len(header.Extra)` 必须等于 `111`。
 - 不得在 payload 前后拼接 vanity bytes、JSON、签名或其它 opaque data。
 - `payload_version` 不支持时必须拒绝该区块。
 - `difficulty_policy_version` 与 USDB chain config 在该 block height 下的期望值不一致时必须拒绝该区块。
 
-实现可以将链级 `MaximumExtraDataSize` 设为大于 107 的值以预留后续版本空间，但 v1 验证必须按精确长度解析。
+legacy / non-USDB header 继续使用 32-byte `MaximumExtraDataSize`。USDB 可以使用独立的
+160-byte outer limit 预留后续版本空间，但当前 v1 验证必须按 111-byte 精确长度解析，
+不能把剩余 49 bytes 当成任意扩展区。
 
 # stable_block_hash
 
@@ -128,7 +137,8 @@ pass_id = lowercase_hex(pass_txid) + "i" + decimal(pass_index)
 - `snapshot_id` 已由 USDB / balance-history 的 `ConsensusSnapshotIdentity` 派生，identity 中已经包含 `stable_block_hash`。
 - `system_state_id` 又绑定 upstream `snapshot_id` 与 usdb-indexer local state commit。
 - 因此 `stable_block_hash` 对链上共识约束是冗余字段，只增加诊断直观性。
-- 加入该字段会让 v1 payload 从 107 bytes 增至 139 bytes。
+- 加入该字段会让当前 111-byte v1 payload 增至 143 bytes，仍低于 160-byte USDB
+  outer limit，但该字段继续保持冗余。
 
 验证和审计时需要展示 `stable_block_hash` 的，必须通过 UIP-0006 USDB Economic State View 返回。除非未来发现 `snapshot_id` / `system_state_id` 不能覆盖某类共识安全需求，否则 v2 不应仅为了展示便利加入 `stable_block_hash`。
 
@@ -139,6 +149,25 @@ pass_id = lowercase_hex(pass_txid) + "i" + decimal(pass_index)
 `btc_height` 是 validator 构造 `ConsensusQueryContext.requested_height` 的输入。
 
 validator 不得用当前 USDB head 替代该高度。
+
+## btc_anchor_age_blocks
+
+`btc_anchor_age_blocks` 不是 miner 自由选择的 freshness 声明。它由父块 selector、
+当前 selector 和目标 USDB block 对应的 activation checkpoint 唯一派生：
+
+- 首个需要 selector 的非 genesis USDB block：必须为 `0`。
+- 父块尚未激活 USDB selector、当前块为首个 activation block：必须为 `0`。
+- `child.btc_height > parent.btc_height`：必须为 `0`。
+- `child.btc_height == parent.btc_height`：只有
+  `snapshot_id` 与 `system_state_id` 都和父块完全一致时才允许继续，并且必须等于
+  `parent.btc_anchor_age_blocks + 1`。
+- `child.btc_height < parent.btc_height`：必须拒绝。
+- 派生值大于 activation checkpoint 的 `btc_anchor_max_age_blocks`：必须拒绝。
+- counter overflow：必须拒绝。
+
+同高度时不比较 `pass_id`；矿工可以在同一 BTC-side state 中选择另一张合法 candidate
+pass。`difficulty_policy_version` 仍按当前 USDB block 的 activation checkpoint 校验，
+不属于 BTC anchor identity。
 
 ## snapshot_id
 
@@ -164,18 +193,67 @@ v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`usdb_main` 或其�
 - 一个 USDB-chain account address 不一定唯一映射到一张 pass。
 - 后续 `candidate_set_view` 或多 pass 场景需要避免隐式选择歧义。
 
+# BTC Anchor 推进与新鲜度边界
+
+`btc_anchor_policy_version = 1` 定义 `btc_anchor_age_blocks` 的 bounded-reuse 规则。
+该规则解决以下问题：
+
+- 旧 BTC 高度不能在 USDB child chain 中回退。
+- 同一精确 BTC anchor 不能无限期重复引用。
+- 同高度 BTC replacement 不能在一个既有 USDB parent 后静默切换 identity。
+- miner builder 和 validator 使用同一个只依赖 header parent / child 与 chain config 的
+  状态机，不能由 CLI 或 companion RPC 改写。
+
+该规则不证明 payload 离真实 BTC tip 有多近。validator 不得使用“本机当前 bitcoind
+tip”作为共识 freshness 条件，否则同一区块会因验证时间、节点同步进度或 RPC 视图不同
+而得到不同结果。恶意矿工仍可能从不低于父块的历史 BTC 高度缓慢推进；v1 只把每个精确
+anchor 的连续复用窗口限制为一个 activation-bound USDB block count。
+
+运行节点可以用本地 BTC tip 计算 soft lag 并告警、停止本地 mining 或触发运维响应，
+但该值不得参与 `VerifyHeader`。未来若引入 BTC header chain / SPV proof，应激活新的
+`btc_anchor_policy_version`，由共识可验证的 BTC tip 定义 `max_anchor_lag`。完整 SPV
+proof 不应直接塞入 `header.Extra`；当前 160-byte outer limit 只足以容纳小型 commitment，
+不能容纳无界 proof。
+
+# BTC Reorg 处理边界
+
+`snapshot_id` 已承诺 `stable_block_hash`，因此同高度 BTC replacement 会改变
+`snapshot_id`；无需在 v1 payload 重复携带 block hash。
+
+bounded-reuse 本身不提供 BTC finality，也不解决深层 BTC reorg 后 orphan snapshot 的
+长期历史可用性。当前 reference implementation 对已被 BTC canonical history 替换且
+companion service 无法重放的 selector fail closed。现有节点不得把“已经导入过该
+USDB block”当成绕过 fresh validator replay 的依据。当前 Go 节点尚未实现运行中
+自动检测并 rewind 已导入的 orphan selector；现有 same-height replacement E2E 只证明
+fresh validator 会拒绝。这是 public-network reorg policy 的实现缺口，不得标记为已完成。
+
+正式 public network 必须在发布前冻结以下二选一的可执行运维/协议边界：
+
+1. BTC-side archive 可按 committed snapshot identity 永久重放 orphan state，使既有
+   USDB block 保持可验证；或
+2. 深层 BTC reorg 触发 USDB chain 回退到最后一个仍可验证的 selector，并有确定的
+   detection、rewind、restart/joiner 流程。
+
+阈值 signer/publisher 不属于 v1 必选组件。future SPV/header-chain policy 仍保留为
+去信任化升级方向。在上述 public-network reorg policy 未完成 live E2E 前，
+`btc_anchor_policy_version = 1` 只能视为 bounded stale-replay guard，不能宣称提供完整
+BTC finality。
+
 # Validator Replay
 
 validator 必须按以下顺序验证：
 
 1. 从 `header.Extra` 解析 `ProfileSelectorPayload`。
 2. 校验 payload version 和固定长度。
-3. 使用 `btc_height`、`snapshot_id`、`system_state_id` 构造 UIP-0006 `query_context` 和 `expected_state`。
-4. 使用 `pass_id` 查询 UIP-0006 定义的 pass economic profile，或使用等价的历史 `get_pass_snapshot` / `get_pass_energy` RPC 组合。
-5. 确认 resolved profile 对应的 `selected_pass` 满足 UIP-0006 `candidate_pass` 条件。
-6. 按 USDB chain reward rule version 从 resolved profile 重算 reward input。
-7. 如果 future USDB chain difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
-8. 在 `Finalize` / state transition 中使用重算 reward 结果发放奖励。
+3. 从目标 USDB block 的 activation checkpoint 读取
+   `btc_anchor_policy_version / btc_anchor_max_age_blocks`，并在任何 companion RPC
+   之前校验父子 BTC anchor transition。
+4. 使用 `btc_height`、`snapshot_id`、`system_state_id` 构造 UIP-0006 `query_context` 和 `expected_state`。
+5. 使用 `pass_id` 查询 UIP-0006 定义的 pass economic profile，或使用等价的历史 `get_pass_snapshot` / `get_pass_energy` RPC 组合。
+6. 确认 resolved profile 对应的 `selected_pass` 满足 UIP-0006 `candidate_pass` 条件。
+7. 按 USDB chain reward rule version 从 resolved profile 重算 reward input。
+8. 如果 future USDB chain difficulty policy 已激活，并且该 policy 依赖 USDB level，则使用同一个 resolved profile 重算本块应有 difficulty。
+9. 在 `Finalize` / state transition 中使用重算 reward 结果发放奖励。
 
 任一步失败都必须 fail-closed。validator 不得因为 USDB 不可用、历史不可用或 mismatch 而继续接受新区块。
 
@@ -223,11 +301,14 @@ USDB chain reward rule / future difficulty rule
 
 # Reward 与 Difficulty 共享 Selector
 
-`ProfileSelectorPayload` 的 selector 是：
+`ProfileSelectorPayload` 中定位 historical profile 的 selector 是：
 
 ```text
 btc_height + snapshot_id + system_state_id + pass_id
 ```
+
+`btc_anchor_age_blocks` 不参与 UIP-0006 查询主键；它只承诺该 historical selector
+相对 USDB parent 的推进关系。
 
 reward rule 和 future difficulty policy 必须消费同一个 selector 得到的同一份 `resolved_profile`。不得定义第二套独立 difficulty payload 来携带另一组 `{btc_height, snapshot_id, system_state_id, pass_id}`。
 
@@ -245,9 +326,12 @@ miner 生成新区块时应该：
 
 1. 从本地 BTC-side `usdb-indexer` service 获取 current system state。
 2. 使用配置的 `pass_id` 在该 state 下确认 pass 可查询。
-3. 从 USDB chain config 读取待挖 USDB block number 对应的 expected `difficulty_policy_version`。
-4. 将 `difficulty_policy_version`、`btc_height`、`snapshot_id`、`system_state_id` 和 `pass_id` 编码成 `ProfileSelectorPayload`。
-5. 写入待挖区块的 `header.Extra`。
+3. 从 USDB chain config 读取待挖 USDB block number 对应的 expected
+   `difficulty_policy_version / btc_anchor_policy_version / btc_anchor_max_age_blocks`。
+4. 使用待挖块的 parent selector 派生唯一 `btc_anchor_age_blocks`；无法推进时停止组块。
+5. 将 `difficulty_policy_version`、`btc_height`、`btc_anchor_age_blocks`、
+   `snapshot_id`、`system_state_id` 和 `pass_id` 编码成 `ProfileSelectorPayload`。
+6. 写入待挖区块的 `header.Extra`。
 
 miner 不能正确构造 payload 时，不应继续挖 USDB reward-enabled 区块。
 
@@ -259,6 +343,7 @@ miner 不能正确构造 payload 时，不应继续挖 USDB reward-enabled 区�
 | --- | --- | --- |
 | `payload_version` | `header.Extra` 第 0 字节 | 描述 payload 字节布局。 |
 | `difficulty_policy_version` | `header.Extra` 第 1-2 字节；期望值来自 USDB chain config / fork policy | 描述 `level -> difficulty` 公式和校验规则。 |
+| `btc_anchor_policy_version` | USDB chain config activation checkpoint | 描述父子 BTC anchor transition；不由 payload 或 RPC 选择。 |
 | `reward_rule_version` | USDB chain config / fork policy | 描述 reward 公式和奖励发放规则。 |
 
 如果未来只改变 reward multiplier、base reward、collab bonus 或 difficulty policy 公式，但 `ProfileSelectorPayload` 字节布局不变，不应强制升级 `payload_version`。
@@ -300,6 +385,7 @@ collab bonus 若进入 USDB chain reward rule，不得要求每个区块在 head
 - genesis 和 PoW 基础参数。
 - USDB reward consensus 是否启用。
 - active `payload_version`。
+- active `btc_anchor_policy_version` 和正数 `btc_anchor_max_age_blocks`。
 - `reward_rule_version`。
 - expected `difficulty_policy_version` 及其激活高度。
 - 这些版本从 genesis 生效还是在后续 fork 高度生效。
@@ -313,9 +399,14 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
 | 错误 | 触发条件 |
 | --- | --- |
 | `MISSING_USDB_PROFILE_SELECTOR` | `header.Extra` 为空或未携带 profile selector。 |
-| `PAYLOAD_SIZE_MISMATCH` | `len(header.Extra) != 107`。 |
+| `PAYLOAD_SIZE_MISMATCH` | `len(header.Extra) != 111`。 |
 | `PAYLOAD_VERSION_MISMATCH` | 不支持的 `payload_version`。 |
 | `DIFFICULTY_POLICY_VERSION_MISMATCH` | payload `difficulty_policy_version` 与 chain config expected version 不一致。 |
+| `BTC_ANCHOR_POLICY_VERSION_UNSUPPORTED` | activation checkpoint 指定了本实现不支持的 anchor policy。 |
+| `BTC_ANCHOR_HEIGHT_REGRESSION` | child `btc_height` 小于 parent。 |
+| `BTC_ANCHOR_IDENTITY_MISMATCH` | 同高度 child 的 `snapshot_id/system_state_id` 与 parent 不同。 |
+| `BTC_ANCHOR_AGE_MISMATCH` | child age 不是父子 transition 唯一派生值。 |
+| `BTC_ANCHOR_AGE_EXCEEDED` | child age 超过 activation checkpoint 上限或 counter overflow。 |
 | `SNAPSHOT_ID_MISMATCH` | USDB historical state 与 payload `snapshot_id` 不一致。 |
 | `SYSTEM_STATE_ID_MISMATCH` | USDB historical state 与 payload `system_state_id` 不一致。 |
 | `PASS_NOT_FOUND` | `pass_id` 在该 historical context 下不存在。 |
@@ -330,7 +421,10 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
 - `ProfileSelectorPayload` binary roundtrip。
 - invalid version。
 - invalid payload size。
-- miner 生成的 `header.Extra` 长度正好为 107。
+- miner 生成的 `header.Extra` 长度正好为 111。
+- 首个 selector 与 BTC 高度前进时 age 为 0；同 anchor 连续块严格 `+1`。
+- BTC height regression、同高 identity replacement、age 跳号、counter overflow 和
+  `btc_anchor_max_age_blocks` 边界前后。
 - `difficulty_policy_version` 与 chain config expected version 不一致时拒绝。
 - validator 使用 payload selectors 查询历史 BTC-side USDB state。
 - BTC head 前进后，旧 USDB block 仍按旧 payload 验证通过。
@@ -340,13 +434,18 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
 
 # 实现迁移注意
 
-- 当前 go-ethereum 实现已经移除旧 `RewardPayloadV1`，统一使用 107-byte
+- UIP 仍处于 Draft 且开发链不承诺旧数据兼容，因此当前 111-byte layout 直接取代早期
+  107-byte v1 prototype；实现不保留双栈 parser。public network 一旦冻结 v1，
+  后续任何 layout 变化都必须升级 `payload_version`。
+- 当前 go-ethereum 实现已经移除旧 `RewardPayloadV1`，统一使用 111-byte
   `ProfileSelectorPayload`，并由 USDB chain config 按待处理 block number 提供 expected
-  `payload_version / difficulty_policy_version`。
+  `payload_version / btc_anchor_policy_version / difficulty_policy_version` 和
+  `btc_anchor_max_age_blocks`。
 - miner/validator CLI 只保留 companion RPC URL、timeout 和 selected pass 等运行参数；
   是否激活本规则及 expected version 只能由 chain config 决定。
-- `VerifyHeader` 先执行不访问 RPC 的固定长度和版本校验，再按 selector 查询 historical
-  profile 并重算实际 difficulty；畸形 payload 不会进入 RPC 路径。
+- `VerifyHeader` 先执行不访问 RPC 的固定长度、版本和父子 BTC anchor transition
+  校验，再按 selector 查询 historical profile 并重算实际 difficulty；畸形或 stale
+  transition 不会进入 RPC 路径。
 - miner `Prepare`、validator `VerifyHeader` 与 reward state transition 均消费同一 selector
   解析出的 UIP-0006 profile。development chain 在 UIP-0011 激活前仍使用既有 Ethash
   静态奖励，不再使用旧 level/reward multiplier mock。
@@ -357,3 +456,7 @@ UIP-0008 负责通用版本激活矩阵。USDB chain 具体 chain config、genes
 # 后续实现议题
 
 1. collab bonus 的 aggregate 字段是否直接复用 `effective_energy`，还是定义独立 `collab_bonus_energy` / `collab_bonus_bps`。
+2. public testnet/mainnet 的 `btc_anchor_max_age_blocks` 必须结合冻结后的 PoW block-time
+   实测标定；development 默认 `6650` 只表达约一天的量级，不是 public 参数。
+3. 深层 BTC reorg 采用 orphan snapshot archive 还是 deterministic USDB rewind，必须在
+   public release 前完成 restart/joiner/live E2E；future SPV policy 单独版本化。

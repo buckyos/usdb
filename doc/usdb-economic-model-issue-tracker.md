@@ -281,7 +281,8 @@
   - `doc/UIP/UIP-0007-usdb-consensus-profile-selector.md` 已进入 Draft。
   - 已确认 `stable_block_hash` 不进入 UIP-0007 v1 header payload，由 UIP-0006 state view 返回。
   - 已确认 reward rule 与 future difficulty policy 复用同一 profile selector。
-  - Go 使用固定 107-byte `ProfileSelectorPayload`，miner/validator/reward 共用 selector-bound resolver。
+  - Go 使用固定 111-byte `ProfileSelectorPayload`，新增 activation-bound
+    `btc_anchor_age_blocks` 父子 transition；miner/validator/reward 共用 selector-bound resolver。
   - 已确认 future difficulty policy 使用独立 `difficulty_policy_version`；该字段进入 UIP-0007 payload 作为显式承诺，但必须匹配 USDB chain config / fork policy 的 expected version。
   - 已确认 collab bonus 不在 header 中携带全量 `collab_pass_id`。
   - `doc/UIP/UIP-0009-usdb-chain-config-and-bootstrap.md` 已进入 Draft，用于承接 USDB chain config、genesis 和 consensus version 激活。
@@ -292,6 +293,8 @@
   - 明确 tamper 测试和 mismatch 错误。
 - 下一步：
   - public release 冻结 chain ID、activation schedule、registry binding 和 manifest。
+  - 冻结 public `btcAnchorMaxAgeBlocks`，并完成深层 BTC reorg 的 orphan archive
+    或 deterministic USDB rewind/restart/joiner live E2E。
   - 继续进行 100K+、长时间 soak 与多 Leader 分布性能评估。
 - 验收：
   - USDB state view 可在历史 context 下重放。

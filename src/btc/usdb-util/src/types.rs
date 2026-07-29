@@ -496,6 +496,10 @@ mod tests {
         let b = build_consensus_snapshot_id(&identity);
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
+
+        let mut replacement = identity;
+        replacement.stable_block_hash = "bb".repeat(32);
+        assert_ne!(a, build_consensus_snapshot_id(&replacement));
     }
 
     #[test]

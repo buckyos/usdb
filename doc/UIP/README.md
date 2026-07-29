@@ -51,7 +51,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 - [UIP-0004-collab-leader-effective-energy.md](./UIP-0004-collab-leader-effective-energy.md)：协作矿工证 Leader 解析、collab contribution 与 effective energy。
 - [UIP-0005-level-and-real-difficulty.md](./UIP-0005-level-and-real-difficulty.md)：基于 effective energy 的 level 阈值表和 real difficulty 折算规则。
 - [UIP-0006-usdb-economic-state-view.md](./UIP-0006-usdb-economic-state-view.md)：USDB indexer 提供的经济状态视图、审计字段和历史重放错误语义。
-- [UIP-0007-usdb-consensus-profile-selector.md](./UIP-0007-usdb-consensus-profile-selector.md)：USDB chain `header.Extra` 中的最小 consensus profile selector。
+- [UIP-0007-usdb-consensus-profile-selector.md](./UIP-0007-usdb-consensus-profile-selector.md)：USDB chain `header.Extra` 中的最小 consensus profile selector 与父子 BTC anchor bounded-reuse 规则。
 - [UIP-0008-protocol-versioning-and-activation-matrix.md](./UIP-0008-protocol-versioning-and-activation-matrix.md)：协议版本族、BTC registry revisions、USDB activation schedule、历史重放和 state commit 版本绑定。
 - [UIP-0008-activation-registry-implementation-notes.md](./UIP-0008-activation-registry-implementation-notes.md)：BTC registry 与 USDB activation checkpoints 在多服务实现中的所有权和校验设计备忘。
 - [UIP-0009-usdb-chain-config-and-bootstrap.md](./UIP-0009-usdb-chain-config-and-bootstrap.md)：USDB chain config、genesis、PoW bootstrap 和共识版本字段。
@@ -76,7 +76,7 @@ RPC 和运行参数同样必须显式区分边界：BTC-side 状态服务使用
 | `leader_ref`、`resolved_leader`、`leader_eligible`、`collab_contribution`、`effective_energy` | [UIP-0004](./UIP-0004-collab-leader-effective-energy.md) | BTC-side Leader 解析、USDB-chain eligibility 边界和 nominal effective energy。 |
 | `level`、`difficulty_factor_bps`、`real_difficulty` | [UIP-0005](./UIP-0005-level-and-real-difficulty.md) | indexer nominal level/factor 和 USDB-chain difficulty 折算公式。 |
 | `query_context`、`expected_state`、`external_state`、`candidate_pass`、`candidate_set_view`、`top_ranked_candidate`、`collab_breakdown` | [UIP-0006](./UIP-0006-usdb-economic-state-view.md) | BTC-side USDB 历史查询、经济审计集合和确定性排序。 |
-| `ProfileSelectorPayload`、`selected_pass`、USDB miner、USDB validator | [UIP-0007](./UIP-0007-usdb-consensus-profile-selector.md) | USDB block 选择的 pass、链上 selector payload 和验证角色。 |
+| `ProfileSelectorPayload`、`selected_pass`、`btc_anchor_age_blocks`、`btc_anchor_policy_version`、`btc_anchor_max_age_blocks`、USDB miner、USDB validator | [UIP-0007](./UIP-0007-usdb-consensus-profile-selector.md) | USDB block 选择的 pass、链上 selector payload、父子 BTC anchor transition 和验证角色。 |
 | `btc_activation_record`、`btc_registry_revision`、`activation_registry_id`、`active_version_set`、`usdb_activation_checkpoint`、`usdb_activation_schedule`、`resolved_usdb_versions` | [UIP-0008](./UIP-0008-protocol-versioning-and-activation-matrix.md) | BTC 单版本族记录、完整 registry 快照，以及 USDB chain 的完整激活检查点和按高度 lookup。 |
 | `candidate_energy`、`candidate_level`、`leader_quote_active` | [UIP-0014](./UIP-0014-leader-quote-activity-and-candidate-energy.md) | USDB-chain policy 应用于 selected pass 的实际候选能量和等级。 |
 
