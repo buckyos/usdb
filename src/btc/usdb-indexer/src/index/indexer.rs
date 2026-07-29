@@ -526,11 +526,40 @@ impl InscriptionIndexer {
     }
 
     fn current_balance_history_snapshot(&self) -> Result<BalanceHistorySnapshotInfo, String> {
-        self.status.balance_history_snapshot().ok_or_else(|| {
+        let snapshot = self.status.balance_history_snapshot().ok_or_else(|| {
             let msg = "Balance-history snapshot is not ready yet".to_string();
             error!("{}", msg);
             msg
-        })
+        })?;
+        self.validate_upstream_stable_lag(
+            snapshot.stable_height,
+            snapshot.stable_lag,
+            "current snapshot",
+        )?;
+        Ok(snapshot)
+    }
+
+    fn validate_upstream_stable_lag(
+        &self,
+        stable_height: u32,
+        upstream_stable_lag: u32,
+        source: &str,
+    ) -> Result<(), String> {
+        let expected_stable_lag = self.activation_registry().stable_lag_blocks();
+        if upstream_stable_lag == expected_stable_lag {
+            return Ok(());
+        }
+
+        let msg = format!(
+            "Balance-history stable lag does not match the embedded BTC activation registry: source={}, stable_height={}, upstream_stable_lag={}, expected_stable_lag={}, activation_registry_id={}",
+            source,
+            stable_height,
+            upstream_stable_lag,
+            expected_stable_lag,
+            self.activation_registry().activation_registry_id()
+        );
+        error!("{}", msg);
+        Err(msg)
     }
 
     fn stored_pass_commit_matches_upstream(
@@ -572,6 +601,7 @@ impl InscriptionIndexer {
             local_anchor.stable_height == upstream_snapshot.stable_height
                 && local_anchor.stable_block_hash == upstream_block_hash
                 && local_anchor.latest_block_commit == upstream_block_commit
+                && local_anchor.stable_lag == upstream_snapshot.stable_lag
                 && local_anchor.commit_protocol_version
                     == upstream_snapshot.commit_protocol_version
                 && local_anchor.commit_hash_algo == upstream_snapshot.commit_hash_algo,
@@ -715,6 +745,11 @@ impl InscriptionIndexer {
                     error!("{}", msg);
                     msg
                 })?;
+            self.validate_upstream_stable_lag(
+                height,
+                upstream_state_ref.consensus_identity.stable_lag,
+                "historical state ref during common-ancestor search",
+            )?;
 
             if Self::stored_pass_commit_matches_upstream(&local_commit, &upstream_commit)
                 && Self::stored_snapshot_anchor_matches_historical_state_ref(
@@ -965,6 +1000,11 @@ impl InscriptionIndexer {
                     error!("{}", msg);
                     msg
                 })?;
+            self.validate_upstream_stable_lag(
+                height,
+                state_ref.consensus_identity.stable_lag,
+                "historical state ref during snapshot-history backfill",
+            )?;
             let snapshot: BalanceHistorySnapshotInfo = state_ref.into();
             self.miner_pass_storage
                 .upsert_balance_history_snapshot_history_entry(&snapshot)
@@ -986,6 +1026,12 @@ impl InscriptionIndexer {
         synced_height: u32,
         snapshot: &BalanceHistorySnapshotInfo,
     ) -> Result<(), String> {
+        self.validate_upstream_stable_lag(
+            snapshot.stable_height,
+            snapshot.stable_lag,
+            "snapshot anchor persistence",
+        )?;
+
         // Only adopt an upstream snapshot anchor when the local durable state has
         // fully caught up to the same stable height.
         if snapshot.stable_height != synced_height {
@@ -1031,8 +1077,13 @@ impl InscriptionIndexer {
                 return Ok(latest_height);
             }
 
-            if let Some(snapshot) = latest_snapshot
-                && self
+            if let Some(snapshot) = latest_snapshot {
+                self.validate_upstream_stable_lag(
+                    snapshot.stable_height,
+                    snapshot.stable_lag,
+                    "snapshot observed while waiting for new blocks",
+                )?;
+                if self
                     .detect_upstream_reorg_target(
                         last_synced_height,
                         latest_height,
@@ -1041,12 +1092,13 @@ impl InscriptionIndexer {
                     )
                     .await?
                     .is_some()
-            {
-                info!(
-                    "Detected upstream anchor drift while idle: module=indexer, synced_height={}, upstream_height={}",
-                    last_synced_height, latest_height
-                );
-                return Ok(latest_height);
+                {
+                    info!(
+                        "Detected upstream anchor drift while idle: module=indexer, synced_height={}, upstream_height={}",
+                        last_synced_height, latest_height
+                    );
+                    return Ok(latest_height);
+                }
             }
 
             // Sleep for a while before checking again

@@ -4999,6 +4999,47 @@ async fn test_sync_blocks_balance_threshold_and_penalty_applied_before_dormant_t
 }
 
 #[tokio::test]
+async fn test_sync_once_rejects_upstream_stable_lag_mismatch_before_persistence() {
+    let root_dir = test_root_dir("indexer_behavior", "sync_once_stable_lag_mismatch");
+    write_test_config(&root_dir, 100);
+
+    let status = Arc::new(MockStatus::new(100));
+    let upstream_commit = mock_balance_history_commit(100, "a", "b", "c");
+    let mut mismatched_snapshot = snapshot_from_commit(&upstream_commit);
+    mismatched_snapshot.stable_lag = regtest_stable_lag() + 1;
+    status.set_snapshot(mismatched_snapshot);
+
+    let fixture = build_indexer_fixture_with_runtime_deps_at_root(
+        root_dir.clone(),
+        Arc::new(MockInscriptionSource::default()),
+        Arc::new(MockBlockHintProvider::default()),
+        Arc::new(MockTransferTracker::default()),
+        vec![],
+        Arc::new(MockBalanceProvider::default()),
+        status,
+        Arc::new(MockBalanceHistoryCommitProvider::default()),
+    );
+
+    let err = fixture.indexer.sync_once_for_test().await.unwrap_err();
+
+    assert!(err.contains("stable lag does not match"));
+    assert!(err.contains("source=current snapshot"));
+    assert!(err.contains(&format!("upstream_stable_lag={}", regtest_stable_lag() + 1)));
+    assert!(err.contains(&format!("expected_stable_lag={}", regtest_stable_lag())));
+    assert!(
+        fixture
+            .storage
+            .get_balance_history_snapshot_anchor()
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fixture.storage.get_synced_btc_block_height().unwrap(), None);
+    assert_eq!(fixture.status.update_count(), 0);
+
+    cleanup_temp_dir(&fixture.root_dir);
+}
+
+#[tokio::test]
 async fn test_sync_once_rolls_back_when_upstream_height_regresses() {
     let root_dir = test_root_dir("indexer_behavior", "sync_once_height_regresses");
     write_test_config(&root_dir, 100);

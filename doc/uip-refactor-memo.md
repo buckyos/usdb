@@ -1136,7 +1136,8 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
 
 ## BTC Registry Stable Lag v2 与 Release Drift Guard
 
-状态：实现、目标回归和 stable-lag 跨进程 smoke 已完成，等待 review，尚未提交。
+状态：基础实现与首轮验证已提交 `353f466`；2026-07-29 stable-lag 边界矩阵扩展已完成，
+当前改动等待 review，尚未提交。
 
 - BTC registry schema/hash domain 升级为 v2，network scope 新增必填
   `stable_lag_blocks`。mainnet/regtest 当前均固定为 `5`；balance-history 从 registry
@@ -1175,3 +1176,24 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
   fail closed。
 - 其余旧 live/regtest 场景仍有直接把 BTC tip/event height 当作 stable context 的入口；
   后续需要按场景补确认块并调整 reorg 分叉点，不做机械减 5。
+
+### 2026-07-29 Stable-Lag 边界矩阵扩展
+
+- balance-history 纯函数边界覆盖改为精确断言 `tip=lag-1 -> 0`、
+  `tip=lag -> 0`、`tip=lag+1 -> 1`。
+- stable-lag regtest 从 `tip=3 < lag=5` 启动，snapshot/state-ref 必须返回
+  `SNAPSHOT_NOT_READY`；below-lag restart 后保持相同状态，再追到
+  `tip=20 / stable=15`。
+- 同一 balance-history DB 的 clean restart、depth-3 lag-window replacement
+  均要求 snapshot 和 height `15` state-ref canonical JSON 完全相同；
+  追到 `tip=23 / stable=18` 后继续重放旧 state-ref。
+- usdb-indexer 新增 registry lag fail-closed：
+  - 当前上游 snapshot 在任何 index/status/anchor 写入前拒绝 mismatch；
+  - common-ancestor 与 snapshot-history backfill 读取的 historical state-ref
+    同样校验；
+  - current/historical RPC 从持久化 DB 读取时再次校验，错误返回
+    `VERSION_MISMATCH` 且 `mismatch_field=stable_lag`。
+- usdb-indexer 服务测试关闭并从同一目录重开服务，逐字段交叉比较
+  snapshot、economic profile、candidate 首页面，并用重启前 cursor 继续下一页。
+- 默认隔离 regtest 矩阵和全部新增 Rust 定向测试已通过；没有访问或修改本机
+  BTC mainnet 服务。

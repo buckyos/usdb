@@ -1027,6 +1027,11 @@ impl UsdbIndexerRpcServer {
             .get_synced_btc_block_height()
             .map_err(Self::to_internal_error)?
             .unwrap_or(anchor.stable_height);
+        self.validate_stored_snapshot_stable_lag(
+            anchor.stable_height,
+            anchor.stable_lag,
+            local_synced_block_height,
+        )?;
 
         Ok(Some(IndexerSnapshotInfo::from(IndexerSnapshotInfoSeed {
             network: self.config.config().bitcoin.network().to_string(),
@@ -1069,6 +1074,11 @@ impl UsdbIndexerRpcServer {
                     ),
                 )
             })?;
+        self.validate_stored_snapshot_stable_lag(
+            anchor.stable_height,
+            anchor.stable_lag,
+            block_height,
+        )?;
 
         Ok(IndexerSnapshotInfo::from(IndexerSnapshotInfoSeed {
             network: self.config.config().bitcoin.network().to_string(),
@@ -1080,6 +1090,37 @@ impl UsdbIndexerRpcServer {
             commit_protocol_version: anchor.commit_protocol_version,
             commit_hash_algo: anchor.commit_hash_algo,
         }))
+    }
+
+    fn validate_stored_snapshot_stable_lag(
+        &self,
+        stable_height: u32,
+        stored_stable_lag: u32,
+        local_synced_height: u32,
+    ) -> Result<(), JsonError> {
+        let expected_stable_lag = self.indexer.activation_registry().stable_lag_blocks();
+        if stored_stable_lag == expected_stable_lag {
+            return Ok(());
+        }
+
+        let detail = format!(
+            "Stored balance-history stable lag does not match the embedded BTC activation registry: stable_height={}, stored_stable_lag={}, expected_stable_lag={}, activation_registry_id={}",
+            stable_height,
+            stored_stable_lag,
+            expected_stable_lag,
+            self.indexer.activation_registry().activation_registry_id()
+        );
+        error!("{}", detail);
+        let mut data = ConsensusRpcErrorData::new(USDB_INDEXER_SERVICE_NAME);
+        data.requested_height = Some(stable_height);
+        data.local_synced_height = Some(local_synced_height);
+        data.upstream_stable_height = Some(stable_height);
+        data.consensus_ready = Some(false);
+        data.detail = Some(detail);
+        Err(Self::to_consensus_error(
+            ConsensusRpcErrorCode::VersionMismatch,
+            data.with_mismatch_field("stable_lag"),
+        ))
     }
 
     fn build_local_state_commit_info_at_height(
@@ -3291,7 +3332,7 @@ mod tests {
     use bitcoincore_rpc::bitcoin::{Network, OutPoint, ScriptBuf, Txid};
     use ord::InscriptionId;
     use ordinals::SatPoint;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
@@ -3534,7 +3575,20 @@ mod tests {
             serde_json::to_vec_pretty(&config_file).unwrap(),
         )
         .unwrap();
-        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let server = open_server_from_root(&root_dir, catalog);
+        server
+            .indexer
+            .miner_pass_storage()
+            .update_synced_btc_block_height(synced_height)
+            .unwrap();
+        (server, root_dir)
+    }
+
+    fn open_server_from_root(
+        root_dir: &Path,
+        catalog: Option<BtcActivationRegistryCatalog>,
+    ) -> UsdbIndexerRpcServer {
+        let config = Arc::new(ConfigManager::load(Some(root_dir.to_path_buf())).unwrap());
         let output = Arc::new(IndexOutput::new());
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
         let mut indexer = InscriptionIndexer::new(config.clone(), status.clone()).unwrap();
@@ -3543,20 +3597,14 @@ mod tests {
         }
         let indexer = Arc::new(indexer);
 
-        indexer
-            .miner_pass_storage()
-            .update_synced_btc_block_height(synced_height)
-            .unwrap();
-
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(());
-        let server = UsdbIndexerRpcServer::new(
+        UsdbIndexerRpcServer::new(
             config,
             status,
             indexer,
             "127.0.0.1:0".parse().unwrap(),
             shutdown_tx,
-        );
-        (server, root_dir)
+        )
     }
 
     fn test_registry_revision_catalog() -> (BtcActivationRegistryCatalog, String, String) {
@@ -3936,8 +3984,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_snapshot_info_uses_persisted_stable_lag() {
-        let (server, root_dir) = build_server("snapshot_info_stable_lag", 120);
+    fn test_get_snapshot_info_rejects_persisted_stable_lag_mismatch() {
+        let (server, root_dir) = build_server("snapshot_info_stable_lag_mismatch", 120);
         server
             .indexer
             .miner_pass_storage()
@@ -3955,12 +4003,56 @@ mod tests {
             })
             .unwrap();
 
-        let snapshot = server.get_snapshot_info().unwrap().unwrap();
-        assert_eq!(snapshot.consensus_identity.stable_lag, 2);
+        let err = server.get_snapshot_info().unwrap_err();
         assert_eq!(
-            snapshot.snapshot_id,
-            build_consensus_snapshot_id(&snapshot.consensus_identity)
+            err.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::VersionMismatch.code())
         );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.mismatch_field.as_deref(), Some("stable_lag"));
+        assert_eq!(data.consensus_ready, Some(false));
+        assert!(
+            data.detail
+                .as_deref()
+                .unwrap()
+                .contains("stored_stable_lag=2")
+        );
+        assert!(
+            data.detail
+                .as_deref()
+                .unwrap()
+                .contains(&format!("expected_stable_lag={}", regtest_stable_lag()))
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_state_ref_at_height_rejects_historical_stable_lag_mismatch() {
+        let (server, root_dir) = build_server("historical_stable_lag_mismatch", 120);
+        let mut historical_snapshot = ready_balance_history_snapshot(110);
+        historical_snapshot.stable_lag = 2;
+        server
+            .indexer
+            .miner_pass_storage()
+            .upsert_balance_history_snapshot_history_entry(&historical_snapshot)
+            .unwrap();
+
+        let err = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 110,
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::VersionMismatch.code())
+        );
+        let data = decode_consensus_error_data(&err);
+        assert_eq!(data.mismatch_field.as_deref(), Some("stable_lag"));
+        assert_eq!(data.requested_height, Some(110));
+        assert_eq!(data.consensus_ready, Some(false));
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
@@ -6002,6 +6094,108 @@ mod tests {
         assert_eq!(replay.pass.effective_energy, original.pass.effective_energy);
 
         drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_snapshot_profile_and_candidate_cursor_replay_after_restart() {
+        let (server, root_dir) = build_server("economic_restart_replay", 120);
+        seed_state_ref_context(&server, 120);
+        let high_energy_pass = make_active_pass(160, 240, 100);
+        let low_energy_pass = make_active_pass(161, 241, 101);
+        for pass in [&high_energy_pass, &low_energy_pass] {
+            server
+                .indexer
+                .miner_pass_storage()
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+        seed_energy_record(&server, &high_energy_pass, 120, 200);
+        seed_energy_record(&server, &low_energy_pass, 120, 100);
+
+        let snapshot_before = server.get_snapshot_info().unwrap().unwrap();
+        let profile_before = get_pass_economic_profile_for_test(&server, &high_energy_pass, 120);
+        let first_page_before = server
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&profile_before.external_state)),
+                selection_rule: None,
+                cursor: None,
+                limit: 1,
+            })
+            .unwrap();
+        let cursor = first_page_before
+            .next_cursor
+            .clone()
+            .expect("two candidates must produce a continuation cursor");
+        assert_eq!(
+            snapshot_before.consensus_identity.stable_lag,
+            regtest_stable_lag()
+        );
+        assert_eq!(
+            first_page_before.items[0].pass_id,
+            high_energy_pass.inscription_id.to_string()
+        );
+
+        drop(server);
+        let restarted = open_server_from_root(&root_dir, None);
+
+        let snapshot_after = restarted.get_snapshot_info().unwrap().unwrap();
+        let profile_after = restarted
+            .get_pass_economic_profile(GetPassEconomicProfileParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                pass_id: high_energy_pass.inscription_id.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&profile_before.external_state)),
+            })
+            .unwrap();
+        let first_page_after = restarted
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&profile_before.external_state)),
+                selection_rule: None,
+                cursor: None,
+                limit: 1,
+            })
+            .unwrap();
+        let second_page_after = restarted
+            .get_candidate_set_view(GetCandidateSetViewParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                block_height: None,
+                context: None,
+                selection_rule: Some(CANDIDATE_SET_SELECTION_RULE.to_string()),
+                cursor: Some(cursor),
+                limit: 1,
+            })
+            .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(snapshot_after).unwrap(),
+            serde_json::to_value(snapshot_before).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(profile_after).unwrap(),
+            serde_json::to_value(&profile_before).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(first_page_after).unwrap(),
+            serde_json::to_value(first_page_before).unwrap()
+        );
+        assert_eq!(
+            second_page_after.external_state,
+            profile_before.external_state
+        );
+        assert_eq!(second_page_after.total, 2);
+        assert_eq!(second_page_after.items.len(), 1);
+        assert_eq!(
+            second_page_after.items[0].pass_id,
+            low_energy_pass.inscription_id.to_string()
+        );
+        assert!(second_page_after.next_cursor.is_none());
+
+        drop(restarted);
         std::fs::remove_dir_all(root_dir).unwrap();
     }
 

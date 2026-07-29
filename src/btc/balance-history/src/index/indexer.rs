@@ -893,12 +893,20 @@ mod tests {
     fn test_compute_stable_sync_target_height_saturates_at_zero() {
         let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap();
         assert_eq!(
-            compute_stable_sync_target_height(1, u32::MAX, stable_lag),
+            compute_stable_sync_target_height(0, u32::MAX, stable_lag),
             0
         );
         assert_eq!(
-            compute_stable_sync_target_height(0, u32::MAX, stable_lag),
+            compute_stable_sync_target_height(stable_lag - 1, u32::MAX, stable_lag),
             0
+        );
+        assert_eq!(
+            compute_stable_sync_target_height(stable_lag, u32::MAX, stable_lag),
+            0
+        );
+        assert_eq!(
+            compute_stable_sync_target_height(stable_lag + 1, u32::MAX, stable_lag),
+            1
         );
     }
 
