@@ -43,8 +43,16 @@ USDB 经济模型需要的是可重放、可审计、可按历史高度验证的
 - standard / `leader_pass_id` collab / `leader_btc_addr` collab 三种合法形态已使用互斥字段解析；BTC 地址按当前 indexer network 校验。
 - `usdb_collab` 只作为 invalid schema 检测项存在，不进入 pass storage、RPC、commit mutation、control-plane mint 或前端类型。
 - pass storage、查询、Rust client、CLI、control-plane 和浏览器类型均暴露 `mint_version`、`pass_kind` 与 Leader 绑定字段。
+- ord、bitcoind 与 fixture source 将历史字段 `inscription_number` 统一解释为
+  `pass_id` 中的 reveal-envelope index，不再使用 ord source-local global number。
+- 隔离 live/regtest 已用真实 ord 铭文交叉验证 `application/json`、
+  `text/plain;charset=utf-8`、raw/USDB source comparison，以及 ord/bitcoind
+  primary indexer 的 canonical state/commit 一致性。
 
-当前剩余工作是集中 live/regtest schema 矩阵复核，以及由 UIP-0008 固定公开网络 activation matrix；不再保留开发期兼容或迁移任务。
+当前剩余工作是由 UIP-0008 固定公开网络 activation matrix，并单独冻结
+“reveal 当下没有可用 owner”的 invalid/ignore/fail-closed 口径；纯 parser 负向组合
+继续由确定性单元测试覆盖，不要求为每个无链上状态语义的 JSON 变体重复构造 live
+场景。不再保留开发期兼容或迁移任务。
 
 # 非目标
 
@@ -282,7 +290,9 @@ v1 schema 应该采用严格解析。
 application/json;charset=utf-8
 ```
 
-如果 inscription source 无法提供可靠 content-type，索引器可以基于内容做 JSON 解析，但不得绕过 schema 校验。
+content-type 只作为内容提示，不参与 mint 共识分类。对同一 UTF-8 JSON body，source
+报告 `application/json`、`text/plain` 或无法提供可靠 content-type 时，索引器必须进入
+同一 strict schema classifier 并得到相同结果。content-type 不得绕过 schema 校验。
 
 # 激活矩阵
 
@@ -412,7 +422,7 @@ effective energy 不写入本 schema 或 pass mint storage，由 UIP-0004 / UIP-
 - v1 non-canonical `prev` pass id invalid。
 - pre-standard development payload 不作为正式协议版本参与标准解析。
 
-参考实现的 parser、source comparison、indexer behavior 和 control-plane mint 测试已覆盖上述 core 规则；集中 live/regtest 阶段继续复核真实 ord body 和不同 content-type 来源的一致性。
+参考实现的 parser、source comparison、indexer behavior 和 control-plane mint 测试已覆盖上述 core 规则；隔离 live/regtest 已复核真实 ord body、不同 content-type 及 ord/bitcoind source 的一致性。
 
 # 安全考虑
 
@@ -443,5 +453,5 @@ collab pass 不能同时作为 `candidate_pass` 和 Leader 加成来源。
 
 # 下一步
 
-1. 在集中 live/regtest 中复核 v1 valid/invalid schema 矩阵及 ord/bitcoind source 一致性。
-2. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
+1. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
+2. 后续只为新增的链上解析边界增加 live 场景；纯 JSON schema 组合保留在确定性 parser 测试中。

@@ -23,6 +23,7 @@
 - [multi_transfer_balance_assert.json](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/scenarios/multi_transfer_balance_assert.json)
 - [run_regression.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/run_regression.sh)
 - [regtest_live_ord_e2e.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh)
+- [regtest_live_ord_uip0001_0004_gap_matrix.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_live_ord_uip0001_0004_gap_matrix.sh)
 - [regtest_world_sim.sh](/home/bucky/work/usdb/src/btc/usdb-indexer/scripts/regtest_world_sim.sh)
 - [usdb-indexer-regtest-world-sim.md](/home/bucky/work/usdb/doc/usdb-indexer/usdb-indexer-regtest-world-sim.md)
 
@@ -86,6 +87,22 @@ ORD_BIN=/path/to/ord \
 src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 ```
 
+运行 UIP0001-0004 集中 live 缺口矩阵：
+
+```bash
+ORD_BIN=/path/to/ord \
+src/btc/usdb-indexer/scripts/regtest_live_ord_uip0001_0004_gap_matrix.sh
+```
+
+该矩阵在一条隔离 regtest 链上覆盖：
+
+- 真实 ord `application/json` / `text/plain;charset=utf-8` 铭文。
+- missing、owner mismatch、duplicate、Invalid、Consumed、Burned prev 严格 invalid。
+- Active / Dormant / Consumed pass 的真实 ord `OP_RETURN` burn 边界。
+- valid multi-prev 逐项继承折损。
+- raw/USDB mint source comparison，以及 bitcoind/ord primary indexer 的 canonical
+  pass、energy、invalid、candidate、commit 和 system-state 全量一致性。
+
 ## 常用环境变量
 
 1. `SCENARIO_RUNNER`：Python 场景执行器路径（默认仓库内 `regtest_scenario_runner.py`）
@@ -116,6 +133,8 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_e2e.sh
 26. `REMINT_CONFIRM_BLOCKS`：`remint(prev)` 后的确认块数（默认 `2`）
 27. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
 28. `DIAG_TAIL_LINES`：失败诊断时每个关键日志打印的尾部行数（默认 `120`）
+29. `RUN_UIP0001_0004_LIVE_MATRIX`：`run_regression.sh` 是否执行 UIP0001-0004 集中 live 矩阵（默认 `0`）
+30. `BTC_STABLE_LAG_BLOCKS`：旧 live 脚本为当前 regtest registry 补挖的稳定确认块数（当前必须为 `5`）
 
 示例：
 

@@ -28,6 +28,7 @@ FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
 TRANSFER_CONFIRM_BLOCKS="${TRANSFER_CONFIRM_BLOCKS:-1}"
 REMINT_CONFIRM_BLOCKS="${REMINT_CONFIRM_BLOCKS:-2}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-5}"
 PENALTY_FUND_AMOUNT_BTC="${PENALTY_FUND_AMOUNT_BTC:-0.50000000}"
 PENALTY_SPEND_AMOUNT_BTC="${PENALTY_SPEND_AMOUNT_BTC:-0.49950000}"
 PENALTY_FUND_CONFIRM_BLOCKS="${PENALTY_FUND_CONFIRM_BLOCKS:-1}"
@@ -2161,6 +2162,17 @@ EOF
   else
     log "Unsupported LIVE_SCENARIO=${LIVE_SCENARIO}, expected transfer_remint/invalid_mint/passive_transfer/same_owner_multi_mint/duplicate_prev_inherit"
     exit 1
+  fi
+
+  if [[ ! "$BTC_STABLE_LAG_BLOCKS" =~ ^[0-9]+$ ]]; then
+    log "BTC_STABLE_LAG_BLOCKS must be a non-negative integer"
+    exit 1
+  fi
+  if (( BTC_STABLE_LAG_BLOCKS > 0 )); then
+    log "Mining ${BTC_STABLE_LAG_BLOCKS} blocks so target height ${target_height} reaches the stable frontier"
+    "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$MINER_WALLET_NAME" \
+      generatetoaddress "$BTC_STABLE_LAG_BLOCKS" "$miner_address" >/dev/null
+    wait_until_ord_server_synced_to_bitcoind
   fi
 
   create_balance_history_config

@@ -103,10 +103,11 @@
   - 明确以 `leader_pass_id` / `leader_btc_addr` 二选一作为 leader 引用，并移除新协议中的 `usdb_collab`。
   - 明确开发期旧格式不作为正式协议版本进入 UIP 版本序列。
 - 下一步：
-  - 在集中 live/regtest 中复核真实 ord body 的 valid/invalid schema 矩阵。
+  - 后续只为新增的链上解析边界增加 targeted live；纯 JSON schema 组合由确定性 parser 测试覆盖。
   - 由 UIP-0008 固定公开网络 activation height 和 stable network id。
 - 验收：
   - 有覆盖缺失 `prev`、未知字段、版本字段、collab 字段的单测。
+  - 真实 ord `application/json` / `text/plain` 与 ord/bitcoind source 一致性矩阵通过。
   - 文档和 parser 行为一致。
 
 ### ECO-003. 将 `prev` 继承从 warn/skip 收敛为严格失败
@@ -115,15 +116,18 @@
 - 状态：`Done`
 - 当前现状：
   - `prev` 在任何 mutation 前完成全量校验；任一引用无效都会让新 mint 进入 `Invalid`。
-  - duplicate、missing、owner mismatch、非 Dormant、Consumed/Burned prev 均已覆盖，失败不会部分消费。
+  - duplicate、missing、owner mismatch、Invalid、非 Dormant、Consumed/Burned prev
+    均已覆盖，失败不会部分消费。
 - 目标：
   - 在新协议版本下，任意 `prev` 无效都必须让本次 mint 进入 `Invalid`。
   - 明确所有权一致性是 owner 相同、控制权相同还是 lineage 相同。
   - 同一个 `prev` 在同一列表中重复出现必须 invalid。
 - 下一步：
-  - 在集中 live/regtest 中复核完整 prev invalid 矩阵和 same-block ordering。
+  - 新增链上 same-block 组合时补 targeted live；canonical ordering 继续由 block-event 测试守护。
 - 验收：
-  - 增加 owner mismatch、missing prev、already consumed、burned prev、duplicate prev 的严格 invalid 测试。
+  - 增加 owner mismatch、missing prev、Invalid pass、already consumed、burned prev、
+    duplicate prev 的严格 invalid 测试。
+  - 上述六类 prev 在同一隔离 live 矩阵中均记录为 `INVALID_PREV_ID`，且不发生部分消费。
   - 开发期旧行为不保留兼容入口。
 
 ### ECO-004. Burned 状态必须同步写入 energy 终态
@@ -139,10 +143,11 @@
   - `Burned` energy 必须为 `0`。
   - 任意历史查询命中 burn 后高度，不得继续返回 burn 前可用能量。
 - 下一步：
-  - 在集中 live/regtest 中增加真实 ord burn 场景。
+  - 后续扩展跨版本 burn/reorg 边界；v1 真实 ord burn 已完成。
 - 验收：
   - burn 后 pass snapshot 和 energy snapshot 状态一致。
   - validator payload 不会使用 burned pass 的旧能量。
+  - ord `wallet burn` 的 `OP_RETURN` 输出按无可用 owner 处理。
 
 ### ECO-005. 明确并实现 energy penalty v2 公式
 
@@ -175,7 +180,7 @@
   - 明确折损率、rounding 和多 `prev` 累加顺序。
   - 明确旧版本和新版本的差异。
 - 下一步：
-  - 在集中 live/regtest 中复核单 prev、多 prev 和边界 rounding。
+  - 随真实公式版本升级补跨激活继承测试；v1 单/multi-prev live 已完成。
 - 验收：
   - 多 prev 继承、单 prev 继承、边界 rounding 都有测试。
 
@@ -313,9 +318,10 @@
   - 明确支持的 content-type。
   - 明确未知字段在不同协议版本下是允许、忽略还是 invalid。
 - 下一步：
-  - 在集中 live/regtest 中复核 ord/bitcoind/fixture source 对同一 body 的分类一致性。
+  - 后续新增 source 时复用相同 strict-classifier golden；当前三 source 的确定性分类已覆盖。
 - 验收：
   - ord source、bitcoind source、fixture source 对同一铭文给出一致分类。
+  - ord/bitcoind primary indexer 对同一真实链得到相同 pass/energy/commit/system state。
 
 ### ECO-013. 标准化 SourceDAO / Dividend / fee split 冷启动流程
 

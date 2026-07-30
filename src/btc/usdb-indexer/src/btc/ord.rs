@@ -19,7 +19,6 @@ pub enum ContentBody {
 #[derive(Debug, Clone)]
 pub struct OrdInscriptionItem {
     pub id: InscriptionId,
-    pub number: i32,
     pub timestamp: u32,
     pub satpoint: SatPoint,
     pub content_type: Option<String>,
@@ -28,7 +27,6 @@ pub struct OrdInscriptionItem {
 #[derive(Debug, Deserialize)]
 struct OrdInscriptionResponse {
     id: String,
-    number: i64,
     timestamp: i64,
     satpoint: String,
     #[serde(default)]
@@ -71,14 +69,6 @@ impl OrdClient {
             error!("{}", msg);
             msg
         })?;
-        let number = i32::try_from(item.number).map_err(|e| {
-            let msg = format!(
-                "Inscription number out of range from ord response: url={}, inscription_id={}, number={}, error={}",
-                url, id, item.number, e
-            );
-            error!("{}", msg);
-            msg
-        })?;
         let timestamp_u64 = u64::try_from(item.timestamp).map_err(|e| {
             let msg = format!(
                 "Inscription timestamp out of range from ord response: url={}, inscription_id={}, timestamp={}, error={}",
@@ -98,7 +88,6 @@ impl OrdClient {
 
         Ok(OrdInscriptionItem {
             id,
-            number,
             timestamp,
             satpoint,
             content_type: item.content_type.or(item.effective_content_type),

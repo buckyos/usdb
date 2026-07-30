@@ -9,6 +9,7 @@ MANIFEST_PATH="${MANIFEST_PATH:-${REPO_ROOT}/src/btc/Cargo.toml}"
 RUN_REGTEST_SMOKE="${RUN_REGTEST_SMOKE:-1}"
 RUN_LIVE_ORD_E2E="${RUN_LIVE_ORD_E2E:-0}"
 RUN_LIVE_ORD_REALWORLD_SUITE="${RUN_LIVE_ORD_REALWORLD_SUITE:-0}"
+RUN_UIP0001_0004_LIVE_MATRIX="${RUN_UIP0001_0004_LIVE_MATRIX:-0}"
 RUN_REORG_REGRESSION="${RUN_REORG_REGRESSION:-0}"
 
 log() {
@@ -148,6 +149,12 @@ main() {
     run_cmd "${SCRIPT_DIR}/regtest_live_ord_e2e.sh"
   else
     log "Skipping live ord e2e: RUN_LIVE_ORD_E2E=${RUN_LIVE_ORD_E2E}, RUN_LIVE_ORD_REALWORLD_SUITE=${RUN_LIVE_ORD_REALWORLD_SUITE}"
+  fi
+
+  if [[ "${RUN_UIP0001_0004_LIVE_MATRIX}" == "1" ]]; then
+    run_cmd "${SCRIPT_DIR}/regtest_live_ord_uip0001_0004_gap_matrix.sh"
+  else
+    log "Skipping UIP0001-0004 live matrix: RUN_UIP0001_0004_LIVE_MATRIX=${RUN_UIP0001_0004_LIVE_MATRIX}"
   fi
 
   if [[ "${RUN_REORG_REGRESSION}" == "1" ]]; then

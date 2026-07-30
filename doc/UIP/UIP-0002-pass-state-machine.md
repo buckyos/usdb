@@ -39,14 +39,20 @@ UIP-0002 的目标是先固定事件与状态语义，为 UIP-0003 energy 公式
 
 参考实现已完成 UIP-0002 core 对齐：
 
-- `prev` 先完整校验再原子提交；missing、owner mismatch、duplicate、非 Dormant、Consumed/Burned 引用均使新 mint 进入 `Invalid`，不会部分消费。
+- `prev` 先完整校验再原子提交；missing、owner mismatch、duplicate，以及引用
+  `Invalid` / 非 Dormant / `Consumed` / `Burned` pass 均使新 mint 进入
+  `Invalid`，不会部分消费。
 - valid remint 在同一 event height 将每张 prev 写为 `Consumed`、energy 写为 `Consumed / 0`，再创建新 Active pass。
 - Active / Dormant burn 同步写入 `Burned / 0` energy 终态；Consumed burn 保持 `Consumed` 经济终态。
 - pass event 使用 canonical block ordering，Active 离开前完成 block-level balance settlement，block-end 只结算最终仍 Active 的 pass。
 - `leader_pass_id` mint-time 校验 Active standard Leader；`leader_btc_addr` 按当前 BTC network 接收并在目标高度动态解析。
 - Consumed / Burned pass 后续 transfer 不再更新 owner/satpoint，明确作为非共识审计 tradeoff。
+- 隔离 live/regtest 已覆盖真实 ord `OP_RETURN` burn、missing/owner
+  mismatch/duplicate/Invalid/Consumed/Burned prev 严格失败，以及 valid multi-prev
+  原子继承。
 
-当前剩余工作是集中 live/regtest 状态矩阵复核，以及由 UIP-0008 固定公开网络 activation matrix；不需要兼容早期 warn/skip 行为或旧数据库。
+当前剩余 live 工作仅保留新增的 same-block 组合排序与后续跨版本激活边界；公开网络
+activation matrix 由 UIP-0008 固定。不需要兼容早期 warn/skip 行为或旧数据库。
 
 # 非目标
 
@@ -322,6 +328,8 @@ burn 指 pass inscription 被销毁或无法再定位到可用 owner。
 
 burn 规则：
 
+- inscription sat 被发送到 `OP_RETURN` 输出时没有可用 owner，必须按 burn 处理；
+  indexer 不得把 `OP_RETURN` script hash 当作普通 owner。
 - `Active` pass burn 后必须转为 `Burned`。
 - `Dormant` pass burn 后必须转为 `Burned`。
 - `Consumed` pass burn 后当前经济状态保持 `Consumed`；实现可以追加非共识审计记录。
@@ -423,6 +431,7 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。USDB chain
 - invalid `prev` owner mismatch makes entire mint `Invalid`。
 - missing referenced `prev` makes entire mint `Invalid`。
 - duplicate `prev` makes entire mint `Invalid`。
+- referenced `Invalid` pass makes entire mint `Invalid`。
 - already consumed `prev` makes entire mint `Invalid`。
 - burned `prev` makes entire mint `Invalid`。
 - transfer to same owner updates satpoint only。
@@ -440,7 +449,9 @@ UIP-0002 影响 BTC 侧 pass 状态、`prev` 消费和历史 replay。USDB chain
 - `leader_pass_id` collab mint requires active standard Leader。
 - `leader_btc_addr` collab mint accepts valid address and resolves Leader by height。
 
-参考实现的状态机、energy timeline、indexer behavior 和 service tests 已覆盖上述 core 场景；集中 live/regtest 阶段继续复核真实 ord event ordering、burn 和完整 prev 失败矩阵。
+参考实现的状态机、energy timeline、indexer behavior 和 service tests 已覆盖上述 core
+场景；隔离 live/regtest 已复核真实 ord `OP_RETURN` burn 和完整 prev 失败矩阵，
+same-block 组合排序仍由确定性 block-event 测试覆盖。
 
 # 安全考虑
 
@@ -476,6 +487,6 @@ different-owner transfer 允许把冻结后的 `raw_energy` 作为历史收益�
 
 # 下一步
 
-1. 在集中 live/regtest 中复核 burn、完整 prev invalid 矩阵和 same-block ordering。
+1. 对新增的 same-block 链上组合补 targeted live；已有 canonical ordering 继续由确定性测试守护。
 2. 在 UIP-0008 activation matrix 中确认正式激活高度和稳定 `network_id`。
 3. 后续按审计需求决定是否增加不参与协议状态的 event-index API。

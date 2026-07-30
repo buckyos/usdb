@@ -1,5 +1,5 @@
 use super::utxo::UTXOValueManager;
-use bitcoincore_rpc::bitcoin::{Amount, OutPoint, Transaction, Txid};
+use bitcoincore_rpc::bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, Txid};
 use ordinals::SatPoint;
 use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 
@@ -11,7 +11,12 @@ pub struct TxItem {
 pub struct SatPointResult {
     pub satpoint: SatPoint,
     pub value: Amount,
-    pub address: Option<BtcScriptHash>, // If address is None, it means the satpoint is spent as fee
+    // None means the sat has no usable owner because it was lost to fees or sent to OP_RETURN.
+    pub address: Option<BtcScriptHash>,
+}
+
+fn usable_owner(script_pubkey: &ScriptBuf) -> Option<BtcScriptHash> {
+    (!script_pubkey.is_op_return()).then(|| script_pubkey.to_btc_script_hash())
 }
 
 impl TxItem {
@@ -63,16 +68,16 @@ impl TxItem {
                     offset,
                 };
 
-                let address = vout_item.script_pubkey.to_btc_script_hash();
+                let address = usable_owner(&vout_item.script_pubkey);
                 info!(
-                    "Found ordinal {} -> {}, address: {}",
+                    "Found ordinal {} -> {}, owner: {:?}",
                     satpoint, point, address
                 );
 
                 return Ok(Some(SatPointResult {
                     satpoint: point,
                     value: vout_item.value,
-                    address: Some(address),
+                    address,
                 }));
             }
 
@@ -97,5 +102,23 @@ impl TxItem {
             value: Amount::from_sat(0),
             address: None,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoincore_rpc::bitcoin::{opcodes::all::OP_RETURN, script::Builder};
+
+    #[test]
+    fn test_usable_owner_rejects_op_return() {
+        let burn_script = Builder::new().push_opcode(OP_RETURN).into_script();
+        assert_eq!(usable_owner(&burn_script), None);
+
+        let spendable_script = ScriptBuf::new();
+        assert_eq!(
+            usable_owner(&spendable_script),
+            Some(spendable_script.to_btc_script_hash())
+        );
     }
 }

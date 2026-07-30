@@ -1,4 +1,6 @@
-use super::{DiscoveredInscription, InscriptionSource, InscriptionSourceFuture};
+use super::{
+    DiscoveredInscription, InscriptionSource, InscriptionSourceFuture, canonical_inscription_number,
+};
 use crate::btc::{ContentBody, OrdClient, OrdClientRef, OrdInscriptionItem};
 use crate::config::ConfigManagerRef;
 use bitcoincore_rpc::bitcoin::Block;
@@ -102,6 +104,7 @@ impl InscriptionSource for OrdInscriptionSource {
 
             for (i, item) in parsed.into_iter().enumerate() {
                 let (inscription, content_string) = item;
+                let inscription_number = canonical_inscription_number(&inscription.id)?;
                 if content_string.is_none() {
                     debug!(
                         "Inscription has no text content from ord source: module=inscription_source_ord, block_height={}, inscription_id={}",
@@ -111,7 +114,7 @@ impl InscriptionSource for OrdInscriptionSource {
 
                 discovered.push(DiscoveredInscription {
                     inscription_id: inscription.id,
-                    inscription_number: inscription.number,
+                    inscription_number,
                     block_height,
                     timestamp: inscription.timestamp,
                     satpoint: Some(inscription.satpoint),

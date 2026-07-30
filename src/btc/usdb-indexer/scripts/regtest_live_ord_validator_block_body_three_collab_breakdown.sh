@@ -25,12 +25,15 @@ LEADER_TOP_UP_BTC="${LEADER_TOP_UP_BTC:-0.02}"
 COLLAB_TOP_UP_BTC="${COLLAB_TOP_UP_BTC:-0.01}"
 ENERGY_TOP_UP_CONFIRM_BLOCKS="${ENERGY_TOP_UP_CONFIRM_BLOCKS:-1}"
 ENERGY_GROWTH_BLOCKS="${ENERGY_GROWTH_BLOCKS:-2}"
+BTC_STABLE_LAG_BLOCKS="${BTC_STABLE_LAG_BLOCKS:-5}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-300}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 ORD_SERVER_LOG_FILE="${ORD_SERVER_LOG_FILE:-$WORK_DIR/ord-server.log}"
 REGTEST_LOG_PREFIX="[usdb-validator-block-body-three-collab]"
+export REGTEST_LOG_PREFIX
 
+# shellcheck source=src/btc/usdb-indexer/scripts/regtest_reorg_lib.sh
 source "${SCRIPT_DIR}/regtest_reorg_lib.sh"
 
 main() {
@@ -111,6 +114,11 @@ EOF
     regtest_wait_until_ord_server_synced_to_bitcoind
   fi
   query_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  if (( BTC_STABLE_LAG_BLOCKS > 0 )); then
+    regtest_log "Mining ${BTC_STABLE_LAG_BLOCKS} blocks so query height ${query_height} reaches the stable frontier"
+    regtest_mine_blocks "$BTC_STABLE_LAG_BLOCKS" "$miner_address"
+    regtest_wait_until_ord_server_synced_to_bitcoind
+  fi
 
   regtest_create_balance_history_config
   regtest_create_usdb_indexer_config
@@ -125,6 +133,10 @@ EOF
 
   profile_resp="$(regtest_get_pass_economic_profile_response "$leader_pass_id" "$query_height")"
   regtest_assert_json_expr "$profile_resp" "data.get('error') is None" "True"
+  regtest_assert_json_expr \
+    "$profile_resp" \
+    "(data.get('result') or {}).get('external_state', {}).get('stable_lag')" \
+    "$BTC_STABLE_LAG_BLOCKS"
   candidate_view="$(regtest_collect_candidate_set_view "$query_height" "" "$USDB_ECONOMIC_PAGE_LIMIT")"
   breakdown_view="$(regtest_collect_collab_breakdown \
     "$leader_pass_id" "$query_height" "" "collab_pass_id_asc" "$USDB_ECONOMIC_PAGE_LIMIT")"

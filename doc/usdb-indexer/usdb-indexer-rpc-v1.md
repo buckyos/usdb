@@ -123,6 +123,9 @@
 }
 ```
 
+`inscription_number` 是保留的历史字段名，其 canonical 含义是 `inscription_id` 中的
+reveal-envelope index；它不是 ord 的 source-local global inscription number。
+
 ## 4.3 PassHistoryEvent
 
 ```json

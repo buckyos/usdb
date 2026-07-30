@@ -1213,7 +1213,8 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
 
 ## UIP-0007 Anchor 跨进程边界矩阵
 
-状态：实现、定向测试和隔离跨进程 E2E 已通过，当前改动等待 review，尚未提交。
+状态：实现、定向测试和隔离跨进程 E2E 已通过并提交：
+Go `76dcafd35` / usdb `9202107`。
 
 - Go profile E2E 新增独立 `run_usdb_profile_anchor_boundary_e2e.sh`，只在测试 genesis
   将 `btcAnchorMaxAgeBlocks` 设为 `3`，不修改 development/public 内置参数。
@@ -1233,3 +1234,32 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
 - 本场景只验证“选定 canonical branch 上按父块重新计数”和 fresh replay；受控
   `debug_setHead` 不代表 public network 自动 reorg 协调方案，也不解决深层 BTC reorg
   的最终恢复策略。
+
+## UIP-0001 至 UIP-0004 Live 缺口复核
+
+状态：实现、定向测试和隔离 live/regtest 已通过，当前改动等待 review，尚未提交。
+
+- 新增 `regtest_live_ord_uip0001_0004_gap_matrix.sh`，在同一稳定历史上覆盖真实 ord
+  JSON/text 铭文，missing/owner mismatch/duplicate/Invalid/Consumed/Burned prev，
+  Active/Dormant/Consumed burn 和 valid multi-prev。
+- 真实 ord `wallet burn` 使用 1-sat `OP_RETURN` 输出。修正 transfer tracker：
+  `OP_RETURN` 没有可用 owner，必须进入 Burned，而不是把 nulldata script hash 当作
+  普通 owner并错误进入 Dormant。
+- 修正共享 ord 同步 helper 的 off-by-one：ord `/blockcount` 是已索引区块数量，
+  Bitcoin Core `getblockcount` 是最高高度；同步条件必须是
+  `ord_block_count >= btc_height + 1`。
+- ord、bitcoind、fixture source 将 legacy `inscription_number` 统一为
+  `InscriptionId.index`，source comparison 将该字段纳入比较，避免 source 选择改变
+  pass block commit、local state commit 或 system state。
+- 新矩阵先逐高度比较 raw inscription 和 USDB mint source，再分别使用 bitcoind/ord
+  primary indexer 重放，逐字段比较 pass、energy、invalid、candidate、pass commit、
+  local state commit 和 system state；两份 canonical view 完全一致。
+- 既有 `transfer_remint` live 与 three-collab breakdown 已补稳定确认块并在
+  `stable_lag=5` 下复跑通过；three-collab 同时校验 profile 返回相同 stable lag。
+- 验证结果：新 UIP0001-0004 矩阵、基础 transfer/remint 和 UIP0004 three-collab
+  targeted live 全部通过；Rust source/content 与 OP_RETURN 单测、ShellCheck 及完整
+  crate 回归结果见本批最终 review 记录。
+- 未在本批改变 direct ownerless reveal 语义：如果 inscription sat 在 reveal 当下就
+  没有可用 owner，当前 indexer 仍按既有逻辑 fail closed 并停止扫块。普通 ord wallet
+  路径不会生成该形态，但 invalid/ignore/fail-closed 的最终口径涉及 invalid pass
+  storage 与抗 DoS 约束，需要单独冻结后再实现和补 targeted 测试。

@@ -1924,25 +1924,28 @@ regtest_start_ord_server() {
   regtest_wait_http_ready "ord-server" "http://127.0.0.1:${ORD_RPC_PORT}/blockcount"
 }
 
-regtest_get_ord_server_block_height() {
+regtest_get_ord_server_block_count() {
   curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
     "http://127.0.0.1:${ORD_RPC_PORT}/blockcount" | tr -d '\n\r '
 }
 
 regtest_wait_until_ord_server_synced_to_bitcoind() {
-  local start_ts now ord_height btc_height
+  local start_ts now ord_block_count btc_height expected_ord_block_count
   regtest_log "Waiting until ord server catches up to bitcoind"
   start_ts="$(date +%s)"
   while true; do
     btc_height="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount 2>/dev/null || echo 0)"
-    ord_height="$(regtest_get_ord_server_block_height 2>/dev/null || echo 0)"
-    if [[ "$ord_height" =~ ^[0-9]+$ ]] && [[ "$btc_height" =~ ^[0-9]+$ ]] && [[ "$ord_height" -ge "$btc_height" ]]; then
-      return 0
+    ord_block_count="$(regtest_get_ord_server_block_count 2>/dev/null || echo 0)"
+    if [[ "$ord_block_count" =~ ^[0-9]+$ ]] && [[ "$btc_height" =~ ^[0-9]+$ ]]; then
+      expected_ord_block_count=$((btc_height + 1))
+      if (( ord_block_count >= expected_ord_block_count )); then
+        return 0
+      fi
     fi
 
     now="$(date +%s)"
     if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
-      regtest_log "ord server sync timeout: ord_height=${ord_height:-unknown}, btc_height=${btc_height:-unknown}"
+      regtest_log "ord server sync timeout: ord_block_count=${ord_block_count:-unknown}, btc_height=${btc_height:-unknown}"
       exit 1
     fi
     sleep 1
@@ -2012,8 +2015,8 @@ regtest_ord_inscribe_file() {
   fi
   inscription_id="$(regtest_extract_inscription_id "$output")"
   if [[ -z "$inscription_id" ]]; then
-    regtest_log "Failed to parse inscription id from ord output: ${output}"
-    exit 1
+    echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Failed to parse inscription id from ord output: ${output}" >&2
+    return 1
   fi
 
   echo "$inscription_id"
@@ -2029,8 +2032,24 @@ regtest_ord_send_inscription() {
   output="$(regtest_run_ord_wallet_named "$wallet_name" send --fee-rate "$ORD_FEE_RATE" "$destination" "$inscription_id" 2>&1 || true)"
   txid="$(regtest_extract_txid "$output")"
   if [[ -z "$txid" ]]; then
-    regtest_log "Failed to parse transfer txid from ord output: ${output}"
-    exit 1
+    echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Failed to parse transfer txid from ord output: ${output}" >&2
+    return 1
+  fi
+
+  echo "$txid"
+}
+
+regtest_ord_burn_inscription() {
+  local wallet_name="$1"
+  local inscription_id="$2"
+  local output txid
+
+  echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Burn inscription via ord: wallet=${wallet_name}, inscription_id=${inscription_id}" >&2
+  output="$(regtest_run_ord_wallet_named "$wallet_name" burn --fee-rate "$ORD_FEE_RATE" "$inscription_id" 2>&1 || true)"
+  txid="$(regtest_extract_txid "$output")"
+  if [[ -z "$txid" ]]; then
+    echo "${REGTEST_LOG_PREFIX:-[usdb-indexer-reorg]} Failed to parse burn txid from ord output: ${output}" >&2
+    return 1
   fi
 
   echo "$txid"

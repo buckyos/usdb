@@ -11,9 +11,21 @@ use std::sync::Arc;
 
 pub type InscriptionSourceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Return the source-independent reveal-envelope index stored in the legacy
+/// `inscription_number` field.
+pub fn canonical_inscription_number(inscription_id: &InscriptionId) -> Result<i32, String> {
+    i32::try_from(inscription_id.index).map_err(|error| {
+        format!(
+            "Inscription envelope index does not fit i32: inscription_id={}, index={}, error={}",
+            inscription_id, inscription_id.index, error
+        )
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct DiscoveredInscription {
     pub inscription_id: InscriptionId,
+    // This is the canonical envelope index, not ord's source-local global number.
     pub inscription_number: i32,
     pub block_height: u32,
     pub timestamp: u32,
@@ -235,5 +247,52 @@ mod tests {
                 .iter()
                 .all(|mint| mint.error_code == MintValidationErrorCode::InvalidSchema)
         );
+    }
+
+    #[test]
+    fn canonical_inscription_number_uses_envelope_index_and_rejects_overflow() {
+        let mut inscription_id = test_inscription_id(4);
+        inscription_id.index = 7;
+        assert_eq!(canonical_inscription_number(&inscription_id).unwrap(), 7);
+
+        inscription_id.index = i32::MAX as u32 + 1;
+        let error = canonical_inscription_number(&inscription_id).unwrap_err();
+        assert!(error.contains("does not fit i32"));
+    }
+
+    #[test]
+    fn classify_usdb_mints_is_consistent_across_supported_content_type_hints() {
+        let content_string = r#"{"p":"usdb","op":"mint","v":1,"usdb_main":"0x1111111111111111111111111111111111111111","prev":[]}"#;
+        let content_types = [
+            Some("application/json;charset=utf-8"),
+            Some("text/plain;charset=utf-8"),
+            None,
+        ];
+        let inscriptions = content_types
+            .into_iter()
+            .enumerate()
+            .map(|(index, content_type)| DiscoveredInscription {
+                inscription_id: test_inscription_id(index as u8 + 5),
+                inscription_number: 0,
+                block_height: 10,
+                timestamp: 100,
+                satpoint: None,
+                content_type: content_type.map(str::to_string),
+                content_string: Some(content_string.to_string()),
+            })
+            .collect();
+
+        let batch = classify_usdb_mints_from_inscriptions(inscriptions, Network::Regtest).unwrap();
+
+        assert_eq!(batch.valid_mints.len(), 3);
+        assert!(batch.invalid_mints.is_empty());
+        assert!(batch.valid_mints.iter().all(|mint| {
+            matches!(
+                &mint.content,
+                USDBInscription::Mint(content)
+                    if content.usdb_main
+                        == "0x1111111111111111111111111111111111111111"
+            )
+        }));
     }
 }

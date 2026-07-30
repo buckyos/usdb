@@ -1,3 +1,4 @@
+use super::canonical_inscription_number;
 use super::{DiscoveredInscription, InscriptionSource, InscriptionSourceFuture};
 use crate::config::ConfigManagerRef;
 use bitcoincore_rpc::bitcoin::Block;
@@ -27,7 +28,6 @@ struct FixtureFileRaw {
 #[derive(Debug, Deserialize)]
 struct FixtureInscriptionRaw {
     inscription_id: String,
-    inscription_number: i32,
     timestamp: Option<u32>,
     satpoint: Option<String>,
     content_type: Option<String>,
@@ -111,6 +111,7 @@ impl FixtureInscriptionSource {
                         raw.inscription_id, height, e
                     )
                 })?;
+                let inscription_number = canonical_inscription_number(&inscription_id)?;
                 let satpoint = match raw.satpoint {
                     Some(text) => Some(SatPoint::from_str(&text).map_err(|e| {
                         format!(
@@ -123,7 +124,7 @@ impl FixtureInscriptionSource {
 
                 items.push(FixtureInscription {
                     inscription_id,
-                    inscription_number: raw.inscription_number,
+                    inscription_number,
                     timestamp: raw.timestamp,
                     satpoint,
                     content_type: raw.content_type,
@@ -194,7 +195,6 @@ mod tests {
             vec![FixtureInscriptionRaw {
                 inscription_id: "0000000000000000000000000000000000000000000000000000000000000000i0"
                     .to_string(),
-                inscription_number: 42,
                 timestamp: Some(1234),
                 satpoint: Some(
                     "0000000000000000000000000000000000000000000000000000000000000000:0:0"
@@ -212,7 +212,7 @@ mod tests {
             items[0].inscription_id,
             parse_id("0000000000000000000000000000000000000000000000000000000000000000i0")
         );
-        assert_eq!(items[0].inscription_number, 42);
+        assert_eq!(items[0].inscription_number, 0);
         assert_eq!(items[0].timestamp, Some(1234));
         assert_eq!(items[0].content_string.as_deref(), Some("{}"));
     }
@@ -233,7 +233,6 @@ mod tests {
             "200".to_string(),
             vec![FixtureInscriptionRaw {
                 inscription_id: "invalid-inscription-id".to_string(),
-                inscription_number: 1,
                 timestamp: None,
                 satpoint: None,
                 content_type: None,
@@ -269,6 +268,7 @@ mod tests {
             .await
             .expect("load fixture");
         assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].inscription_number, 9);
         assert_eq!(loaded[0].timestamp, 0);
         assert_eq!(loaded[0].block_height, 300);
     }

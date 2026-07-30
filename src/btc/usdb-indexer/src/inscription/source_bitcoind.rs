@@ -1,4 +1,6 @@
-use super::{DiscoveredInscription, InscriptionSource, InscriptionSourceFuture};
+use super::{
+    DiscoveredInscription, InscriptionSource, InscriptionSourceFuture, canonical_inscription_number,
+};
 use usdb_util::BTCRpcClientRef;
 
 use bitcoincore_rpc::bitcoin::Block;
@@ -41,6 +43,7 @@ impl InscriptionSource for BitcoindInscriptionSource {
                         txid,
                         index: index as u32,
                     };
+                    let inscription_number = canonical_inscription_number(&inscription_id)?;
 
                     let inscription = envelope.payload;
                     let content_string = inscription
@@ -51,7 +54,7 @@ impl InscriptionSource for BitcoindInscriptionSource {
 
                     discovered.push(DiscoveredInscription {
                         inscription_id,
-                        inscription_number: inscription_id.index as i32,
+                        inscription_number,
                         block_height,
                         timestamp: block.header.time,
                         satpoint: None,

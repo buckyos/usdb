@@ -199,7 +199,7 @@ impl CompareInscriptionSource {
             CompareTarget::UsdbMint.as_str(),
             primary_mints,
             shadow_mints,
-            |mint| mint.inscription_id.to_string(),
+            |mint| format!("{}#{}", mint.inscription_id, mint.inscription_number),
             |mint| Some(mint.content_string.as_str()),
         )
     }
@@ -215,7 +215,7 @@ impl CompareInscriptionSource {
             CompareTarget::RawInscription.as_str(),
             primary_inscriptions,
             shadow_inscriptions,
-            |item| item.inscription_id.to_string(),
+            |item| format!("{}#{}", item.inscription_id, item.inscription_number),
             |item| item.content_string.as_deref(),
         )
     }

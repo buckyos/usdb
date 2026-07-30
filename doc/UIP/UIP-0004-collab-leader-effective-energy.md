@@ -437,7 +437,11 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 - old collab 被 consumed 后不再向旧 Leader 贡献 `collab_contribution`。
 - 链外 validator test envelope 同时携带 `raw_energy`、`collab_contribution`、`effective_energy`，且可由 breakdown 重算。
 
-当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景，three-collab breakdown 已获得真实 ord targeted smoke 覆盖。集中 live/regtest 阶段继续补齐 `leader_btc_addr` remint 跟随、fixed binding 不跟随、old collab consumed 和大规模 collab 聚合/分页场景。
+当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景；world simulator 交叉覆盖
+`leader_btc_addr` remint 跟随、fixed binding 不跟随和 old collab consumed。
+three-collab breakdown 已在 `stable_lag=5` 下获得真实 ord targeted smoke 覆盖，并验证
+profile/candidate/breakdown 与历史分页。后续 live 工作集中在更大规模 collab 聚合、
+分页容量和新增跨版本边界，不重复已有 deterministic 状态组合。
 
 # 已确认规则
 

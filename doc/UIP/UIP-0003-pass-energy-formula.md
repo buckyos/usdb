@@ -40,8 +40,11 @@ Activation: BTC network activation matrix; development networks activate from he
 - RocksDB energy value 使用 `u128`；RPC、链外 validator test JSON、Rust client 和前端通过 canonical decimal string 传递 energy。
 - range / raw leaderboard 的 `items[].energy` 明确保持 UIP-0003 raw energy 口径；profile / `candidate_set_view` 的 derived energy 由 UIP-0004 / UIP-0006 运行时计算。
 - 公式单测、timeline、状态机、RPC 与跨组件类型测试已覆盖 unit 边界、penalty、inherit rounding、饱和和历史投影。
+- 隔离 live/regtest 已覆盖 Active/Dormant burn 归零、Consumed burn 保持终态，以及
+  multi-prev 逐项 95% 折损后求和；ord/bitcoind 两种 source 得到相同 energy 与 state commit。
 
-当前剩余工作是集中 live/regtest 交叉验证和大数据运行评估；公开网络的公式版本激活由 UIP-0008 承接，不增加旧 DB 迁移逻辑。
+当前剩余工作是大数据运行评估与后续真实公式版本跨激活测试；公开网络的公式版本激活
+由 UIP-0008 承接，不增加旧 DB 迁移逻辑。
 
 # 非目标
 
@@ -517,4 +520,5 @@ UIP-0002 已规定同一 BTC owner 在同一高度最多只能拥有一张 Activ
 - BTC indexer RPC 已将 pass energy snapshot 输出拆为 `raw_energy`、`collab_contribution`、`effective_energy` 三个 canonical decimal string；后两者按 UIP-0004 实时派生，不写回 raw ledger。
 - BTC indexer RPC range / leaderboard 的 `items[].energy` 仍表示 UIP-0003 raw energy，并输出 canonical decimal string。
 - 前端、CLI、链外 validator test envelope 和 UIP-0006 state view 消费 energy 字段时必须继续使用 `string`，不得退回 JSON number。
-- formula-version mismatch 与单 prev remint 折损已通过 targeted live；完整 runner 仍需继续复核 burn 终态、多 prev 边界和 reorg 重放。
+- formula-version mismatch、单 prev remint、真实 ord burn 终态和 multi-prev 逐项折损已通过
+  targeted live；reorg/restart 重放由既有确定性矩阵覆盖，后续继续扩展跨公式版本激活边界。
