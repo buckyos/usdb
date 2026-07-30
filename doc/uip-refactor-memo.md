@@ -1136,8 +1136,8 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
 
 ## BTC Registry Stable Lag v2 与 Release Drift Guard
 
-状态：基础实现与首轮验证已提交 `353f466`；2026-07-29 stable-lag 边界矩阵扩展已完成，
-当前改动等待 review，尚未提交。
+状态：基础实现与首轮验证已提交 `353f466`；2026-07-29 stable-lag 边界矩阵扩展已提交
+`4c92f7d`。
 
 - BTC registry schema/hash domain 升级为 v2，network scope 新增必填
   `stable_lag_blocks`。mainnet/regtest 当前均固定为 `5`；balance-history 从 registry
@@ -1210,3 +1210,26 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
   余额查询能力；旧单实例 wrapper 保留，现有脚本调用方式不变。
 - `run_regtest_suite.sh stable-lag-reorg` 已实跑通过，完整 3 深度 / 9 生命周期路径
   用时约 137 秒；测试只使用隔离 Bitcoin Core 28.1 regtest。
+
+## UIP-0007 Anchor 跨进程边界矩阵
+
+状态：实现、定向测试和隔离跨进程 E2E 已通过，当前改动等待 review，尚未提交。
+
+- Go profile E2E 新增独立 `run_usdb_profile_anchor_boundary_e2e.sh`，只在测试 genesis
+  将 `btcAnchorMaxAgeBlocks` 设为 `3`，不修改 development/public 内置参数。
+- 第一段在同一 BTC stable height 上生成 age `0..3`，精确 max 可接受；候选
+  max+1 必须 fail closed，观察窗口内 USDB canonical head 不前进。
+- 挖出一个新的 BTC stable block 后，balance-history 与 usdb-indexer 同步到新 context；
+  下一 USDB block 必须把 age 归零，并再次覆盖 `0..3` / max+1 边界。
+- 首次运行发现 miner 在 max+1 失败后不会因纯外部 BTC 状态更新重新组块：
+  geth recommit timer 原先在无新交易时直接跳过。worker 现仅在 USDB work build
+  失败期间保留 retry 标志，按现有 recommit interval 拉取外部状态；首次成功后清除，
+  不给正常成功路径增加永久轮询。
+- 使用 `debug_setHead` 将 USDB canonical head 从 block `8` 回退到 block `5`，
+  从保留的 age-0 parent 重新生成 block `6..8`。replacement block hash 必须变化，
+  age 必须重新严格计数为 `1..3`。
+- fresh validator 从 genesis 同步 replacement branch，并由共享 Python verifier
+  重放最终 8 个 selector、profile、difficulty、reward 和 system storage。
+- 本场景只验证“选定 canonical branch 上按父块重新计数”和 fresh replay；受控
+  `debug_setHead` 不代表 public network 自动 reorg 协调方案，也不解决深层 BTC reorg
+  的最终恢复策略。
