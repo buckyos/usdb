@@ -1237,7 +1237,7 @@ Go `76dcafd35` / usdb `9202107`。
 
 ## UIP-0001 至 UIP-0004 Live 缺口复核
 
-状态：实现、定向测试和隔离 live/regtest 已通过，当前改动等待 review，尚未提交。
+状态：实现、定向测试和隔离 live/regtest 已通过并提交：usdb `fe5aa50`。
 
 - 新增 `regtest_live_ord_uip0001_0004_gap_matrix.sh`，在同一稳定历史上覆盖真实 ord
   JSON/text 铭文，missing/owner mismatch/duplicate/Invalid/Consumed/Burned prev，
@@ -1263,3 +1263,38 @@ Go `76dcafd35` / usdb `9202107`。
   没有可用 owner，当前 indexer 仍按既有逻辑 fail closed 并停止扫块。普通 ord wallet
   路径不会生成该形态，但 invalid/ignore/fail-closed 的最终口径涉及 invalid pass
   storage 与抗 DoS 约束，需要单独冻结后再实现和补 targeted 测试。
+
+## UIP-0010 Public Release Candidate E2E
+
+状态：2026-07-29 实现、单元测试和首次完整跨进程 E2E 已通过；go-ethereum / SourceDAO
+改动等待 review，尚未提交。
+
+- go-ethereum 新增 `internal/usdbrelease` 和
+  `geth usdb-release-manifest create|verify`，冻结 manifest/signature/trusted-key v1
+  schema。Ed25519 signature 覆盖 exact manifest bytes；strict parser 拒绝 duplicate/
+  unknown fields、unsupported schema/algorithm、untrusted/duplicate key 和 artifact drift。
+- manifest 直接承诺 release/network/chain identity、canonical genesis、nonzero-depth
+  bootstrap acceptance、bootnode artifact 和 Dividend fee policy；genesis/acceptance
+  分别间接承诺 activation/system code 与 SourceDAO config/state/validation/transaction
+  evidence。
+- 新增 `run_usdb_public_release_candidate_e2e.sh`：默认要求三仓 clean，从隔离 source
+  snapshot 和空 Go cache 构建 geth，重建并审计 SourceDAO artifacts；开发期验证未提交改动
+  只能显式使用 `ALLOW_DIRTY_RELEASE_E2E=1`。
+- clean build 首次暴露 go-ethereum bootstrap config 中 Dao/Dividend artifact commitments
+  已落后于当前 SourceDAO 产物；已同步两个 config 的 artifact SHA-256，并更新 Dividend
+  runtime code hash。修正后 canonical genesis 连续两次生成 exact bytes 一致。
+- acceptance 在 checkpoint 后等待 3 个确认块；checkpoint replacement、bootstrap-admin
+  污染、manifest/signature/genesis 篡改均被拒绝。node1 restart 后再次验证 acceptance 和
+  signed release。
+- fresh node2 使用 `archive` 模式，只通过 manifest 承诺的 bootnode 自动发现 node1，
+  不调用 `admin_addPeer`；同步后 strict validation/acceptance 与 node1 一致，并通过
+  `eth_getProof` 重放 genesis 和 acceptance checkpoint 的 Dividend code/finalized slot。
+- SourceDAO fee probe 新增 gate 前断言：Dividend 增量为 0、miner 获得全部 fee；gate 后
+  继续交叉验证 60%/40% fee、emission、sender 扣款和 Dividend ledger sync。
+- full bootstrap 二次执行没有新的 completed/error operation。首次 E2E report 记录
+  genesis hash `0x8896308d4b56613bee89d417b988854cbf16896982ce23bc0c2895ea5bd1d910`；
+  该值来自 test-only fee height、fake PoW 和 ephemeral signing key，不是 public network
+  冻结值。
+- 正式 public testnet/mainnet 仍需冻结最终地址/artifacts、activation height、acceptance
+  confirmation depth、canonical `USDBGenesisHash`、release signing key custody/trusted-key
+  distribution 和 bootstrap-admin governance；本批只验证发布与 joiner 机制。

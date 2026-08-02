@@ -270,6 +270,27 @@ verify release manifest signature
 - acceptance artifact 必须由 release manifest 承诺；单独下载的未签名 acceptance artifact
   不能建立 public network identity。
 
+当前 v1 实现使用以下 schema：
+
+- `uip-0010-public-release-manifest:v1`
+- `uip-0010-public-release-signature:v1`
+- `uip-0010-public-release-trusted-keys:v1`
+
+manifest 直接记录 `release_id`、`network_id`、`chain_id`、canonical genesis JSON
+SHA-256 / block hash、acceptance artifact SHA-256 / checkpoint / confirmation depth、
+bootnodes 文件 SHA-256 / canonical enode 集合，以及 Dividend fee policy。它不重复展开
+genesis 与 acceptance 已承诺的全部字段：
+
+- exact genesis bytes 间接承诺 activation matrix、system address、runtime code、chain config
+  和 `USDBGenesisHash` 输入。
+- exact acceptance artifact 间接承诺 SourceDAO bootstrap config/state、strict validation
+  identity 和全部 bootstrap transaction evidence。
+
+验证器必须从本地 exact files 重建 manifest 并逐字段比较，不能只验证 detached signature。
+v1 对 manifest exact bytes 使用 Ed25519 签名；signature 记录 key ID、manifest SHA-256 和
+base64 signature。manifest、signature 和 trusted-key parser 均拒绝未知字段、重复 JSON key、
+unsupported schema/algorithm、重复 key ID 和非 canonical bootnode。
+
 # Chain Config Fields
 
 UIP-0010 要求 USDB chain config 至少表达：
@@ -645,13 +666,22 @@ bootstrap.validation
 joiner 不需要重新执行 bootstrap 交易。它只需要同步链上历史、重新执行 strict validation 并验证
 acceptance checkpoint。在验证成功前，joiner 必须保持未接受状态，不得对外提供正式网络服务。
 
-当前开发期自动化入口
-`go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh` 会在 full bootstrap 后固定
-readiness，跨 fee gate 校验 UIP-0011 分账和 Dividend ledger sync，再固定 block hash/state root，
-重启出块节点，并启动 `full` sync 的全新 joiner 重放历史；随后在两端执行 strict validation、
-比较完整模块摘要，并断言 full bootstrap 重放没有新的 completed/error operation。fake PoW 使用
-1 秒 seal interval，避免生成墙钟未来块。该入口不替代 public release manifest signature、
-真实 BTC-side state 或 PoW calibration。
+当前有两个自动化入口：
+
+- `go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh` 覆盖 unsigned development
+  lifecycle：full bootstrap、fee gate、Dividend ledger sync、acceptance、restart、`full`
+  joiner 和 bootstrap 幂等重放。
+- `go-ethereum/scripts/usdb/run_usdb_public_release_candidate_e2e.sh` 覆盖 candidate public
+  release lifecycle：隔离 source snapshot 和空 Go cache 构建、SourceDAO artifact audit、
+  两次 canonical genesis exact-byte 比较、非零 confirmation depth acceptance、Ed25519
+  signed release manifest、篡改拒绝、node1 restart、仅通过 signed bootnode artifact 发现
+  node1 的 fresh `archive` joiner、genesis/acceptance 历史 state proof、fee gate 前后分账和
+  bootstrap 幂等重放。
+
+public-release E2E 默认拒绝 dirty worktree。开发本批验证未提交实现时可以显式使用
+`ALLOW_DIRTY_RELEASE_E2E=1`，但该 override 不能用于正式 release。测试使用 ephemeral signer、
+fake PoW 和 test-only UIP-0006 indexer fixture，只证明发布机制与历史重放闭环，不替代最终
+public 参数冻结、真实 BTC-side state、正式 release signing key custody 或 PoW calibration。
 
 # Trusted Bootstrap Manifest Key
 
@@ -668,7 +698,8 @@ trusted key 的价值是降低 joiner 对下载渠道、镜像站或手工复制
 v1 建议：
 
 - local dev / CI 不要求 trusted key。
-- public network release tooling 应支持 signed manifest 验证。
+- public network release tooling 已提供 `geth usdb-release-manifest create|verify`，public
+  release 必须同时验证 signature、expected release/network ID 和本地 artifact commitments。
 - public testnet 可以通过启动参数、安装包配置或 release bundle 提供 trusted key。
 - mainnet 应考虑把 official release signing key 或 trusted key registry 随客户端 / 安装包分发，并支持 key rotation。
 - 是否把 trusted key 编译进客户端、写入安装包配置，还是由 joiner 启动参数提供，留给后续冷启动 / joiner 流程文档确定。
@@ -706,12 +737,15 @@ UIP-0011 不应重新定义 SourceDAO / Dividend 冷启动流程。
 go-ethereum:
 
 - `/home/bucky/work/go-ethereum/cmd/geth/usdbbootstrap.go`
+- `/home/bucky/work/go-ethereum/cmd/geth/usdbrelease.go`
 - `/home/bucky/work/go-ethereum/cmd/geth/chaincmd.go`
 - `/home/bucky/work/go-ethereum/core/genesis.go`
+- `/home/bucky/work/go-ethereum/internal/usdbrelease/release.go`
 - `/home/bucky/work/go-ethereum/params/config.go`
 - `/home/bucky/work/go-ethereum/core/state_transition.go`
 - `/home/bucky/work/go-ethereum/scripts/usdb/run_local_two_node_network.sh`
 - `/home/bucky/work/go-ethereum/scripts/usdb/run_local_full_bootstrap_restart_joiner.sh`
+- `/home/bucky/work/go-ethereum/scripts/usdb/run_usdb_public_release_candidate_e2e.sh`
 
 SourceDAO:
 
@@ -766,6 +800,11 @@ USDB docker:
 - bootstrap 后重启节点仍保持状态。
 - joiner 使用同一 genesis 后可重放 bootstrap 历史、重算 strict validation identity 并验证同一
   acceptance checkpoint。
+- public release manifest 必须要求非零 acceptance confirmation depth，并承诺 exact genesis、
+  acceptance 和 bootnodes bytes；错误 release/network ID、untrusted key、manifest/signature/
+  genesis/acceptance/bootnodes drift 均失败。
+- fresh archive joiner 只能通过 manifest 承诺的 bootnode 自动发现网络，不能依赖测试脚本调用
+  `admin_addPeer`；同步后必须返回 genesis 与 acceptance checkpoint 的历史 account/storage proof。
 - fee split 激活前 `DividendAddress` 不收取协议分账。
 - fee split 激活后按 UIP-0011 的规则进入 `DividendAddress`。
 - runtime code hash 或 finalized marker 被篡改时，gate 后出块和验证 fail closed。
@@ -782,6 +821,6 @@ USDB docker:
 | fee split 的 on-chain bootstrap readiness predicate | v1 已冻结 exact Dividend runtime code hash + unstructured `bootstrapFinalized == 1`。 | public release 绑定最终 artifact/code hash，并保留 gate 后 fail-closed 测试。 |
 | `DividendFeeSplitBlock` 与 bootstrap 完成高度之间的安全间隔 | 不要求精确最小间隔；public network 应留 release 复核和恢复窗口。 | 在 UIP-0008 activation matrix 中固定每个 public network 的具体高度。 |
 | SourceDAO full bootstrap 是否进入 public network 首次 release 强制状态 | 若首个 release 需要完整 SourceDAO 治理系统，则 `scope = full` 应成为完成条件。 | 确认 public testnet / mainnet 的 required module set。 |
-| `bootstrap_state` / `bootstrap_marker` 是否需要签名 | marker 本身不是共识输入；public release 应签 manifest，并由 manifest 引用 state/marker hash。 | 设计 release signing key / signer set。 |
-| public joiner 是否需要内置 trusted bootstrap manifest key | trusted key 是 artifact provenance 机制，不是共识规则；joiner 还必须验证 manifest 承诺的 acceptance checkpoint。 | public release 前确定 key 嵌入方式、轮换策略和非零 confirmation depth。 |
+| `bootstrap_state` / `bootstrap_marker` 是否需要签名 | v1 manifest 通过 acceptance artifact SHA-256 间接承诺 exact bootstrap state/config；marker 不单独签名。 | public release 前冻结 release signing key custody 与发布流程。 |
+| public joiner 是否需要内置 trusted bootstrap manifest key | CLI、strict trusted-key schema 和 archive joiner E2E 已完成；trusted key 仍是 artifact provenance 机制，不是共识规则。 | public release 前确定 key 嵌入方式、轮换策略和该网络的非零 confirmation depth。 |
 | direct-predeploy initializer 抢跑 | v1 使用受控 candidate ceremony；strict validation + signed acceptance checkpoint 成功前不承认 public activation。 | public release tooling 必须保持外部入口关闭，失败时废弃 candidate datadir；若未来要求 block 0 permissionless，再单独引入 authenticated initializer 或 genesis storage。 |
