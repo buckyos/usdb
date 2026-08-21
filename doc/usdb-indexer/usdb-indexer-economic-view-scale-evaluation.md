@@ -1,7 +1,8 @@
 # USDB Economic View 规模评估
 
-状态：2026-07-27 已完成 `100 / 1K / 10K / 100K` deterministic release v4
-复核，并补齐 cold-cache、物理 I/O、并发分页和 multi-leader topology。
+状态：2026-08-02 已完成 `100 / 1K / 10K / 100K` deterministic release v4
+复核，以及 release v5 historical-context eviction、cold-first 并发和
+consume/remint/reorg/reopen 容量补充。
 
 ## 1. 目标与范围
 
@@ -30,6 +31,11 @@ round-robin 分散到指定数量的 Leader，用于比较单 Leader 热点和�
 - 同一冻结 `external_state` 重放的有序摘要完全一致。
 - 有序摘要按 item 长度分帧编码，不依赖分页边界；10K 数据在 `limit=20/100/500` 下得到相同 candidate/breakdown digest。
 - 关闭并重新打开 SQLite/RocksDB 后，candidate 与 breakdown 摘要仍完全一致。
+- 三个 historical context 交错查询严格遵守容量为 2 的 LRU；命中不重新读取
+  energy，淘汰后重查必须重新派生且摘要不变。
+- 同一 cold key 的并发首次查询只执行一次 energy 派生，所有 waiter 返回相同摘要。
+- 批量 consume/remint 后回滚并写入 replacement branch：pre-reorg context 保持可重放，
+  orphan context 被拒绝，replacement context 在 reopen 后逐项一致。
 
 ## 3. 观测口径
 
@@ -42,8 +48,9 @@ round-robin 分散到指定数量的 Leader，用于比较单 Leader 热点和�
   `read_bytes/write_bytes` delta。
 - cold-cache：关闭 storage、`sync_all` 后对 fixture 文件执行 GNU
   `dd iflag=nocache`，重新打开服务再遍历；报告同时记录实际 eviction 文件数和字节数。
-- concurrency：多个 barrier-synchronized client 对同一冻结 state 并发遍历
-  candidate 和热点 Leader breakdown，逐 client 校验 digest。
+- concurrency：v4 对 warm cache、v5 对全新进程中的 cold-first key 使用多个
+  barrier-synchronized client，逐 client 校验 digest，并比较单请求/并发的总 energy
+  decode 数量。
 
 SQLite/RocksDB 计数均为逻辑操作或 VM 工作量。只有 v4 cold-cache 报告中的
 `read_bytes` 是内核计数的物理读取；它仍受宿主机、虚拟化块设备和并行负载影响，
@@ -55,7 +62,8 @@ SQLite/RocksDB 计数均为逻辑操作或 VM 工作量。只有 v4 cold-cache �
 - Intel Core i7-13700KF，12 个可见逻辑 CPU
 - Rust `1.91.0`
 - v3 base commit：`697c349`
-- v4 100K base commit：`b8b1289`，叠加本批尚未提交的 scale-test 改动
+- v4 100K base commit：`b8b1289`，最终 hardening commit：`2b97fbe`
+- v5 base commit：`e208bb4`，叠加本批尚未提交的 capacity-test/cache 改动
 - profile：Cargo `--release`
 
 ## 5. 首轮结果
@@ -135,7 +143,42 @@ items，因此从 7.26 秒下降到约 258 毫秒。
 - 16 组 candidate 和 breakdown digest 全部一致；
 - cache-hit 路径 RocksDB seek/decode 为 0，额外 RSS 约 2.82 MiB。
 
-## 9. 运行方式
+## 9. Historical Cache、Cold-First 与 Churn/Reorg
+
+v5 使用真实 SQLite pass/history storage、RocksDB energy storage 和正式 RPC 派生层。
+LRU 序列固定为 `120, 121, 120, 122, 120, 121`；cache 上限为 2，因此预期
+hit 序列为 `false, false, true, false, true, false`。
+
+| N | Leaders | 每类 remint | candidate miss/hit ms | miss/hit decode | breakdown miss/hit ms | miss/hit decode |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 8 | 500 | 12.1-13.1 / 2.1-2.2 | 2,000 / 0 | 2.6-2.8 / 0.5-0.6 | 125 / 0 |
+| 10,000 | 32 | 5,000 | 306.3-310.6 / 10.1 | 20,000 / 0 | 24.9-26.6 / 0.6-0.7 | 313 / 0 |
+
+10K cold-first 结果：
+
+- 单 client candidate 全分页约 `311.2 ms`；8 client 同时首次查询的整体 wall time
+  约 `352.6 ms`，总 decode 均为 `20,000`，没有放大为 `160,000`。
+- 单 client 热点 breakdown 约 `28.9 ms`；8 client cold-first 整体约 `31.1 ms`，
+  总 decode 均为 `313`。
+- 服务端按完整 `external_state + resource parameters` 建立 per-key derivation gate；
+  unrelated historical key 不共享全局派生锁。gate 只保留 `Weak` 引用，不增加无界缓存。
+
+10K churn/reorg 路径每个分支执行 `5,000 standard + 5,000 collab` 的
+`Active -> Dormant -> Consumed` 与 replacement remint：
+
+- orphan branch 写入约 `786 ms`，回滚到 height 120 约 `352 ms`，replacement 写入
+  约 `762 ms`。
+- orphan `external_state` 在同高度 replacement 后返回 `SNAPSHOT_ID_MISMATCH`。
+- pre-reorg height 120 与 replacement height 131 的 candidate/breakdown digest，均在
+  SQLite/RocksDB 关闭重开后保持一致；数据库由约 `28.39 MiB` 增至约 `55.31 MiB`。
+- remint 折扣会产生相同 effective energy；容量断言按 UIP-0006 固定的 canonical
+  `pass_id` 文本逐字节顺序校验 tie-break。
+
+该 churn fixture 通过正式 storage/history/rollback 和 RPC 派生 API 批量写入确定性事件，
+用于测量大数据重放，不替代真实 ord 交易语义测试。真实 consume/remint/reorg 已由
+targeted live/regtest 与 300/2500-tick world-sim 交叉覆盖。
+
+## 10. 运行方式
 
 默认运行全部三档：
 
@@ -170,13 +213,23 @@ src/btc/usdb-indexer/scripts/run_economic_scale_eval.sh 100000
 
 JSON 默认写入 `src/btc/target/economic-scale/`。测试本身标记为 ignored，不进入普通单元测试时延预算。
 
-## 10. 后续评估边界
+容量补充默认执行 10K/5K churn：
+
+```bash
+src/btc/usdb-indexer/scripts/run_economic_capacity_supplement.sh
+```
+
+可通过 `USDB_ECONOMIC_CAPACITY_SIZE`、`USDB_ECONOMIC_CAPACITY_LEADER_COUNT`、
+`USDB_ECONOMIC_CAPACITY_CHURN_COUNT`、`USDB_ECONOMIC_CAPACITY_PAGE_LIMIT` 和
+`USDB_ECONOMIC_CAPACITY_COLD_START_CLIENTS` 调整规模；JSON 默认写入
+`src/btc/target/economic-capacity/`。
+
+## 11. 后续评估边界
 
 容量基线和跨页长重放一致性已经建立，但生产容量结论仍需要补充：
 
-1. 多个 historical height/Leader 交错查询和 bounded-cache eviction。
-2. 100K 以上离线容量点，以及 30-60 分钟 replay/查询 soak。
-3. 大规模 consume/remint/reorg 后重新打开服务，再验证同一历史 context 与新 canonical context。
-4. 在目标部署磁盘上用 cgroup/`fio` 隔离背景负载，重复 cold-cache 物理 I/O。
+1. 100K 以上离线容量点，以及 30-60 分钟 replay/查询 soak。
+2. 在目标部署磁盘上用 cgroup/`fio` 隔离背景负载，重复 cold-cache 物理 I/O。
+3. 未来 retention/pruning 落地后，重复多 historical context eviction 与 reopen 矩阵。
 
 这些项目属于容量与运行稳定性评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐结论。

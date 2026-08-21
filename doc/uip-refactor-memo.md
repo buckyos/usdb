@@ -535,7 +535,8 @@
 ## UIP-0004 至 UIP-0006 Economic View 规模评估
 
 状态：`100 / 1K / 10K / 100K` deterministic release v4、cold-cache、物理 I/O、
-multi-leader 和并发矩阵已完成；改动尚未提交，等待 review。
+multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的 v5 容量补充
+见本文后续独立小节。
 
 ### 实现与测试入口
 
@@ -560,8 +561,9 @@ multi-leader 和并发矩阵已完成；改动尚未提交，等待 review。
 
 ### 后续边界
 
-- 仍需 cold-start 并发首次派生、多 historical context cache eviction、100K 以上
-  容量点，以及目标部署磁盘上的隔离 I/O 重复测试。
+- cold-start 并发首次派生、多 historical context cache eviction 和批量
+  consume/remint/reorg/reopen 已由后续 v5 补充完成；仍需 100K 以上容量点，以及目标
+  部署磁盘上的隔离 I/O 重复测试。
 - 这些属于容量与运维评估，不阻塞 UIP-0001 至 UIP-0006 当前协议行为对齐。
 
 ## 跨 UIP 术语收口
@@ -1055,7 +1057,8 @@ review，尚未提交；本批不冻结 future quote/aux 正式语义。
   指标为 0；runner v2 显式区分 clean full run 与 recovery-stage qualification。
 - 长跑暴露并修正 wallet rescan transient、recovery wallet load、indexer restart
   未重建 transfer tracker 和 residual bitcoind 清理问题。
-- cold-start 并发首次派生、多 historical-context cache eviction 和 100K 以上容量点继续保留。
+- cold-start 并发首次派生、多 historical-context cache eviction 和批量
+  consume/remint/reorg/reopen 已由 2026-08-02 v5 补充完成；100K 以上容量点继续保留。
 - public testnet/mainnet 仍需正式 difficulty/fixed-price calibration、canonical
   genesis/release manifest 和真实第二 production policy 激活 E2E。
 - Go 新增真实 Ethash calibration report v4 和 pilot ladder。`0x2000` 的 256-block
@@ -1266,8 +1269,8 @@ Go `76dcafd35` / usdb `9202107`。
 
 ## UIP-0010 Public Release Candidate E2E
 
-状态：2026-07-29 实现、单元测试和首次完整跨进程 E2E 已通过；go-ethereum / SourceDAO
-改动等待 review，尚未提交。
+状态：2026-08-02 实现、单元测试和首次完整跨进程 E2E 已通过并提交：
+go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 - go-ethereum 新增 `internal/usdbrelease` 和
   `geth usdb-release-manifest create|verify`，冻结 manifest/signature/trusted-key v1
@@ -1298,3 +1301,31 @@ Go `76dcafd35` / usdb `9202107`。
 - 正式 public testnet/mainnet 仍需冻结最终地址/artifacts、activation height、acceptance
   confirmation depth、canonical `USDBGenesisHash`、release signing key custody/trusted-key
   distribution 和 bootstrap-admin governance；本批只验证发布与 joiner 机制。
+
+## UIP-0006 容量补充：Historical Cache、Cold-First 与 Churn/Reorg
+
+状态：2026-08-02 实现与 `1K / 10K` release 数据点已通过，等待 review，尚未提交。
+
+- candidate/breakdown 有界缓存继续固定为 2 个完整 external-state key；新增 per-key
+  derivation gate，同一 cold key 的并发请求只允许一个请求执行全量派生，其余 waiter
+  在 gate 后复查缓存。gate 使用 `Weak` 生命周期，不形成第二套无界 key storage，
+  不同 historical key 也不会被一个全局派生锁串行化。
+- 新增 ignored release test 与独立 runner
+  `run_economic_capacity_supplement.sh`，结构化报告记录 latency、RSS、SQLite、RocksDB、
+  process I/O、digest、LRU 命中和 churn/reorg/reopen 结果。
+- LRU 序列 `120,121,120,122,120,121` 精确得到
+  `miss,miss,hit,miss,hit,miss`。10K candidate miss/hit 分别解码 `20,000/0`
+  条 energy record；热点 breakdown 为 `313/0`，被淘汰 context 重查摘要保持一致。
+- 10K 8-client cold-first candidate 整体约 `352.6 ms`，与单 client 一样只解码
+  `20,000` 条，而不是放大到 `160,000`；热点 breakdown 同样保持单次 `313` 条解码。
+- 容量分支每次执行 `5,000 standard + 5,000 collab` 的 dormant/consume/remint；
+  orphan 写入约 `786 ms`、回滚约 `352 ms`、replacement 写入约 `762 ms`。
+  同高度 replacement 后 orphan context 返回 `SNAPSHOT_ID_MISMATCH`；pre-reorg 与
+  replacement candidate/breakdown 均在 SQLite/RocksDB reopen 后逐项重放一致。
+- 首次 1K run 使 remint 折扣产生 equal effective energy，暴露 scale harness 用解析后的
+  `InscriptionId` 比较 tie-break；UIP-0006 要求 canonical `pass_id` 文本逐字节升序，
+  已修正测试断言，服务端排序口径无需改变。
+- 该 synthetic capacity fixture 走真实 storage/history/rollback 和 RPC 派生 API；真实
+  ord consume/remint/reorg 语义继续由 targeted live 与既有 300/2500-tick world-sim 覆盖。
+- 后续容量项收敛为 100K 以上离线点、目标部署磁盘隔离复核、30-60 分钟 replay/query
+  soak，以及未来 retention/pruning 上线后的同矩阵复跑。

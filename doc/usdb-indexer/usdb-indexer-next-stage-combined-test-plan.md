@@ -217,7 +217,8 @@ recovery qualification run，最终所有 fail 指标为 0。
    - 已完成 `100 / 1K / 10K / 100K` standard + collab 的 candidate/profile/breakdown 容量基线与 restart replay
    - 已完成 10K 下 `limit=20/100/500` 的 cursor 分页敏感性评估
    - 已完成 100K cold-cache/物理 I/O、1,000-Leader topology 和 8-client cache-hit 并发分页
-   - 待补多 historical context cache eviction、cold-start 并发首次派生和 100K 以上容量点
+   - 已完成 10K 多 historical context LRU eviction、8-client cold-start 首次派生 singleflight，以及每类 5K consume/remint/reorg/reopen 重放
+   - 待补 100K 以上容量点、目标磁盘隔离复核和 30-60 分钟查询/replay soak
    - 300-tick 与 2500-tick 三 seed validator replay/query soak 均已完成
 4. 未来真实 prune / retention feature 上线后的新专项
    - 真实 retention floor

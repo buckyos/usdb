@@ -59,7 +59,7 @@ UIP-0003、UIP-0004 和 UIP-0005 分别定义了：
 
 参考实现也已补齐跨组件调用面：Rust typed client、`usdb-indexer-cli` 和 control-plane proxy 都能直接调用 historical state ref、profile、miner aggregate、`candidate_set_view` 和 `collab_breakdown`。`get_rpc_info` 现在显式声明 view version、`candidate_set_view` ordering rule、max limit 和五个必需 feature；control-plane 只有在 service/API/version/rule/features 全部匹配时才声明 UIP-0006 economic state view 可用。
 
-happy path、same-height reorg、three-pass `candidate_set_view` 和 three-collab `collab_breakdown` 已通过真实 ord targeted smoke。deterministic live/regtest 与 `100 / 1K / 10K` 规模矩阵也已完成；后续容量工作集中在并发、冷缓存、100K 以上规模和长时 soak。
+happy path、same-height reorg、three-pass `candidate_set_view` 和 three-collab `collab_breakdown` 已通过真实 ord targeted smoke。deterministic live/regtest、`100 / 1K / 10K / 100K` 规模矩阵，以及 10K historical-context eviction、cold-first 并发和 5K-per-kind consume/remint/reorg/reopen 容量补充均已完成；后续容量工作集中在 100K 以上规模、目标磁盘复核和长时 soak。
 
 # 能力发现
 
@@ -560,9 +560,9 @@ USDB Economic State View
 - cursor 正常续页在 current head 前进后仍固定原 external state。
 - 非法 limit、cursor 篡改、跨资源 cursor、绑定字段变化和旧 `page/page_size` 请求均 fail closed。
 
-参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K / 100K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放、restart 重放、cold-cache 物理 I/O、cache-hit 并发分页和 single/multi-leader topology；结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim 已通过；2500-tick 多 seed 长时 soak、cold-start 并发和多 historical-context cache eviction 仍属于后续容量评估。
+参考实现的 Rust/service tests 已覆盖上述 core 规则；deterministic live/regtest 矩阵已覆盖 profile / `candidate_set_view` / `collab_breakdown`、版本 mismatch、head advance、same-height/multi-block reorg、restart 和 historical context。`100 / 1K / 10K / 100K` standard + collab 规模矩阵已覆盖 cursor 全分页、两种 breakdown 排序、冻结状态重放、restart 重放、cold-cache 物理 I/O、cache-hit 并发分页和 single/multi-leader topology；10K 补充矩阵进一步覆盖容量为 2 的 historical-context LRU、8-client cold-first singleflight，以及每类 5K consume/remint 后 rollback、replacement、orphan 拒绝和 reopen 重放。结果与测量边界见 `doc/usdb-indexer/usdb-indexer-economic-view-scale-evaluation.md`。完整 300-block 随机 world-sim 与 2500-tick 多 seed 长时 soak 已通过。
 
 # 后续实现议题
 
-1. cold-start 并发、多个 historical context 和 100K 以上规模下的 cache eviction/容量评估。
+1. 100K 以上规模、目标部署磁盘和未来 retention/pruning 下的容量复核。
 2. script hash -> BTC address 反向索引是否作为后续独立能力实现。

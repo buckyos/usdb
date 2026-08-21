@@ -15,6 +15,10 @@ const QUERY_HEIGHT: u32 = 120;
 const MINT_HEIGHT: u32 = 100;
 const MAINNET_LEADER_ADDRESS: &str = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh";
 const REPORT_VERSION: &str = "usdb-economic-view-scale:v4";
+const CAPACITY_REPORT_VERSION: &str = "usdb-economic-view-capacity-supplement:v1";
+const HISTORICAL_CONTEXT_END_HEIGHT: u32 = 124;
+const CHURN_DORMANT_HEIGHT: u32 = 130;
+const CHURN_REMINT_HEIGHT: u32 = 131;
 
 static SQLITE_STATEMENTS: AtomicU64 = AtomicU64::new(0);
 static SQLITE_READ_STATEMENTS: AtomicU64 = AtomicU64::new(0);
@@ -145,6 +149,87 @@ struct ConcurrentQuerySpec<'a> {
     expected_breakdown_digest: &'a str,
     client_count: usize,
     iterations_per_client: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CacheProbeResult {
+    block_height: u32,
+    expected_cache_hit: bool,
+    observed_cache_hit: bool,
+    cache_entry_count: usize,
+    ordered_digest: String,
+    metrics: QueryRunMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoricalCacheEvictionResult {
+    cache_max_entries: usize,
+    query_sequence: Vec<u32>,
+    candidate_probes: Vec<CacheProbeResult>,
+    breakdown_probes: Vec<CacheProbeResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct ColdConcurrentRunResult {
+    client_count: usize,
+    traversal_count: usize,
+    latency_p50_us: u64,
+    latency_p95_us: u64,
+    latency_max_us: u64,
+    wall_latency_us: u64,
+    ordered_digest: String,
+    combined_metrics: QueryRunMetrics,
+}
+
+#[derive(Debug, Serialize)]
+struct ColdFirstDerivationResult {
+    candidate_single: CandidateRunResult,
+    candidate_concurrent: ColdConcurrentRunResult,
+    breakdown_single: BreakdownRunResult,
+    breakdown_concurrent: ColdConcurrentRunResult,
+}
+
+#[derive(Debug, Serialize)]
+struct ChurnBranchResult {
+    standard_remint_count: usize,
+    collab_remint_count: usize,
+    apply_latency_ms: u64,
+    candidate: CandidateRunResult,
+    breakdown: BreakdownRunResult,
+}
+
+#[derive(Debug, Serialize)]
+struct ChurnReorgReplayResult {
+    dormant_height: u32,
+    remint_height: u32,
+    rollback_latency_ms: u64,
+    orphan_context_rejected: bool,
+    orphan_error_code: i64,
+    orphan: ChurnBranchResult,
+    replacement: ChurnBranchResult,
+    restart_base_candidate: CandidateRunResult,
+    restart_base_breakdown: BreakdownRunResult,
+    restart_replacement_candidate: CandidateRunResult,
+    restart_replacement_breakdown: BreakdownRunResult,
+}
+
+#[derive(Debug, Serialize)]
+struct EconomicCapacitySupplementReport {
+    report_version: &'static str,
+    build_profile: &'static str,
+    standard_pass_count: usize,
+    collab_pass_count: usize,
+    leader_count: usize,
+    churn_count_per_kind: usize,
+    page_limit: usize,
+    cold_start_client_count: usize,
+    fixture_build_latency_ms: u64,
+    fixture_rss_delta_kib: i64,
+    database_size_bytes_before_churn: u64,
+    database_size_bytes_after_replay: u64,
+    historical_cache_eviction: HistoricalCacheEvictionResult,
+    cold_first_derivation: ColdFirstDerivationResult,
+    churn_reorg_replay: ChurnReorgReplayResult,
 }
 
 #[derive(Debug, Serialize)]
@@ -665,6 +750,63 @@ fn seed_scale_fixture(
     }
 }
 
+fn expected_collab_contribution_at_height(
+    pass_count: usize,
+    leader_count: usize,
+    leader_index: Option<usize>,
+    block_height: u32,
+) -> Energy {
+    let growth = calc_growth_delta(100_000, block_height.saturating_sub(QUERY_HEIGHT));
+    (0..pass_count).fold(0u128, |total, index| {
+        if leader_index.is_some_and(|leader| index % leader_count != leader) {
+            return total;
+        }
+        let raw_energy = ((index as u128).saturating_add(1))
+            .saturating_mul(2)
+            .saturating_add(growth);
+        total.saturating_add(calc_collab_contribution(raw_energy))
+    })
+}
+
+fn seed_state_ref_context_with_identity(
+    server: &UsdbIndexerRpcServer,
+    block_height: u32,
+    hash_byte: u8,
+    commit_byte: u8,
+) -> balance_history::SnapshotInfo {
+    let mut snapshot = ready_balance_history_snapshot(block_height);
+    snapshot.stable_block_hash = Some(format!("{hash_byte:02x}").repeat(32));
+    snapshot.latest_block_commit = Some(format!("{commit_byte:02x}").repeat(32));
+    let mut readiness = ready_balance_history_readiness(block_height);
+    readiness.stable_block_hash = snapshot.stable_block_hash.clone();
+    readiness.latest_block_commit = snapshot.latest_block_commit.clone();
+    server
+        .status
+        .set_balance_history_snapshot(Some(snapshot.clone()));
+    server.status.set_balance_history_readiness(Some(readiness));
+    server
+        .indexer
+        .miner_pass_storage()
+        .upsert_balance_history_snapshot_anchor(&snapshot)
+        .unwrap();
+    server
+        .indexer
+        .miner_pass_storage()
+        .upsert_active_balance_snapshot(block_height, 5_000, 2)
+        .unwrap();
+    snapshot
+}
+
+fn resolve_external_state(
+    server: &UsdbIndexerRpcServer,
+    block_height: u32,
+) -> EconomicExternalState {
+    let (_, state_ref) = server
+        .resolve_economic_query_context(USDB_ECONOMIC_STATE_VIEW_VERSION, Some(block_height), None)
+        .unwrap();
+    EconomicExternalState::from(&state_ref)
+}
+
 fn collect_candidate_pages(
     server: &UsdbIndexerRpcServer,
     expected_total: usize,
@@ -674,6 +816,43 @@ fn collect_candidate_pages(
     limit: usize,
     pinned_state: Option<&EconomicExternalState>,
 ) -> CandidateRunResult {
+    collect_candidate_pages_at_height(
+        server,
+        CandidateCollectionSpec {
+            query_height: QUERY_HEIGHT,
+            expected_total,
+            leader_id,
+            expected_total_contribution,
+            expected_contributing_leaders,
+            limit,
+            pinned_state,
+        },
+    )
+}
+
+struct CandidateCollectionSpec<'a> {
+    query_height: u32,
+    expected_total: usize,
+    leader_id: &'a str,
+    expected_total_contribution: Energy,
+    expected_contributing_leaders: usize,
+    limit: usize,
+    pinned_state: Option<&'a EconomicExternalState>,
+}
+
+fn collect_candidate_pages_at_height(
+    server: &UsdbIndexerRpcServer,
+    spec: CandidateCollectionSpec<'_>,
+) -> CandidateRunResult {
+    let CandidateCollectionSpec {
+        query_height,
+        expected_total,
+        leader_id,
+        expected_total_contribution,
+        expected_contributing_leaders,
+        limit,
+        pinned_state,
+    } = spec;
     let metric_start = reset_read_metrics(server);
     let mut cursor = None;
     let mut page_count = 0usize;
@@ -682,7 +861,7 @@ fn collect_candidate_pages(
     let mut hasher = Sha256::new();
     let mut external_state = None;
     let mut leader_item = None;
-    let mut previous_item: Option<(Energy, InscriptionId)> = None;
+    let mut previous_item: Option<(Energy, String)> = None;
     let mut aggregate_collab_contribution: Energy = 0;
     let mut contributing_leader_count = 0usize;
 
@@ -691,7 +870,7 @@ fn collect_candidate_pages(
         let page = server
             .get_candidate_set_view(GetCandidateSetViewParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
-                block_height: cursor.is_none().then_some(QUERY_HEIGHT),
+                block_height: cursor.is_none().then_some(query_height),
                 context: if cursor.is_none() {
                     pinned_state.map(ConsensusQueryContext::from)
                 } else {
@@ -719,14 +898,14 @@ fn collect_candidate_pages(
         for item in &page.items {
             let effective_energy = item.effective_energy.parse::<Energy>().unwrap();
             let collab_contribution = item.collab_contribution.parse::<Energy>().unwrap();
-            let pass_id = item.pass_id.parse::<InscriptionId>().unwrap();
-            if let Some((previous_energy, previous_pass_id)) = previous_item {
+            if let Some((previous_energy, previous_pass_id)) = previous_item.as_ref() {
                 assert!(
-                    previous_energy > effective_energy
-                        || (previous_energy == effective_energy && previous_pass_id <= pass_id)
+                    *previous_energy > effective_energy
+                        || (*previous_energy == effective_energy
+                            && previous_pass_id <= &item.pass_id)
                 );
             }
-            previous_item = Some((effective_energy, pass_id));
+            previous_item = Some((effective_energy, item.pass_id.clone()));
             if item.pass_id == leader_id {
                 leader_item = Some(item.clone());
             }
@@ -772,6 +951,26 @@ fn collect_breakdown_pages(
     sort: &str,
     pinned_state: Option<&EconomicExternalState>,
 ) -> BreakdownRunResult {
+    collect_breakdown_pages_at_height(
+        server,
+        QUERY_HEIGHT,
+        leader_id,
+        expected_total,
+        limit,
+        sort,
+        pinned_state,
+    )
+}
+
+fn collect_breakdown_pages_at_height(
+    server: &UsdbIndexerRpcServer,
+    query_height: u32,
+    leader_id: &str,
+    expected_total: usize,
+    limit: usize,
+    sort: &str,
+    pinned_state: Option<&EconomicExternalState>,
+) -> BreakdownRunResult {
     let metric_start = reset_read_metrics(server);
     let mut cursor = None;
     let mut page_count = 0usize;
@@ -793,7 +992,7 @@ fn collect_breakdown_pages(
             .get_collab_breakdown(GetCollabBreakdownParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader_id.to_string(),
-                block_height: cursor.is_none().then_some(QUERY_HEIGHT),
+                block_height: cursor.is_none().then_some(query_height),
                 context: if cursor.is_none() {
                     pinned_state.map(ConsensusQueryContext::from)
                 } else {
@@ -894,6 +1093,24 @@ fn replay_candidate_pages(
     limit: usize,
     pinned_state: &EconomicExternalState,
 ) -> TraversalMetrics {
+    replay_candidate_pages_at_height(
+        server,
+        QUERY_HEIGHT,
+        expected_total,
+        expected_digest,
+        limit,
+        pinned_state,
+    )
+}
+
+fn replay_candidate_pages_at_height(
+    server: &UsdbIndexerRpcServer,
+    query_height: u32,
+    expected_total: usize,
+    expected_digest: &str,
+    limit: usize,
+    pinned_state: &EconomicExternalState,
+) -> TraversalMetrics {
     let started_at = Instant::now();
     let mut cursor = None;
     let mut page_count = 0usize;
@@ -903,7 +1120,7 @@ fn replay_candidate_pages(
         let page = server
             .get_candidate_set_view(GetCandidateSetViewParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
-                block_height: cursor.is_none().then_some(QUERY_HEIGHT),
+                block_height: cursor.is_none().then_some(query_height),
                 context: cursor
                     .is_none()
                     .then(|| ConsensusQueryContext::from(pinned_state)),
@@ -942,6 +1159,43 @@ fn replay_breakdown_pages(
     limit: usize,
     pinned_state: &EconomicExternalState,
 ) -> TraversalMetrics {
+    replay_breakdown_pages_at_height(
+        server,
+        BreakdownReplaySpec {
+            query_height: QUERY_HEIGHT,
+            leader_id,
+            expected_total,
+            expected_contribution,
+            expected_digest,
+            limit,
+            pinned_state,
+        },
+    )
+}
+
+struct BreakdownReplaySpec<'a> {
+    query_height: u32,
+    leader_id: &'a str,
+    expected_total: usize,
+    expected_contribution: Energy,
+    expected_digest: &'a str,
+    limit: usize,
+    pinned_state: &'a EconomicExternalState,
+}
+
+fn replay_breakdown_pages_at_height(
+    server: &UsdbIndexerRpcServer,
+    spec: BreakdownReplaySpec<'_>,
+) -> TraversalMetrics {
+    let BreakdownReplaySpec {
+        query_height,
+        leader_id,
+        expected_total,
+        expected_contribution,
+        expected_digest,
+        limit,
+        pinned_state,
+    } = spec;
     let started_at = Instant::now();
     let mut cursor = None;
     let mut page_count = 0usize;
@@ -952,7 +1206,7 @@ fn replay_breakdown_pages(
             .get_collab_breakdown(GetCollabBreakdownParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 leader_pass_id: leader_id.to_string(),
-                block_height: cursor.is_none().then_some(QUERY_HEIGHT),
+                block_height: cursor.is_none().then_some(query_height),
                 context: cursor
                     .is_none()
                     .then(|| ConsensusQueryContext::from(pinned_state)),
@@ -1098,6 +1352,512 @@ fn run_concurrent_queries(
     }
 }
 
+fn candidate_cache_contains(
+    server: &UsdbIndexerRpcServer,
+    external_state: &EconomicExternalState,
+) -> bool {
+    server
+        .candidate_set_view_cache
+        .lock()
+        .unwrap()
+        .entries
+        .iter()
+        .any(|entry| entry.external_state == *external_state)
+}
+
+fn breakdown_cache_contains(
+    server: &UsdbIndexerRpcServer,
+    external_state: &EconomicExternalState,
+    leader_id: &str,
+) -> bool {
+    server
+        .collab_breakdown_cache
+        .lock()
+        .unwrap()
+        .entries
+        .iter()
+        .any(|entry| {
+            entry.external_state == *external_state
+                && entry.leader_pass_id == leader_id
+                && entry.sort == "collab_pass_id_asc"
+        })
+}
+
+fn run_historical_cache_eviction(
+    server: &UsdbIndexerRpcServer,
+    pass_count: usize,
+    leader_count: usize,
+    primary_leader: &ScaleLeaderFixture,
+    page_limit: usize,
+    states: &BTreeMap<u32, EconomicExternalState>,
+) -> HistoricalCacheEvictionResult {
+    let query_sequence = vec![120, 121, 120, 122, 120, 121];
+    let expected_hits = [false, false, true, false, true, false];
+    let leader_id = primary_leader.pass.inscription_id.to_string();
+    let mut candidate_digests = BTreeMap::new();
+    let mut candidate_probes = Vec::with_capacity(query_sequence.len());
+    for (&block_height, &expected_cache_hit) in query_sequence.iter().zip(&expected_hits) {
+        let state = states.get(&block_height).unwrap();
+        let observed_cache_hit = candidate_cache_contains(server, state);
+        assert_eq!(observed_cache_hit, expected_cache_hit);
+        let run = collect_candidate_pages_at_height(
+            server,
+            CandidateCollectionSpec {
+                query_height: block_height,
+                expected_total: pass_count,
+                leader_id: &leader_id,
+                expected_total_contribution: expected_collab_contribution_at_height(
+                    pass_count,
+                    leader_count,
+                    None,
+                    block_height,
+                ),
+                expected_contributing_leaders: leader_count,
+                limit: page_limit,
+                pinned_state: Some(state),
+            },
+        );
+        if let Some(previous) = candidate_digests.insert(block_height, run.ordered_digest.clone()) {
+            assert_eq!(run.ordered_digest, previous);
+        }
+        if expected_cache_hit {
+            assert_eq!(run.metrics.reads.rocksdb_records_decoded, 0);
+            assert_eq!(run.metrics.reads.rocksdb_iterator_seeks, 0);
+        } else {
+            assert!(run.metrics.reads.rocksdb_records_decoded > 0);
+        }
+        let cache_entry_count = server
+            .candidate_set_view_cache
+            .lock()
+            .unwrap()
+            .entries
+            .len();
+        assert!(cache_entry_count <= ECONOMIC_VIEW_CACHE_MAX_ENTRIES);
+        candidate_probes.push(CacheProbeResult {
+            block_height,
+            expected_cache_hit,
+            observed_cache_hit,
+            cache_entry_count,
+            ordered_digest: run.ordered_digest,
+            metrics: run.metrics,
+        });
+    }
+
+    let mut breakdown_digests = BTreeMap::new();
+    let mut breakdown_probes = Vec::with_capacity(query_sequence.len());
+    for (&block_height, &expected_cache_hit) in query_sequence.iter().zip(&expected_hits) {
+        let state = states.get(&block_height).unwrap();
+        let observed_cache_hit = breakdown_cache_contains(server, state, &leader_id);
+        assert_eq!(observed_cache_hit, expected_cache_hit);
+        let run = collect_breakdown_pages_at_height(
+            server,
+            block_height,
+            &leader_id,
+            primary_leader.collab_count,
+            page_limit,
+            "collab_pass_id_asc",
+            Some(state),
+        );
+        assert_eq!(
+            run.aggregate_collab_contribution,
+            expected_collab_contribution_at_height(
+                pass_count,
+                leader_count,
+                Some(0),
+                block_height,
+            )
+            .to_string()
+        );
+        if let Some(previous) = breakdown_digests.insert(block_height, run.ordered_digest.clone()) {
+            assert_eq!(run.ordered_digest, previous);
+        }
+        if expected_cache_hit {
+            assert_eq!(run.metrics.reads.rocksdb_records_decoded, 0);
+            assert_eq!(run.metrics.reads.rocksdb_iterator_seeks, 0);
+        } else {
+            assert!(run.metrics.reads.rocksdb_records_decoded > 0);
+        }
+        let cache_entry_count = server.collab_breakdown_cache.lock().unwrap().entries.len();
+        assert!(cache_entry_count <= ECONOMIC_VIEW_CACHE_MAX_ENTRIES);
+        breakdown_probes.push(CacheProbeResult {
+            block_height,
+            expected_cache_hit,
+            observed_cache_hit,
+            cache_entry_count,
+            ordered_digest: run.ordered_digest,
+            metrics: run.metrics,
+        });
+    }
+
+    HistoricalCacheEvictionResult {
+        cache_max_entries: ECONOMIC_VIEW_CACHE_MAX_ENTRIES,
+        query_sequence,
+        candidate_probes,
+        breakdown_probes,
+    }
+}
+
+fn run_cold_candidate_concurrent(
+    server: &UsdbIndexerRpcServer,
+    block_height: u32,
+    expected_total: usize,
+    expected_digest: &str,
+    page_limit: usize,
+    pinned_state: &EconomicExternalState,
+    client_count: usize,
+) -> ColdConcurrentRunResult {
+    let metric_start = reset_read_metrics(server);
+    let wall_started_at = Instant::now();
+    let barrier = Arc::new(Barrier::new(client_count));
+    let mut workers = Vec::with_capacity(client_count);
+    for _ in 0..client_count {
+        let server = server.clone();
+        let barrier = barrier.clone();
+        let pinned_state = pinned_state.clone();
+        let expected_digest = expected_digest.to_string();
+        workers.push(thread::spawn(move || {
+            barrier.wait();
+            replay_candidate_pages_at_height(
+                &server,
+                block_height,
+                expected_total,
+                &expected_digest,
+                page_limit,
+                &pinned_state,
+            )
+        }));
+    }
+
+    let mut latencies = Vec::with_capacity(client_count);
+    let mut total_pages = 0usize;
+    let mut total_items = 0usize;
+    for worker in workers {
+        let run = worker.join().unwrap();
+        latencies.push(duration_us(run.elapsed));
+        total_pages = total_pages.saturating_add(run.page_count);
+        total_items = total_items.saturating_add(run.item_count);
+    }
+    let wall_latency = wall_started_at.elapsed();
+    let latency_max_us = *latencies.iter().max().unwrap();
+    let latency_p50_us = duration_percentile(&mut latencies, 50);
+    let latency_p95_us = duration_percentile(&mut latencies, 95);
+    ColdConcurrentRunResult {
+        client_count,
+        traversal_count: client_count,
+        latency_p50_us,
+        latency_p95_us,
+        latency_max_us,
+        wall_latency_us: duration_us(wall_latency),
+        ordered_digest: expected_digest.to_string(),
+        combined_metrics: finish_read_metrics(
+            server,
+            metric_start,
+            Duration::ZERO,
+            total_pages,
+            total_items,
+        ),
+    }
+}
+
+struct ColdBreakdownSpec<'a> {
+    block_height: u32,
+    leader_id: &'a str,
+    expected_total: usize,
+    expected_contribution: Energy,
+    expected_digest: &'a str,
+    page_limit: usize,
+    pinned_state: &'a EconomicExternalState,
+    client_count: usize,
+}
+
+fn run_cold_breakdown_concurrent(
+    server: &UsdbIndexerRpcServer,
+    spec: ColdBreakdownSpec<'_>,
+) -> ColdConcurrentRunResult {
+    let metric_start = reset_read_metrics(server);
+    let wall_started_at = Instant::now();
+    let barrier = Arc::new(Barrier::new(spec.client_count));
+    let mut workers = Vec::with_capacity(spec.client_count);
+    for _ in 0..spec.client_count {
+        let server = server.clone();
+        let barrier = barrier.clone();
+        let pinned_state = spec.pinned_state.clone();
+        let leader_id = spec.leader_id.to_string();
+        let expected_digest = spec.expected_digest.to_string();
+        let block_height = spec.block_height;
+        let expected_total = spec.expected_total;
+        let expected_contribution = spec.expected_contribution;
+        let page_limit = spec.page_limit;
+        workers.push(thread::spawn(move || {
+            barrier.wait();
+            replay_breakdown_pages_at_height(
+                &server,
+                BreakdownReplaySpec {
+                    query_height: block_height,
+                    leader_id: &leader_id,
+                    expected_total,
+                    expected_contribution,
+                    expected_digest: &expected_digest,
+                    limit: page_limit,
+                    pinned_state: &pinned_state,
+                },
+            )
+        }));
+    }
+
+    let mut latencies = Vec::with_capacity(spec.client_count);
+    let mut total_pages = 0usize;
+    let mut total_items = 0usize;
+    for worker in workers {
+        let run = worker.join().unwrap();
+        latencies.push(duration_us(run.elapsed));
+        total_pages = total_pages.saturating_add(run.page_count);
+        total_items = total_items.saturating_add(run.item_count);
+    }
+    let wall_latency = wall_started_at.elapsed();
+    let latency_max_us = *latencies.iter().max().unwrap();
+    let latency_p50_us = duration_percentile(&mut latencies, 50);
+    let latency_p95_us = duration_percentile(&mut latencies, 95);
+    ColdConcurrentRunResult {
+        client_count: spec.client_count,
+        traversal_count: spec.client_count,
+        latency_p50_us,
+        latency_p95_us,
+        latency_max_us,
+        wall_latency_us: duration_us(wall_latency),
+        ordered_digest: spec.expected_digest.to_string(),
+        combined_metrics: finish_read_metrics(
+            server,
+            metric_start,
+            Duration::ZERO,
+            total_pages,
+            total_items,
+        ),
+    }
+}
+
+struct AppliedChurnBranch {
+    standard_remint_count: usize,
+    collab_remint_count: usize,
+    total_collab_contribution: Energy,
+    primary_leader_contribution: Energy,
+    apply_latency_ms: u64,
+}
+
+fn apply_churn_branch(
+    server: &UsdbIndexerRpcServer,
+    pass_count: usize,
+    leader_count: usize,
+    churn_count: usize,
+    standard_namespace: u8,
+    collab_namespace: u8,
+) -> AppliedChurnBranch {
+    use crate::index::energy_formula::calc_inheritable_energy;
+
+    let started_at = Instant::now();
+    let storage = server.indexer.miner_pass_storage();
+    let mut energy_records = Vec::with_capacity(churn_count.saturating_mul(6));
+    storage.savepoint_begin().unwrap();
+
+    for offset in 0..churn_count {
+        let index = leader_count.saturating_add(offset);
+        let index_u32 = u32::try_from(index).unwrap();
+        let old_id = scale_inscription_id(1, index_u32);
+        let old = storage
+            .get_pass_by_inscription_id(&old_id)
+            .unwrap()
+            .expect("standard prev pass must exist");
+        let dormant_energy = 1_000_000u128
+            .saturating_add((pass_count - index) as u128)
+            .saturating_add(calc_growth_delta(
+                100_000,
+                CHURN_DORMANT_HEIGHT - QUERY_HEIGHT,
+            ));
+        storage
+            .update_state_at_height(
+                &old_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                CHURN_DORMANT_HEIGHT,
+            )
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &old_id,
+                MinerPassState::Consumed,
+                MinerPassState::Dormant,
+                CHURN_REMINT_HEIGHT,
+            )
+            .unwrap();
+        let mut remint = scale_pass(
+            standard_namespace,
+            index_u32,
+            i32::try_from(pass_count.saturating_mul(2).saturating_add(index)).unwrap(),
+            old.owner,
+            MinerPassKind::Standard,
+            ScaleLeaderRef::None,
+        );
+        remint.mint_block_height = CHURN_REMINT_HEIGHT;
+        remint.prev = vec![old_id];
+        storage
+            .add_new_mint_pass_at_height(&remint, CHURN_REMINT_HEIGHT)
+            .unwrap();
+        energy_records.extend([
+            PassEnergyRecord {
+                inscription_id: old_id,
+                block_height: CHURN_DORMANT_HEIGHT,
+                state: MinerPassState::Dormant,
+                active_block_height: MINT_HEIGHT,
+                owner_address: old.owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: dormant_energy,
+            },
+            PassEnergyRecord {
+                inscription_id: old_id,
+                block_height: CHURN_REMINT_HEIGHT,
+                state: MinerPassState::Consumed,
+                active_block_height: CHURN_REMINT_HEIGHT,
+                owner_address: old.owner,
+                owner_balance: 0,
+                owner_delta: 0,
+                energy: 0,
+            },
+            PassEnergyRecord {
+                inscription_id: remint.inscription_id,
+                block_height: CHURN_REMINT_HEIGHT,
+                state: MinerPassState::Active,
+                active_block_height: CHURN_REMINT_HEIGHT,
+                owner_address: remint.owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: calc_inheritable_energy(dormant_energy),
+            },
+        ]);
+    }
+
+    for index in 0..churn_count {
+        let index_u32 = u32::try_from(index).unwrap();
+        let old_id = scale_inscription_id(2, index_u32);
+        let old = storage
+            .get_pass_by_inscription_id(&old_id)
+            .unwrap()
+            .expect("collab prev pass must exist");
+        let dormant_energy = ((index as u128).saturating_add(1))
+            .saturating_mul(2)
+            .saturating_add(calc_growth_delta(
+                100_000,
+                CHURN_DORMANT_HEIGHT - QUERY_HEIGHT,
+            ));
+        storage
+            .update_state_at_height(
+                &old_id,
+                MinerPassState::Dormant,
+                MinerPassState::Active,
+                CHURN_DORMANT_HEIGHT,
+            )
+            .unwrap();
+        storage
+            .update_state_at_height(
+                &old_id,
+                MinerPassState::Consumed,
+                MinerPassState::Dormant,
+                CHURN_REMINT_HEIGHT,
+            )
+            .unwrap();
+        let leader_ref = if let Some(leader_pass_id) = old.leader_pass_id {
+            ScaleLeaderRef::PassId(leader_pass_id)
+        } else {
+            ScaleLeaderRef::Address {
+                address: old
+                    .leader_btc_addr
+                    .as_deref()
+                    .expect("address collab must retain Leader address"),
+                owner: old
+                    .leader_btc_owner
+                    .expect("address collab must retain Leader owner"),
+            }
+        };
+        let mut remint = scale_pass(
+            collab_namespace,
+            index_u32,
+            i32::try_from(pass_count.saturating_mul(3).saturating_add(index)).unwrap(),
+            old.owner,
+            MinerPassKind::Collab,
+            leader_ref,
+        );
+        remint.mint_block_height = CHURN_REMINT_HEIGHT;
+        remint.prev = vec![old_id];
+        storage
+            .add_new_mint_pass_at_height(&remint, CHURN_REMINT_HEIGHT)
+            .unwrap();
+        energy_records.extend([
+            PassEnergyRecord {
+                inscription_id: old_id,
+                block_height: CHURN_DORMANT_HEIGHT,
+                state: MinerPassState::Dormant,
+                active_block_height: MINT_HEIGHT,
+                owner_address: old.owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: dormant_energy,
+            },
+            PassEnergyRecord {
+                inscription_id: old_id,
+                block_height: CHURN_REMINT_HEIGHT,
+                state: MinerPassState::Consumed,
+                active_block_height: CHURN_REMINT_HEIGHT,
+                owner_address: old.owner,
+                owner_balance: 0,
+                owner_delta: 0,
+                energy: 0,
+            },
+            PassEnergyRecord {
+                inscription_id: remint.inscription_id,
+                block_height: CHURN_REMINT_HEIGHT,
+                state: MinerPassState::Active,
+                active_block_height: CHURN_REMINT_HEIGHT,
+                owner_address: remint.owner,
+                owner_balance: 100_000,
+                owner_delta: 0,
+                energy: calc_inheritable_energy(dormant_energy),
+            },
+        ]);
+    }
+    storage.savepoint_commit().unwrap();
+    server
+        .indexer
+        .pass_energy_manager()
+        .insert_pass_energy_records_for_test(&energy_records)
+        .unwrap();
+
+    let projected_growth = calc_growth_delta(100_000, CHURN_REMINT_HEIGHT - QUERY_HEIGHT);
+    let dormant_growth = calc_growth_delta(100_000, CHURN_DORMANT_HEIGHT - QUERY_HEIGHT);
+    let mut total_collab_contribution = 0u128;
+    let mut primary_leader_contribution = 0u128;
+    for index in 0..pass_count {
+        let base_energy = ((index as u128).saturating_add(1)).saturating_mul(2);
+        let raw_energy = if index < churn_count {
+            calc_inheritable_energy(base_energy.saturating_add(dormant_growth))
+        } else {
+            base_energy.saturating_add(projected_growth)
+        };
+        let contribution = calc_collab_contribution(raw_energy);
+        total_collab_contribution = total_collab_contribution.saturating_add(contribution);
+        if index % leader_count == 0 {
+            primary_leader_contribution = primary_leader_contribution.saturating_add(contribution);
+        }
+    }
+
+    AppliedChurnBranch {
+        standard_remint_count: churn_count,
+        collab_remint_count: churn_count,
+        total_collab_contribution,
+        primary_leader_contribution,
+        apply_latency_ms: duration_ms(started_at.elapsed()),
+    }
+}
+
 fn get_leader_profile(
     server: &UsdbIndexerRpcServer,
     leader_id: &str,
@@ -1149,6 +1909,20 @@ fn write_report(report: &EconomicScaleReport) {
     }
     fs::write(&path, json).unwrap();
     println!("USDB_ECONOMIC_SCALE_REPORT_FILE={}", path.display());
+}
+
+fn write_capacity_report(report: &EconomicCapacitySupplementReport) {
+    let json = serde_json::to_string_pretty(report).unwrap();
+    let Ok(path) = std::env::var("USDB_ECONOMIC_CAPACITY_REPORT_FILE") else {
+        println!("USDB_ECONOMIC_CAPACITY_REPORT={json}");
+        return;
+    };
+    let path = PathBuf::from(path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    fs::write(&path, json).unwrap();
+    println!("USDB_ECONOMIC_CAPACITY_REPORT_FILE={}", path.display());
 }
 
 #[test]
@@ -1438,6 +2212,482 @@ fn test_economic_view_scale_profile() {
     write_report(&report);
 
     if std::env::var_os("USDB_ECONOMIC_SCALE_KEEP_DB").is_none() {
+        fs::remove_dir_all(root_dir).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "release-mode cache/concurrency/churn capacity evaluation"]
+fn test_economic_view_capacity_supplement() {
+    let pass_count = std::env::var("USDB_ECONOMIC_CAPACITY_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1_000);
+    let page_limit = std::env::var("USDB_ECONOMIC_CAPACITY_PAGE_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(100);
+    let leader_count = std::env::var("USDB_ECONOMIC_CAPACITY_LEADER_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    let cold_start_clients = std::env::var("USDB_ECONOMIC_CAPACITY_COLD_START_CLIENTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8);
+    let default_churn_count = (pass_count / 2).min(pass_count.saturating_sub(leader_count));
+    let churn_count = std::env::var("USDB_ECONOMIC_CAPACITY_CHURN_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(default_churn_count);
+    assert!(pass_count > 1);
+    assert!((1..pass_count).contains(&leader_count));
+    assert!((1..=ECONOMIC_PAGE_MAX_LIMIT).contains(&page_limit));
+    assert!(cold_start_clients >= 2);
+    assert!((1..=pass_count.saturating_sub(leader_count)).contains(&churn_count));
+    assert!(pass_count.saturating_mul(4) <= i32::MAX as usize);
+
+    let (server, root_dir) = build_server(
+        &format!("economic_capacity_{pass_count}_{leader_count}_{churn_count}"),
+        HISTORICAL_CONTEXT_END_HEIGHT,
+    );
+    server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(Some(trace_sql));
+    let fixture_rss_before = process_memory_kib().0;
+    let fixture_started_at = Instant::now();
+    let fixture = seed_scale_fixture(&server, pass_count, leader_count);
+    let fixture_build_latency_ms = duration_ms(fixture_started_at.elapsed());
+    let fixture_rss_after = process_memory_kib().0;
+    for block_height in (QUERY_HEIGHT + 1)..=HISTORICAL_CONTEXT_END_HEIGHT {
+        seed_state_ref_context_with_identity(
+            &server,
+            block_height,
+            u8::try_from(block_height).unwrap(),
+            u8::try_from(block_height + 64).unwrap(),
+        );
+    }
+    let states = (QUERY_HEIGHT..=HISTORICAL_CONTEXT_END_HEIGHT)
+        .map(|height| (height, resolve_external_state(&server, height)))
+        .collect::<BTreeMap<_, _>>();
+    let primary_leader = &fixture.leaders[0];
+    let leader_id = primary_leader.pass.inscription_id.to_string();
+    let primary_collab_count = primary_leader.collab_count;
+    let historical_cache_eviction = run_historical_cache_eviction(
+        &server,
+        pass_count,
+        leader_count,
+        primary_leader,
+        page_limit,
+        &states,
+    );
+    let base_candidate_digest = historical_cache_eviction
+        .candidate_probes
+        .iter()
+        .find(|probe| probe.block_height == QUERY_HEIGHT)
+        .unwrap()
+        .ordered_digest
+        .clone();
+    let base_breakdown_digest = historical_cache_eviction
+        .breakdown_probes
+        .iter()
+        .find(|probe| probe.block_height == QUERY_HEIGHT)
+        .unwrap()
+        .ordered_digest
+        .clone();
+    let base_state = states.get(&QUERY_HEIGHT).unwrap().clone();
+    let database_size_bytes_before_churn = directory_size(&root_dir);
+    server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(server);
+
+    let prepare_reopened = |server: &UsdbIndexerRpcServer| {
+        seed_state_ref_context_with_identity(
+            server,
+            HISTORICAL_CONTEXT_END_HEIGHT,
+            u8::try_from(HISTORICAL_CONTEXT_END_HEIGHT).unwrap(),
+            u8::try_from(HISTORICAL_CONTEXT_END_HEIGHT + 64).unwrap(),
+        );
+        server
+            .indexer
+            .miner_pass_storage()
+            .set_sql_trace_for_test(Some(trace_sql));
+    };
+
+    let candidate_single_server = reopen_server(&root_dir);
+    prepare_reopened(&candidate_single_server);
+    let candidate_single = collect_candidate_pages_at_height(
+        &candidate_single_server,
+        CandidateCollectionSpec {
+            query_height: QUERY_HEIGHT,
+            expected_total: pass_count,
+            leader_id: &leader_id,
+            expected_total_contribution: expected_collab_contribution_at_height(
+                pass_count,
+                leader_count,
+                None,
+                QUERY_HEIGHT,
+            ),
+            expected_contributing_leaders: leader_count,
+            limit: page_limit,
+            pinned_state: Some(&base_state),
+        },
+    );
+    assert_eq!(candidate_single.ordered_digest, base_candidate_digest);
+    candidate_single_server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(candidate_single_server);
+
+    let candidate_concurrent_server = reopen_server(&root_dir);
+    prepare_reopened(&candidate_concurrent_server);
+    let candidate_concurrent = run_cold_candidate_concurrent(
+        &candidate_concurrent_server,
+        QUERY_HEIGHT,
+        pass_count,
+        &base_candidate_digest,
+        page_limit,
+        &base_state,
+        cold_start_clients,
+    );
+    assert_eq!(
+        candidate_concurrent
+            .combined_metrics
+            .reads
+            .rocksdb_records_decoded,
+        candidate_single.metrics.reads.rocksdb_records_decoded
+    );
+    assert_eq!(
+        candidate_concurrent
+            .combined_metrics
+            .reads
+            .rocksdb_iterator_seeks,
+        candidate_single.metrics.reads.rocksdb_iterator_seeks
+    );
+    candidate_concurrent_server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(candidate_concurrent_server);
+
+    let breakdown_single_server = reopen_server(&root_dir);
+    prepare_reopened(&breakdown_single_server);
+    let breakdown_single = collect_breakdown_pages_at_height(
+        &breakdown_single_server,
+        QUERY_HEIGHT,
+        &leader_id,
+        primary_collab_count,
+        page_limit,
+        "collab_pass_id_asc",
+        Some(&base_state),
+    );
+    assert_eq!(breakdown_single.ordered_digest, base_breakdown_digest);
+    breakdown_single_server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(breakdown_single_server);
+
+    let breakdown_concurrent_server = reopen_server(&root_dir);
+    prepare_reopened(&breakdown_concurrent_server);
+    let breakdown_concurrent = run_cold_breakdown_concurrent(
+        &breakdown_concurrent_server,
+        ColdBreakdownSpec {
+            block_height: QUERY_HEIGHT,
+            leader_id: &leader_id,
+            expected_total: primary_collab_count,
+            expected_contribution: expected_collab_contribution_at_height(
+                pass_count,
+                leader_count,
+                Some(0),
+                QUERY_HEIGHT,
+            ),
+            expected_digest: &base_breakdown_digest,
+            page_limit,
+            pinned_state: &base_state,
+            client_count: cold_start_clients,
+        },
+    );
+    assert_eq!(
+        breakdown_concurrent
+            .combined_metrics
+            .reads
+            .rocksdb_records_decoded,
+        breakdown_single.metrics.reads.rocksdb_records_decoded
+    );
+    assert_eq!(
+        breakdown_concurrent
+            .combined_metrics
+            .reads
+            .rocksdb_iterator_seeks,
+        breakdown_single.metrics.reads.rocksdb_iterator_seeks
+    );
+    breakdown_concurrent_server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(breakdown_concurrent_server);
+
+    let cold_first_derivation = ColdFirstDerivationResult {
+        candidate_single,
+        candidate_concurrent,
+        breakdown_single,
+        breakdown_concurrent,
+    };
+
+    let churn_server = reopen_server(&root_dir);
+    prepare_reopened(&churn_server);
+    let orphan_applied =
+        apply_churn_branch(&churn_server, pass_count, leader_count, churn_count, 3, 4);
+    seed_state_ref_context_with_identity(&churn_server, CHURN_DORMANT_HEIGHT, 0x31, 0x32);
+    seed_state_ref_context_with_identity(&churn_server, CHURN_REMINT_HEIGHT, 0x33, 0x34);
+    let orphan_state = resolve_external_state(&churn_server, CHURN_REMINT_HEIGHT);
+    let orphan_candidate = collect_candidate_pages_at_height(
+        &churn_server,
+        CandidateCollectionSpec {
+            query_height: CHURN_REMINT_HEIGHT,
+            expected_total: pass_count,
+            leader_id: &leader_id,
+            expected_total_contribution: orphan_applied.total_collab_contribution,
+            expected_contributing_leaders: leader_count,
+            limit: page_limit,
+            pinned_state: Some(&orphan_state),
+        },
+    );
+    let orphan_breakdown = collect_breakdown_pages_at_height(
+        &churn_server,
+        CHURN_REMINT_HEIGHT,
+        &leader_id,
+        primary_collab_count,
+        page_limit,
+        "collab_pass_id_asc",
+        Some(&orphan_state),
+    );
+    assert_eq!(
+        orphan_breakdown.aggregate_collab_contribution,
+        orphan_applied.primary_leader_contribution.to_string()
+    );
+    let orphan_candidate_digest = orphan_candidate.ordered_digest.clone();
+    let orphan_breakdown_digest = orphan_breakdown.ordered_digest.clone();
+    let orphan = ChurnBranchResult {
+        standard_remint_count: orphan_applied.standard_remint_count,
+        collab_remint_count: orphan_applied.collab_remint_count,
+        apply_latency_ms: orphan_applied.apply_latency_ms,
+        candidate: orphan_candidate,
+        breakdown: orphan_breakdown,
+    };
+
+    let rollback_started_at = Instant::now();
+    let base_anchor = ready_balance_history_snapshot(QUERY_HEIGHT);
+    churn_server
+        .indexer
+        .miner_pass_storage()
+        .rollback_to_block_height(QUERY_HEIGHT, Some(&base_anchor))
+        .unwrap();
+    churn_server
+        .indexer
+        .pass_energy_manager()
+        .rollback_to_pass_synced_height(QUERY_HEIGHT)
+        .unwrap();
+    seed_state_ref_context_with_identity(&churn_server, QUERY_HEIGHT, 0xaa, 0xbb);
+    let rollback_latency_ms = duration_ms(rollback_started_at.elapsed());
+    assert_eq!(
+        resolve_external_state(&churn_server, QUERY_HEIGHT),
+        base_state
+    );
+
+    let replacement_applied =
+        apply_churn_branch(&churn_server, pass_count, leader_count, churn_count, 5, 6);
+    seed_state_ref_context_with_identity(&churn_server, CHURN_DORMANT_HEIGHT, 0x41, 0x42);
+    seed_state_ref_context_with_identity(&churn_server, CHURN_REMINT_HEIGHT, 0x43, 0x44);
+    let replacement_state = resolve_external_state(&churn_server, CHURN_REMINT_HEIGHT);
+    assert_ne!(replacement_state, orphan_state);
+    let replacement_candidate = collect_candidate_pages_at_height(
+        &churn_server,
+        CandidateCollectionSpec {
+            query_height: CHURN_REMINT_HEIGHT,
+            expected_total: pass_count,
+            leader_id: &leader_id,
+            expected_total_contribution: replacement_applied.total_collab_contribution,
+            expected_contributing_leaders: leader_count,
+            limit: page_limit,
+            pinned_state: Some(&replacement_state),
+        },
+    );
+    let replacement_breakdown = collect_breakdown_pages_at_height(
+        &churn_server,
+        CHURN_REMINT_HEIGHT,
+        &leader_id,
+        primary_collab_count,
+        page_limit,
+        "collab_pass_id_asc",
+        Some(&replacement_state),
+    );
+    assert_eq!(
+        replacement_breakdown.aggregate_collab_contribution,
+        replacement_applied.primary_leader_contribution.to_string()
+    );
+    assert_eq!(
+        replacement_applied.total_collab_contribution,
+        orphan_applied.total_collab_contribution
+    );
+    assert_eq!(
+        replacement_applied.primary_leader_contribution,
+        orphan_applied.primary_leader_contribution
+    );
+    assert_ne!(
+        replacement_candidate.ordered_digest,
+        orphan_candidate_digest
+    );
+    assert_ne!(
+        replacement_breakdown.ordered_digest,
+        orphan_breakdown_digest
+    );
+    let replacement_candidate_digest = replacement_candidate.ordered_digest.clone();
+    let replacement_breakdown_digest = replacement_breakdown.ordered_digest.clone();
+    let replacement = ChurnBranchResult {
+        standard_remint_count: replacement_applied.standard_remint_count,
+        collab_remint_count: replacement_applied.collab_remint_count,
+        apply_latency_ms: replacement_applied.apply_latency_ms,
+        candidate: replacement_candidate,
+        breakdown: replacement_breakdown,
+    };
+
+    let orphan_error = churn_server
+        .get_candidate_set_view(GetCandidateSetViewParams {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            block_height: Some(CHURN_REMINT_HEIGHT),
+            context: Some(ConsensusQueryContext::from(&orphan_state)),
+            selection_rule: None,
+            cursor: None,
+            limit: page_limit,
+        })
+        .unwrap_err();
+    let orphan_error_code = match orphan_error.code {
+        ErrorCode::ServerError(code) => code,
+        other => panic!("unexpected orphan replay error: {other:?}"),
+    };
+    assert_eq!(
+        orphan_error_code,
+        ConsensusRpcErrorCode::SnapshotIdMismatch.code()
+    );
+    churn_server
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(churn_server);
+
+    let restarted = reopen_server(&root_dir);
+    seed_state_ref_context_with_identity(&restarted, CHURN_REMINT_HEIGHT, 0x43, 0x44);
+    restarted
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(Some(trace_sql));
+    let restart_base_candidate = collect_candidate_pages_at_height(
+        &restarted,
+        CandidateCollectionSpec {
+            query_height: QUERY_HEIGHT,
+            expected_total: pass_count,
+            leader_id: &leader_id,
+            expected_total_contribution: expected_collab_contribution_at_height(
+                pass_count,
+                leader_count,
+                None,
+                QUERY_HEIGHT,
+            ),
+            expected_contributing_leaders: leader_count,
+            limit: page_limit,
+            pinned_state: Some(&base_state),
+        },
+    );
+    let restart_base_breakdown = collect_breakdown_pages_at_height(
+        &restarted,
+        QUERY_HEIGHT,
+        &leader_id,
+        primary_collab_count,
+        page_limit,
+        "collab_pass_id_asc",
+        Some(&base_state),
+    );
+    let restart_replacement_candidate = collect_candidate_pages_at_height(
+        &restarted,
+        CandidateCollectionSpec {
+            query_height: CHURN_REMINT_HEIGHT,
+            expected_total: pass_count,
+            leader_id: &leader_id,
+            expected_total_contribution: replacement_applied.total_collab_contribution,
+            expected_contributing_leaders: leader_count,
+            limit: page_limit,
+            pinned_state: Some(&replacement_state),
+        },
+    );
+    let restart_replacement_breakdown = collect_breakdown_pages_at_height(
+        &restarted,
+        CHURN_REMINT_HEIGHT,
+        &leader_id,
+        primary_collab_count,
+        page_limit,
+        "collab_pass_id_asc",
+        Some(&replacement_state),
+    );
+    assert_eq!(restart_base_candidate.ordered_digest, base_candidate_digest);
+    assert_eq!(restart_base_breakdown.ordered_digest, base_breakdown_digest);
+    assert_eq!(
+        restart_replacement_candidate.ordered_digest,
+        replacement_candidate_digest
+    );
+    assert_eq!(
+        restart_replacement_breakdown.ordered_digest,
+        replacement_breakdown_digest
+    );
+    restarted
+        .indexer
+        .miner_pass_storage()
+        .set_sql_trace_for_test(None);
+    drop(restarted);
+
+    let database_size_bytes_after_replay = directory_size(&root_dir);
+    let churn_reorg_replay = ChurnReorgReplayResult {
+        dormant_height: CHURN_DORMANT_HEIGHT,
+        remint_height: CHURN_REMINT_HEIGHT,
+        rollback_latency_ms,
+        orphan_context_rejected: true,
+        orphan_error_code,
+        orphan,
+        replacement,
+        restart_base_candidate,
+        restart_base_breakdown,
+        restart_replacement_candidate,
+        restart_replacement_breakdown,
+    };
+    let report = EconomicCapacitySupplementReport {
+        report_version: CAPACITY_REPORT_VERSION,
+        build_profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+        standard_pass_count: pass_count,
+        collab_pass_count: pass_count,
+        leader_count,
+        churn_count_per_kind: churn_count,
+        page_limit,
+        cold_start_client_count: cold_start_clients,
+        fixture_build_latency_ms,
+        fixture_rss_delta_kib: signed_delta(fixture_rss_after, fixture_rss_before),
+        database_size_bytes_before_churn,
+        database_size_bytes_after_replay,
+        historical_cache_eviction,
+        cold_first_derivation,
+        churn_reorg_replay,
+    };
+    write_capacity_report(&report);
+
+    if std::env::var_os("USDB_ECONOMIC_CAPACITY_KEEP_DB").is_none() {
         fs::remove_dir_all(root_dir).unwrap();
     }
 }

@@ -17,7 +17,7 @@ use ord::InscriptionId;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 use tokio::sync::watch;
 use usdb_util::{
@@ -43,6 +43,48 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 const MAX_RPC_PAGE_SIZE: usize = 1_000;
 const ECONOMIC_VIEW_CACHE_MAX_ENTRIES: usize = 2;
+
+// Coordinate cold misses per full query key. Weak gate references avoid turning
+// in-flight coordination into a second, unbounded historical-state cache.
+#[derive(Debug)]
+struct DerivationGateEntry<K> {
+    key: K,
+    gate: Weak<Mutex<()>>,
+}
+
+#[derive(Debug)]
+struct DerivationGateSet<K> {
+    entries: Vec<DerivationGateEntry<K>>,
+}
+
+impl<K> Default for DerivationGateSet<K> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq> DerivationGateSet<K> {
+    fn gate_for(&mut self, key: K) -> Arc<Mutex<()>> {
+        self.entries.retain(|entry| entry.gate.strong_count() > 0);
+        if let Some(gate) = self
+            .entries
+            .iter()
+            .find(|entry| entry.key == key)
+            .and_then(|entry| entry.gate.upgrade())
+        {
+            return gate;
+        }
+
+        let gate = Arc::new(Mutex::new(()));
+        self.entries.push(DerivationGateEntry {
+            key,
+            gate: Arc::downgrade(&gate),
+        });
+        gate
+    }
+}
 
 type CurrentStateForErrorPayload = (
     Option<IndexerSnapshotInfo>,
@@ -82,6 +124,12 @@ struct CandidateSetViewCacheEntry {
     selection_rule: String,
     total: u64,
     items: Arc<Vec<CandidateSetViewItem>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CandidateSetViewDerivationKey {
+    external_state: EconomicExternalState,
+    selection_rule: String,
 }
 
 #[derive(Debug, Default)]
@@ -130,6 +178,13 @@ struct CollabBreakdownCacheEntry {
     leader_pass_id: String,
     sort: String,
     breakdown: CachedCollabBreakdown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CollabBreakdownDerivationKey {
+    external_state: EconomicExternalState,
+    leader_pass_id: String,
+    sort: String,
 }
 
 #[derive(Debug, Default)]
@@ -228,7 +283,10 @@ pub struct UsdbIndexerRpcServer {
     server_handle: Arc<Mutex<Option<jsonrpc_http_server::CloseHandle>>>,
     pass_energy_leaderboard_cache: Arc<Mutex<PassEnergyLeaderboardCache>>,
     candidate_set_view_cache: Arc<Mutex<CandidateSetViewCache>>,
+    candidate_set_view_derivation_gates:
+        Arc<Mutex<DerivationGateSet<CandidateSetViewDerivationKey>>>,
     collab_breakdown_cache: Arc<Mutex<CollabBreakdownCache>>,
+    collab_breakdown_derivation_gates: Arc<Mutex<DerivationGateSet<CollabBreakdownDerivationKey>>>,
 }
 
 impl UsdbIndexerRpcServer {
@@ -250,7 +308,9 @@ impl UsdbIndexerRpcServer {
                 PassEnergyLeaderboardCache::default(),
             )),
             candidate_set_view_cache: Arc::new(Mutex::new(CandidateSetViewCache::default())),
+            candidate_set_view_derivation_gates: Arc::new(Mutex::new(DerivationGateSet::default())),
             collab_breakdown_cache: Arc::new(Mutex::new(CollabBreakdownCache::default())),
+            collab_breakdown_derivation_gates: Arc::new(Mutex::new(DerivationGateSet::default())),
         }
     }
 
@@ -2725,11 +2785,29 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
         let initial_external_state = EconomicExternalState::from(&initial_state_ref);
         let leader_pass_id_text = leader_pass_id.to_string();
-        let cached = self.collab_breakdown_cache.lock().unwrap().get(
+        let initial_cached = self.collab_breakdown_cache.lock().unwrap().get(
             &initial_external_state,
             &leader_pass_id_text,
             sort.as_str(),
         );
+        let derivation_gate = initial_cached.is_none().then(|| {
+            self.collab_breakdown_derivation_gates
+                .lock()
+                .unwrap()
+                .gate_for(CollabBreakdownDerivationKey {
+                    external_state: initial_external_state.clone(),
+                    leader_pass_id: leader_pass_id_text.clone(),
+                    sort: sort.as_str().to_string(),
+                })
+        });
+        let _derivation_guard = derivation_gate.as_ref().map(|gate| gate.lock().unwrap());
+        let cached = initial_cached.or_else(|| {
+            self.collab_breakdown_cache.lock().unwrap().get(
+                &initial_external_state,
+                &leader_pass_id_text,
+                sort.as_str(),
+            )
+        });
         let cache_hit = cached.is_some();
         let breakdown = match cached {
             Some(cached) => cached,
@@ -3179,11 +3257,27 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
         };
         let call_start = Instant::now();
         let initial_external_state = EconomicExternalState::from(&initial_state_ref);
-        let cached = self
+        let initial_cached = self
             .candidate_set_view_cache
             .lock()
             .unwrap()
             .get(&initial_external_state, selection_rule);
+        let derivation_gate = initial_cached.is_none().then(|| {
+            self.candidate_set_view_derivation_gates
+                .lock()
+                .unwrap()
+                .gate_for(CandidateSetViewDerivationKey {
+                    external_state: initial_external_state.clone(),
+                    selection_rule: selection_rule.to_string(),
+                })
+        });
+        let _derivation_guard = derivation_gate.as_ref().map(|gate| gate.lock().unwrap());
+        let cached = initial_cached.or_else(|| {
+            self.candidate_set_view_cache
+                .lock()
+                .unwrap()
+                .get(&initial_external_state, selection_rule)
+        });
         let cache_hit = cached.is_some();
         let (total, ranked) = match cached {
             Some((total, ranked)) => (total, ranked),
@@ -3333,7 +3427,8 @@ mod tests {
     use ord::InscriptionId;
     use ordinals::SatPoint;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{
         ActivationStatus, BtcActivationRecord, BtcActivationRegistryCatalog, BtcScriptHash,
@@ -7226,6 +7321,100 @@ mod tests {
         assert!(!candidate_ids.contains(&collab_high_raw.inscription_id.to_string()));
         assert!(!candidate_ids.contains(&collab_addr.inscription_id.to_string()));
         assert!(!candidate_ids.contains(&dormant_standard.inscription_id.to_string()));
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_cold_economic_view_concurrency_derives_each_key_once() {
+        let (server, root_dir) = build_server("economic_view_cold_singleflight", 120);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let leader = make_active_pass(93, 193, 100);
+        let other_standard = make_active_pass(94, 194, 100);
+        let collab_one = make_collab_pass(95, 195, 101, leader.inscription_id);
+        let collab_two = make_collab_pass(96, 196, 102, leader.inscription_id);
+        for pass in [&leader, &other_standard, &collab_one, &collab_two] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+            seed_energy_record(&server, pass, 120, 100);
+        }
+
+        const CLIENT_COUNT: usize = 8;
+        server
+            .indexer
+            .pass_energy_manager()
+            .reset_storage_read_metrics_for_test();
+        let barrier = Arc::new(Barrier::new(CLIENT_COUNT));
+        let candidate_workers = (0..CLIENT_COUNT)
+            .map(|_| {
+                let server = server.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    let page = server
+                        .get_candidate_set_view(GetCandidateSetViewParams {
+                            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                            block_height: Some(120),
+                            context: None,
+                            selection_rule: None,
+                            cursor: None,
+                            limit: 10,
+                        })
+                        .unwrap();
+                    assert_eq!(page.total, 2);
+                    assert_eq!(page.items.len(), 2);
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in candidate_workers {
+            worker.join().unwrap();
+        }
+        let candidate_reads = server
+            .indexer
+            .pass_energy_manager()
+            .storage_read_metrics_for_test();
+        assert_eq!(candidate_reads.records_decoded, 4);
+
+        server
+            .indexer
+            .pass_energy_manager()
+            .reset_storage_read_metrics_for_test();
+        let barrier = Arc::new(Barrier::new(CLIENT_COUNT));
+        let leader_id = leader.inscription_id.to_string();
+        let breakdown_workers = (0..CLIENT_COUNT)
+            .map(|_| {
+                let server = server.clone();
+                let barrier = barrier.clone();
+                let leader_id = leader_id.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    let page = server
+                        .get_collab_breakdown(GetCollabBreakdownParams {
+                            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                            leader_pass_id: leader_id,
+                            block_height: Some(120),
+                            context: None,
+                            sort: None,
+                            cursor: None,
+                            limit: 10,
+                        })
+                        .unwrap();
+                    assert_eq!(page.total, 2);
+                    assert_eq!(page.items.len(), 2);
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in breakdown_workers {
+            worker.join().unwrap();
+        }
+        let breakdown_reads = server
+            .indexer
+            .pass_energy_manager()
+            .storage_read_metrics_for_test();
+        assert_eq!(breakdown_reads.records_decoded, 2);
 
         drop(server);
         std::fs::remove_dir_all(root_dir).unwrap();
