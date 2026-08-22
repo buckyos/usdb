@@ -714,7 +714,23 @@ multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的
 
 ### TODO：接入正式 CI
 
-- 当前 USDB 项目尚未配置正式 CI，本批不新增 CI provider/workflow 文件。
+- 当前 USDB 项目尚未配置正式 CI；2026-08-21 已先完成可供 workflow 直接调用的
+  本地 fast gate，本批仍不新增 CI provider/workflow 文件。
+- `go-ethereum/scripts/usdb/lib/go_toolchain.sh` 统一三类工具链模式：正式构建严格
+  使用 Go 1.18.5 且不传兼容 linker 参数；Go 1.26 只作为 compatibility lane，
+  仅在 linker 明确支持时注入 `-checklinkname=0`；普通 E2E 的 `auto` 模式按同一
+  capability 规则选择。现有 E2E 已移除开发机绝对 Go 路径和无条件 linker 参数，
+  改为优先复用 `GETH_BIN`，否则构建一次 geth 后复用。
+- `go-ethereum/scripts/usdb/run_fast_ci.sh` 支持 `go / rust / golden / sourcedao`
+  独立或组合执行，已覆盖 canonical/compatibility geth build、Go USDB 聚焦测试、
+  Rust workspace fmt/clippy/test、全量脚本 ShellCheck、simulator Python tests、两份
+  Rust-to-Go golden check，以及 SourceDAO 合约测试、USDB build 和 bytecode audit。
+- 2026-08-21 已分别实跑三个 scope：Go 1.18.5 canonical 与 Go 1.26.0
+  compatibility 均完成测试和 geth build；Rust workspace、simulator 与 golden
+  check 全部通过；SourceDAO 在 Node 24 下通过 266 tests、29 个 Solidity 文件构建
+  和 42 个 USDB artifact bytecode audit。
+- Go 1.26 的兼容 linker 参数不是正式发布策略；后续应升级或移除旧
+  `github.com/fjl/memsize` runtime 私有符号依赖，再删除 compatibility workaround。
 - 建立 CI 后，将 `cargo fmt --all -- --check`、`cargo clippy -p usdb-util --all-targets -- -D warnings`、`cargo test -p usdb-util`、`cargo test -p usdb-indexer` 和 balance-history 自动化测试作为 Rust gate。
 - CI 必须运行 `generate_go_btc_activation_golden -- --check <go-artifact>` 和
   `generate_go_release_manifest_golden -- --check <go-release-artifact>`，防止 Rust
