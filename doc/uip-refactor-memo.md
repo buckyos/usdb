@@ -712,10 +712,18 @@ multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的
 - live 测试暴露离线 `geth import/export` 未应用 `--ethash.usdb-indexer.*` 配置，以及 `import --nocompaction` 吞掉 import error 的问题；Go 侧已直接修复并增加命令 flags/config 单元测试，不保留旧行为。
 - normal 与 `usdb_activation_conformance` 两套 Go 回归通过；本批脚本、CLI 修复和文档改动尚未提交，等待 review。
 
-### TODO：接入正式 CI
+### 正式 Fast CI 与后续 Nightly
 
-- 当前 USDB 项目尚未配置正式 CI；2026-08-21 已先完成可供 workflow 直接调用的
-  本地 fast gate，本批仍不新增 CI provider/workflow 文件。
+- 2026-08-22 已增加最小正式 Fast CI：`go-ethereum`、`usdb`、`SourceDAO`
+  分别维护 repo-local GitHub Actions workflow；每次提交只执行可重复、无外部服务
+  依赖的 blocking gate，跨进程 E2E、容量与 soak 继续留给后续 nightly。
+- workflow runner 固定为 `ubuntu-24.04`；Go release/compatibility、Python、Rust、
+  Node/npm 分别固定为 `1.18.5 / 1.26.0 / 3.13.7 / 1.91.0 /
+  24.12.0 / 11.6.2`。第三方 Action 使用完整 commit SHA，不使用浮动 tag。
+- `go-ethereum/scripts/usdb/ci-revisions.json` 记录三仓最近一次联合验证基线和共享
+  工具链；严格校验 repository identity、完整 commit SHA、重复/未知 JSON key。
+  coordinator 当前 checkout 可相对已验证 baseline 前进，两个 sibling checkout 必须
+  精确命中 lock，从而避免让一个 commit 自己声明尚未产生的自身 SHA。
 - `go-ethereum/scripts/usdb/lib/go_toolchain.sh` 统一三类工具链模式：正式构建严格
   使用 Go 1.18.5 且不传兼容 linker 参数；Go 1.26 只作为 compatibility lane，
   仅在 linker 明确支持时注入 `-checklinkname=0`；普通 E2E 的 `auto` 模式按同一
@@ -731,11 +739,17 @@ multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的
   和 42 个 USDB artifact bytecode audit。
 - Go 1.26 的兼容 linker 参数不是正式发布策略；后续应升级或移除旧
   `github.com/fjl/memsize` runtime 私有符号依赖，再删除 compatibility workaround。
-- 建立 CI 后，将 `cargo fmt --all -- --check`、`cargo clippy -p usdb-util --all-targets -- -D warnings`、`cargo test -p usdb-util`、`cargo test -p usdb-indexer` 和 balance-history 自动化测试作为 Rust gate。
-- CI 必须运行 `generate_go_btc_activation_golden -- --check <go-artifact>` 和
+- Rust repo-local gate 已覆盖 workspace `cargo fmt --all -- --check`、
+  `cargo clippy --workspace --all-targets -- -D warnings`、workspace tests、
+  indexer ShellCheck 和 world simulator；工具链由
+  `src/btc/rust-toolchain.toml` 固定。
+- central fast gate 运行 `generate_go_btc_activation_golden -- --check <go-artifact>` 和
   `generate_go_release_manifest_golden -- --check <go-release-artifact>`，防止 Rust
   registry/release manifest 与 Go 内嵌 artifact 漂移。
-- Go gate 使用项目冻结的 Go toolchain 运行 `internal/usdb`、`params`、`consensus/ethash`、`miner`、`core` tests 和 vet，并检查 Python verifier compile 与 live shell syntax。
+- Go gate 使用项目冻结的 Go toolchain 运行 `internal/usdb`、`params`、
+  `consensus/ethash`、`miner`、`core` tests 和 vet，并检查 Python 与 shell 测试入口。
+- SourceDAO gate 固定 Node 24.12.0/npm 11.6.2，执行 clean `npm ci`、完整 Hardhat
+  tests、USDB build 和 bytecode audit。
 - 基础和 fresh-validator 跨进程 E2E 初期作为手工或定时任务；运行资源、端口隔离和稳定时长明确后再决定是否进入每次提交的 blocking gate。
 
 ## USDB Chain 命名与系统边界收口

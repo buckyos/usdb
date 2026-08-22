@@ -80,7 +80,7 @@ services:
       - ${USDB_DOCKER_SCRIPTS_HOST_DIR:-./scripts}:/opt/usdb/docker/scripts:ro
 
   sourcedao-bootstrap:
-    image: ${SOURCE_DAO_BOOTSTRAP_IMAGE:-node:22-bookworm}
+    image: ${SOURCE_DAO_BOOTSTRAP_IMAGE:-node:24.12.0-bookworm}
     restart: "no"
     entrypoint: ["bash", "-lc", "/opt/usdb/docker/scripts/entrypoints/start_sourcedao_bootstrap.sh"]
     depends_on:

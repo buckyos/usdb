@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BTC_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+REPO_DIR=$(cd "$BTC_DIR/../.." && pwd)
+MANIFEST="$BTC_DIR/Cargo.toml"
+INDEXER_SCRIPTS="$BTC_DIR/usdb-indexer/scripts"
+
+log() {
+  echo "[usdb-rust-fast] $*"
+}
+
+require_command() {
+  local command="$1"
+  if ! command -v "$command" >/dev/null; then
+    echo "required command is unavailable: $command" >&2
+    exit 1
+  fi
+}
+
+for command in cargo rustc shellcheck python3; do
+  require_command "$command"
+done
+
+cd "$BTC_DIR"
+log "toolchains: $(rustc --version); $(cargo --version); $(python3 --version 2>&1)"
+log "checking Rust formatting and Clippy"
+cargo fmt --manifest-path "$MANIFEST" --all -- --check
+cargo clippy --manifest-path "$MANIFEST" --workspace --all-targets -- -D warnings
+
+log "running Rust workspace tests"
+cargo test --manifest-path "$MANIFEST" --workspace
+
+log "checking indexer shell scripts"
+(
+  local_scripts="src/btc/usdb-indexer/scripts"
+  declare -a shell_files
+  cd "$REPO_DIR"
+  mapfile -d '' shell_files < <(find "$local_scripts" -maxdepth 1 -type f -name '*.sh' -print0)
+  shellcheck -x -P "$local_scripts" "${shell_files[@]}"
+)
+
+log "running world simulator tests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_world_simulator.py"
+log "Rust fast gate passed"

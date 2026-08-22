@@ -260,6 +260,7 @@ mod tests {
     use std::str::FromStr;
 
     #[test]
+    #[ignore = "requires a reachable Bitcoin Core mainnet RPC service"]
     fn test_btc_client() {
         let config = BTCConfig::default();
         let rpc_url = config.rpc_url();

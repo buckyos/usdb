@@ -236,8 +236,8 @@ impl StatusManager {
         // self.output.println(&format!("Balance History sync status: {:?}", status));
         let balance_history_bar = self.output.balance_history_bar();
         let current = balance_history_bar.length().unwrap_or(0);
-        balance_history_bar.set_length(status.total as u64);
-        balance_history_bar.set_position(status.current as u64);
+        balance_history_bar.set_length(status.total);
+        balance_history_bar.set_position(status.current);
         if current == 0 {
             balance_history_bar.reset_eta();
         }
