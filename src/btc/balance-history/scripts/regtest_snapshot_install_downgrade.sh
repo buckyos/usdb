@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+export REPO_ROOT
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-bh-snapshot-install-downgrade-XXXXXX)}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
@@ -14,8 +15,9 @@ BH_RPC_PORT="${BH_RPC_PORT:-30010}"
 WALLET_NAME="${WALLET_NAME:-bhsnapshotdowngrade}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
-REGTEST_LOG_PREFIX="[snapshot-install-downgrade]"
+export REGTEST_LOG_PREFIX="[snapshot-install-downgrade]"
 
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -62,7 +64,7 @@ main() {
   local mining_address target_address target_script_hash
   local txid_old txid_new vout_old vout_new
   local old_height new_height
-  local old_block_hash new_block_hash old_snapshot_file old_snapshot_hash
+  local old_block_hash new_block_hash old_snapshot_file
   local old_commit new_commit resp
 
   mining_address="$(regtest_get_new_address)"
@@ -73,11 +75,13 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
+  regtest_mine_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
   regtest_wait_until_synced_height "$COINBASE_MATURITY"
 
   txid_old="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.4)"
   regtest_mine_blocks 1 "$mining_address"
   old_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$old_height" "$mining_address"
   regtest_wait_until_synced_height "$old_height"
   vout_old="$(regtest_get_tx_vout_for_address "$txid_old" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_old" "$vout_old"
@@ -89,8 +93,6 @@ main() {
   regtest_stop_balance_history
   regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" create-snapshot --block-height "$old_height"
   old_snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/snapshot_${old_height}.db"
-  old_snapshot_hash="$(sha256sum "$old_snapshot_file" | awk '{print $1}')"
-
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
   regtest_wait_until_synced_height "$old_height"
@@ -98,6 +100,7 @@ main() {
   txid_new="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.2)"
   regtest_mine_blocks 1 "$mining_address"
   new_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$new_height" "$mining_address"
   regtest_wait_until_synced_height "$new_height"
   vout_new="$(regtest_get_tx_vout_for_address "$txid_new" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_new" "$vout_new"
@@ -123,7 +126,7 @@ main() {
 
   regtest_stop_balance_history
   regtest_config_set_max_sync_block_height "$BALANCE_HISTORY_ROOT/config.toml" "$old_height"
-  regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" install-snapshot --file "$old_snapshot_file" --hash "$old_snapshot_hash"
+  regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" install-snapshot --file "$old_snapshot_file"
   regtest_assert_backup_count "$BALANCE_HISTORY_ROOT" "1"
 
   regtest_start_balance_history

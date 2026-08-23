@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+export REPO_ROOT
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-bh-snapshot-install-failure-XXXXXX)}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
@@ -14,12 +15,13 @@ BTC_P2P_PORT="${BTC_P2P_PORT:-29433}"
 BH_RPC_PORT="${BH_RPC_PORT:-29410}"
 TARGET_BH_RPC_PORT="${TARGET_BH_RPC_PORT:-29411}"
 WALLET_NAME="${WALLET_NAME:-bhsnapshotfail}"
-TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-102}"
+TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history-source.log}"
 TARGET_BALANCE_HISTORY_LOG_FILE="${TARGET_BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history-target.log}"
-REGTEST_LOG_PREFIX="[snapshot-install-failure]"
+export REGTEST_LOG_PREFIX="[snapshot-install-failure]"
 
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -79,7 +81,7 @@ main() {
   local mining_address target_address target_script_hash
   local txid_old txid_new vout_old vout_new
   local old_height snapshot_height old_block_hash snapshot_file snapshot_hash wrong_hash
-  local wrong_hash_output missing_file_output resp
+  local snapshot_manifest wrong_manifest wrong_hash_output missing_file_output resp
 
   source_root="$BALANCE_HISTORY_ROOT"
   source_log="$BALANCE_HISTORY_LOG_FILE"
@@ -100,11 +102,13 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
+  regtest_mine_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
   regtest_wait_until_synced_height "$COINBASE_MATURITY"
 
   txid_old="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.4)"
   regtest_mine_blocks 1 "$mining_address"
   old_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$old_height" "$mining_address"
   regtest_wait_until_synced_height "$old_height"
   vout_old="$(regtest_get_tx_vout_for_address "$txid_old" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_old" "$vout_old"
@@ -112,6 +116,7 @@ main() {
   txid_new="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.2)"
   regtest_mine_blocks 1 "$mining_address"
   snapshot_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$snapshot_height" "$mining_address"
   regtest_wait_until_synced_height "$snapshot_height"
   vout_new="$(regtest_get_tx_vout_for_address "$txid_new" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_new" "$vout_new"
@@ -122,7 +127,16 @@ main() {
   snapshot_file="$source_root/snapshots/snapshot_${snapshot_height}.db"
   snapshot_hash="$(sha256sum "$snapshot_file" | awk '{print $1}')"
   wrong_hash="0${snapshot_hash:1}"
-  old_block_hash="$(regtest_get_block_hash_by_height "$old_height")"
+  snapshot_manifest="$(regtest_snapshot_manifest_path "$snapshot_file")"
+  wrong_manifest="$WORK_DIR/snapshot_wrong_hash.manifest.json"
+  regtest_write_snapshot_manifest_variant \
+    "$snapshot_manifest" "$wrong_manifest" "$snapshot_file" "$wrong_hash"
+  TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-$old_height}"
+  if (( TARGET_MAX_SYNC_HEIGHT < old_height || TARGET_MAX_SYNC_HEIGHT >= snapshot_height )); then
+    regtest_log "TARGET_MAX_SYNC_HEIGHT must be in [${old_height}, ${snapshot_height}); got ${TARGET_MAX_SYNC_HEIGHT}"
+    exit 1
+  fi
+  old_block_hash="$(regtest_get_block_hash_by_height "$TARGET_MAX_SYNC_HEIGHT")"
 
   BALANCE_HISTORY_ROOT="$target_root"
   BALANCE_HISTORY_LOG_FILE="$target_log"
@@ -149,7 +163,8 @@ main() {
 
   regtest_stop_balance_history
 
-  regtest_expect_cli_failure "$target_root" "$wrong_hash_output" install-snapshot --file "$snapshot_file" --hash "$wrong_hash"
+  regtest_expect_cli_failure "$target_root" "$wrong_hash_output" \
+    install-snapshot --file "$snapshot_file" --manifest "$wrong_manifest"
   regtest_assert_no_install_artifacts "$target_root"
 
   regtest_start_balance_history
@@ -169,7 +184,8 @@ main() {
 
   regtest_stop_balance_history
 
-  regtest_expect_cli_failure "$target_root" "$missing_file_output" install-snapshot --file "$target_root/snapshots/missing_snapshot.db" --hash "$snapshot_hash"
+  regtest_expect_cli_failure "$target_root" "$missing_file_output" \
+    install-snapshot --file "$target_root/snapshots/missing_snapshot.db"
   regtest_assert_no_install_artifacts "$target_root"
 
   regtest_start_balance_history

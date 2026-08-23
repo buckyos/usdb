@@ -24,7 +24,7 @@
 
 | 分层 | 当前入口 | 默认执行 | 外部服务 | 主要覆盖 | 当前状态 |
 | --- | --- | --- | --- | --- | --- |
-| Rust unit tests | `cargo test -p balance-history` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、readiness、script registry unit paths | 本地可运行并已通过 |
+| Rust unit tests | `cargo test -p balance-history -p balance-history-snapshot-tool` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、exact-height builder state、readiness、script registry unit paths | 本地可运行并已通过 |
 | Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，支持 suite/size 切片 |
 | Regtest scripts | `bash src/btc/balance-history/scripts/run_regtest_suite.sh <suite>` | 否 | 本机 bitcoind binary | 端到端 smoke、stable-lag reorg boundary、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已有 `smoke` 和 `stable-lag-reorg` runner；更大套件仍为手工入口 |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
@@ -67,7 +67,7 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 | Restart/recovery reorg | 服务离线或重启后的 reorg 恢复 | `regtest_restart_reorg_smoke.sh`, `regtest_restart_multi_reorg_smoke.sh`, `regtest_restart_hybrid_reorg_smoke.sh` |
 | Query semantics | balance、delta、batch query、spend graph、same-block aggregation | `regtest_spend_graph_queries.sh`, `regtest_multi_input_same_block_queries.sh`, `regtest_restart_same_block_aggregate_reorg.sh` |
 | Undo retention | retained undo window 内的 reorg 行为 | `regtest_undo_retention_reorg.sh`, `regtest_undo_retention_same_block_aggregate_reorg.sh` |
-| Snapshot | snapshot export/install/recovery/failure 语义 | `regtest_snapshot_recovery.sh`, `regtest_snapshot_restart_recovery.sh`, `regtest_snapshot_install_repeat.sh`, `regtest_snapshot_install_retry.sh`, `regtest_snapshot_install_failure.sh`, `regtest_snapshot_install_corrupt.sh`, `regtest_snapshot_install_downgrade.sh` |
+| Snapshot | snapshot export/install/recovery/failure、exact-height resume/reorg/continued sync 语义 | `regtest_snapshot_recovery.sh`, `regtest_snapshot_restart_recovery.sh`, `regtest_snapshot_install_repeat.sh`, `regtest_snapshot_install_retry.sh`, `regtest_snapshot_install_failure.sh`, `regtest_snapshot_install_corrupt.sh`, `regtest_snapshot_install_downgrade.sh`, `regtest_exact_height_snapshot_tool.sh`, `regtest_exact_height_snapshot_restart.sh`, `regtest_exact_height_snapshot_same_height_reorg.sh`, `regtest_exact_height_snapshot_install_spend.sh` |
 | Oracle | 用独立 oracle 对拍生成的 regtest block 历史余额 | `regtest_history_balance_oracle.sh` |
 | Loader threshold | RPC/local-loader 切换行为 | `regtest_loader_switch.sh` |
 
@@ -137,7 +137,14 @@ bash src/btc/balance-history/scripts/regtest_snapshot_install_failure.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_corrupt.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh
 bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_restart.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_same_height_reorg.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_install_spend.sh
 ```
+
+Snapshot scripts derive the confirmation count from the running service's `stable_lag` value.
+Installer tests use the adjacent manifest, or an explicitly modified manifest for negative cases;
+the removed legacy `--hash` option is not part of the test contract.
 
 ## 真实 BTC 数据测试
 
@@ -178,6 +185,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 | 缺口 | 风险 | 建议修复 |
 | --- | --- | --- |
 | 统一 regtest runner 仍不完整 | 当前收敛了 `smoke` 和 `stable-lag-reorg`，其它更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
+| Exact-height snapshot 尚无大数据与签名失败注入 | 当前覆盖状态恢复、同高度换链、完整 UTXO 安装后继续同步，但未覆盖生产规模导出和 signer/manifest 发布失败 | 增加 100K+ UTXO/余额容量测试、磁盘空间故障和签名发布失败注入 |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
 | `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |

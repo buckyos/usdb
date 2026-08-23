@@ -234,6 +234,7 @@ impl ExactHeightSnapshotBuilder {
         state.active_job_height = Some(options.target_height);
         state.updated_at = unix_timestamp();
         save_json_atomic(&self.paths.state_file, &state)?;
+        crate::abort_after_checkpoint("syncing");
 
         let config = Arc::new(config);
         let status = Arc::new(SyncStatusManager::new());
@@ -281,6 +282,7 @@ impl ExactHeightSnapshotBuilder {
         job.snapshot_id = Some(sealed_state_ref.snapshot_id.clone());
         job.set_stage(SnapshotBuildStage::Sealed);
         save_json_atomic(&job_file, &job)?;
+        crate::abort_after_checkpoint("sealed");
 
         let final_dir = self
             .paths
@@ -318,6 +320,7 @@ impl ExactHeightSnapshotBuilder {
         job.temp_dir = Some(display_relative(&self.paths.root, &temp_dir));
         job.set_stage(SnapshotBuildStage::Building);
         save_json_atomic(&job_file, &job)?;
+        crate::abort_after_checkpoint("building");
 
         let snapshot_file_name = format!("snapshot_{}.db", options.target_height);
         let snapshot_path = temp_dir.join(&snapshot_file_name);
@@ -327,6 +330,7 @@ impl ExactHeightSnapshotBuilder {
 
         job.set_stage(SnapshotBuildStage::Verifying);
         save_json_atomic(&job_file, &job)?;
+        crate::abort_after_checkpoint("verifying");
         let verified = verify_snapshot_files(
             &creation.db_path,
             &creation.manifest_path,
@@ -382,6 +386,7 @@ impl ExactHeightSnapshotBuilder {
                     e
                 )
             })?;
+        crate::abort_after_checkpoint("published");
 
         let marker = verify_published_artifact(
             &final_dir,
@@ -696,6 +701,7 @@ impl ExactHeightSnapshotBuilder {
         job.completed_at = Some(marker.completed_at);
         job.updated_at = unix_timestamp();
         save_json_atomic(job_file, job)?;
+        crate::abort_after_checkpoint("job_complete");
 
         state.latest_completed = Some(completed);
         state.active_job_height = None;

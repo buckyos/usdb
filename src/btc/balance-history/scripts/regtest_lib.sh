@@ -378,6 +378,28 @@ regtest_mine_blocks() {
     generatetoaddress "$block_count" "$address" >/dev/null
 }
 
+regtest_mine_until_height_is_stable() {
+  local target_height="$1"
+  local address="$2"
+  local stable_lag current_height required_tip blocks_to_mine
+
+  stable_lag="$(regtest_get_snapshot_stable_lag)"
+  if [[ ! "$stable_lag" =~ ^[0-9]+$ ]]; then
+    regtest_log "Unable to resolve balance-history stable lag: ${stable_lag}"
+    exit 1
+  fi
+
+  current_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  required_tip=$((target_height + stable_lag))
+  if (( current_height >= required_tip )); then
+    return 0
+  fi
+
+  blocks_to_mine=$((required_tip - current_height))
+  regtest_log "Mining ${blocks_to_mine} confirmation blocks so height=${target_height} enters the stable view (lag=${stable_lag})"
+  regtest_mine_blocks "$blocks_to_mine" "$address"
+}
+
 regtest_mine_empty_block() {
   local address="$1"
   regtest_log "Mining empty replacement block to address=${address}"
@@ -432,6 +454,86 @@ regtest_run_balance_history_cli() {
       --root-dir "$root_dir" \
       "$@"
   )
+}
+
+regtest_run_snapshot_tool() {
+  local builder_root="$1"
+  shift
+
+  (
+    cd "$REPO_ROOT" || exit 1
+    cargo run --quiet --manifest-path src/btc/Cargo.toml \
+      -p balance-history-snapshot-tool -- \
+      --root-dir "$builder_root" \
+      --json \
+      "$@"
+  )
+}
+
+regtest_assert_json_file() {
+  local file="$1"
+  local expression="$2"
+  local expected="$3"
+  local actual
+
+  actual="$(python3 - "$file" "$expression" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    data = json.load(source)
+print(eval(sys.argv[2], {"__builtins__": {}}, {"data": data}))
+PY
+)"
+  regtest_log "JSON assertion: file=${file}, expr=${expression}, expected=${expected}, actual=${actual}"
+  if [[ "$actual" != "$expected" ]]; then
+    exit 1
+  fi
+}
+
+regtest_assert_json_files_equal() {
+  local left_file="$1"
+  local right_file="$2"
+  local field="$3"
+
+  python3 - "$left_file" "$right_file" "$field" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    left = json.load(source)
+with open(sys.argv[2], encoding="utf-8") as source:
+    right = json.load(source)
+field = sys.argv[3]
+if left[field] != right[field]:
+    raise SystemExit(f"JSON field mismatch for {field}: {left[field]!r} != {right[field]!r}")
+PY
+}
+
+regtest_snapshot_manifest_path() {
+  local snapshot_file="$1"
+  printf '%s.manifest.json\n' "${snapshot_file%.db}"
+}
+
+regtest_write_snapshot_manifest_variant() {
+  local source_manifest="$1"
+  local destination_manifest="$2"
+  local snapshot_file="$3"
+  local file_sha256="$4"
+
+  python3 - "$source_manifest" "$destination_manifest" "$snapshot_file" "$file_sha256" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+snapshot_file = Path(sys.argv[3])
+manifest = json.loads(source.read_text(encoding="utf-8"))
+manifest["file_name"] = snapshot_file.name
+manifest["file_sha256"] = sys.argv[4]
+destination.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PY
 }
 
 # Restart the service and wait until its RPC endpoint becomes reachable again.

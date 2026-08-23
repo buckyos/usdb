@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+export REPO_ROOT
 WORK_DIR="${WORK_DIR:-$(mktemp -d /tmp/usdb-bh-snapshot-install-retry-XXXXXX)}"
 BITCOIN_DIR="${BITCOIN_DIR:-$WORK_DIR/bitcoin}"
 BITCOIN_BIN_DIR="${BITCOIN_BIN_DIR:-/home/bucky/btc/bitcoin-28.1/bin}"
@@ -14,12 +15,13 @@ BTC_P2P_PORT="${BTC_P2P_PORT:-29733}"
 BH_RPC_PORT="${BH_RPC_PORT:-29710}"
 TARGET_BH_RPC_PORT="${TARGET_BH_RPC_PORT:-29711}"
 WALLET_NAME="${WALLET_NAME:-bhsnapshotretry}"
-TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-102}"
+TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history-source.log}"
 TARGET_BALANCE_HISTORY_LOG_FILE="${TARGET_BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history-target.log}"
-REGTEST_LOG_PREFIX="[snapshot-install-retry]"
+export REGTEST_LOG_PREFIX="[snapshot-install-retry]"
 
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -80,7 +82,7 @@ main() {
   local vout_old vout_new vout_after_restore
   local old_height snapshot_height post_restore_height
   local old_block_hash snapshot_block_hash snapshot_commit snapshot_file snapshot_hash wrong_hash
-  local wrong_hash_output resp
+  local snapshot_manifest wrong_manifest wrong_hash_output resp
 
   wrong_hash_output="$WORK_DIR/install_wrong_hash_retry.out"
 
@@ -95,11 +97,13 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
+  regtest_mine_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
   regtest_wait_until_synced_height "$COINBASE_MATURITY"
 
   txid_old="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.4)"
   regtest_mine_blocks 1 "$mining_address"
   old_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$old_height" "$mining_address"
   regtest_wait_until_synced_height "$old_height"
   vout_old="$(regtest_get_tx_vout_for_address "$txid_old" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_old" "$vout_old"
@@ -107,6 +111,7 @@ main() {
   txid_new="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.2)"
   regtest_mine_blocks 1 "$mining_address"
   snapshot_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$snapshot_height" "$mining_address"
   regtest_wait_until_synced_height "$snapshot_height"
   vout_new="$(regtest_get_tx_vout_for_address "$txid_new" "$target_address")"
   regtest_lock_wallet_outpoint "$txid_new" "$vout_new"
@@ -121,7 +126,16 @@ main() {
   snapshot_file="$BALANCE_HISTORY_ROOT/snapshots/snapshot_${snapshot_height}.db"
   snapshot_hash="$(sha256sum "$snapshot_file" | awk '{print $1}')"
   wrong_hash="0${snapshot_hash:1}"
-  old_block_hash="$(regtest_get_block_hash_by_height "$old_height")"
+  snapshot_manifest="$(regtest_snapshot_manifest_path "$snapshot_file")"
+  wrong_manifest="$WORK_DIR/snapshot_wrong_hash.manifest.json"
+  regtest_write_snapshot_manifest_variant \
+    "$snapshot_manifest" "$wrong_manifest" "$snapshot_file" "$wrong_hash"
+  TARGET_MAX_SYNC_HEIGHT="${TARGET_MAX_SYNC_HEIGHT:-$old_height}"
+  if (( TARGET_MAX_SYNC_HEIGHT < old_height || TARGET_MAX_SYNC_HEIGHT >= snapshot_height )); then
+    regtest_log "TARGET_MAX_SYNC_HEIGHT must be in [${old_height}, ${snapshot_height}); got ${TARGET_MAX_SYNC_HEIGHT}"
+    exit 1
+  fi
+  old_block_hash="$(regtest_get_block_hash_by_height "$TARGET_MAX_SYNC_HEIGHT")"
 
   BALANCE_HISTORY_ROOT="$TARGET_BALANCE_HISTORY_ROOT"
   BALANCE_HISTORY_LOG_FILE="$TARGET_BALANCE_HISTORY_LOG_FILE"
@@ -137,10 +151,11 @@ main() {
   regtest_assert_json_expr "$resp" "data['result']['stable_block_hash']" "$old_block_hash"
 
   regtest_stop_balance_history
-  regtest_expect_cli_failure "$BALANCE_HISTORY_ROOT" "$wrong_hash_output" install-snapshot --file "$snapshot_file" --hash "$wrong_hash"
+  regtest_expect_cli_failure "$BALANCE_HISTORY_ROOT" "$wrong_hash_output" \
+    install-snapshot --file "$snapshot_file" --manifest "$wrong_manifest"
   regtest_assert_artifact_counts "$BALANCE_HISTORY_ROOT" "0" "0"
 
-  regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" install-snapshot --file "$snapshot_file" --hash "$snapshot_hash"
+  regtest_run_balance_history_cli "$BALANCE_HISTORY_ROOT" install-snapshot --file "$snapshot_file"
   regtest_assert_artifact_counts "$BALANCE_HISTORY_ROOT" "0" "1"
   regtest_config_set_max_sync_block_height "$BALANCE_HISTORY_ROOT/config.toml" "4294967295"
 
@@ -166,6 +181,7 @@ main() {
   txid_after_restore="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$target_address" 0.1)"
   regtest_mine_blocks 1 "$mining_address"
   post_restore_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  regtest_mine_until_height_is_stable "$post_restore_height" "$mining_address"
   regtest_wait_until_synced_height "$post_restore_height"
   vout_after_restore="$(regtest_get_tx_vout_for_address "$txid_after_restore" "$target_address")"
 

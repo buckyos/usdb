@@ -204,13 +204,24 @@ uses the `balance-history` library for exact-height synchronization and snapshot
 `create`, `status`, `list`, and `verify` commands persist the state machine and expose JSON output
 for automation.
 
-The deterministic regtest entrypoint is:
+The deterministic regtest entrypoints are:
 
 ```text
 src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_restart.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_same_height_reorg.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_install_spend.sh
 ```
 
-It covers initial full-UTXO publication, completed-request replay, artifact verification, and
-incremental `H -> H+1` creation from the same mutable workspace. Reorg recovery, forced process
-interruption at each persisted stage, and install-then-spend validation remain follow-up test
-batches rather than implicit claims of the first test.
+Together they cover initial full-UTXO publication, completed-request replay, artifact
+verification, incremental `H -> H+1` creation, and cross-process resume after every durable
+builder transition (`syncing`, `sealed`, `building`, `verifying`, `published`, and
+`job_complete`). They also retain and verify both artifacts across a same-height BTC branch
+replacement, require an explicit block hash when one height is ambiguous, continue from the
+replacement branch at `H+1`, and install a generated checkpoint before spending an output that
+predates the checkpoint.
+
+The legacy snapshot install/recovery scripts also use manifest verification and advance each
+transaction height into the service's configured stable view before asserting indexed state.
+Remaining follow-up coverage is production-scale export/install performance, disk and atomic
+publication failure injection, and optional signer/signature failure paths.

@@ -4,6 +4,7 @@
 
 mod builder;
 mod state;
+mod test_hook;
 mod verify;
 
 pub use builder::*;
@@ -15,6 +16,7 @@ pub use state::{
     CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState,
     SnapshotCompleteMarker,
 };
+pub(crate) use test_hook::abort_after_checkpoint;
 pub(crate) use verify::{build_complete_marker, verify_published_artifact, verify_snapshot_files};
 
 #[cfg(test)]
