@@ -2585,7 +2585,7 @@ impl BalanceHistoryDB {
             u32::MAX,
         );
 
-        let mut iter = self
+        let iter = self
             .db
             .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
@@ -2594,9 +2594,22 @@ impl BalanceHistoryDB {
         let mut snapshot = Vec::with_capacity(batch_size);
         let mut entries_processed = 0u64;
 
-        while let Some(Ok((key, value))) = iter.next() {
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error while generating balance snapshot shard {:02x}: {}",
+                    shard_index, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
             if key.len() != BALANCE_HISTORY_KEY_LEN {
-                continue;
+                return Err(format!(
+                    "Invalid balance-history key length {} in snapshot shard {:02x}; expected {}",
+                    key.len(),
+                    shard_index,
+                    BALANCE_HISTORY_KEY_LEN
+                ));
             }
 
             //info!("Shard {:0x} processing key {:x?}", shard_index, key);
@@ -2674,16 +2687,29 @@ impl BalanceHistoryDB {
         seek_key.resize(UTXO_KEY_LEN, 0xFF); // max UTXO key
         let seek_key = seek_key;
 
-        let mut iter = self
+        let iter = self
             .db
             .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
         let mut snapshot = Vec::with_capacity(batch_size);
         let mut entries_processed = 0u64;
 
-        while let Some(Ok((key, value))) = iter.next() {
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error while generating UTXO snapshot shard {:02x}: {}",
+                    shard_index, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
             if key.len() != UTXO_KEY_LEN {
-                continue;
+                return Err(format!(
+                    "Invalid UTXO key length {} in snapshot shard {:02x}; expected {}",
+                    key.len(),
+                    shard_index,
+                    UTXO_KEY_LEN
+                ));
             }
 
             //info!("Shard {:0x} processing key {:x?}", shard_index, key);
@@ -2694,7 +2720,12 @@ impl BalanceHistoryDB {
 
             entries_processed += 1;
 
-            let outpoint = usdb_util::OutPointCodec::decode(&key).unwrap();
+            let outpoint = usdb_util::OutPointCodec::decode(&key).map_err(|e| {
+                format!(
+                    "Failed to decode UTXO key in snapshot shard {:02x}: {}",
+                    shard_index, e
+                )
+            })?;
             let utxo_value = Self::parse_utxo_from_value(&value);
 
             let entry = UTXOEntry {
@@ -2780,16 +2811,29 @@ impl BalanceHistoryDB {
         let mut seek_key = vec![shard_index];
         seek_key.resize(SCRIPT_REGISTRY_KEY_LEN, 0xFF);
 
-        let mut iter = self
+        let iter = self
             .db
             .full_iterator_cf(&cf, IteratorMode::From(&seek_key, Direction::Reverse));
 
         let mut snapshot = Vec::with_capacity(batch_size);
         let mut entries_processed = 0u64;
 
-        while let Some(Ok((key, value))) = iter.next() {
+        for item in iter {
+            let (key, value) = item.map_err(|e| {
+                let msg = format!(
+                    "Iterator error while generating script-registry snapshot shard {:02x}: {}",
+                    shard_index, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
             if key.len() != SCRIPT_REGISTRY_KEY_LEN {
-                continue;
+                return Err(format!(
+                    "Invalid script-registry key length {} in snapshot shard {:02x}; expected {}",
+                    key.len(),
+                    shard_index,
+                    SCRIPT_REGISTRY_KEY_LEN
+                ));
             }
 
             if key[0] != shard_index {

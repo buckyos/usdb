@@ -9,6 +9,7 @@
 - [balance-history-readiness-design.md](./balance-history-readiness-design.md)
 - [balance-history-rollback数据模型设计.md](./balance-history-rollback%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B%E8%AE%BE%E8%AE%A1.md)
 - [balance-history-review-remediation-plan.md](./balance-history-review-remediation-plan.md)
+- [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)
 
 ## Regtest 框架
 

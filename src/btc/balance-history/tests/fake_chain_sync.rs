@@ -270,6 +270,21 @@ fn process_block_batch_indexes_coinbase_spends_op_return_and_registry() {
 }
 
 #[test]
+fn sync_to_height_stops_at_exact_configured_target() {
+    let scenario = build_scenario();
+    let harness = Harness::new("sync_to_exact_height", scenario.chain, 3);
+
+    let synced = harness
+        .indexer
+        .sync_to_height(3, std::time::Duration::from_millis(1))
+        .unwrap();
+
+    assert_eq!(synced, 3);
+    assert_eq!(harness.indexer.db().get_btc_block_height().unwrap(), 3);
+    assert!(harness.indexer.db().get_utxo_count().unwrap() > 0);
+}
+
+#[test]
 fn sync_once_rolls_back_reorg_and_restores_cross_batch_utxos() {
     let scenario = build_scenario();
     let harness = Harness::new("sync_once_reorg", scenario.chain.clone(), 3);

@@ -136,6 +136,7 @@ bash src/btc/balance-history/scripts/regtest_snapshot_install_retry.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_failure.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_corrupt.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
 ```
 
 ## 真实 BTC 数据测试

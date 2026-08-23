@@ -473,6 +473,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "balance-history-snapshot-tool"
+version = "0.1.0"
+dependencies = [
+ "balance-history",
+ "bitcoincore-rpc",
+ "clap",
+ "named-lock",
+ "serde",
+ "serde_json",
+ "sha2",
+ "usdb-util",
+]
+
+[[package]]
 name = "base58ck"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

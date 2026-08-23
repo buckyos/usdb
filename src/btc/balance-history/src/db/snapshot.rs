@@ -1,7 +1,7 @@
 use super::db::{BalanceHistoryEntry, BlockCommitEntry, ScriptRegistryEntry};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, OutPointCodec, UTXOEntry};
@@ -116,6 +116,49 @@ impl SnapshotDB {
             path: path.to_path_buf(),
             conn,
         })
+    }
+
+    /// Opens an existing snapshot without applying schema migrations or writable pragmas.
+    pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let conn =
+            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+                let msg = format!(
+                    "Failed to open snapshot {} read-only: {}",
+                    path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        Ok(Self {
+            path: path.to_path_buf(),
+            conn,
+        })
+    }
+
+    /// Runs SQLite's full integrity check and rejects any non-`ok` result.
+    pub fn verify_integrity(&self) -> Result<(), String> {
+        let result: String = self
+            .conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to run integrity check for snapshot {}: {}",
+                    self.path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        if result != "ok" {
+            return Err(format!(
+                "Snapshot integrity check failed for {}: {}",
+                self.path.display(),
+                result
+            ));
+        }
+        Ok(())
     }
 
     fn ensure_schema_migrations(conn: &Connection) -> Result<(), String> {

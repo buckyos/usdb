@@ -10,6 +10,7 @@ use crate::output::IndexOutputRef;
 use crate::service::{resolve_balance_history_active_versions, resolve_balance_history_stable_lag};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::oneshot;
 use usdb_util::BtcScriptHash;
 
@@ -331,6 +332,84 @@ impl BalanceHistoryIndexer {
 
     pub fn db(&self) -> &BalanceHistoryDBRef {
         &self.db
+    }
+
+    /// Synchronizes the durable workspace to one exact configured target height and returns.
+    ///
+    /// This is the one-shot embedding entry point used by the snapshot builder. Unlike `run`, it
+    /// does not wait forever after reaching the configured maximum. A restart can call this method
+    /// again and continue from the height already committed in RocksDB.
+    pub fn sync_to_height(
+        &self,
+        target_height: u32,
+        poll_interval: Duration,
+    ) -> Result<u32, String> {
+        if self.config.sync.max_sync_block_height != target_height {
+            return Err(format!(
+                "Snapshot sync target {} does not match configured max_sync_block_height {}",
+                target_height, self.config.sync.max_sync_block_height
+            ));
+        }
+
+        let current_height = self.db.get_btc_block_height()?;
+        if current_height > target_height {
+            return Err(format!(
+                "Balance-history workspace height {} is above snapshot target height {}",
+                current_height, target_height
+            ));
+        }
+
+        self.btc_client.init().map_err(|e| {
+            format!(
+                "Failed to initialize BTC client for exact-height snapshot sync: {}",
+                e
+            )
+        })?;
+
+        let sync_result = (|| {
+            loop {
+                let synced_height = self.sync_once()?;
+                self.btc_client
+                    .on_sync_complete(synced_height)
+                    .map_err(|e| {
+                        format!(
+                            "BTC client failed to finalize sync iteration at height {}: {}",
+                            synced_height, e
+                        )
+                    })?;
+
+                if synced_height == target_height {
+                    self.db.flush_all()?;
+                    self.output.finish_index();
+                    return Ok(synced_height);
+                }
+                if synced_height > target_height {
+                    return Err(format!(
+                        "Balance-history synchronized past exact snapshot target: current={}, target={}",
+                        synced_height, target_height
+                    ));
+                }
+
+                self.output.set_index_message(&format!(
+                    "Waiting for BTC height {} to enter the stable sync range; current stable height {}",
+                    target_height, synced_height
+                ));
+                std::thread::sleep(poll_interval);
+            }
+        })();
+
+        let stop_result = self.btc_client.stop().map_err(|e| {
+            format!(
+                "Failed to stop BTC client after exact-height snapshot sync: {}",
+                e
+            )
+        });
+
+        match (sync_result, stop_result) {
+            (Err(sync_error), _) => Err(sync_error),
+            (Ok(_), Err(stop_error)) => Err(stop_error),
+            (Ok(height), Ok(())) => Ok(height),
+        }
     }
 
     fn resume_pending_rollback_if_needed(&self) -> Result<bool, String> {

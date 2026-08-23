@@ -29,6 +29,21 @@ pub struct SnapshotIndexer {
     output: IndexOutputRef,
 }
 
+/// Files and verified metadata produced by one snapshot creation run.
+#[derive(Clone, Debug)]
+pub struct SnapshotCreationResult {
+    /// Finalized SQLite snapshot file.
+    pub db_path: PathBuf,
+    /// Canonical manifest sidecar for `db_path`.
+    pub manifest_path: PathBuf,
+    /// Optional detached manifest signature sidecar.
+    pub signature_path: Option<PathBuf>,
+    /// Counts and source height persisted in the snapshot DB.
+    pub meta: SnapshotMeta,
+    /// Manifest data written beside the snapshot DB.
+    pub manifest: SnapshotManifest,
+}
+
 impl SnapshotIndexer {
     pub fn new(
         config: BalanceHistoryConfigRef,
@@ -39,6 +54,24 @@ impl SnapshotIndexer {
     }
 
     pub fn run(&self, target_block_height: u32, with_utxo: bool) -> Result<(), String> {
+        let db_path = self
+            .config
+            .snapshot_dir()
+            .join(format!("snapshot_{}.db", target_block_height));
+        self.run_to_path(target_block_height, with_utxo, &db_path)
+            .map(|_| ())
+    }
+
+    /// Creates one snapshot at an explicit output path and returns its distributable artifacts.
+    ///
+    /// Callers must use a new path. This lets an orchestrator build inside a temporary directory,
+    /// verify the complete artifact set, and atomically publish that directory afterwards.
+    pub fn run_to_path(
+        &self,
+        target_block_height: u32,
+        with_utxo: bool,
+        db_path: &Path,
+    ) -> Result<SnapshotCreationResult, String> {
         info!(
             "Starting snapshot generation up to block height {}, with_utxo={}",
             target_block_height, with_utxo
@@ -70,20 +103,32 @@ impl SnapshotIndexer {
 
         self.output.start_load(0);
 
-        let root_dir = self.config.root_dir.clone();
-
         self.output.println(&format!(
-            "Creating snapshot database at {} height {}, with_utxo={}",
-            root_dir.display(),
+            "Creating snapshot database at {} for height {}, with_utxo={}",
+            db_path.display(),
             target_block_height,
             with_utxo
         ));
-        let snapshot_db = SnapshotDB::open_by_height(&root_dir, target_block_height, true)
-            .map_err(|e| {
-                let msg = format!("Failed to create snapshot database: {}", e);
-                self.output.eprintln(&msg);
-                msg
+        if db_path.exists() {
+            return Err(format!(
+                "Snapshot output path {} already exists",
+                db_path.display()
+            ));
+        }
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create snapshot output directory {}: {}",
+                    parent.display(),
+                    e
+                )
             })?;
+        }
+        let snapshot_db = SnapshotDB::open(db_path).map_err(|e| {
+            let msg = format!("Failed to create snapshot database: {}", e);
+            self.output.eprintln(&msg);
+            msg
+        })?;
 
         let snapshot_db = Arc::new(Mutex::new(snapshot_db));
         let mut snapshot_meta = SnapshotMeta::new(target_block_height);
@@ -273,7 +318,7 @@ impl SnapshotIndexer {
             "Snapshot manifest written to {}",
             manifest_path.display()
         ));
-        if let Some(signing_key) = signing_key {
+        let signature_path = if let Some(signing_key) = signing_key {
             let signature_path = signature_path_for_manifest_file(&manifest_path);
             let signature = signing_key
                 .to_signing_key()?
@@ -283,9 +328,18 @@ impl SnapshotIndexer {
                 "Snapshot manifest signature written to {}",
                 signature_path.display()
             ));
-        }
+            Some(signature_path)
+        } else {
+            None
+        };
 
-        Ok(())
+        Ok(SnapshotCreationResult {
+            db_path,
+            manifest_path,
+            signature_path,
+            meta: snapshot_meta,
+            manifest,
+        })
     }
 }
 
@@ -915,7 +969,7 @@ impl SnapshotInstaller {
                 .println("No snapshot file hash provided, skipping verification");
         }
 
-        let snapshot_db = SnapshotDB::open(&data.file).map_err(|e| {
+        let snapshot_db = SnapshotDB::open_read_only(&data.file).map_err(|e| {
             let msg = format!("Failed to open snapshot database: {}", e);
             error!("{}", msg);
             msg
