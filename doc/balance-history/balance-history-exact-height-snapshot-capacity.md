@@ -62,6 +62,38 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 `peak_rss_kib_sampled` 是采样值，不是内核提供的完整进程树 high-water mark。脚本直接运行
 预构建二进制，避免把 Cargo 编译开销计入阶段指标；它也不会统计 bitcoind 自身资源。
 
+## 当前目标硬件 100K 基线
+
+2026-08-23 在当前目标机器、代码 revision `db2da3f`、Bitcoin Core `28.1` 上完成了 100K
+warm 和 cold-advisory 两轮隔离 regtest。机器为 12 logical CPU 的 Intel i7-13700KF 虚拟化
+环境、约 62 GiB 内存和 ext4 virtual disk：
+
+| 指标 | Warm | Cold advisory |
+| --- | ---: | ---: |
+| requested UTXO | 100,000 | 100,000 |
+| actual snapshot UTXO | 100,152 | 100,152 |
+| snapshot bytes | 40,005,632 | 40,001,536 |
+| chain load | 11.58s | 11.78s |
+| sync | 2.07s / 131.4 MiB | 2.05s / 131.2 MiB |
+| export | 3.90s / 121.2 MiB | 3.88s / 122.2 MiB |
+| verify | 0.67s / 24.2 MiB | 0.66s / 24.0 MiB |
+| install | 1.42s / 140.1 MiB | 1.42s / 136.6 MiB |
+
+阶段单元格格式为 `elapsed / peak_rss_sampled`。两轮 create/verify 的 SHA-256 均分别一致。
+原始指标保存在：
+
+```text
+/tmp/usdb-bh-snapshot-capacity-100k-metrics.json
+/tmp/usdb-bh-snapshot-capacity-100k-cold-metrics.json
+```
+
+40 MB 测试 artifact 能完整覆盖 100K 逻辑路径，但不足以让 advisory eviction 稳定表现为真实
+物理 I/O，不能从 warm/cold 数值接近推导主网冷缓存代价很低。
+
+该 harness 依赖 debug-only `sealed` checkpoint 中止来拆分 sync 和 export，因此表中耗时来自
+debug 二进制，只能作为当前 revision 的功能/趋势基线，不能作为 release 主网性能 SLA。
+正式主网构建必须使用 release 二进制，并独立记录端到端 wall time、峰值 RSS 和设备 I/O。
+
 ## 验收建议
 
 同一硬件至少依次运行 1K、10K、100K 三档，并固定代码 revision、Bitcoin Core 版本、输出

@@ -235,6 +235,13 @@ for sync, export, verify, and install. Its default 1K workload is a functional b
 10K/100K and advisory cold-cache runs remain explicit operator actions on the target hardware.
 See `balance-history-exact-height-snapshot-capacity.md` for metric semantics and limitations.
 
+The production mainnet creation, signed distribution, recipient installation, and post-startup
+acceptance workflow is documented in
+`balance-history-mainnet-exact-height-snapshot-operations.md` and wrapped by
+`src/btc/balance-history/scripts/mainnet_exact_height_snapshot.sh`. The production wrapper uses
+the common `~/.usdb` namespace by default but isolates its builder, validation, release, and key
+state from the live `~/.usdb/balance-history` service root.
+
 The legacy snapshot install/recovery scripts also use manifest verification and advance each
 transaction height into the service's configured stable view before asserting indexed state.
 Remaining follow-up coverage is a recorded 100K production-hardware run, physical-I/O collection,

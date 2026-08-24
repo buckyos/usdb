@@ -104,6 +104,7 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 | `regtest_exact_height_snapshot_failure_paths.sh` | Snapshot | `30332/30333/N/A` | exact-height 参数拒绝、发布前失败、恢复和发布后篡改 |
 | `regtest_exact_height_snapshot_signed_install.sh` | Snapshot | `30432/30433/30411-30413` | 签名篡改、非信任 signer 和受信任安装 provenance |
 | `regtest_exact_height_snapshot_capacity.sh` | Snapshot/capacity | `30932/30933/N/A` | 参数化 1K/10K/100K UTXO 导出、校验和安装指标 |
+| `mainnet_exact_height_snapshot.sh` | Snapshot/production | N/A | 主网 exact-height snapshot 的初始化、预检、断点续跑、signed validation 和打包入口 |
 
 ## 推荐手工套件
 
@@ -257,6 +258,12 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 
 指标解释见
 [balance-history-exact-height-snapshot-capacity.md](/home/bucky/work/usdb/doc/balance-history/balance-history-exact-height-snapshot-capacity.md)。
+
+在正式硬件上制作并签名分发主网 checkpoint 时，使用
+`mainnet_exact_height_snapshot.sh` 封装的 `init/preflight/create/status/verify/finalize` 流程，并按
+[balance-history-mainnet-exact-height-snapshot-operations.md](/home/bucky/work/usdb/doc/balance-history/balance-history-mainnet-exact-height-snapshot-operations.md)
+完成目录规划、artifact 复核和接收方安装。脚本默认使用独立的
+`~/.usdb/balance-history-snapshot-mainnet`，不会复用在线 `~/.usdb/balance-history`。
 
 ## 排障
 
