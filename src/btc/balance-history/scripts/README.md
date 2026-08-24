@@ -97,6 +97,13 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 | `regtest_snapshot_install_failure.sh` | Snapshot | `29432/29433/29410` | 安装失败不污染 live state |
 | `regtest_snapshot_install_corrupt.sh` | Snapshot | `30232/30233/30210` | 损坏 snapshot 拒绝安装 |
 | `regtest_snapshot_install_downgrade.sh` | Snapshot | `30032/30033/30010` | 旧 snapshot/downgrade 安装保护 |
+| `regtest_exact_height_snapshot_tool.sh` | Snapshot | `29832/29833/29810` | exact-height 初次创建、幂等重放和增量 H+1 |
+| `regtest_exact_height_snapshot_restart.sh` | Snapshot | `29932/29933/29910` | 所有 durable checkpoint 的跨进程恢复 |
+| `regtest_exact_height_snapshot_same_height_reorg.sh` | Snapshot/reorg | `30032/30033/30010` | 同高度分支替换、歧义拒绝和新分支继续同步 |
+| `regtest_exact_height_snapshot_install_spend.sh` | Snapshot/install | `30132/30133/30110-30111` | 安装后花费快照前 UTXO 并继续追块 |
+| `regtest_exact_height_snapshot_failure_paths.sh` | Snapshot | `30332/30333/N/A` | exact-height 参数拒绝、发布前失败、恢复和发布后篡改 |
+| `regtest_exact_height_snapshot_signed_install.sh` | Snapshot | `30432/30433/30411-30413` | 签名篡改、非信任 signer 和受信任安装 provenance |
+| `regtest_exact_height_snapshot_capacity.sh` | Snapshot/capacity | `30932/30933/N/A` | 参数化 1K/10K/100K UTXO 导出、校验和安装指标 |
 
 ## 推荐手工套件
 
@@ -231,7 +238,25 @@ bash src/btc/balance-history/scripts/regtest_snapshot_install_retry.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_failure.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_corrupt.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_downgrade.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_restart.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_same_height_reorg.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_install_spend.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_failure_paths.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_signed_install.sh
 ```
+
+容量测试单独运行，默认 1K UTXO；100K 和 advisory cold-cache 必须显式选择：
+
+```bash
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
+
+SNAPSHOT_CAPACITY_UTXOS=100000 SNAPSHOT_CAPACITY_COLD_CACHE=1 \
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
+```
+
+指标解释见
+[balance-history-exact-height-snapshot-capacity.md](/home/bucky/work/usdb/doc/balance-history/balance-history-exact-height-snapshot-capacity.md)。
 
 ## 排障
 

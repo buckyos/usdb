@@ -67,7 +67,7 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 | Restart/recovery reorg | 服务离线或重启后的 reorg 恢复 | `regtest_restart_reorg_smoke.sh`, `regtest_restart_multi_reorg_smoke.sh`, `regtest_restart_hybrid_reorg_smoke.sh` |
 | Query semantics | balance、delta、batch query、spend graph、same-block aggregation | `regtest_spend_graph_queries.sh`, `regtest_multi_input_same_block_queries.sh`, `regtest_restart_same_block_aggregate_reorg.sh` |
 | Undo retention | retained undo window 内的 reorg 行为 | `regtest_undo_retention_reorg.sh`, `regtest_undo_retention_same_block_aggregate_reorg.sh` |
-| Snapshot | snapshot export/install/recovery/failure、exact-height resume/reorg/continued sync 语义 | `regtest_snapshot_recovery.sh`, `regtest_snapshot_restart_recovery.sh`, `regtest_snapshot_install_repeat.sh`, `regtest_snapshot_install_retry.sh`, `regtest_snapshot_install_failure.sh`, `regtest_snapshot_install_corrupt.sh`, `regtest_snapshot_install_downgrade.sh`, `regtest_exact_height_snapshot_tool.sh`, `regtest_exact_height_snapshot_restart.sh`, `regtest_exact_height_snapshot_same_height_reorg.sh`, `regtest_exact_height_snapshot_install_spend.sh` |
+| Snapshot | snapshot export/install/recovery/failure、exact-height resume/reorg/continued sync、签名信任与容量语义 | `regtest_snapshot_recovery.sh`, `regtest_snapshot_restart_recovery.sh`, `regtest_snapshot_install_repeat.sh`, `regtest_snapshot_install_retry.sh`, `regtest_snapshot_install_failure.sh`, `regtest_snapshot_install_corrupt.sh`, `regtest_snapshot_install_downgrade.sh`, `regtest_exact_height_snapshot_tool.sh`, `regtest_exact_height_snapshot_restart.sh`, `regtest_exact_height_snapshot_same_height_reorg.sh`, `regtest_exact_height_snapshot_install_spend.sh`, `regtest_exact_height_snapshot_failure_paths.sh`, `regtest_exact_height_snapshot_signed_install.sh`, `regtest_exact_height_snapshot_capacity.sh` |
 | Oracle | 用独立 oracle 对拍生成的 regtest block 历史余额 | `regtest_history_balance_oracle.sh` |
 | Loader threshold | RPC/local-loader 切换行为 | `regtest_loader_switch.sh` |
 
@@ -140,11 +140,26 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
 bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_restart.sh
 bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_same_height_reorg.sh
 bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_install_spend.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_failure_paths.sh
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_signed_install.sh
 ```
 
 Snapshot scripts derive the confirmation count from the running service's `stable_lag` value.
 Installer tests use the adjacent manifest, or an explicitly modified manifest for negative cases;
 the removed legacy `--hash` option is not part of the test contract.
+
+容量入口不属于默认 `snapshot-full` 回归；按数据档位单独执行：
+
+```bash
+SNAPSHOT_CAPACITY_UTXOS=1000 \
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
+
+SNAPSHOT_CAPACITY_UTXOS=100000 SNAPSHOT_CAPACITY_COLD_CACHE=1 \
+bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
+```
+
+详细指标约束见
+[balance-history-exact-height-snapshot-capacity.md](./balance-history-exact-height-snapshot-capacity.md)。
 
 ## 真实 BTC 数据测试
 
@@ -185,12 +200,12 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 | 缺口 | 风险 | 建议修复 |
 | --- | --- | --- |
 | 统一 regtest runner 仍不完整 | 当前收敛了 `smoke` 和 `stable-lag-reorg`，其它更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
-| Exact-height snapshot 尚无大数据与签名失败注入 | 当前覆盖状态恢复、同高度换链、完整 UTXO 安装后继续同步，但未覆盖生产规模导出和 signer/manifest 发布失败 | 增加 100K+ UTXO/余额容量测试、磁盘空间故障和签名发布失败注入 |
+| Exact-height snapshot 尚无生产硬件结果与磁盘故障注入 | 已有 1K 可重复容量入口、签名篡改/非信任 signer、发布前失败和恢复覆盖，但尚未记录 100K 正式硬件结果 | 在目标硬件跑 1K/10K/100K warm/cold-advisory 矩阵，并补磁盘满与设备级物理 I/O 采样 |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
 | `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |
 | 真实 BTC local loader 测试仍需人工提供节点 | local blk 加速路径可能在无日常信号下退化 | 已有显式 real-data test mode；下一步补 fixture/regtest-generated blk subset，让 CI 也能覆盖 local-loader 子集 |
-| shell helper 重复 | 多个脚本重复定义 JSON assertion helper | 把通用 JSON assertion helper 移入 `regtest_lib.sh` |
+| shell helper 重复 | 共享库已有 JSON assertion helper，但部分旧脚本仍保留本地副本 | 后续触及对应旧脚本时删除本地副本并复用 `regtest_lib.sh` |
 | 大模块 ownership 不清晰 | DB/server/snapshot/block 文件过大，review 与补测成本高 | lib export 后拆分 helper，并把共享 test builders 移入 `tests/common` |
 
 ## 建议落地顺序

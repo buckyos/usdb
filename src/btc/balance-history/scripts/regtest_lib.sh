@@ -252,6 +252,33 @@ regtest_config_set_max_sync_block_height() {
   regtest_config_set_sync_value "$config_path" "max_sync_block_height" "$max_sync_block_height"
 }
 
+regtest_config_set_snapshot_policy() {
+  local config_path="$1"
+  local trust_mode="$2"
+  local signing_key_file="${3:-}"
+  local trusted_keys_file="${4:-}"
+
+  python3 - "$config_path" "$trust_mode" "$signing_key_file" "$trusted_keys_file" <<'PY'
+from pathlib import Path
+import sys
+
+config_path = Path(sys.argv[1])
+trust_mode = sys.argv[2]
+signing_key_file = sys.argv[3]
+trusted_keys_file = sys.argv[4]
+content = config_path.read_text(encoding="utf-8")
+if "[snapshot]" in content:
+    raise SystemExit(f"[snapshot] section already exists in {config_path}")
+
+lines = ["", "[snapshot]", f'trust_mode = "{trust_mode}"']
+if signing_key_file:
+    lines.append(f'signing_key_file = "{signing_key_file}"')
+if trusted_keys_file:
+    lines.append(f'trusted_keys_file = "{trusted_keys_file}"')
+config_path.write_text(content.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+PY
+}
+
 regtest_wait_balance_history_rpc_ready_at_port() {
   local rpc_port="$1"
   local log_file="$2"
@@ -491,6 +518,21 @@ PY
   fi
 }
 
+regtest_assert_json_expr() {
+  local response="$1"
+  local expression="$2"
+  local expected="$3"
+  local actual
+
+  actual="$(printf '%s' "$response" \
+    | python3 -c "import json,sys; data=json.load(sys.stdin); print(${expression})")"
+  regtest_log "RPC assertion: expr=${expression}, expected=${expected}, actual=${actual}"
+  if [[ "$actual" != "$expected" ]]; then
+    regtest_log "RPC assertion failed. response=${response}"
+    exit 1
+  fi
+}
+
 regtest_assert_json_files_equal() {
   local left_file="$1"
   local right_file="$2"
@@ -534,6 +576,22 @@ manifest["file_name"] = snapshot_file.name
 manifest["file_sha256"] = sys.argv[4]
 destination.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 PY
+}
+
+regtest_expect_command_failure() {
+  local output_file="$1"
+  local expected_text="$2"
+  shift 2
+
+  if "$@" >"$output_file" 2>&1; then
+    regtest_log "Expected command to fail but it succeeded: $*"
+    exit 1
+  fi
+  if ! grep -F -- "$expected_text" "$output_file" >/dev/null; then
+    regtest_log "Failed command output did not contain expected text: ${expected_text}"
+    cat "$output_file" >&2
+    exit 1
+  fi
 }
 
 # Restart the service and wait until its RPC endpoint becomes reachable again.

@@ -369,6 +369,7 @@ impl ExactHeightSnapshotBuilder {
                 e
             )
         })?;
+        crate::fail_at_checkpoint("before_publish")?;
         std::fs::rename(&temp_dir, &final_dir).map_err(|e| {
             format!(
                 "Failed to atomically publish snapshot directory {} as {}: {}",
@@ -836,5 +837,67 @@ mod tests {
         let error = builder.prepare_workspace_config(None).unwrap_err();
 
         assert!(error.contains("pass --config <FILE>"));
+    }
+
+    #[test]
+    fn persisted_job_rejects_expected_hash_change() {
+        let builder = ExactHeightSnapshotBuilder::new(PathBuf::from("/unused"));
+        let expected = "11".repeat(32);
+        let job = SnapshotBuildJob::new(10, None, Some(expected.clone()));
+
+        builder.validate_job(&job, 10, Some(&expected)).unwrap();
+        let error = builder
+            .validate_job(&job, 10, Some(&"22".repeat(32)))
+            .unwrap_err();
+
+        assert!(error.contains("was created with expected block hash"));
+    }
+
+    #[test]
+    fn workspace_height_must_remain_between_base_and_target() {
+        let builder = ExactHeightSnapshotBuilder::new(PathBuf::from("/unused"));
+        let job = SnapshotBuildJob::new(12, Some(completed(10)), None);
+
+        let below = builder
+            .validate_workspace_height(&job, 9, true)
+            .unwrap_err();
+        let above = builder
+            .validate_workspace_height(&job, 13, true)
+            .unwrap_err();
+
+        assert!(below.contains("below completed base height 10"));
+        assert!(above.contains("above active snapshot target 12"));
+    }
+
+    #[test]
+    fn block_hash_normalization_accepts_uppercase_and_rejects_invalid_input() {
+        let uppercase = "AB".repeat(32);
+        assert_eq!(normalize_hash(&uppercase).unwrap(), "ab".repeat(32));
+
+        let error = normalize_hash("not-a-block-hash").unwrap_err();
+        assert!(error.contains("expected 64 hexadecimal characters"));
+    }
+
+    #[test]
+    fn builder_state_rejects_version_and_network_mismatch() {
+        let builder = ExactHeightSnapshotBuilder::new(PathBuf::from("/unused"));
+        let mut state = SnapshotBuilderState::new("regtest".to_string());
+
+        builder.validate_state(&state, "regtest").unwrap();
+        state.version += 1;
+        assert!(
+            builder
+                .validate_state(&state, "regtest")
+                .unwrap_err()
+                .contains("Unsupported snapshot builder state version")
+        );
+
+        state.version = crate::BUILDER_STATE_VERSION;
+        assert!(
+            builder
+                .validate_state(&state, "bitcoin")
+                .unwrap_err()
+                .contains("Snapshot builder network mismatch")
+        );
     }
 }

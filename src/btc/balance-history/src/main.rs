@@ -365,7 +365,9 @@ async fn main() {
             let snapshot_installer =
                 index::SnapshotInstaller::new(config.clone(), db, output.clone());
             if let Err(e) = snapshot_installer.install(data) {
-                output.eprintln(&format!("Failed to install snapshot: {}", e));
+                let message = format!("Failed to install snapshot: {}", e);
+                output.eprintln(&message);
+                eprintln!("{message}");
                 std::process::exit(1);
             }
 

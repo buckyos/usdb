@@ -211,6 +211,9 @@ src/btc/balance-history/scripts/regtest_exact_height_snapshot_tool.sh
 src/btc/balance-history/scripts/regtest_exact_height_snapshot_restart.sh
 src/btc/balance-history/scripts/regtest_exact_height_snapshot_same_height_reorg.sh
 src/btc/balance-history/scripts/regtest_exact_height_snapshot_install_spend.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_failure_paths.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_signed_install.sh
+src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 ```
 
 Together they cover initial full-UTXO publication, completed-request replay, artifact
@@ -221,7 +224,18 @@ replacement, require an explicit block hash when one height is ambiguous, contin
 replacement branch at `H+1`, and install a generated checkpoint before spending an output that
 predates the checkpoint.
 
+The failure-path test rejects expected-hash and conflicting-target requests, injects both abrupt
+and ordinary failures before publication, resumes from durable state, verifies temporary artifact
+cleanup, and detects post-publication file tampering. The signed-install test rejects an invalid
+signature without replacing the existing database, rejects an untrusted signer, and verifies the
+installed provenance for a trusted signer.
+
+The parameterized capacity entrypoint builds real regtest UTXOs and emits comparable JSON metrics
+for sync, export, verify, and install. Its default 1K workload is a functional benchmark smoke;
+10K/100K and advisory cold-cache runs remain explicit operator actions on the target hardware.
+See `balance-history-exact-height-snapshot-capacity.md` for metric semantics and limitations.
+
 The legacy snapshot install/recovery scripts also use manifest verification and advance each
 transaction height into the service's configured stable view before asserting indexed state.
-Remaining follow-up coverage is production-scale export/install performance, disk and atomic
-publication failure injection, and optional signer/signature failure paths.
+Remaining follow-up coverage is a recorded 100K production-hardware run, physical-I/O collection,
+and disk-full/filesystem-level atomic publication failure injection.
