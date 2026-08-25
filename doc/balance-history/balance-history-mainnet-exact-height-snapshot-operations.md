@@ -244,6 +244,10 @@ sha256sum "$BALANCE_HISTORY" "$SNAPSHOT_TOOL"
 
 ## 5. 生成并保护签名 key
 
+签名对象、文件格式、接收方信任引导和密钥轮换边界见
+[Balance-History Snapshot 签名与信任说明](./balance-history-snapshot-signing.md)。本节只记录
+主网 snapshot 生成机的操作步骤。
+
 正式分发建议强制 signed install。首次生成 signer：
 
 ```bash
@@ -319,12 +323,15 @@ signing_key_file = "/home/bucky/.usdb/secure/snapshot-keys/usdb-mainnet-snapshot
 ```bash
 CONFIRMATIONS=144
 TIP=$("$BITCOIN_CLI" -datadir="$BITCOIN_DATA_DIR" getblockcount)
-H=$((TIP - CONFIRMATIONS))
+H=$((TIP - CONFIRMATIONS + 1))
 H_HASH=$("$BITCOIN_CLI" -datadir="$BITCOIN_DATA_DIR" getblockhash "$H")
 
 printf 'tip=%s\nheight=%s\nblock_hash=%s\nconfirmations=%s\n' \
   "$TIP" "$H" "$H_HASH" "$CONFIRMATIONS"
 ```
+
+这里按 Bitcoin Core 常用口径把 tip block 计为 1 confirmation，因此确认数公式为
+`TIP - H + 1`。
 
 把 tip、`H`、`H_HASH`、确认深度、选择时间和代码 revision 写入发布记录。不要在 snapshot
 仍在构建时把同一 builder root 改为另一个目标高度。
@@ -469,6 +476,9 @@ SNAPSHOT_FILE="$ARTIFACT_PATH/snapshot_${H}.db"
 发布审计，也可以在确认没有进程使用后删除并重建；不要把它当成生产 builder 的增量基础。
 
 ## 10. 打包和分发
+
+Balance-history binary、public trusted-key catalog 和 snapshot 的整体发布编排见
+[Balance-History 发布与 Snapshot 分发](../publish/balance-history-release-and-snapshot-distribution.md)。
 
 不要发布 mutable workspace、job state 或签名私钥，只打包已验证的 immutable artifact：
 

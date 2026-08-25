@@ -25,6 +25,10 @@
 
 ## 快照与恢复
 
+- [balance-history-snapshot-signing.md](./balance-history-snapshot-signing.md)
+- [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)
+- [balance-history-exact-height-snapshot-capacity.md](./balance-history-exact-height-snapshot-capacity.md)
+- [balance-history-mainnet-exact-height-snapshot-operations.md](./balance-history-mainnet-exact-height-snapshot-operations.md)
 - [balance-history-regtest-snapshot-recovery.md](./balance-history-regtest-snapshot-recovery.md)
 - [balance-history-regtest-snapshot-restart-recovery.md](./balance-history-regtest-snapshot-restart-recovery.md)
 - [balance-history-regtest-snapshot-install-repeat.md](./balance-history-regtest-snapshot-install-repeat.md)
@@ -50,3 +54,5 @@
 - [../btc-consensus-rpc-error-contract-design.md](../btc-consensus-rpc-error-contract-design.md)
 - [../btc-reorg风险现状与改造计划.md](../btc-reorg%E9%A3%8E%E9%99%A9%E7%8E%B0%E7%8A%B6%E4%B8%8E%E6%94%B9%E9%80%A0%E8%AE%A1%E5%88%92.md)
 - [../usdb-双链共识接入问题风险与改造清单.md](../usdb-%E5%8F%8C%E9%93%BE%E5%85%B1%E8%AF%86%E6%8E%A5%E5%85%A5%E9%97%AE%E9%A2%98%E9%A3%8E%E9%99%A9%E4%B8%8E%E6%94%B9%E9%80%A0%E6%B8%85%E5%8D%95.md)
+
+跨组件发布和上线编排统一从 [../publish/README.md](../publish/README.md) 进入。
