@@ -359,12 +359,14 @@ impl BalanceHistoryIndexer {
             ));
         }
 
-        self.btc_client.init().map_err(|e| {
-            format!(
+        self.cache_monitor.start();
+        if let Err(error) = self.btc_client.init() {
+            self.cache_monitor.stop();
+            return Err(format!(
                 "Failed to initialize BTC client for exact-height snapshot sync: {}",
-                e
-            )
-        })?;
+                error
+            ));
+        }
 
         let sync_result = (|| {
             loop {
@@ -405,11 +407,13 @@ impl BalanceHistoryIndexer {
             )
         });
 
-        match (sync_result, stop_result) {
+        let result = match (sync_result, stop_result) {
             (Err(sync_error), _) => Err(sync_error),
             (Ok(_), Err(stop_error)) => Err(stop_error),
             (Ok(height), Ok(())) => Ok(height),
-        }
+        };
+        self.cache_monitor.stop();
+        result
     }
 
     fn resume_pending_rollback_if_needed(&self) -> Result<bool, String> {
@@ -466,7 +470,7 @@ impl BalanceHistoryIndexer {
             ret
         });
 
-        match handle.await {
+        let result = match handle.await {
             Ok(ret) => match ret {
                 Ok(_) => {
                     info!("Balance History Indexer thread exited successfully");
@@ -483,7 +487,9 @@ impl BalanceHistoryIndexer {
                 error!("{}", msg);
                 Err(msg)
             }
-        }
+        };
+        self.cache_monitor.stop();
+        result
     }
 
     // Gracefully shutdown the indexer and wait for the run loop to exit

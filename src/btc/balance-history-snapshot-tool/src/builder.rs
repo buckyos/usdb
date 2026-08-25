@@ -8,13 +8,14 @@ use balance_history::{
     BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotIndexer, SyncStatusManager,
     build_historical_state_ref_at_height,
 };
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use usdb_util::BTCRpcClient;
+use usdb_util::{BTCRpcClient, get_memory_usage_snapshot};
 
 /// Inputs controlling one exact-height create or resume operation.
 #[derive(Clone, Debug)]
@@ -129,6 +130,18 @@ impl ExactHeightSnapshotBuilder {
         let mut config = BalanceHistoryConfig::load(&self.paths.workspace)?;
         config.root_dir = self.paths.workspace.clone();
         config.sync.max_sync_block_height = options.target_height;
+        let memory = get_memory_usage_snapshot();
+        config.validate_memory_budget(memory.limit_bytes)?;
+        info!(
+            "Snapshot builder memory plan: source={}, limit_bytes={}, used_bytes={}, utxo_cache_bytes={}, balance_cache_bytes={}, total_cache_bytes={}, pressure_threshold_percent={}",
+            memory.source,
+            memory.limit_bytes,
+            memory.used_bytes,
+            config.sync.utxo_max_cache_bytes,
+            config.sync.balance_max_cache_bytes,
+            config.sync.cache_budget_bytes()?,
+            config.sync.max_memory_percent
+        );
         let network = config.btc.network().to_string();
         let expected_block_hash = normalize_optional_hash(options.expected_block_hash)?;
 
@@ -491,13 +504,22 @@ impl ExactHeightSnapshotBuilder {
                 )
             })?;
             if existing != source_data {
-                return Err(format!(
-                    "Workspace config {} differs from requested config {}; use a separate builder root",
-                    destination.display(),
-                    source.display()
-                ));
+                let existing_config = parse_balance_history_config(&existing, &destination)?;
+                let requested_config = parse_balance_history_config(&source_data, source)?;
+                if !configs_equal_except_memory(&existing_config, &requested_config) {
+                    return Err(format!(
+                        "Workspace config {} differs from requested config {}; only cache limits and the memory-pressure threshold may change for an existing builder",
+                        destination.display(),
+                        source.display()
+                    ));
+                }
+                info!(
+                    "Refreshing operational memory settings in snapshot workspace config {}",
+                    destination.display()
+                );
+            } else {
+                return Ok(());
             }
-            return Ok(());
         }
         let temp = self
             .paths
@@ -754,6 +776,34 @@ impl ExactHeightSnapshotBuilder {
     }
 }
 
+fn parse_balance_history_config(data: &[u8], path: &Path) -> Result<BalanceHistoryConfig, String> {
+    let text = std::str::from_utf8(data).map_err(|e| {
+        format!(
+            "Balance-history config {} is not UTF-8: {}",
+            path.display(),
+            e
+        )
+    })?;
+    toml::from_str(text).map_err(|e| {
+        format!(
+            "Failed to parse balance-history config {} while comparing workspace settings: {}",
+            path.display(),
+            e
+        )
+    })
+}
+
+fn configs_equal_except_memory(
+    existing: &BalanceHistoryConfig,
+    requested: &BalanceHistoryConfig,
+) -> bool {
+    let mut existing = existing.clone();
+    existing.sync.utxo_max_cache_bytes = requested.sync.utxo_max_cache_bytes;
+    existing.sync.balance_max_cache_bytes = requested.sync.balance_max_cache_bytes;
+    existing.sync.max_memory_percent = requested.sync.max_memory_percent;
+    existing == *requested
+}
+
 fn normalize_optional_hash(value: Option<String>) -> Result<Option<String>, String> {
     value.map(|value| normalize_hash(&value)).transpose()
 }
@@ -837,6 +887,47 @@ mod tests {
         let error = builder.prepare_workspace_config(None).unwrap_err();
 
         assert!(error.contains("pass --config <FILE>"));
+    }
+
+    #[test]
+    fn workspace_config_allows_only_operational_memory_refresh() {
+        let root = std::env::temp_dir().join(format!("snapshot-config-{}", unique_run_id()));
+        let source = root.join("source.toml");
+        let builder = ExactHeightSnapshotBuilder::new(root.join("builder"));
+        builder.paths.create_dirs().unwrap();
+
+        let mut config = BalanceHistoryConfig {
+            root_dir: builder.paths.workspace.clone(),
+            ..BalanceHistoryConfig::default()
+        };
+        config.sync.utxo_max_cache_bytes = 4 * 1024 * 1024;
+        config.sync.balance_max_cache_bytes = 12 * 1024 * 1024;
+        config.sync.max_memory_percent = 80;
+        std::fs::write(&source, toml::to_string_pretty(&config).unwrap()).unwrap();
+        builder.prepare_workspace_config(Some(&source)).unwrap();
+
+        config.sync.utxo_max_cache_bytes = 8 * 1024 * 1024;
+        config.sync.balance_max_cache_bytes = 24 * 1024 * 1024;
+        std::fs::write(&source, toml::to_string_pretty(&config).unwrap()).unwrap();
+        builder.prepare_workspace_config(Some(&source)).unwrap();
+        let refreshed =
+            std::fs::read_to_string(builder.paths.workspace.join("config.toml")).unwrap();
+        let refreshed: BalanceHistoryConfig = toml::from_str(&refreshed).unwrap();
+        assert_eq!(
+            refreshed.sync.utxo_max_cache_bytes,
+            config.sync.utxo_max_cache_bytes
+        );
+        assert_eq!(
+            refreshed.sync.balance_max_cache_bytes,
+            config.sync.balance_max_cache_bytes
+        );
+
+        config.sync.batch_size += 1;
+        std::fs::write(&source, toml::to_string_pretty(&config).unwrap()).unwrap();
+        let error = builder.prepare_workspace_config(Some(&source)).unwrap_err();
+        assert!(error.contains("only cache limits"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

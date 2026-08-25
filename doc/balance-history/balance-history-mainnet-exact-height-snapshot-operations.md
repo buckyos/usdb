@@ -39,7 +39,37 @@ USDB 正式服务默认统一使用 `~/.usdb` 命名空间。推荐生产入口�
 容量评估。`550 GiB` 可用空间仍不自动等于“主网全量构建容量已证明充足”；首次全量 builder
 应记录 workspace、artifact 和 validation install 的实际增长，并设置磁盘监控和停止阈值。
 
-### 1.1 真实主网历史高度 smoke
+### 1.1 主网全量构建内存基线
+
+2026-08-25，首次同步到目标高度 `963800` 的任务在 durable height `742912` 后被 Linux OOM
+killer 终止。旧配置没有显式 cache limit，旧默认算法在 `62.8 GiB` 物理内存上计算出约
+`54.8 GiB` cache budget，只留下固定 `8 GiB` 给 RocksDB、批处理对象、文件页缓存、分配器和
+系统。该容量是按 cache entry 估算的逻辑上限，不是进程 RSS 硬上限，因此不能作为安全的
+整机内存边界。
+
+当前主网脚本改为按有效 cgroup/物理内存生成显式预算，默认参数为：
+
+```text
+SNAPSHOT_CACHE_BUDGET_PERCENT=66
+SNAPSHOT_MAX_MEMORY_PERCENT=80
+UTXO : balance cache = 1 : 3
+```
+
+在本机 `67,426,422,784` bytes 有效内存上，对应：
+
+```text
+UTXO cache       = 11,125,359,759 bytes  (~10.36 GiB)
+balance cache    = 33,376,079,278 bytes  (~31.08 GiB)
+total cache      = 44,501,439,037 bytes  (~41.45 GiB)
+pressure trigger = 53,941,138,227 bytes  (80%)
+```
+
+两类 cache 合计约占有效内存三分之二，不是各自占三分之二。剩余约 `21.35 GiB` 不属于 cache
+预算；cache logical limit 与 80% pressure trigger 之间另有约 `8.79 GiB`，供 RocksDB 和运行时
+开销增长。exact-height `sync_to_height` 也会启动 cgroup-aware monitor，达到阈值后主动缩减
+cache。
+
+### 1.2 真实主网历史高度 smoke
 
 2026-08-24 已使用本机未裁剪 Bitcoin Core 28.1 主网数据，在隔离 snapshot root 中完成高度
 `10000` 的真实链路测试：
@@ -148,6 +178,8 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 | `BITCOIN_DATA_DIR` | `~/.bitcoin` | 未裁剪主网 datadir |
 | `SNAPSHOT_MIN_CONFIRMATIONS` | `144` | 目标高度最小确认数 |
 | `SNAPSHOT_POLL_INTERVAL_SECS` | `30` | 等待 stable range 的轮询周期 |
+| `SNAPSHOT_CACHE_BUDGET_PERCENT` | `66` | 两类 cache 合计占有效内存的比例 |
+| `SNAPSHOT_MAX_MEMORY_PERCENT` | `80` | 整机/cgroup 达到该比例时开始缩减 cache |
 
 脚本子命令：
 
@@ -158,9 +190,12 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 - `verify`：重开 immutable artifact 并再次检查 canonical hash；
 - `finalize`：verify、独立 `trust_mode=signed` 安装、tar 和 checksum 发布。
 
-`init` 可重复执行，但不会覆盖已有私钥；现有 builder config 与当前环境不一致时会要求恢复原
-参数或使用新的 `SNAPSHOT_ROOT`。`finalize` 也可重复执行，只会复核已有 validation marker 和
-package checksum。
+`init` 可重复执行，但不会覆盖已有私钥。网络、路径、signer 等冻结字段不一致时仍会要求恢复
+原参数或使用新的 `SNAPSHOT_ROOT`；只有 `utxo_max_cache_bytes`、
+`balance_max_cache_bytes`、`max_memory_percent` 三个非共识运行参数可以原子刷新，下一次
+`create` 会在开始同步前同步更新已有 workspace config。因此 OOM 或人工停止后可以调整内存
+预算并从 durable height 继续，不需要删除数据库。`finalize` 也可重复执行，只会复核已有
+validation marker 和 package checksum。
 
 下面第 3 至第 13 节保留展开后的手工步骤，主要用于审计、排障和理解脚本行为。正常生产操作
 优先使用上述脚本，避免手工漏掉 hash pin、signed validation 或 package checksum。
@@ -296,6 +331,9 @@ rpc_url = "tcp://127.0.0.1:50001"
 [sync]
 local_loader_threshold = 500
 batch_size = 128
+utxo_max_cache_bytes = 11125359759
+balance_max_cache_bytes = 33376079278
+max_memory_percent = 80
 max_sync_block_height = 4294967295
 undo_retention_blocks = 64
 undo_cleanup_interval_blocks = 16
@@ -312,6 +350,17 @@ signing_key_file = "/home/bucky/.usdb/secure/snapshot-keys/usdb-mainnet-snapshot
 `root_dir` 和 `max_sync_block_height` 会由 snapshot builder 在内存中收敛到自己的 workspace
 和目标 `H`；配置文件仍应写清楚，方便人工审计。snapshot 创建不依赖 ord/electrs RPC，
 但当前配置 schema 要求这两个 section 存在。
+
+上面的 cache 字节数是当前目标机器的示例，不应复制到不同内存限制的主机。正式入口会调用：
+
+```bash
+balance-history-snapshot-tool --json memory-plan \
+  --cache-budget-percent 66 \
+  --max-memory-percent 80
+```
+
+并把返回的具体字节数写入 builder config。修改两个 `SNAPSHOT_*_PERCENT` 环境变量后应先重新
+执行 `init` 和 `preflight`，确认输出的 memory plan，再执行 `create` 恢复任务。
 
 如果 bitcoind 使用非默认认证，应在 `[btc]` 中显式填写 `auth`。当前机器省略 `auth` 时会
 读取 `data_dir/.cookie`。

@@ -26,6 +26,8 @@ SNAPSHOT_TOOL="${SNAPSHOT_TOOL_BIN:-${REPO_ROOT}/src/btc/target/release/balance-
 SIGNER_ID="${SNAPSHOT_SIGNER_ID:-usdb-mainnet-snapshot-v1}"
 MIN_CONFIRMATIONS="${SNAPSHOT_MIN_CONFIRMATIONS:-144}"
 POLL_INTERVAL_SECS="${SNAPSHOT_POLL_INTERVAL_SECS:-30}"
+CACHE_BUDGET_PERCENT="${SNAPSHOT_CACHE_BUDGET_PERCENT:-66}"
+MAX_MEMORY_PERCENT="${SNAPSHOT_MAX_MEMORY_PERCENT:-80}"
 
 BUILDER_CONFIG="${CONFIG_ROOT}/builder.toml"
 SIGNING_KEY="${KEY_ROOT}/${SIGNER_ID}.signing-key.json"
@@ -39,6 +41,7 @@ fi
 
 HEIGHT=""
 REQUESTED_HASH=""
+MEMORY_PLAN_JSON=""
 
 usage() {
   cat <<'USAGE'
@@ -68,6 +71,9 @@ Primary overrides:
   BITCOIN_BIN_DIR            Bitcoin Core bin directory.
   BITCOIN_DATA_DIR           Mainnet datadir. Default: ~/.bitcoin
   SNAPSHOT_MIN_CONFIRMATIONS Minimum target confirmations. Default: 144
+  SNAPSHOT_CACHE_BUDGET_PERCENT
+                              Effective memory assigned to both caches. Default: 66
+  SNAPSHOT_MAX_MEMORY_PERCENT Whole-host/cgroup pressure threshold. Default: 80
 
 The snapshot root must be independent from the live balance-history root. For a dedicated disk,
 mount it at SNAPSHOT_ROOT or set SNAPSHOT_ROOT to a directory on that filesystem.
@@ -185,6 +191,12 @@ check_static_preflight() {
   ((10#$MIN_CONFIRMATIONS > 0)) || die "SNAPSHOT_MIN_CONFIRMATIONS must be greater than zero"
   [[ "$POLL_INTERVAL_SECS" =~ ^[0-9]+$ ]] || die "SNAPSHOT_POLL_INTERVAL_SECS must be a positive integer"
   ((10#$POLL_INTERVAL_SECS > 0)) || die "SNAPSHOT_POLL_INTERVAL_SECS must be greater than zero"
+  [[ "$CACHE_BUDGET_PERCENT" =~ ^[0-9]+$ ]] || die "SNAPSHOT_CACHE_BUDGET_PERCENT must be an integer"
+  ((10#$CACHE_BUDGET_PERCENT >= 1 && 10#$CACHE_BUDGET_PERCENT <= 100)) || \
+    die "SNAPSHOT_CACHE_BUDGET_PERCENT must be in the range 1..=100"
+  [[ "$MAX_MEMORY_PERCENT" =~ ^[0-9]+$ ]] || die "SNAPSHOT_MAX_MEMORY_PERCENT must be an integer"
+  ((10#$MAX_MEMORY_PERCENT >= 20 && 10#$MAX_MEMORY_PERCENT <= 95)) || \
+    die "SNAPSHOT_MAX_MEMORY_PERCENT must be in the range 20..=95"
   [[ -x "$BITCOIN_CLI" ]] || die "bitcoin-cli is not executable: ${BITCOIN_CLI}"
   [[ -x "$BITCOIND" ]] || die "bitcoind is not executable: ${BITCOIND}"
   [[ -d "$BITCOIN_DATA_DIR/blocks" ]] || die "BTC blocks directory is missing: ${BITCOIN_DATA_DIR}/blocks"
@@ -299,6 +311,68 @@ require_release_binaries() {
   [[ -x "$SNAPSHOT_TOOL" ]] || die "Missing release binary ${SNAPSHOT_TOOL}; run init"
 }
 
+load_memory_plan() {
+  if [[ -z "$MEMORY_PLAN_JSON" ]]; then
+    MEMORY_PLAN_JSON="$(
+      "$SNAPSHOT_TOOL" \
+        --root-dir "$BUILDER_ROOT" \
+        --json \
+        memory-plan \
+        --cache-budget-percent "$CACHE_BUDGET_PERCENT" \
+        --max-memory-percent "$MAX_MEMORY_PERCENT"
+    )" || die "Snapshot memory plan is invalid; adjust SNAPSHOT_CACHE_BUDGET_PERCENT or SNAPSHOT_MAX_MEMORY_PERCENT"
+  fi
+}
+
+log_memory_plan() {
+  load_memory_plan
+  log "Memory plan: source=$(jq -r '.source' <<<"$MEMORY_PLAN_JSON") limit_bytes=$(jq -r '.memory_limit_bytes' <<<"$MEMORY_PLAN_JSON") total_cache_bytes=$(jq -r '.total_cache_bytes' <<<"$MEMORY_PLAN_JSON") utxo_cache_bytes=$(jq -r '.utxo_cache_bytes' <<<"$MEMORY_PLAN_JSON") balance_cache_bytes=$(jq -r '.balance_cache_bytes' <<<"$MEMORY_PLAN_JSON") pressure_threshold_percent=$(jq -r '.max_memory_percent' <<<"$MEMORY_PLAN_JSON")"
+}
+
+configs_match_except_memory() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+import tomllib
+
+MEMORY_KEYS = {
+    "utxo_max_cache_bytes",
+    "balance_max_cache_bytes",
+    "max_memory_percent",
+}
+
+def load(path):
+    with open(path, "rb") as config_file:
+        config = tomllib.load(config_file)
+    sync = config.get("sync", {})
+    for key in MEMORY_KEYS:
+        sync.pop(key, None)
+    return config
+
+raise SystemExit(0 if load(sys.argv[1]) == load(sys.argv[2]) else 1)
+PY
+}
+
+publish_generated_config() {
+  local generated="$1"
+  local destination="$2"
+  local label="$3"
+  if [[ -f "$destination" ]]; then
+    if cmp -s "$generated" "$destination"; then
+      rm -f "$generated"
+      return
+    fi
+    if configs_match_except_memory "$generated" "$destination"; then
+      mv "$generated" "$destination"
+      log "Refreshed ${label} operational memory settings in ${destination}"
+      return
+    fi
+    rm -f "$generated"
+    die "Frozen ${label} config differs outside operational memory settings: ${destination}; restore the original settings or use a new root"
+  fi
+  mv "$generated" "$destination"
+  log "Created frozen ${label} config ${destination}"
+}
+
 generate_key_if_missing() {
   if [[ -f "$SIGNING_KEY" && -f "$PUBLIC_KEY" && -f "$TRUSTED_KEYS" ]]; then
     log "Using existing signer ${SIGNER_ID} in ${KEY_ROOT}"
@@ -317,12 +391,17 @@ generate_key_if_missing() {
 
 generate_builder_config() {
   local temp="${BUILDER_CONFIG}.generated.$$"
+  local utxo_cache_bytes balance_cache_bytes max_memory_percent
+  load_memory_plan
+  utxo_cache_bytes="$(jq -er '.utxo_cache_bytes' <<<"$MEMORY_PLAN_JSON")"
+  balance_cache_bytes="$(jq -er '.balance_cache_bytes' <<<"$MEMORY_PLAN_JSON")"
+  max_memory_percent="$(jq -er '.max_memory_percent' <<<"$MEMORY_PLAN_JSON")"
   python3 - "$temp" "$BUILDER_ROOT/workspace" "$BITCOIN_DATA_DIR" "$BTC_RPC_URL" \
-    "$SIGNING_KEY" <<'PY'
+    "$SIGNING_KEY" "$utxo_cache_bytes" "$balance_cache_bytes" "$max_memory_percent" <<'PY'
 import json
 import sys
 
-path, root, btc_data, btc_rpc, signing_key = sys.argv[1:]
+path, root, btc_data, btc_rpc, signing_key, utxo_cache, balance_cache, max_memory = sys.argv[1:]
 q = json.dumps
 text = f'''root_dir = {q(root)}
 
@@ -340,6 +419,9 @@ rpc_url = "tcp://127.0.0.1:50001"
 [sync]
 local_loader_threshold = 500
 batch_size = 128
+utxo_max_cache_bytes = {utxo_cache}
+balance_max_cache_bytes = {balance_cache}
+max_memory_percent = {max_memory}
 max_sync_block_height = 4294967295
 undo_retention_blocks = 64
 undo_cleanup_interval_blocks = 16
@@ -355,16 +437,8 @@ signing_key_file = {q(signing_key)}
 with open(path, "x", encoding="utf-8") as output:
     output.write(text)
 PY
-  if [[ -f "$BUILDER_CONFIG" ]]; then
-    if ! cmp -s "$temp" "$BUILDER_CONFIG"; then
-      rm -f "$temp"
-      die "Frozen builder config differs from current environment: ${BUILDER_CONFIG}; restore the original settings or use a new SNAPSHOT_ROOT"
-    fi
-    rm -f "$temp"
-  else
-    mv "$temp" "$BUILDER_CONFIG"
-    log "Created frozen builder config ${BUILDER_CONFIG}"
-  fi
+  publish_generated_config "$temp" "$BUILDER_CONFIG" "builder"
+  log_memory_plan
 }
 
 ensure_initialized() {
@@ -414,13 +488,18 @@ generate_validation_config() {
   local validation_root="$1"
   local config="$validation_root/config.toml"
   local temp="${config}.generated.$$"
+  local utxo_cache_bytes balance_cache_bytes max_memory_percent
+  load_memory_plan
+  utxo_cache_bytes="$(jq -er '.utxo_cache_bytes' <<<"$MEMORY_PLAN_JSON")"
+  balance_cache_bytes="$(jq -er '.balance_cache_bytes' <<<"$MEMORY_PLAN_JSON")"
+  max_memory_percent="$(jq -er '.max_memory_percent' <<<"$MEMORY_PLAN_JSON")"
   mkdir -p "$validation_root"
   python3 - "$temp" "$validation_root" "$BITCOIN_DATA_DIR" "$BTC_RPC_URL" \
-    "$TRUSTED_KEYS" <<'PY'
+    "$TRUSTED_KEYS" "$utxo_cache_bytes" "$balance_cache_bytes" "$max_memory_percent" <<'PY'
 import json
 import sys
 
-path, root, btc_data, btc_rpc, trusted_keys = sys.argv[1:]
+path, root, btc_data, btc_rpc, trusted_keys, utxo_cache, balance_cache, max_memory = sys.argv[1:]
 q = json.dumps
 text = f'''root_dir = {q(root)}
 
@@ -438,6 +517,9 @@ rpc_url = "tcp://127.0.0.1:50001"
 [sync]
 local_loader_threshold = 500
 batch_size = 128
+utxo_max_cache_bytes = {utxo_cache}
+balance_max_cache_bytes = {balance_cache}
+max_memory_percent = {max_memory}
 max_sync_block_height = 4294967295
 undo_retention_blocks = 64
 undo_cleanup_interval_blocks = 16
@@ -453,15 +535,7 @@ trusted_keys_file = {q(trusted_keys)}
 with open(path, "x", encoding="utf-8") as output:
     output.write(text)
 PY
-  if [[ -f "$config" ]]; then
-    cmp -s "$temp" "$config" || {
-      rm -f "$temp"
-      die "Validation config differs from frozen config: ${config}"
-    }
-    rm -f "$temp"
-  else
-    mv "$temp" "$config"
-  fi
+  publish_generated_config "$temp" "$config" "validation"
 }
 
 run_finalize() {
@@ -544,6 +618,8 @@ BALANCE_HISTORY=${BALANCE_HISTORY}
 SNAPSHOT_TOOL=${SNAPSHOT_TOOL}
 SIGNER_ID=${SIGNER_ID}
 MIN_CONFIRMATIONS=${MIN_CONFIRMATIONS}
+CACHE_BUDGET_PERCENT=${CACHE_BUDGET_PERCENT}
+MAX_MEMORY_PERCENT=${MAX_MEMORY_PERCENT}
 EOF
 }
 
@@ -562,6 +638,11 @@ case "$COMMAND" in
     parse_target_args "$@"
     check_static_preflight
     resolve_target 0
+    if [[ -x "$SNAPSHOT_TOOL" ]]; then
+      log_memory_plan
+    else
+      warn "Release snapshot tool is unavailable; run init before validating the memory plan"
+    fi
     ;;
   create)
     parse_target_args "$@"

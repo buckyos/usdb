@@ -479,10 +479,12 @@ dependencies = [
  "balance-history",
  "bitcoincore-rpc",
  "clap",
+ "log",
  "named-lock",
  "serde",
  "serde_json",
  "sha2",
+ "toml 0.9.10+spec-1.1.0",
  "usdb-util",
 ]
 

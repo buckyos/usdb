@@ -4,6 +4,53 @@ use std::sync::Arc;
 use usdb_util::{BALANCE_HISTORY_SERVICE_HTTP_PORT, BTCConfig, ElectrsConfig, OrdConfig};
 
 const MIN_CACHE_BYTES: usize = 1024 * 1024;
+const MIN_MEMORY_PRESSURE_HEADROOM_PERCENT: usize = 10;
+
+/// Default fraction of the effective memory limit reserved for both in-memory caches.
+pub const DEFAULT_CACHE_BUDGET_PERCENT: usize = 66;
+const DEFAULT_UTXO_CACHE_SHARE_PERCENT: usize = 25;
+
+/// Concrete UTXO and address-balance cache limits derived from one memory ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DerivedCacheLimits {
+    /// Effective host or cgroup memory ceiling used for the calculation.
+    pub memory_limit_bytes: u64,
+    /// Percentage of the effective ceiling assigned to both caches.
+    pub cache_budget_percent: usize,
+    /// Combined cache budget.
+    pub total_cache_bytes: u64,
+    /// UTXO cache budget.
+    pub utxo_cache_bytes: u64,
+    /// Address-balance cache budget.
+    pub balance_cache_bytes: u64,
+}
+
+/// Derives the concrete 1:3 UTXO/balance split used by balance-history.
+pub fn derive_cache_limits(
+    memory_limit_bytes: u64,
+    cache_budget_percent: usize,
+) -> Result<DerivedCacheLimits, String> {
+    if memory_limit_bytes == 0 {
+        return Err("Effective memory limit must be greater than zero".to_string());
+    }
+    if !(1..=100).contains(&cache_budget_percent) {
+        return Err("Cache budget percent must be in the range 1..=100".to_string());
+    }
+
+    let total_cache_bytes = ((memory_limit_bytes as u128 * cache_budget_percent as u128) / 100)
+        .try_into()
+        .map_err(|_| "Derived cache budget exceeds u64".to_string())?;
+    let utxo_cache_bytes =
+        ((total_cache_bytes as u128 * DEFAULT_UTXO_CACHE_SHARE_PERCENT as u128) / 100) as u64;
+
+    Ok(DerivedCacheLimits {
+        memory_limit_bytes,
+        cache_budget_percent,
+        total_cache_bytes,
+        utxo_cache_bytes,
+        balance_cache_bytes: total_cache_bytes - utxo_cache_bytes,
+    })
+}
 
 fn default_batch_size() -> usize {
     128
@@ -13,11 +60,14 @@ fn get_cache_size() -> usize {
     let available_memory = usdb_util::get_smart_memory_limit();
     info!("Available memory: {} bytes", available_memory);
 
-    // Leave 8 GB free
-    let cache_size = available_memory.saturating_sub(1024 * 1024 * 1024 * 8);
+    // A proportional budget leaves room for RocksDB, batch allocations, the OS, and allocator
+    // overhead on both small containers and dedicated snapshot hosts.
+    let cache_size = derive_cache_limits(available_memory, DEFAULT_CACHE_BUDGET_PERCENT)
+        .map(|limits| limits.total_cache_bytes)
+        .unwrap_or(0);
     info!("Calculated cache size: {} bytes", cache_size);
 
-    cache_size as usize
+    usize::try_from(cache_size).unwrap_or(usize::MAX)
 }
 
 // 1/4 of total cache size, at least 1 GB
@@ -69,8 +119,7 @@ pub struct IndexConfig {
     #[serde(default = "default_balance_cache_bytes")]
     pub balance_max_cache_bytes: usize,
 
-    // Maximum percent of system memory to use for caches
-    // Value can be 10-100
+    // Whole-host/cgroup pressure threshold that triggers cache shrinking.
     #[serde(default = "default_max_memory_percent")]
     pub max_memory_percent: usize,
 
@@ -129,10 +178,35 @@ impl IndexConfig {
                 MIN_CACHE_BYTES
             ));
         }
-        if !(10..=100).contains(&self.max_memory_percent) {
-            return Err("sync.max_memory_percent must be in the range 10..=100".to_string());
+        if !(20..=95).contains(&self.max_memory_percent) {
+            return Err("sync.max_memory_percent must be in the range 20..=95".to_string());
         }
         self.cache_budget_bytes()?;
+        Ok(())
+    }
+
+    /// Ensures cache capacity leaves room before the whole-process pressure threshold.
+    pub fn validate_memory_budget(&self, memory_limit_bytes: u64) -> Result<(), String> {
+        if memory_limit_bytes == 0 {
+            return Ok(());
+        }
+        let cache_budget = self.cache_budget_bytes()? as u64;
+        let maximum_cache_percent = self
+            .max_memory_percent
+            .saturating_sub(MIN_MEMORY_PRESSURE_HEADROOM_PERCENT);
+        let maximum_cache_budget =
+            ((memory_limit_bytes as u128 * maximum_cache_percent as u128) / 100) as u64;
+        if cache_budget > maximum_cache_budget {
+            return Err(format!(
+                "Combined cache budget {} bytes exceeds {} bytes ({}% of effective memory limit {}); leave at least {} percentage points before the {}% memory-pressure threshold",
+                cache_budget,
+                maximum_cache_budget,
+                maximum_cache_percent,
+                memory_limit_bytes,
+                MIN_MEMORY_PRESSURE_HEADROOM_PERCENT,
+                self.max_memory_percent
+            ));
+        }
         Ok(())
     }
 }
@@ -291,14 +365,7 @@ impl BalanceHistoryConfig {
 
     /// Ensures configured cache capacities leave memory for the database and runtime.
     pub fn validate_memory_budget(&self, memory_limit_bytes: u64) -> Result<(), String> {
-        let cache_budget = self.sync.cache_budget_bytes()? as u64;
-        if memory_limit_bytes > 0 && cache_budget >= memory_limit_bytes {
-            return Err(format!(
-                "Combined cache budget {} bytes must be smaller than effective memory limit {} bytes",
-                cache_budget, memory_limit_bytes
-            ));
-        }
-        Ok(())
+        self.sync.validate_memory_budget(memory_limit_bytes)
     }
 
     pub fn db_dir(&self) -> PathBuf {
@@ -411,13 +478,52 @@ mod tests {
         let mut config = BalanceHistoryConfig::default();
         config.sync.utxo_max_cache_bytes = 4 * 1024 * 1024;
         config.sync.balance_max_cache_bytes = 12 * 1024 * 1024;
+        config.sync.max_memory_percent = 85;
 
         assert!(
             config
                 .validate_memory_budget(16 * 1024 * 1024)
                 .unwrap_err()
-                .contains("must be smaller")
+                .contains("memory-pressure threshold")
         );
-        config.validate_memory_budget(17 * 1024 * 1024).unwrap();
+        config.validate_memory_budget(22 * 1024 * 1024).unwrap();
+    }
+
+    #[test]
+    fn two_thirds_cache_plan_preserves_runtime_headroom() {
+        let memory_limit = 64 * 1024 * 1024 * 1024;
+        let limits = derive_cache_limits(memory_limit, DEFAULT_CACHE_BUDGET_PERCENT).unwrap();
+        assert_eq!(
+            limits.total_cache_bytes,
+            memory_limit * DEFAULT_CACHE_BUDGET_PERCENT as u64 / 100
+        );
+        assert_eq!(limits.utxo_cache_bytes, limits.total_cache_bytes / 4);
+        assert_eq!(
+            limits.balance_cache_bytes,
+            limits.total_cache_bytes - limits.utxo_cache_bytes
+        );
+
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.utxo_max_cache_bytes = limits.utxo_cache_bytes as usize;
+        config.sync.balance_max_cache_bytes = limits.balance_cache_bytes as usize;
+        config.sync.max_memory_percent = 80;
+        config.validate_memory_budget(memory_limit).unwrap();
+    }
+
+    #[test]
+    fn legacy_leave_eight_gib_budget_is_rejected_on_64_gib_host() {
+        let memory_limit = 64 * 1024 * 1024 * 1024;
+        let legacy_budget = memory_limit - 8 * 1024 * 1024 * 1024;
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.utxo_max_cache_bytes = (legacy_budget / 4) as usize;
+        config.sync.balance_max_cache_bytes = (legacy_budget * 3 / 4) as usize;
+        config.sync.max_memory_percent = 90;
+
+        assert!(
+            config
+                .validate_memory_budget(memory_limit)
+                .unwrap_err()
+                .contains("memory-pressure threshold")
+        );
     }
 }

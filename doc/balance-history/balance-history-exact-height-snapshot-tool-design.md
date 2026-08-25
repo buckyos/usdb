@@ -165,10 +165,18 @@ balance-history configuration used by the workspace. There is one active job per
 parallel targets require separate roots.
 
 The first `create` for a new builder root must pass `--config <balance-history-config.toml>`.
-Later create/resume operations reuse the atomically copied workspace config and reject a different
-config file. Height `0` is rejected because the current balance-history block-commit history starts
-at height `1`. In `--json` mode stdout contains only the command result; operational logs remain in
-the builder root's log directory.
+Later create/resume operations reuse the atomically copied workspace config and reject changes to
+the BTC source, network, paths, signer, or indexing semantics. The UTXO cache limit, balance cache
+limit, and whole-process memory-pressure threshold are explicitly operational: they may be
+atomically refreshed for an existing workspace so an interrupted build can resume under a safer
+host/cgroup memory plan without rebuilding durable state.
+
+The runtime validates that combined logical cache capacity remains at least ten percentage points
+below the configured pressure threshold. `sync_to_height` starts the same cgroup-aware cache
+monitor as the long-running service and stops it when bounded synchronization returns. Height `0`
+is rejected because the current balance-history block-commit history starts at height `1`. In
+`--json` mode stdout contains only the command result; operational logs remain in the builder root's
+log directory.
 
 ## 9. Required validation
 
