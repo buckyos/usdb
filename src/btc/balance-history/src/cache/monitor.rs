@@ -1,7 +1,9 @@
 use super::balance::AddressBalanceCacheRef;
 use super::utxo::UTXOCacheRef;
 use crate::config::BalanceHistoryConfigRef;
-use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+
+const MONITOR_INTERVAL_SECS: u64 = 10;
+const SHRINK_PERCENT: usize = 10;
 
 #[derive(Clone)]
 pub struct MemoryCacheMonitor {
@@ -25,10 +27,19 @@ impl MemoryCacheMonitor {
     }
 
     pub fn start(&self) {
+        let memory = usdb_util::get_memory_usage_snapshot();
+        info!(
+            "Starting cache memory monitor: source={}, limit_bytes={}, used_bytes={}, used_percent={}, max_percent={}",
+            memory.source,
+            memory.limit_bytes,
+            memory.used_bytes,
+            memory.used_percent(),
+            self.config.sync.max_memory_percent
+        );
         let monitor = self.clone();
         std::thread::spawn(move || {
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(10));
+                std::thread::sleep(std::time::Duration::from_secs(MONITOR_INTERVAL_SECS));
                 monitor.check();
             }
         });
@@ -45,40 +56,59 @@ impl MemoryCacheMonitor {
 
     fn check(&self) {
         let max_memory_percent = self.config.sync.max_memory_percent;
+        let memory = usdb_util::get_memory_usage_snapshot();
+        let used_percent = memory.used_percent();
 
-        let mut info = System::new_with_specifics(
-            RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-        );
-        info.refresh_memory();
-
-        if info.total_memory() == 0 {
-            // Unable to get memory info
-            error!("Unable to get system memory info");
+        if memory.limit_bytes == 0 {
+            error!("Unable to determine effective memory limit");
+            return;
+        }
+        if used_percent <= max_memory_percent as u64 {
             return;
         }
 
-        let used_percent = info.used_memory() * 100 / info.total_memory();
-        if used_percent <= self.config.sync.max_memory_percent as u64 {
-            return;
-        }
-
-        // Memory usage is high, need shrink caches
-        info!(
-            "High memory usage detected: {}% used, max allowed {}%, shrinking caches",
-            used_percent, max_memory_percent
+        warn!(
+            "High memory usage detected: source={}, used_bytes={}, limit_bytes={}, used_percent={}, max_percent={}; shrinking caches by {}%",
+            memory.source,
+            memory.used_bytes,
+            memory.limit_bytes,
+            used_percent,
+            max_memory_percent,
+            SHRINK_PERCENT
         );
         self.shrink_caches();
     }
 
     fn shrink_caches(&self) {
-        // Reduce 1% of UTXO cache each time
-        let target_utxo_count = (self.utxo_cache.get_count() as usize * 99) / 100;
+        let target_utxo_count = shrink_target(self.utxo_cache.get_count() as usize);
         self.utxo_cache.shrink(target_utxo_count);
 
-        // Reduce 1% of Address Balance cache each time
-        let target_balance_count = (self.address_balance_cache.get_count() as usize * 99) / 100;
+        let target_balance_count = shrink_target(self.address_balance_cache.get_count() as usize);
         self.address_balance_cache.shrink(target_balance_count);
     }
 }
 
+fn shrink_target(current_count: usize) -> usize {
+    let reduction = (current_count / (100 / SHRINK_PERCENT)).max(1);
+    current_count.saturating_sub(reduction).max(1)
+}
+
 pub type MemoryCacheMonitorRef = std::sync::Arc<MemoryCacheMonitor>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shrink_target_reduces_large_caches_by_ten_percent() {
+        assert_eq!(shrink_target(1_000), 900);
+        assert_eq!(shrink_target(101), 91);
+    }
+
+    #[test]
+    fn shrink_target_never_creates_zero_capacity() {
+        assert_eq!(shrink_target(0), 1);
+        assert_eq!(shrink_target(1), 1);
+        assert_eq!(shrink_target(9), 8);
+    }
+}

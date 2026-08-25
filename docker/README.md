@@ -569,6 +569,49 @@ docker compose \
   up -d --build
 ```
 
+### 7.8 32GB 目标硬件测试档位
+
+`compose.test-32gb.yml` 用于验证单节点在 32GiB 物理内存机器上的保守运行边界。它不是正式网
+参数冻结，而是部署和 soak 测试的统一基线：
+
+| 项目 | 默认值 |
+| --- | ---: |
+| balance-history cgroup memory | 24GiB |
+| balance-history cgroup memory + swap | 24GiB |
+| UTXO cache | 4GiB |
+| balance cache | 12GiB |
+| cache pressure threshold | 85% |
+
+16GiB 显式缓存预算低于 24GiB 容器上限，剩余容器空间用于 RocksDB、BTC block-file cache、线程栈
+和批处理临时对象；宿主机剩余约 8GiB 供操作系统、bitcoind 和其他 USDB 服务使用。该档位默认
+禁用 balance-history 的额外 swap 空间，以便测试能暴露真实内存上限，而不是把压力转移到磁盘。
+
+在 joiner 配置上叠加运行：
+
+```bash
+cd /home/bucky/work/usdb
+docker compose \
+  --env-file docker/local/joiner/env/joiner.env \
+  -f docker/compose.base.yml \
+  -f docker/compose.joiner.yml \
+  -f docker/compose.test-32gb.yml \
+  up -d
+```
+
+balance-history 每 10 秒读取当前进程所在的 cgroup v2/v1 memory usage/limit；没有有限 cgroup
+上限时才回退宿主机物理内存。超过 `BH_SYNC_MAX_MEMORY_PERCENT` 后，每轮将两类 cache 容量缩小
+10%。启动日志会记录 accounting source、limit、当前 usage 和显式 cache budget，方便确认 profile
+确实生效。
+
+基础 Compose 不使用该 overlay 时仍采用显式保守上限：UTXO 2GiB、balance 6GiB、压力阈值 85%。
+可以覆盖以下变量，但 cache 总和必须严格小于 balance-history 的有效内存上限：
+
+- `BH_MEMORY_LIMIT`
+- `BH_MEMORY_SWAP_LIMIT`
+- `BH_SYNC_UTXO_MAX_CACHE_BYTES`
+- `BH_SYNC_BALANCE_MAX_CACHE_BYTES`
+- `BH_SYNC_MAX_MEMORY_PERCENT`
+
 ## 8. 关键部署机制
 
 ### 8.1 `snapshot-loader -> balance-history`

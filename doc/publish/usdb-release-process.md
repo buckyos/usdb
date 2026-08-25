@@ -110,7 +110,8 @@ public release。上线时至少需要：
 - trusted-key catalog 没有独立可信 hash 来源；
 - 必要测试未运行，或报告只来自开发 mock；
 - joiner 无法从公开 artifact 完成冷启动；
-- 没有磁盘、内存、PoW 或服务不可用时的停止条件；
+- 没有磁盘、内存、PoW 或服务不可用时的停止条件；balance-history 至少应通过
+  `compose.test-32gb.yml` 的显式 cache/cgroup 基线测试；
 - 没有回滚、撤包、key compromise 或错误 genesis 的处置人和入口。
 
 ## 5. 下一步文档拆分

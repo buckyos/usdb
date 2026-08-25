@@ -61,6 +61,31 @@ pub async fn run_service(
         output.println("Indexing balance history up to the latest block height.");
     }
 
+    let memory = usdb_util::get_memory_usage_snapshot();
+    if let Err(error) = config.validate_memory_budget(memory.limit_bytes) {
+        error!("Invalid balance-history memory configuration: {}", error);
+        output.eprintln(&format!(
+            "Invalid balance-history memory configuration: {}",
+            error
+        ));
+        std::process::exit(1);
+    }
+    let cache_budget = config.sync.cache_budget_bytes().unwrap();
+    info!(
+        "Balance-history memory plan: source={}, limit_bytes={}, used_bytes={}, utxo_cache_bytes={}, balance_cache_bytes={}, total_cache_bytes={}, pressure_threshold_percent={}",
+        memory.source,
+        memory.limit_bytes,
+        memory.used_bytes,
+        config.sync.utxo_max_cache_bytes,
+        config.sync.balance_max_cache_bytes,
+        cache_budget,
+        config.sync.max_memory_percent
+    );
+    output.println(&format!(
+        "Memory plan: {} byte cache budget within {} byte {} limit",
+        cache_budget, memory.limit_bytes, memory.source
+    ));
+
     let config = Arc::new(config);
 
     let indexer = match BalanceHistoryIndexer::new(config.clone(), output.clone()) {

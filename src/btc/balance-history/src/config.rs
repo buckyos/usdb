@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use usdb_util::{BALANCE_HISTORY_SERVICE_HTTP_PORT, BTCConfig, ElectrsConfig, OrdConfig};
 
+const MIN_CACHE_BYTES: usize = 1024 * 1024;
+
 fn default_batch_size() -> usize {
     128
 }
@@ -102,6 +104,36 @@ impl Default for IndexConfig {
             undo_retention_blocks: default_undo_retention_blocks(),
             undo_cleanup_interval_blocks: default_undo_cleanup_interval_blocks(),
         }
+    }
+}
+
+impl IndexConfig {
+    /// Returns the combined upper bound of the UTXO and balance caches.
+    pub fn cache_budget_bytes(&self) -> Result<usize, String> {
+        self.utxo_max_cache_bytes
+            .checked_add(self.balance_max_cache_bytes)
+            .ok_or_else(|| "Combined balance-history cache budget overflows usize".to_string())
+    }
+
+    /// Validates cache limits before cache capacities are constructed.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.utxo_max_cache_bytes < MIN_CACHE_BYTES {
+            return Err(format!(
+                "sync.utxo_max_cache_bytes must be at least {} bytes",
+                MIN_CACHE_BYTES
+            ));
+        }
+        if self.balance_max_cache_bytes < MIN_CACHE_BYTES {
+            return Err(format!(
+                "sync.balance_max_cache_bytes must be at least {} bytes",
+                MIN_CACHE_BYTES
+            ));
+        }
+        if !(10..=100).contains(&self.max_memory_percent) {
+            return Err("sync.max_memory_percent must be in the range 10..=100".to_string());
+        }
+        self.cache_budget_bytes()?;
+        Ok(())
     }
 }
 
@@ -220,6 +252,10 @@ impl BalanceHistoryConfig {
                 "Default config: {}",
                 toml::to_string_pretty(&default_config).unwrap()
             );
+            if let Err(error) = default_config.validate() {
+                log::error!("Invalid default balance-history configuration: {}", error);
+                return Err(error);
+            }
             Ok(default_config)
         } else {
             info!("Loading config from {}", path.display());
@@ -236,8 +272,33 @@ impl BalanceHistoryConfig {
                 msg
             })?;
 
+            if let Err(error) = config.validate() {
+                log::error!(
+                    "Invalid balance-history configuration from {}: {}",
+                    path.display(),
+                    error
+                );
+                return Err(error);
+            }
             Ok(config)
         }
+    }
+
+    /// Validates static configuration values independently of host memory.
+    pub fn validate(&self) -> Result<(), String> {
+        self.sync.validate()
+    }
+
+    /// Ensures configured cache capacities leave memory for the database and runtime.
+    pub fn validate_memory_budget(&self, memory_limit_bytes: u64) -> Result<(), String> {
+        let cache_budget = self.sync.cache_budget_bytes()? as u64;
+        if memory_limit_bytes > 0 && cache_budget >= memory_limit_bytes {
+            return Err(format!(
+                "Combined cache budget {} bytes must be smaller than effective memory limit {} bytes",
+                cache_budget, memory_limit_bytes
+            ));
+        }
+        Ok(())
     }
 
     pub fn db_dir(&self) -> PathBuf {
@@ -298,5 +359,65 @@ mod tests {
         assert_eq!(cfg.root_dir, root);
 
         std::fs::remove_dir_all(&cfg.root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_load_preserves_explicit_cache_limits() {
+        let root = temp_root("explicit_cache");
+        let mut expected = BalanceHistoryConfig {
+            root_dir: root.clone(),
+            ..BalanceHistoryConfig::default()
+        };
+        expected.sync.utxo_max_cache_bytes = 4 * 1024 * 1024;
+        expected.sync.balance_max_cache_bytes = 12 * 1024 * 1024;
+        expected.sync.max_memory_percent = 85;
+        std::fs::write(
+            root.join("config.toml"),
+            toml::to_string_pretty(&expected).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = BalanceHistoryConfig::load(&root).unwrap();
+        assert_eq!(loaded.sync.utxo_max_cache_bytes, 4 * 1024 * 1024);
+        assert_eq!(loaded.sync.balance_max_cache_bytes, 12 * 1024 * 1024);
+        assert_eq!(loaded.sync.max_memory_percent, 85);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_rejects_invalid_cache_configuration() {
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.utxo_max_cache_bytes = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("utxo_max_cache_bytes")
+        );
+
+        config.sync.utxo_max_cache_bytes = MIN_CACHE_BYTES;
+        config.sync.max_memory_percent = 101;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("max_memory_percent")
+        );
+    }
+
+    #[test]
+    fn test_rejects_cache_budget_at_memory_limit() {
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.utxo_max_cache_bytes = 4 * 1024 * 1024;
+        config.sync.balance_max_cache_bytes = 12 * 1024 * 1024;
+
+        assert!(
+            config
+                .validate_memory_budget(16 * 1024 * 1024)
+                .unwrap_err()
+                .contains("must be smaller")
+        );
+        config.validate_memory_budget(17 * 1024 * 1024).unwrap();
     }
 }

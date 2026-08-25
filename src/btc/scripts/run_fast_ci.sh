@@ -45,4 +45,7 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_world_simul
 
 log "checking Docker P2P defaults"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_p2p_defaults.py"
+
+log "checking balance-history memory profile"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_balance_history_memory_profile.py"
 log "Rust fast gate passed"

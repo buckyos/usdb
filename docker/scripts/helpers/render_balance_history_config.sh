@@ -65,6 +65,9 @@ rpc_url = "${ELECTRS_RPC_URL:-tcp://electrs:50001}"
 [sync]
 local_loader_threshold = ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-500}
 batch_size = ${BH_SYNC_BATCH_SIZE:-128}
+utxo_max_cache_bytes = ${BH_SYNC_UTXO_MAX_CACHE_BYTES:-2147483648}
+balance_max_cache_bytes = ${BH_SYNC_BALANCE_MAX_CACHE_BYTES:-6442450944}
+max_memory_percent = ${BH_SYNC_MAX_MEMORY_PERCENT:-85}
 max_sync_block_height = ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
 
 [rpc_server]
