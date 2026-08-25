@@ -129,6 +129,9 @@
 - 只描述基础依赖关系
 - 不带明确的开发/模拟/冷启动语义
 - 端口、数据路径、RPC 地址都通过 env 控制
+- USDB 节点默认使用 `31303/TCP+UDP`：TCP 承载 devp2p，UDP 承载节点发现
+- testnet 与 mainnet 保持相同默认 P2P 端口；自定义 `ETHW_COMMAND` 时，其 `--port` 必须与 `ETHW_P2P_PORT` 一致
+- 同机多节点必须显式覆盖 `ETHW_P2P_BIND_PORT` 和节点命令中的监听端口
 
 ### 3.2 `compose.joiner.yml`
 

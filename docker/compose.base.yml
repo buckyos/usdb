@@ -151,7 +151,8 @@ services:
     ports:
       - "${ETHW_HTTP_BIND_PORT:-8545}:${ETHW_HTTP_PORT:-8545}"
       - "${ETHW_WS_BIND_PORT:-8546}:${ETHW_WS_PORT:-8546}"
-      - "${ETHW_P2P_BIND_PORT:-30303}:${ETHW_P2P_PORT:-30303}"
+      - "${ETHW_P2P_BIND_PORT:-31303}:${ETHW_P2P_PORT:-31303}/tcp"
+      - "${ETHW_P2P_BIND_PORT:-31303}:${ETHW_P2P_PORT:-31303}/udp"
     networks:
       - usdb-net
 
