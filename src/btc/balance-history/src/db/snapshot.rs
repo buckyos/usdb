@@ -1133,6 +1133,35 @@ mod tests {
     use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
     use usdb_util::ToBtcScriptHash;
 
+    struct TestRoot(PathBuf);
+
+    impl TestRoot {
+        fn new(name: &str) -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join("usdb").join(format!(
+                "{}-{}-{}",
+                name,
+                std::process::id(),
+                unique
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn test_snapshot_db_creation() {
         let dir = std::env::temp_dir().join("usdb").join("test_snapshot");
@@ -1266,11 +1295,74 @@ mod tests {
     }
 
     #[test]
-    fn test_load() {
+    fn test_snapshot_by_height_round_trip() {
+        let root = TestRoot::new("test_snapshot_by_height_round_trip");
+        let target_block_height = 123_456;
+        let script = ScriptBuf::from(vec![42u8; 32]);
+        let expected = BalanceHistoryEntry {
+            script_hash: script.to_btc_script_hash(),
+            block_height: target_block_height,
+            delta: 1_250,
+            balance: 9_750,
+        };
+
+        let mut snapshot_db =
+            SnapshotDB::open_by_height(root.path(), target_block_height, true).unwrap();
+        snapshot_db
+            .put_balance_history_entries(std::slice::from_ref(&expected))
+            .unwrap();
+        let mut meta = SnapshotMeta::new(target_block_height);
+        meta.balance_history_count = 1;
+        snapshot_db.update_meta(&meta).unwrap();
+
+        let expected_path = root
+            .path()
+            .join("snapshots")
+            .join(format!("snapshot_{}.db", target_block_height));
+        let finalized_path = snapshot_db.finalize_for_distribution().unwrap();
+        assert_eq!(finalized_path, expected_path);
+
+        let loaded = SnapshotDB::open_by_height(root.path(), target_block_height, false).unwrap();
+        loaded.verify_integrity().unwrap();
+
+        let loaded_meta = loaded.get_meta().unwrap();
+        assert_eq!(loaded_meta.block_height, target_block_height);
+        assert_eq!(loaded_meta.balance_history_count, 1);
+        assert_eq!(loaded_meta.version, SNAPSHOT_DB_VERSION);
+
+        let loaded_entry = loaded
+            .get_balance_history_entry(&expected.script_hash)
+            .unwrap()
+            .expect("snapshot entry should survive finalization and reload");
+        assert_eq!(loaded_entry.script_hash, expected.script_hash);
+        assert_eq!(loaded_entry.block_height, expected.block_height);
+        assert_eq!(loaded_entry.delta, expected.delta);
+        assert_eq!(loaded_entry.balance, expected.balance);
+    }
+
+    #[test]
+    fn test_open_missing_snapshot_by_height_fails_closed() {
+        let root = TestRoot::new("test_open_missing_snapshot_by_height_fails_closed");
+        let target_block_height = 654_321;
+
+        let error = match SnapshotDB::open_by_height(root.path(), target_block_height, false) {
+            Ok(_) => panic!("missing snapshot should not be created when create_new is false"),
+            Err(error) => error,
+        };
+
+        let expected_path = root
+            .path()
+            .join("snapshots")
+            .join(format!("snapshot_{}.db", target_block_height));
+        assert!(error.contains("does not exist"));
+        assert!(!expected_path.exists());
+    }
+
+    #[test]
+    #[ignore = "requires a locally generated mainnet snapshot at height 900000"]
+    fn test_load_mainnet_snapshot_900000() {
         let config = BalanceHistoryConfig::default();
         let target_block_height = 900_000;
-        // let file_name = format!("snapshot_{}.db", target_block_height);
-        // let dir = config.snapshot_dir().join(file_name);
         let snapshot_db = SnapshotDB::open_by_height(&config.root_dir, target_block_height, false)
             .expect("Failed to load snapshot DB");
 
