@@ -10,9 +10,9 @@
 create-snapshot` 命令替换进生产流程；后者不会负责从独立持久化 workspace 精确同步到目标
 高度，也不提供这里要求的 job 恢复和按高度/分支管理。
 
-容量测试中的 `100K` 指在隔离 regtest 中人工构造 100,000 个 live UTXO，用于观察工具的
-扩展趋势。正式主网 snapshot 会处理高度 `H` 上真实的全量状态，不能用 100K 测试结果估算
-最终时长、内存或文件大小。
+容量测试中的 `100K/250K/1M` 指在隔离 regtest 中人工构造相应数量的 live UTXO，用于观察
+工具的扩展趋势。正式主网 snapshot 会处理高度 `H` 上真实的全量状态，不能直接用合成测试
+结果推算最终时长、内存或文件大小。
 
 本文示例使用当前目标机器上已验证的路径：
 
@@ -32,11 +32,32 @@ USDB 正式服务默认统一使用 `~/.usdb` 命名空间。推荐生产入口�
 - bitcoind 是未裁剪主网节点，`blocks == headers`，且不处于 initial block download；
 - Bitcoin Core 已使用约 `870 GB`，其中 `blocks/` 约 `811 GB`；
 - 机器内存约 `62 GiB`，当前 available 约 `59 GiB`；
-- 根盘约 `2.2 TB`，但只剩约 `56 GiB`，使用率 `98%`；
-- 当前不存在 `/data` mount。
+- 根盘约 `2.2 TB`，清理旧 `~/.usdb/balance-history` 数据后约有 `550 GiB` 可用，使用率约
+  `74%`。
 
-因此当前机器满足主网数据完整性和内存前提，但**尚不满足全量 snapshot 的安全磁盘前提**。
-在增加或挂载专用存储之前，不要启动主网全量 builder。
+当前机器已通过主网节点只读 preflight 和 1M warm/cold-advisory 合成容量测试，可以继续更大
+容量评估。`550 GiB` 可用空间仍不自动等于“主网全量构建容量已证明充足”；首次全量 builder
+应记录 workspace、artifact 和 validation install 的实际增长，并设置磁盘监控和停止阈值。
+
+### 1.1 真实主网历史高度 smoke
+
+2026-08-24 已使用本机未裁剪 Bitcoin Core 28.1 主网数据，在隔离 snapshot root 中完成高度
+`10000` 的真实链路测试：
+
+- canonical block hash 为
+  `0000000099c744455f58e6c6e98b671e1bf7f37346bfd4cf5d0274ad8ee660cb`；
+- 从创世同步并严格停在高度 `10000`，记录 `10000` 个 block commit 和 `9494` 个 live UTXO；
+- release `create` 用时约 `365s`，artifact SHA-256 为
+  `f674cefd1dc4be9bb87c3c14cb643fd364b38870314809046302ea9bab6991d8`；
+- 独立 verify、signed install、release tar 和 tar checksum 全部通过；
+- 同高度重跑返回 `resumed=true`、`already_complete=true`，snapshot ID 和 SHA-256 不变；
+- 同一 builder 增量创建高度 `10001` 用时约 `1s`，block commit 和 UTXO 计数都按真实新区块
+  推进，随后独立 verify 通过。
+
+该测试证明 snapshot tool 能读取真实主网 blk 数据，并完成 exact-height、恢复、增量和签名安装
+闭环。高度 `5000/10000` 处于 Bitcoin 早期，交易密度、script 类型和 UTXO 规模都很低，因此
+适合作为真实数据功能 smoke，不代表现代主网状态的容量、I/O 或兼容性覆盖。后续应逐级增加
+包含更多交易与新 script 时代的历史目标，最终仍需对计划发布高度执行全量构建和验证。
 
 ## 2. 完成条件
 
@@ -566,6 +587,5 @@ curl -s -X POST "$RPC_URL" -H 'content-type: application/json' \
 - 正式硬件可接受的最长生成时间、峰值内存和磁盘空间阈值；
 - 深层 BTC reorg 后已发布 snapshot 的撤回和替换流程。
 
-首次正式生成前，应先记录一次 100K regtest capacity 指标作为工具基线，再执行主网全量构建。
-100K 基线只能说明当前二进制和机器能稳定完成中等规模 export/install，不替代主网 artifact
-本身的完整验证。
+当前机器已记录 100K、250K 和 1M regtest capacity 指标。1M 基线说明当前二进制和机器能稳定
+完成更大规模 export/install，但仍不替代主网 artifact 本身的完整验证和物理 I/O 监控。

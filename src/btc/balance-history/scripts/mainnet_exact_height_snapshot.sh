@@ -214,7 +214,7 @@ check_static_preflight() {
     df -h "$(existing_ancestor "$SNAPSHOT_ROOT")"
     df -i "$(existing_ancestor "$SNAPSHOT_ROOT")"
   fi
-  warn "Disk capacity cannot yet be inferred from the 100K regtest; confirm mainnet workspace, validation copy, artifact, package, and safety margin fit before create."
+  warn "Mainnet disk capacity cannot be inferred from synthetic capacity runs alone; confirm workspace, validation copy, artifact, package, and safety margin fit before create."
 }
 
 target_file() {
