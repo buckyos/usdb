@@ -1,0 +1,47 @@
+{
+  "schema_version": "usdb-network-bundle:v1",
+  "network_bundle_id": "usdb-testnet-v0",
+  "status": "development-resettable",
+  "chain_id": 202608250,
+  "network_id": 202608250,
+  "p2p_port": 31303,
+  "btc_source": {
+    "network_id": "btc-mainnet",
+    "index_origin_height": 963800,
+    "activation_registry_id": "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c"
+  },
+  "artifacts": {
+    "genesis": {
+      "path": "artifacts/usdb-genesis.json",
+      "sha256": "c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e"
+    },
+    "genesis_manifest": {
+      "path": "artifacts/usdb-genesis.manifest.json",
+      "sha256": "0e49eeeba45e96d504038272e99875a5240eb17f71367bba5a0dd08c8a4a9246"
+    },
+    "chain_bootstrap": {
+      "path": "artifacts/usdb-chain-bootstrap-config.json",
+      "sha256": "c41e7f23e70daf36ee97a38ee827dc36240646b2b69445043199e8aacb064ab8"
+    },
+    "sourcedao_bootstrap": {
+      "path": "artifacts/sourcedao-bootstrap-config.json",
+      "sha256": "5339986ce8cbee70c381dab388345571a28f6e8988958bc98b120c36b572d37e"
+    },
+    "snapshot_trusted_keys": {
+      "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",
+      "sha256": "ae6d48debc9e665d48c2316e715308f59065421a6f490107cbafc794a758c8ef"
+    },
+    "bootstrap_manifest": {
+      "path": "artifacts/bootstrap-manifest.json",
+      "sha256": "573e0383d3fcad3d7ec5b28cc3586ae822a167edfec5db396d10187a3c6a5ce7"
+    },
+    "network_environment": {
+      "path": "network.env",
+      "sha256": "2fe1e8ad789783d56a8d6fc36363bfd52224e680dedea96708f6d763f776e9cd"
+    },
+    "compose_overlay": {
+      "path": "compose.network.yml",
+      "sha256": "08df021012a73b8b4952af770bdeea6f06d21ac3bf7b1903380212486a78ceb3"
+    }
+  }
+}

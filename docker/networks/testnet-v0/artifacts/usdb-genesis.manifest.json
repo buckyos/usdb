@@ -1,0 +1,13 @@
+{
+  "schema_version": "usdb-genesis-manifest:v1",
+  "network_bundle_id": "usdb-testnet-v0",
+  "chain_id": 202608250,
+  "network_id": 202608250,
+  "genesis_file": "usdb-genesis.json",
+  "file_sha256": "c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e",
+  "bootstrap_config_sha256": "c41e7f23e70daf36ee97a38ee827dc36240646b2b69445043199e8aacb064ab8",
+  "sourcedao_config_sha256": "5339986ce8cbee70c381dab388345571a28f6e8988958bc98b120c36b572d37e",
+  "go_ethereum_revision": "28363547055f6c9d1bf2424cb1702231ab7c2fd4",
+  "sourcedao_revision": "a6031556848290f9dac02b65a1532cbf93190013",
+  "trust": "development-manifest"
+}

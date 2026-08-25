@@ -13,15 +13,17 @@
 - `bootstrap`：ETHW 冷启动与 SourceDAO bootstrap
 - `usdb-control-plane`：统一控制台服务
 - `balance-history` 快照恢复
+- `testnet-v0`：image-only 共享 runtime、独立 network bundle 和节点级私有配置
 
-当前仍然属于开发期部署体系，重点是：
+`compose.base.yml` 与本地 overlay 仍属于开发期部署体系，重点是：
 
 - 本地 bring-up
 - 本地模拟
 - 冷启动编排
 - 控制台观测
 
-而不是正式发布包的最终形态。
+部署用入口已独立为 `compose.runtime.yml`，避免开发期 build、workspace mount、`latest/local`
+默认值进入 testnet/mainnet。当前 `testnet-v0` 仍是可重置测试网，不等于正式发布包已经冻结。
 
 ## 1. 目录结构
 
@@ -34,7 +36,9 @@
 - `Dockerfile.world-sim-tools`
   - world-sim 使用的 `ord + bitcoin-cli + simulator` 工具镜像
 - `compose.base.yml`
-  - 所有主要服务的基础定义
+  - 本地开发主要服务的基础定义
+- `compose.runtime.yml`
+  - testnet/mainnet 共用的 image-only 运行定义
 - `compose.joiner.yml`
   - joiner 模式 overlay
 - `compose.dev-sim.yml`
@@ -47,6 +51,8 @@
   - 冷启动 bootstrap overlay
 - `env/*.env.example`
   - 各运行模式的环境变量模板
+- `networks/testnet-v0/`
+  - testnet-v0 的 chain/network identity、genesis、bootstrap config 和 public trust catalog
 - `scripts/`
   - 各类启动器、渲染器、helper 脚本
 - `local/`
@@ -103,6 +109,19 @@
 - 本地 bootstrap config
 - 本地 keys
 
+### 2.5 部署运行层
+
+[compose.runtime.yml](/home/bucky/work/usdb/docker/compose.runtime.yml) 不继承本地开发 Compose：
+
+- 只消费显式 release image，不包含 `build:`；
+- 不启动或公开 BTC RPC，默认连接每台宿主机自己的 Bitcoin Core；
+- HTTP/WS、balance-history、indexer 和 control-plane 默认只绑定 `127.0.0.1`；
+- 只把 USDB P2P `31303/TCP+UDP` 对外发布；
+- one-shot init 使用 `service_completed_successfully`，长服务使用 healthcheck；
+- 网络共同身份由 `docker/networks/<network>/` 提供，节点 secret 和角色留在未提交的 `node.env`。
+
+当前实现见 [testnet-v0 network bundle](/home/bucky/work/usdb/docker/networks/testnet-v0/README.md)。
+
 ## 3. 各 compose 文件作用
 
 ### 3.1 `compose.base.yml`
@@ -132,6 +151,14 @@
 - USDB 节点默认使用 `31303/TCP+UDP`：TCP 承载 devp2p，UDP 承载节点发现
 - testnet 与 mainnet 保持相同默认 P2P 端口；自定义 `ETHW_COMMAND` 时，其 `--port` 必须与 `ETHW_P2P_PORT` 一致
 - 同机多节点必须显式覆盖 `ETHW_P2P_BIND_PORT` 和节点命令中的监听端口
+
+### 3.1.1 `compose.runtime.yml`
+
+作用：定义 testnet/mainnet 可复用的部署运行面。
+
+它刻意不提供本地默认镜像、内置 Bitcoin Core、SourceDAO 管理员密钥或自动数据清理。网络 bundle
+负责 genesis/chain identity，节点 env 负责镜像、BTC RPC、bootnodes 和 miner 参数。SourceDAO
+bootstrap 是独立受控步骤，不能把 private key 放入 Compose。
 
 ### 3.2 `compose.joiner.yml`
 

@@ -1,0 +1,248 @@
+x-runtime-logging: &runtime-logging
+  driver: json-file
+  options:
+    max-size: ${USDB_LOG_MAX_SIZE:-100m}
+    max-file: ${USDB_LOG_MAX_FILES:-5}
+
+x-usdb-service-defaults: &usdb-service-defaults
+  image: ${USDB_SERVICES_IMAGE:?USDB_SERVICES_IMAGE must reference a versioned release image}
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  logging: *runtime-logging
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  networks:
+    - usdb-runtime
+
+x-bitcoin-environment: &bitcoin-environment
+  BTC_NETWORK: ${BTC_NETWORK:?BTC_NETWORK is required}
+  BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+  BTC_RPC_URL: ${BTC_RPC_URL:?BTC_RPC_URL is required}
+  BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
+  BTC_RPC_USER: ${BTC_RPC_USER:-}
+  BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:-}
+  BTC_COOKIE_FILE: ${BTC_COOKIE_FILE:-}
+
+x-balance-history-environment: &balance-history-environment
+  <<: *bitcoin-environment
+  BH_ROOT_DIR: /data/balance-history
+  BH_RPC_HOST: 0.0.0.0
+  BH_RPC_PORT: 28010
+  BH_SYNC_LOCAL_LOADER_THRESHOLD: ${BH_SYNC_LOCAL_LOADER_THRESHOLD:-4294967295}
+  BH_SYNC_BATCH_SIZE: ${BH_SYNC_BATCH_SIZE:-128}
+  BH_SYNC_UTXO_MAX_CACHE_BYTES: ${BH_SYNC_UTXO_MAX_CACHE_BYTES:-4294967296}
+  BH_SYNC_BALANCE_MAX_CACHE_BYTES: ${BH_SYNC_BALANCE_MAX_CACHE_BYTES:-10737418240}
+  BH_SYNC_MAX_MEMORY_PERCENT: ${BH_SYNC_MAX_MEMORY_PERCENT:-75}
+  BH_SYNC_MAX_SYNC_BLOCK_HEIGHT: ${BH_SYNC_MAX_SYNC_BLOCK_HEIGHT:-4294967295}
+  BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-signed}
+  BH_SNAPSHOT_SIGNING_KEY_FILE: ""
+  BH_SNAPSHOT_TRUSTED_KEYS_FILE: ${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-/run/usdb/keys/usdb-mainnet-snapshot-v1.trusted-keys.json}
+  SNAPSHOT_MODE: ${SNAPSHOT_MODE:-balance-history}
+  BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:?BH_SNAPSHOT_FILE is required}
+  BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:?BH_SNAPSHOT_MANIFEST is required}
+
+services:
+  snapshot-loader:
+    <<: *usdb-service-defaults
+    restart: "no"
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/snapshot_loader.sh"]
+    environment:
+      <<: *balance-history-environment
+    volumes:
+      - balance-history-data:/data/balance-history
+      - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
+      - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
+    mem_limit: ${BH_MEMORY_LIMIT:-20g}
+
+  balance-history:
+    <<: *usdb-service-defaults
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_balance_history.sh"]
+    depends_on:
+      snapshot-loader:
+        condition: service_completed_successfully
+    environment:
+      <<: *balance-history-environment
+      WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-300}
+      BH_EXTRA_ARGS: ${BH_EXTRA_ARGS:-}
+    volumes:
+      - balance-history-data:/data/balance-history
+      - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
+    ports:
+      - "${BH_BIND_ADDRESS:-127.0.0.1}:${BH_BIND_PORT:-28010}:28010"
+    mem_limit: ${BH_MEMORY_LIMIT:-20g}
+    stop_grace_period: ${BH_STOP_GRACE_PERIOD:-2m}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/28010'"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+
+  usdb-indexer:
+    <<: *usdb-service-defaults
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_usdb_indexer.sh"]
+    depends_on:
+      balance-history:
+        condition: service_healthy
+    environment:
+      <<: *bitcoin-environment
+      USDB_INDEXER_ROOT_DIR: /data/usdb-indexer
+      BALANCE_HISTORY_RPC_URL: http://balance-history:28010
+      INSCRIPTION_SOURCE: ${INSCRIPTION_SOURCE:-bitcoind}
+      USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:?USDB_GENESIS_BLOCK_HEIGHT is required}
+      USDB_INDEXER_RPC_HOST: 0.0.0.0
+      USDB_INDEXER_RPC_PORT: 28020
+      USDB_INDEXER_RPC_SERVER_ENABLED: "true"
+      PASS_ENERGY_LEADERBOARD_CACHE_ENABLED: ${PASS_ENERGY_LEADERBOARD_CACHE_ENABLED:-true}
+      PASS_ENERGY_LEADERBOARD_CACHE_TOP_K: ${PASS_ENERGY_LEADERBOARD_CACHE_TOP_K:-1000}
+      WAIT_FOR_BH_TIMEOUT_SECS: ${WAIT_FOR_BH_TIMEOUT_SECS:-300}
+      WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-300}
+      USDB_INDEXER_EXTRA_ARGS: ${USDB_INDEXER_EXTRA_ARGS:-}
+    volumes:
+      - usdb-indexer-data:/data/usdb-indexer
+    ports:
+      - "${USDB_INDEXER_BIND_ADDRESS:-127.0.0.1}:${USDB_INDEXER_BIND_PORT:-28020}:28020"
+    mem_limit: ${USDB_INDEXER_MEMORY_LIMIT:-4g}
+    stop_grace_period: ${USDB_INDEXER_STOP_GRACE_PERIOD:-2m}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/28020'"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+
+  usdb-chain-init:
+    image: ${USDB_CHAIN_IMAGE:?USDB_CHAIN_IMAGE must reference a versioned release image}
+    restart: "no"
+    entrypoint: ["/opt/usdb/scripts/usdb_runtime_init.sh"]
+    security_opt:
+      - no-new-privileges:true
+    logging: *runtime-logging
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      USDB_CHAIN_DATA_DIR: /data/usdb-chain
+      USDB_CHAIN_ID: ${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}
+      USDB_NETWORK_ID: ${USDB_NETWORK_ID:?USDB_NETWORK_ID is required}
+      USDB_GENESIS_FILE: /network/usdb-genesis.json
+      USDB_GENESIS_MANIFEST_FILE: /network/usdb-genesis.manifest.json
+    volumes:
+      - usdb-chain-data:/data/usdb-chain
+      - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
+    networks:
+      - usdb-runtime
+
+  usdb-chain:
+    image: ${USDB_CHAIN_IMAGE:?USDB_CHAIN_IMAGE must reference a versioned release image}
+    restart: unless-stopped
+    entrypoint: ["/opt/usdb/scripts/usdb_runtime_node.sh"]
+    security_opt:
+      - no-new-privileges:true
+    logging: *runtime-logging
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      usdb-chain-init:
+        condition: service_completed_successfully
+      usdb-indexer:
+        condition: service_healthy
+    environment:
+      USDB_CHAIN_DATA_DIR: /data/usdb-chain
+      USDB_CHAIN_ID: ${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}
+      USDB_NETWORK_ID: ${USDB_NETWORK_ID:?USDB_NETWORK_ID is required}
+      USDB_GENESIS_FILE: /network/usdb-genesis.json
+      USDB_GENESIS_MANIFEST_FILE: /network/usdb-genesis.manifest.json
+      USDB_NODE_ROLE: ${USDB_NODE_ROLE:-full}
+      USDB_INDEXER_RPC_URL: http://usdb-indexer:28020
+      USDB_INDEXER_QUERY_TIMEOUT: ${USDB_INDEXER_QUERY_TIMEOUT:-5s}
+      USDB_P2P_PORT: 31303
+      USDB_DISCOVERY_PORT: 31303
+      USDB_MAX_PEERS: ${USDB_MAX_PEERS:-50}
+      USDB_HTTP_PORT: 8545
+      USDB_HTTP_VHOSTS: ${USDB_HTTP_VHOSTS:-localhost,127.0.0.1,usdb-chain}
+      USDB_WS_PORT: 8546
+      USDB_WS_ORIGINS: ${USDB_WS_ORIGINS:-http://localhost}
+      USDB_BOOTNODES: ${USDB_BOOTNODES:-}
+      USDB_NAT: ${USDB_NAT:-}
+      USDB_MINER_ADDRESS: ${USDB_MINER_ADDRESS:-}
+      USDB_PASS_ID: ${USDB_PASS_ID:-}
+      USDB_MINER_THREADS: ${USDB_MINER_THREADS:-1}
+      USDB_CHAIN_EXTRA_ARGS: ${USDB_CHAIN_EXTRA_ARGS:-}
+    volumes:
+      - usdb-chain-data:/data/usdb-chain
+      - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
+    ports:
+      - "${USDB_HTTP_BIND_ADDRESS:-127.0.0.1}:${USDB_HTTP_BIND_PORT:-8545}:8545"
+      - "${USDB_WS_BIND_ADDRESS:-127.0.0.1}:${USDB_WS_BIND_PORT:-8546}:8546"
+      - "${USDB_P2P_BIND_ADDRESS:-0.0.0.0}:${USDB_P2P_BIND_PORT:-31303}:31303/tcp"
+      - "${USDB_P2P_BIND_ADDRESS:-0.0.0.0}:${USDB_P2P_BIND_PORT:-31303}:31303/udp"
+    mem_limit: ${USDB_CHAIN_MEMORY_LIMIT:-5g}
+    stop_grace_period: ${USDB_CHAIN_STOP_GRACE_PERIOD:-2m}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8545'"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 60s
+    networks:
+      - usdb-runtime
+
+  usdb-control-plane:
+    <<: *usdb-service-defaults
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/start_control_plane.sh"]
+    depends_on:
+      balance-history:
+        condition: service_healthy
+      usdb-indexer:
+        condition: service_healthy
+      usdb-chain:
+        condition: service_healthy
+    environment:
+      <<: *bitcoin-environment
+      CONTROL_PLANE_ROOT_DIR: /data/usdb-control-plane
+      CONTROL_PLANE_HOST: 0.0.0.0
+      CONTROL_PLANE_PORT: 28040
+      BALANCE_HISTORY_RPC_URL: http://balance-history:28010
+      USDB_INDEXER_RPC_URL: http://usdb-indexer:28020
+      USDB_CHAIN_RPC_URL: http://usdb-chain:8545
+      CONTROL_PLANE_BOOTSTRAP_MANIFEST: /network/bootstrap-manifest.json
+      CONTROL_PLANE_SNAPSHOT_MARKER: /data/balance-history/bootstrap/snapshot-loader.done.json
+      CONTROL_PLANE_USDB_INIT_MARKER: /data/usdb-chain/bootstrap/usdb-init.done.json
+      CONTROL_PLANE_USDB_GENESIS: /network/usdb-genesis.json
+      CONTROL_PLANE_SOURCEDAO_STATE: /data/usdb-chain/bootstrap/sourcedao-bootstrap-state.json
+      CONTROL_PLANE_SOURCEDAO_MARKER: /data/usdb-chain/bootstrap/sourcedao-bootstrap.done.json
+      CONTROL_PLANE_SOURCEDAO_WEB_URL: ${CONTROL_PLANE_SOURCEDAO_WEB_URL:-}
+      CONTROL_PLANE_EXTRA_ARGS: ${CONTROL_PLANE_EXTRA_ARGS:-}
+    volumes:
+      - control-plane-data:/data/usdb-control-plane
+      - balance-history-data:/data/balance-history:ro
+      - usdb-chain-data:/data/usdb-chain:ro
+      - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
+    ports:
+      - "${CONTROL_PLANE_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PLANE_BIND_PORT:-28040}:28040"
+    mem_limit: ${CONTROL_PLANE_MEMORY_LIMIT:-1g}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:28040/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  balance-history-data:
+  usdb-indexer-data:
+  usdb-chain-data:
+  control-plane-data:
+
+networks:
+  usdb-runtime:
+    name: ${USDB_DOCKER_NETWORK:?USDB_DOCKER_NETWORK is required}

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "chainId": 202608250,
+  "btcSource": {
+    "networkId": "btc-mainnet",
+    "indexOriginHeight": 963800
+  },
+  "usdbConsensus": {
+    "activations": [
+      {
+        "block": 0,
+        "btcActivationRegistryId": "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c",
+        "btcAnchorMaxAgeBlocks": 6650,
+        "versions": {
+          "payloadVersion": 1,
+          "btcAnchorPolicyVersion": 1,
+          "difficultyPolicyVersion": 1,
+          "rewardRuleVersion": 1,
+          "coinbaseEmissionPolicyVersion": 1,
+          "feeSplitPolicyVersion": 1,
+          "collaborationEfficiencyPolicyVersion": 1,
+          "pricePolicyVersion": 1,
+          "quotePolicyVersion": 0,
+          "auxPoolPolicyVersion": 0
+        }
+      }
+    ]
+  },
+  "predeploys": {
+    "dao": {
+      "address": "0x0000000000000000000000000000000000001001",
+      "artifact": "contracts/Dao.sol/SourceDao.json",
+      "runtimeCodeHash": "0xc6549189a694031f7d94e6b1b8b11b2bc43d1753cdaa7ac885a97c5e6d462593",
+      "artifactSha256": "4ec8d999391a85397518c9a1c82b0b57616a2cb73f8cc0dda7e758fb5831f261"
+    },
+    "dividend": {
+      "address": "0x0000000000000000000000000000000000001002",
+      "artifact": "contracts/Dividend.sol/DividendContract.json",
+      "runtimeCodeHash": "0x24859958e81d46d4a3df2de8b346600d05ed8a3e683ad4c2117fe9e73804144e",
+      "artifactSha256": "79c83a7d90a604040f044871b718dc9511788d5d4bb20cb88f2eb660b47c5a2e"
+    }
+  },
+  "bootstrapAdmin": {
+    "address": "0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37",
+    "balanceWei": "10000000000000000000"
+  },
+  "genesisDifficulty": "0x180000",
+  "minimumDifficulty": "0x100000",
+  "dividendFeeSplitBlock": 8192
+}

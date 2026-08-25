@@ -1,0 +1,19 @@
+services:
+  snapshot-loader:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
+  balance-history:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
+  usdb-indexer:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
+  usdb-chain-init:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
+  usdb-chain:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
+  usdb-control-plane:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0

@@ -16,6 +16,7 @@
 
 - [USDB Release 总体流程](./usdb-release-process.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
+- [USDB testnet-v0 Network Bundle](./usdb-testnet-v0-network-bundle.md)
 
 ## 3. 关联文档
 

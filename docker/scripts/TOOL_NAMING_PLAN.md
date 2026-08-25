@@ -91,6 +91,10 @@ Examples:
 - `run_testnet_runtime.sh`
 - `run_mainnet_joiner.sh`
 
+`run_testnet_runtime.sh` is now implemented for the resettable `testnet-v0`
+bundle. The remaining testnet joiner/mainnet names are still reserved design
+targets.
+
 Why this works:
 
 - `run_` makes it clear the tool starts or manages a stack profile
