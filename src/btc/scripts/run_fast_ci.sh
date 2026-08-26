@@ -48,4 +48,8 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_p2p_d
 
 log "checking balance-history memory profile"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_balance_history_memory_profile.py"
+
+log "checking testnet network and release manifests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_validate_network_bundle.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_release_manifest.py"
 log "Rust fast gate passed"

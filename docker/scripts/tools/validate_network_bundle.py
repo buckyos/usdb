@@ -191,18 +191,30 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     return network
 
 
-def validate_image_ref(name: str, value: str) -> None:
+def validate_image_ref(name: str, value: str, expected_image: str) -> None:
     require(bool(value), f"{name} is required in node.env")
     lowered = value.lower()
     require(not lowered.endswith(":latest"), f"{name} must not use latest")
     require(not lowered.endswith(":local"), f"{name} must not use a local tag")
     require("replace" not in lowered, f"{name} still contains a placeholder")
+    require(
+        re.fullmatch(rf"{re.escape(expected_image)}@sha256:[0-9a-f]{{64}}", value) is not None,
+        f"{name} must use the canonical GHCR digest reference",
+    )
 
 
 def validate_node_env(path: Path, require_runtime: bool) -> None:
     env = read_env(path)
-    validate_image_ref("USDB_SERVICES_IMAGE", env.get("USDB_SERVICES_IMAGE", ""))
-    validate_image_ref("USDB_CHAIN_IMAGE", env.get("USDB_CHAIN_IMAGE", ""))
+    validate_image_ref(
+        "USDB_SERVICES_IMAGE",
+        env.get("USDB_SERVICES_IMAGE", ""),
+        "ghcr.io/buckyos/usdb-services",
+    )
+    validate_image_ref(
+        "USDB_CHAIN_IMAGE",
+        env.get("USDB_CHAIN_IMAGE", ""),
+        "ghcr.io/buckyos/usdb-chain",
+    )
 
     auth_mode = env.get("BTC_AUTH_MODE", "userpass")
     require(auth_mode in {"userpass", "cookie"}, "testnet node BTC auth must be userpass or cookie")

@@ -118,6 +118,7 @@ above.
 | [run_local_sourcedao_web.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_sourcedao_web.sh) | frontend launcher | exports SourceDAO web env from control-plane overview and runs `buckydaowww/src` | opening the SourceDAO Web app card from the console against local full-sim | does not start SourceDAOBackend; override `SOURCEDAO_BACKEND_URL` if needed |
 | [smoke_bootstrap_stack.sh](/home/bucky/work/usdb/docker/scripts/tools/smoke_bootstrap_stack.sh) | smoke validation | creates a temporary bootstrap project and local manifests | validating cold-start wiring, manifests, and bootstrap one-shots | can keep the stack running with `KEEP_RUNNING=1` |
 | [validate_network_bundle.py](/home/bucky/work/usdb/docker/scripts/tools/validate_network_bundle.py) | release input validation | read-only strict JSON/env and hash validation | before pull/up on every testnet node | optional `--require-runtime` also requires signed snapshot files |
+| [release_manifest.py](/home/bucky/work/usdb/docker/scripts/tools/release_manifest.py) | release candidate identity | creates or validates the digest-pinned three-repository manifest | after both GHCR candidates and all component CI checks pass | v1 emits candidate manifests with snapshot explicitly pending |
 
 ## Recommended Documentation Contract For Future Tools
 

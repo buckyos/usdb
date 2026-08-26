@@ -9,6 +9,9 @@
 当前状态是 `development-resettable`，不是 public release 或未来 mainnet 参数。发生不兼容重置时必须发布
 新的 bundle/chain ID，不能在已有 `testnet-v0` 数据目录上原地替换 genesis。
 
+完整参数所有权、重置边界和上线签字项见
+[`doc/publish/usdb-testnet-v0-parameter-freeze.md`](../../../doc/publish/usdb-testnet-v0-parameter-freeze.md)。
+
 ## 冻结值
 
 | 项目 | testnet-v0 |
@@ -26,7 +29,8 @@
 
 ## 启动前输入
 
-1. 发布并取得 versioned `USDB_SERVICES_IMAGE` 与 `USDB_CHAIN_IMAGE`。`latest`、`local` 和占位引用会被拒绝；release candidate 应进一步固定 digest。
+1. 通过 GitHub image workflows 发布 candidate，并取得 digest-only `USDB_SERVICES_IMAGE` 与
+   `USDB_CHAIN_IMAGE`。`latest`、`local`、普通 tag 和占位引用不能进入跨仓 release manifest。
 2. 在本机 Bitcoin Core 中创建仅供 USDB 使用的 RPC 账户，并允许 Docker bridge 访问；不要对公网发布 `8332`。
 3. 准备 `snapshot_963800.db`、manifest 和 detached signature。默认信任 bundle 中的
    `usdb-mainnet-snapshot-v1` public key catalog。
@@ -65,7 +69,7 @@ SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key
 
 ## 尚未冻结
 
-- 两个发布镜像的 digest 与三仓 release manifest。
+- 两个发布镜像的 digest 与最终三仓 release manifest；candidate workflow 已具备，但尚待实际 artifact。
 - snapshot artifact 自身的 hash/signature；当前只冻结 signer public key。
 - 三台机器的 bootnode enode、外部 IP 和 miner pass。
 - 正式 PoW calibration 报告。

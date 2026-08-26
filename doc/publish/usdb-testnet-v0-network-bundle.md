@@ -2,6 +2,8 @@
 
 第一个三节点测试网使用：
 
+- [testnet-v0 参数冻结清单](./usdb-testnet-v0-parameter-freeze.md)
+- [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)
 - [共享 runtime Compose](../../docker/compose.runtime.yml)
 - [testnet-v0 bundle](../../docker/networks/testnet-v0/README.md)
 - [启动工具](../../docker/scripts/tools/run_testnet_runtime.sh)

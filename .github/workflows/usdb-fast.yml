@@ -39,3 +39,14 @@ jobs:
 
       - name: Run Rust fast gate
         run: src/btc/scripts/run_fast_ci.sh
+
+  publish_services_image:
+    name: Publish USDB services image
+    needs: rust-fast
+    if: github.event_name == 'push' && github.repository == 'buckyos/usdb'
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/usdb-services-image.yml

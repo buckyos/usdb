@@ -2,8 +2,9 @@
 
 ## 1. 目标与边界
 
-本文是 USDB 多仓库 release 和上线的编排入口，不替代 UIP、组件设计或具体运维手册。当前项目
-尚未配置正式 CI，因此第一版以可审计的人工 release 为基线，后续再把稳定步骤迁入 CI。
+本文是 USDB 多仓库 release 和上线的编排入口，不替代 UIP、组件设计或具体运维手册。当前已有
+三仓 Fast CI、GHCR candidate image 和跨仓 candidate manifest；最终 snapshot 合并、不可变 GitHub
+Release 与节点部署批准仍以可审计的人工流程为基线。
 
 涉及的主要代码库和产物：
 
@@ -36,7 +37,7 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 ### 3.1 参数冻结
 
-状态：`manual`
+状态：`partial/candidate`
 
 - 冻结目标网络、chain ID、genesis、activation registry binding；
 - 冻结 SourceDAO bootstrap 参数和 system addresses；
@@ -46,13 +47,16 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 ### 3.2 可重复构建
 
-状态：`manual`
+状态：`implemented/candidate`
 
-- 从 clean worktree 和冻结 commit 构建 release binaries；
+- Fast CI 成功后从主分支冻结 commit 构建 GHCR candidate images；
 - 记录工具链和外部依赖版本；
 - 生成 artifact hash；
 - 禁止从未记录的本地 binary 或 mutable host path 直接发布；
 - 对跨仓库生成物执行 golden vector 和 roundtrip 校验。
+
+镜像 workflow、digest/attestation 和跨仓 candidate manifest 见
+[GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)。
 
 ### 3.3 组件测试
 
@@ -68,12 +72,13 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 ### 3.4 Artifact 签名与信任引导
 
-状态：`manual/planned`
+状态：`partial`
 
 - Snapshot 使用独立 Ed25519 signer 签署 manifest；
 - balance-history release bundle 携带 public trusted-key catalog；
 - SourceDAO/genesis 等其他 artifact 使用各自冻结的签名与 hash 方案；
-- binary、OCI image 和 Git release 签名体系尚待正式落地，不得复用 snapshot 私钥；
+- OCI candidate image 已生成 GitHub provenance attestation；binary 和最终 GitHub Release 签名仍待落地，
+  且不得复用 snapshot 私钥；
 - 私钥不进入 Git、普通 CI、普通节点镜像或公开 release bundle。
 
 ### 3.5 Staging/Devnet 演练
@@ -118,10 +123,10 @@ public release。上线时至少需要：
 
 随着流程落地，本目录建议继续增加：
 
-- `release-manifest-schema.md`：跨仓库 release manifest 固定 schema；
+- `release-manifest-promotion.md`：从 candidate schema 补齐 snapshot、测试证据和批准记录后发布；
 - `usdb-chain-genesis-release.md`：genesis、chain config 和 activation binding 发布；
 - `sourcedao-release-and-bootstrap.md`：合约 artifact 和 bootstrap；
-- `container-image-release.md`：OCI build、SBOM、digest 和签名；
+- `github-ci-image-and-release-publishing.md`：OCI candidate build、SBOM、digest、attestation 和跨仓 manifest；
 - `public-network-launch-runbook.md`：上线时间线、角色、检查和回滚；
 - `release-key-management.md`：不同 signer 的存储、轮换和失陷处理。
 

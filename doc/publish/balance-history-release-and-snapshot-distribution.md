@@ -146,7 +146,7 @@ trusted_keys_file = "/etc/usdb/snapshot-keys/usdb-mainnet-snapshot-v1.trusted-ke
 
 - 正式 mainnet signer 和 public catalog 尚未冻结；
 - binary bundle/install script 尚未实现；
-- release manifest schema 尚未冻结；
+- 最终 published release manifest 的 snapshot/promotion 扩展尚未冻结；
 - binary/OCI signing、SBOM 和正式 CI 尚未落地；
 - catalog rotation/revocation 的公开渠道和演练尚未完成。
 

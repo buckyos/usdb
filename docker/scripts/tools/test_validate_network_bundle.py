@@ -29,8 +29,8 @@ class NetworkBundleValidatorTests(unittest.TestCase):
 
     def write_node_env(self, **overrides: str) -> Path:
         values = {
-            "USDB_SERVICES_IMAGE": "registry.example/usdb-services:v0.1.0",
-            "USDB_CHAIN_IMAGE": "registry.example/usdb-chain:v0.1.0",
+            "USDB_SERVICES_IMAGE": "ghcr.io/buckyos/usdb-services@sha256:" + "a" * 64,
+            "USDB_CHAIN_IMAGE": "ghcr.io/buckyos/usdb-chain@sha256:" + "b" * 64,
             "BTC_AUTH_MODE": "userpass",
             "BTC_RPC_USER": "test-user",
             "BTC_RPC_PASSWORD": "test-password",
@@ -70,8 +70,13 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             VALIDATOR.validate_network_bundle(self.bundle)
 
     def test_mutable_image_tag_is_rejected(self) -> None:
-        path = self.write_node_env(USDB_CHAIN_IMAGE="registry.example/usdb-chain:latest")
+        path = self.write_node_env(USDB_CHAIN_IMAGE="ghcr.io/buckyos/usdb-chain:latest")
         with self.assertRaisesRegex(ValueError, "must not use latest"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_versioned_image_tag_is_rejected(self) -> None:
+        path = self.write_node_env(USDB_CHAIN_IMAGE="ghcr.io/buckyos/usdb-chain:testnet-v0-r1")
+        with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
             VALIDATOR.validate_node_env(path, False)
 
     def test_miner_requires_address_and_pass(self) -> None:

@@ -15,6 +15,8 @@
 ## 2. 当前手册
 
 - [USDB Release 总体流程](./usdb-release-process.md)
+- [USDB testnet-v0 参数冻结清单](./usdb-testnet-v0-parameter-freeze.md)
+- [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
 - [USDB testnet-v0 Network Bundle](./usdb-testnet-v0-network-bundle.md)
 
