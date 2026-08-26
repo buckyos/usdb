@@ -6,10 +6,10 @@
 
 - `usdb` 和 `go-ethereum` Fast CI 成功后发布 `linux/amd64` 候选镜像；
 - 每个镜像绑定 source commit、OCI digest 和 GitHub provenance attestation；
-- 手工选择两个镜像 digest 与三仓 commit，生成严格校验的跨仓 candidate manifest；
+- 手工选择 services、chain、Bitcoin Core 三个镜像 digest 与三仓 commit，生成严格校验的跨仓 candidate manifest；
 - candidate manifest 保持 snapshot 为 `pending`，不能直接作为 public release。
 
-Snapshot 大文件分发、Bitcoin Core release image、最终 GitHub Release 和节点部署批准属于后续批次。
+Snapshot 大文件分发、最终 GitHub Release 和节点部署批准属于后续批次。
 SourceDAO 当前没有独立运行镜像，但其 commit 和 CI check 是 release manifest 的必要输入。
 
 GitHub 官方参考：
@@ -66,7 +66,21 @@ Dockerfile
 ghcr.io/buckyos/usdb-chain:git-<40-char-sha>-run-<run-id>-<attempt>
 ```
 
-### 3.3 Tag 与 digest
+### 3.3 Bitcoin Core
+
+入口：
+
+- [Bitcoin image workflow](../../.github/workflows/usdb-bitcoin-image.yml)
+- [Bitcoin release Dockerfile](../../docker/Dockerfile.bitcoin-core)
+- [Bitcoin image 与同步手册](./bitcoin-core-release-and-sync-operations.md)
+
+该 workflow 从同一 `usdb` commit 构建经过上游签名校验的 Bitcoin Core 28.1 image：
+
+```text
+ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-28.1-git-<40-char-sha>-run-<run-id>-<attempt>
+```
+
+### 3.4 Tag 与 digest
 
 候选 tag 用于人工查找，不是部署身份。每次 workflow run/attempt 使用唯一 tag，避免静默覆盖前一次
 候选。节点和 release manifest 一律使用：
@@ -74,9 +88,10 @@ ghcr.io/buckyos/usdb-chain:git-<40-char-sha>-run-<run-id>-<attempt>
 ```text
 ghcr.io/buckyos/usdb-services@sha256:<64-char-digest>
 ghcr.io/buckyos/usdb-chain@sha256:<64-char-digest>
+ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
 ```
 
-两个 workflow 都写入 OCI source/revision/version labels，生成 BuildKit provenance/SBOM，并通过
+三个 workflow 都写入 OCI source/revision/version labels，生成 BuildKit provenance/SBOM，并通过
 `actions/attest` 生成 GitHub attestation。跨仓 coordinator 会同时校验：
 
 - digest 在 GHCR 中存在；
@@ -89,8 +104,8 @@ ghcr.io/buckyos/usdb-chain@sha256:<64-char-digest>
 在第一次发布前完成：
 
 1. 允许仓库 workflow 使用 `packages: write`、`attestations: write` 和 `id-token: write`。
-2. 首次创建 `usdb-services`、`usdb-chain` package 后，将其设为 public，便于节点匿名拉取；如果保持
-   private，则必须给 `buckyos/usdb` coordinator 仓库授予两个 package 的 Actions read access。
+2. 首次创建 `usdb-services`、`usdb-chain`、`usdb-bitcoin-core` package 后，将其设为 public，便于节点匿名拉取；如果保持
+   private，则必须给 `buckyos/usdb` coordinator 仓库授予三个 package 的 Actions read access。
 3. 创建 `testnet-release-candidate` Environment，配置 required reviewer 并禁止发起人自审。
 4. 为 `master/main` 保持 branch protection，确保 image workflow 只能消费已进入主线的 commit。
 5. 不把 snapshot signing key、SourceDAO bootstrap private key 或 BTC RPC secret 放入这些 workflow。
@@ -108,10 +123,10 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 
 候选组合的推荐冻结顺序是：
 
-1. 合并并通过目标 `usdb`、`SourceDAO` commit 的 Fast CI；等待 services candidate image 完成。
+1. 合并并通过目标 `usdb`、`SourceDAO` commit 的 Fast CI；等待 services 和 Bitcoin candidate image 完成。
 2. 在 `go-ethereum/scripts/usdb/ci-revisions.json` 中锁定上述两个 commit，完成 cross-repository golden
    验证并等待 chain candidate image 完成。
-3. 从被锁定的 `usdb` commit 运行 manifest workflow，选择两个实际 OCI digest。
+3. 从被锁定的 `usdb` commit 运行 manifest workflow，选择三个实际 OCI digest。
 
 这个顺序避免循环依赖：Go lock 中的自身 revision 仍是联合 CI baseline，release 的最终 Go revision
 由跨仓 manifest 冻结；但 lock 中的 `usdb`、`SourceDAO` revision 必须与 release 选择完全一致。
@@ -120,7 +135,7 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 
 - `release_id`，例如 `usdb-testnet-v0-r1`；
 - 完整 `go-ethereum` 和 `SourceDAO` commit；
-- services/chain 两个 GHCR digest reference；
+- services/chain/Bitcoin Core 三个 GHCR digest reference；
 - 冻结的 genesis block hash。
 
 `usdb` revision 取 workflow 自身的 `github.sha`，不能由字符串输入替换。workflow 会：
@@ -129,7 +144,7 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 2. 要求所选 `usdb`、`SourceDAO` revision 与 Go commit 内 `ci-revisions.json` 的兼容性锁一致；
 3. 检查该 commit 上规定的 Fast CI jobs 已成功；
 4. 严格校验 `testnet-v0` network bundle；
-5. 验证两个 OCI artifact 的 digest、signer workflow 和 source commit；
+5. 验证三个 OCI artifact 的 digest、signer workflow 和 source commit；
 6. 生成并再次读取验证 `usdb-release-manifest.json`；
 7. 上传 manifest 和 SHA-256，保留 30 天供 review。
 
@@ -146,10 +161,11 @@ python3 docker/scripts/tools/release_manifest.py create \
   --go-ethereum-revision <40-char-sha> \
   --source-dao-revision <40-char-sha> \
   --services-image ghcr.io/buckyos/usdb-services@sha256:<digest> \
-  --chain-image ghcr.io/buckyos/usdb-chain@sha256:<digest>
+  --chain-image ghcr.io/buckyos/usdb-chain@sha256:<digest> \
+  --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
 ```
 
-当前 v1 candidate manifest 固定以下边界：
+当前 v2 candidate manifest 固定以下边界：
 
 - 只接受 canonical `buckyos` repositories 和 GHCR image names；
 - 只接受完整 lowercase Git SHA 和 digest-only image reference；
@@ -165,7 +181,6 @@ manifest，并补齐：
 
 - snapshot release record、URL、大小、SHA-256、signer 和 catalog hash；
 - PoW 校准报告、完整 E2E 报告与人工批准记录；
-- Bitcoin Core image digest；
 - 最终 manifest 签名/attestation。
 
 完成后创建不可变 GitHub Release，并把最终 manifest、checksum、public catalog 和小型报告作为 release

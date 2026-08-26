@@ -23,6 +23,10 @@ on:
         description: ghcr.io/buckyos/usdb-chain@sha256:...
         required: true
         type: string
+      bitcoin_image:
+        description: ghcr.io/buckyos/usdb-bitcoin-core@sha256:...
+        required: true
+        type: string
       genesis_block_hash:
         description: Frozen block-zero hash for the selected network bundle
         required: true
@@ -55,6 +59,7 @@ jobs:
           SOURCE_DAO_REVISION: ${{ inputs.source_dao_revision }}
           SERVICES_IMAGE: ${{ inputs.services_image }}
           CHAIN_IMAGE: ${{ inputs.chain_image }}
+          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
           GENESIS_BLOCK_HASH: ${{ inputs.genesis_block_hash }}
         run: |
           set -euo pipefail
@@ -78,6 +83,10 @@ jobs:
           }
           [[ "$CHAIN_IMAGE" =~ ^ghcr\.io/buckyos/usdb-chain@sha256:[0-9a-f]{64}$ ]] || {
             echo "chain image must be a canonical GHCR digest reference" >&2
+            exit 1
+          }
+          [[ "$BITCOIN_IMAGE" =~ ^ghcr\.io/buckyos/usdb-bitcoin-core@sha256:[0-9a-f]{64}$ ]] || {
+            echo "Bitcoin image must be a canonical GHCR digest reference" >&2
             exit 1
           }
           [[ "$GENESIS_BLOCK_HASH" =~ ^0x[0-9a-f]{64}$ ]] || {
@@ -196,6 +205,7 @@ jobs:
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
           SERVICES_IMAGE: ${{ inputs.services_image }}
           CHAIN_IMAGE: ${{ inputs.chain_image }}
+          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
         run: |
           set -euo pipefail
           verify_image() {
@@ -221,6 +231,11 @@ jobs:
             buckyos/go-ethereum \
             buckyos/go-ethereum/.github/workflows/usdb-chain-image.yml \
             "$GO_ETHEREUM_REVISION"
+          verify_image \
+            "$BITCOIN_IMAGE" \
+            buckyos/usdb \
+            buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml \
+            "$USDB_REVISION"
 
       - name: Create and revalidate cross-repository manifest
         id: manifest
@@ -233,6 +248,7 @@ jobs:
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
           SERVICES_IMAGE: ${{ inputs.services_image }}
           CHAIN_IMAGE: ${{ inputs.chain_image }}
+          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
         run: |
           set -euo pipefail
           mkdir -p release-output
@@ -249,7 +265,8 @@ jobs:
             --go-ethereum-revision "$GO_ETHEREUM_REVISION" \
             --source-dao-revision "$SOURCE_DAO_REVISION" \
             --services-image "$SERVICES_IMAGE" \
-            --chain-image "$CHAIN_IMAGE"
+            --chain-image "$CHAIN_IMAGE" \
+            --bitcoin-image "$BITCOIN_IMAGE"
           python3 usdb/docker/scripts/tools/release_manifest.py validate \
             --bundle-dir usdb/docker/networks/testnet-v0 \
             --manifest "$manifest" \

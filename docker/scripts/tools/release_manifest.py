@@ -24,7 +24,7 @@ from validate_network_bundle import (  # noqa: E402
     validate_network_bundle,
 )
 
-SCHEMA_VERSION = "usdb-release-manifest:v1"
+SCHEMA_VERSION = "usdb-release-manifest:v2"
 RELEASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,95}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -50,6 +50,11 @@ IMAGE_SPECS = {
         "name": "ghcr.io/buckyos/usdb-chain",
         "source": "go_ethereum",
         "signer_workflow": "buckyos/go-ethereum/.github/workflows/usdb-chain-image.yml",
+    },
+    "bitcoin_core": {
+        "name": "ghcr.io/buckyos/usdb-bitcoin-core",
+        "source": "usdb",
+        "signer_workflow": "buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml",
     },
 }
 REQUIRED_CHECKS = {
@@ -340,6 +345,7 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--source-dao-revision", required=True)
     create.add_argument("--services-image", required=True)
     create.add_argument("--chain-image", required=True)
+    create.add_argument("--bitcoin-image", required=True)
 
     validate = subparsers.add_parser("validate", help="validate an existing manifest")
     validate.add_argument("--bundle-dir", type=Path, required=True)
@@ -368,6 +374,7 @@ def main() -> int:
                 image_references={
                     "usdb_services": args.services_image,
                     "usdb_chain": args.chain_image,
+                    "bitcoin_core": args.bitcoin_image,
                 },
             )
             write_manifest(args.output.resolve(), manifest)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import re
 from pathlib import Path
@@ -131,6 +132,9 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(env.get("USDB_CHAIN_ID") == str(EXPECTED_CHAIN_ID), "network.env chain ID mismatch")
     require(env.get("USDB_NETWORK_ID") == str(EXPECTED_CHAIN_ID), "network.env network ID mismatch")
     require(env.get("BTC_NETWORK") == "bitcoin", "network.env BTC network must be bitcoin")
+    require(env.get("BTC_MIN_READY_HEIGHT") == str(EXPECTED_ORIGIN), "network.env Bitcoin readiness height mismatch")
+    require(env.get("BTC_MAX_TIP_AGE_SECS") == "7200", "network.env Bitcoin maximum tip age mismatch")
+    require(env.get("BTC_MIN_CONNECTIONS") == "1", "network.env Bitcoin minimum connections mismatch")
     require(env.get("USDB_GENESIS_BLOCK_HEIGHT") == str(EXPECTED_ORIGIN), "network.env origin mismatch")
     require(env.get("BTC_ACTIVATION_REGISTRY_ID") == EXPECTED_BTC_REGISTRY, "network.env registry mismatch")
     require(env.get("USDB_P2P_PORT") == "31303", "network.env P2P port mismatch")
@@ -203,7 +207,7 @@ def validate_image_ref(name: str, value: str, expected_image: str) -> None:
     )
 
 
-def validate_node_env(path: Path, require_runtime: bool) -> None:
+def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime: bool = False) -> None:
     env = read_env(path)
     validate_image_ref(
         "USDB_SERVICES_IMAGE",
@@ -215,12 +219,18 @@ def validate_node_env(path: Path, require_runtime: bool) -> None:
         env.get("USDB_CHAIN_IMAGE", ""),
         "ghcr.io/buckyos/usdb-chain",
     )
+    validate_image_ref(
+        "USDB_BITCOIN_IMAGE",
+        env.get("USDB_BITCOIN_IMAGE", ""),
+        "ghcr.io/buckyos/usdb-bitcoin-core",
+    )
 
     auth_mode = env.get("BTC_AUTH_MODE", "userpass")
-    require(auth_mode in {"userpass", "cookie"}, "testnet node BTC auth must be userpass or cookie")
-    if auth_mode == "userpass":
-        require(bool(env.get("BTC_RPC_USER")), "BTC_RPC_USER is required")
-        require(bool(env.get("BTC_RPC_PASSWORD")), "BTC_RPC_PASSWORD is required")
+    require(auth_mode == "userpass", "testnet release Bitcoin RPC auth must use userpass")
+    require(bool(env.get("BTC_RPC_USER")), "BTC_RPC_USER is required")
+    require(bool(env.get("BTC_RPC_PASSWORD")), "BTC_RPC_PASSWORD is required")
+    require(env.get("BTC_RPC_URL") == "http://btc-node:8332", "BTC_RPC_URL must use the private btc-node endpoint")
+    require(env.get("BTC_P2P_BIND_PORT", "8333") == "8333", "Bitcoin mainnet P2P bind port must be 8333")
 
     role = env.get("USDB_NODE_ROLE", "full")
     require(role in {"bootnode", "full", "miner"}, "unsupported USDB_NODE_ROLE")
@@ -229,6 +239,26 @@ def validate_node_env(path: Path, require_runtime: bool) -> None:
         require(bool(env.get("USDB_PASS_ID")), "miner role requires USDB_PASS_ID")
 
     require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet-v0 P2P bind port must be 31303")
+    if require_bitcoin_runtime:
+        data_dir = Path(env.get("BTC_NODE_DATA_HOST_DIR", ""))
+        require(data_dir.is_absolute(), "BTC_NODE_DATA_HOST_DIR must be an absolute path")
+        require(data_dir.is_dir(), f"Bitcoin data directory does not exist: {data_dir}")
+        rpcauth_file = Path(env.get("BTC_RPCAUTH_HOST_FILE", ""))
+        require(rpcauth_file.is_absolute(), "BTC_RPCAUTH_HOST_FILE must be an absolute path")
+        require(rpcauth_file.is_file(), f"Bitcoin rpcauth file does not exist: {rpcauth_file}")
+        require(rpcauth_file.stat().st_mode & 0o077 == 0, "Bitcoin rpcauth file must not be group/world accessible")
+        rpcauth = rpcauth_file.read_text(encoding="utf-8").strip()
+        match = re.fullmatch(r"([A-Za-z0-9._-]+):([0-9a-fA-F]{32})\$([0-9a-fA-F]{64})", rpcauth)
+        require(match is not None, "Bitcoin rpcauth file contains an invalid value")
+        assert match is not None
+        username, salt, expected_hmac = match.groups()
+        require(username == env.get("BTC_RPC_USER"), "Bitcoin rpcauth username does not match BTC_RPC_USER")
+        actual_hmac = hmac.new(
+            salt.encode("utf-8"),
+            env["BTC_RPC_PASSWORD"].encode("utf-8"),
+            "sha256",
+        ).hexdigest()
+        require(hmac.compare_digest(actual_hmac, expected_hmac.lower()), "Bitcoin rpcauth does not match RPC password")
     if require_runtime:
         snapshot_dir = Path(env.get("BH_SNAPSHOT_HOST_DIR", ""))
         require(snapshot_dir.is_dir(), f"snapshot host directory does not exist: {snapshot_dir}")
@@ -245,6 +275,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bundle-dir", type=Path, required=True)
     parser.add_argument("--node-env", type=Path)
     parser.add_argument("--require-runtime", action="store_true")
+    parser.add_argument("--require-bitcoin-runtime", action="store_true")
     return parser.parse_args()
 
 
@@ -252,7 +283,7 @@ def main() -> int:
     args = parse_args()
     network = validate_network_bundle(args.bundle_dir.resolve())
     if args.node_env is not None:
-        validate_node_env(args.node_env.resolve(), args.require_runtime)
+        validate_node_env(args.node_env.resolve(), args.require_runtime, args.require_bitcoin_runtime)
     print(
         json.dumps(
             {
@@ -262,6 +293,7 @@ def main() -> int:
                 "network_id": network["network_id"],
                 "node_env_checked": args.node_env is not None,
                 "runtime_artifacts_checked": args.require_runtime,
+                "bitcoin_runtime_checked": args.require_bitcoin_runtime,
             },
             sort_keys=True,
         )

@@ -1,0 +1,87 @@
+FROM debian:bookworm-slim AS verifier
+
+ARG BITCOIN_VERSION=28.1
+ARG BITCOIN_ARCH=x86_64-linux-gnu
+ARG BITCOIN_ARCHIVE_SHA256=07f77afd326639145b9ba9562912b2ad2ccec47b8a305bd075b4f4cb127b7ed7
+ARG GUIX_SIGS_REVISION=3b667ee3ebb3dcd9e1990cf03e38a0935eec1683
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/bitcoin-release
+
+# The release checksum file must be signed by all three pinned Bitcoin Core
+# contributors. The archive checksum is then checked against that signed file.
+RUN set -eux; \
+    release_base="https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}"; \
+    keys_base="https://raw.githubusercontent.com/bitcoin-core/guix.sigs/${GUIX_SIGS_REVISION}/builder-keys"; \
+    archive="bitcoin-${BITCOIN_VERSION}-${BITCOIN_ARCH}.tar.gz"; \
+    curl -fsSLO "${release_base}/SHA256SUMS"; \
+    curl -fsSLO "${release_base}/SHA256SUMS.asc"; \
+    curl -fsSLO "${release_base}/${archive}"; \
+    curl -fsSLo achow101.gpg "${keys_base}/achow101.gpg"; \
+    curl -fsSLo laanwj.gpg "${keys_base}/laanwj.gpg"; \
+    curl -fsSLo 0xb10c.gpg "${keys_base}/0xb10c.gpg"; \
+    printf '%s  %s\n' \
+        '1b31ab2e336d5ee44dd4d9f5703ad4445798fcee3b1352ab75afa145e737224a' achow101.gpg \
+        '556c62caf73e85a56ac2d15ecd814cf733f2a425cf72edb89eb7bafad6178656' laanwj.gpg \
+        'ccd3cc6fd3c58e8717abc31472ca9318a657711ecbdcf1a26289b3214045195e' 0xb10c.gpg \
+        | sha256sum --check --strict; \
+    export GNUPGHOME=/tmp/bitcoin-release/gnupg; \
+    install -d -m 0700 "${GNUPGHOME}"; \
+    gpg --batch --import achow101.gpg laanwj.gpg 0xb10c.gpg; \
+    gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS \
+        >signature-status.txt 2>signature-log.txt || true; \
+    for fingerprint in \
+        152812300785C96444D3334D17565732E08E5E41 \
+        9DEAE0DC7063249FB05474681E4AED62986CD25D \
+        0CCBAAFD76A2ECE2CCD3141DE2FFD5B1D88CA97D; do \
+        grep -q "^\[GNUPG:\] VALIDSIG ${fingerprint} " signature-status.txt; \
+    done; \
+    grep -q "^${BITCOIN_ARCHIVE_SHA256}  ${archive}$" SHA256SUMS; \
+    printf '%s  %s\n' "${BITCOIN_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict; \
+    tar -xzf "${archive}"; \
+    install -d /opt/bitcoin/bin /opt/bitcoin/share/rpcauth; \
+    install -m 0755 \
+        "bitcoin-${BITCOIN_VERSION}/bin/bitcoind" \
+        "bitcoin-${BITCOIN_VERSION}/bin/bitcoin-cli" \
+        "bitcoin-${BITCOIN_VERSION}/bin/bitcoin-tx" \
+        "bitcoin-${BITCOIN_VERSION}/bin/bitcoin-util" \
+        "bitcoin-${BITCOIN_VERSION}/bin/bitcoin-wallet" \
+        /opt/bitcoin/bin/; \
+    install -m 0755 \
+        "bitcoin-${BITCOIN_VERSION}/share/rpcauth/rpcauth.py" \
+        /opt/bitcoin/share/rpcauth/rpcauth.py
+
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        python3 \
+        tini \
+    && groupadd --gid 1000 bitcoin \
+    && useradd --uid 1000 --gid bitcoin --create-home --home-dir /home/bitcoin bitcoin \
+    && install -d -o bitcoin -g bitcoin -m 0700 /data/bitcoin \
+    && install -d /opt/usdb/docker/scripts/entrypoints /opt/usdb/docker/scripts/tools \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=verifier /opt/bitcoin /opt/bitcoin
+COPY docker/scripts/entrypoints/start_bitcoin_core.sh /opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh
+COPY docker/scripts/tools/check_bitcoin_readiness.py /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py
+
+RUN chmod 0755 \
+    /opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh \
+    /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py
+
+ENV PATH="/opt/bitcoin/bin:${PATH}"
+
+USER bitcoin
+VOLUME ["/data/bitcoin"]
+EXPOSE 8332 8333
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/usdb/docker/scripts/entrypoints/start_bitcoin_core.sh"]

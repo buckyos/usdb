@@ -15,7 +15,8 @@ Release 与节点部署批准仍以可审计的人工流程为基线。
 | 控制与部署 | `usdb` / control-plane、Docker | binary/image、compose、env template、操作脚本 |
 | USDB 链节点 | `go-ethereum` | geth binary/image、genesis、chain config |
 | SourceDAO | `SourceDAO` | contract artifacts、bootstrap 参数、validation report |
-| 外部依赖 | Bitcoin Core、ord 等 | 固定版本、来源和 checksum |
+| BTC full node | Bitcoin Core | digest-pinned image、上游签名/checksum、SBOM |
+| 外部依赖 | ord 等 | 固定版本、来源和 checksum |
 
 ## 2. Release 身份
 
@@ -54,9 +55,12 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 - 生成 artifact hash；
 - 禁止从未记录的本地 binary 或 mutable host path 直接发布；
 - 对跨仓库生成物执行 golden vector 和 roundtrip 校验。
+- Bitcoin Core release image 验证三个固定上游 signer，并单独发布 provenance/SBOM。
 
 镜像 workflow、digest/attestation 和跨仓 candidate manifest 见
 [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)。
+Bitcoin 独立生命周期和同步门禁见
+[Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)。
 
 ### 3.3 组件测试
 
@@ -117,6 +121,7 @@ public release。上线时至少需要：
 - joiner 无法从公开 artifact 完成冷启动；
 - 没有磁盘、内存、PoW 或服务不可用时的停止条件；balance-history 至少应通过
   `compose.test-32gb.yml` 的显式 cache/cgroup 基线测试；
+- Bitcoin Core 不是 mainnet full node、`txindex` 未同步到 tip，或 RPC 暴露到公网；
 - 没有回滚、撤包、key compromise 或错误 genesis 的处置人和入口。
 
 ## 5. 下一步文档拆分

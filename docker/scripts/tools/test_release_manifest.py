@@ -71,6 +71,7 @@ class ReleaseManifestTests(unittest.TestCase):
             image_references={
                 "usdb_services": "ghcr.io/buckyos/usdb-services@sha256:" + "d" * 64,
                 "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
+                "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
             },
         )
 
@@ -97,6 +98,7 @@ class ReleaseManifestTests(unittest.TestCase):
                 image_references={
                     "usdb_services": "ghcr.io/buckyos/usdb-services:latest",
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
+                    "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
                 },
             )
 

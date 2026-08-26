@@ -7,6 +7,7 @@ bundle_dir="${USDB_TESTNET_BUNDLE_DIR:-${docker_dir}/networks/testnet-v0}"
 node_env="${USDB_TESTNET_NODE_ENV:-${bundle_dir}/node.env}"
 project_name="${USDB_TESTNET_PROJECT_NAME:-usdb-testnet-v0}"
 validator="${script_dir}/validate_network_bundle.py"
+bitcoin_runner="${script_dir}/run_testnet_bitcoin.sh"
 
 usage() {
   cat <<EOF
@@ -17,14 +18,15 @@ Actions:
   init-env       Create the private per-node node.env from the example.
   validate       Validate only the checked-in immutable network bundle.
   validate-node  Validate the bundle and this machine's node.env.
-  up             Require images, BTC credentials and signed snapshot; start detached.
+  up             Require a ready Bitcoin project and signed snapshot; start detached.
   down           Stop containers without deleting named volumes.
   ps             Show service state.
   logs           Follow service logs.
   pull           Pull the explicitly configured release images.
 
 The helper composes docker/compose.runtime.yml with the testnet-v0 network
-overlay. It never builds images and never deletes node data.
+overlay. Bitcoin Core has an independent lifecycle managed by
+run_testnet_bitcoin.sh. This helper never builds images or deletes node data.
 EOF
 }
 
@@ -87,7 +89,10 @@ case "${action}" in
       echo "docker is required" >&2
       exit 1
     }
-    validate_bundle --node-env "${node_env}" --require-runtime
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" \
+      USDB_TESTNET_NODE_ENV="${node_env}" \
+      "${bitcoin_runner}" wait
     compose config --quiet
     compose up -d "$@"
     ;;

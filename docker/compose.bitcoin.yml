@@ -1,0 +1,56 @@
+x-bitcoin-logging: &bitcoin-logging
+  driver: json-file
+  options:
+    max-size: ${USDB_LOG_MAX_SIZE:-100m}
+    max-file: ${USDB_LOG_MAX_FILES:-5}
+
+services:
+  btc-node:
+    image: ${USDB_BITCOIN_IMAGE:?USDB_BITCOIN_IMAGE must reference a digest-pinned release image}
+    restart: unless-stopped
+    user: ${BTC_CONTAINER_UID:-1000}:${BTC_CONTAINER_GID:-1000}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *bitcoin-logging
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      BTC_NETWORK: ${BTC_NETWORK:?BTC_NETWORK is required}
+      BTC_NODE_DATA_DIR: /data/bitcoin
+      BTC_RPCAUTH_FILE: /run/secrets/bitcoin-rpcauth
+      BTC_RPC_URL: http://127.0.0.1:8332
+      BTC_RPC_USER: ${BTC_RPC_USER:?BTC_RPC_USER is required}
+      BTC_RPC_PASSWORD: ${BTC_RPC_PASSWORD:?BTC_RPC_PASSWORD is required}
+      BTC_MIN_READY_HEIGHT: ${BTC_MIN_READY_HEIGHT:?BTC_MIN_READY_HEIGHT is required}
+      BTC_MAX_TIP_AGE_SECS: ${BTC_MAX_TIP_AGE_SECS:?BTC_MAX_TIP_AGE_SECS is required}
+      BTC_MIN_CONNECTIONS: ${BTC_MIN_CONNECTIONS:?BTC_MIN_CONNECTIONS is required}
+      BTC_READY_EXPECTED_CHAIN: main
+      BTC_DBCACHE_MB: ${BTC_DBCACHE_MB:-3072}
+      BTC_DISABLE_WALLET: ${BTC_DISABLE_WALLET:-1}
+      BTC_EXTRA_ARGS: ${BTC_EXTRA_ARGS:-}
+    volumes:
+      - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin
+      - ${BTC_RPCAUTH_HOST_FILE:?BTC_RPCAUTH_HOST_FILE is required}:/run/secrets/bitcoin-rpcauth:ro
+    ports:
+      - "${BTC_P2P_BIND_ADDRESS:-0.0.0.0}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp"
+    mem_limit: ${BTC_MEMORY_LIMIT:-5g}
+    stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-10m}
+    healthcheck:
+      test: ["CMD", "python3", "/opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      usdb-runtime:
+        aliases:
+          - btc-node
+
+networks:
+  usdb-runtime:
+    external: true
+    name: ${USDB_DOCKER_NETWORK:?USDB_DOCKER_NETWORK is required}

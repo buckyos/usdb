@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hmac
 import json
 import shutil
 import tempfile
@@ -31,9 +32,14 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         values = {
             "USDB_SERVICES_IMAGE": "ghcr.io/buckyos/usdb-services@sha256:" + "a" * 64,
             "USDB_CHAIN_IMAGE": "ghcr.io/buckyos/usdb-chain@sha256:" + "b" * 64,
+            "USDB_BITCOIN_IMAGE": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "c" * 64,
+            "BTC_RPC_URL": "http://btc-node:8332",
             "BTC_AUTH_MODE": "userpass",
             "BTC_RPC_USER": "test-user",
             "BTC_RPC_PASSWORD": "test-password",
+            "BTC_P2P_BIND_PORT": "8333",
+            "BTC_NODE_DATA_HOST_DIR": str(self.root / "bitcoin"),
+            "BTC_RPCAUTH_HOST_FILE": str(self.root / "bitcoin-rpcauth"),
             "USDB_NODE_ROLE": "full",
             "USDB_P2P_BIND_PORT": "31303",
             "BH_SNAPSHOT_HOST_DIR": str(self.root / "snapshot"),
@@ -42,6 +48,13 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         path = self.root / "node.env"
         path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
         return path
+
+    def write_rpcauth(self, mode: int = 0o600) -> None:
+        salt = "00112233445566778899aabbccddeeff"
+        digest = hmac.new(salt.encode(), b"test-password", "sha256").hexdigest()
+        path = self.root / "bitcoin-rpcauth"
+        path.write_text(f"test-user:{salt}${digest}\n", encoding="utf-8")
+        path.chmod(mode)
 
     def test_checked_in_bundle_is_valid(self) -> None:
         network = VALIDATOR.validate_network_bundle(self.bundle)
@@ -79,6 +92,16 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
             VALIDATOR.validate_node_env(path, False)
 
+    def test_mutable_bitcoin_image_is_rejected(self) -> None:
+        path = self.write_node_env(USDB_BITCOIN_IMAGE="ghcr.io/buckyos/usdb-bitcoin-core:28.1")
+        with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_external_bitcoin_rpc_is_rejected(self) -> None:
+        path = self.write_node_env(BTC_RPC_URL="http://host.docker.internal:8332")
+        with self.assertRaisesRegex(ValueError, "private btc-node endpoint"):
+            VALIDATOR.validate_node_env(path, False)
+
     def test_miner_requires_address_and_pass(self) -> None:
         path = self.write_node_env(USDB_NODE_ROLE="miner")
         with self.assertRaisesRegex(ValueError, "USDB_MINER_ADDRESS"):
@@ -95,6 +118,33 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         ):
             (snapshot_dir / name).touch()
         VALIDATOR.validate_node_env(path, True)
+
+    def test_bitcoin_runtime_requires_private_full_node_paths(self) -> None:
+        path = self.write_node_env()
+        bitcoin_dir = self.root / "bitcoin"
+        bitcoin_dir.mkdir()
+        self.write_rpcauth()
+        VALIDATOR.validate_node_env(path, False, True)
+
+    def test_bitcoin_runtime_rejects_public_auth_file(self) -> None:
+        path = self.write_node_env()
+        (self.root / "bitcoin").mkdir()
+        self.write_rpcauth(0o644)
+        with self.assertRaisesRegex(ValueError, "group/world accessible"):
+            VALIDATOR.validate_node_env(path, False, True)
+
+    def test_bitcoin_runtime_rejects_password_mismatch(self) -> None:
+        path = self.write_node_env(BTC_RPC_PASSWORD="wrong-password")
+        (self.root / "bitcoin").mkdir()
+        self.write_rpcauth()
+        with self.assertRaisesRegex(ValueError, "does not match RPC password"):
+            VALIDATOR.validate_node_env(path, False, True)
+
+    def test_bitcoin_runtime_rejects_relative_data_path(self) -> None:
+        path = self.write_node_env(BTC_NODE_DATA_HOST_DIR="relative/bitcoin")
+        self.write_rpcauth()
+        with self.assertRaisesRegex(ValueError, "must be an absolute path"):
+            VALIDATOR.validate_node_env(path, False, True)
 
 
 if __name__ == "__main__":

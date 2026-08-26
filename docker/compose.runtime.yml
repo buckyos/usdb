@@ -9,8 +9,6 @@ x-usdb-service-defaults: &usdb-service-defaults
   restart: unless-stopped
   security_opt:
     - no-new-privileges:true
-  extra_hosts:
-    - host.docker.internal:host-gateway
   logging: *runtime-logging
   ulimits:
     nofile:
@@ -245,4 +243,5 @@ volumes:
 
 networks:
   usdb-runtime:
+    external: true
     name: ${USDB_DOCKER_NETWORK:?USDB_DOCKER_NETWORK is required}

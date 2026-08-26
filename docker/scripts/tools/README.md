@@ -33,6 +33,7 @@ This table is the fastest way to decide which tool to start from.
 | [run_local_bootstrap.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_bootstrap.sh) | ETHW cold-start + SourceDAO bootstrap validation | `docker/local/bootstrap/env/bootstrap.env` | `base + dev-sim + bootstrap` | detached by default | bootstrap artifacts are preserved locally; Docker volumes persist until `reset` |
 | [run_local_full_sim.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_full_sim.sh) | Complete local development simulation stack | `docker/local/dev-full-sim/env/dev-full-sim.env` | `base + dev-sim + ord + bootstrap + world-sim` | foreground | controlled by `WORLD_SIM_STATE_MODE`; `reset` also clears volumes |
 | [run_testnet_runtime.sh](/home/bucky/work/usdb/docker/scripts/tools/run_testnet_runtime.sh) | Run one testnet-v0 node from versioned images and bundle inputs | uncommitted `docker/networks/testnet-v0/node.env` | `runtime + testnet-v0 network` | detached | persistent named volumes; no destructive reset action |
+| [run_testnet_bitcoin.sh](/home/bucky/work/usdb/docker/scripts/tools/run_testnet_bitcoin.sh) | Run the independent testnet-v0 Bitcoin mainnet full node | uncommitted `docker/networks/testnet-v0/node.env` | `compose.bitcoin.yml` | detached plus strict sync wait | bind-mounted BTC data survives all USDB runtime resets |
 
 `run_testnet_runtime.sh` is the first deployment profile and is intentionally
 separate from all local `compose.base.yml` tools. SourceDAO Web is intentionally not part of this runtime profile matrix yet. It
@@ -53,7 +54,8 @@ service I need”.
 | `run_local_world_sim_ethw.sh` | yes | yes | yes | yes | yes | yes | yes | yes | no |
 | `run_local_bootstrap.sh` | yes | yes | yes | yes | yes | no | yes | no | yes |
 | `run_local_full_sim.sh` | yes | yes | yes | yes | yes | yes | yes | yes | yes |
-| `run_testnet_runtime.sh` | external host service | yes | yes | yes | yes | no | `usdb-chain` | no | separate controlled step |
+| `run_testnet_bitcoin.sh` | yes | no | no | no | no | no | no | no | no |
+| `run_testnet_runtime.sh` | independent shared-network service | yes | yes | yes | yes | no | `usdb-chain` | no | separate controlled step |
 
 ## BTC / ETHW Runtime Matrix
 
@@ -67,7 +69,8 @@ This table compares the runtime semantics instead of only listing services.
 | `run_local_world_sim_ethw.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | local dev `geth` node, protocol-aligned with world-sim | none | deterministic BTC ord wallets; optional ETHW deterministic alignment |
 | `run_local_bootstrap.sh` | `regtest` | `cookie` | none | bootstrap-oriented local USDB chain from generated genesis | dev-workspace bootstrap by default | bootstrap artifacts and USDB-chain init inputs, not world-sim identities |
 | `run_local_full_sim.sh` | `regtest` | `userpass` | long-running `ord-server` plus world-sim wallet actions | bootstrap-oriented local USDB chain plus deterministic miner identity | full dev-workspace bootstrap | deterministic BTC ord wallets and USDB-chain identity alignment |
-| `run_testnet_runtime.sh` | Bitcoin mainnet | dedicated host RPC account | no separate ord service; indexer uses bitcoind inscription source | testnet-v0 full/bootnode/miner role from frozen genesis | config is frozen in bundle; execution is a separate secret-bearing step | chain/network ID and genesis are bundle-owned; node identity is machine-local |
+| `run_testnet_bitcoin.sh` | Bitcoin mainnet | dedicated rpcauth, private Docker RPC | no ord | not started | none | digest-pinned Bitcoin 28.1 and persistent host data directory |
+| `run_testnet_runtime.sh` | Bitcoin mainnet | dedicated rpcauth through `btc-node:8332` | no separate ord service; indexer uses bitcoind inscription source | testnet-v0 full/bootnode/miner role from frozen genesis | config is frozen in bundle; execution is a separate secret-bearing step | chain/network ID and genesis are bundle-owned; node identity is machine-local |
 
 Current status:
 
@@ -117,8 +120,8 @@ above.
 | [build_world_sim_images.sh](/home/bucky/work/usdb/docker/scripts/tools/build_world_sim_images.sh) | image packaging | builds `WORLD_SIM_BITCOIN_IMAGE` and `WORLD_SIM_TOOLS_IMAGE` | first-time world-sim image setup or when host `bitcoind` / `ord` changes | supports `WORLD_SIM_RELEASE_ORD_SOURCE=local` and `git-tag` |
 | [run_local_sourcedao_web.sh](/home/bucky/work/usdb/docker/scripts/tools/run_local_sourcedao_web.sh) | frontend launcher | exports SourceDAO web env from control-plane overview and runs `buckydaowww/src` | opening the SourceDAO Web app card from the console against local full-sim | does not start SourceDAOBackend; override `SOURCEDAO_BACKEND_URL` if needed |
 | [smoke_bootstrap_stack.sh](/home/bucky/work/usdb/docker/scripts/tools/smoke_bootstrap_stack.sh) | smoke validation | creates a temporary bootstrap project and local manifests | validating cold-start wiring, manifests, and bootstrap one-shots | can keep the stack running with `KEEP_RUNNING=1` |
-| [validate_network_bundle.py](/home/bucky/work/usdb/docker/scripts/tools/validate_network_bundle.py) | release input validation | read-only strict JSON/env and hash validation | before pull/up on every testnet node | optional `--require-runtime` also requires signed snapshot files |
-| [release_manifest.py](/home/bucky/work/usdb/docker/scripts/tools/release_manifest.py) | release candidate identity | creates or validates the digest-pinned three-repository manifest | after both GHCR candidates and all component CI checks pass | v1 emits candidate manifests with snapshot explicitly pending |
+| [validate_network_bundle.py](/home/bucky/work/usdb/docker/scripts/tools/validate_network_bundle.py) | release input validation | read-only strict JSON/env and hash validation | before pull/up on every testnet node | runtime flags require signed snapshot and private Bitcoin data/rpcauth paths |
+| [release_manifest.py](/home/bucky/work/usdb/docker/scripts/tools/release_manifest.py) | release candidate identity | creates or validates the digest-pinned three-repository manifest | after all three GHCR candidates and component CI checks pass | v2 emits candidate manifests with snapshot explicitly pending |
 
 ## Recommended Documentation Contract For Future Tools
 

@@ -36,8 +36,10 @@ accepted-bootstrap 身份的修改都必须发布新的 bundle，并使用新的
 | BTC stable lag | `5` blocks | BTC state view identity | activation registry artifact |
 | BTC anchor max age | `6650` USDB blocks | consensus | chain bootstrap config |
 
-Bitcoin Core 的 RPC URL、cookie/userpass 凭据和允许访问的 Docker/host 地址是节点本地配置，不进入
-genesis。RPC 不能暴露到公网；每台机器应使用独立的最低权限 RPC 账户。
+Bitcoin Core 的 image digest、数据目录、RPC userpass 和 P2P bind 是节点本地配置，不进入 genesis。
+release profile 固定使用独立 Compose project 和 `http://btc-node:8332` 私有 endpoint；RPC 不映射
+宿主机端口，每台机器使用独立 rpcauth。操作流程见
+[Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)。
 
 ## Genesis 与共识参数
 
@@ -108,7 +110,7 @@ SourceDAO bootstrap 的完整权威输入是
 | --- | --- | --- |
 | PoW 校准 | 目标硬件报告、最终 genesis/minimum difficulty | 若改 genesis 则是 |
 | 三仓 revision | `go-ethereum`、`usdb`、`SourceDAO` commit | 未启动前重新生成 bundle |
-| 发布镜像 | 两个 OCI digest、构建日志/SBOM | 仅共识兼容替换可不重置 |
+| 发布镜像 | services/chain/Bitcoin Core 三个 OCI digest、构建日志/SBOM | 仅共识兼容替换可不重置 |
 | Snapshot | height/hash、snapshot ID、文件 SHA、manifest/signature、signer key ID | snapshot 本身否；origin 改变则是 |
 | BTC origin anchor | BTC block `963800` 的 canonical block hash | origin/hash 身份变化则是 |
 | Bootnodes | enode、外部 IP、端口和节点所有者 | 否 |
@@ -134,7 +136,7 @@ SourceDAO bootstrap 的完整权威输入是
 | `artifacts/sourcedao-bootstrap-config.json` | accepted SourceDAO 初始化参数 |
 | `artifacts/bootstrap-manifest.json` | control-plane 启动门禁输入 |
 | `trust/*.trusted-keys.json` | snapshot public trust catalog；不含 private key |
-| 未提交的 `node.env` | 节点角色、RPC 凭据、bootnodes、miner、资源限制 |
+| 未提交的 `node.env` | 三个 image digest、Bitcoin 数据/RPC、节点角色、bootnodes、miner、资源限制 |
 
 `validate_network_bundle.py` 对重复字段执行 fail-closed 解析，并交叉校验 chain ID、BTC source、origin、
 registry、genesis、SourceDAO 地址和 artifact hashes。脚本中的 `EXPECTED_*` 是 testnet-v0 的 validator
