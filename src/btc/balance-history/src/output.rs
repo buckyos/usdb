@@ -25,14 +25,20 @@ impl IndexOutput {
         &self.status
     }
 
-    fn create_bar(&self) -> ProgressBar {
+    fn create_bar(&self, prefix: &str, estimated_total: bool) -> ProgressBar {
         let bar = self.mp.add(ProgressBar::new(0));
-        bar.set_style(
+        let style = if estimated_total {
             ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {per_sec} {percent}% ({eta_precise} remaining) {msg}")
-            .expect("Invalid progress bar template")
-            .progress_chars("#>-"),
-        );
+                .template("{prefix:.bold} {spinner:.green} [{elapsed_precise}] {pos} processed (~{len} estimated) {per_sec} {msg}")
+                .expect("Invalid estimated progress template")
+        } else {
+            ProgressStyle::default_bar()
+                .template("{prefix:.bold} {spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {per_sec} {percent}% ({eta_precise} remaining) {msg}")
+                .expect("Invalid progress bar template")
+                .progress_chars("#>-")
+        };
+        bar.set_style(style);
+        bar.set_prefix(prefix.to_string());
         bar
     }
 
@@ -54,18 +60,29 @@ impl IndexOutput {
 
     // Load methods
     pub fn start_load(&self, total: u64) {
-        let bar = self.create_bar();
+        self.start_load_bar("Load", total, false);
+    }
+
+    /// Starts a distinct load task whose total is an approximate source count.
+    pub fn start_estimated_load_stage(&self, label: &str, estimated_total: u64) {
+        self.start_load_bar(label, estimated_total, true);
+    }
+
+    fn start_load_bar(&self, label: &str, total: u64, estimated_total: bool) {
+        let mut load_bar = self.load_bar.lock().unwrap();
+        assert!(load_bar.is_none(), "Load bar already started");
+
+        let bar = self.create_bar(label, estimated_total);
         bar.set_length(total);
-        self.mp.add(bar.clone());
-        {
-            let mut load_bar = self.load_bar.lock().unwrap();
-            assert!(load_bar.is_none(), "Load bar already started");
-            *load_bar = Some(bar);
-        }
+        bar.set_position(0);
+        bar.reset_elapsed();
+        bar.reset_eta();
+        *load_bar = Some(bar);
+        drop(load_bar);
 
         self.status
-            .update_phase(SyncPhase::Loading, Some("Starting block load".to_string()));
-        self.status.update_total(total, None);
+            .update_phase(SyncPhase::Loading, Some(label.to_string()));
+        self.status.update_status(0, total, Some(label.to_string()));
     }
 
     pub fn update_load_total_count(&self, total: u64) {
@@ -93,21 +110,24 @@ impl IndexOutput {
     }
 
     pub fn finish_load(&self) {
+        self.finish_load_stage("Loading complete");
+    }
+
+    /// Finishes the active load task while retaining its completed line in the terminal.
+    pub fn finish_load_stage(&self, message: &str) {
         let mut load_bar = self.load_bar.lock().unwrap();
         if let Some(bar) = load_bar.take() {
-            bar.finish_with_message("Loading complete");
+            bar.finish_with_message(message.to_string());
         }
-        self.status
-            .update_message(Some("Loading complete".to_string()));
+        self.status.update_message(Some(message.to_string()));
     }
 
     // Index methods
     pub fn start_index(&self, total: u64, current: u64) {
-        let bar: ProgressBar = self.create_bar();
+        let bar: ProgressBar = self.create_bar("Index", false);
         bar.set_length(total);
         bar.set_position(current);
         bar.reset_eta();
-        self.mp.add(bar.clone());
 
         {
             let mut index_bar = self.index_bar.lock().unwrap();
@@ -165,3 +185,34 @@ impl IndexOutput {
 }
 
 pub type IndexOutputRef = std::sync::Arc<IndexOutput>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::status::SyncStatusManager;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_starting_new_load_stage_resets_progress_status() {
+        let status = Arc::new(SyncStatusManager::new());
+        let output = IndexOutput::new(status.clone());
+
+        output.start_estimated_load_stage("First phase", 100);
+        output.update_load_current_count(125);
+        output.finish_load_stage("First phase complete");
+
+        output.start_estimated_load_stage("Second phase", 500);
+        let current = status.get_status();
+        assert_eq!(current.phase, SyncPhase::Loading);
+        assert_eq!(current.current, 0);
+        assert_eq!(current.total, 500);
+        assert_eq!(current.message.as_deref(), Some("Second phase"));
+
+        output.update_load_current_count(10);
+        output.finish_load_stage("Second phase complete");
+        let completed = status.get_status();
+        assert_eq!(completed.current, 10);
+        assert_eq!(completed.total, 500);
+        assert_eq!(completed.message.as_deref(), Some("Second phase complete"));
+    }
+}

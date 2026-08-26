@@ -101,8 +101,6 @@ impl SnapshotIndexer {
             return Err(msg);
         }
 
-        self.output.start_load(0);
-
         self.output.println(&format!(
             "Creating snapshot database at {} for height {}, with_utxo={}",
             db_path.display(),
@@ -136,11 +134,12 @@ impl SnapshotIndexer {
         // First generate balance history snapshot
         {
             let total = self.db.get_history_balance_count()?;
-            self.output.update_load_total_count(total);
             self.output.println(&format!(
-                "Will generate balance history snapshot with {} entries at block height {}",
+                "Will generate balance history snapshot with approximately {} source entries at block height {}",
                 total, target_block_height
             ));
+            self.output
+                .start_estimated_load_stage("Snapshot balance history", total);
 
             let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
 
@@ -156,16 +155,21 @@ impl SnapshotIndexer {
                 target_block_height, total_count
             );
             self.output.println(&msg);
+            self.output.finish_load_stage(&format!(
+                "Balance history snapshot complete: {} rows written",
+                total_count
+            ));
         }
 
         // Then generate UTXO snapshot if needed
         if with_utxo {
             let total = self.db.get_utxo_count()?;
-            self.output.update_load_total_count(total);
             self.output.println(&format!(
-                "Will generate UTXO snapshot with {} entries at block height {}",
+                "Will generate UTXO snapshot with approximately {} entries at block height {}",
                 total, target_block_height
             ));
+            self.output
+                .start_estimated_load_stage("Snapshot UTXOs", total);
 
             let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
             let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
@@ -180,6 +184,10 @@ impl SnapshotIndexer {
             );
 
             self.output.println(&msg);
+            self.output.finish_load_stage(&format!(
+                "UTXO snapshot complete: {} rows written",
+                total_count
+            ));
         }
 
         {
@@ -187,11 +195,12 @@ impl SnapshotIndexer {
                 .db
                 .get_block_commit_count()?
                 .min(u64::from(target_block_height) + 1);
-            self.output.update_load_total_count(estimated_total);
             self.output.println(&format!(
-                "Will generate block commit snapshot up to block height {}",
-                target_block_height
+                "Will generate block commit snapshot up to block height {} with approximately {} entries",
+                target_block_height, estimated_total
             ));
+            self.output
+                .start_estimated_load_stage("Snapshot block commits", estimated_total);
 
             let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
             let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
@@ -206,6 +215,10 @@ impl SnapshotIndexer {
                 target_block_height, total_count
             );
             self.output.println(&msg);
+            self.output.finish_load_stage(&format!(
+                "Block commit snapshot complete: {} rows written",
+                total_count
+            ));
         }
 
         // Script registry is an auxiliary seen-script cache without per-height state. It is
@@ -213,11 +226,12 @@ impl SnapshotIndexer {
         // original scriptPubKey for address display, without changing consensus state_ref.
         {
             let total = self.db.get_script_registry_count()?;
-            self.output.update_load_total_count(total);
             self.output.println(&format!(
-                "Will generate script registry snapshot with {} entries",
+                "Will generate script registry snapshot with approximately {} entries",
                 total
             ));
+            self.output
+                .start_estimated_load_stage("Snapshot script registry", total);
 
             let generator = SnapshotGenerator::new(snapshot_db.clone(), self.output.clone());
             let cb = Arc::new(Box::new(generator.clone()) as Box<dyn SnapshotCallback>);
@@ -231,6 +245,10 @@ impl SnapshotIndexer {
                 total_count
             );
             self.output.println(&msg);
+            self.output.finish_load_stage(&format!(
+                "Script registry snapshot complete: {} rows written",
+                total_count
+            ));
         }
 
         // Finally, update snapshot meta with counts
