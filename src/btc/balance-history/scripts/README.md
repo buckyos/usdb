@@ -260,13 +260,16 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 [balance-history-exact-height-snapshot-capacity.md](/home/bucky/work/usdb/doc/balance-history/balance-history-exact-height-snapshot-capacity.md)。
 
 在正式硬件上制作并签名分发主网 checkpoint 时，使用
-`mainnet_exact_height_snapshot.sh` 封装的 `init/preflight/create/status/verify/finalize` 流程，并按
+`mainnet_exact_height_snapshot.sh` 封装的
+`init/preflight/create/resume-verify/status/verify/finalize` 流程，并按
 [balance-history-mainnet-exact-height-snapshot-operations.md](/home/bucky/work/usdb/doc/balance-history/balance-history-mainnet-exact-height-snapshot-operations.md)
 完成目录规划、artifact 复核和接收方安装。脚本默认使用独立的
 `~/.usdb/balance-history-snapshot-mainnet`，不会复用在线 `~/.usdb/balance-history`。
 脚本通过 snapshot tool 的 cgroup-aware `memory-plan` 固化显式 cache limit；默认两类 cache
 合计使用有效内存的 `66%`，并在整机/cgroup 使用率达到 `80%` 时开始缩减。OOM 或人工停止后
 可刷新这三个运行时内存字段并从 durable height 恢复，不需要删除 builder workspace。
+当 job 已进入 `verifying` 时使用 `resume-verify`，复用现有 SQLite artifact，并在不打开
+RocksDB/indexer 的独立进程中继续校验和发布。
 
 ## 排障
 

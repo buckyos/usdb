@@ -138,10 +138,9 @@ main() {
   regtest_assert_json_file "$publish_status" "data['state']['active_job_height']" "$next_height"
 
   publish_report="$WORK_DIR/publish-resume.json"
-  regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
+  regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" resume-verify \
     --height "$next_height" \
-    --expected-block-hash "$next_hash" \
-    --poll-interval-secs 1 >"$publish_report"
+    --expected-block-hash "$next_hash" >"$publish_report"
   regtest_assert_json_file "$publish_report" "data['height']" "$next_height"
   regtest_assert_json_file "$publish_report" "data['already_complete']" "False"
   temp_count="$(find "$SNAPSHOT_BUILDER_ROOT/tmp" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"

@@ -137,6 +137,73 @@ impl SnapshotDB {
         })
     }
 
+    /// Opens an immutable snapshot for a full verification pass with an explicit page cache.
+    ///
+    /// Verification scans the complete database and its indexes. Keeping this operational
+    /// setting separate from the normal read-only path avoids silently changing service query
+    /// memory while preventing SQLite's small default cache from dominating offline verification.
+    pub fn open_read_only_for_verification(
+        path: &Path,
+        cache_size_kib: u32,
+    ) -> Result<Self, String> {
+        if cache_size_kib == 0 {
+            return Err("Snapshot verification cache size must be greater than zero".to_string());
+        }
+        let canonical_path = path.canonicalize().map_err(|e| {
+            format!(
+                "Failed to canonicalize snapshot verification path {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut uri = url::Url::from_file_path(&canonical_path).map_err(|_| {
+            format!(
+                "Failed to encode snapshot verification path as file URI: {}",
+                canonical_path.display()
+            )
+        })?;
+        uri.query_pairs_mut().append_pair("immutable", "1");
+        let conn = Connection::open_with_flags(
+            uri.as_str(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to open immutable snapshot {} for verification: {}",
+                canonical_path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let snapshot = Self {
+            path: canonical_path,
+            conn,
+        };
+        let cache_size_kib = i64::from(cache_size_kib);
+        snapshot
+            .conn
+            .pragma_update(None, "query_only", true)
+            .and_then(|_| {
+                snapshot
+                    .conn
+                    .pragma_update(None, "cache_size", -cache_size_kib)
+            })
+            .and_then(|_| snapshot.conn.pragma_update(None, "temp_store", "MEMORY"))
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to configure snapshot verification connection {}: {}",
+                    path.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        Ok(snapshot)
+    }
+
     /// Runs SQLite's full integrity check and rejects any non-`ok` result.
     pub fn verify_integrity(&self) -> Result<(), String> {
         let result: String = self

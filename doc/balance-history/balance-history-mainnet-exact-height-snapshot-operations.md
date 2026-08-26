@@ -159,6 +159,7 @@ bash "$SNAPSHOT_SCRIPT" paths
 bash "$SNAPSHOT_SCRIPT" init
 bash "$SNAPSHOT_SCRIPT" preflight --height "$H"
 bash "$SNAPSHOT_SCRIPT" create --height "$H"
+bash "$SNAPSHOT_SCRIPT" resume-verify --height "$H" # 仅在 status 为 verifying 时执行
 bash "$SNAPSHOT_SCRIPT" status --height "$H"
 bash "$SNAPSHOT_SCRIPT" finalize --height "$H"
 ```
@@ -186,6 +187,7 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 - `init`：主网节点预检、构建 release binary、首次 keygen、冻结 builder config；
 - `preflight`：只读检查网络、IBD/prune、tip、目标 hash/确认数、路径和文件系统；
 - `create`：固定目标身份，创建或恢复 exact-height job；
+- `resume-verify`：复用已经生成的临时 SQLite，仅执行验证和发布，不打开 RocksDB/indexer；
 - `status/list`：查看持久化 builder/job 状态；
 - `verify`：重开 immutable artifact 并再次检查 canonical hash；
 - `finalize`：verify、独立 `trust_mode=signed` 安装、tar 和 checksum 发布。
@@ -404,8 +406,9 @@ CREATE_REPORT="$RELEASE_ROOT/create-${H}-${H_HASH}.json"
   >"$CREATE_REPORT"
 ```
 
-发生正常错误、主机重启或进程中止后，使用完全相同的 `H` 和 `H_HASH` 重跑。workspace 的
-RocksDB 同步进度会保留；未完成的 SQLite 导出会从头重建：
+发生正常错误、主机重启或进程中止后，先读取 job 状态。`prepare/syncing/sealed/building`
+继续使用完全相同的 `H` 和 `H_HASH` 重跑 `create`；workspace 的 RocksDB 同步进度会保留，
+未完成的 SQLite 导出会从头重建：
 
 ```bash
 "$SNAPSHOT_TOOL" \
@@ -418,6 +421,24 @@ RocksDB 同步进度会保留；未完成的 SQLite 导出会从头重建：
   >"$CREATE_REPORT"
 ```
 
+如果状态为 `verifying`，禁止再次执行 `create`。此时临时目录中的 DB、manifest 和签名已经
+生成，应显式恢复验证：
+
+```bash
+"$SNAPSHOT_TOOL" \
+  --root-dir "$BUILDER_ROOT" \
+  --json \
+  resume-verify \
+  --height "$H" \
+  --expected-block-hash "$H_HASH" \
+  >"$CREATE_REPORT"
+```
+
+`resume-verify` 不打开 mutable workspace，也不持有 RocksDB/indexer cache。首次 full verify
+中断时会从文件 hash 开始重新验证，但不会重新生成 SQLite；如果 `complete.json` 已经写入，
+则直接继续原子发布。`status` 中的 `verification.phase`、`phase_started_at` 和 `heartbeat_at`
+用于区分长时间磁盘扫描与无进展进程。
+
 单独查看状态：
 
 ```bash
@@ -425,7 +446,8 @@ RocksDB 同步进度会保留；未完成的 SQLite 导出会从头重建：
 "$SNAPSHOT_TOOL" --root-dir "$BUILDER_ROOT" --json list
 ```
 
-如果状态中仍有 `active_job_height`，必须先完成或人工处理该任务，不能直接开始 `H+1`。
+如果状态中仍有 `active_job_height`，必须先按其 stage 使用 `create` 或 `resume-verify` 完成，
+不能直接开始 `H+1`。
 
 ## 9. 完成后复核
 

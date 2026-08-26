@@ -97,10 +97,16 @@ main() {
     regtest_assert_json_file "$status_file" "data['state']['active_job_height']" "$target_height"
 
     regtest_log "Resuming target=${target_height} after checkpoint=${checkpoint}"
-    regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
-      --height "$target_height" \
-      --expected-block-hash "$target_hash" \
-      --poll-interval-secs 1 >"$resume_report"
+    if [[ "$expected_stage" == "verifying" ]]; then
+      regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" resume-verify \
+        --height "$target_height" \
+        --expected-block-hash "$target_hash" >"$resume_report"
+    else
+      regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
+        --height "$target_height" \
+        --expected-block-hash "$target_hash" \
+        --poll-interval-secs 1 >"$resume_report"
+    fi
     regtest_assert_json_file "$resume_report" "data['height']" "$target_height"
     regtest_assert_json_file "$resume_report" "data['btc_block_hash']" "$target_hash"
 

@@ -1,21 +1,26 @@
+use crate::verify::VerifiedSnapshot;
 use crate::{
     BuilderLock, BuilderPaths, CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage,
-    SnapshotBuilderState, SnapshotCompleteMarker, build_complete_marker, load_json,
-    save_json_atomic, unique_run_id, unix_timestamp, verify_published_artifact,
-    verify_snapshot_files,
+    SnapshotBuilderState, SnapshotCompleteMarker, SnapshotVerificationPhase,
+    SnapshotVerificationProgress, build_complete_marker, load_json, save_json_atomic,
+    unique_run_id, unix_timestamp, verify_published_artifact, verify_published_artifact_marker,
+    verify_snapshot_files_with_progress,
 };
 use balance_history::{
     BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotIndexer, SyncStatusManager,
-    build_historical_state_ref_at_height,
+    build_historical_state_ref_at_height, manifest_path_for_snapshot_file,
 };
-use log::info;
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::thread;
 use std::time::Duration;
 use usdb_util::{BTCRpcClient, get_memory_usage_snapshot};
+
+const VERIFICATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Inputs controlling one exact-height create or resume operation.
 #[derive(Clone, Debug)]
@@ -28,6 +33,20 @@ pub struct SnapshotCreateOptions {
     pub poll_interval: Duration,
     /// Balance-history config copied into an unused workspace on first use.
     pub config_file: Option<PathBuf>,
+}
+
+/// Inputs for resuming verification of an already-generated temporary artifact.
+#[derive(Clone, Debug)]
+pub struct SnapshotResumeVerifyOptions {
+    /// Exact BTC height of the persisted verifying job.
+    pub target_height: u32,
+    /// Optional operator-pinned canonical block hash for the target.
+    pub expected_block_hash: Option<String>,
+}
+
+enum VerificationMessage {
+    Phase(SnapshotVerificationPhase),
+    Finished(Box<Result<VerifiedSnapshot, String>>),
 }
 
 /// Machine-readable result of a successful create or idempotent replay.
@@ -242,6 +261,13 @@ impl ExactHeightSnapshotBuilder {
             ));
         }
 
+        if job.stage == SnapshotBuildStage::Verifying {
+            return Err(format!(
+                "Snapshot job {} already has a resumable verification artifact; run resume-verify --height {} instead of rebuilding it",
+                options.target_height, options.target_height
+            ));
+        }
+
         job.set_stage(SnapshotBuildStage::Syncing);
         save_json_atomic(&job_file, &job)?;
         state.active_job_height = Some(options.target_height);
@@ -341,10 +367,21 @@ impl ExactHeightSnapshotBuilder {
             SnapshotIndexer::new(config.clone(), indexer.db().clone(), output.clone());
         let creation = snapshot_indexer.run_to_path(options.target_height, true, &snapshot_path)?;
 
+        info!(
+            "Explicitly releasing snapshot export and RocksDB/indexer resources before verification"
+        );
+        drop(snapshot_indexer);
+        drop(indexer);
+        drop(output);
+        drop(config);
+        info!("Snapshot export and RocksDB/indexer resources released");
+
         job.set_stage(SnapshotBuildStage::Verifying);
         save_json_atomic(&job_file, &job)?;
         crate::abort_after_checkpoint("verifying");
-        let verified = verify_snapshot_files(
+        let verified = self.verify_snapshot_files_with_job_progress(
+            &mut job,
+            &job_file,
             &creation.db_path,
             &creation.manifest_path,
             &network,
@@ -402,12 +439,19 @@ impl ExactHeightSnapshotBuilder {
             })?;
         crate::abort_after_checkpoint("published");
 
-        let marker = verify_published_artifact(
+        let published_marker = verify_published_artifact_marker(
             &final_dir,
             &network,
             options.target_height,
             Some(&canonical_hash),
         )?;
+        if published_marker != marker {
+            return Err(format!(
+                "Published snapshot marker changed during atomic publication at {}",
+                final_dir.display()
+            ));
+        }
+        self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
         self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
 
         Ok(SnapshotCreateReport::from_marker(
@@ -415,6 +459,244 @@ impl ExactHeightSnapshotBuilder {
             &final_dir,
             &marker,
             resumed,
+            false,
+        ))
+    }
+
+    /// Resumes full verification and publication without opening the mutable RocksDB workspace.
+    pub fn resume_verify(
+        &self,
+        options: SnapshotResumeVerifyOptions,
+    ) -> Result<SnapshotCreateReport, String> {
+        if options.target_height == 0 {
+            return Err(
+                "Snapshot height 0 is unsupported because balance-history block commitments start at height 1"
+                    .to_string(),
+            );
+        }
+        self.paths.create_dirs()?;
+        let _lock = BuilderLock::acquire(&self.paths.root)?;
+
+        let config = BalanceHistoryConfig::load(&self.paths.workspace)?;
+        let network = config.btc.network().to_string();
+        let expected_block_hash = normalize_optional_hash(options.expected_block_hash)?;
+        let mut state: SnapshotBuilderState =
+            load_json(&self.paths.state_file)?.ok_or_else(|| {
+                format!(
+                    "Snapshot builder state does not exist at {}",
+                    self.paths.state_file.display()
+                )
+            })?;
+        self.validate_state(&state, &network)?;
+
+        let job_file = self.paths.job_file(options.target_height);
+        let mut job: SnapshotBuildJob = load_json(&job_file)?.ok_or_else(|| {
+            format!(
+                "Snapshot job {} does not exist at {}",
+                options.target_height,
+                job_file.display()
+            )
+        })?;
+        self.validate_job(&job, options.target_height, expected_block_hash.as_deref())?;
+
+        if job.stage == SnapshotBuildStage::Complete {
+            let artifact_dir = job.artifact_dir.as_deref().ok_or_else(|| {
+                format!(
+                    "Completed snapshot job {} is missing artifact_dir",
+                    options.target_height
+                )
+            })?;
+            let artifact_dir = self.resolve_managed_path(artifact_dir)?;
+            let marker = verify_published_artifact_marker(
+                &artifact_dir,
+                &network,
+                options.target_height,
+                expected_block_hash.as_deref(),
+            )?;
+            self.validate_marker_for_job(&job, &marker)?;
+            return Ok(SnapshotCreateReport::from_marker(
+                &self.paths.root,
+                &artifact_dir,
+                &marker,
+                true,
+                true,
+            ));
+        }
+        if job.stage != SnapshotBuildStage::Verifying {
+            return Err(format!(
+                "Snapshot job {} is in stage {:?}; resume-verify requires stage Verifying",
+                options.target_height, job.stage
+            ));
+        }
+        if state.active_job_height != Some(options.target_height) {
+            return Err(format!(
+                "Snapshot builder active job mismatch: expected {}, got {:?}",
+                options.target_height, state.active_job_height
+            ));
+        }
+
+        let canonical_hash = job.btc_block_hash.clone().ok_or_else(|| {
+            format!(
+                "Verifying snapshot job {} is missing its sealed BTC block hash",
+                options.target_height
+            )
+        })?;
+        if let Some(expected) = expected_block_hash.as_deref()
+            && !canonical_hash.eq_ignore_ascii_case(expected)
+        {
+            return Err(format!(
+                "Snapshot job {} sealed BTC block hash {} does not match requested {}",
+                options.target_height, canonical_hash, expected
+            ));
+        }
+        let rpc_client = BTCRpcClient::new(config.btc.rpc_url(), config.btc.auth())?;
+        let current_hash = format!("{:x}", rpc_client.get_block_hash(options.target_height)?);
+        if !current_hash.eq_ignore_ascii_case(&canonical_hash) {
+            return Err(format!(
+                "Canonical BTC block hash changed before resumed verification at height {}: sealed={}, current={}",
+                options.target_height, canonical_hash, current_hash
+            ));
+        }
+
+        let final_dir = self
+            .paths
+            .snapshot_artifact_dir(options.target_height, &canonical_hash);
+        if final_dir.exists() {
+            let marker = verify_published_artifact_marker(
+                &final_dir,
+                &network,
+                options.target_height,
+                Some(&canonical_hash),
+            )?;
+            self.validate_marker_for_job(&job, &marker)?;
+            self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
+            self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
+            return Ok(SnapshotCreateReport::from_marker(
+                &self.paths.root,
+                &final_dir,
+                &marker,
+                true,
+                false,
+            ));
+        }
+
+        let temp_dir = job.temp_dir.as_deref().ok_or_else(|| {
+            format!(
+                "Verifying snapshot job {} is missing temp_dir",
+                options.target_height
+            )
+        })?;
+        let temp_dir = self.resolve_managed_path(temp_dir)?;
+        if !temp_dir.starts_with(&self.paths.temp) || !temp_dir.is_dir() {
+            return Err(format!(
+                "Verifying snapshot job {} references unavailable temporary directory {}",
+                options.target_height,
+                temp_dir.display()
+            ));
+        }
+
+        let marker_path = temp_dir.join("complete.json");
+        let marker = if marker_path.is_file() {
+            let marker = verify_published_artifact_marker(
+                &temp_dir,
+                &network,
+                options.target_height,
+                Some(&canonical_hash),
+            )?;
+            self.validate_marker_for_job(&job, &marker)?;
+            self.remove_stale_sqlite_sidecars(&temp_dir, &marker)?;
+            marker
+        } else {
+            let db_path = temp_dir.join(format!("snapshot_{}.db", options.target_height));
+            let manifest_path = manifest_path_for_snapshot_file(&db_path);
+            let verified = self.verify_snapshot_files_with_job_progress(
+                &mut job,
+                &job_file,
+                &db_path,
+                &manifest_path,
+                &network,
+                options.target_height,
+                Some(&canonical_hash),
+            )?;
+            let expected_snapshot_id = job.snapshot_id.as_deref().ok_or_else(|| {
+                format!(
+                    "Verifying snapshot job {} is missing its sealed snapshot ID",
+                    options.target_height
+                )
+            })?;
+            if verified.manifest.state_ref.snapshot_id != expected_snapshot_id {
+                return Err(format!(
+                    "Generated snapshot ID {} does not match sealed job snapshot ID {}",
+                    verified.manifest.state_ref.snapshot_id, expected_snapshot_id
+                ));
+            }
+            let marker = build_complete_marker(&verified, &network)?;
+            save_json_atomic(&marker_path, &marker)?;
+            marker
+        };
+
+        let canonical_hash_after_verify =
+            format!("{:x}", rpc_client.get_block_hash(options.target_height)?);
+        if !canonical_hash_after_verify.eq_ignore_ascii_case(&canonical_hash) {
+            return Err(format!(
+                "BTC block hash changed while resuming snapshot verification at height {}: sealed={}, current={}",
+                options.target_height, canonical_hash, canonical_hash_after_verify
+            ));
+        }
+
+        let final_parent = final_dir.parent().ok_or_else(|| {
+            format!(
+                "Snapshot artifact path {} has no parent",
+                final_dir.display()
+            )
+        })?;
+        std::fs::create_dir_all(final_parent).map_err(|e| {
+            format!(
+                "Failed to create snapshot artifact parent {}: {}",
+                final_parent.display(),
+                e
+            )
+        })?;
+        crate::fail_at_checkpoint("before_publish")?;
+        std::fs::rename(&temp_dir, &final_dir).map_err(|e| {
+            format!(
+                "Failed to atomically publish snapshot directory {} as {}: {}",
+                temp_dir.display(),
+                final_dir.display(),
+                e
+            )
+        })?;
+        File::open(final_parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| {
+                format!(
+                    "Failed to sync published snapshot parent {}: {}",
+                    final_parent.display(),
+                    e
+                )
+            })?;
+        crate::abort_after_checkpoint("published");
+
+        let published_marker = verify_published_artifact_marker(
+            &final_dir,
+            &network,
+            options.target_height,
+            Some(&canonical_hash),
+        )?;
+        if published_marker != marker {
+            return Err(format!(
+                "Published snapshot marker changed during atomic publication at {}",
+                final_dir.display()
+            ));
+        }
+        self.remove_stale_sqlite_sidecars(&final_dir, &marker)?;
+        self.finalize_state_from_marker(&mut state, &mut job, &job_file, &final_dir, &marker)?;
+
+        Ok(SnapshotCreateReport::from_marker(
+            &self.paths.root,
+            &final_dir,
+            &marker,
+            true,
             false,
         ))
     }
@@ -475,6 +757,220 @@ impl ExactHeightSnapshotBuilder {
             self.find_single_artifact_dir(height)?
         };
         verify_published_artifact(&artifact_dir, &state.network, height, block_hash)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn verify_snapshot_files_with_job_progress(
+        &self,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        db_path: &Path,
+        manifest_path: &Path,
+        expected_network: &str,
+        expected_height: u32,
+        expected_block_hash: Option<&str>,
+    ) -> Result<VerifiedSnapshot, String> {
+        let db_path = db_path.to_path_buf();
+        let manifest_path = manifest_path.to_path_buf();
+        let expected_network = expected_network.to_string();
+        let expected_block_hash = expected_block_hash.map(str::to_string);
+        let (sender, receiver) = mpsc::channel();
+        let worker_sender = sender.clone();
+        let worker = thread::Builder::new()
+            .name(format!("snapshot-verify-{}", expected_height))
+            .spawn(move || {
+                let progress_sender = worker_sender.clone();
+                let result = verify_snapshot_files_with_progress(
+                    &db_path,
+                    &manifest_path,
+                    &expected_network,
+                    expected_height,
+                    expected_block_hash.as_deref(),
+                    move |phase| {
+                        progress_sender
+                            .send(VerificationMessage::Phase(phase))
+                            .map_err(|_| {
+                                "Snapshot verification progress receiver disconnected".to_string()
+                            })
+                    },
+                );
+                let _ = worker_sender.send(VerificationMessage::Finished(Box::new(result)));
+            })
+            .map_err(|e| format!("Failed to start snapshot verification worker: {}", e))?;
+        drop(sender);
+
+        let mut current_phase = None;
+        let mut persistence_error = None;
+        loop {
+            match receiver.recv_timeout(VERIFICATION_HEARTBEAT_INTERVAL) {
+                Ok(VerificationMessage::Phase(phase)) => {
+                    current_phase = Some(phase);
+                    if let Err(e) = self.persist_verification_progress(job, job_file, phase, true) {
+                        error!("{}", e);
+                        persistence_error.get_or_insert(e);
+                    }
+                }
+                Ok(VerificationMessage::Finished(result)) => {
+                    worker.join().map_err(|_| {
+                        "Snapshot verification worker panicked after reporting completion"
+                            .to_string()
+                    })?;
+                    if let Some(error) = persistence_error {
+                        return Err(error);
+                    }
+                    return *result;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(phase) = current_phase
+                        && let Err(e) =
+                            self.persist_verification_progress(job, job_file, phase, false)
+                    {
+                        error!("{}", e);
+                        persistence_error.get_or_insert(e);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    worker.join().map_err(|_| {
+                        "Snapshot verification worker panicked before reporting completion"
+                            .to_string()
+                    })?;
+                    return Err(
+                        "Snapshot verification worker exited without reporting completion"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+
+    fn persist_verification_progress(
+        &self,
+        job: &mut SnapshotBuildJob,
+        job_file: &Path,
+        phase: SnapshotVerificationPhase,
+        phase_changed: bool,
+    ) -> Result<(), String> {
+        let now = unix_timestamp();
+        let phase_started_at = if phase_changed {
+            now
+        } else {
+            job.verification
+                .as_ref()
+                .filter(|progress| progress.phase == phase)
+                .map(|progress| progress.phase_started_at)
+                .unwrap_or(now)
+        };
+        job.verification = Some(SnapshotVerificationProgress {
+            phase,
+            phase_started_at,
+            heartbeat_at: now,
+        });
+        job.updated_at = now;
+        save_json_atomic(job_file, job)?;
+        if phase_changed {
+            info!(
+                "Snapshot verification entered phase {:?} for height {}",
+                phase, job.target_height
+            );
+        } else {
+            info!(
+                "Snapshot verification heartbeat: height={}, phase={:?}, phase_elapsed_secs={}",
+                job.target_height,
+                phase,
+                now.saturating_sub(phase_started_at)
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_marker_for_job(
+        &self,
+        job: &SnapshotBuildJob,
+        marker: &SnapshotCompleteMarker,
+    ) -> Result<(), String> {
+        let expected_hash = job.btc_block_hash.as_deref().ok_or_else(|| {
+            format!(
+                "Snapshot job {} is missing its sealed BTC block hash",
+                job.target_height
+            )
+        })?;
+        let expected_snapshot_id = job.snapshot_id.as_deref().ok_or_else(|| {
+            format!(
+                "Snapshot job {} is missing its sealed snapshot ID",
+                job.target_height
+            )
+        })?;
+        if marker.height != job.target_height
+            || !marker.btc_block_hash.eq_ignore_ascii_case(expected_hash)
+            || marker.snapshot_id != expected_snapshot_id
+        {
+            return Err(format!(
+                "Snapshot completion marker does not match persisted job {}",
+                job.target_height
+            ));
+        }
+        Ok(())
+    }
+
+    fn remove_stale_sqlite_sidecars(
+        &self,
+        artifact_dir: &Path,
+        marker: &SnapshotCompleteMarker,
+    ) -> Result<(), String> {
+        let db_path = artifact_dir.join(&marker.snapshot_file);
+        let wal_path = PathBuf::from(format!("{}-wal", db_path.to_string_lossy()));
+        let shm_path = PathBuf::from(format!("{}-shm", db_path.to_string_lossy()));
+        if wal_path.exists() {
+            let wal_size = wal_path
+                .metadata()
+                .map_err(|e| {
+                    format!(
+                        "Failed to inspect snapshot WAL sidecar {}: {}",
+                        wal_path.display(),
+                        e
+                    )
+                })?
+                .len();
+            if wal_size != 0 {
+                return Err(format!(
+                    "Refusing to publish snapshot with non-empty WAL sidecar {} ({} bytes)",
+                    wal_path.display(),
+                    wal_size
+                ));
+            }
+            std::fs::remove_file(&wal_path).map_err(|e| {
+                format!(
+                    "Failed to remove empty snapshot WAL sidecar {}: {}",
+                    wal_path.display(),
+                    e
+                )
+            })?;
+        }
+        if shm_path.exists() {
+            std::fs::remove_file(&shm_path).map_err(|e| {
+                format!(
+                    "Failed to remove snapshot shared-memory sidecar {}: {}",
+                    shm_path.display(),
+                    e
+                )
+            })?;
+        }
+        if wal_path.exists() || shm_path.exists() {
+            return Err(format!(
+                "Snapshot SQLite sidecar cleanup did not complete in {}",
+                artifact_dir.display()
+            ));
+        }
+        File::open(artifact_dir)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| {
+                format!(
+                    "Failed to sync snapshot artifact directory {} after sidecar cleanup: {}",
+                    artifact_dir.display(),
+                    e
+                )
+            })?;
+        Ok(())
     }
 
     fn prepare_workspace_config(&self, source: Option<&Path>) -> Result<(), String> {
@@ -721,6 +1217,7 @@ impl ExactHeightSnapshotBuilder {
         job.snapshot_id = Some(marker.snapshot_id.clone());
         job.temp_dir = None;
         job.artifact_dir = Some(completed.artifact_dir.clone());
+        job.verification = None;
         job.completed_at = Some(marker.completed_at);
         job.updated_at = unix_timestamp();
         save_json_atomic(job_file, job)?;
@@ -990,5 +1487,82 @@ mod tests {
                 .unwrap_err()
                 .contains("Snapshot builder network mismatch")
         );
+    }
+
+    #[test]
+    fn verification_progress_is_persisted_without_rebuilding_job_state() {
+        let root = std::env::temp_dir().join(format!("snapshot-progress-{}", unique_run_id()));
+        let builder = ExactHeightSnapshotBuilder::new(root.clone());
+        builder.paths.create_dirs().unwrap();
+        let job_file = builder.paths.job_file(10);
+        let mut job = SnapshotBuildJob::new(10, None, None);
+        job.set_stage(SnapshotBuildStage::Verifying);
+
+        builder
+            .persist_verification_progress(
+                &mut job,
+                &job_file,
+                SnapshotVerificationPhase::IntegrityCheck,
+                true,
+            )
+            .unwrap();
+        let first = job.verification.clone().unwrap();
+        builder
+            .persist_verification_progress(
+                &mut job,
+                &job_file,
+                SnapshotVerificationPhase::IntegrityCheck,
+                false,
+            )
+            .unwrap();
+
+        let persisted: SnapshotBuildJob = load_json(&job_file).unwrap().unwrap();
+        let progress = persisted.verification.unwrap();
+        assert_eq!(progress.phase, SnapshotVerificationPhase::IntegrityCheck);
+        assert_eq!(progress.phase_started_at, first.phase_started_at);
+        assert!(progress.heartbeat_at >= first.heartbeat_at);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_sqlite_sidecars_are_removed_but_nonempty_wal_is_rejected() {
+        let root = std::env::temp_dir().join(format!("snapshot-sidecars-{}", unique_run_id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let builder = ExactHeightSnapshotBuilder::new(root.clone());
+        let marker = SnapshotCompleteMarker {
+            version: crate::COMPLETE_MARKER_VERSION,
+            height: 10,
+            network: "regtest".to_string(),
+            btc_block_hash: "11".repeat(32),
+            snapshot_id: "snapshot-10".to_string(),
+            snapshot_file: "snapshot_10.db".to_string(),
+            manifest_file: "snapshot_10.manifest.json".to_string(),
+            signature_file: None,
+            file_sha256: "22".repeat(32),
+            balance_history_count: 0,
+            utxo_count: 0,
+            block_commit_count: 1,
+            script_registry_count: 0,
+            completed_at: 1,
+        };
+        let wal_path = root.join("snapshot_10.db-wal");
+        let shm_path = root.join("snapshot_10.db-shm");
+        std::fs::write(&wal_path, []).unwrap();
+        std::fs::write(&shm_path, [1u8]).unwrap();
+
+        builder
+            .remove_stale_sqlite_sidecars(&root, &marker)
+            .unwrap();
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
+
+        std::fs::write(&wal_path, [1u8]).unwrap();
+        let error = builder
+            .remove_stale_sqlite_sidecars(&root, &marker)
+            .unwrap_err();
+        assert!(error.contains("non-empty WAL sidecar"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

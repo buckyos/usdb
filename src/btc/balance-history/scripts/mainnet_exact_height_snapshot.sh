@@ -49,6 +49,7 @@ Usage:
   mainnet_exact_height_snapshot.sh init
   mainnet_exact_height_snapshot.sh preflight --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh create --height H [--block-hash HASH]
+  mainnet_exact_height_snapshot.sh resume-verify --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh status [--height H]
   mainnet_exact_height_snapshot.sh list
   mainnet_exact_height_snapshot.sh verify --height H [--block-hash HASH]
@@ -59,6 +60,8 @@ Commands:
   init       Build release binaries, generate the signing key once, and freeze builder config.
   preflight  Check the mainnet node, target height/hash, confirmations, paths, and filesystem.
   create     Pin H/hash on first use, then create or resume the exact-height snapshot.
+  resume-verify
+             Resume verification/publication of an existing temporary artifact without RocksDB.
   status     Show the persisted builder/job state.
   list       List all persisted snapshot jobs.
   verify     Reopen the completed artifact and recheck the current canonical hash.
@@ -468,6 +471,22 @@ run_create() {
   log "Create report: ${report}"
 }
 
+run_resume_verify() {
+  local report
+  check_static_preflight
+  create_operational_dirs
+  ensure_initialized
+  resolve_target 0
+  report="${RELEASE_ROOT}/reports/resume-verify-${HEIGHT}-${REQUESTED_HASH}.json"
+  "$SNAPSHOT_TOOL" \
+    --root-dir "$BUILDER_ROOT" \
+    --json \
+    resume-verify \
+    --height "$HEIGHT" \
+    --expected-block-hash "$REQUESTED_HASH" | tee "$report"
+  log "Resume verify report: ${report}"
+}
+
 run_verify() {
   local report
   check_static_preflight
@@ -647,6 +666,10 @@ case "$COMMAND" in
   create)
     parse_target_args "$@"
     run_create
+    ;;
+  resume-verify)
+    parse_target_args "$@"
+    run_resume_verify
     ;;
   status)
     parse_target_args "$@"

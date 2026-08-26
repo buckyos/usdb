@@ -1,5 +1,7 @@
 use balance_history::{DEFAULT_CACHE_BUDGET_PERCENT, IndexConfig, derive_cache_limits};
-use balance_history_snapshot_tool::{ExactHeightSnapshotBuilder, SnapshotCreateOptions};
+use balance_history_snapshot_tool::{
+    ExactHeightSnapshotBuilder, SnapshotCreateOptions, SnapshotResumeVerifyOptions,
+};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -56,6 +58,16 @@ enum Command {
         poll_interval_secs: u64,
     },
 
+    /// Resume verification and publication of an already-generated temporary artifact.
+    ResumeVerify {
+        #[arg(long)]
+        height: u32,
+
+        /// Optional canonical BTC block hash that must match the sealed job.
+        #[arg(long)]
+        expected_block_hash: Option<String>,
+    },
+
     /// Show builder state and an optional per-height job.
     Status {
         #[arg(long)]
@@ -109,6 +121,15 @@ fn main() {
                 expected_block_hash,
                 poll_interval: Duration::from_secs(poll_interval_secs.max(1)),
                 config_file: config,
+            })
+            .and_then(|report| print_value(&report, cli.json)),
+        Command::ResumeVerify {
+            height,
+            expected_block_hash,
+        } => builder
+            .resume_verify(SnapshotResumeVerifyOptions {
+                target_height: height,
+                expected_block_hash,
             })
             .and_then(|report| print_value(&report, cli.json)),
         Command::Status { height } => builder

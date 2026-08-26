@@ -14,10 +14,15 @@ pub(crate) use state::{
 };
 pub use state::{
     CompletedSnapshotRef, SnapshotBuildJob, SnapshotBuildStage, SnapshotBuilderState,
-    SnapshotCompleteMarker,
+    SnapshotCompleteMarker, SnapshotVerificationPhase, SnapshotVerificationProgress,
 };
 pub(crate) use test_hook::{abort_after_checkpoint, fail_at_checkpoint};
-pub(crate) use verify::{build_complete_marker, verify_published_artifact, verify_snapshot_files};
+#[cfg(test)]
+pub(crate) use verify::verify_snapshot_files;
+pub(crate) use verify::{
+    build_complete_marker, verify_published_artifact, verify_published_artifact_marker,
+    verify_snapshot_files_with_progress,
+};
 
 #[cfg(test)]
 mod test;

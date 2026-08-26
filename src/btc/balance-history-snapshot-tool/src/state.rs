@@ -87,6 +87,37 @@ pub enum SnapshotBuildStage {
     Complete,
 }
 
+/// Durable sub-phase of full snapshot artifact verification.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotVerificationPhase {
+    /// Recalculate the snapshot database SHA-256 digest.
+    FileHash,
+    /// Run SQLite's full integrity check.
+    IntegrityCheck,
+    /// Count balance-history rows.
+    BalanceHistoryCount,
+    /// Count live UTXO rows.
+    UtxoCount,
+    /// Count block commitment rows.
+    BlockCommitCount,
+    /// Count script registry rows.
+    ScriptRegistryCount,
+    /// Verify the latest block commitment and signature-file layout.
+    CommitIdentity,
+}
+
+/// Persisted progress for an active full verification pass.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotVerificationProgress {
+    /// Current verification sub-phase.
+    pub phase: SnapshotVerificationPhase,
+    /// Time at which the current sub-phase started, as Unix seconds.
+    pub phase_started_at: u64,
+    /// Last heartbeat written while the phase was still running, as Unix seconds.
+    pub heartbeat_at: u64,
+}
+
 /// Identity and managed path of a completed immutable snapshot artifact.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompletedSnapshotRef {
@@ -148,6 +179,9 @@ pub struct SnapshotBuildJob {
     pub temp_dir: Option<String>,
     /// Published artifact directory relative to the builder root.
     pub artifact_dir: Option<String>,
+    /// Active full-verification sub-phase and heartbeat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<SnapshotVerificationProgress>,
     /// Number of snapshot export attempts for this job.
     pub attempt: u32,
     /// Job creation time as Unix seconds.
@@ -175,6 +209,7 @@ impl SnapshotBuildJob {
             snapshot_id: None,
             temp_dir: None,
             artifact_dir: None,
+            verification: None,
             attempt: 0,
             started_at: now,
             updated_at: now,

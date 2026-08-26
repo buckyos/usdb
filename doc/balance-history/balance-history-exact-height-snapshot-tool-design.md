@@ -98,28 +98,35 @@ For `create --height H` the tool:
 4. resumes indexing until the durable height is exactly `H`;
 5. flushes RocksDB and seals the block hash, block commit, and state reference at `H`;
 6. builds a full snapshot including all live UTXOs in a temporary artifact directory;
-7. reopens and verifies the generated SQLite DB, metadata counts, manifest hash, state reference,
-   and optional signature metadata;
-8. atomically publishes the artifact directory and writes `complete.json`;
-9. updates the builder state and clears the active job.
+7. explicitly releases the snapshot exporter and RocksDB/indexer handles;
+8. reopens and verifies the generated SQLite DB, metadata counts, manifest hash, state reference,
+   and optional signature metadata exactly once;
+9. writes `complete.json`, atomically publishes the artifact directory, and performs a lightweight
+   marker/manifest/path check without repeating the full database scan;
+10. updates the builder state and clears the active job.
 
 The tool never advances the workspace beyond `H` before the checkpoint for `H` is complete.
 After completion, a later target can incrementally continue from the same workspace.
 
 ## 6. Restart and idempotency
 
-Re-running `create --height H` is the resume operation:
+Before the SQLite artifact reaches `Verifying`, re-running `create --height H` is the resume
+operation:
 
 - workspace height below `H`: continue indexing;
-- workspace height equal to `H`: skip sync and continue build or verification;
+- workspace height equal to `H`: skip completed sync work and continue export;
 - workspace height above `H`: fail closed;
-- interrupted temporary artifact: remove it and rebuild from the sealed workspace;
+- interrupted `Building` artifact: remove it and rebuild from the sealed workspace;
+- interrupted `Verifying` artifact: preserve it and require `resume-verify --height H`, which does
+  not open the mutable RocksDB workspace;
 - valid completed artifact for the same height and block hash: return it idempotently;
 - unfinished job for a different height: reject the new request.
 
-The first version restarts snapshot export from the beginning instead of persisting SQLite
-row-level progress. Sync progress is preserved in RocksDB, which is the expensive part of a new
-builder.
+The exporter still restarts an interrupted `Building` phase from the beginning instead of
+persisting SQLite row-level progress. Once DB, manifest, and optional signature generation has
+completed, `resume-verify` reuses those files. If full verification already wrote `complete.json`,
+the command resumes atomic publication without repeating integrity/count scans. Verification
+persists its current sub-phase and a 30-second heartbeat in `job.json`.
 
 If an unfinished job must be abandoned after its workspace has advanced beyond the latest
 completed checkpoint, recovery must restore the latest completed snapshot into the workspace.
@@ -142,6 +149,7 @@ may require a larger explicit confirmation depth and a pinned expected block has
 
 ```text
 balance-history-snapshot-tool create --height <H> [--expected-block-hash <HASH>]
+balance-history-snapshot-tool resume-verify --height <H> [--expected-block-hash <HASH>]
 balance-history-snapshot-tool status [--height <H>]
 balance-history-snapshot-tool list
 balance-history-snapshot-tool verify --height <H> [--block-hash <HASH>]
@@ -209,8 +217,9 @@ The first version does not include:
 
 The first implementation is the `balance-history-snapshot-tool` Rust workspace crate. It directly
 uses the `balance-history` library for exact-height synchronization and snapshot export. Its
-`create`, `status`, `list`, and `verify` commands persist the state machine and expose JSON output
-for automation.
+`create`, `resume-verify`, `status`, `list`, and `verify` commands persist the state machine and
+expose JSON output for automation. `resume-verify` is the explicit process boundary between
+RocksDB-backed synchronization/export and SQLite-only verification/publication.
 
 The deterministic regtest entrypoints are:
 

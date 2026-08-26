@@ -1,6 +1,6 @@
 use crate::{
     build_complete_marker, save_json_atomic, unique_run_id, verify_published_artifact,
-    verify_snapshot_files,
+    verify_published_artifact_marker, verify_snapshot_files,
 };
 use balance_history::{
     BlockCommitEntry, HistoricalSnapshotStateRef, SnapshotDB, SnapshotHash, SnapshotManifest,
@@ -70,12 +70,40 @@ fn completed_artifact_round_trip_checks_db_manifest_and_marker() {
 
     let verified =
         verify_snapshot_files(&db_path, &manifest_path, "regtest", 10, Some(&block_hash)).unwrap();
+    assert!(!db_path.with_extension("db-wal").exists());
+    assert!(!db_path.with_extension("db-shm").exists());
     let marker = build_complete_marker(&verified, "regtest").unwrap();
     save_json_atomic(&artifact_dir.join("complete.json"), &marker).unwrap();
 
+    let marker_only =
+        verify_published_artifact_marker(&artifact_dir, "regtest", 10, Some(&block_hash)).unwrap();
+    assert_eq!(marker_only, marker);
     let reloaded =
         verify_published_artifact(&artifact_dir, "regtest", 10, Some(&block_hash)).unwrap();
     assert_eq!(reloaded, marker);
+}
+
+#[test]
+fn persisted_pre_progress_job_remains_resumable() {
+    let legacy_job = r#"{
+        "version": 1,
+        "target_height": 10,
+        "base_checkpoint": null,
+        "stage": "verifying",
+        "expected_block_hash": null,
+        "btc_block_hash": null,
+        "snapshot_id": null,
+        "temp_dir": "tmp/job",
+        "artifact_dir": null,
+        "attempt": 1,
+        "started_at": 1,
+        "updated_at": 2,
+        "completed_at": null
+    }"#;
+
+    let job: crate::SnapshotBuildJob = serde_json::from_str(legacy_job).unwrap();
+    assert_eq!(job.stage, crate::SnapshotBuildStage::Verifying);
+    assert!(job.verification.is_none());
 }
 
 #[test]

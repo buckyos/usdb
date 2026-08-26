@@ -1,8 +1,15 @@
-use crate::{COMPLETE_MARKER_VERSION, SnapshotCompleteMarker, load_json, unix_timestamp};
+use crate::{
+    COMPLETE_MARKER_VERSION, SnapshotCompleteMarker, SnapshotVerificationPhase, load_json,
+    unix_timestamp,
+};
 use balance_history::{
     SnapshotDB, SnapshotHash, SnapshotManifest, signature_path_for_manifest_file,
 };
+use log::info;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+const SNAPSHOT_VERIFICATION_CACHE_SIZE_KIB: u32 = 512 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedSnapshot {
@@ -23,6 +30,27 @@ pub(crate) fn verify_snapshot_files(
     expected_height: u32,
     expected_block_hash: Option<&str>,
 ) -> Result<VerifiedSnapshot, String> {
+    verify_snapshot_files_with_progress(
+        db_path,
+        manifest_path,
+        expected_network,
+        expected_height,
+        expected_block_hash,
+        |_| Ok(()),
+    )
+}
+
+pub(crate) fn verify_snapshot_files_with_progress<F>(
+    db_path: &Path,
+    manifest_path: &Path,
+    expected_network: &str,
+    expected_height: u32,
+    expected_block_hash: Option<&str>,
+    mut on_phase: F,
+) -> Result<VerifiedSnapshot, String>
+where
+    F: FnMut(SnapshotVerificationPhase) -> Result<(), String>,
+{
     if !db_path.is_file() {
         return Err(format!(
             "Snapshot DB file does not exist: {}",
@@ -48,7 +76,9 @@ pub(crate) fn verify_snapshot_files(
         ));
     }
 
+    let started = begin_phase(SnapshotVerificationPhase::FileHash, db_path, &mut on_phase)?;
     let actual_hash = SnapshotHash::calc_hash(db_path)?;
+    finish_phase(SnapshotVerificationPhase::FileHash, db_path, started);
     if !actual_hash.eq_ignore_ascii_case(&manifest.file_sha256) {
         return Err(format!(
             "Snapshot file hash mismatch: manifest={}, actual={}",
@@ -79,8 +109,15 @@ pub(crate) fn verify_snapshot_files(
         ));
     }
 
-    let snapshot_db = SnapshotDB::open_read_only(db_path)?;
+    let snapshot_db =
+        SnapshotDB::open_read_only_for_verification(db_path, SNAPSHOT_VERIFICATION_CACHE_SIZE_KIB)?;
+    let started = begin_phase(
+        SnapshotVerificationPhase::IntegrityCheck,
+        db_path,
+        &mut on_phase,
+    )?;
     snapshot_db.verify_integrity()?;
+    finish_phase(SnapshotVerificationPhase::IntegrityCheck, db_path, started);
     let meta = snapshot_db.get_meta()?;
     if meta.block_height != expected_height {
         return Err(format!(
@@ -89,10 +126,45 @@ pub(crate) fn verify_snapshot_files(
         ));
     }
 
+    let started = begin_phase(
+        SnapshotVerificationPhase::BalanceHistoryCount,
+        db_path,
+        &mut on_phase,
+    )?;
     let balance_history_count = snapshot_db.stat_balance_history_entries_count()?;
+    finish_phase(
+        SnapshotVerificationPhase::BalanceHistoryCount,
+        db_path,
+        started,
+    );
+
+    let started = begin_phase(SnapshotVerificationPhase::UtxoCount, db_path, &mut on_phase)?;
     let utxo_count = snapshot_db.stat_utxo_entries_count()?;
+    finish_phase(SnapshotVerificationPhase::UtxoCount, db_path, started);
+
+    let started = begin_phase(
+        SnapshotVerificationPhase::BlockCommitCount,
+        db_path,
+        &mut on_phase,
+    )?;
     let block_commit_count = snapshot_db.stat_block_commit_entries_count()?;
+    finish_phase(
+        SnapshotVerificationPhase::BlockCommitCount,
+        db_path,
+        started,
+    );
+
+    let started = begin_phase(
+        SnapshotVerificationPhase::ScriptRegistryCount,
+        db_path,
+        &mut on_phase,
+    )?;
     let script_registry_count = snapshot_db.stat_script_registry_entries_count()?;
+    finish_phase(
+        SnapshotVerificationPhase::ScriptRegistryCount,
+        db_path,
+        started,
+    );
     let actual_counts = (
         balance_history_count,
         utxo_count,
@@ -112,6 +184,11 @@ pub(crate) fn verify_snapshot_files(
         ));
     }
 
+    let started = begin_phase(
+        SnapshotVerificationPhase::CommitIdentity,
+        db_path,
+        &mut on_phase,
+    )?;
     let commits = if expected_height == 0 {
         snapshot_db.get_block_commit_entries(1, None)?
     } else {
@@ -162,6 +239,7 @@ pub(crate) fn verify_snapshot_files(
         }
         None
     };
+    finish_phase(SnapshotVerificationPhase::CommitIdentity, db_path, started);
 
     Ok(VerifiedSnapshot {
         db_path: db_path.to_path_buf(),
@@ -173,6 +251,32 @@ pub(crate) fn verify_snapshot_files(
         block_commit_count,
         script_registry_count,
     })
+}
+
+fn begin_phase<F>(
+    phase: SnapshotVerificationPhase,
+    db_path: &Path,
+    on_phase: &mut F,
+) -> Result<Instant, String>
+where
+    F: FnMut(SnapshotVerificationPhase) -> Result<(), String>,
+{
+    on_phase(phase)?;
+    info!(
+        "Starting snapshot verification phase {:?} for {}",
+        phase,
+        db_path.display()
+    );
+    Ok(Instant::now())
+}
+
+fn finish_phase(phase: SnapshotVerificationPhase, db_path: &Path, started: Instant) {
+    info!(
+        "Completed snapshot verification phase {:?} for {} in {:.1}s",
+        phase,
+        db_path.display(),
+        started.elapsed().as_secs_f64()
+    );
 }
 
 pub(crate) fn build_complete_marker(
@@ -202,6 +306,44 @@ pub(crate) fn build_complete_marker(
 }
 
 pub(crate) fn verify_published_artifact(
+    artifact_dir: &Path,
+    expected_network: &str,
+    expected_height: u32,
+    expected_block_hash: Option<&str>,
+) -> Result<SnapshotCompleteMarker, String> {
+    let marker = verify_published_artifact_marker(
+        artifact_dir,
+        expected_network,
+        expected_height,
+        expected_block_hash,
+    )?;
+    let db_path = safe_artifact_file(artifact_dir, &marker.snapshot_file)?;
+    let manifest_path = safe_artifact_file(artifact_dir, &marker.manifest_file)?;
+    let verified = verify_snapshot_files(
+        &db_path,
+        &manifest_path,
+        expected_network,
+        expected_height,
+        Some(&marker.btc_block_hash),
+    )?;
+    let rebuilt = build_complete_marker(&verified, expected_network)?;
+    if marker.snapshot_id != rebuilt.snapshot_id
+        || marker.file_sha256 != rebuilt.file_sha256
+        || marker.balance_history_count != rebuilt.balance_history_count
+        || marker.utxo_count != rebuilt.utxo_count
+        || marker.block_commit_count != rebuilt.block_commit_count
+        || marker.script_registry_count != rebuilt.script_registry_count
+        || marker.signature_file != rebuilt.signature_file
+    {
+        return Err(format!(
+            "Snapshot completion marker does not match verified artifact {}",
+            artifact_dir.display()
+        ));
+    }
+    Ok(marker)
+}
+
+pub(crate) fn verify_published_artifact_marker(
     artifact_dir: &Path,
     expected_network: &str,
     expected_height: u32,
@@ -239,28 +381,54 @@ pub(crate) fn verify_published_artifact(
 
     let db_path = safe_artifact_file(artifact_dir, &marker.snapshot_file)?;
     let manifest_path = safe_artifact_file(artifact_dir, &marker.manifest_file)?;
-    if let Some(signature_file) = marker.signature_file.as_deref() {
-        let _ = safe_artifact_file(artifact_dir, signature_file)?;
+    if !db_path.is_file() {
+        return Err(format!(
+            "Snapshot completion marker references missing DB file {}",
+            db_path.display()
+        ));
     }
-    let verified = verify_snapshot_files(
-        &db_path,
-        &manifest_path,
-        expected_network,
-        expected_height,
-        Some(&marker.btc_block_hash),
-    )?;
-    let rebuilt = build_complete_marker(&verified, expected_network)?;
-    if marker.snapshot_id != rebuilt.snapshot_id
-        || marker.file_sha256 != rebuilt.file_sha256
-        || marker.balance_history_count != rebuilt.balance_history_count
-        || marker.utxo_count != rebuilt.utxo_count
-        || marker.block_commit_count != rebuilt.block_commit_count
-        || marker.script_registry_count != rebuilt.script_registry_count
-        || marker.signature_file != rebuilt.signature_file
+    let marker_signature_path = marker
+        .signature_file
+        .as_deref()
+        .map(|signature_file| safe_artifact_file(artifact_dir, signature_file))
+        .transpose()?;
+    let manifest = SnapshotManifest::load(&manifest_path)?;
+    let db_file_name = file_name(&db_path)?;
+    if manifest.file_name != db_file_name
+        || manifest.file_sha256 != marker.file_sha256
+        || manifest.state_ref.block_height != marker.height
+        || manifest.state_ref.consensus_identity.network != marker.network
+        || !manifest
+            .state_ref
+            .stable_block_hash
+            .eq_ignore_ascii_case(&marker.btc_block_hash)
+        || manifest.state_ref.snapshot_id != marker.snapshot_id
     {
         return Err(format!(
-            "Snapshot completion marker does not match verified artifact {}",
+            "Snapshot completion marker does not match artifact manifest {}",
             artifact_dir.display()
+        ));
+    }
+    let expected_signature_path = signature_path_for_manifest_file(&manifest_path);
+    match (
+        manifest.signing_key_id.is_some(),
+        marker_signature_path.as_ref(),
+    ) {
+        (true, Some(signature_path)) if *signature_path == expected_signature_path => {}
+        (false, None) if !expected_signature_path.exists() => {}
+        _ => {
+            return Err(format!(
+                "Snapshot completion marker signature layout does not match manifest {}",
+                artifact_dir.display()
+            ));
+        }
+    }
+    if let Some(signature_path) = marker_signature_path
+        && !signature_path.is_file()
+    {
+        return Err(format!(
+            "Snapshot completion marker references missing signature file {}",
+            signature_path.display()
         ));
     }
     Ok(marker)
