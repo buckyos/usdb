@@ -1,8 +1,8 @@
 use crate::config::{BalanceHistoryConfigRef, SnapshotTrustMode};
 use crate::db::{
-    BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry,
-    BlockCommitEntry, ScriptRegistryEntry, SnapshotCallback, SnapshotDB, SnapshotHash,
-    SnapshotMeta,
+    BALANCE_HISTORY_DATA_MODEL_VERSION, BalanceHistoryDB, BalanceHistoryDBIdentity,
+    BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry, BlockCommitEntry,
+    ScriptRegistryEntry, SnapshotCallback, SnapshotDB, SnapshotHash, SnapshotMeta,
 };
 use crate::output::IndexOutputRef;
 use crate::service::{HistoricalSnapshotStateRef, build_historical_state_ref_at_height};
@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, UTXOEntry};
 
-/// Version tag for the first external snapshot manifest sidecar format.
-pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v2";
+/// Current external snapshot manifest sidecar schema version.
+pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v3";
 /// Detached signature scheme name used by signed snapshot manifests.
 pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
 
@@ -128,8 +128,13 @@ impl SnapshotIndexer {
             msg
         })?;
 
+        let db_identity = self.db.get_db_identity()?.ok_or_else(|| {
+            let msg = "Source balance-history DB has no identity".to_string();
+            self.output.eprintln(&msg);
+            msg
+        })?;
         let snapshot_db = Arc::new(Mutex::new(snapshot_db));
-        let mut snapshot_meta = SnapshotMeta::new(target_block_height);
+        let mut snapshot_meta = SnapshotMeta::new(target_block_height, db_identity);
 
         // First generate balance history snapshot
         {
@@ -320,6 +325,7 @@ impl SnapshotIndexer {
                 .to_string(),
             file_hash,
             state_ref,
+            snapshot_meta.db_identity.clone(),
             signing_key.as_ref().map(|key| key.key_id.clone()),
         );
         let manifest_path = manifest_path_for_snapshot_file(&db_path);
@@ -503,6 +509,8 @@ pub struct SnapshotManifest {
     pub file_sha256: String,
     /// Exact historical consensus state expected after installation.
     pub state_ref: HistoricalSnapshotStateRef,
+    /// RocksDB schema, data model, and Bitcoin network identity of the exported state.
+    pub db_identity: BalanceHistoryDBIdentity,
     /// Earliest complete at-or-before point balance query height after install.
     pub balance_query_floor: u32,
     /// Earliest complete exact-delta/history query height after install.
@@ -545,12 +553,14 @@ impl SnapshotManifest {
         file_name: String,
         file_sha256: String,
         state_ref: HistoricalSnapshotStateRef,
+        db_identity: BalanceHistoryDBIdentity,
         signing_key_id: Option<String>,
     ) -> Self {
         Self {
             manifest_version: SNAPSHOT_MANIFEST_VERSION.to_string(),
             file_name,
             file_sha256,
+            db_identity,
             balance_query_floor: state_ref.block_height,
             history_query_floor: state_ref.block_height.saturating_add(1),
             state_ref,
@@ -1005,6 +1015,26 @@ impl SnapshotInstaller {
             msg
         })?;
 
+        let expected_identity = BalanceHistoryDBIdentity::for_network(self.config.btc.network());
+        if meta.db_identity != expected_identity {
+            let msg = format!(
+                "Snapshot DB identity mismatch: expected {:?}, found {:?}",
+                expected_identity, meta.db_identity
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if let Some(manifest) = manifest.as_ref()
+            && manifest.db_identity != meta.db_identity
+        {
+            let msg = format!(
+                "Snapshot manifest DB identity mismatch: manifest {:?}, snapshot {:?}",
+                manifest.db_identity, meta.db_identity
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         if let Some(manifest) = manifest.as_ref()
             && manifest.state_ref.block_height != meta.block_height
         {
@@ -1152,6 +1182,20 @@ impl SnapshotInstaller {
             "Validating staged snapshot state against manifest for block height {}",
             meta.block_height
         ));
+
+        let staged_identity = staging_db.get_db_identity()?.ok_or_else(|| {
+            let msg = "Staged balance-history DB has no identity".to_string();
+            error!("{}", msg);
+            msg
+        })?;
+        if staged_identity != manifest.db_identity {
+            let msg = format!(
+                "Staged balance-history DB identity mismatch: expected {:?}, got {:?}",
+                manifest.db_identity, staged_identity
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         let actual_state_ref =
             build_historical_state_ref_at_height(&self.config, staging_db, meta.block_height)?
@@ -1652,6 +1696,7 @@ mod tests {
                 .to_string(),
             SnapshotHash::calc_hash(snapshot_path).unwrap(),
             state_ref,
+            BalanceHistoryDBIdentity::for_network(config.btc.network()),
             None,
         )
     }
@@ -1772,7 +1817,10 @@ mod tests {
                 }])
                 .unwrap();
 
-            let mut meta = SnapshotMeta::new(10);
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
             meta.balance_history_count = 1;
             meta.utxo_count = 1;
             meta.block_commit_count = 1;
@@ -1963,7 +2011,10 @@ mod tests {
                 .put_block_commit_entries(std::slice::from_ref(&new_commit))
                 .unwrap();
 
-            let mut meta = SnapshotMeta::new(10);
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
             meta.balance_history_count = 1;
             meta.utxo_count = 1;
             meta.block_commit_count = 1;
@@ -2028,7 +2079,10 @@ mod tests {
                 .put_block_commit_entries(std::slice::from_ref(&new_commit))
                 .unwrap();
 
-            let mut meta = SnapshotMeta::new(10);
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
             meta.block_commit_count = 1;
             snapshot_db.update_meta(&meta).unwrap();
         }
@@ -2063,6 +2117,96 @@ mod tests {
     }
 
     #[test]
+    fn test_install_rejects_manifest_db_identity_mismatch_before_swap() {
+        let root_dir = temp_root("install_manifest_bad_db_identity");
+        let config = Arc::new(test_config_with_root(&root_dir));
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(3).unwrap();
+        let live_db = Arc::new(live_db);
+
+        let snapshot_path = root_dir.join("install_source_snapshot.db");
+        let manifest_path = manifest_path_for_snapshot_file(&snapshot_path);
+        let new_commit = BlockCommitEntry {
+            block_height: 10,
+            btc_block_hash: BlockHash::from_slice(&[10u8; 32]).unwrap(),
+            balance_delta_root: [11u8; 32],
+            block_commit: [12u8; 32],
+        };
+
+        {
+            let mut snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
+            snapshot_db
+                .put_block_commit_entries(std::slice::from_ref(&new_commit))
+                .unwrap();
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
+            meta.block_commit_count = 1;
+            snapshot_db.update_meta(&meta).unwrap();
+        }
+
+        let mut manifest =
+            build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
+        manifest.db_identity.data_model_version =
+            "balance-history-data-model:tampered-v0".to_string();
+        manifest.save(&manifest_path).unwrap();
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        let error = installer
+            .install(SnapshotData {
+                file: snapshot_path,
+                manifest_file: Some(manifest_path),
+            })
+            .unwrap_err();
+        assert!(error.contains("Snapshot manifest DB identity mismatch"));
+
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
+        assert!(!reopened_db.get_snapshot_install_used().unwrap());
+        assert!(reopened_db.get_block_commit(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_install_rejects_snapshot_db_identity_mismatch_without_manifest() {
+        let root_dir = temp_root("install_snapshot_bad_db_identity");
+        let config = Arc::new(test_config_with_root(&root_dir));
+
+        let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        live_db.put_btc_block_height(3).unwrap();
+        let live_db = Arc::new(live_db);
+
+        let snapshot_path = root_dir.join("install_source_snapshot.db");
+        {
+            let snapshot_db = SnapshotDB::open(&snapshot_path).unwrap();
+            let mut incompatible = BalanceHistoryDBIdentity::for_network(config.btc.network());
+            incompatible.data_model_version =
+                "balance-history-data-model:incompatible-v0".to_string();
+            snapshot_db
+                .update_meta(&SnapshotMeta::new(10, incompatible))
+                .unwrap();
+        }
+
+        let status = Arc::new(SyncStatusManager::new());
+        let output = Arc::new(IndexOutput::new(status));
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        let error = installer
+            .install(SnapshotData {
+                file: snapshot_path,
+                manifest_file: None,
+            })
+            .unwrap_err();
+        assert!(error.contains("Snapshot DB identity mismatch"));
+
+        let reopened_db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened_db.get_btc_block_height().unwrap(), 3);
+        assert!(!reopened_db.get_snapshot_install_used().unwrap());
+    }
+
+    #[test]
     fn test_install_accepts_signed_manifest_when_trusted() {
         let root_dir = temp_root("install_manifest_signed_ok");
         let mut config = test_config_with_root(&root_dir);
@@ -2092,7 +2236,10 @@ mod tests {
                 .put_block_commit_entries(std::slice::from_ref(&new_commit))
                 .unwrap();
 
-            let mut meta = SnapshotMeta::new(10);
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
             meta.block_commit_count = 1;
             snapshot_db.update_meta(&meta).unwrap();
         }
@@ -2117,6 +2264,12 @@ mod tests {
 
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let identity = reopened_db.get_db_identity().unwrap().unwrap();
+        assert_eq!(
+            identity.data_model_version,
+            BALANCE_HISTORY_DATA_MODEL_VERSION
+        );
+        assert_eq!(identity.btc_network, config.btc.network().to_string());
         let provenance = reopened_db
             .get_snapshot_install_provenance()
             .unwrap()
@@ -2174,7 +2327,10 @@ mod tests {
                 .put_block_commit_entries(std::slice::from_ref(&new_commit))
                 .unwrap();
 
-            let mut meta = SnapshotMeta::new(10);
+            let mut meta = SnapshotMeta::new(
+                10,
+                BalanceHistoryDBIdentity::for_network(config.btc.network()),
+            );
             meta.block_commit_count = 1;
             snapshot_db.update_meta(&meta).unwrap();
         }

@@ -1,4 +1,6 @@
-use super::db::{BalanceHistoryEntry, BlockCommitEntry, ScriptRegistryEntry};
+use super::db::{
+    BalanceHistoryDBIdentity, BalanceHistoryEntry, BlockCommitEntry, ScriptRegistryEntry,
+};
 use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
 use rusqlite::{Connection, OpenFlags};
@@ -6,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, OutPointCodec, UTXOEntry};
 
-// The version of the snapshot database schema.
-pub const SNAPSHOT_DB_VERSION: u32 = 2;
+/// Current SQLite snapshot schema version.
+pub const SNAPSHOT_DB_VERSION: u32 = 3;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotMeta {
     pub block_height: u32,
     pub balance_history_count: u64,
@@ -18,10 +20,13 @@ pub struct SnapshotMeta {
     pub script_registry_count: u64,
     pub generated_at: u64, // UNIX timestamp
     pub version: u32,
+    /// State-domain identity of the RocksDB that exported this snapshot.
+    pub db_identity: BalanceHistoryDBIdentity,
 }
 
 impl SnapshotMeta {
-    pub fn new(block_height: u32) -> Self {
+    /// Creates metadata for a snapshot exported from `db_identity` at `block_height`.
+    pub fn new(block_height: u32, db_identity: BalanceHistoryDBIdentity) -> Self {
         let start = SystemTime::now();
         let since_the_epoch = start
             .duration_since(UNIX_EPOCH)
@@ -35,6 +40,7 @@ impl SnapshotMeta {
             script_registry_count: 0,
             generated_at: since_the_epoch.as_secs(),
             version: SNAPSHOT_DB_VERSION,
+            db_identity,
         }
     }
 }
@@ -96,8 +102,6 @@ impl SnapshotDB {
                 error!("{}", msg);
                 msg
             })?;
-
-        Self::ensure_schema_migrations(&conn)?;
 
         conn.execute_batch(
             r#"
@@ -228,57 +232,6 @@ impl SnapshotDB {
         Ok(())
     }
 
-    fn ensure_schema_migrations(conn: &Connection) -> Result<(), String> {
-        if !Self::table_has_column(conn, "meta", "script_registry_count")? {
-            conn.execute(
-                "ALTER TABLE meta ADD COLUMN script_registry_count INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|e| {
-                let msg = format!(
-                    "Failed to add script_registry_count column to snapshot meta: {}",
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
-        let mut stmt = conn
-            .prepare(&format!("PRAGMA table_info({})", table))
-            .map_err(|e| {
-                let msg = format!("Failed to inspect {} schema: {}", table, e);
-                error!("{}", msg);
-                msg
-            })?;
-        let mut rows = stmt.query([]).map_err(|e| {
-            let msg = format!("Failed to query {} schema: {}", table, e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        while let Some(row) = rows.next().map_err(|e| {
-            let msg = format!("Failed to read {} schema row: {}", table, e);
-            error!("{}", msg);
-            msg
-        })? {
-            let name: String = row.get(1).map_err(|e| {
-                let msg = format!("Failed to read {} schema column name: {}", table, e);
-                error!("{}", msg);
-                msg
-            })?;
-            if name == column {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
     pub fn open_by_height(
         root_dir: &Path,
         block_height: u32,
@@ -382,9 +335,14 @@ impl SnapshotDB {
 
     /// Update the snapshot metadata
     pub fn update_meta(&self, meta: &SnapshotMeta) -> Result<(), String> {
+        let db_identity_json = serde_json::to_string(&meta.db_identity).map_err(|e| {
+            let msg = format!("Failed to serialize snapshot DB identity: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
         self.conn
             .execute(
-                "INSERT INTO meta (block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO meta (block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version, db_identity_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 (
                     meta.block_height as i64,
                     meta.balance_history_count as i64,
@@ -393,6 +351,7 @@ impl SnapshotDB {
                     meta.script_registry_count as i64,
                     meta.generated_at as i64,
                     meta.version as i64,
+                    db_identity_json,
                 ),
             )
             .map_err(|e| {
@@ -408,7 +367,7 @@ impl SnapshotDB {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version FROM meta ORDER BY generated_at DESC LIMIT 1",
+                "SELECT block_height, balance_history_count, utxo_count, block_commit_count, script_registry_count, generated_at, version, db_identity_json FROM meta ORDER BY generated_at DESC LIMIT 1",
             )
             .map_err(|e| {
                 let msg = format!("Failed to prepare statement: {}", e);
@@ -416,17 +375,27 @@ impl SnapshotDB {
                 msg
             })?;
 
-        let meta = stmt
+        let (
+            block_height,
+            balance_history_count,
+            utxo_count,
+            block_commit_count,
+            script_registry_count,
+            generated_at,
+            version,
+            db_identity_json,
+        ): (i64, i64, i64, i64, i64, i64, i64, String) = stmt
             .query_row([], |row| {
-                Ok(SnapshotMeta {
-                    block_height: row.get::<_, i64>(0).map(|v| v as u32)?,
-                    balance_history_count: row.get::<_, i64>(1).map(|v| v as u64)?,
-                    utxo_count: row.get::<_, i64>(2).map(|v| v as u64)?,
-                    block_commit_count: row.get::<_, i64>(3).map(|v| v as u64)?,
-                    script_registry_count: row.get::<_, i64>(4).map(|v| v as u64)?,
-                    generated_at: row.get::<_, i64>(5).map(|v| v as u64)?,
-                    version: row.get::<_, i64>(6).map(|v| v as u32)?,
-                })
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
             })
             .map_err(|e| {
                 let msg = format!("Failed to query row: {}", e);
@@ -434,7 +403,37 @@ impl SnapshotDB {
                 msg
             })?;
 
-        Ok(meta)
+        let version = version as u32;
+        if version != SNAPSHOT_DB_VERSION {
+            let msg = format!(
+                "Unsupported snapshot DB version {} in {} (expected {})",
+                version,
+                self.path.display(),
+                SNAPSHOT_DB_VERSION
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let db_identity = serde_json::from_str(&db_identity_json).map_err(|e| {
+            let msg = format!(
+                "Failed to parse snapshot DB identity in {}: {}",
+                self.path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+
+        Ok(SnapshotMeta {
+            block_height: block_height as u32,
+            balance_history_count: balance_history_count as u64,
+            utxo_count: utxo_count as u64,
+            block_commit_count: block_commit_count as u64,
+            script_registry_count: script_registry_count as u64,
+            generated_at: generated_at as u64,
+            version,
+            db_identity,
+        })
     }
 
     pub fn put_balance_history_entries(
@@ -1197,10 +1196,14 @@ pub type SnapshotDBRef = std::sync::Arc<SnapshotDB>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use bitcoincore_rpc::bitcoin::{BlockHash, ScriptBuf};
+    use bitcoincore_rpc::bitcoin::{BlockHash, Network, ScriptBuf};
     use usdb_util::ToBtcScriptHash;
 
     struct TestRoot(PathBuf);
+
+    fn test_db_identity() -> BalanceHistoryDBIdentity {
+        BalanceHistoryDBIdentity::for_network(Network::Regtest)
+    }
 
     impl TestRoot {
         fn new(name: &str) -> Self {
@@ -1239,7 +1242,7 @@ mod tests {
         }
 
         let snapshot_db = SnapshotDB::open(&db_path).unwrap();
-        let meta = SnapshotMeta::new(100);
+        let meta = SnapshotMeta::new(100, test_db_identity());
         snapshot_db.update_meta(&meta).unwrap();
 
         let retrieved_meta = snapshot_db.get_meta().unwrap();
@@ -1247,6 +1250,21 @@ mod tests {
         assert_eq!(retrieved_meta.block_commit_count, 0);
         assert_eq!(retrieved_meta.script_registry_count, 0);
         assert_eq!(retrieved_meta.version, SNAPSHOT_DB_VERSION);
+        assert_eq!(retrieved_meta.db_identity, test_db_identity());
+    }
+
+    #[test]
+    fn test_snapshot_meta_rejects_unsupported_db_version() {
+        let root = TestRoot::new("snapshot_version_mismatch");
+        let db_path = root.path().join("snapshot.db");
+        let snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        let mut meta = SnapshotMeta::new(100, test_db_identity());
+        meta.version = SNAPSHOT_DB_VERSION - 1;
+        snapshot_db.update_meta(&meta).unwrap();
+
+        let error = snapshot_db.get_meta().unwrap_err();
+        assert!(error.contains("Unsupported snapshot DB version"));
+        assert!(error.contains(&format!("expected {}", SNAPSHOT_DB_VERSION)));
     }
 
     #[test]
@@ -1342,7 +1360,9 @@ mod tests {
                 block_commit: [9u8; 32],
             }])
             .unwrap();
-        snapshot_db.update_meta(&SnapshotMeta::new(7)).unwrap();
+        snapshot_db
+            .update_meta(&SnapshotMeta::new(7, test_db_identity()))
+            .unwrap();
 
         assert!(
             wal_path.exists(),
@@ -1378,7 +1398,7 @@ mod tests {
         snapshot_db
             .put_balance_history_entries(std::slice::from_ref(&expected))
             .unwrap();
-        let mut meta = SnapshotMeta::new(target_block_height);
+        let mut meta = SnapshotMeta::new(target_block_height, test_db_identity());
         meta.balance_history_count = 1;
         snapshot_db.update_meta(&meta).unwrap();
 

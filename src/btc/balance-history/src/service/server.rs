@@ -2027,7 +2027,7 @@ mod tests {
                 manifest_verified: true,
                 signature_present: true,
                 signature_verified: true,
-                manifest_version: Some("balance-history-snapshot-manifest:v2".to_string()),
+                manifest_version: Some("balance-history-snapshot-manifest:v3".to_string()),
                 signature_scheme: Some("ed25519".to_string()),
                 signing_key_id: Some("trusted-signer".to_string()),
                 snapshot_file_sha256: Some("aa".repeat(32)),

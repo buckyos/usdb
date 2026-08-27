@@ -3,7 +3,8 @@ use crate::{
     unix_timestamp,
 };
 use balance_history::{
-    SnapshotDB, SnapshotHash, SnapshotManifest, signature_path_for_manifest_file,
+    BalanceHistoryDBIdentity, SnapshotDB, SnapshotHash, SnapshotManifest,
+    signature_path_for_manifest_file,
 };
 use log::info;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,13 @@ where
             expected_network, manifest.state_ref.consensus_identity.network
         ));
     }
+    let expected_identity = BalanceHistoryDBIdentity::for_network_name(expected_network)?;
+    if manifest.db_identity != expected_identity {
+        return Err(format!(
+            "Snapshot manifest DB identity mismatch: expected {:?}, got {:?}",
+            expected_identity, manifest.db_identity
+        ));
+    }
     if let Some(expected_block_hash) = expected_block_hash
         && !manifest
             .state_ref
@@ -123,6 +131,12 @@ where
         return Err(format!(
             "Snapshot metadata height mismatch: expected {}, got {}",
             expected_height, meta.block_height
+        ));
+    }
+    if meta.db_identity != manifest.db_identity {
+        return Err(format!(
+            "Snapshot metadata DB identity mismatch: manifest {:?}, DB {:?}",
+            manifest.db_identity, meta.db_identity
         ));
     }
 

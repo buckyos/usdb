@@ -1362,7 +1362,7 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 ## Balance-History 核心 Review 第一批修正
 
-状态：2026-08-26 已实现，等待 review，尚未提交。
+状态：2026-08-26 已实现并提交：usdb `b6e811f`。
 
 - 移除未被调用且语义有误导性的 BIP30 原始 coinbase 黑名单 helper。批处理按区块/交易位置
   保留同一 outpoint 的多个 generation，在高度 `91842/91880` 覆盖未花费旧 generation 时
@@ -1378,3 +1378,24 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 - snapshot 中 `H` 之前的 block commit 保留为审计数据，不再隐含声明对应余额状态可重放。
 - 由于 BIP30 会改变早期 balance history 与后续 rolling block commit，本批不提供旧 DB/旧
   manifest 兼容或迁移；正式验收前需要从头重建 balance-history 与 snapshot。
+
+## Balance-History 核心 Review 第二批修正
+
+状态：2026-08-26 已实现，完整回归与 clippy 通过，等待 review，尚未提交。
+
+- multi-block rollback 的初始化、逐块进度推进和最终状态清理分别使用单个 RocksDB
+  `WriteBatch`。逐块 rollback 将 UTXO/balance/block commit/undo/current height 与
+  `rollback_next_height` 放入同一批次，进程不能留下“区块已经恢复、进度仍指向旧高度”的
+  可见状态。
+- rollback resume 使用同一个 RocksDB snapshot 读取完整 rollback tuple 和 durable height；
+  tuple 缺字段、状态值非法或 next/current 不一致时 fail closed。覆盖中间块后重启、最后一块
+  已回滚但状态未清理后重启，以及残缺 tuple 拒绝。
+- RocksDB 新增不可变 `BalanceHistoryDBIdentity`，冻结 identity/schema/data-model version、
+  service、BTC network 和 genesis hash。相同 identity 可重开；跨网络、data model 不匹配、
+  非空无 identity 的旧 DB 全部拒绝。
+- SQLite snapshot schema 升级为 `version=3`，manifest 升级为
+  `balance-history-snapshot-manifest:v3`，两者都承诺同一 source DB identity。安装要求接收配置、
+  SQLite meta、manifest 与 staging RocksDB identity 完全一致；即使无 manifest 的开发安装也
+  会拒绝不兼容 artifact，signed 模式则额外由 file hash 和签名覆盖该承诺。
+- 安装后重开继续校验 identity、provenance 和 retention floor。开发期不提供旧 DB identity
+  回填、SQLite schema migration 或旧 manifest 兼容；旧 balance-history 与 snapshot 必须重建。

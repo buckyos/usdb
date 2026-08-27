@@ -493,14 +493,38 @@ snapshot_<H>.manifest.sig
 complete.json
 ```
 
-当前 manifest schema 为 `balance-history-snapshot-manifest:v2`，并显式冻结：
+当前 SQLite snapshot schema 为 `version=3`，manifest schema 为
+`balance-history-snapshot-manifest:v3`。两者除状态与文件哈希外还显式冻结：
 
 - `balance_query_floor = H`：安装后可完整回答的最早 at-or-before 点余额高度；
-- `history_query_floor = H + 1`：安装后可完整回答的最早精确 delta/历史区间高度。
+- `history_query_floor = H + 1`：安装后可完整回答的最早精确 delta/历史区间高度；
+- `db_identity`：schema/data-model version、service、BTC network 和 genesis hash。
 
 snapshot 内保留的 `H` 之前 block commit 只用于审计，不能作为这些历史余额状态仍可查询的声明。
 
-### 9.1 用接收方信任策略试安装
+### 9.1 RocksDB Identity 与重建边界
+
+snapshot 的发布身份和安装后的 RocksDB identity 是两层不同约束。发布身份继续由
+`network + H + BTC block hash + snapshot ID` 确定；每个 balance-history RocksDB 还会在
+`meta/db_identity` 中冻结：
+
+- identity serialization version；
+- service name；
+- RocksDB schema/key encoding version；
+- balance-history data model version；
+- BTC network 和对应 genesis hash。
+
+数据库每次打开都会比较完整 identity。network/genesis、schema 或 data model 任一不一致都
+fail closed；非空但没有 identity 的旧数据库也会被拒绝。当前仍处于开发阶段，不提供旧数据
+迁移：应移动或删除旧 RocksDB 后从创世重建，或者向空 root 安装使用当前代码生成的 snapshot。
+
+SQLite meta 与 manifest 必须携带完全相同的 source DB identity；signed manifest 的文件哈希和
+签名同时覆盖 SQLite 文件及 manifest identity。snapshot install 还会先创建新的 staging
+RocksDB，写入接收节点当前配置的 expected identity，并要求 expected、SQLite、manifest、
+staging 四者一致后才原子替换 live DB。旧 SQLite schema、旧 manifest 或 identity mismatch
+都不能通过重新安装被标记成当前数据模型。
+
+### 9.2 用接收方信任策略试安装
 
 `snapshot-tool verify` 会重开 artifact 并核对 DB、manifest、state-ref、计数和文件 hash；正式
 发布前还必须在独立 validation root 中执行一次 signed install，以接收方视角验证 detached

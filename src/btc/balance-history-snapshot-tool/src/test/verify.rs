@@ -3,11 +3,11 @@ use crate::{
     verify_published_artifact_marker, verify_snapshot_files,
 };
 use balance_history::{
-    BlockCommitEntry, HistoricalSnapshotStateRef, SnapshotDB, SnapshotHash, SnapshotManifest,
-    SnapshotMeta, manifest_path_for_snapshot_file,
+    BalanceHistoryDBIdentity, BlockCommitEntry, HistoricalSnapshotStateRef, SnapshotDB,
+    SnapshotHash, SnapshotManifest, SnapshotMeta, manifest_path_for_snapshot_file,
 };
-use bitcoincore_rpc::bitcoin::BlockHash;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
+use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use std::path::PathBuf;
 use usdb_util::{
     CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusSnapshotIdentity,
@@ -34,7 +34,8 @@ fn completed_artifact_round_trip_checks_db_manifest_and_marker() {
     let mut db = SnapshotDB::open(&db_path).unwrap();
     db.put_block_commit_entries(std::slice::from_ref(&commit))
         .unwrap();
-    let mut meta = SnapshotMeta::new(10);
+    let db_identity = BalanceHistoryDBIdentity::for_network(Network::Regtest);
+    let mut meta = SnapshotMeta::new(10, db_identity.clone());
     meta.block_commit_count = 1;
     db.update_meta(&meta).unwrap();
     let db_path = db.finalize_for_distribution().unwrap();
@@ -59,10 +60,11 @@ fn completed_artifact_round_trip_checks_db_manifest_and_marker() {
         commit_protocol_version: "1.0.0".to_string(),
         commit_hash_algo: "sha256".to_string(),
     };
-    let manifest = SnapshotManifest::build(
+    let mut manifest = SnapshotManifest::build(
         "snapshot_10.db".to_string(),
         SnapshotHash::calc_hash(&db_path).unwrap(),
         state_ref,
+        db_identity,
         None,
     );
     let manifest_path = manifest_path_for_snapshot_file(&db_path);
@@ -81,6 +83,12 @@ fn completed_artifact_round_trip_checks_db_manifest_and_marker() {
     let reloaded =
         verify_published_artifact(&artifact_dir, "regtest", 10, Some(&block_hash)).unwrap();
     assert_eq!(reloaded, marker);
+
+    manifest.db_identity.data_model_version = "balance-history-data-model:tampered-v0".to_string();
+    manifest.save(&manifest_path).unwrap();
+    let error = verify_snapshot_files(&db_path, &manifest_path, "regtest", 10, Some(&block_hash))
+        .unwrap_err();
+    assert!(error.contains("Snapshot manifest DB identity mismatch"));
 }
 
 #[test]

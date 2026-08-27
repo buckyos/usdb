@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS meta (
     block_commit_count INTEGER NOT NULL,
     script_registry_count INTEGER NOT NULL DEFAULT 0,
     generated_at    INTEGER NOT NULL,
-    version         INTEGER NOT NULL DEFAULT 1
+    version         INTEGER NOT NULL,
+    db_identity_json TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS balance_history (

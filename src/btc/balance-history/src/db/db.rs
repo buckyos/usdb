@@ -1,13 +1,15 @@
 use super::helper::get_approx_cf_key_count;
 use crate::config::BalanceHistoryConfigRef;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
+use bitcoincore_rpc::bitcoin::blockdata::constants::genesis_block;
 use bitcoincore_rpc::bitcoin::hashes::Hash;
-use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf, Txid};
+use bitcoincore_rpc::bitcoin::{BlockHash, Network, OutPoint, ScriptBuf, Txid};
 use rocksdb::{
     ColumnFamilyDescriptor, DB, Direction, IteratorMode, Options, ReadOptions, WriteBatch,
     WriteOptions,
 };
 use rust_rocksdb::{self as rocksdb};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -41,6 +43,30 @@ pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_
 pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provenance";
 pub const META_KEY_BALANCE_QUERY_FLOOR: &str = "balance_query_floor";
 pub const META_KEY_HISTORY_QUERY_FLOOR: &str = "history_query_floor";
+/// Meta key containing the immutable identity of one balance-history RocksDB.
+pub const META_KEY_DB_IDENTITY: &str = "db_identity";
+
+/// Serialization contract version for [`BalanceHistoryDBIdentity`].
+pub const BALANCE_HISTORY_DB_IDENTITY_VERSION: &str = "balance-history-db-identity:v1";
+/// RocksDB column-family and key encoding version.
+pub const BALANCE_HISTORY_DB_SCHEMA_VERSION: &str = "balance-history-rocksdb-schema:v1";
+/// Indexed Bitcoin state model version, including BIP30 duplicate-txid generations.
+pub const BALANCE_HISTORY_DATA_MODEL_VERSION: &str =
+    "balance-history-data-model:bip30-generations-v1";
+
+const BALANCE_HISTORY_COLUMN_FAMILIES: [&str; 11] = [
+    BALANCE_HISTORY_CF,
+    META_CF,
+    UTXO_CF,
+    SCRIPT_REGISTRY_CF,
+    BLOCKS_CF,
+    BLOCK_HEIGHTS_CF,
+    BLOCK_COMMITS_CF,
+    BLOCK_UNDO_META_CF,
+    BLOCK_UNDO_CREATED_UTXOS_CF,
+    BLOCK_UNDO_SPENT_UTXOS_CF,
+    BLOCK_UNDO_BALANCE_INDEX_CF,
+];
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = BtcScriptHash::LEN + 4; // BtcScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
@@ -147,6 +173,53 @@ pub struct BlockStateUpdateBatch<'a> {
     pub undo_bundles: &'a [BlockUndoBundle],
 }
 
+/// Immutable state-domain identity persisted when a balance-history DB is created.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BalanceHistoryDBIdentity {
+    /// Serialization contract used by this identity record.
+    pub identity_version: String,
+    /// Service that owns the database.
+    pub service: String,
+    /// RocksDB schema and key-encoding version.
+    pub schema_version: String,
+    /// Bitcoin indexing semantics used to derive the stored state.
+    pub data_model_version: String,
+    /// Canonical Bitcoin network name from the active service configuration.
+    pub btc_network: String,
+    /// Genesis hash anchoring the configured Bitcoin network.
+    pub btc_genesis_hash: String,
+}
+
+impl BalanceHistoryDBIdentity {
+    /// Builds the expected balance-history identity for one Bitcoin network.
+    pub fn for_network(network: Network) -> Self {
+        Self {
+            identity_version: BALANCE_HISTORY_DB_IDENTITY_VERSION.to_string(),
+            service: usdb_util::BALANCE_HISTORY_SERVICE_NAME.to_string(),
+            schema_version: BALANCE_HISTORY_DB_SCHEMA_VERSION.to_string(),
+            data_model_version: BALANCE_HISTORY_DATA_MODEL_VERSION.to_string(),
+            btc_network: network.to_string(),
+            btc_genesis_hash: genesis_block(network).block_hash().to_string(),
+        }
+    }
+
+    /// Builds the expected identity from a canonical Bitcoin network name.
+    pub fn for_network_name(network: &str) -> Result<Self, String> {
+        let network = network.parse::<Network>().map_err(|e| {
+            let msg = format!("Unsupported Bitcoin network {}: {}", network, e);
+            error!("{}", msg);
+            msg
+        })?;
+        Ok(Self::for_network(network))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RollbackState {
+    target_height: u32,
+    next_height: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BalanceHistoryDBMode {
     BestEffort,
@@ -192,12 +265,120 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        Ok(BalanceHistoryDB {
+        let db = BalanceHistoryDB {
             file,
             db,
             config,
             mode: Mutex::new(mode),
-        })
+        };
+        db.ensure_db_identity()?;
+        Ok(db)
+    }
+
+    fn ensure_db_identity(&self) -> Result<(), String> {
+        let expected = BalanceHistoryDBIdentity::for_network(self.config.btc.network());
+        match self.get_db_identity()? {
+            Some(actual) if actual == expected => {
+                info!(
+                    "Validated balance-history DB identity: schema_version={}, data_model_version={}, btc_network={}, btc_genesis_hash={}",
+                    actual.schema_version,
+                    actual.data_model_version,
+                    actual.btc_network,
+                    actual.btc_genesis_hash
+                );
+                Ok(())
+            }
+            Some(actual) => {
+                let msg = format!(
+                    "Balance-history DB identity mismatch at {}: expected {:?}, found {:?}. Use a separate data directory or rebuild the database.",
+                    self.file.display(),
+                    expected,
+                    actual
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+            None if self.has_any_persisted_data()? => {
+                let msg = format!(
+                    "Balance-history DB at {} contains data but has no DB identity. This data predates the current schema/data model and must be rebuilt.",
+                    self.file.display()
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+            None => self.put_db_identity(&expected),
+        }
+    }
+
+    fn has_any_persisted_data(&self) -> Result<bool, String> {
+        let mut default_iter = self.db.iterator(IteratorMode::Start);
+        if let Some(item) = default_iter.next() {
+            item.map_err(|e| {
+                let msg = format!(
+                    "Failed to inspect default column family while initializing DB identity: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+            return Ok(true);
+        }
+
+        for cf_name in BALANCE_HISTORY_COLUMN_FAMILIES {
+            let cf = self.db.cf_handle(cf_name).ok_or_else(|| {
+                let msg = format!("Column family {} not found", cf_name);
+                error!("{}", msg);
+                msg
+            })?;
+            let mut iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+            if let Some(item) = iter.next() {
+                item.map_err(|e| {
+                    let msg = format!(
+                        "Failed to inspect column family {} while initializing DB identity: {}",
+                        cf_name, e
+                    );
+                    error!("{}", msg);
+                    msg
+                })?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn put_db_identity(&self, identity: &BalanceHistoryDBIdentity) -> Result<(), String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let encoded = serde_json::to_vec(identity).map_err(|e| {
+            let msg = format!("Failed to serialize balance-history DB identity: {}", e);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(true);
+        self.db
+            .put_cf_opt(cf, META_KEY_DB_IDENTITY, encoded, &write_options)
+            .map_err(|e| {
+                let msg = format!("Failed to persist balance-history DB identity: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
+        info!(
+            "Initialized balance-history DB identity: schema_version={}, data_model_version={}, btc_network={}, btc_genesis_hash={}",
+            identity.schema_version,
+            identity.data_model_version,
+            identity.btc_network,
+            identity.btc_genesis_hash
+        );
+        Ok(())
+    }
+
+    /// Returns the immutable identity bound to this RocksDB instance.
+    pub fn get_db_identity(&self) -> Result<Option<BalanceHistoryDBIdentity>, String> {
+        self.get_json_meta(META_KEY_DB_IDENTITY)
     }
 
     pub fn get_mode(&self) -> BalanceHistoryDBMode {
@@ -301,35 +482,21 @@ impl BalanceHistoryDB {
     }
 
     fn get_cf_descriptors_on_mode(mode: BalanceHistoryDBMode) -> Vec<ColumnFamilyDescriptor> {
-        // Define column families
-        vec![
-            ColumnFamilyDescriptor::new(
-                BALANCE_HISTORY_CF,
-                Self::get_balance_history_cf_opts_on_mode(mode),
-            ),
-            ColumnFamilyDescriptor::new(META_CF, Options::default()),
-            ColumnFamilyDescriptor::new(UTXO_CF, Self::get_utxo_cf_opts_on_mode(mode)),
-            ColumnFamilyDescriptor::new(
-                SCRIPT_REGISTRY_CF,
-                Self::get_script_registry_cf_opts_on_mode(mode),
-            ),
-            ColumnFamilyDescriptor::new(BLOCKS_CF, Options::default()),
-            ColumnFamilyDescriptor::new(BLOCK_HEIGHTS_CF, Options::default()),
-            ColumnFamilyDescriptor::new(BLOCK_COMMITS_CF, Options::default()),
-            ColumnFamilyDescriptor::new(BLOCK_UNDO_META_CF, Options::default()),
-            ColumnFamilyDescriptor::new(
-                BLOCK_UNDO_CREATED_UTXOS_CF,
-                Self::get_block_undo_height_cf_opts(),
-            ),
-            ColumnFamilyDescriptor::new(
-                BLOCK_UNDO_SPENT_UTXOS_CF,
-                Self::get_block_undo_height_cf_opts(),
-            ),
-            ColumnFamilyDescriptor::new(
-                BLOCK_UNDO_BALANCE_INDEX_CF,
-                Self::get_block_undo_height_cf_opts(),
-            ),
-        ]
+        BALANCE_HISTORY_COLUMN_FAMILIES
+            .into_iter()
+            .map(|name| {
+                let options = match name {
+                    BALANCE_HISTORY_CF => Self::get_balance_history_cf_opts_on_mode(mode),
+                    UTXO_CF => Self::get_utxo_cf_opts_on_mode(mode),
+                    SCRIPT_REGISTRY_CF => Self::get_script_registry_cf_opts_on_mode(mode),
+                    BLOCK_UNDO_CREATED_UTXOS_CF
+                    | BLOCK_UNDO_SPENT_UTXOS_CF
+                    | BLOCK_UNDO_BALANCE_INDEX_CF => Self::get_block_undo_height_cf_opts(),
+                    _ => Options::default(),
+                };
+                ColumnFamilyDescriptor::new(name, options)
+            })
+            .collect()
     }
 
     fn get_block_undo_height_cf_opts() -> Options {
@@ -1379,6 +1546,20 @@ impl BalanceHistoryDB {
     }
 
     pub fn rollback_one_block(&self, block_height: u32) -> Result<(), String> {
+        if self.get_rollback_state()?.is_some() {
+            let msg = "Cannot call rollback_one_block while a multi-block rollback is in progress"
+                .to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+        self.rollback_one_block_atomic(block_height, None)
+    }
+
+    fn rollback_one_block_atomic(
+        &self,
+        block_height: u32,
+        progress_next_height: Option<u32>,
+    ) -> Result<(), String> {
         let current_height = self.get_btc_block_height()?;
         if current_height != block_height {
             let msg = format!(
@@ -1442,6 +1623,21 @@ impl BalanceHistoryDB {
         self.append_delete_block_undo_bundle_to_batch(&mut batch, block_height)?;
 
         let previous_height = block_height.saturating_sub(1);
+        if let Some(progress_next_height) = progress_next_height {
+            if progress_next_height != previous_height {
+                let msg = format!(
+                    "Invalid atomic rollback progress update at height {}: expected {}, got {}",
+                    block_height, previous_height, progress_next_height
+                );
+                error!("{}", msg);
+                return Err(msg);
+            }
+            batch.put_cf(
+                meta_cf,
+                META_KEY_ROLLBACK_NEXT_HEIGHT,
+                progress_next_height.to_be_bytes(),
+            );
+        }
         batch.put_cf(
             meta_cf,
             META_KEY_BTC_BLOCK_HEIGHT,
@@ -1461,6 +1657,13 @@ impl BalanceHistoryDB {
 
     // Roll back committed forward state down to the inclusive target height.
     pub fn rollback_to_block_height(&self, target_height: u32) -> Result<(), String> {
+        if self.get_rollback_state()?.is_some() {
+            let msg = "A rollback is already in progress; resume it before starting another one"
+                .to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         let current_height = self.get_btc_block_height()?;
         if target_height > current_height {
             let msg = format!(
@@ -1477,16 +1680,14 @@ impl BalanceHistoryDB {
 
         self.ensure_rollback_undo_available(target_height, current_height)?;
 
-        self.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1)?;
-        self.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, target_height)?;
-        self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, current_height)?;
+        self.begin_rollback(target_height, current_height)?;
 
         let result = (|| {
             let mut next_height = current_height;
             while next_height > target_height {
-                self.rollback_one_block(next_height)?;
-                next_height -= 1;
-                self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, next_height)?;
+                let previous_height = next_height - 1;
+                self.rollback_one_block_atomic(next_height, Some(previous_height))?;
+                next_height = previous_height;
             }
             Ok::<(), String>(())
         })();
@@ -1502,50 +1703,18 @@ impl BalanceHistoryDB {
 
     // Resume an interrupted rollback using persisted rollback meta state.
     pub fn resume_rollback_if_needed(&self) -> Result<bool, String> {
-        if self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? != Some(1) {
+        let Some(state) = self.get_rollback_state()? else {
             return Ok(false);
-        }
-
-        let target_height = self
-            .get_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT)?
-            .ok_or_else(|| {
-                let msg = "Missing rollback_target_height while rollback_in_progress=1".to_string();
-                error!("{}", msg);
-                msg
-            })?;
-        let mut next_height = self
-            .get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT)?
-            .ok_or_else(|| {
-                let msg = "Missing rollback_next_height while rollback_in_progress=1".to_string();
-                error!("{}", msg);
-                msg
-            })?;
-        let current_height = self.get_btc_block_height()?;
-
-        if next_height != current_height {
-            let msg = format!(
-                "Rollback resume state mismatch: rollback_next_height={}, current_height={}",
-                next_height, current_height
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
-
-        if target_height > next_height {
-            let msg = format!(
-                "Invalid rollback resume state: target_height {} > next_height {}",
-                target_height, next_height
-            );
-            error!("{}", msg);
-            return Err(msg);
-        }
+        };
+        let target_height = state.target_height;
+        let mut next_height = state.next_height;
 
         self.ensure_rollback_undo_available(target_height, next_height)?;
 
         while next_height > target_height {
-            self.rollback_one_block(next_height)?;
-            next_height -= 1;
-            self.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, next_height)?;
+            let previous_height = next_height - 1;
+            self.rollback_one_block_atomic(next_height, Some(previous_height))?;
+            next_height = previous_height;
         }
 
         self.clear_rollback_state()?;
@@ -1553,11 +1722,11 @@ impl BalanceHistoryDB {
     }
 
     pub fn is_rollback_in_progress(&self) -> Result<bool, String> {
-        Ok(self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? == Some(1))
+        Ok(self.get_rollback_state()?.is_some())
     }
 
     pub fn prune_undo_before_height(&self, min_retained_height: u32) -> Result<usize, String> {
-        if self.get_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS)? == Some(1) {
+        if self.is_rollback_in_progress()? {
             warn!(
                 "Skipping undo prune while rollback is in progress: min_retained_height={}",
                 min_retained_height
@@ -1903,24 +2072,131 @@ impl BalanceHistoryDB {
         })
     }
 
-    fn delete_meta_key(&self, key: &str) -> Result<(), String> {
+    fn begin_rollback(&self, target_height: u32, current_height: u32) -> Result<(), String> {
+        if target_height >= current_height {
+            let msg = format!(
+                "Invalid rollback state initialization: target_height {} must be below current_height {}",
+                target_height, current_height
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        if self.get_rollback_state()?.is_some() {
+            let msg = "Cannot initialize rollback state while another rollback is in progress"
+                .to_string();
+            error!("{}", msg);
+            return Err(msg);
+        }
+
         let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", META_CF);
             error!("{}", msg);
             msg
         })?;
-        self.db.delete_cf(cf, key).map_err(|e| {
-            let msg = format!("Failed to delete meta key {}: {}", key, e);
+        let mut batch = WriteBatch::default();
+        batch.put_cf(cf, META_KEY_ROLLBACK_IN_PROGRESS, 1u32.to_be_bytes());
+        batch.put_cf(
+            cf,
+            META_KEY_ROLLBACK_TARGET_HEIGHT,
+            target_height.to_be_bytes(),
+        );
+        batch.put_cf(
+            cf,
+            META_KEY_ROLLBACK_NEXT_HEIGHT,
+            current_height.to_be_bytes(),
+        );
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!(
+                "Failed to initialize atomic rollback state from {} to {}: {}",
+                current_height, target_height, e
+            );
             error!("{}", msg);
             msg
         })
     }
 
+    fn get_rollback_state(&self) -> Result<Option<RollbackState>, String> {
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        // Read the complete recovery tuple and durable height from one sequence number. This
+        // prevents concurrent readiness checks from combining values across a rollback batch.
+        let snapshot = self.db.snapshot();
+        let get_u32 = |key: &str| -> Result<Option<u32>, String> {
+            match snapshot.get_cf(&cf, key) {
+                Ok(Some(value)) => Self::decode_u32_meta_value(key, value.as_slice()).map(Some),
+                Ok(None) => Ok(None),
+                Err(e) => {
+                    let msg = format!("Failed to read rollback meta key {}: {}", key, e);
+                    error!("{}", msg);
+                    Err(msg)
+                }
+            }
+        };
+
+        let in_progress = get_u32(META_KEY_ROLLBACK_IN_PROGRESS)?;
+        let target_height = get_u32(META_KEY_ROLLBACK_TARGET_HEIGHT)?;
+        let next_height = get_u32(META_KEY_ROLLBACK_NEXT_HEIGHT)?;
+
+        match (in_progress, target_height, next_height) {
+            (None, None, None) => Ok(None),
+            (Some(1), Some(target_height), Some(next_height)) => {
+                if target_height > next_height {
+                    let msg = format!(
+                        "Invalid rollback state: target_height {} > next_height {}",
+                        target_height, next_height
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                let current_height = get_u32(META_KEY_BTC_BLOCK_HEIGHT)?.unwrap_or(0);
+                if next_height != current_height {
+                    let msg = format!(
+                        "Rollback state is not atomic with durable height: next_height={}, current_height={}",
+                        next_height, current_height
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+
+                Ok(Some(RollbackState {
+                    target_height,
+                    next_height,
+                }))
+            }
+            state => {
+                let msg = format!(
+                    "Incomplete or invalid rollback state tuple: in_progress={:?}, target_height={:?}, next_height={:?}",
+                    state.0, state.1, state.2
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
+    }
+
     fn clear_rollback_state(&self) -> Result<(), String> {
-        self.delete_meta_key(META_KEY_ROLLBACK_IN_PROGRESS)?;
-        self.delete_meta_key(META_KEY_ROLLBACK_TARGET_HEIGHT)?;
-        self.delete_meta_key(META_KEY_ROLLBACK_NEXT_HEIGHT)?;
-        Ok(())
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut batch = WriteBatch::default();
+        batch.delete_cf(cf, META_KEY_ROLLBACK_IN_PROGRESS);
+        batch.delete_cf(cf, META_KEY_ROLLBACK_TARGET_HEIGHT);
+        batch.delete_cf(cf, META_KEY_ROLLBACK_NEXT_HEIGHT);
+        let mut write_options = WriteOptions::default();
+        write_options.set_sync(false);
+        self.db.write_opt(&batch, &write_options).map_err(|e| {
+            let msg = format!("Failed to clear atomic rollback state: {}", e);
+            error!("{}", msg);
+            msg
+        })
     }
 
     fn get_u32_meta(&self, key: &str) -> Result<Option<u32>, String> {
@@ -1930,20 +2206,7 @@ impl BalanceHistoryDB {
             msg
         })?;
         match self.db.get_cf(cf, key) {
-            Ok(Some(value)) => {
-                if value.len() != 4 {
-                    let msg = format!(
-                        "Invalid meta value length for key {}: expected 4, got {}",
-                        key,
-                        value.len()
-                    );
-                    error!("{}", msg);
-                    return Err(msg);
-                }
-                Ok(Some(u32::from_be_bytes(
-                    value.as_slice().try_into().unwrap(),
-                )))
-            }
+            Ok(Some(value)) => Self::decode_u32_meta_value(key, value.as_slice()).map(Some),
             Ok(None) => Ok(None),
             Err(e) => {
                 let msg = format!("Failed to read meta key {}: {}", key, e);
@@ -1951,6 +2214,19 @@ impl BalanceHistoryDB {
                 Err(msg)
             }
         }
+    }
+
+    fn decode_u32_meta_value(key: &str, value: &[u8]) -> Result<u32, String> {
+        if value.len() != 4 {
+            let msg = format!(
+                "Invalid meta value length for key {}: expected 4, got {}",
+                key,
+                value.len()
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        Ok(u32::from_be_bytes(value.try_into().unwrap()))
     }
 
     fn get_json_meta<T: serde::de::DeserializeOwned>(
@@ -3493,10 +3769,130 @@ pub type SnapshotCallbackRef = std::sync::Arc<Box<dyn SnapshotCallback>>;
 mod tests {
     use super::*;
     use crate::config::BalanceHistoryConfig;
-    use bitcoincore_rpc::bitcoin::ScriptBuf;
     use bitcoincore_rpc::bitcoin::hashes::Hash;
+    use bitcoincore_rpc::bitcoin::{Network, ScriptBuf};
     use std::sync::{Arc, Mutex};
     use usdb_util::ToBtcScriptHash;
+
+    #[test]
+    fn test_db_identity_initializes_and_reopens_on_same_network() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_identity_reopen_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        config.btc.network = Network::Regtest;
+        let config = Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let expected = BalanceHistoryDBIdentity::for_network(config.btc.network());
+        assert_eq!(db.get_db_identity().unwrap(), Some(expected.clone()));
+        drop(db);
+
+        let reopened = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert_eq!(reopened.get_db_identity().unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn test_db_identity_rejects_network_mismatch() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_identity_network_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        config.btc.network = Network::Bitcoin;
+        let config = Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        drop(db);
+
+        let mut wrong_network = config.as_ref().clone();
+        wrong_network.btc.network = Network::Regtest;
+        let error = BalanceHistoryDB::open(Arc::new(wrong_network), BalanceHistoryDBMode::Normal)
+            .err()
+            .unwrap();
+        assert!(error.contains("DB identity mismatch"));
+        assert!(error.contains("Use a separate data directory or rebuild"));
+    }
+
+    #[test]
+    fn test_db_identity_rejects_data_model_mismatch() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_identity_model_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        let mut incompatible = BalanceHistoryDBIdentity::for_network(config.btc.network());
+        incompatible.data_model_version = "balance-history-data-model:legacy-v0".to_string();
+        db.put_db_identity(&incompatible).unwrap();
+        drop(db);
+
+        let error = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal)
+            .err()
+            .unwrap();
+        assert!(error.contains("DB identity mismatch"));
+        assert!(error.contains("balance-history-data-model:legacy-v0"));
+    }
+
+    #[test]
+    fn test_db_identity_rejects_nonempty_legacy_database() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_identity_legacy_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+        std::fs::create_dir_all(config.db_dir()).unwrap();
+        let file = config.db_dir().join("balance_history");
+
+        let raw_db = DB::open_cf_descriptors(
+            &BalanceHistoryDB::get_options_on_mode(BalanceHistoryDBMode::Normal),
+            &file,
+            BalanceHistoryDB::get_cf_descriptors_on_mode(BalanceHistoryDBMode::Normal),
+        )
+        .unwrap();
+        let meta_cf = raw_db.cf_handle(META_CF).unwrap();
+        raw_db
+            .put_cf(meta_cf, META_KEY_BTC_BLOCK_HEIGHT, 1u32.to_be_bytes())
+            .unwrap();
+        drop(raw_db);
+
+        let error = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal)
+            .err()
+            .unwrap();
+        assert!(error.contains("contains data but has no DB identity"));
+        assert!(error.contains("must be rebuilt"));
+    }
+
+    #[test]
+    fn test_db_identity_rejects_legacy_data_in_default_column_family() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_identity_default_cf_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+        std::fs::create_dir_all(config.db_dir()).unwrap();
+        let file = config.db_dir().join("balance_history");
+
+        let raw_db = DB::open_cf_descriptors(
+            &BalanceHistoryDB::get_options_on_mode(BalanceHistoryDBMode::Normal),
+            &file,
+            BalanceHistoryDB::get_cf_descriptors_on_mode(BalanceHistoryDBMode::Normal),
+        )
+        .unwrap();
+        raw_db.put(b"legacy-default-key", b"legacy-value").unwrap();
+        drop(raw_db);
+
+        let error = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal)
+            .err()
+            .unwrap();
+        assert!(error.contains("contains data but has no DB identity"));
+        assert!(error.contains("must be rebuilt"));
+    }
 
     #[test]
     fn test_make_and_parse_key() {
@@ -4653,11 +5049,19 @@ mod tests {
             .unwrap();
         }
 
-        db.rollback_one_block(13).unwrap();
-        db.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1).unwrap();
-        db.put_u32_meta(META_KEY_ROLLBACK_TARGET_HEIGHT, 11)
-            .unwrap();
-        db.put_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT, 12).unwrap();
+        db.begin_rollback(11, 13).unwrap();
+        db.rollback_one_block_atomic(13, Some(12)).unwrap();
+        assert_eq!(db.get_btc_block_height().unwrap(), 12);
+        assert_eq!(
+            db.get_rollback_state().unwrap(),
+            Some(RollbackState {
+                target_height: 11,
+                next_height: 12,
+            })
+        );
+
+        drop(db);
+        let db = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
 
         let resumed = db.resume_rollback_if_needed().unwrap();
         assert!(resumed);
@@ -4676,5 +5080,86 @@ mod tests {
             db.get_u32_meta(META_KEY_ROLLBACK_NEXT_HEIGHT).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn test_rollback_state_tuple_fails_closed_when_incomplete() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_rollback_state_tuple_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let db = BalanceHistoryDB::open(std::sync::Arc::new(config), BalanceHistoryDBMode::Normal)
+            .unwrap();
+
+        db.put_u32_meta(META_KEY_ROLLBACK_IN_PROGRESS, 1).unwrap();
+
+        let error = db.resume_rollback_if_needed().unwrap_err();
+        assert!(error.contains("Incomplete or invalid rollback state tuple"));
+    }
+
+    #[test]
+    fn test_resume_rollback_clears_state_after_final_block_was_already_reverted() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir =
+            std::env::temp_dir().join("balance_history_rollback_final_clear_resume_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let config = Arc::new(config);
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+
+        let script_hash = ScriptBuf::from(vec![12u8; 32]).to_btc_script_hash();
+        let outpoint = OutPoint {
+            txid: Txid::from_slice(&[12u8; 32]).unwrap(),
+            vout: 0,
+        };
+        let commit = BlockCommitEntry {
+            block_height: 12,
+            btc_block_hash: BlockHash::from_slice(&[12u8; 32]).unwrap(),
+            balance_delta_root: [12u8; 32],
+            block_commit: [12u8; 32],
+        };
+        let undo = BlockUndoBundle {
+            block_height: 12,
+            btc_block_hash: commit.btc_block_hash,
+            created_utxos: vec![BlockUndoUtxoEntry {
+                outpoint,
+                script_hash,
+                value: 12,
+            }],
+            spent_utxos: Vec::new(),
+            touched_script_hashes: vec![script_hash],
+        };
+        db.update_block_state_with_undo_async(
+            &[(
+                Arc::new(outpoint),
+                Arc::new(UTXOValue {
+                    script_hash,
+                    value: 12,
+                }),
+            )],
+            &[],
+            &[BalanceHistoryEntry {
+                script_hash,
+                block_height: 12,
+                delta: 12,
+                balance: 12,
+            }],
+            12,
+            &[commit],
+            &[undo],
+        )
+        .unwrap();
+
+        db.begin_rollback(11, 12).unwrap();
+        db.rollback_one_block_atomic(12, Some(11)).unwrap();
+        assert_eq!(db.get_btc_block_height().unwrap(), 11);
+        drop(db);
+
+        let reopened = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
+        assert!(reopened.resume_rollback_if_needed().unwrap());
+        assert!(!reopened.is_rollback_in_progress().unwrap());
+        assert_eq!(reopened.get_btc_block_height().unwrap(), 11);
     }
 }
