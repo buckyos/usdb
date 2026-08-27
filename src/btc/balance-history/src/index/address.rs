@@ -137,8 +137,8 @@ impl AddressIndexer {
             let mut records: Vec<(BtcScriptHash, ScriptBuf)> = Vec::new();
             for tx in &block.txdata {
                 for output in &tx.output {
-                    // Skip OP_RETURN outputs
-                    if output.script_pubkey.is_op_return() {
+                    // Keep the auxiliary registry aligned with the canonical UTXO view.
+                    if usdb_util::is_core_unspendable(&output.script_pubkey) {
                         continue;
                     }
 
@@ -236,8 +236,8 @@ impl BlockFileIndexerCallback<Option<Vec<(BtcScriptHash, ScriptBuf)>>> for Addre
         if let Some(records) = records.as_mut() {
             for tx in &block.txdata {
                 for output in &tx.output {
-                    // Skip OP_RETURN outputs
-                    if output.script_pubkey.is_op_return() {
+                    // Keep the auxiliary registry aligned with the canonical UTXO view.
+                    if usdb_util::is_core_unspendable(&output.script_pubkey) {
                         continue;
                     }
 

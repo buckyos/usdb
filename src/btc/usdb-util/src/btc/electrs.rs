@@ -1,5 +1,5 @@
 use crate::types::BalanceHistoryData;
-use crate::{BtcScriptHash, ToBtcScriptHash};
+use crate::{BtcScriptHash, ToBtcScriptHash, is_core_unspendable};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
 use bitcoincore_rpc::bitcoin::{Script, ScriptBuf, Transaction, Txid};
 use electrum_client::{Client, ElectrumApi, GetBalanceRes, GetHistoryRes, Param};
@@ -39,7 +39,9 @@ impl TxFullItem {
         }
 
         for vout in &self.vout {
-            if vout.script_pubkey.to_btc_script_hash() == *script_hash {
+            if !is_core_unspendable(&vout.script_pubkey)
+                && vout.script_pubkey.to_btc_script_hash() == *script_hash
+            {
                 delta += vout.value.to_sat() as i64;
                 if script_buf.is_none() {
                     script_buf = Some(vout.script_pubkey.clone());
@@ -47,13 +49,14 @@ impl TxFullItem {
             }
         }
 
-        assert!(
-            script_buf.is_some(),
-            "Script buffer not found for script hash {} in transaction",
-            script_hash
-        );
+        let script_buf = script_buf.ok_or_else(|| {
+            format!(
+                "Spendable script not found for script hash {} in transaction",
+                script_hash
+            )
+        })?;
 
-        Ok((delta, script_buf.unwrap()))
+        Ok((delta, script_buf))
     }
 }
 
@@ -192,12 +195,15 @@ impl ElectrsClient {
             if script_buf.is_none() {
                 script_buf = Some(script_buf_inner);
             }
-            balance += delta;
-            assert!(
-                balance >= 0,
-                "Balance went negative for script hash {}",
-                script_hash
-            );
+            balance = balance
+                .checked_add(delta)
+                .ok_or_else(|| format!("Balance overflow for script hash {}", script_hash))?;
+            if balance < 0 {
+                return Err(format!(
+                    "Balance went negative for script hash {} at block height {}",
+                    script_hash, item.height
+                ));
+            }
         }
 
         info!(
@@ -205,9 +211,15 @@ impl ElectrsClient {
             script_hash, block_height, balance
         );
 
+        let script_buf = script_buf.ok_or_else(|| {
+            format!(
+                "No spendable confirmed history found for script hash {} at block height {}",
+                script_hash, block_height
+            )
+        })?;
         let ret = ElectrsBalanceHistory {
             balance: balance as u64,
-            script_buf: script_buf.unwrap(),
+            script_buf,
         };
         Ok(ret)
     }
@@ -235,12 +247,15 @@ impl ElectrsClient {
             if script_buf.is_none() {
                 script_buf = Some(script_buf_inner);
             }
-            balance += delta;
-            assert!(
-                balance >= 0,
-                "Balance went negative for script hash {}",
-                script_hash
-            );
+            balance = balance
+                .checked_add(delta)
+                .ok_or_else(|| format!("Balance overflow for script hash {}", script_hash))?;
+            if balance < 0 {
+                return Err(format!(
+                    "Balance went negative for script hash {} at block height {}",
+                    script_hash, item.height
+                ));
+            }
 
             let data = BalanceHistoryData {
                 block_height: item.height as u32,
@@ -256,9 +271,15 @@ impl ElectrsClient {
             result.len()
         );
 
+        let script_buf = script_buf.ok_or_else(|| {
+            format!(
+                "No spendable confirmed history found for script hash {} at block height {}",
+                script_hash, block_height
+            )
+        })?;
         let ret = ElectrsBalanceHistoryList {
             history: result,
-            script_buf: script_buf.unwrap(),
+            script_buf,
         };
         Ok(ret)
     }
@@ -319,8 +340,42 @@ pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::{Address, Network, Txid};
+    use bitcoincore_rpc::bitcoin::{Address, Amount, Network, Txid};
     use std::str::FromStr;
+
+    #[test]
+    fn amount_delta_excludes_core_unspendable_outputs() {
+        let oversized_script = ScriptBuf::from(vec![0x51; 10_001]);
+        let script_hash = oversized_script.to_btc_script_hash();
+        let tx = TxFullItem {
+            vin: Vec::new(),
+            vout: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: oversized_script,
+            }],
+        };
+
+        let error = tx.amount_delta_from_tx(&script_hash).unwrap_err();
+        assert!(error.contains("Spendable script not found"));
+    }
+
+    #[test]
+    fn amount_delta_keeps_nonstandard_but_core_spendable_scripts() {
+        let script = ScriptBuf::from(vec![0x51, 0x51]);
+        let script_hash = script.to_btc_script_hash();
+        let tx = TxFullItem {
+            vin: Vec::new(),
+            vout: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: script.clone(),
+            }],
+        };
+
+        assert_eq!(
+            tx.amount_delta_from_tx(&script_hash).unwrap(),
+            (50_000, script)
+        );
+    }
 
     #[tokio::test]
     #[ignore = "Requires Electrs server running at tcp://127.0.0.1:50001 and specific transactions in the history"]

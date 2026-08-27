@@ -131,6 +131,11 @@
 2. 普通查询是否可用；
 3. 当前 stable snapshot 是否可被下游用于共识消费。
 
+`query_ready=false` 时，普通 DB 查询不是“仍可尝试”的软提示：服务会对余额、历史、UTXO、
+block commit、snapshot/state-ref 和 script registry 查询返回结构化
+`SNAPSHOT_NOT_READY`。`get_network_type`、`get_sync_status`、`get_readiness`、
+`get_snapshot_provenance` 与 `stop` 保持可访问，用于探活、诊断和恢复操作。
+
 请求：
 
 ```json

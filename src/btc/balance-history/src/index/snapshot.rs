@@ -1887,6 +1887,8 @@ mod tests {
         );
 
         let status = Arc::new(SyncStatusManager::new());
+        status.set_rpc_alive(true);
+        status.update_phase(crate::status::SyncPhase::Indexing, None);
         let (shutdown_tx, _) = watch::channel(());
         let rpc_server = BalanceHistoryRpcServer::new(
             config.clone(),
@@ -1894,6 +1896,15 @@ mod tests {
             status,
             Arc::new(reopened_db),
             shutdown_tx,
+        );
+
+        let readiness = rpc_server.get_readiness().unwrap();
+        assert!(readiness.query_ready);
+        assert!(!readiness.consensus_ready);
+        assert!(
+            readiness
+                .blockers
+                .contains(&crate::ReadinessBlocker::SnapshotInstallUnverified)
         );
 
         let snapshot = rpc_server.get_snapshot_info().unwrap();

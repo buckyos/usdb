@@ -518,6 +518,13 @@ snapshot 的发布身份和安装后的 RocksDB identity 是两层不同约束�
 fail closed；非空但没有 identity 的旧数据库也会被拒绝。当前仍处于开发阶段，不提供旧数据
 迁移：应移动或删除旧 RocksDB 后从创世重建，或者向空 root 安装使用当前代码生成的 snapshot。
 
+当前 data model 为
+`balance-history-data-model:bip30-generations-core-unspendable-v2`。其中 unspendable 与
+Bitcoin Core `CScript::IsUnspendable()` 完全一致：首字节为 `OP_RETURN`，或 script 长度大于
+10,000 bytes 的输出都不进入 UTXO、余额历史和辅助 script registry。不要使用
+rust-bitcoin deprecated `is_provably_unspendable` 替代该规则；后者还包含 illegal opcode，
+语义更宽。该变化会影响 rolling block commit，因此旧 data-model snapshot 必须重建。
+
 SQLite meta 与 manifest 必须携带完全相同的 source DB identity；signed manifest 的文件哈希和
 签名同时覆盖 SQLite 文件及 manifest identity。snapshot install 还会先创建新的 staging
 RocksDB，写入接收节点当前配置的 expected identity，并要求 expected、SQLite、manifest、

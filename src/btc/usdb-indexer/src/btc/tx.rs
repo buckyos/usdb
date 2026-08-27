@@ -1,7 +1,7 @@
 use super::utxo::UTXOValueManager;
 use bitcoincore_rpc::bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, Txid};
 use ordinals::SatPoint;
-use usdb_util::{BtcScriptHash, ToBtcScriptHash};
+use usdb_util::{BtcScriptHash, ToBtcScriptHash, is_core_unspendable};
 
 pub struct TxItem {
     pub txid: Txid,
@@ -11,12 +11,13 @@ pub struct TxItem {
 pub struct SatPointResult {
     pub satpoint: SatPoint,
     pub value: Amount,
-    // None means the sat has no usable owner because it was lost to fees or sent to OP_RETURN.
+    // None means the sat has no usable owner because it was lost to fees or sent to a
+    // Bitcoin Core unspendable output.
     pub address: Option<BtcScriptHash>,
 }
 
 fn usable_owner(script_pubkey: &ScriptBuf) -> Option<BtcScriptHash> {
-    (!script_pubkey.is_op_return()).then(|| script_pubkey.to_btc_script_hash())
+    (!is_core_unspendable(script_pubkey)).then(|| script_pubkey.to_btc_script_hash())
 }
 
 impl TxItem {
@@ -111,9 +112,12 @@ mod tests {
     use bitcoincore_rpc::bitcoin::{opcodes::all::OP_RETURN, script::Builder};
 
     #[test]
-    fn test_usable_owner_rejects_op_return() {
+    fn test_usable_owner_rejects_core_unspendable_scripts() {
         let burn_script = Builder::new().push_opcode(OP_RETURN).into_script();
         assert_eq!(usable_owner(&burn_script), None);
+
+        let oversized_script = ScriptBuf::from(vec![0x51; 10_001]);
+        assert_eq!(usable_owner(&oversized_script), None);
 
         let spendable_script = ScriptBuf::new();
         assert_eq!(

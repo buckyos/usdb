@@ -525,8 +525,8 @@ impl BatchBlockPreloader {
                 }
 
                 for (n, vout) in tx.output.iter().enumerate() {
-                    // Skip outputs that cannot be spent
-                    if vout.script_pubkey.is_op_return() {
+                    // Match Bitcoin Core's UTXO exclusion semantics exactly.
+                    if usdb_util::is_core_unspendable(&vout.script_pubkey) {
                         continue;
                     }
 

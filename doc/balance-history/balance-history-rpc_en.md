@@ -78,6 +78,12 @@ Returns structured readiness state for:
 Downstream callers should gate on `consensus_ready=true` instead of treating
 `get_network_type` reachability as readiness.
 
+`query_ready=false` is enforced by the server, not merely advisory. Ordinary
+DB-backed balance, history, UTXO, block-commit, snapshot/state-ref, and script
+registry queries fail closed with `SNAPSHOT_NOT_READY`. Liveness, status,
+readiness, snapshot provenance, and shutdown endpoints remain available for
+diagnostics and recovery.
+
 The response also exposes `balance_query_floor` and `history_query_floor`, with
 the same semantics as `get_snapshot_info` below.
 

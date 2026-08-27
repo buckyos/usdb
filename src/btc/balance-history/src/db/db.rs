@@ -52,7 +52,7 @@ pub const BALANCE_HISTORY_DB_IDENTITY_VERSION: &str = "balance-history-db-identi
 pub const BALANCE_HISTORY_DB_SCHEMA_VERSION: &str = "balance-history-rocksdb-schema:v1";
 /// Indexed Bitcoin state model version, including BIP30 duplicate-txid generations.
 pub const BALANCE_HISTORY_DATA_MODEL_VERSION: &str =
-    "balance-history-data-model:bip30-generations-v1";
+    "balance-history-data-model:bip30-generations-core-unspendable-v2";
 
 const BALANCE_HISTORY_COLUMN_FAMILIES: [&str; 11] = [
     BALANCE_HISTORY_CF,

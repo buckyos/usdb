@@ -138,6 +138,8 @@ struct FakeScenario {
     script_e: ScriptBuf,
     script_f: ScriptBuf,
     op_return_script: ScriptBuf,
+    oversized_script: ScriptBuf,
+    oversized_outpoint: OutPoint,
     outpoint_b: OutPoint,
     outpoint_c: OutPoint,
     outpoint_d: OutPoint,
@@ -156,15 +158,21 @@ fn build_scenario() -> FakeScenario {
     let miner_3 = script(8);
     let miner_3_reorg = script(9);
     let op_return_script = op_return_script(99);
+    let oversized_script = ScriptBuf::from(vec![0x51; 10_001]);
 
     let genesis_coinbase = coinbase_tx(0, vec![output(50, &script(0))]);
     let genesis_block = block(BlockHash::all_zeros(), 0, vec![genesis_coinbase]);
 
     let coinbase_1 = coinbase_tx(
         1,
-        vec![output(100, &script_a), output(0, &op_return_script)],
+        vec![
+            output(100, &script_a),
+            output(0, &op_return_script),
+            output(10, &oversized_script),
+        ],
     );
     let outpoint_a = outpoint(&coinbase_1, 0);
+    let oversized_outpoint = outpoint(&coinbase_1, 2);
     let block_1 = block(genesis_block.block_hash(), 1, vec![coinbase_1]);
 
     let spend_a = spend_tx(
@@ -235,6 +243,8 @@ fn build_scenario() -> FakeScenario {
         script_e,
         script_f,
         op_return_script,
+        oversized_script,
+        oversized_outpoint,
         outpoint_b,
         outpoint_c,
         outpoint_d,
@@ -323,7 +333,7 @@ fn process_block_batch_applies_and_rolls_back_duplicate_outpoint_generation() {
 }
 
 #[test]
-fn process_block_batch_indexes_coinbase_spends_op_return_and_registry() {
+fn process_block_batch_matches_core_unspendable_utxo_and_registry_semantics() {
     let scenario = build_scenario();
     let harness = Harness::new("process_block_batch_shapes", scenario.chain.clone(), 3);
     let db = harness.indexer.db().clone();
@@ -343,6 +353,7 @@ fn process_block_batch_indexes_coinbase_spends_op_return_and_registry() {
     assert!(db.get_utxo(&scenario.outpoint_c).unwrap().is_none());
     assert!(db.get_utxo(&scenario.outpoint_d).unwrap().is_none());
     assert!(db.get_utxo(&scenario.outpoint_e).unwrap().is_some());
+    assert!(db.get_utxo(&scenario.oversized_outpoint).unwrap().is_none());
 
     assert_registry(&db, &scenario.script_a, true);
     assert_registry(&db, &scenario.script_b, true);
@@ -350,6 +361,8 @@ fn process_block_batch_indexes_coinbase_spends_op_return_and_registry() {
     assert_registry(&db, &scenario.script_d, true);
     assert_registry(&db, &scenario.script_e, true);
     assert_registry(&db, &scenario.op_return_script, false);
+    assert_registry(&db, &scenario.oversized_script, false);
+    assert_empty_balance(&db, &scenario.oversized_script, 3);
     assert_eq!(
         db.get_block_commit(3).unwrap().unwrap().btc_block_hash,
         scenario.original_block_3.block_hash()

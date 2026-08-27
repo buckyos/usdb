@@ -1381,7 +1381,7 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 ## Balance-History 核心 Review 第二批修正
 
-状态：2026-08-26 已实现，完整回归与 clippy 通过，等待 review，尚未提交。
+状态：2026-08-26 已实现并提交：usdb `cd0442d`。
 
 - multi-block rollback 的初始化、逐块进度推进和最终状态清理分别使用单个 RocksDB
   `WriteBatch`。逐块 rollback 将 UTXO/balance/block commit/undo/current height 与
@@ -1399,3 +1399,25 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   会拒绝不兼容 artifact，signed 模式则额外由 file hash 和签名覆盖该承诺。
 - 安装后重开继续校验 identity、provenance 和 retention floor。开发期不提供旧 DB identity
   回填、SQLite schema migration 或旧 manifest 兼容；旧 balance-history 与 snapshot 必须重建。
+
+## Balance-History 核心 Review 第三批修正
+
+状态：2026-08-26 已实现，完整回归与 clippy 通过，等待 review，尚未提交。
+
+- 新增共享 `is_core_unspendable`，严格对齐 Bitcoin Core：`OP_RETURN` 或 script 长度大于
+  10,000 bytes。balance-history UTXO/余额、地址 registry、Electrs verifier oracle 和
+  usdb-indexer ordinal owner 使用同一 helper；不使用语义更宽的 rust-bitcoin deprecated
+  helper。data-model identity 升级为
+  `balance-history-data-model:bip30-generations-core-unspendable-v2`，旧 balance-history DB、
+  snapshot 和由旧 owner 语义构建的 usdb-indexer 开发库需重建。
+- balance/snapshot verifier 不再要求所有 script 都能编码成标准 BTC address；验证主键固定为
+  script hash，地址只作为可选日志标签。Electrs 返回 script 必须与请求 hash 一致且可进入 Core
+  UTXO 集；内部 cardinality、batch 长度和余额 mismatch 返回 `Err`，不再 panic。
+- `query_ready` 从观测字段升级为服务端 gate。rollback/loading/initializing/shutdown 期间，余额、
+  历史、snapshot/state-ref、block commit、live UTXO 和 script registry 查询统一返回结构化
+  `SNAPSHOT_NOT_READY`；liveness/readiness/provenance/stop 仍可用于诊断恢复。
+- 配置加载不再记录原始 TOML，避免 `BTCAuth::UserPass` 泄露到日志；启动参数的 service root
+  覆盖 config 内 root redirect。零 batch、零 undo retention/cleanup、溢出转换、无效 RPC
+  address/port、无任何 key role 的 signed snapshot 配置全部在启动前 fail closed。
+- 正式 indexer 在打开业务 DB 前比较配置 network 的 canonical genesis 与 BTC RPC height 0，
+  防止错误网络数据被写入带另一网络 identity 的空库。

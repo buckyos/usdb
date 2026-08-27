@@ -439,6 +439,7 @@ impl BalanceHistoryRpcServer {
     }
 
     fn resolve_queryable_snapshot(&self) -> Result<SnapshotInfo, JsonError> {
+        self.ensure_query_ready()?;
         let snapshot = self
             .build_snapshot_info()
             .map_err(Self::to_internal_error)?;
@@ -457,6 +458,31 @@ impl BalanceHistoryRpcServer {
         }
 
         Ok(snapshot)
+    }
+
+    fn ensure_query_ready(&self) -> Result<(), JsonError> {
+        let readiness = self.readiness_info().map_err(|e| {
+            Self::to_internal_error(format!("Failed to evaluate query readiness: {}", e))
+        })?;
+        if readiness.query_ready {
+            return Ok(());
+        }
+
+        let snapshot = self.build_snapshot_info().ok();
+        let mut data = self.build_consensus_error_data_for_state(
+            None,
+            ConsensusStateReference::default(),
+            self.build_consensus_state_reference(snapshot.as_ref()),
+            Some(format!(
+                "Balance-history queries are gated while readiness blockers are active: {:?}",
+                readiness.blockers
+            )),
+        );
+        data.consensus_ready = Some(false);
+        Err(Self::to_consensus_error(
+            ConsensusRpcErrorCode::SnapshotNotReady,
+            data,
+        ))
     }
 
     fn validate_requested_height(&self, requested_height: u32) -> Result<SnapshotInfo, JsonError> {
@@ -892,6 +918,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     }
 
     fn get_block_height(&self) -> JsonResult<u64> {
+        self.ensure_query_ready()?;
         let height = self.db.get_btc_block_height().map_err(|e| JsonError {
             code: ErrorCode::InternalError,
             message: format!("Failed to get block height: {}", e),
@@ -942,6 +969,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     }
 
     fn get_block_commit(&self, block_height: u32) -> JsonResult<Option<BlockCommitInfo>> {
+        self.ensure_query_ready()?;
         let commit = self
             .db
             .get_block_commit(block_height)
@@ -965,6 +993,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     }
 
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>> {
+        self.ensure_query_ready()?;
         if let Some(height) = params.block_height {
             self.validate_requested_height(height)?;
             // This endpoint uses at-or-before semantics:
@@ -1034,6 +1063,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         &self,
         params: GetBalancesParams,
     ) -> JsonResult<Vec<Vec<AddressBalance>>> {
+        self.ensure_query_ready()?;
         use rayon::prelude::*;
 
         let results: JsonResult<Vec<Vec<AddressBalance>>> = params
@@ -1056,6 +1086,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         &self,
         params: GetBalanceParams,
     ) -> JsonResult<Vec<Option<AddressBalance>>> {
+        self.ensure_query_ready()?;
         if let Some(height) = params.block_height {
             self.validate_requested_history_height(height)?;
             let ret = self
@@ -1122,6 +1153,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         &self,
         params: GetBalancesParams,
     ) -> JsonResult<Vec<Vec<Option<AddressBalance>>>> {
+        self.ensure_query_ready()?;
         use rayon::prelude::*;
 
         let results: JsonResult<Vec<Vec<Option<AddressBalance>>>> = params
@@ -1245,6 +1277,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
     }
 
     fn get_live_utxo(&self, outpoint: OutPoint) -> JsonResult<Option<UtxoInfo>> {
+        self.ensure_query_ready()?;
         let utxo = self.db.get_utxo(&outpoint).map_err(|e| JsonError {
             code: ErrorCode::InternalError,
             message: format!(
@@ -1266,6 +1299,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         &self,
         params: ResolveScriptHashesParams,
     ) -> JsonResult<ScriptHashResolutionResponse> {
+        self.ensure_query_ready()?;
         self.validate_script_resolution_params(&params)?;
         let include_script_pubkey = params.include_script_pubkey.unwrap_or(false);
         let network = self.config.btc.network();
@@ -1353,6 +1387,8 @@ mod tests {
         let db =
             Arc::new(BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap());
         let status = Arc::new(SyncStatusManager::new());
+        status.set_rpc_alive(true);
+        status.update_phase(crate::status::SyncPhase::Indexing, None);
         let (shutdown_tx, _) = watch::channel(());
 
         BalanceHistoryRpcServer::new(
@@ -1796,7 +1832,7 @@ mod tests {
         assert_eq!(data.service, BALANCE_HISTORY_SERVICE_NAME);
         assert_eq!(data.requested_height, Some(13));
         assert_eq!(data.upstream_stable_height, Some(12));
-        assert_eq!(data.consensus_ready, Some(false));
+        assert_eq!(data.consensus_ready, Some(true));
         assert_eq!(data.actual_state.stable_height, Some(12));
         assert_eq!(
             data.actual_state.stable_block_hash,
@@ -1880,6 +1916,10 @@ mod tests {
     #[test]
     fn test_get_readiness_defaults_to_not_ready_before_rpc_alive() {
         let server = make_test_server("readiness_defaults");
+        server.status.set_rpc_alive(false);
+        server
+            .status
+            .update_phase(crate::status::SyncPhase::Initializing, None);
 
         let readiness = server.get_readiness().unwrap();
         assert!(!readiness.rpc_alive);
@@ -2123,6 +2163,136 @@ mod tests {
                 .blockers
                 .contains(&ReadinessBlocker::RollbackInProgress)
         );
+    }
+
+    #[test]
+    fn test_db_backed_rpc_queries_fail_closed_during_rollback() {
+        let server = make_test_server("rpc_query_gate_rollback");
+        server.status.update_total(12, None);
+        server.status.update_current(12, None);
+        seed_stable_commit(&server, 12, 9);
+        server.status.set_rollback_in_progress(true);
+
+        let errors = vec![
+            server.get_block_height().unwrap_err(),
+            server.get_snapshot_info().unwrap_err(),
+            server.get_block_commit(12).unwrap_err(),
+            server.get_live_utxo(OutPoint::null()).unwrap_err(),
+            server
+                .resolve_script_hashes(ResolveScriptHashesParams {
+                    script_hashes: Vec::new(),
+                    include_script_pubkey: None,
+                })
+                .unwrap_err(),
+            server
+                .get_address_balance(GetBalanceParams {
+                    script_hash: make_script_hash(1),
+                    block_height: None,
+                    block_range: Some(12..12),
+                })
+                .unwrap_err(),
+            server
+                .get_addresses_balances(GetBalancesParams {
+                    script_hashes: Vec::new(),
+                    block_height: None,
+                    block_range: None,
+                })
+                .unwrap_err(),
+            server
+                .get_address_balance_delta(GetBalanceParams {
+                    script_hash: make_script_hash(1),
+                    block_height: None,
+                    block_range: Some(12..12),
+                })
+                .unwrap_err(),
+            server
+                .get_addresses_balances_delta(GetBalancesParams {
+                    script_hashes: Vec::new(),
+                    block_height: None,
+                    block_range: None,
+                })
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(
+                error.code,
+                JsonErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+            );
+            assert_eq!(
+                error.message,
+                ConsensusRpcErrorCode::SnapshotNotReady.as_str()
+            );
+            let data = decode_consensus_error_data(&error);
+            assert_eq!(data.consensus_ready, Some(false));
+            assert!(
+                data.detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("RollbackInProgress"))
+            );
+        }
+
+        assert!(!server.get_readiness().unwrap().query_ready);
+        assert_eq!(
+            server.get_network_type().unwrap(),
+            server.config.btc.network().to_string()
+        );
+        server.get_sync_status().unwrap();
+        server.get_snapshot_provenance().unwrap();
+        server.status.set_rollback_in_progress(false);
+        assert_eq!(server.get_block_height().unwrap(), 12);
+        assert_eq!(server.get_snapshot_info().unwrap().stable_height, 12);
+    }
+
+    #[test]
+    fn test_rpc_query_gate_covers_all_non_ready_runtime_states() {
+        for (tag, phase, rollback, shutdown, expected_blocker) in [
+            (
+                "initializing",
+                crate::status::SyncPhase::Initializing,
+                false,
+                false,
+                ReadinessBlocker::Initializing,
+            ),
+            (
+                "loading",
+                crate::status::SyncPhase::Loading,
+                false,
+                false,
+                ReadinessBlocker::Loading,
+            ),
+            (
+                "rollback",
+                crate::status::SyncPhase::Indexing,
+                true,
+                false,
+                ReadinessBlocker::RollbackInProgress,
+            ),
+            (
+                "shutdown",
+                crate::status::SyncPhase::Indexing,
+                false,
+                true,
+                ReadinessBlocker::ShutdownRequested,
+            ),
+        ] {
+            let server = make_test_server(&format!("rpc_query_gate_{}", tag));
+            seed_stable_commit(&server, 12, 9);
+            server.status.update_phase(phase, None);
+            server.status.set_rollback_in_progress(rollback);
+            server.status.set_shutdown_requested(shutdown);
+
+            let error = server.get_snapshot_info().unwrap_err();
+            assert_eq!(
+                error.code,
+                JsonErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotNotReady.code())
+            );
+            let data = decode_consensus_error_data(&error);
+            assert!(
+                data.detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains(&format!("{:?}", expected_blocker)))
+            );
+        }
     }
 
     #[test]

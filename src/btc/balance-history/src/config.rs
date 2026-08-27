@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use usdb_util::{BALANCE_HISTORY_SERVICE_HTTP_PORT, BTCConfig, ElectrsConfig, OrdConfig};
+use usdb_util::{BALANCE_HISTORY_SERVICE_HTTP_PORT, BTCAuth, BTCConfig, ElectrsConfig, OrdConfig};
 
 const MIN_CACHE_BYTES: usize = 1024 * 1024;
 const MIN_MEMORY_PRESSURE_HEADROOM_PERCENT: usize = 10;
@@ -166,6 +166,26 @@ impl IndexConfig {
 
     /// Validates cache limits before cache capacities are constructed.
     pub fn validate(&self) -> Result<(), String> {
+        if self.batch_size == 0 || self.batch_size > u32::MAX as usize {
+            return Err(format!(
+                "sync.batch_size must be in the range 1..={}, got {}",
+                u32::MAX,
+                self.batch_size
+            ));
+        }
+        if self.local_loader_threshold > u32::MAX as usize {
+            return Err(format!(
+                "sync.local_loader_threshold must not exceed {}, got {}",
+                u32::MAX,
+                self.local_loader_threshold
+            ));
+        }
+        if self.undo_retention_blocks == 0 {
+            return Err("sync.undo_retention_blocks must be greater than 0".to_string());
+        }
+        if self.undo_cleanup_interval_blocks == 0 {
+            return Err("sync.undo_cleanup_interval_blocks must be greater than 0".to_string());
+        }
         if self.utxo_max_cache_bytes < MIN_CACHE_BYTES {
             return Err(format!(
                 "sync.utxo_max_cache_bytes must be at least {} bytes",
@@ -277,6 +297,44 @@ impl Default for RpcServer {
     }
 }
 
+impl RpcServer {
+    fn validate(&self) -> Result<(), String> {
+        if self.port == 0 {
+            return Err("rpc_server.port must be greater than 0".to_string());
+        }
+        format!("{}:{}", self.host, self.port)
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| format!("Invalid rpc_server address: {}", e))?;
+        Ok(())
+    }
+}
+
+impl SnapshotConfig {
+    fn validate(&self) -> Result<(), String> {
+        for (name, path) in [
+            ("snapshot.signing_key_file", self.signing_key_file.as_ref()),
+            (
+                "snapshot.trusted_keys_file",
+                self.trusted_keys_file.as_ref(),
+            ),
+        ] {
+            if path.is_some_and(|path| path.as_os_str().is_empty()) {
+                return Err(format!("{} must not be empty", name));
+            }
+        }
+        if self.trust_mode == SnapshotTrustMode::Signed
+            && self.signing_key_file.is_none()
+            && self.trusted_keys_file.is_none()
+        {
+            return Err(
+                "snapshot.trust_mode=signed requires signing_key_file or trusted_keys_file"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
 fn get_default_root_dir() -> PathBuf {
     usdb_util::get_service_dir(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
 }
@@ -322,10 +380,7 @@ impl BalanceHistoryConfig {
                 "Config file {} does not exist. Using default configuration.",
                 path.display()
             );
-            info!(
-                "Default config: {}",
-                toml::to_string_pretty(&default_config).unwrap()
-            );
+            default_config.log_safe_summary("default");
             if let Err(error) = default_config.validate() {
                 log::error!("Invalid default balance-history configuration: {}", error);
                 return Err(error);
@@ -338,13 +393,20 @@ impl BalanceHistoryConfig {
                 log::error!("{}", msg);
                 msg
             })?;
-            info!("Config data: {}", config_data);
-
-            let config: BalanceHistoryConfig = toml::from_str(&config_data).map_err(|e| {
+            let mut config: BalanceHistoryConfig = toml::from_str(&config_data).map_err(|e| {
                 let msg = format!("Failed to parse config file {}: {}", path.display(), e);
                 log::error!("{}", msg);
                 msg
             })?;
+
+            if config.root_dir != root_dir {
+                warn!(
+                    "Ignoring config root_dir {} because the service root is fixed by startup argument {}",
+                    config.root_dir.display(),
+                    root_dir.display()
+                );
+                config.root_dir = root_dir.to_path_buf();
+            }
 
             if let Err(error) = config.validate() {
                 log::error!(
@@ -354,13 +416,23 @@ impl BalanceHistoryConfig {
                 );
                 return Err(error);
             }
+            config.log_safe_summary("file");
             Ok(config)
         }
     }
 
     /// Validates static configuration values independently of host memory.
     pub fn validate(&self) -> Result<(), String> {
-        self.sync.validate()
+        if self.root_dir.as_os_str().is_empty() || self.root_dir == Path::new("/") {
+            return Err(format!(
+                "root_dir must identify a dedicated service directory, got {}",
+                self.root_dir.display()
+            ));
+        }
+        self.sync.validate()?;
+        self.rpc_server.validate()?;
+        self.snapshot.validate()?;
+        Ok(())
     }
 
     /// Ensures configured cache capacities leave memory for the database and runtime.
@@ -399,6 +471,28 @@ impl BalanceHistoryConfig {
             .trusted_keys_file
             .as_deref()
             .map(|path| self.resolve_service_path(path))
+    }
+
+    fn log_safe_summary(&self, source: &str) {
+        let auth_mode = match self.btc.auth.as_ref() {
+            None => "default_cookie",
+            Some(BTCAuth::None) => "none",
+            Some(BTCAuth::UserPass(_, _)) => "user_pass",
+            Some(BTCAuth::CookieFile(_)) => "cookie_file",
+        };
+        info!(
+            "Loaded balance-history {} config: root_dir={}, btc_network={}, btc_auth_mode={}, batch_size={}, undo_retention_blocks={}, undo_cleanup_interval_blocks={}, rpc_addr={}:{}, snapshot_trust_mode={:?}",
+            source,
+            self.root_dir.display(),
+            self.btc.network(),
+            auth_mode,
+            self.sync.batch_size,
+            self.sync.undo_retention_blocks,
+            self.sync.undo_cleanup_interval_blocks,
+            self.rpc_server.host,
+            self.rpc_server.port,
+            self.snapshot.trust_mode
+        );
     }
 }
 
@@ -453,6 +547,26 @@ mod tests {
     }
 
     #[test]
+    fn test_load_uses_startup_root_instead_of_config_redirect() {
+        let root = temp_root("root_authority");
+        let redirected = root.join("redirected");
+        let config = BalanceHistoryConfig {
+            root_dir: redirected,
+            ..BalanceHistoryConfig::default()
+        };
+        std::fs::write(
+            root.join("config.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = BalanceHistoryConfig::load(&root).unwrap();
+        assert_eq!(loaded.root_dir, root);
+
+        std::fs::remove_dir_all(&loaded.root_dir).unwrap();
+    }
+
+    #[test]
     fn test_rejects_invalid_cache_configuration() {
         let mut config = BalanceHistoryConfig::default();
         config.sync.utxo_max_cache_bytes = 0;
@@ -471,6 +585,63 @@ mod tests {
                 .unwrap_err()
                 .contains("max_memory_percent")
         );
+    }
+
+    #[test]
+    fn test_rejects_unsafe_sync_and_rpc_configuration() {
+        let mut config = BalanceHistoryConfig::default();
+        config.sync.batch_size = 0;
+        assert!(config.validate().unwrap_err().contains("batch_size"));
+
+        config.sync.batch_size = default_batch_size();
+        config.sync.undo_retention_blocks = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("undo_retention_blocks")
+        );
+
+        config.sync.undo_retention_blocks = default_undo_retention_blocks();
+        config.sync.undo_cleanup_interval_blocks = 0;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("undo_cleanup_interval_blocks")
+        );
+
+        config.sync.undo_cleanup_interval_blocks = default_undo_cleanup_interval_blocks();
+        config.rpc_server.port = 0;
+        assert!(config.validate().unwrap_err().contains("rpc_server.port"));
+
+        config.rpc_server.port = default_rpc_port();
+        config.rpc_server.host = "not a host".to_string();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("rpc_server address")
+        );
+    }
+
+    #[test]
+    fn test_signed_snapshot_configuration_requires_a_key_role() {
+        let mut config = BalanceHistoryConfig::default();
+        config.snapshot.trust_mode = SnapshotTrustMode::Signed;
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .contains("signing_key_file or trusted_keys_file")
+        );
+
+        config.snapshot.signing_key_file = Some(PathBuf::from("signing-key.json"));
+        config.validate().unwrap();
+
+        config.snapshot.signing_key_file = None;
+        config.snapshot.trusted_keys_file = Some(PathBuf::from("trusted-keys.json"));
+        config.validate().unwrap();
     }
 
     #[test]

@@ -8,6 +8,8 @@ use crate::config::BalanceHistoryConfigRef;
 use crate::db::{BalanceHistoryDB, BalanceHistoryDBMode, BalanceHistoryDBRef, BalanceHistoryEntry};
 use crate::output::IndexOutputRef;
 use crate::service::{resolve_balance_history_active_versions, resolve_balance_history_stable_lag};
+use bitcoincore_rpc::bitcoin::constants::genesis_block;
+use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,6 +39,27 @@ fn validate_activation_at_height(
                 block_height, error
             )
         })
+}
+
+fn validate_btc_genesis_hash(
+    network: Network,
+    actual_genesis_hash: BlockHash,
+) -> Result<(), String> {
+    let expected_genesis_hash = genesis_block(network).block_hash();
+    if actual_genesis_hash != expected_genesis_hash {
+        return Err(format!(
+            "BTC RPC network mismatch: configured network {} expects genesis {}, upstream returned {}",
+            network, expected_genesis_hash, actual_genesis_hash
+        ));
+    }
+    Ok(())
+}
+
+fn validate_btc_client_network(
+    config: &BalanceHistoryConfigRef,
+    btc_client: &BTCClientRef,
+) -> Result<(), String> {
+    validate_btc_genesis_hash(config.btc.network(), btc_client.get_block_hash(0)?)
 }
 
 // Find the highest local height that still matches the current canonical BTC chain.
@@ -143,6 +166,9 @@ pub struct BalanceHistoryIndexer {
 
 impl BalanceHistoryIndexer {
     pub fn new(config: BalanceHistoryConfigRef, output: IndexOutputRef) -> Result<Self, String> {
+        let btc_rpc_client = create_btc_rpc_client(&config)?;
+        validate_btc_client_network(&config, &btc_rpc_client)?;
+
         // First open in normal mode to get last synced block height
         output.println("Initializing database in normal mode... this may take a while.");
         let db = match BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal) {
@@ -159,7 +185,6 @@ impl BalanceHistoryIndexer {
         // Check synced block height
         let last_synced_block_height = db.get_btc_block_height()?;
         validate_activation_at_height(&config, last_synced_block_height)?;
-        let btc_rpc_client = create_btc_rpc_client(&config)?;
         let rpc_latest_block_height = btc_rpc_client.get_latest_block_height().map_err(|e| {
             let msg = format!("Failed to get latest block height from BTC client: {}", e);
             error!("{}", msg);
@@ -993,6 +1018,16 @@ mod tests {
             compute_stable_sync_target_height(stable_lag + 1, u32::MAX, stable_lag),
             1
         );
+    }
+
+    #[test]
+    fn test_validate_btc_genesis_hash_rejects_network_mismatch() {
+        let regtest_genesis = genesis_block(Network::Regtest).block_hash();
+        validate_btc_genesis_hash(Network::Regtest, regtest_genesis).unwrap();
+
+        let error = validate_btc_genesis_hash(Network::Bitcoin, regtest_genesis).unwrap_err();
+        assert!(error.contains("BTC RPC network mismatch"));
+        assert!(error.contains("bitcoin"));
     }
 
     #[test]

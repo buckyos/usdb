@@ -85,6 +85,12 @@
 1. 正在 catch-up 的 `Indexing` 阶段可以 `query_ready = true`
 2. 但不代表它已经 `consensus_ready = true`
 
+`query_ready` 不是只供调用方参考的提示字段。除 `get_network_type`、`get_sync_status`、
+`get_readiness`、`get_snapshot_provenance` 和 `stop` 这类诊断/控制接口外，DB-backed RPC 在
+`query_ready = false` 时必须 fail closed，并返回结构化 `SNAPSHOT_NOT_READY`。因此 rollback、
+rollback resume、Loading 和 shutdown 窗口不会继续暴露可能跨状态边界的余额、UTXO、commit
+或 script registry 查询结果。
+
 ### 3. consensus_ready
 
 第一版规则：
