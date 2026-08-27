@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, UTXOEntry};
 
 /// Version tag for the first external snapshot manifest sidecar format.
-pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v1";
+pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v2";
 /// Detached signature scheme name used by signed snapshot manifests.
 pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
 
@@ -503,6 +503,10 @@ pub struct SnapshotManifest {
     pub file_sha256: String,
     /// Exact historical consensus state expected after installation.
     pub state_ref: HistoricalSnapshotStateRef,
+    /// Earliest complete at-or-before point balance query height after install.
+    pub balance_query_floor: u32,
+    /// Earliest complete exact-delta/history query height after install.
+    pub history_query_floor: u32,
     /// Detached signature scheme used for the optional sidecar signature file.
     #[serde(default)]
     pub signature_scheme: Option<String>,
@@ -547,6 +551,8 @@ impl SnapshotManifest {
             manifest_version: SNAPSHOT_MANIFEST_VERSION.to_string(),
             file_name,
             file_sha256,
+            balance_query_floor: state_ref.block_height,
+            history_query_floor: state_ref.block_height.saturating_add(1),
             state_ref,
             signature_scheme: signing_key_id
                 .as_ref()
@@ -1009,6 +1015,17 @@ impl SnapshotInstaller {
             error!("{}", msg);
             return Err(msg);
         }
+        if let Some(manifest) = manifest.as_ref()
+            && (manifest.balance_query_floor != meta.block_height
+                || manifest.history_query_floor != meta.block_height.saturating_add(1))
+        {
+            let msg = format!(
+                "Snapshot manifest retention floor mismatch at height {}: balance_query_floor={}, history_query_floor={}",
+                meta.block_height, manifest.balance_query_floor, manifest.history_query_floor
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         info!("Snapshot metadata: {:?}", meta);
         self.output.println(&format!(
@@ -1051,6 +1068,18 @@ impl SnapshotInstaller {
         if let Some(manifest) = manifest.as_ref() {
             self.validate_staged_manifest(&staging_db, &meta, manifest)?;
         }
+        let balance_query_floor = meta.block_height;
+        let history_query_floor = meta.block_height.saturating_add(1);
+        staging_db
+            .put_query_retention_floors(balance_query_floor, history_query_floor)
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to persist snapshot query retention floors at block height {}: {}",
+                    meta.block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
         let provenance = SnapshotInstallProvenance {
             origin: SnapshotInstallOrigin::SnapshotInstall,
             trust_mode,
@@ -1079,6 +1108,8 @@ impl SnapshotInstaller {
                 .as_ref()
                 .map(|value| value.state_ref.snapshot_id.clone()),
             installed_block_height: meta.block_height,
+            balance_query_floor,
+            history_query_floor,
         };
         staging_db
             .put_snapshot_install_provenance(&provenance)
@@ -1819,6 +1850,8 @@ mod tests {
 
         let snapshot = rpc_server.get_snapshot_info().unwrap();
         assert_eq!(snapshot.stable_height, 10);
+        assert_eq!(snapshot.balance_query_floor, 10);
+        assert_eq!(snapshot.history_query_floor, 11);
         assert_eq!(
             snapshot.stable_block_hash,
             Some(format!("{:x}", new_commit.btc_block_hash))
@@ -2098,12 +2131,19 @@ mod tests {
             provenance.signing_key_id,
             Some("snapshot-signer-1".to_string())
         );
+        assert_eq!(provenance.balance_query_floor, 10);
+        assert_eq!(provenance.history_query_floor, 11);
+        assert_eq!(reopened_db.get_query_retention_floors().unwrap(), (10, 11));
         assert_eq!(
             reopened_db
                 .get_snapshot_install_manifest_verified()
                 .unwrap(),
             Some(true)
         );
+
+        reopened_db.put_query_retention_floors(9, 11).unwrap();
+        let error = reopened_db.get_query_retention_floors().unwrap_err();
+        assert!(error.contains("conflicts with install provenance"));
     }
 
     #[test]

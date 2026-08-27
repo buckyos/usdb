@@ -157,12 +157,15 @@ fn build_scenario() -> FakeScenario {
     let miner_3_reorg = script(9);
     let op_return_script = op_return_script(99);
 
+    let genesis_coinbase = coinbase_tx(0, vec![output(50, &script(0))]);
+    let genesis_block = block(BlockHash::all_zeros(), 0, vec![genesis_coinbase]);
+
     let coinbase_1 = coinbase_tx(
         1,
         vec![output(100, &script_a), output(0, &op_return_script)],
     );
     let outpoint_a = outpoint(&coinbase_1, 0);
-    let block_1 = block(BlockHash::all_zeros(), 1, vec![coinbase_1]);
+    let block_1 = block(genesis_block.block_hash(), 1, vec![coinbase_1]);
 
     let spend_a = spend_tx(
         vec![outpoint_a],
@@ -213,7 +216,12 @@ fn build_scenario() -> FakeScenario {
     let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Bitcoin).unwrap();
     let chain = FakeChain::new(
         stable_lag + 3,
-        BTreeMap::from([(1, block_1), (2, block_2), (3, original_block_3.clone())]),
+        BTreeMap::from([
+            (0, genesis_block),
+            (1, block_1),
+            (2, block_2),
+            (3, original_block_3.clone()),
+        ]),
     );
 
     FakeScenario {
@@ -233,6 +241,85 @@ fn build_scenario() -> FakeScenario {
         outpoint_e,
         outpoint_f,
     }
+}
+
+#[test]
+fn process_block_batch_rejects_mixed_fork_linkage_without_db_mutation() {
+    let script_a = script(41);
+    let genesis = block(
+        BlockHash::all_zeros(),
+        100,
+        vec![coinbase_tx(100, vec![output(50, &script_a)])],
+    );
+    let block_1 = block(
+        genesis.block_hash(),
+        101,
+        vec![coinbase_tx(101, vec![output(50, &script_a)])],
+    );
+    let unrelated_parent = block(
+        genesis.block_hash(),
+        102,
+        vec![coinbase_tx(102, vec![output(50, &script(42))])],
+    );
+    let mixed_block_2 = block(
+        unrelated_parent.block_hash(),
+        103,
+        vec![coinbase_tx(103, vec![output(50, &script(43))])],
+    );
+    let chain = FakeChain::new(
+        2,
+        BTreeMap::from([(0, genesis), (1, block_1), (2, mixed_block_2)]),
+    );
+    let harness = Harness::new("mixed_fork_batch_rejected", chain, 2);
+    let db = harness.indexer.db().clone();
+
+    let error = harness.indexer.process_block_batch(1..3, 2).unwrap_err();
+
+    assert!(error.contains("linkage mismatch"), "{error}");
+    assert_eq!(db.get_btc_block_height().unwrap(), 0);
+    assert!(db.get_block_commit(1).unwrap().is_none());
+    assert_eq!(db.get_utxo_count().unwrap(), 0);
+}
+
+#[test]
+fn process_block_batch_applies_and_rolls_back_duplicate_outpoint_generation() {
+    let owner = script(51);
+    let genesis = block(
+        BlockHash::all_zeros(),
+        200,
+        vec![coinbase_tx(200, vec![output(50, &script(50))])],
+    );
+    let duplicate_coinbase = coinbase_tx(201, vec![output(75, &owner)]);
+    let duplicate_outpoint = outpoint(&duplicate_coinbase, 0);
+    let block_1 = block(genesis.block_hash(), 201, vec![duplicate_coinbase.clone()]);
+    let block_2 = block(block_1.block_hash(), 202, vec![duplicate_coinbase]);
+    let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Bitcoin).unwrap();
+    let chain = FakeChain::new(
+        stable_lag + 2,
+        BTreeMap::from([(0, genesis), (1, block_1), (2, block_2)]),
+    );
+    let harness = Harness::new("duplicate_outpoint_generation", chain, 2);
+    let db = harness.indexer.db().clone();
+
+    harness.indexer.process_block_batch(1..3, 2).unwrap();
+
+    assert_balance(&db, &owner, 1, 75, 75);
+    assert_balance(&db, &owner, 2, 0, 75);
+    assert_eq!(db.get_utxo(&duplicate_outpoint).unwrap().unwrap().value, 75);
+    let undo = db.get_block_undo_bundle(2).unwrap().unwrap();
+    assert_eq!(undo.created_utxos[0].outpoint, duplicate_outpoint);
+    assert_eq!(undo.spent_utxos[0].outpoint, duplicate_outpoint);
+
+    db.rollback_one_block(2).unwrap();
+
+    assert_eq!(db.get_btc_block_height().unwrap(), 1);
+    assert_eq!(db.get_utxo(&duplicate_outpoint).unwrap().unwrap().value, 75);
+    assert_balance(&db, &owner, 1, 75, 75);
+    assert!(
+        db.get_balance_delta_at_block_height(&owner.to_btc_script_hash(), 2)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

@@ -78,6 +78,9 @@ Returns structured readiness state for:
 Downstream callers should gate on `consensus_ready=true` instead of treating
 `get_network_type` reachability as readiness.
 
+The response also exposes `balance_query_floor` and `history_query_floor`, with
+the same semantics as `get_snapshot_info` below.
+
 The response also includes `script_registry`, a display-only diagnostic summary:
 
 ```json
@@ -105,6 +108,8 @@ Example result:
   "stable_height": 812345,
   "stable_block_hash": "000000...",
   "latest_block_commit": "4f7c...",
+  "balance_query_floor": 800000,
+  "history_query_floor": 800001,
   "stable_lag": 5,
   "balance_history_api_version": "1.0.0",
   "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
@@ -115,6 +120,13 @@ Example result:
 
 When the stable snapshot is not yet complete, this method now returns the
 shared consensus error `SNAPSHOT_NOT_READY` with structured JSON `data`.
+
+- `balance_query_floor` is the earliest complete at-or-before point-balance height.
+- `history_query_floor` is the earliest complete exact-delta/history-range height.
+- A genesis-synced node reports both as `0`. A node installed from a compact
+  snapshot at height `H` reports `H` and `H + 1` respectively.
+- Pre-snapshot block commits remain available for audit, but do not claim that
+  the corresponding balance state is retained.
 
 ### 6) `get_address_balance`
 
@@ -146,6 +158,8 @@ Notes:
 - If no data exists for the address, service returns a zero entry: `block_height=0, delta=0, balance=0`.
 - If `block_height` or `block_range` exceeds current `stable_height`, the
   method returns shared consensus error `HEIGHT_NOT_SYNCED`.
+- A point height below `balance_query_floor`, or a range start below
+  `history_query_floor`, returns `STATE_NOT_RETAINED`.
 
 ### 7) `get_addresses_balances`
 
@@ -154,7 +168,8 @@ Batch version of `get_address_balance`.
 - Input: `script_hashes[]` plus optional `block_height` / `block_range`.
 - Output: 2D array, outer order matches input `script_hashes` order.
 - Height/range validation matches `get_address_balance`, including
-  `HEIGHT_NOT_SYNCED` for future stable heights.
+  `HEIGHT_NOT_SYNCED` for future stable heights and `STATE_NOT_RETAINED` below
+  the corresponding retention floor.
 
 ### 8) `resolve_script_hashes`
 

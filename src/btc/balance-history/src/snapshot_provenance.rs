@@ -50,6 +50,10 @@ pub struct SnapshotInstallProvenance {
     pub snapshot_id: Option<String>,
     /// Installed BTC block height of the snapshot DB.
     pub installed_block_height: u32,
+    /// Earliest height for which at-or-before point balance queries are complete.
+    pub balance_query_floor: u32,
+    /// Earliest height for which exact deltas and history ranges are complete.
+    pub history_query_floor: u32,
 }
 
 impl SnapshotInstallProvenance {

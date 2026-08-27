@@ -175,6 +175,10 @@ pub struct SnapshotInfo {
     pub stable_block_hash: Option<String>,
     /// Latest logical block commit at `stable_height`, encoded as lowercase hex.
     pub latest_block_commit: Option<String>,
+    /// Earliest height with a complete at-or-before point balance view.
+    pub balance_query_floor: u32,
+    /// Earliest height with complete exact deltas and balance-history ranges.
+    pub history_query_floor: u32,
     /// Fixed stable lag promised by this balance-history instance for the current network.
     ///
     /// Downstream services must treat this as part of the stable-view identity,
@@ -250,6 +254,8 @@ impl From<HistoricalSnapshotStateRef> for SnapshotInfo {
             stable_height: state_ref.block_height,
             stable_block_hash: Some(state_ref.stable_block_hash),
             latest_block_commit: Some(state_ref.latest_block_commit),
+            balance_query_floor: state_ref.block_height,
+            history_query_floor: state_ref.block_height.saturating_add(1),
             stable_lag: state_ref.consensus_identity.stable_lag,
             balance_history_api_version: state_ref.consensus_identity.balance_history_api_version,
             balance_history_semantics_version: state_ref
@@ -380,6 +386,10 @@ pub struct ReadinessInfo {
     pub stable_block_hash: Option<String>,
     /// Latest logical block commit at `stable_height`, when available.
     pub latest_block_commit: Option<String>,
+    /// Earliest complete at-or-before point balance query height.
+    pub balance_query_floor: u32,
+    /// Earliest complete exact-delta/history range query height.
+    pub history_query_floor: u32,
     /// Snapshot-install origin summary when the local DB came from snapshot install.
     pub snapshot_origin: Option<SnapshotInstallOrigin>,
     /// Snapshot verification summary when the local DB came from snapshot install.
@@ -498,8 +508,8 @@ pub trait BalanceHistoryRpc {
 
     /// Returns snapshot metadata for the service's current stable view.
     ///
-    /// The response includes the stable block height, the canonical block hash
-    /// recorded at that height, and the latest logical block-commit metadata.
+    /// The response includes the stable block height, the canonical block hash,
+    /// the latest logical block commit, and local point/history retention floors.
     ///
     /// Returns shared consensus error `SNAPSHOT_NOT_READY` when the local DB
     /// has a height but the advertised stable snapshot is still incomplete.
@@ -525,8 +535,8 @@ pub trait BalanceHistoryRpc {
     /// not against the service's current head.
     ///
     /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when `block_height`
-    /// is above the current stable height, and `SNAPSHOT_NOT_READY` when the
-    /// current stable view is not yet safe for consensus use.
+    /// is above the current stable height, `SNAPSHOT_NOT_READY` when the current
+    /// stable view is incomplete, and `STATE_NOT_RETAINED` below the point floor.
     #[rpc(name = "get_state_ref_at_height")]
     fn get_state_ref_at_height(
         &self,
@@ -550,8 +560,9 @@ pub trait BalanceHistoryRpc {
     /// - with neither selector: returns one-element vector containing the latest
     ///   persisted balance record overall
     ///
-    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` when the requested
-    /// height or range exceeds the current stable height.
+    /// Returns shared consensus error `HEIGHT_NOT_SYNCED` above the current
+    /// stable height. Point queries below `balance_query_floor` and ranges below
+    /// `history_query_floor` return `STATE_NOT_RETAINED`.
     #[rpc(name = "get_address_balance")]
     fn get_address_balance(&self, params: GetBalanceParams) -> JsonResult<Vec<AddressBalance>>;
 

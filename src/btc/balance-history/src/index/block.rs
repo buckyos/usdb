@@ -19,9 +19,32 @@ use usdb_util::{BtcScriptHash, ToBtcScriptHash};
 // starts from block height 0 and there is no earlier committed block.
 const EMPTY_COMMIT_HASH: [u8; 32] = [0u8; 32];
 
+const BIP30_DUPLICATE_COINBASES: [(u32, &str, &str); 2] = [
+    (
+        91_842,
+        "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec",
+        "d5d27987d2a3dfc724e359870c6644b40e497bdc0589a033220fe15429d88599",
+    ),
+    (
+        91_880,
+        "00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721",
+        "e3bf3d07d4b0375638d5f1db5255fe07ba2c4cb067cd81b84ee974b6585fb468",
+    ),
+];
+
 type UtxoUpdateSet = (Vec<(OutPointRef, UTXOEntryRef)>, Vec<OutPointRef>);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+fn is_bip30_duplicate_coinbase(block_height: u32, block_hash: &BlockHash, txid: &Txid) -> bool {
+    BIP30_DUPLICATE_COINBASES
+        .iter()
+        .any(|(height, expected_block_hash, expected_txid)| {
+            block_height == *height
+                && block_hash.to_string() == *expected_block_hash
+                && txid.to_string() == *expected_txid
+        })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct BlockTxIndex {
     block_height: u32,
     tx_index: u32,
@@ -29,13 +52,13 @@ struct BlockTxIndex {
 
 struct VOutUtxoInfo {
     item: UTXOEntryRef,
-    block_height: u32,
+    position: BlockTxIndex,
     spend: bool, // Whether this UTXO is spent in the batch
 }
 
 impl VOutUtxoInfo {
-    fn created_before(&self, spending_block_height: u32) -> bool {
-        self.block_height < spending_block_height
+    fn created_before(&self, spending_position: BlockTxIndex) -> bool {
+        self.position < spending_position
     }
 }
 
@@ -53,6 +76,10 @@ pub struct PreloadVOut {
 pub struct PreloadTx {
     pub txid: Txid,
     pub vin: Vec<PreloadVIn>,
+    // UTXOs displaced by a duplicate outpoint generation, including the two
+    // historical BIP30 coinbase exceptions. They behave like synthetic inputs
+    // for balance and undo.
+    pub displaced_vout: Vec<PreloadVIn>,
     pub vout: Vec<PreloadVOut>,
 }
 
@@ -86,7 +113,10 @@ struct VInPosition {
 pub struct BatchBlockData {
     block_range: std::ops::Range<u32>,
     blocks: Arc<Mutex<Vec<PreloadBlock>>>,
-    vout_utxos: Arc<RwLock<HashMap<OutPointRef, VOutUtxoInfo>>>,
+    // Keep duplicate outpoint generations ordered by creation position so
+    // parallel vin loading remains deterministic. On canonical mainnet the
+    // only unspent replacements are the two historical BIP30 exceptions.
+    vout_utxos: Arc<RwLock<HashMap<OutPointRef, Vec<VOutUtxoInfo>>>>,
 
     // Keep latest balances for all addresses involved while processing a batch.
     balances: Arc<DashMap<BtcScriptHash, BalanceHistoryData>>,
@@ -285,6 +315,8 @@ impl BatchBlockPreloader {
             let (height, block) = res?;
             blocks.push((height, block));
         }
+        blocks.sort_unstable_by_key(|(height, _)| *height);
+        self.validate_loaded_chain(&block_height_range, &blocks)?;
 
         data.bench_mark.load_blocks_duration_micros.store(
             begin.elapsed().as_micros() as u64,
@@ -306,6 +338,8 @@ impl BatchBlockPreloader {
         for res in result {
             preprocessed_blocks.push(res?);
         }
+        preprocessed_blocks.sort_unstable_by_key(|block| block.height);
+        let duplicate_outpoints = Self::index_batch_vouts(&preprocessed_blocks, &data);
         data.bench_mark.preprocess_utxos_duration_micros.store(
             begin.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -314,29 +348,24 @@ impl BatchBlockPreloader {
         // Now preload UTXOs for all blocks
         let begin = std::time::Instant::now();
         let result: Vec<Result<(), String>> = preprocessed_blocks
-            .into_par_iter()
-            .map(|mut preload_block| {
-                self.preload_utxos(&mut preload_block, &data)?;
-
-                data.blocks.lock().unwrap().push(preload_block);
-
-                Ok(())
-            })
+            .par_iter_mut()
+            .map(|preload_block| self.preload_utxos(preload_block, &data))
             .collect();
         for res in result {
             res?;
         }
+        Self::resolve_duplicate_outpoint_generations(
+            &self.db,
+            &mut preprocessed_blocks,
+            &data,
+            &duplicate_outpoints,
+        )?;
+        *data.blocks.lock().unwrap() = preprocessed_blocks;
 
         data.bench_mark.preload_utxos_duration_micros.store(
             begin.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
-
-        // Sort the blocks by height
-        {
-            let mut blocks = data.blocks.lock().unwrap();
-            blocks.par_sort_unstable_by(|a, b| a.height.cmp(&b.height));
-        }
 
         // Load balances at the starting block height - 1
         if block_height_range.start > 0 {
@@ -351,6 +380,108 @@ impl BatchBlockPreloader {
         }
 
         Ok(data)
+    }
+
+    fn validate_loaded_chain(
+        &self,
+        block_height_range: &std::ops::Range<u32>,
+        blocks: &[(u32, Block)],
+    ) -> Result<(), String> {
+        if blocks.len() != block_height_range.len() {
+            return Err(format!(
+                "Loaded block count mismatch for range {:?}: expected {}, got {}",
+                block_height_range,
+                block_height_range.len(),
+                blocks.len()
+            ));
+        }
+
+        let durable_height = self.db.get_btc_block_height()?;
+        if block_height_range.start != durable_height.saturating_add(1) {
+            return Err(format!(
+                "Block batch must extend the durable tip contiguously: durable_height={}, requested_range={:?}",
+                durable_height, block_height_range
+            ));
+        }
+
+        let first = blocks.first().ok_or_else(|| {
+            format!(
+                "Loaded empty block batch for range {:?}",
+                block_height_range
+            )
+        })?;
+        let expected_parent_hash = match self.db.get_block_commit(durable_height)? {
+            Some(commit) => commit.btc_block_hash,
+            None if durable_height == 0 => self.btc_client.get_block_hash(0)?,
+            None => {
+                return Err(format!(
+                    "Missing durable parent block commit at height {} for batch {:?}",
+                    durable_height, block_height_range
+                ));
+            }
+        };
+        if first.1.header.prev_blockhash != expected_parent_hash {
+            return Err(format!(
+                "Block batch parent mismatch at height {}: expected {}, got {}",
+                first.0, expected_parent_hash, first.1.header.prev_blockhash
+            ));
+        }
+
+        for (offset, (height, block)) in blocks.iter().enumerate() {
+            let expected_height = block_height_range.start + offset as u32;
+            if *height != expected_height {
+                return Err(format!(
+                    "Non-contiguous loaded block height: expected {}, got {}",
+                    expected_height, height
+                ));
+            }
+            if offset > 0 {
+                let previous_hash = blocks[offset - 1].1.block_hash();
+                if block.header.prev_blockhash != previous_hash {
+                    return Err(format!(
+                        "Block batch linkage mismatch at height {}: expected parent {}, got {}",
+                        height, previous_hash, block.header.prev_blockhash
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn index_batch_vouts(blocks: &[PreloadBlock], data: &BatchBlockData) -> Vec<OutPointRef> {
+        let mut vout_utxo_map = data.vout_utxos.write().unwrap();
+        let mut duplicate_outpoints = Vec::new();
+        let estimated = blocks
+            .iter()
+            .flat_map(|block| block.txdata.iter())
+            .map(|tx| tx.vout.len())
+            .sum::<usize>();
+        vout_utxo_map.reserve(estimated);
+
+        for block in blocks {
+            for (tx_index, tx) in block.txdata.iter().enumerate() {
+                let position = BlockTxIndex {
+                    block_height: block.height,
+                    tx_index: tx_index as u32,
+                };
+                for vout in &tx.vout {
+                    let generations = vout_utxo_map.entry(vout.outpoint.clone()).or_default();
+                    if !generations.is_empty() {
+                        duplicate_outpoints.push(vout.outpoint.clone());
+                    }
+                    generations.push(VOutUtxoInfo {
+                        item: vout.cache_tx_out.clone(),
+                        position,
+                        spend: false,
+                    });
+                }
+            }
+        }
+
+        duplicate_outpoints.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+        duplicate_outpoints.dedup_by(|left, right| left.as_ref() == right.as_ref());
+        duplicate_outpoints
     }
 
     fn preprocess_block(
@@ -375,6 +506,7 @@ impl BatchBlockPreloader {
                 let mut preload_tx = PreloadTx {
                     txid: tx.compute_txid(),
                     vin: Vec::with_capacity(tx.input.len()),
+                    displaced_vout: Vec::new(),
                     vout: Vec::with_capacity(tx.output.len()),
                 };
 
@@ -431,28 +563,6 @@ impl BatchBlockPreloader {
                 .extend(script_registry_entries);
         }
 
-        // Append all vout UTXOs to UTXO cache
-        let mut vout_utxo_map = data.vout_utxos.write().unwrap();
-        let estimated = preload_block
-            .txdata
-            .iter()
-            .map(|tx| tx.vout.len())
-            .sum::<usize>();
-        vout_utxo_map.reserve(estimated);
-
-        for tx in &preload_block.txdata {
-            for vout in &tx.vout {
-                vout_utxo_map.insert(
-                    vout.outpoint.clone(),
-                    VOutUtxoInfo {
-                        item: vout.cache_tx_out.clone(),
-                        block_height,
-                        spend: false,
-                    },
-                );
-            }
-        }
-
         Ok(preload_block)
     }
 
@@ -467,22 +577,33 @@ impl BatchBlockPreloader {
 
         for (tx_index, tx) in &mut preload_block.txdata.iter_mut().enumerate() {
             for (vin_index, vin) in tx.vin.iter_mut().enumerate() {
+                let spending_position = BlockTxIndex {
+                    block_height: preload_block.height,
+                    tx_index: tx_index as u32,
+                };
                 // First check if the UTXO is already in vout cache (i.e., created in the same batch)
                 {
                     let mut vout_utxo_map = data.vout_utxos.write().unwrap();
-                    if let Some(vout_utxo_info) = vout_utxo_map.get_mut(&vin.outpoint) {
-                        assert!(
-                            !vout_utxo_info.spend,
-                            "Double spend of UTXO in the same batch: {}",
-                            vin.outpoint
-                        );
+                    if let Some(generations) = vout_utxo_map.get_mut(&vin.outpoint)
+                        && let Some(vout_utxo_info) = generations
+                            .iter_mut()
+                            .rev()
+                            .find(|candidate| candidate.created_before(spending_position))
+                    {
+                        if vout_utxo_info.spend {
+                            return Err(format!(
+                                "Double spend of in-batch UTXO {} at block height {}",
+                                vin.outpoint, preload_block.height
+                            ));
+                        }
                         vout_utxo_info.spend = true;
 
                         vin.cache_tx_out.replace(vout_utxo_info.item.clone());
                         // Same-block spends never existed before the rollback boundary, but
                         // earlier-block spends inside this batch must be restorable if a later
                         // block is rolled back.
-                        vin.need_flush = vout_utxo_info.created_before(preload_block.height);
+                        vin.need_flush =
+                            vout_utxo_info.position.block_height < preload_block.height;
 
                         continue;
                     }
@@ -544,6 +665,154 @@ impl BatchBlockPreloader {
         Ok(())
     }
 
+    fn resolve_duplicate_outpoint_generations(
+        db: &BalanceHistoryDBRef,
+        blocks: &mut [PreloadBlock],
+        data: &BatchBlockData,
+        duplicate_outpoints: &[OutPointRef],
+    ) -> Result<(), String> {
+        let first_height = blocks
+            .first()
+            .map(|block| block.height)
+            .ok_or_else(|| "Cannot resolve duplicate outpoints in an empty batch".to_string())?;
+        let last_height = blocks.last().map(|block| block.height).unwrap();
+        let contains_bip30_exception = BIP30_DUPLICATE_COINBASES
+            .iter()
+            .any(|(height, _, _)| *height >= first_height && *height <= last_height);
+        if duplicate_outpoints.is_empty() && !contains_bip30_exception {
+            return Ok(());
+        }
+
+        let mut displacements = Vec::new();
+        let mut replaced = HashSet::new();
+
+        // Handle duplicate generations whose original and replacement both
+        // live in this batch. Normal inputs have already marked any generation
+        // that was spent before the replacement was created.
+        {
+            let mut vout_utxo_map = data.vout_utxos.write().unwrap();
+            for outpoint in duplicate_outpoints {
+                let generations = vout_utxo_map.get_mut(outpoint).ok_or_else(|| {
+                    format!(
+                        "Missing indexed generations for duplicate outpoint {}",
+                        outpoint
+                    )
+                })?;
+                for replacement_index in 1..generations.len() {
+                    let (earlier, replacement) = generations.split_at_mut(replacement_index);
+                    let displaced = &mut earlier[replacement_index - 1];
+                    let replacement = &replacement[0];
+                    if displaced.spend {
+                        continue;
+                    }
+
+                    displaced.spend = true;
+                    replaced.insert((replacement.position, *outpoint.as_ref()));
+                    displacements.push((
+                        replacement.position,
+                        outpoint.clone(),
+                        displaced.item.clone(),
+                        displaced.position.block_height < replacement.position.block_height,
+                    ));
+                }
+            }
+        }
+
+        // When the original generation was committed by an earlier batch, it
+        // is not present in the in-memory generation index. Only the two known
+        // historical BIP30 exceptions are allowed to query and replace such a
+        // durable UTXO; doing this for every output would be prohibitively
+        // expensive during initial sync.
+        for (height, _, _) in BIP30_DUPLICATE_COINBASES {
+            if height < first_height || height > last_height {
+                continue;
+            }
+
+            let block_index = (height - first_height) as usize;
+            let block = blocks
+                .get(block_index)
+                .ok_or_else(|| format!("Missing block at BIP30 exception height {}", height))?;
+            if block.height != height {
+                return Err(format!(
+                    "Non-contiguous block batch at BIP30 exception height {}: got {}",
+                    height, block.height
+                ));
+            }
+            let Some(tx) = block.txdata.first() else {
+                return Err(format!(
+                    "Missing coinbase transaction at BIP30 exception height {}",
+                    height
+                ));
+            };
+            if !is_bip30_duplicate_coinbase(height, &block.block_hash, &tx.txid) {
+                continue;
+            }
+
+            let position = BlockTxIndex {
+                block_height: height,
+                tx_index: 0,
+            };
+            let mut replacement_count = 0usize;
+            for vout in &tx.vout {
+                if replaced.contains(&(position, *vout.outpoint.as_ref())) {
+                    replacement_count += 1;
+                    continue;
+                }
+
+                if let Some(displaced) = db.get_utxo(vout.outpoint.as_ref())? {
+                    replaced.insert((position, *vout.outpoint.as_ref()));
+                    displacements.push((
+                        position,
+                        vout.outpoint.clone(),
+                        Arc::new(displaced),
+                        true,
+                    ));
+                    replacement_count += 1;
+                }
+            }
+
+            if replacement_count == 0 {
+                return Err(format!(
+                    "BIP30 duplicate coinbase {} at height {} found no displaced UTXO. Rebuild balance-history from a data model that indexes the original coinbase generation.",
+                    tx.txid, block.height
+                ));
+            }
+        }
+
+        displacements.sort_unstable_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.as_ref().cmp(right.1.as_ref()))
+        });
+        for (position, outpoint, displaced, need_flush) in displacements {
+            let block_index = position
+                .block_height
+                .checked_sub(first_height)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid BIP30 displacement height {} before batch start {}",
+                        position.block_height, first_height
+                    )
+                })? as usize;
+            let tx = blocks
+                .get_mut(block_index)
+                .and_then(|block| block.txdata.get_mut(position.tx_index as usize))
+                .ok_or_else(|| {
+                    format!(
+                        "Missing transaction for BIP30 displacement at height {}, tx_index {}",
+                        position.block_height, position.tx_index
+                    )
+                })?;
+            tx.displaced_vout.push(PreloadVIn {
+                outpoint,
+                cache_tx_out: Some(displaced),
+                need_flush,
+            });
+        }
+
+        Ok(())
+    }
+
     fn fetch_utxos(&self, outpoints: &[OutPointRef]) -> Result<Vec<UTXOEntryRef>, String> {
         // First try to get from db by bulk
         let all = self.db.get_utxos_bulk(outpoints)?;
@@ -585,6 +854,7 @@ impl BatchBlockPreloader {
                 let vin_hashes = tx
                     .vin
                     .par_iter()
+                    .chain(tx.displaced_vout.par_iter())
                     .map(|vin| vin.cache_tx_out.as_ref().unwrap().script_hash);
 
                 // Collect vout addresses
@@ -807,7 +1077,7 @@ impl BatchBlockFlusher {
                     });
                 }
 
-                for vin in &tx.vin {
+                for vin in tx.vin.iter().chain(tx.displaced_vout.iter()) {
                     if !vin.need_flush {
                         continue;
                     }
@@ -860,12 +1130,17 @@ impl BatchBlockFlusher {
             let vout_utxos = data.vout_utxos.read().unwrap();
             utxo_list.reserve(vout_utxos.len());
 
-            for (outpoint, vout_utxo_info) in vout_utxos.iter() {
-                if vout_utxo_info.spend {
-                    continue;
+            for (outpoint, generations) in vout_utxos.iter() {
+                let mut unspent = generations.iter().filter(|generation| !generation.spend);
+                if let Some(vout_utxo_info) = unspent.next() {
+                    if unspent.next().is_some() {
+                        return Err(format!(
+                            "Multiple unspent generations remain for outpoint {} after BIP30 resolution",
+                            outpoint
+                        ));
+                    }
+                    utxo_list.push((outpoint.clone(), vout_utxo_info.item.clone()));
                 }
-
-                utxo_list.push((outpoint.clone(), vout_utxo_info.item.clone()));
             }
         }
 
@@ -881,6 +1156,7 @@ impl BatchBlockFlusher {
                     block.txdata.par_iter().flat_map(|tx| {
                         tx.vin
                             .par_iter()
+                            .chain(tx.displaced_vout.par_iter())
                             .filter(|vin| vin.need_flush)
                             .map(|vin| vin.outpoint.clone())
                     })
@@ -907,12 +1183,14 @@ impl BatchBlockFlusher {
         new_utxos: &[(OutPointRef, UTXOEntryRef)],
         spent_utxos: &[OutPointRef],
     ) {
-        for (outpoint, utxo) in new_utxos {
-            self.utxo_cache.put(outpoint.clone(), utxo.clone());
-        }
-
+        // A BIP30 replacement removes and recreates the same outpoint in one
+        // atomic batch, so cache ordering must mirror the durable DB ordering.
         for outpoint in spent_utxos {
             self.utxo_cache.spend(outpoint.as_ref());
+        }
+
+        for (outpoint, utxo) in new_utxos {
+            self.utxo_cache.put(outpoint.clone(), utxo.clone());
         }
 
         for entry in data.balances.iter() {
@@ -938,6 +1216,87 @@ mod block_commit_tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use usdb_util::{ToBtcScriptHash, UTXOValue};
+
+    #[test]
+    fn test_bip30_duplicate_coinbase_identity_is_height_bound() {
+        let first: Txid = "d5d27987d2a3dfc724e359870c6644b40e497bdc0589a033220fe15429d88599"
+            .parse()
+            .unwrap();
+        let second: Txid = "e3bf3d07d4b0375638d5f1db5255fe07ba2c4cb067cd81b84ee974b6585fb468"
+            .parse()
+            .unwrap();
+        let first_block: BlockHash =
+            "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"
+                .parse()
+                .unwrap();
+        let second_block: BlockHash =
+            "00000000000743f190a18c5577a3c2d2a1f610ae9601ac046a38084ccb7cd721"
+                .parse()
+                .unwrap();
+
+        assert!(is_bip30_duplicate_coinbase(91_842, &first_block, &first));
+        assert!(is_bip30_duplicate_coinbase(91_880, &second_block, &second));
+        assert!(!is_bip30_duplicate_coinbase(91_812, &first_block, &first));
+        assert!(!is_bip30_duplicate_coinbase(91_880, &first_block, &second));
+    }
+
+    #[test]
+    fn test_bip30_duplicate_loads_displaced_generation_from_durable_db() {
+        let db = temp_db("bip30_durable_displacement");
+        let old_script_hash = make_entry(1, 91_812, 50, 50).script_hash;
+        let new_script_hash = make_entry(2, 91_842, 50, 50).script_hash;
+        let duplicate_txid: Txid =
+            "d5d27987d2a3dfc724e359870c6644b40e497bdc0589a033220fe15429d88599"
+                .parse()
+                .unwrap();
+        let duplicate_block_hash: BlockHash =
+            "00000000000a4d0a398161ffc163c503763b1f4360639393e0e4c8e300e0caec"
+                .parse()
+                .unwrap();
+        let outpoint = Arc::new(OutPoint {
+            txid: duplicate_txid,
+            vout: 0,
+        });
+        db.put_utxo(outpoint.as_ref(), &old_script_hash, 50)
+            .unwrap();
+
+        let mut blocks = vec![PreloadBlock {
+            height: 91_842,
+            block_hash: duplicate_block_hash,
+            txdata: vec![PreloadTx {
+                txid: outpoint.txid,
+                vin: Vec::new(),
+                displaced_vout: Vec::new(),
+                vout: vec![PreloadVOut {
+                    outpoint: outpoint.clone(),
+                    cache_tx_out: Arc::new(UTXOValue {
+                        script_hash: new_script_hash,
+                        value: 50,
+                    }),
+                }],
+            }],
+        }];
+        let data = BatchBlockData::new();
+        let duplicate_outpoints = BatchBlockPreloader::index_batch_vouts(&blocks, &data);
+        assert!(duplicate_outpoints.is_empty());
+
+        BatchBlockPreloader::resolve_duplicate_outpoint_generations(
+            &db,
+            &mut blocks,
+            &data,
+            &duplicate_outpoints,
+        )
+        .unwrap();
+
+        let displaced = &blocks[0].txdata[0].displaced_vout;
+        assert_eq!(displaced.len(), 1);
+        assert_eq!(*displaced[0].outpoint, *outpoint);
+        assert_eq!(
+            displaced[0].cache_tx_out.as_ref().unwrap().script_hash,
+            old_script_hash
+        );
+        assert!(displaced[0].need_flush);
+    }
 
     fn temp_db(test_name: &str) -> BalanceHistoryDBRef {
         let mut config = BalanceHistoryConfig::default();
@@ -1204,6 +1563,7 @@ mod block_commit_tests {
             txdata: vec![PreloadTx {
                 txid: Txid::from_slice(&[11u8; 32]).unwrap(),
                 vin: Vec::new(),
+                displaced_vout: Vec::new(),
                 vout: vec![PreloadVOut {
                     outpoint,
                     cache_tx_out: utxo,
@@ -1260,6 +1620,7 @@ mod block_commit_tests {
                         need_flush: true,
                     },
                 ],
+                displaced_vout: Vec::new(),
                 vout: vec![
                     PreloadVOut {
                         outpoint: Arc::new(OutPoint {
@@ -1388,6 +1749,7 @@ mod block_commit_tests {
                         need_flush: true,
                     },
                 ],
+                displaced_vout: Vec::new(),
                 vout: vec![
                     PreloadVOut {
                         outpoint: Arc::new(OutPoint {
@@ -1504,7 +1866,7 @@ impl BatchBlockBalanceProcessor {
                     HashMap::with_capacity(block.txdata.len() * 16);
                 for tx in block.txdata.iter() {
                     // Process vin (decrease balance)
-                    for vin in tx.vin.iter() {
+                    for vin in tx.vin.iter().chain(tx.displaced_vout.iter()) {
                         let vout = vin.cache_tx_out.as_ref().unwrap();
 
                         match block_history.entry(vout.script_hash) {
@@ -1684,6 +2046,11 @@ impl BatchBlockProcessor {
         let processor = BatchBlockBalanceProcessor::new();
         processor.process(&data)?;
 
+        // Re-read the canonical hash after all expensive preprocessing. If the
+        // BTC branch changed while this batch was being built, reject it before
+        // any RocksDB or shared-cache mutation occurs.
+        self.validate_canonical_batch_end(&data)?;
+
         data.bench_mark.process_balances_duration_micros.store(
             begin.elapsed().as_micros() as u64,
             std::sync::atomic::Ordering::Relaxed,
@@ -1709,6 +2076,24 @@ impl BatchBlockProcessor {
         );
 
         data.bench_mark.log();
+
+        Ok(())
+    }
+
+    fn validate_canonical_batch_end(&self, data: &BatchBlockDataRef) -> Result<(), String> {
+        let blocks = data.blocks.lock().unwrap();
+        let last = blocks
+            .last()
+            .ok_or_else(|| "Cannot validate canonical end of an empty block batch".to_string())?;
+        let canonical_hash = self.btc_client.get_block_hash(last.height)?;
+        if canonical_hash != last.block_hash {
+            let msg = format!(
+                "BTC canonical batch end changed before commit at height {}: loaded {}, canonical {}",
+                last.height, last.block_hash, canonical_hash
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
 
         Ok(())
     }

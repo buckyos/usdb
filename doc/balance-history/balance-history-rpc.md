@@ -157,6 +157,8 @@
   "stable_height": 800000,
   "stable_block_hash": "....",
   "latest_block_commit": "....",
+  "balance_query_floor": 0,
+  "history_query_floor": 0,
   "script_registry": {
     "available": true,
     "count": 123456,
@@ -201,6 +203,8 @@
   "stable_height": 812345,
   "stable_block_hash": "000000...",
   "latest_block_commit": "4f7c...",
+  "balance_query_floor": 800000,
+  "history_query_floor": 800001,
   "stable_lag": 5,
   "balance_history_api_version": "1.0.0",
   "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
@@ -212,6 +216,9 @@
 说明：
 
 - 当 stable snapshot 尚不完整，例如 stable height 已存在，但 `stable_block_hash` 或 `latest_block_commit` 尚不可用时，返回共享共识错误 `SNAPSHOT_NOT_READY`；
+- `balance_query_floor` 是按高度查询 at-or-before 点余额的最早完整高度；从 genesis 同步的节点为 `0`，从高度 `H` 的压缩 snapshot 安装的节点为 `H`；
+- `history_query_floor` 是精确 delta 和历史区间的最早完整高度；从 genesis 同步的节点为 `0`，从高度 `H` 的压缩 snapshot 安装的节点为 `H + 1`；
+- snapshot 会保留 `H` 及以前的 block commit 供审计，但这些 commit 不表示节点仍保留对应高度的完整余额状态；
 - 新的错误返回会携带结构化 `data`，其中包含当前 `stable_height`、`consensus_ready` 与 `actual_state`，供下游做自动判定。
 
 ### 6) `get_state_ref_at_height`
@@ -273,6 +280,7 @@
 - `snapshot_id` 只承诺 balance-history 的 BTC anchor、API 和 query semantics，不包含 usdb-indexer formula、activation registry 或 active version set；这些 identity 由 usdb-indexer 的 `local_state_commit/system_state_id` 承诺；
 - 若高度合法，但该节点当前缺少构造该历史 state ref 所需的 block commit，会返回共享共识错误 `HISTORY_NOT_AVAILABLE`；
 - 若 `block_height` 超过当前 stable height，返回共享共识错误 `HEIGHT_NOT_SYNCED`；
+- 若 `block_height` 低于 `balance_query_floor`，返回共享共识错误 `STATE_NOT_RETAINED`；
 - 若当前 stable view 还未准备好，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
 
 ### 7) `get_address_balance`
@@ -350,6 +358,7 @@
 - 当 `block_range` 为空区间（`start == end`）时返回空数组 `[]`。
 - 若目标地址暂无数据，返回默认零值记录（`block_height=0, delta=0, balance=0`）。
 - 当 `block_height` 或 `block_range` 超出当前 `stable_height` 时，返回共享共识错误 `HEIGHT_NOT_SYNCED`，而不是隐式回退到当前可用高度。
+- 按高度的 at-or-before 查询低于 `balance_query_floor` 时返回 `STATE_NOT_RETAINED`；历史区间的 `start` 低于 `history_query_floor` 时同样 fail closed。
 
 ### 8) `get_addresses_balances`
 
@@ -369,6 +378,7 @@
 
 - 对高度/区间的合法性约束与 `get_address_balance` 相同；
 - 若任一请求高度越过当前 `stable_height`，返回共享共识错误 `HEIGHT_NOT_SYNCED`。
+- point/range retention 约束与 `get_address_balance` 完全一致。
 
 ### 9) `resolve_script_hashes`
 

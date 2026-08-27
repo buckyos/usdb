@@ -95,6 +95,8 @@ impl MockStatus {
             stable_height: latest_height,
             stable_block_hash: Some("11".repeat(32)),
             latest_block_commit: Some("22".repeat(32)),
+            balance_query_floor: 0,
+            history_query_floor: 0,
             stable_lag: regtest_stable_lag(),
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
@@ -787,6 +789,8 @@ fn snapshot_from_commit(commit: &balance_history::BlockCommitInfo) -> BalanceHis
         stable_height: commit.block_height,
         stable_block_hash: Some(commit.btc_block_hash.clone()),
         latest_block_commit: Some(commit.block_commit.clone()),
+        balance_query_floor: 0,
+        history_query_floor: 0,
         stable_lag: regtest_stable_lag(),
         balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
         balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION

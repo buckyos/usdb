@@ -493,6 +493,13 @@ snapshot_<H>.manifest.sig
 complete.json
 ```
 
+当前 manifest schema 为 `balance-history-snapshot-manifest:v2`，并显式冻结：
+
+- `balance_query_floor = H`：安装后可完整回答的最早 at-or-before 点余额高度；
+- `history_query_floor = H + 1`：安装后可完整回答的最早精确 delta/历史区间高度。
+
+snapshot 内保留的 `H` 之前 block commit 只用于审计，不能作为这些历史余额状态仍可查询的声明。
+
 ### 9.1 用接收方信任策略试安装
 
 `snapshot-tool verify` 会重开 artifact 并核对 DB、manifest、state-ref、计数和文件 hash；正式

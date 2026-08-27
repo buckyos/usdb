@@ -3764,6 +3764,8 @@ mod tests {
             stable_height,
             stable_block_hash: Some("aa".repeat(32)),
             latest_block_commit: Some("bb".repeat(32)),
+            balance_query_floor: 0,
+            history_query_floor: 0,
             stable_lag: regtest_stable_lag(),
             balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION.to_string(),
             balance_history_semantics_version: balance_history::BALANCE_HISTORY_SEMANTICS_VERSION
@@ -3786,6 +3788,8 @@ mod tests {
             stable_height: Some(stable_height),
             stable_block_hash: Some("aa".repeat(32)),
             latest_block_commit: Some("bb".repeat(32)),
+            balance_query_floor: 0,
+            history_query_floor: 0,
             snapshot_origin: None,
             snapshot_verification_state: None,
             snapshot_signing_key_id: None,
@@ -3837,6 +3841,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4030,6 +4036,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4048,6 +4056,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4088,6 +4098,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: 2,
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4199,6 +4211,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4295,6 +4309,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("aa".repeat(32)),
                 latest_block_commit: Some("bb".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4356,6 +4372,8 @@ mod tests {
                 stable_height: 120,
                 stable_block_hash: Some("11".repeat(32)),
                 latest_block_commit: Some("22".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4372,6 +4390,8 @@ mod tests {
                 stable_height: 130,
                 stable_block_hash: Some("33".repeat(32)),
                 latest_block_commit: Some("44".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),
@@ -4986,6 +5006,8 @@ mod tests {
                 stable_height: 125,
                 stable_block_hash: Some("11".repeat(32)),
                 latest_block_commit: Some("22".repeat(32)),
+                balance_query_floor: 0,
+                history_query_floor: 0,
                 stable_lag: regtest_stable_lag(),
                 balance_history_api_version: balance_history::BALANCE_HISTORY_API_VERSION
                     .to_string(),

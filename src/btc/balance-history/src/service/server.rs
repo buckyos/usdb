@@ -186,6 +186,7 @@ impl BalanceHistoryRpcServer {
     fn build_snapshot_info(&self) -> Result<SnapshotInfo, String> {
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
+        let (balance_query_floor, history_query_floor) = self.db.get_query_retention_floors()?;
         let semantics_version =
             resolve_balance_history_semantics_version(&self.config, stable_height)?;
 
@@ -197,6 +198,8 @@ impl BalanceHistoryRpcServer {
             latest_block_commit: latest_commit
                 .as_ref()
                 .map(|entry| encode_hex(&entry.block_commit)),
+            balance_query_floor,
+            history_query_floor,
             stable_lag: resolve_balance_history_stable_lag(&self.config)
                 .map_err(|error| error.to_string())?,
             balance_history_api_version: BALANCE_HISTORY_API_VERSION.to_string(),
@@ -471,6 +474,54 @@ impl BalanceHistoryRpcServer {
                 ),
             ));
         }
+        if requested_height < snapshot.balance_query_floor {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::StateNotRetained,
+                self.build_consensus_error_data(
+                    Some(requested_height),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested balance height {} is below retained balance floor {}",
+                        requested_height, snapshot.balance_query_floor
+                    )),
+                ),
+            ));
+        }
+
+        Ok(snapshot)
+    }
+
+    fn validate_requested_history_height(
+        &self,
+        requested_height: u32,
+    ) -> Result<SnapshotInfo, JsonError> {
+        let snapshot = self.resolve_queryable_snapshot()?;
+        if requested_height > snapshot.stable_height {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::HeightNotSynced,
+                self.build_consensus_error_data(
+                    Some(requested_height),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested height {} is above current stable height {}",
+                        requested_height, snapshot.stable_height
+                    )),
+                ),
+            ));
+        }
+        if requested_height < snapshot.history_query_floor {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::StateNotRetained,
+                self.build_consensus_error_data(
+                    Some(requested_height),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested exact history height {} is below retained history floor {}",
+                        requested_height, snapshot.history_query_floor
+                    )),
+                ),
+            ));
+        }
 
         Ok(snapshot)
     }
@@ -489,6 +540,19 @@ impl BalanceHistoryRpcServer {
                     Some(format!(
                         "Requested range [{} , {}) exceeds current stable height {}",
                         range.start, range.end, snapshot.stable_height
+                    )),
+                ),
+            ));
+        }
+        if !range.is_empty() && range.start < snapshot.history_query_floor {
+            return Err(Self::to_consensus_error(
+                ConsensusRpcErrorCode::StateNotRetained,
+                self.build_consensus_error_data(
+                    Some(range.start),
+                    Some(&snapshot),
+                    Some(format!(
+                        "Requested history range [{}, {}) starts below retained history floor {}",
+                        range.start, range.end, snapshot.history_query_floor
                     )),
                 ),
             ));
@@ -676,6 +740,7 @@ impl BalanceHistoryRpcServer {
         let runtime = self.status.get_runtime_readiness();
         let stable_height = self.db.get_btc_block_height()?;
         let latest_commit = self.db.get_block_commit(stable_height)?;
+        let (balance_query_floor, history_query_floor) = self.db.get_query_retention_floors()?;
         let script_registry = self.script_registry_status();
         let snapshot_provenance = self.db.get_snapshot_install_provenance()?;
         let snapshot_install_used = if snapshot_provenance.is_some() {
@@ -754,6 +819,8 @@ impl BalanceHistoryRpcServer {
             stable_height: Some(stable_height),
             stable_block_hash,
             latest_block_commit,
+            balance_query_floor,
+            history_query_floor,
             snapshot_origin: snapshot_provenance
                 .as_ref()
                 .map(|value| value.origin.clone()),
@@ -990,6 +1057,7 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
         params: GetBalanceParams,
     ) -> JsonResult<Vec<Option<AddressBalance>>> {
         if let Some(height) = params.block_height {
+            self.validate_requested_history_height(height)?;
             let ret = self
                 .db
                 .get_balance_delta_at_block_height(&params.script_hash, height)
@@ -1014,6 +1082,8 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
             if range.is_empty() {
                 return Ok(Vec::new());
             }
+
+            self.validate_requested_range(&range)?;
 
             let ret = self
                 .db
@@ -1394,6 +1464,8 @@ mod tests {
             snapshot.latest_block_commit,
             Some(encode_hex(&commit.block_commit))
         );
+        assert_eq!(snapshot.balance_query_floor, 0);
+        assert_eq!(snapshot.history_query_floor, 0);
         assert_eq!(
             snapshot.stable_lag,
             resolve_balance_history_stable_lag(&server.config).unwrap()
@@ -1733,6 +1805,79 @@ mod tests {
     }
 
     #[test]
+    fn test_snapshot_retention_floors_fail_closed_by_query_semantics() {
+        let server = make_test_server("snapshot_retention_floors");
+        seed_stable_commit(&server, 12, 9);
+        server.db.put_query_retention_floors(10, 11).unwrap();
+        let script_hash = make_script_hash(1);
+
+        let snapshot = server.get_snapshot_info().unwrap();
+        assert_eq!(snapshot.balance_query_floor, 10);
+        assert_eq!(snapshot.history_query_floor, 11);
+
+        let point_error = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: Some(9),
+                block_range: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            point_error.code,
+            JsonErrorCode::ServerError(ConsensusRpcErrorCode::StateNotRetained.code())
+        );
+        server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: Some(10),
+                block_range: None,
+            })
+            .unwrap();
+
+        let delta_error = server
+            .get_address_balance_delta(GetBalanceParams {
+                script_hash,
+                block_height: Some(10),
+                block_range: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            delta_error.code,
+            JsonErrorCode::ServerError(ConsensusRpcErrorCode::StateNotRetained.code())
+        );
+
+        let range_error = server
+            .get_address_balance(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: Some(10..12),
+            })
+            .unwrap_err();
+        assert_eq!(
+            range_error.code,
+            JsonErrorCode::ServerError(ConsensusRpcErrorCode::StateNotRetained.code())
+        );
+        server
+            .get_address_balance_delta(GetBalanceParams {
+                script_hash,
+                block_height: None,
+                block_range: Some(11..13),
+            })
+            .unwrap();
+
+        let state_ref_error = server
+            .get_state_ref_at_height(GetStateRefAtHeightParams {
+                block_height: 9,
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            state_ref_error.code,
+            JsonErrorCode::ServerError(ConsensusRpcErrorCode::StateNotRetained.code())
+        );
+    }
+
+    #[test]
     fn test_get_readiness_defaults_to_not_ready_before_rpc_alive() {
         let server = make_test_server("readiness_defaults");
 
@@ -1837,6 +1982,7 @@ mod tests {
             .db
             .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
             .unwrap();
+        server.db.put_query_retention_floors(12, 13).unwrap();
         server.db.put_snapshot_install_state(false).unwrap();
 
         let readiness = server.get_readiness().unwrap();
@@ -1870,6 +2016,7 @@ mod tests {
             .db
             .update_address_history_with_block_commits_async(&Vec::new(), 12, &[commit])
             .unwrap();
+        server.db.put_query_retention_floors(12, 13).unwrap();
         server
             .db
             .put_snapshot_install_provenance(&SnapshotInstallProvenance {
@@ -1880,12 +2027,14 @@ mod tests {
                 manifest_verified: true,
                 signature_present: true,
                 signature_verified: true,
-                manifest_version: Some("balance-history-snapshot-manifest:v1".to_string()),
+                manifest_version: Some("balance-history-snapshot-manifest:v2".to_string()),
                 signature_scheme: Some("ed25519".to_string()),
                 signing_key_id: Some("trusted-signer".to_string()),
                 snapshot_file_sha256: Some("aa".repeat(32)),
                 snapshot_id: Some("bb".repeat(32)),
                 installed_block_height: 12,
+                balance_query_floor: 12,
+                history_query_floor: 13,
             })
             .unwrap();
 
@@ -2126,6 +2275,7 @@ mod tests {
     fn test_get_address_balance_delta_requires_selector_and_exact_miss_returns_none() {
         let server = make_test_server("balance_delta_params");
         let script_hash = make_script_hash(3);
+        seed_stable_commit(&server, 12, 4);
         seed_balance_entries(
             &server,
             &[BalanceHistoryEntry {

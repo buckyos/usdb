@@ -39,6 +39,8 @@ pub const META_KEY_UNDO_RETAINED_FROM_HEIGHT: &str = "undo_retained_from_height"
 pub const META_KEY_SNAPSHOT_INSTALL_USED: &str = "snapshot_install_used";
 pub const META_KEY_SNAPSHOT_INSTALL_MANIFEST_VERIFIED: &str = "snapshot_install_manifest_verified";
 pub const META_KEY_SNAPSHOT_INSTALL_PROVENANCE: &str = "snapshot_install_provenance";
+pub const META_KEY_BALANCE_QUERY_FLOOR: &str = "balance_query_floor";
+pub const META_KEY_HISTORY_QUERY_FLOOR: &str = "history_query_floor";
 
 pub const BALANCE_HISTORY_KEY_LEN: usize = BtcScriptHash::LEN + 4; // BtcScriptHash (32 bytes) + block_height (4 bytes)
 pub const UTXO_KEY_LEN: usize = Txid::LEN + 4; // OutPoint: txid (32 bytes) + vout (4 bytes)
@@ -968,15 +970,18 @@ impl BalanceHistoryDB {
             msg
         })?;
 
+        // Apply spends before creations because the two historical BIP30
+        // exceptions replace an existing UTXO with the same outpoint in one
+        // logical block update.
+        for outpoint in update.remove_utxos {
+            let key = Self::make_utxo_key(outpoint);
+            batch.delete_cf(utxo_cf, key);
+        }
+
         for (outpoint, utxo) in update.new_utxos {
             let value = UTXOValue::encode(&utxo.script_hash, utxo.value);
             let key = Self::make_utxo_key(outpoint);
             batch.put_cf(utxo_cf, key, value);
-        }
-
-        for outpoint in update.remove_utxos {
-            let key = Self::make_utxo_key(outpoint);
-            batch.delete_cf(utxo_cf, key);
         }
 
         let balance_cf = self.db.cf_handle(BALANCE_HISTORY_CF).ok_or_else(|| {
@@ -1783,6 +1788,82 @@ impl BalanceHistoryDB {
         &self,
     ) -> Result<Option<SnapshotInstallProvenance>, String> {
         self.get_json_meta(META_KEY_SNAPSHOT_INSTALL_PROVENANCE)
+    }
+
+    /// Persists the query-retention contract of this local database atomically.
+    pub fn put_query_retention_floors(
+        &self,
+        balance_query_floor: u32,
+        history_query_floor: u32,
+    ) -> Result<(), String> {
+        if history_query_floor < balance_query_floor {
+            let msg = format!(
+                "Invalid query retention floors: balance_query_floor={}, history_query_floor={}",
+                balance_query_floor, history_query_floor
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+
+        let cf = self.db.cf_handle(META_CF).ok_or_else(|| {
+            let msg = format!("Column family {} not found", META_CF);
+            error!("{}", msg);
+            msg
+        })?;
+        let mut batch = WriteBatch::default();
+        batch.put_cf(
+            cf,
+            META_KEY_BALANCE_QUERY_FLOOR,
+            balance_query_floor.to_be_bytes(),
+        );
+        batch.put_cf(
+            cf,
+            META_KEY_HISTORY_QUERY_FLOOR,
+            history_query_floor.to_be_bytes(),
+        );
+        let mut ops = WriteOptions::default();
+        ops.set_sync(false);
+        self.db.write_opt(&batch, &ops).map_err(|e| {
+            let msg = format!("Failed to persist query retention floors: {}", e);
+            error!("{}", msg);
+            msg
+        })
+    }
+
+    /// Returns local query-retention floors. A DB synchronized from genesis has
+    /// complete history and therefore defaults to zero. Snapshot-installed DBs
+    /// must carry explicit floors and fail closed if the metadata is incomplete.
+    pub fn get_query_retention_floors(&self) -> Result<(u32, u32), String> {
+        let balance_floor = self.get_u32_meta(META_KEY_BALANCE_QUERY_FLOOR)?;
+        let history_floor = self.get_u32_meta(META_KEY_HISTORY_QUERY_FLOOR)?;
+        match (balance_floor, history_floor) {
+            (Some(balance_floor), Some(history_floor)) if history_floor >= balance_floor => {
+                if let Some(provenance) = self.get_snapshot_install_provenance()?
+                    && (provenance.balance_query_floor != balance_floor
+                        || provenance.history_query_floor != history_floor)
+                {
+                    let msg = format!(
+                        "Snapshot retention floor metadata conflicts with install provenance: metadata=({}, {}), provenance=({}, {})",
+                        balance_floor,
+                        history_floor,
+                        provenance.balance_query_floor,
+                        provenance.history_query_floor
+                    );
+                    error!("{}", msg);
+                    return Err(msg);
+                }
+                Ok((balance_floor, history_floor))
+            }
+            (None, None) if !self.get_snapshot_install_used()? => Ok((0, 0)),
+            (balance_floor, history_floor) => {
+                let msg = format!(
+                    "Incomplete or invalid query retention metadata: balance_query_floor={:?}, history_query_floor={:?}",
+                    balance_floor, history_floor
+                );
+                error!("{}", msg);
+                Err(msg)
+            }
+        }
     }
 
     fn put_u32_meta(&self, key: &str, value: u32) -> Result<(), String> {
@@ -4087,6 +4168,26 @@ mod tests {
 
         assert_eq!(db.get_undo_retained_from_height().unwrap(), Some(120));
         assert_eq!(db.get_rollback_supported_from_height().unwrap(), Some(80));
+    }
+
+    #[test]
+    fn test_query_retention_floors_default_for_full_db_and_fail_closed_for_snapshot_db() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_query_retention_floor_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir;
+        let db = BalanceHistoryDB::open(std::sync::Arc::new(config), BalanceHistoryDBMode::Normal)
+            .unwrap();
+
+        assert_eq!(db.get_query_retention_floors().unwrap(), (0, 0));
+
+        db.put_snapshot_install_state(false).unwrap();
+        let error = db.get_query_retention_floors().unwrap_err();
+        assert!(error.contains("Incomplete or invalid query retention metadata"));
+
+        db.put_query_retention_floors(10, 11).unwrap();
+        assert_eq!(db.get_query_retention_floors().unwrap(), (10, 11));
     }
 
     #[test]

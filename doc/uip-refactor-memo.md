@@ -1359,3 +1359,22 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   ord consume/remint/reorg 语义继续由 targeted live 与既有 300/2500-tick world-sim 覆盖。
 - 后续容量项收敛为 100K 以上离线点、目标部署磁盘隔离复核、30-60 分钟 replay/query
   soak，以及未来 retention/pruning 上线后的同矩阵复跑。
+
+## Balance-History 核心 Review 第一批修正
+
+状态：2026-08-26 已实现，等待 review，尚未提交。
+
+- 移除未被调用且语义有误导性的 BIP30 原始 coinbase 黑名单 helper。批处理按区块/交易位置
+  保留同一 outpoint 的多个 generation，在高度 `91842/91880` 覆盖未花费旧 generation 时
+  显式写入 balance debit、replacement UTXO 和可恢复 undo；前向 DB/cache 顺序统一为先
+  remove 后 put。`index_batch_vouts` 在插入时只记录实际 collision outpoint；后续解析只遍历
+  这些候选，并仅在 batch 覆盖 `91842/91880` 时检查 durable BIP30 displacement，正常新区块
+  batch 不再二次扫描完整 UTXO map 和交易列表。
+- batch preload 绑定本地 durable parent，逐高度验证 `prev_blockhash` 连续；昂贵派生结束后、
+  RocksDB 提交前重新读取 batch end canonical hash，分支变化时整批丢弃且不修改 durable state。
+- snapshot manifest 升级为 `balance-history-snapshot-manifest:v2`，安装时持久化
+  `balance_query_floor=H`、`history_query_floor=H+1`。`get_snapshot_info` 暴露两个下限；point
+  balance/state-ref 与 exact delta/history range 分别按对应下限返回 `STATE_NOT_RETAINED`。
+- snapshot 中 `H` 之前的 block commit 保留为审计数据，不再隐含声明对应余额状态可重放。
+- 由于 BIP30 会改变早期 balance history 与后续 rolling block commit，本批不提供旧 DB/旧
+  manifest 兼容或迁移；正式验收前需要从头重建 balance-history 与 snapshot。
