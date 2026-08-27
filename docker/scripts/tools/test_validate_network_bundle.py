@@ -37,11 +37,18 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_AUTH_MODE": "userpass",
             "BTC_RPC_USER": "test-user",
             "BTC_RPC_PASSWORD": "test-password",
+            "BTC_P2P_BIND_ADDRESS": "127.0.0.1",
             "BTC_P2P_BIND_PORT": "8333",
             "BTC_NODE_DATA_HOST_DIR": str(self.root / "bitcoin"),
             "BTC_RPCAUTH_HOST_FILE": str(self.root / "bitcoin-rpcauth"),
             "USDB_NODE_ROLE": "full",
+            "USDB_P2P_BIND_ADDRESS": "0.0.0.0",
             "USDB_P2P_BIND_PORT": "31303",
+            "USDB_HTTP_BIND_ADDRESS": "127.0.0.1",
+            "USDB_WS_BIND_ADDRESS": "127.0.0.1",
+            "BH_BIND_ADDRESS": "127.0.0.1",
+            "USDB_INDEXER_BIND_ADDRESS": "127.0.0.1",
+            "CONTROL_PLANE_BIND_ADDRESS": "127.0.0.1",
             "SNAPSHOT_MODE": "none",
             "BH_SNAPSHOT_HOST_DIR": str(self.root / "snapshot"),
             "BH_SNAPSHOT_FILE": "",
@@ -126,6 +133,25 @@ class NetworkBundleValidatorTests(unittest.TestCase):
     def test_external_bitcoin_rpc_is_rejected(self) -> None:
         path = self.write_node_env(BTC_RPC_URL="http://host.docker.internal:8332")
         with self.assertRaisesRegex(ValueError, "private btc-node endpoint"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_public_bitcoin_p2p_bind_is_supported(self) -> None:
+        path = self.write_node_env(BTC_P2P_BIND_ADDRESS="0.0.0.0")
+        VALIDATOR.validate_node_env(path, False)
+
+    def test_noncanonical_bitcoin_p2p_bind_is_rejected(self) -> None:
+        path = self.write_node_env(BTC_P2P_BIND_ADDRESS="192.0.2.10")
+        with self.assertRaisesRegex(ValueError, "must be explicit loopback-only or public"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_empty_bitcoin_p2p_bind_is_rejected(self) -> None:
+        path = self.write_node_env(BTC_P2P_BIND_ADDRESS="")
+        with self.assertRaisesRegex(ValueError, "must be explicit loopback-only or public"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_public_operator_rpc_bind_is_rejected(self) -> None:
+        path = self.write_node_env(USDB_HTTP_BIND_ADDRESS="0.0.0.0")
+        with self.assertRaisesRegex(ValueError, "USDB_HTTP_BIND_ADDRESS must be loopback-only"):
             VALIDATOR.validate_node_env(path, False)
 
     def test_miner_requires_address_and_pass(self) -> None:

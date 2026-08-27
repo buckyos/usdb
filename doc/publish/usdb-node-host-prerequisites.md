@@ -3,7 +3,7 @@
 ## 1. 适用范围
 
 本文定义 USDB 节点通用的主机软件边界，适用于开发网、测试网和正式网。网络身份、genesis、
-BTC registry、PoW 参数、端口暴露和节点角色由各自 network bundle 决定，不应进入主机准备工具。
+BTC registry、PoW 参数、端口暴露和节点角色由各自 network bundle 决定，不应进入软件准备工具。
 
 Ubuntu 24.04 是当前优先验证的运维基线，但不是协议或运行时硬要求。容器内已经固定用户态依赖，
 宿主机只需提供满足要求的 Linux kernel、amd64 架构、Docker runtime 和少量运维命令。
@@ -94,10 +94,26 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 
 复检通过后才能 clone 固定 revision、写入 node-local secret，并进入对应网络的部署手册。
 
-## 5. 安全与运维边界
+## 5. 防火墙准备
+
+软件准备工具不会修改防火墙。生成该网络的私有 `node.env` 后，使用独立的
+`prepare_usdb_firewall.sh` 同时校验 Docker bind address 和 UFW：
+
+```bash
+sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
+  --node-env docker/networks/testnet-v0/node.env \
+  --ssh-port <actual-ssh-port> \
+  --bitcoin-p2p private \
+  --confirm
+```
+
+测试网和正式网共用该工具，但具体端口和 public/private P2P 决策必须服从对应 network bundle 与
+发布手册。完整边界见 [USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)。
+
+## 6. 安全与运维边界
 
 - `docker` 组拥有 root 级主机权限，只允许专用运维用户加入；
-- Docker 发布端口可能绕过 UFW，应同时检查 `DOCKER-USER` chain 或上游云防火墙；
+- Docker 发布端口可能绕过 UFW，必须同时校验容器 bind address 和上游云防火墙；
 - 已有容器工作负载的主机不能直接删除冲突包，应先评估迁移和数据保留；
 - 自动安装不修改 Docker daemon storage driver、data root、日志策略或防火墙；
 - 正式网可复用同一工具，但必须使用正式网单独冻结的 network bundle 和 release manifest。

@@ -45,7 +45,7 @@ ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
 Bitcoin Compose 和 USDB runtime 是两个 Compose project，共享 bundle 固定的 external Docker
 network。默认 endpoint 为 `http://btc-node:8332`：
 
-- `8333/TCP` 发布到公网用于 Bitcoin P2P；
+- `8333/TCP` 默认只绑定宿主机 loopback；可按节点角色选择发布到公网，用于 Bitcoin 入站 P2P；
 - `8332/TCP` 不映射到宿主机，也不能暴露公网；
 - Bitcoin 数据使用 `BTC_NODE_DATA_HOST_DIR` bind mount；
 - `run_testnet_runtime.sh down` 不停止 Bitcoin、不删除 shared network、不触碰 Bitcoin 数据；
@@ -61,6 +61,11 @@ network。默认 endpoint 为 `http://btc-node:8332`：
 已有非裁剪、`txindex=1` 的 mainnet 数据目录可以直接配置为 `BTC_NODE_DATA_HOST_DIR`，但同一目录在
 任意时刻只能由一个 bitcoind 进程打开。切换前必须等待旧进程完整退出，并确认容器 UID/GID 对目录
 有读写权限。
+
+关闭公网 `8333/TCP` 不影响 Bitcoin Core 主动建立出站 peer 和同步主链，只是不接收入站 peer。
+如需公开 `8333`，必须同时将 `BTC_P2P_BIND_ADDRESS=0.0.0.0` 并采用 firewall public profile；仅增加
+UFW allow 规则不足以改变 loopback-only Docker bind。具体见
+[USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)。
 
 ## 4. 初始化 RPC 身份
 

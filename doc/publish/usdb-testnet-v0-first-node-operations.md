@@ -45,11 +45,14 @@ bootstrap 或持续出块。
 | 软件 | Docker Engine、Compose plugin、Git、Python 3、curl、jq |
 | 时间 | Bitcoin IBD 与 balance-history full sync 均按小时到数天规划 |
 
-防火墙只需公开：
+防火墙必须公开：
 
-- `8333/TCP`：Bitcoin P2P；
 - `31303/TCP+UDP`：USDB devp2p；
 - 运维 SSH。
+
+`8333/TCP` 是可选的 Bitcoin 入站 P2P，不是 USDB 运行依赖。testnet-v0 默认把它绑定到
+`127.0.0.1`；Bitcoin Core 仍会主动建立出站 peer 并正常同步。只有明确希望该节点为 Bitcoin 网络
+提供入站容量时，才改为公网绑定并放行 `8333/TCP`。
 
 `8332`、`8545`、`8546`、`28010`、`28020`、`28040` 必须保持 localhost 或 Docker 私网可见，
 不得直接暴露公网。节点需要正常的出站 DNS、NTP、HTTPS 和 Bitcoin P2P。
@@ -84,8 +87,9 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 
 归档检查输出，其中包含实际 Docker、Compose、Git、Python、curl 和 jq 版本。若目标机器已有
 容器运行时或工作负载，不要直接执行建议的卸载命令，应先人工确认迁移和数据保留方案。
-Docker 发布的容器端口可能绕过 UFW 规则；除 Compose 的 localhost 绑定外，还应在主机
-`DOCKER-USER` 链或上游云防火墙中复核实际暴露面。
+Docker 发布的容器端口可能绕过 UFW 规则；本项目因此同时校验 Compose bind address 和 UFW。
+具体操作见 [USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)，并在上游云防火墙中
+复核同一暴露面。
 
 ## 4. 发布协调机流程
 
@@ -196,9 +200,21 @@ docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet-v0-node1
 ```bash
 docker/scripts/tools/run_testnet_runtime.sh validate
 docker/scripts/tools/run_testnet_runtime.sh validate-node
+sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
+  --node-env docker/networks/testnet-v0/node.env \
+  --ssh-port <actual-ssh-port> \
+  --bitcoin-p2p private \
+  --confirm
+sudo docker/scripts/tools/prepare_usdb_firewall.sh check \
+  --node-env docker/networks/testnet-v0/node.env \
+  --ssh-port <actual-ssh-port> \
+  --bitcoin-p2p private
 docker/scripts/tools/run_testnet_bitcoin.sh pull
 docker/scripts/tools/run_testnet_runtime.sh pull
 ```
+
+如果明确需要接受 Bitcoin 入站 peer，先把 `BTC_P2P_BIND_ADDRESS` 改成 `0.0.0.0`，并将上述两个
+命令的模式改成 `--bitcoin-p2p public`。不要把 `8332` 与 `8333` 一起开放。
 
 ## 7. Bitcoin Core 全量同步
 

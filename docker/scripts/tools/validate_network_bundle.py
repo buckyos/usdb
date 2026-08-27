@@ -249,6 +249,10 @@ def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime
     require(bool(env.get("BTC_RPC_USER")), "BTC_RPC_USER is required")
     require(bool(env.get("BTC_RPC_PASSWORD")), "BTC_RPC_PASSWORD is required")
     require(env.get("BTC_RPC_URL") == "http://btc-node:8332", "BTC_RPC_URL must use the private btc-node endpoint")
+    require(
+        env.get("BTC_P2P_BIND_ADDRESS") in {"127.0.0.1", "0.0.0.0"},
+        "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",
+    )
     require(env.get("BTC_P2P_BIND_PORT", "8333") == "8333", "Bitcoin mainnet P2P bind port must be 8333")
 
     role = env.get("USDB_NODE_ROLE", "full")
@@ -257,7 +261,16 @@ def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime
         require(bool(env.get("USDB_MINER_ADDRESS")), "miner role requires USDB_MINER_ADDRESS")
         require(bool(env.get("USDB_PASS_ID")), "miner role requires USDB_PASS_ID")
 
+    require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet-v0 P2P must bind public IPv4")
     require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet-v0 P2P bind port must be 31303")
+    for key in (
+        "USDB_HTTP_BIND_ADDRESS",
+        "USDB_WS_BIND_ADDRESS",
+        "BH_BIND_ADDRESS",
+        "USDB_INDEXER_BIND_ADDRESS",
+        "CONTROL_PLANE_BIND_ADDRESS",
+    ):
+        require(env.get(key) == "127.0.0.1", f"{key} must be loopback-only")
     if require_bitcoin_runtime:
         data_dir = Path(env.get("BTC_NODE_DATA_HOST_DIR", ""))
         require(data_dir.is_absolute(), "BTC_NODE_DATA_HOST_DIR must be an absolute path")

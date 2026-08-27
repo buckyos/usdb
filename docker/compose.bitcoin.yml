@@ -36,7 +36,7 @@ services:
       - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin
       - ${BTC_RPCAUTH_HOST_FILE:?BTC_RPCAUTH_HOST_FILE is required}:/run/secrets/bitcoin-rpcauth:ro
     ports:
-      - "${BTC_P2P_BIND_ADDRESS:-0.0.0.0}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp"
+      - "${BTC_P2P_BIND_ADDRESS:-127.0.0.1}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp"
     mem_limit: ${BTC_MEMORY_LIMIT:-5g}
     stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-10m}
     healthcheck:

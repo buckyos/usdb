@@ -33,7 +33,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
     def test_release_compose_keeps_rpc_private_and_data_external(self) -> None:
         content = (ROOT / "docker/compose.bitcoin.yml").read_text(encoding="utf-8")
         self.assertIn("${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin", content)
-        self.assertIn("${BTC_P2P_BIND_PORT:-8333}:8333/tcp", content)
+        self.assertIn("${BTC_P2P_BIND_ADDRESS:-127.0.0.1}:${BTC_P2P_BIND_PORT:-8333}:8333/tcp", content)
         self.assertNotIn(":8332:8332", content)
         self.assertIn("external: true", content)
 
@@ -44,6 +44,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertEqual(network_env["BTC_MIN_READY_HEIGHT"], "963800")
         self.assertEqual(network_env["BTC_MAX_TIP_AGE_SECS"], "7200")
         self.assertEqual(network_env["BTC_MIN_CONNECTIONS"], "1")
+        self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["BTC_P2P_BIND_PORT"], "8333")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
         self.assertEqual(env["SNAPSHOT_MODE"], "none")

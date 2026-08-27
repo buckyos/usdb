@@ -31,7 +31,8 @@
 
 1. 通过 GitHub image workflows 发布 candidate，并取得 digest-only `USDB_SERVICES_IMAGE`、
    `USDB_CHAIN_IMAGE` 与 `USDB_BITCOIN_IMAGE`。`latest`、`local`、普通 tag 和占位引用不能进入跨仓 release manifest。
-2. 准备独立 Bitcoin 数据目录和 rpcauth；release Compose 仅发布 `8333/TCP`，不发布 `8332`。
+2. 准备独立 Bitcoin 数据目录和 rpcauth；release Compose 默认把 `8333/TCP` 绑定到 loopback，
+   可显式改为公网 Bitcoin P2P，但始终不发布 `8332`。
 3. 默认使用 `SNAPSHOT_MODE=none`，balance-history 从 BTC 创世全量同步；signed snapshot 是以后可选的节点加速路径。
 4. 确认本机至少 32 GiB 内存；共机模板为 Bitcoin `5g`、balance-history `12g`，全部服务 hard limit 合计 `27g`。
 
