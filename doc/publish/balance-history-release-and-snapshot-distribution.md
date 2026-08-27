@@ -89,6 +89,7 @@ SCRIPT=src/btc/balance-history/scripts/mainnet_exact_height_snapshot.sh
 bash "$SCRIPT" init
 bash "$SCRIPT" preflight --height "$H"
 bash "$SCRIPT" create --height "$H"
+bash "$SCRIPT" resume-verify --height "$H" # interrupted verifying jobs only
 bash "$SCRIPT" verify --height "$H"
 bash "$SCRIPT" finalize --height "$H"
 ```
