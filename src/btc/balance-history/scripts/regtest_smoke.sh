@@ -18,7 +18,9 @@ ENABLE_TRANSFER_CHECK="${ENABLE_TRANSFER_CHECK:-1}"
 SEND_AMOUNT_BTC="${SEND_AMOUNT_BTC:-1.25}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[regtest-smoke]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 main() {
@@ -54,7 +56,7 @@ main() {
     exit 1
   fi
 
-  regtest_wait_until_synced_height "$TARGET_HEIGHT"
+  regtest_wait_until_height_is_stable "$TARGET_HEIGHT" "$mining_address"
   regtest_wait_balance_history_consensus_ready
 
   if [[ "$ENABLE_TRANSFER_CHECK" == "1" ]]; then
@@ -68,8 +70,8 @@ main() {
     regtest_log "Mining 1 block to confirm transfer"
     regtest_mine_blocks 1 "$mining_address"
 
-    expected_height=$((TARGET_HEIGHT + 1))
-    regtest_wait_until_synced_height "$expected_height"
+    expected_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+    regtest_wait_until_height_is_stable "$expected_height" "$mining_address"
     regtest_wait_balance_history_consensus_ready
 
     script_hash="$(regtest_address_to_script_hash "$receiver_address")"

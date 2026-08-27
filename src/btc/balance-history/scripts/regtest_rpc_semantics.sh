@@ -15,7 +15,9 @@ WALLET_NAME="${WALLET_NAME:-bhrpcsemantics}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[rpc-semantics]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -65,37 +67,37 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
-  regtest_wait_until_synced_height "$COINBASE_MATURITY"
+  regtest_wait_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
 
   txid_a1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$address_a" 1.0)"
   regtest_mine_blocks 1 "$mining_address"
   height_1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_1"
+  regtest_wait_until_height_is_stable "$height_1" "$mining_address"
   vout_a1="$(regtest_get_tx_vout_for_address "$txid_a1" "$address_a")"
   regtest_lock_wallet_outpoint "$txid_a1" "$vout_a1"
 
   txid_b1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$address_b" 0.5)"
   regtest_mine_blocks 1 "$mining_address"
   height_2="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_2"
+  regtest_wait_until_height_is_stable "$height_2" "$mining_address"
   vout_b1="$(regtest_get_tx_vout_for_address "$txid_b1" "$address_b")"
   regtest_lock_wallet_outpoint "$txid_b1" "$vout_b1"
 
   txid_a2="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$address_a" 0.25)"
   regtest_mine_blocks 1 "$mining_address"
   height_3="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_3"
+  regtest_wait_until_height_is_stable "$height_3" "$mining_address"
   vout_a2="$(regtest_get_tx_vout_for_address "$txid_a2" "$address_a")"
   regtest_lock_wallet_outpoint "$txid_a2" "$vout_a2"
 
   regtest_mine_empty_block "$mining_address"
   height_4="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_4"
+  regtest_wait_until_height_is_stable "$height_4" "$mining_address"
 
   txid_c1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" sendtoaddress "$address_c" 0.1)"
   regtest_mine_blocks 1 "$mining_address"
   height_5="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_5"
+  regtest_wait_until_height_is_stable "$height_5" "$mining_address"
   vout_c1="$(regtest_get_tx_vout_for_address "$txid_c1" "$address_c")"
   regtest_lock_wallet_outpoint "$txid_c1" "$vout_c1"
 
@@ -158,7 +160,7 @@ main() {
   regtest_log "Spent tracked outpoint via raw transaction txid=${spend_txid}"
   regtest_mine_blocks 1 "$mining_address"
   latest_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$latest_height"
+  regtest_wait_until_height_is_stable "$latest_height" "$mining_address"
 
   resp="$(regtest_rpc_call_balance_history "get_live_utxo" "[\"${txid_a1}:${vout_a1}\"]")"
   regtest_assert_json_expr "$resp" "data['result'] is None" "True"

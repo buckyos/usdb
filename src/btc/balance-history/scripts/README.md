@@ -2,7 +2,8 @@
 
 本目录包含 `balance-history` 的 shell 级端到端测试。每个场景会启动隔离的 Bitcoin Core regtest 节点，启动一个或多个 `balance-history` 服务实例，构造链上交易/区块，并通过 JSON-RPC 验证结果。
 
-当前 `run_regtest_suite.sh` 支持 smoke 和 stable-lag reorg boundary 两个子集；更大的 reorg/snapshot 套件仍保留为手工入口。
+当前 `run_regtest_suite.sh` 支持 `smoke`、`correctness` 和 stable-lag reorg boundary
+三个子集；更大的 reorg/snapshot 套件仍保留为手工入口。
 
 真实本地 BTC 数据测试使用单独入口 `run_real_btc_tests.sh`，它不会启动 bitcoind，而是连接调用者显式指定的本机节点和 blk datadir。
 
@@ -42,6 +43,12 @@ bash src/btc/balance-history/scripts/regtest_rpc_semantics.sh
 bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
 ```
 
+独立模型加真实 bitcoind 的正确性状态线：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
+```
+
 Stable-lag reorg 深度边界矩阵：
 
 ```bash
@@ -64,13 +71,14 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 | `WALLET_NAME` | regtest 钱包名 | 场景自带默认值 |
 | `SYNC_TIMEOUT_SEC` | 等待同步/readiness 的超时时间 | 通常为 `120` |
 | `BALANCE_HISTORY_LOG_FILE` | service stdout/stderr 捕获文件 | `$WORK_DIR/balance-history.log` |
+| `BALANCE_HISTORY_BIN` | 已构建的 balance-history 二进制；suite runner 会自动构建一次并导出 | 未设置时单脚本回退到 `cargo run` |
 | `REGTEST_DIAG_TAIL_LINES` | 失败时打印日志行数 | `120` |
 
 ## 脚本清单
 
 | 脚本 | 分层 | 默认端口 `btc-rpc/p2p/bh-rpc` | 目标 |
 | --- | --- | --- | --- |
-| `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke`、`stable-lag-reorg` |
+| `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke`、`correctness`、`stable-lag-reorg` |
 | `run_real_btc_tests.sh` | Real BTC | N/A | 显式 `USDB_BH_REAL_BTC=1` 后运行本机真实 blk/RPC 测试 |
 | `regtest_smoke.sh` | Smoke | `28132/28133/28110` | 基础同步、网络类型、地址余额查询 |
 | `regtest_rpc_semantics.sh` | Smoke/query | `29032/29033/29010` | latest/exact/range balance、delta、batch 顺序、live UTXO 语义 |
@@ -137,6 +145,28 @@ bash src/btc/balance-history/scripts/regtest_reorg_smoke.sh
 bash src/btc/balance-history/scripts/regtest_snapshot_install_repeat.sh
 bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```
+
+### Correctness
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
+```
+
+该 suite 先显式构建一次 `balance-history`，再复用同一二进制执行独立 oracle 单测、
+RPC semantics、spend graph、same-block aggregation、完整历史状态线和 stable-lag smoke。
+编译时间不会计入服务 readiness 超时。
+
+较大规模的历史状态线可单独参数化运行：
+
+```bash
+ADDRESS_COUNT=32 UNTRACKED_ADDRESS_COUNT=16 \
+BLOCK_COUNT=120 TXS_PER_BLOCK=8 CHECK_INTERVAL=10 \
+SYNC_TIMEOUT_SEC=300 \
+bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
+```
+
+分层设计和 Electrs 后续优化见
+[balance-history-correctness-validation.md](/home/bucky/work/usdb/doc/balance-history/balance-history-correctness-validation.md)。
 
 ### Stable-Lag Reorg Boundary
 
@@ -313,7 +343,7 @@ $BITCOIN_DIR/regtest/debug.log
 
 ## 已知缺口
 
-- `run_regtest_suite.sh` 当前支持 `smoke`、`stable-lag-reorg`，还未扩展 `core`、`reorg-full`、`snapshot-full`。
+- `run_regtest_suite.sh` 当前支持 `smoke`、`correctness`、`stable-lag-reorg`，还未扩展 `core`、`reorg-full`、`snapshot-full`。
 - 聚合 RPC `get_address_balance_summary`、`get_address_balance_timeseries`、`get_address_flow_buckets` 已有 Rust unit 覆盖，但还没有 regtest 脚本覆盖。
 - `resolve_script_hashes` 已有 Rust unit 覆盖，但还没有基于完整 indexed data 的 regtest 覆盖。
 - 多个脚本仍有本地 JSON assertion helper，后续应收敛到 `regtest_lib.sh`。

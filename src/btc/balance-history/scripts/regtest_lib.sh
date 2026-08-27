@@ -19,6 +19,7 @@ CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
 REGTEST_DIAG_TAIL_LINES="${REGTEST_DIAG_TAIL_LINES:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
+BALANCE_HISTORY_BIN="${BALANCE_HISTORY_BIN:-}"
 COINBASE_MATURITY="${COINBASE_MATURITY:-100}"
 
 BITCOIND_PID="${BITCOIND_PID:-}"
@@ -405,16 +406,33 @@ regtest_mine_blocks() {
     generatetoaddress "$block_count" "$address" >/dev/null
 }
 
+regtest_wait_until_stable_lag_available() {
+  local start_ts now response stable_lag
+  start_ts="$(date +%s)"
+
+  while true; do
+    response="$(regtest_rpc_call_balance_history "get_snapshot_info" "[]")"
+    stable_lag="$(printf '%s' "$response" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or {}; print(r.get("stable_lag", ""))')"
+    if [[ "$stable_lag" =~ ^[0-9]+$ ]] && (( stable_lag > 0 )); then
+      printf '%s\n' "$stable_lag"
+      return 0
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      regtest_log "Timed out waiting for protocol stable lag, last response: ${response}" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 regtest_mine_until_height_is_stable() {
   local target_height="$1"
   local address="$2"
   local stable_lag current_height required_tip blocks_to_mine
 
-  stable_lag="$(regtest_get_snapshot_stable_lag)"
-  if [[ ! "$stable_lag" =~ ^[0-9]+$ ]]; then
-    regtest_log "Unable to resolve balance-history stable lag: ${stable_lag}"
-    exit 1
-  fi
+  stable_lag="$(regtest_wait_until_stable_lag_available)"
 
   current_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
   required_tip=$((target_height + stable_lag))
@@ -425,6 +443,16 @@ regtest_mine_until_height_is_stable() {
   blocks_to_mine=$((required_tip - current_height))
   regtest_log "Mining ${blocks_to_mine} confirmation blocks so height=${target_height} enters the stable view (lag=${stable_lag})"
   regtest_mine_blocks "$blocks_to_mine" "$address"
+}
+
+# Advances the BTC tip far enough for one target height to cross the protocol's
+# stable frontier, then waits until balance-history has committed that height.
+regtest_wait_until_height_is_stable() {
+  local target_height="$1"
+  local mining_address="$2"
+
+  regtest_mine_until_height_is_stable "$target_height" "$mining_address"
+  regtest_wait_until_synced_height "$target_height"
 }
 
 regtest_mine_empty_block() {
@@ -458,9 +486,15 @@ regtest_start_balance_history_instance() {
   regtest_log "Starting ${label} service (root=${root_dir}, rpc=${rpc_port})"
   (
     cd "$REPO_ROOT" || exit 1
-    cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
-      --root-dir "$root_dir" \
-      --skip-process-lock
+    if [[ -n "$BALANCE_HISTORY_BIN" ]]; then
+      "$BALANCE_HISTORY_BIN" \
+        --root-dir "$root_dir" \
+        --skip-process-lock
+    else
+      cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
+        --root-dir "$root_dir" \
+        --skip-process-lock
+    fi
   ) >"${log_file}" 2>&1 &
   REGTEST_LAST_BALANCE_HISTORY_PID=$!
 }
@@ -477,9 +511,13 @@ regtest_run_balance_history_cli() {
 
   (
     cd "$REPO_ROOT" || exit 1
-    cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
-      --root-dir "$root_dir" \
-      "$@"
+    if [[ -n "$BALANCE_HISTORY_BIN" ]]; then
+      "$BALANCE_HISTORY_BIN" --root-dir "$root_dir" "$@"
+    else
+      cargo run --manifest-path src/btc/Cargo.toml -p balance-history -- \
+        --root-dir "$root_dir" \
+        "$@"
+    fi
   )
 }
 

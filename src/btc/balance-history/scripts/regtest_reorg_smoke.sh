@@ -16,7 +16,9 @@ TARGET_HEIGHT="${TARGET_HEIGHT:-40}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[reorg-smoke]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 main() {
@@ -42,9 +44,10 @@ main() {
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
 
-  regtest_wait_until_synced_height "$TARGET_HEIGHT"
+  regtest_wait_until_height_is_stable "$TARGET_HEIGHT" "$mining_address"
 
-  local original_hash old_commit_resp old_commit_hash replacement_hash snapshot_resp snapshot_hash replacement_address
+  local stable_lag original_hash old_commit_resp old_commit_hash replacement_hash snapshot_resp snapshot_hash replacement_address
+  stable_lag="$(regtest_get_snapshot_stable_lag)"
   original_hash="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockhash "$TARGET_HEIGHT")"
   old_commit_resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${TARGET_HEIGHT}]")"
   old_commit_hash="$(echo "$old_commit_resp" | regtest_json_extract_python 'import json,sys; d=json.load(sys.stdin); r=d.get("result"); print((r or {}).get("btc_block_hash", ""))')"
@@ -55,11 +58,11 @@ main() {
     exit 1
   fi
 
-  regtest_log "Triggering regtest reorg by invalidating tip and immediately mining a replacement block"
+  regtest_log "Triggering a stable-frontier reorg at height=${TARGET_HEIGHT} with lag=${stable_lag}"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_hash"
   replacement_address="$(regtest_get_new_address)"
-  regtest_log "Mining replacement block to fresh address=${replacement_address}"
-  regtest_mine_blocks 1 "$replacement_address"
+  regtest_log "Mining $((stable_lag + 1)) replacement blocks to fresh address=${replacement_address}"
+  regtest_mine_blocks "$((stable_lag + 1))" "$replacement_address"
 
   replacement_hash="$("$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockhash "$TARGET_HEIGHT")"
   regtest_log "Replacement tip hash=${replacement_hash}"

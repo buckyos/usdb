@@ -67,11 +67,14 @@
 16. Snapshot 辅助读取：可直接读取 `stable_height`、`stable_block_hash`、`stable_lag`，方便校验协议层稳定视图。
 17. readiness 辅助等待：可显式等待 `get_readiness().consensus_ready = true`，避免把 RPC 可连接误当成快照已可用于共识。
 18. 多实例辅助：配置生成、RPC、同步/hash/readiness 等待、余额查询和服务启停均可显式传入 `root_dir` / RPC 端口，支持同一 BTC 分叉下对拍 online、restart 和 fresh joiner。
+19. Stable-frontier 辅助：从服务读取 registry 固定的 `stable_lag`，补挖确认块并等待目标高度进入可查询状态。
+20. 预构建二进制：suite runner 先构建一次并导出 `BALANCE_HISTORY_BIN`；各场景复用二进制，
+    避免 clean build 时间污染 RPC readiness 超时。单独运行脚本时仍可回退到 `cargo run`。
 
 ## 关闭与查询约束
 
 1. `regtest_stop_balance_history` 默认先调用 `stop` RPC，再等待子进程退出；只有超时后才回退到 `kill -9`。
-2. 后台 `cargo run` 进程在服务已退出后可能短暂进入 zombie 状态，脚本需要显式 `wait` 回收，不能只靠 `kill -0` 判断。
+2. 后台 service 进程在服务已退出后可能短暂进入 zombie 状态，脚本需要显式 `wait` 回收，不能只靠 `kill -0` 判断。
 3. `get_live_utxo` 的 JSON-RPC 参数必须使用 rust-bitcoin 的 human-readable `OutPoint` 形式，也就是单个字符串 `"txid:vout"`，不能发送 map 结构。
 4. `get_live_utxo` 只查询 balance-history 当前 DB 中的 live UTXO 视图；它不会像内部索引链路那样在 miss 时回退到 bitcoind 拉取历史交易输出。
 
@@ -138,8 +141,7 @@ main "$@"
 
 ## 后续扩展方向
 
-1. 增加多地址、多交易图、范围查询一致性场景。
-2. 覆盖更复杂的 UTXO 花费图，而不只是单输出转账。
-3. 覆盖 snapshot 生成、安装和恢复后继续追块的一致性场景。
-4. 覆盖服务离线更久、跨多高度组合回滚后再恢复的场景。
-5. 视复杂度再决定是否引入 Python 场景 runner。
+1. 把 correctness 的 scale 档位接入 nightly/soak，并保存参数、seed、耗时和失败现场。
+2. 覆盖 snapshot 生成、安装和恢复后继续追块的一致性场景。
+3. 覆盖服务离线更久、跨多高度组合回滚后再恢复的场景。
+4. 视复杂度再决定是否引入 Python 场景 runner。

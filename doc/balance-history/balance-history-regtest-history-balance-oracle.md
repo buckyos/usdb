@@ -6,6 +6,7 @@
 
 - [src/btc/balance-history/scripts/regtest_history_balance_oracle.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_history_balance_oracle.sh)
 - [src/btc/balance-history/scripts/regtest_balance_oracle.py](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_balance_oracle.py)
+- [src/btc/balance-history/scripts/test_regtest_balance_oracle.py](/home/bucky/work/usdb/src/btc/balance-history/scripts/test_regtest_balance_oracle.py)
 - [src/btc/balance-history/scripts/regtest_lib.sh](/home/bucky/work/usdb/src/btc/balance-history/scripts/regtest_lib.sh)
 
 ## 覆盖目标
@@ -13,10 +14,12 @@
 1. 创建一组被跟踪地址和一组未被跟踪地址。
 2. 在多个连续区块中，按固定 seed 随机生成多笔真实转账。
 3. 每个新区块确认后，由测试端 oracle 读取完整区块交易并更新被跟踪地址余额。
-4. 在周期性检查点上，验证：
+4. 在周期性 stable-frontier 检查点上，验证：
    - 所有被跟踪地址在当前高度的余额与 oracle 一致。
    - 所有被跟踪地址在一个随机抽样历史高度的余额与 oracle 一致。
-5. 在场景结束后，对所有被跟踪地址、所有场景高度做一次全量历史回放校验。
+   - balance-history block commit 与 Bitcoin Core canonical block hash 一致。
+5. 在场景结束后，对所有被跟踪地址、所有场景高度做一次全量历史回放校验，并交叉验证
+   exact delta、movement range、summary、live/spent UTXO 和 script registry。
 
 ## 场景设计说明
 
@@ -27,14 +30,17 @@
    - 同地址多次入账
    - 被跟踪地址输出后续被钱包再次花费
    - 资金从被跟踪地址流向未被跟踪地址
-4. 当前版本聚焦 `get_address_balance` 的历史正确性，尚未把 `delta`、`range` 和 reorg 合并进同一场景。
+4. Oracle 会保存 exact touched-height delta，包括同一地址同块收支抵消后的 zero-net movement；
+   这使 point balance、exact delta、range 和 summary 可以从同一独立模型重算。
+5. BTC tip 只用于推进输入链，RPC 断言固定在 `tip - stable_lag`，不会把尚未稳定的交易误判为
+   balance-history 缺失。
 
 ## 一键运行
 
 在仓库根目录执行：
 
 ```bash
-src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
+bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
 ```
 
 ## 可调参数
@@ -71,8 +77,20 @@ SEED=42 \
 src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```
 
+Nightly/soak 建议档位：
+
+```bash
+ADDRESS_COUNT=32 UNTRACKED_ADDRESS_COUNT=16 \
+BLOCK_COUNT=120 TXS_PER_BLOCK=8 CHECK_INTERVAL=10 \
+SYNC_TIMEOUT_SEC=300 \
+src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
+```
+
 ## 已知边界
 
-1. 当前版本主要覆盖 `get_address_balance` 的历史正确性，不直接覆盖 `get_address_balance_delta` 与 range 接口。
-2. 当前场景未引入 reorg；它更适合作为后续 snapshot 等价性与 reorg 历史正确性测试的基础数据生成器。
-3. 当前用例依赖钱包的真实选币行为，因此不同 Bitcoin Core 主版本理论上可能生成不同交易图；但在同一版本下，固定 seed 仍可稳定复现。
+1. 当前场景未引入 reorg；reorg、restart 和 fresh joiner 由 stable-lag/reorg 专项 suite 覆盖。
+2. BIP30 和 Core unspendable 等难以由钱包随机构造的边界由 Rust fake-chain 测试负责。
+3. 当前用例依赖钱包的真实选币行为，因此不同 Bitcoin Core 主版本理论上可能生成不同交易图；
+   oracle 直接解析最终区块，不依赖预设选币结果，同一工具链与 seed 下可稳定复现。
+4. 主网 Electrs 抽样不属于该脚本；整体分层见
+   [balance-history-correctness-validation.md](./balance-history-correctness-validation.md)。

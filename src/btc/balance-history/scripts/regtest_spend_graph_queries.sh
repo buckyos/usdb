@@ -15,7 +15,9 @@ WALLET_NAME="${WALLET_NAME:-bhspendgraph}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[spend-graph-queries]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -96,14 +98,14 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
-  regtest_wait_until_synced_height "$COINBASE_MATURITY"
+  regtest_wait_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
 
   fund_txid="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
     sendmany "" "$(regtest_build_outputs_json "$address_a" "1.0" "$address_b" "0.6")")"
   regtest_log "Created initial fanout transaction txid=${fund_txid}"
   regtest_mine_blocks 1 "$mining_address"
   height_1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_1"
+  regtest_wait_until_height_is_stable "$height_1" "$mining_address"
   vout_a1="$(regtest_get_tx_vout_for_address "$fund_txid" "$address_a")"
   vout_b1="$(regtest_get_tx_vout_for_address "$fund_txid" "$address_b")"
   regtest_lock_wallet_outpoint "$fund_txid" "$vout_a1"
@@ -113,13 +115,13 @@ main() {
   regtest_spend_outpoint "$fund_txid" "$vout_a1" "$outputs_json"
   regtest_mine_blocks 1 "$mining_address"
   height_2="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_2"
+  regtest_wait_until_height_is_stable "$height_2" "$mining_address"
 
   outputs_json="$(regtest_build_outputs_json "$address_a" "0.20000000" "$address_c" "0.39998000")"
   regtest_spend_outpoint "$fund_txid" "$vout_b1" "$outputs_json"
   regtest_mine_blocks 1 "$mining_address"
   height_3="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_3"
+  regtest_wait_until_height_is_stable "$height_3" "$mining_address"
 
   regtest_assert_address_balance_sat "$address_a" "$height_1" "100000000"
   regtest_assert_address_balance_sat "$address_b" "$height_1" "60000000"

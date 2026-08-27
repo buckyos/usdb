@@ -1402,7 +1402,7 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 ## Balance-History 核心 Review 第三批修正
 
-状态：2026-08-26 已实现，完整回归与 clippy 通过，等待 review，尚未提交。
+状态：2026-08-26 已实现并提交：usdb `acfc962`。
 
 - 新增共享 `is_core_unspendable`，严格对齐 Bitcoin Core：`OP_RETURN` 或 script 长度大于
   10,000 bytes。balance-history UTXO/余额、地址 registry、Electrs verifier oracle 和
@@ -1421,3 +1421,29 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   address/port、无任何 key role 的 signed snapshot 配置全部在启动前 fail closed。
 - 正式 indexer 在打开业务 DB 前比较配置 network 的 canonical genesis 与 BTC RPC height 0，
   防止错误网络数据被写入带另一网络 identity 的空库。
+
+## Balance-History 正确性验证第一批
+
+状态：2026-08-27 已实现并完成默认 correctness 实跑，等待 review，尚未提交。
+
+- 新增独立 Python block oracle 单测，覆盖 exact delta、zero-net movement、live/spent UTXO、
+  history range 和非连续 block 拒绝；默认测试不依赖 Electrs 或本机主网数据。
+- 历史 regtest oracle 改为 stable-lag aware，并在全部受跟踪地址/场景高度上逐点交叉验证
+  balance 与 exact delta；结束时继续验证完整 movement range、summary、live/spent UTXO、
+  script registry，以及检查点 block commit 对 Bitcoin Core canonical hash。
+- `regtest_rpc_semantics.sh`、spend graph、same-block aggregate、基础 smoke、reorg 和 snapshot
+  repeat 入口不再等待不可达的 BTC tip，统一补挖确认块并等待目标高度进入 stable frontier。
+- `run_regtest_suite.sh correctness` 首次构建一次 `balance-history` 并导出预构建二进制，
+  clean build 时间不再污染 RPC readiness；六项默认场景均实跑通过。一次被人工中断的旧
+  bitcoind 占用 spend-graph 固定端口，正常停止后该场景单独重跑通过。
+- 文档冻结四层验证模型：独立 oracle、Rust fake-chain、真实 bitcoind regtest、主网外部审计。
+  Electrs 后续只作为补充历史审计；latest state 优先评估 Bitcoin Core `scantxoutset/gettxout`，
+  历史慢审计增加分层样本、全局 tx 去重、有界并发和 checkpoint/resume。
+- Oracle 支持参数化 scale 档位；建议 nightly 使用 32 tracked address、120 event block、
+  每块 8 笔交易，形成约 960 笔转账；按当前 stable lag 计入初始/确认高度后的完整状态线
+  为 4,032 个 address-height 点。
+- 中等规模档位已实跑通过：16 tracked / 8 untracked address、50 event block、每块 6 笔，
+  共约 300 笔真实转账和 896 个 address-height balance/delta 点；最终 range、summary、
+  live/spent UTXO 与 registry 交叉验证全部一致。
+- `cargo test -p balance-history` 完整回归通过：137 passed、1 个本机 mainnet snapshot
+  手工 fixture ignored、0 failed。

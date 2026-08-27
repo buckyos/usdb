@@ -15,7 +15,9 @@ WALLET_NAME="${WALLET_NAME:-bhmultiinput}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 REGTEST_LOG_PREFIX="[multi-input-same-block]"
+export REPO_ROOT REGTEST_LOG_PREFIX
 
+# shellcheck source=regtest_lib.sh
 source "${SCRIPT_DIR}/regtest_lib.sh"
 
 regtest_assert_json_expr() {
@@ -75,7 +77,7 @@ main() {
   local mining_address address_a address_b address_c
   local script_hash_a script_hash_b script_hash_c
   local fund_txid vout_a vout_b inputs_json outputs_json
-  local bonus_txid height_1 height_2 future_height resp
+  local bonus_txid height_1 height_2 gap_height resp
 
   regtest_ensure_workspace_dirs
   regtest_start_bitcoind
@@ -94,14 +96,14 @@ main() {
   regtest_create_balance_history_config
   regtest_start_balance_history
   regtest_wait_balance_history_rpc_ready
-  regtest_wait_until_synced_height "$COINBASE_MATURITY"
+  regtest_wait_until_height_is_stable "$COINBASE_MATURITY" "$mining_address"
 
   fund_txid="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" -rpcwallet="$WALLET_NAME" \
     sendmany "" "$(regtest_build_outputs_json "$address_a" "1.0" "$address_b" "0.6")")"
   regtest_log "Created initial dual-funding transaction txid=${fund_txid}"
   regtest_mine_blocks 1 "$mining_address"
   height_1="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_1"
+  regtest_wait_until_height_is_stable "$height_1" "$mining_address"
   vout_a="$(regtest_get_tx_vout_for_address "$fund_txid" "$address_a")"
   vout_b="$(regtest_get_tx_vout_for_address "$fund_txid" "$address_b")"
   regtest_lock_wallet_outpoint "$fund_txid" "$vout_a"
@@ -114,8 +116,9 @@ main() {
   regtest_log "Created same-block bonus payment to address_a txid=${bonus_txid}"
   regtest_mine_blocks 1 "$mining_address"
   height_2="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  regtest_wait_until_synced_height "$height_2"
-  future_height=$((height_2 + 10))
+  regtest_wait_until_height_is_stable "$height_2" "$mining_address"
+  gap_height=$((height_2 + 2))
+  regtest_wait_until_height_is_stable "$gap_height" "$mining_address"
 
   regtest_assert_address_balance_sat "$address_a" "$height_1" "100000000"
   regtest_assert_address_balance_sat "$address_b" "$height_1" "60000000"
@@ -143,7 +146,7 @@ main() {
   regtest_assert_json_expr "$resp" "data['result'][2][0]['delta']" "110000000"
   regtest_assert_json_expr "$resp" "data['result'][3][0]['delta']" "-45002000"
 
-  resp="$(regtest_rpc_call_balance_history "get_addresses_balances" "[{\"script_hashes\":[\"${script_hash_c}\",\"${script_hash_b}\",\"${script_hash_a}\"],\"block_height\":${future_height},\"block_range\":null}]")"
+  resp="$(regtest_rpc_call_balance_history "get_addresses_balances" "[{\"script_hashes\":[\"${script_hash_c}\",\"${script_hash_b}\",\"${script_hash_a}\"],\"block_height\":${gap_height},\"block_range\":null}]")"
   regtest_assert_json_expr "$resp" "data['result'][0][0]['balance']" "110000000"
   regtest_assert_json_expr "$resp" "data['result'][1][0]['balance']" "0"
   regtest_assert_json_expr "$resp" "data['result'][2][0]['balance']" "54998000"

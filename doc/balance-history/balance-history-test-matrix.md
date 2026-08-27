@@ -26,7 +26,7 @@
 | --- | --- | --- | --- | --- | --- |
 | Rust unit tests | `cargo test -p balance-history -p balance-history-snapshot-tool` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、exact-height builder state、readiness、script registry unit paths | 本地可运行并已通过 |
 | Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，支持 suite/size 切片 |
-| Regtest scripts | `bash src/btc/balance-history/scripts/run_regtest_suite.sh <suite>` | 否 | 本机 bitcoind binary | 端到端 smoke、stable-lag reorg boundary、snapshot install/recovery、RPC 语义、oracle balance 对拍 | 已有 `smoke` 和 `stable-lag-reorg` runner；更大套件仍为手工入口 |
+| Regtest scripts | `bash src/btc/balance-history/scripts/run_regtest_suite.sh <suite>` | 否 | 本机 bitcoind binary | 端到端 smoke、独立历史状态线、stable-lag reorg boundary、snapshot install/recovery、RPC 语义 | 已有 `smoke`、`correctness` 和 `stable-lag-reorg` runner；更大套件仍为手工入口 |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
 | Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用，支持横向抽样 |
 
@@ -45,6 +45,7 @@ cargo clippy -p balance-history --all-targets
 ```bash
 cd /home/bucky/work/usdb
 bash src/btc/balance-history/scripts/run_regtest_suite.sh smoke
+bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
 ```
 
 修改 reorg、rollback、snapshot 或 local-loader 行为时执行：
@@ -95,6 +96,20 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 该 suite 覆盖 `depth=lag-1/lag/lag+1`，每个深度交叉验证 online、offline restart 和
 fresh joiner。详细测试契约见
 [balance-history-regtest-stable-lag-reorg-depth-matrix.md](./balance-history-regtest-stable-lag-reorg-depth-matrix.md)。
+
+### `correctness`
+
+用于涉及 balance/delta、UTXO、script registry、block commit、stable-lag 查询边界或
+历史 RPC 的改动：
+
+```bash
+bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
+```
+
+该 suite 先运行独立 oracle 单测，再使用真实 bitcoind 执行 RPC、spend graph、同块聚合、
+完整历史状态线和 stable-lag smoke。编译在 suite 开始前单独完成，不计入服务 readiness。
+更大的 32-address/120-block 状态线和主网外部审计流程见
+[balance-history-correctness-validation.md](./balance-history-correctness-validation.md)。
 
 ### `core`
 
@@ -199,25 +214,22 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 
 | 缺口 | 风险 | 建议修复 |
 | --- | --- | --- |
-| 统一 regtest runner 仍不完整 | 当前收敛了 `smoke` 和 `stable-lag-reorg`，其它更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
+| 统一 regtest runner 仍不完整 | 当前收敛了 `smoke`、`correctness` 和 `stable-lag-reorg`，其它更大套件仍需手工执行 | 扩展 `scripts/run_regtest_suite.sh`，继续支持 `core`、`reorg-full`、`snapshot-full` |
 | Exact-height snapshot 尚无生产硬件结果与磁盘故障注入 | 已有 1K 可重复容量入口、签名篡改/非信任 signer、发布前失败和恢复覆盖，但尚未记录 100K 正式硬件结果 | 在目标硬件跑 1K/10K/100K warm/cold-advisory 矩阵，并补磁盘满与设备级物理 I/O 采样 |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
-| 聚合 RPC 缺少 regtest 覆盖 | 浏览器依赖 summary/timeseries/flow，但 shell E2E 没有验证 | 扩展 `regtest_rpc_semantics.sh` 或新增 `regtest_aggregate_rpc_semantics.sh` |
-| `resolve_script_hashes` 缺少 regtest 覆盖 | script registry 单测能通过，但完整 indexed data 路径可能失效 | 增加挖出可花费输出、调用 `resolve_script_hashes`、校验 address recovery 的 regtest |
+| timeseries/flow bucket 聚合仍缺 regtest 覆盖 | Oracle 已对拍 movement range 和 summary，但浏览器使用的 bucket 形状仍主要靠 Rust 测试 | 扩展 oracle 或新增 aggregate RPC 场景 |
+| 主网历史外部审计仍依赖慢 Electrs 路径 | 按地址逐个抓 history/transaction 重复 I/O 大，本机 Electrs 当前需重建 | 先落地 Bitcoin Core `scantxoutset` latest-state 抽样；历史路径增加全局 tx cache、批量/并发、resume，随后评估 sampled block oracle |
 | 真实 BTC local loader 测试仍需人工提供节点 | local blk 加速路径可能在无日常信号下退化 | 已有显式 real-data test mode；下一步补 fixture/regtest-generated blk subset，让 CI 也能覆盖 local-loader 子集 |
 | shell helper 重复 | 共享库已有 JSON assertion helper，但部分旧脚本仍保留本地副本 | 后续触及对应旧脚本时删除本地副本并复用 `regtest_lib.sh` |
 | 大模块 ownership 不清晰 | DB/server/snapshot/block 文件过大，review 与补测成本高 | lib export 后拆分 helper，并把共享 test builders 移入 `tests/common` |
 
 ## 建议落地顺序
 
-1. 整理当前脚本和测试分层文档。
-2. 增加最小版 `run_regtest_suite.sh`，先收敛 `smoke` 子集，不改现有脚本内部实现。
-3. 把通用 shell assertion helper 移入 `regtest_lib.sh`。
-4. 重构 crate export，让 integration tests 可以调用核心模块，而不是依赖 `main.rs` 承载模块。
-5. 增加生成式小链 Rust integration tests：same-block spends、multi-input spends、OP_RETURN output ignore、block commit continuity、reorg rollback。
-6. 增加 aggregate RPC 和 `resolve_script_hashes` 的 regtest 覆盖。
-7. 增加 local blk loader 与 BTC RPC 对齐的显式 real-data test mode。
-8. 增加 fixture/regtest-generated blk subset，降低真实主网数据测试对本机节点的依赖。
+1. 将 `correctness` 默认档位接入 fast/manual gate，scale 档位接入后续 nightly/soak。
+2. 增加 timeseries/flow bucket 的独立 oracle 对拍。
+3. 扩展 runner 的 `reorg-full` 与 `snapshot-full` 套件。
+4. 增加 Bitcoin Core UTXO 抽样工具，恢复 Electrs 后优化历史外部审计。
+5. 增加 fixture/regtest-generated blk subset，降低真实主网数据测试对本机节点的依赖。
 
 ## 验收标准
 
@@ -226,6 +238,8 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 - `cargo test -p balance-history` 仍然是默认快速检查。
 - `scripts/run_regtest_suite.sh smoke` 可以无手工端口编辑地执行文档化子集：`regtest_smoke.sh`、`regtest_rpc_semantics.sh`、`regtest_reorg_smoke.sh`、`regtest_snapshot_install_repeat.sh`、`regtest_history_balance_oracle.sh`。
 - `scripts/run_regtest_suite.sh stable-lag-reorg` 可以确定性覆盖 `depth=lag-1/lag/lag+1`，并要求 online、offline restart、fresh joiner 的最终状态一致。
+- `scripts/run_regtest_suite.sh correctness` 可以确定性对拍 balance/delta/range/summary、
+  live/spent UTXO、script registry 和 block commit。
 - `scripts/run_regtest_suite.sh core` 覆盖普通同步、RPC 语义、一次 reorg、一次 snapshot install 和 oracle balance comparison。
 - 每个新增 balance-history RPC 至少有一个 unit test 和一个 regtest-level consumer test。
 - 真实 BTC 数据测试必须显式 opt-in，不能意外依赖开发者默认配置。
