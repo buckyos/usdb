@@ -183,12 +183,21 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(genesis_usdb.get("btcIndexOriginHeight") == EXPECTED_ORIGIN, "genesis BTC origin mismatch")
     require(genesis_usdb.get("activations") == activations, "genesis activation schedule mismatch")
 
+    require(
+        genesis_manifest.get("schema_version") == "usdb-genesis-manifest:v2",
+        "unexpected genesis manifest schema",
+    )
     require(genesis_manifest.get("network_bundle_id") == EXPECTED_BUNDLE_ID, "genesis manifest bundle mismatch")
     require(genesis_manifest.get("chain_id") == EXPECTED_CHAIN_ID, "genesis manifest chain ID mismatch")
     require(genesis_manifest.get("network_id") == EXPECTED_CHAIN_ID, "genesis manifest network ID mismatch")
     require(
         genesis_manifest.get("file_sha256") == sha256(bundle_dir / "artifacts/usdb-genesis.json"),
         "genesis manifest file hash mismatch",
+    )
+    require(
+        isinstance(genesis_manifest.get("block_hash"), str)
+        and re.fullmatch(r"0x[0-9a-f]{64}", genesis_manifest["block_hash"]) is not None,
+        "invalid genesis manifest block hash",
     )
     require(
         genesis_manifest.get("bootstrap_config_sha256")

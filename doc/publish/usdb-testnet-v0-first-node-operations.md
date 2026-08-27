@@ -20,13 +20,16 @@ balance、block commit 和 state-ref；只有同步耗时不同，最终共识�
 
 1. 最终 `usdb` commit 已进入 `origin/master`；
 2. `go-ethereum/scripts/usdb/ci-revisions.json` 已锁定该 `usdb` commit 和当前 SourceDAO commit；
-3. 三仓 Fast CI 和三张 image workflow 成功；
-4. 取得 services、chain、Bitcoin Core 三个 digest-only image reference；
-5. 生成并保存跨仓 candidate manifest 与 SHA-256；
-6. 确认 bootstrap admin 私钥能够派生出 bundle 中的公开地址；
-7. 确认至少一个 BTC mainnet Active Standard pass 可作为初始 miner。
+3. 三仓普通 Fast CI 成功；
+4. `usdb` / `go-ethereum` 已在明确 commit 上创建同名 annotated release tag，且两仓
+   `USDB Release Build` 成功；
+5. `USDB Release Candidate Manifest` 已从 release tag builds 解析并验证 services、chain、Bitcoin Core
+   三个 digest-only image reference；
+6. 生成并保存跨仓 candidate manifest 与 SHA-256；
+7. 确认 bootstrap admin 私钥能够派生出 bundle 中的公开地址；
+8. 确认至少一个 BTC mainnet Active Standard pass 可作为初始 miner。
 
-第 6、7 项未满足时，可以完成 BTC/balance-history 同步和非矿工节点启动，但不能完成 SourceDAO
+第 7、8 项未满足时，可以完成 BTC/balance-history 同步和非矿工节点启动，但不能完成 SourceDAO
 bootstrap 或持续出块。
 
 ## 3. 机器与网络基线
@@ -86,7 +89,7 @@ Docker 发布的容器端口可能绕过 UFW 规则；除 Compose 的 localhost 
 
 ## 4. 发布协调机流程
 
-### 4.1 冻结 revision
+### 4.1 冻结 revision 与 release tag
 
 记录三个完整 commit：
 
@@ -96,13 +99,24 @@ git -C /path/to/go-ethereum rev-parse HEAD
 git -C /path/to/SourceDAO rev-parse HEAD
 ```
 
-所有 worktree 必须 clean。按 review 流程 push 后，在 GitHub Actions 依次运行：
+所有 worktree 必须 clean。先 push USDB commit，再把该 revision 和 SourceDAO revision 写入 Go
+`ci-revisions.json` 并 push Go commit。普通 Fast CI 全部通过后，选择未使用的 release ID，并在
+两个明确 commit 上创建同名 annotated tag：
 
-1. 三仓 Fast CI；
-2. `USDB Services Image`；
-3. `USDB Bitcoin Core Image`；
-4. `USDB Chain Image`；
-5. `USDB Release Candidate Manifest`。
+```bash
+git -C /path/to/usdb tag -a usdb-testnet-v0-r1 <USDB_COMMIT> \
+  -m "Freeze USDB testnet-v0 release r1"
+git -C /path/to/go-ethereum tag -a usdb-testnet-v0-r1 <GO_ETHEREUM_COMMIT> \
+  -m "Freeze USDB testnet-v0 release r1"
+
+git -C /path/to/usdb push origin refs/tags/usdb-testnet-v0-r1
+git -C /path/to/go-ethereum push origin refs/tags/usdb-testnet-v0-r1
+```
+
+tag push 分别触发两个 `USDB Release Build`，重新运行 Fast gate 并构建三张 image。两边成功后手工
+运行 `USDB Release Candidate Manifest`，唯一输入为同一个 release ID。不要手工填写 revisions、
+image digest 或 genesis block hash；workflow 必须从 tag、compatibility lock、OCI provenance 和
+network bundle 派生并校验这些值。
 
 保存三个 `image@sha256:...`、candidate manifest、manifest checksum、workflow URL 和运行时间。
 首轮建议使用 release ID `usdb-testnet-v0-r1`。

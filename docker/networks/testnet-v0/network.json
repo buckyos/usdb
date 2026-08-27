@@ -17,7 +17,7 @@
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "d420cc918db3736966b81afd4575044edf652e4750c94ce390d83bf946a081d4"
+      "sha256": "440c4f7c1b53075fc2c1482d7ecb895854787ea1f274b58b256d531b59a7ac99"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",

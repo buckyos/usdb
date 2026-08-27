@@ -1,0 +1,85 @@
+name: USDB Release Build
+run-name: USDB release ${{ github.ref_name }}
+
+on:
+  push:
+    tags:
+      - usdb-testnet-v*-r*
+      - usdb-mainnet-v*-r*
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usdb-release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release_ref:
+    name: Validate annotated release tag
+    if: github.repository == 'buckyos/usdb'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release identity
+        shell: bash
+        env:
+          RELEASE_ID: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_TYPE" == "tag" ]]
+          [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
+            echo "invalid USDB release tag: $RELEASE_ID" >&2
+            exit 1
+          }
+          [[ "$(git cat-file -t "refs/tags/${RELEASE_ID}")" == "tag" ]] || {
+            echo "release tag must be annotated: $RELEASE_ID" >&2
+            exit 1
+          }
+          revision="$(git rev-list -n 1 "refs/tags/${RELEASE_ID}")"
+          [[ "$revision" == "$(git rev-parse HEAD)" ]] || {
+            echo "checked-out commit does not match release tag target $revision" >&2
+            exit 1
+          }
+          git fetch --no-tags origin refs/heads/master:refs/remotes/origin/master
+          git merge-base --is-ancestor "$revision" refs/remotes/origin/master || {
+            echo "release tag target is not in master history: $revision" >&2
+            exit 1
+          }
+
+  fast:
+    name: Release fast gate
+    needs: release_ref
+    permissions:
+      contents: read
+    uses: ./.github/workflows/usdb-fast.yml
+
+  publish_services_image:
+    name: Publish USDB services image
+    needs:
+      - release_ref
+      - fast
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/usdb-services-image.yml
+
+  publish_bitcoin_image:
+    name: Publish Bitcoin Core image
+    needs:
+      - release_ref
+      - fast
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/usdb-bitcoin-image.yml

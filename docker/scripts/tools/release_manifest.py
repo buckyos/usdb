@@ -24,8 +24,8 @@ from validate_network_bundle import (  # noqa: E402
     validate_network_bundle,
 )
 
-SCHEMA_VERSION = "usdb-release-manifest:v2"
-RELEASE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,95}$")
+SCHEMA_VERSION = "usdb-release-manifest:v3"
+RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 BLOCK_HASH_RE = re.compile(r"^0x[0-9a-f]{64}$")
@@ -103,8 +103,11 @@ def require_image_reference(value: Any, expected_name: str, context: str) -> str
     return value
 
 
-def build_network_identity(bundle_dir: Path, genesis_block_hash: str) -> dict[str, Any]:
+def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
     network = validate_network_bundle(bundle_dir)
+    genesis_manifest = read_json(bundle_dir / "artifacts/usdb-genesis.manifest.json")
+    genesis_block_hash = genesis_manifest.get("block_hash")
+    require(isinstance(genesis_block_hash, str), "genesis manifest block hash must be a string")
     require(BLOCK_HASH_RE.fullmatch(genesis_block_hash) is not None, "genesis block hash must be 0x plus 64 lowercase hex characters")
     artifacts = network["artifacts"]
     return {
@@ -172,7 +175,6 @@ def create_manifest(
     bundle_dir: Path,
     release_id: str,
     created_at_utc: str,
-    genesis_block_hash: str,
     compatibility_lock_path: Path,
     revisions: dict[str, str],
     image_references: dict[str, str],
@@ -181,6 +183,15 @@ def create_manifest(
     require_created_at(created_at_utc)
     require_exact_keys(revisions, set(REPOSITORIES), "revision inputs")
     require_exact_keys(image_references, set(IMAGE_SPECS), "image inputs")
+    network_identity = build_network_identity(bundle_dir)
+    require(
+        re.fullmatch(
+            rf"{re.escape(network_identity['bundle_id'])}-r[1-9][0-9]*",
+            release_id,
+        )
+        is not None,
+        "release_id does not belong to the selected network bundle",
+    )
 
     repositories: dict[str, Any] = {}
     for key, repository in REPOSITORIES.items():
@@ -208,7 +219,7 @@ def create_manifest(
         "release_id": release_id,
         "stage": "candidate",
         "created_at_utc": created_at_utc,
-        "network_bundle": build_network_identity(bundle_dir, genesis_block_hash),
+        "network_bundle": network_identity,
         "compatibility_lock": build_compatibility_lock(compatibility_lock_path, revisions),
         "repositories": repositories,
         "images": images,
@@ -265,8 +276,16 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
     require_sha256(network["genesis_sha256"], "network_bundle.genesis_sha256")
     require_sha256(network["snapshot_trusted_keys_sha256"], "network_bundle.snapshot_trusted_keys_sha256")
     require(isinstance(network["genesis_block_hash"], str) and BLOCK_HASH_RE.fullmatch(network["genesis_block_hash"]) is not None, "invalid genesis block hash")
-    expected_network = build_network_identity(bundle_dir, network["genesis_block_hash"])
+    expected_network = build_network_identity(bundle_dir)
     require(network == expected_network, "release manifest network identity does not match the bundle")
+    require(
+        re.fullmatch(
+            rf"{re.escape(expected_network['bundle_id'])}-r[1-9][0-9]*",
+            manifest["release_id"],
+        )
+        is not None,
+        "release manifest ID does not belong to the network bundle",
+    )
 
     repositories = manifest["repositories"]
     require(isinstance(repositories, dict), "repositories must be an object")
@@ -349,8 +368,7 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--bundle-dir", type=Path, required=True)
     create.add_argument("--output", type=Path, required=True)
     create.add_argument("--release-id", required=True)
-    create.add_argument("--created-at-utc")
-    create.add_argument("--genesis-block-hash", required=True)
+    create.add_argument("--created-at-utc", required=True)
     create.add_argument("--compatibility-lock", type=Path, required=True)
     create.add_argument("--usdb-revision", required=True)
     create.add_argument("--go-ethereum-revision", required=True)
@@ -371,12 +389,10 @@ def main() -> int:
     bundle_dir = args.bundle_dir.resolve()
     try:
         if args.command == "create":
-            created_at = args.created_at_utc or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             manifest = create_manifest(
                 bundle_dir=bundle_dir,
                 release_id=args.release_id,
-                created_at_utc=created_at,
-                genesis_block_hash=args.genesis_block_hash,
+                created_at_utc=args.created_at_utc,
                 compatibility_lock_path=args.compatibility_lock.resolve(),
                 revisions={
                     "go_ethereum": args.go_ethereum_revision,

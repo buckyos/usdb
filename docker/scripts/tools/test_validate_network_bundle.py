@@ -77,6 +77,21 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
             VALIDATOR.validate_network_bundle(self.bundle)
 
+    def test_invalid_genesis_block_hash_is_rejected(self) -> None:
+        manifest_path = self.bundle / "artifacts/usdb-genesis.manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["block_hash"] = "not-a-block-hash"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        network_path = self.bundle / "network.json"
+        network = json.loads(network_path.read_text(encoding="utf-8"))
+        network["artifacts"]["genesis_manifest"]["sha256"] = VALIDATOR.sha256(
+            manifest_path
+        )
+        network_path.write_text(json.dumps(network), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "invalid genesis manifest block hash"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
     def test_artifact_path_escape_is_rejected(self) -> None:
         path = self.bundle / "network.json"
         value = json.loads(path.read_text(encoding="utf-8"))

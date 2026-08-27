@@ -7,33 +7,9 @@ on:
         description: Immutable deployment release ID, for example usdb-testnet-v0-r1
         required: true
         type: string
-      go_ethereum_revision:
-        description: Full go-ethereum commit SHA
-        required: true
-        type: string
-      source_dao_revision:
-        description: Full SourceDAO commit SHA
-        required: true
-        type: string
-      services_image:
-        description: ghcr.io/buckyos/usdb-services@sha256:...
-        required: true
-        type: string
-      chain_image:
-        description: ghcr.io/buckyos/usdb-chain@sha256:...
-        required: true
-        type: string
-      bitcoin_image:
-        description: ghcr.io/buckyos/usdb-bitcoin-core@sha256:...
-        required: true
-        type: string
-      genesis_block_hash:
-        description: Frozen block-zero hash for the selected network bundle
-        required: true
-        default: "0xac89ddec1c12efa4173c67e70772861def1e121c387b612e702805161970e560"
-        type: string
 
 permissions:
+  actions: read
   attestations: read
   checks: read
   contents: read
@@ -51,52 +27,21 @@ jobs:
     timeout-minutes: 30
     environment: testnet-release-candidate
     steps:
-      - name: Validate revision inputs
+      - name: Validate release ID
         shell: bash
         env:
           RELEASE_ID: ${{ inputs.release_id }}
-          GO_ETHEREUM_REVISION: ${{ inputs.go_ethereum_revision }}
-          SOURCE_DAO_REVISION: ${{ inputs.source_dao_revision }}
-          SERVICES_IMAGE: ${{ inputs.services_image }}
-          CHAIN_IMAGE: ${{ inputs.chain_image }}
-          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
-          GENESIS_BLOCK_HASH: ${{ inputs.genesis_block_hash }}
         run: |
           set -euo pipefail
-          [[ "$RELEASE_ID" =~ ^[a-z0-9][a-z0-9._-]{2,95}$ ]] || {
-            echo "release ID contains unsupported characters" >&2
-            exit 1
-          }
-          for pair in \
-            "go-ethereum:$GO_ETHEREUM_REVISION" \
-            "SourceDAO:$SOURCE_DAO_REVISION"; do
-            name="${pair%%:*}"
-            revision="${pair#*:}"
-            [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
-              echo "$name revision must be a full lowercase Git SHA" >&2
-              exit 1
-            }
-          done
-          [[ "$SERVICES_IMAGE" =~ ^ghcr\.io/buckyos/usdb-services@sha256:[0-9a-f]{64}$ ]] || {
-            echo "services image must be a canonical GHCR digest reference" >&2
-            exit 1
-          }
-          [[ "$CHAIN_IMAGE" =~ ^ghcr\.io/buckyos/usdb-chain@sha256:[0-9a-f]{64}$ ]] || {
-            echo "chain image must be a canonical GHCR digest reference" >&2
-            exit 1
-          }
-          [[ "$BITCOIN_IMAGE" =~ ^ghcr\.io/buckyos/usdb-bitcoin-core@sha256:[0-9a-f]{64}$ ]] || {
-            echo "Bitcoin image must be a canonical GHCR digest reference" >&2
-            exit 1
-          }
-          [[ "$GENESIS_BLOCK_HASH" =~ ^0x[0-9a-f]{64}$ ]] || {
-            echo "genesis block hash must be 0x plus 64 lowercase hex characters" >&2
+          [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
+            echo "invalid USDB release ID: $RELEASE_ID" >&2
             exit 1
           }
 
       - name: Check out release coordinator revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ inputs.release_id }}
           path: usdb
           fetch-depth: 0
           persist-credentials: false
@@ -105,55 +50,117 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: buckyos/go-ethereum
-          ref: ${{ inputs.go_ethereum_revision }}
+          ref: refs/tags/${{ inputs.release_id }}
           path: go-ethereum
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify annotated release tags and master ancestry
+        id: revisions
+        shell: bash
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          verify_release_tag() {
+            local directory="$1"
+            local branch="$2"
+            local tag_ref="refs/tags/${RELEASE_ID}"
+            local revision
+            [[ "$(git -C "$directory" cat-file -t "$tag_ref")" == "tag" ]] || {
+              echo "$directory release tag must be annotated: $RELEASE_ID" >&2
+              exit 1
+            }
+            revision="$(git -C "$directory" rev-list -n 1 "$tag_ref")"
+            [[ "$(git -C "$directory" rev-parse HEAD)" == "$revision" ]] || {
+              echo "$directory checkout does not match release tag target" >&2
+              exit 1
+            }
+            git -C "$directory" fetch --no-tags origin \
+              "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            git -C "$directory" merge-base --is-ancestor \
+              "$revision" "refs/remotes/origin/${branch}" || {
+              echo "$directory release tag target is not in ${branch} history" >&2
+              exit 1
+            }
+            printf '%s\n' "$revision"
+          }
+
+          usdb_revision="$(verify_release_tag usdb master)"
+          go_revision="$(verify_release_tag go-ethereum master)"
+          tagger_epoch="$(git -C usdb for-each-ref \
+            --format='%(taggerdate:unix)' "refs/tags/${RELEASE_ID}")"
+          [[ "$tagger_epoch" =~ ^[0-9]+$ ]] || {
+            echo "USDB release tag has no canonical tagger timestamp" >&2
+            exit 1
+          }
+          created_at="$(date -u --date="@${tagger_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+          go_release_version="$(jq -er '.toolchains.go_release' \
+            go-ethereum/scripts/usdb/ci-revisions.json)"
+          [[ "$go_release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "invalid release Go toolchain version: $go_release_version" >&2
+            exit 1
+          }
+          {
+            echo "usdb_revision=$usdb_revision"
+            echo "go_ethereum_revision=$go_revision"
+            echo "created_at_utc=$created_at"
+            echo "go_release_version=$go_release_version"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Resolve compatibility lock and image-producing runs
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
+          USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
+        run: |
+          set -euo pipefail
+          python3 go-ethereum/scripts/usdb/ci_revisions.py validate
+          gh api \
+            "/repos/buckyos/usdb/actions/workflows/usdb-release-build.yml/runs?event=push&status=success&head_sha=${USDB_REVISION}&per_page=100" \
+            >usdb-release-runs.json
+          gh api \
+            "/repos/buckyos/go-ethereum/actions/workflows/usdb-release-build.yml/runs?event=push&status=success&head_sha=${GO_ETHEREUM_REVISION}&per_page=100" \
+            >go-release-runs.json
+          python3 usdb/docker/scripts/tools/release_candidate_resolver.py \
+            --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json \
+            --usdb-runs usdb-release-runs.json \
+            --go-runs go-release-runs.json \
+            --usdb-revision "$USDB_REVISION" \
+            --go-ethereum-revision "$GO_ETHEREUM_REVISION" \
+            --release-id "$RELEASE_ID" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Check out SourceDAO revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: buckyos/SourceDAO
-          ref: ${{ inputs.source_dao_revision }}
+          ref: ${{ steps.candidate.outputs.source_dao_revision }}
           path: SourceDAO
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify repository revisions and master ancestry
-        id: revisions
+      - name: Verify SourceDAO revision and main ancestry
         shell: bash
         env:
-          GO_ETHEREUM_REVISION: ${{ inputs.go_ethereum_revision }}
-          SOURCE_DAO_REVISION: ${{ inputs.source_dao_revision }}
+          SOURCE_DAO_REVISION: ${{ steps.candidate.outputs.source_dao_revision }}
         run: |
           set -euo pipefail
-          usdb_revision="$(git -C usdb rev-parse HEAD)"
-          [[ "$usdb_revision" == "$GITHUB_SHA" ]] || {
-            echo "USDB checkout does not match workflow revision $GITHUB_SHA" >&2
+          [[ "$(git -C SourceDAO rev-parse HEAD)" == "$SOURCE_DAO_REVISION" ]]
+          git -C SourceDAO fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git -C SourceDAO merge-base --is-ancestor HEAD refs/remotes/origin/main || {
+            echo "SourceDAO revision is not in main history" >&2
             exit 1
           }
-          [[ "$(git -C go-ethereum rev-parse HEAD)" == "$GO_ETHEREUM_REVISION" ]]
-          [[ "$(git -C SourceDAO rev-parse HEAD)" == "$SOURCE_DAO_REVISION" ]]
 
-          for spec in "usdb:master" "go-ethereum:master" "SourceDAO:main"; do
-            directory="${spec%%:*}"
-            branch="${spec#*:}"
-            git -C "$directory" fetch --no-tags origin \
-              "refs/heads/${branch}:refs/remotes/origin/${branch}"
-            git -C "$directory" merge-base --is-ancestor HEAD "refs/remotes/origin/${branch}" || {
-              echo "$directory revision is not in ${branch} history" >&2
-              exit 1
-            }
-          done
-          echo "usdb_revision=$usdb_revision" >>"$GITHUB_OUTPUT"
-
-      - name: Require successful component CI checks
+      - name: Require successful SourceDAO CI check
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GO_ETHEREUM_REVISION: ${{ inputs.go_ethereum_revision }}
-          SOURCE_DAO_REVISION: ${{ inputs.source_dao_revision }}
-          USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
+          SOURCE_DAO_REVISION: ${{ steps.candidate.outputs.source_dao_revision }}
         run: |
           set -euo pipefail
           require_check() {
@@ -171,9 +178,6 @@ jobs:
             }
           }
 
-          require_check buckyos/usdb "$USDB_REVISION" "Rust workspace"
-          require_check buckyos/go-ethereum "$GO_ETHEREUM_REVISION" "Go canonical and compatibility"
-          require_check buckyos/go-ethereum "$GO_ETHEREUM_REVISION" "Cross-repository golden artifacts"
           require_check buckyos/SourceDAO "$SOURCE_DAO_REVISION" "SourceDAO contracts"
 
       - name: Verify selected cross-repository compatibility lock
@@ -187,6 +191,26 @@ jobs:
           python3 usdb/docker/scripts/tools/validate_network_bundle.py
           --bundle-dir usdb/docker/networks/testnet-v0
 
+      - name: Set up release Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ steps.revisions.outputs.go_release_version }}
+          check-latest: false
+          cache: false
+
+      - name: Recompute frozen genesis block hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(jq -er '.block_hash' \
+            usdb/docker/networks/testnet-v0/artifacts/usdb-genesis.manifest.json)"
+          actual="$(cd go-ethereum && go run ./cmd/usdb-genesis-hash \
+            ../usdb/docker/networks/testnet-v0/artifacts/usdb-genesis.json)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "genesis block hash mismatch: computed=$actual frozen=$expected" >&2
+            exit 1
+          }
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
@@ -197,15 +221,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve immutable image references
+        id: images
+        shell: bash
+        env:
+          SERVICES_TAG: ${{ steps.candidate.outputs.services_tag }}
+          CHAIN_TAG: ${{ steps.candidate.outputs.chain_tag }}
+          BITCOIN_TAG: ${{ steps.candidate.outputs.bitcoin_tag }}
+        run: |
+          set -euo pipefail
+          resolve_image() {
+            local output_name="$1"
+            local image_name="$2"
+            local tag="$3"
+            local manifest digest reference
+            manifest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}')"
+            digest="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<<"$manifest")"
+            reference="${image_name}@${digest}"
+            docker buildx imagetools inspect "$reference" >/dev/null
+            echo "${output_name}=${reference}" >>"$GITHUB_OUTPUT"
+          }
+
+          resolve_image services_image ghcr.io/buckyos/usdb-services "$SERVICES_TAG"
+          resolve_image chain_image ghcr.io/buckyos/usdb-chain "$CHAIN_TAG"
+          resolve_image bitcoin_image ghcr.io/buckyos/usdb-bitcoin-core "$BITCOIN_TAG"
+
       - name: Verify image existence and provenance
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GO_ETHEREUM_REVISION: ${{ inputs.go_ethereum_revision }}
+          GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
-          SERVICES_IMAGE: ${{ inputs.services_image }}
-          CHAIN_IMAGE: ${{ inputs.chain_image }}
-          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
+          SERVICES_IMAGE: ${{ steps.images.outputs.services_image }}
+          CHAIN_IMAGE: ${{ steps.images.outputs.chain_image }}
+          BITCOIN_IMAGE: ${{ steps.images.outputs.bitcoin_image }}
         run: |
           set -euo pipefail
           verify_image() {
@@ -215,6 +264,7 @@ jobs:
             local revision="$4"
             docker buildx imagetools inspect "$reference" >/dev/null
             gh attestation verify "oci://${reference}" \
+              --bundle-from-oci \
               --repo "$repository" \
               --signer-workflow "$workflow" \
               --source-digest "$revision" \
@@ -242,24 +292,22 @@ jobs:
         shell: bash
         env:
           RELEASE_ID: ${{ inputs.release_id }}
-          GENESIS_BLOCK_HASH: ${{ inputs.genesis_block_hash }}
-          GO_ETHEREUM_REVISION: ${{ inputs.go_ethereum_revision }}
-          SOURCE_DAO_REVISION: ${{ inputs.source_dao_revision }}
+          CREATED_AT_UTC: ${{ steps.revisions.outputs.created_at_utc }}
+          GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
+          SOURCE_DAO_REVISION: ${{ steps.candidate.outputs.source_dao_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
-          SERVICES_IMAGE: ${{ inputs.services_image }}
-          CHAIN_IMAGE: ${{ inputs.chain_image }}
-          BITCOIN_IMAGE: ${{ inputs.bitcoin_image }}
+          SERVICES_IMAGE: ${{ steps.images.outputs.services_image }}
+          CHAIN_IMAGE: ${{ steps.images.outputs.chain_image }}
+          BITCOIN_IMAGE: ${{ steps.images.outputs.bitcoin_image }}
         run: |
           set -euo pipefail
           mkdir -p release-output
-          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           manifest="release-output/usdb-release-manifest.json"
           python3 usdb/docker/scripts/tools/release_manifest.py create \
             --bundle-dir usdb/docker/networks/testnet-v0 \
             --output "$manifest" \
             --release-id "$RELEASE_ID" \
-            --created-at-utc "$created_at" \
-            --genesis-block-hash "$GENESIS_BLOCK_HASH" \
+            --created-at-utc "$CREATED_AT_UTC" \
             --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json \
             --usdb-revision "$USDB_REVISION" \
             --go-ethereum-revision "$GO_ETHEREUM_REVISION" \

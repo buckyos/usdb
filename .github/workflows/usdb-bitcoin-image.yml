@@ -36,10 +36,21 @@ jobs:
         run: |
           set -euo pipefail
           revision="$(git rev-parse HEAD)"
-          [[ "$revision" == "$GITHUB_SHA" ]] || {
-            echo "Checked-out revision $revision does not match workflow revision $GITHUB_SHA" >&2
-            exit 1
-          }
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            [[ "$(git cat-file -t "$GITHUB_REF")" == "tag" ]] || {
+              echo "release image requires an annotated tag: $GITHUB_REF" >&2
+              exit 1
+            }
+            [[ "$revision" == "$(git rev-list -n 1 "$GITHUB_REF")" ]] || {
+              echo "checked-out revision does not match release tag target" >&2
+              exit 1
+            }
+          else
+            [[ "$revision" == "$GITHUB_SHA" ]] || {
+              echo "checked-out revision $revision does not match workflow revision $GITHUB_SHA" >&2
+              exit 1
+            }
+          fi
           git fetch --no-tags origin refs/heads/master:refs/remotes/origin/master
           git merge-base --is-ancestor "$revision" refs/remotes/origin/master || {
             echo "Bitcoin Core images may only be published from master history: $revision" >&2
@@ -88,6 +99,7 @@ jobs:
           subject-name: ${{ steps.prepare.outputs.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          create-storage-record: false
 
       - name: Record candidate reference
         shell: bash

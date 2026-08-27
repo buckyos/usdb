@@ -61,7 +61,6 @@ class ReleaseManifestTests(unittest.TestCase):
             bundle_dir=self.bundle,
             release_id="usdb-testnet-v0-r1",
             created_at_utc="2026-08-26T12:00:00Z",
-            genesis_block_hash="0x" + "1" * 64,
             compatibility_lock_path=self.compatibility_lock,
             revisions={
                 "go_ethereum": "a" * 40,
@@ -77,9 +76,14 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_candidate_round_trip_is_stable(self) -> None:
         manifest = self.valid_manifest()
+        self.assertEqual(manifest, self.valid_manifest())
         self.assertEqual(
             manifest["snapshot"],
             {"status": "not_used", "bootstrap_mode": "full-sync"},
+        )
+        self.assertEqual(
+            manifest["network_bundle"]["genesis_block_hash"],
+            "0xac89ddec1c12efa4173c67e70772861def1e121c387b612e702805161970e560",
         )
         path = self.root / "release-manifest.json"
         RELEASE.write_manifest(path, manifest)
@@ -92,7 +96,6 @@ class ReleaseManifestTests(unittest.TestCase):
                 bundle_dir=self.bundle,
                 release_id="usdb-testnet-v0-r1",
                 created_at_utc="2026-08-26T12:00:00Z",
-                genesis_block_hash="0x" + "1" * 64,
                 compatibility_lock_path=self.compatibility_lock,
                 revisions={
                     "go_ethereum": "a" * 40,
@@ -101,6 +104,25 @@ class ReleaseManifestTests(unittest.TestCase):
                 },
                 image_references={
                     "usdb_services": "ghcr.io/buckyos/usdb-services:latest",
+                    "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
+                    "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
+                },
+            )
+
+    def test_release_id_must_match_immutable_tag_format(self) -> None:
+        with self.assertRaisesRegex(ValueError, "release_id"):
+            RELEASE.create_manifest(
+                bundle_dir=self.bundle,
+                release_id="latest",
+                created_at_utc="2026-08-26T12:00:00Z",
+                compatibility_lock_path=self.compatibility_lock,
+                revisions={
+                    "go_ethereum": "a" * 40,
+                    "usdb": "b" * 40,
+                    "source_dao": "c" * 40,
+                },
+                image_references={
+                    "usdb_services": "ghcr.io/buckyos/usdb-services@sha256:" + "d" * 64,
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                     "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
                 },
