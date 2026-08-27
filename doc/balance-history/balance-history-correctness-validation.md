@@ -98,12 +98,20 @@ balance 与 exact delta，结束时再验证完整 range、summary、UTXO 和 re
 
 优先使用 Bitcoin Core 自身的 UTXO 集：
 
-1. 从 script registry 做分层确定性抽样，覆盖 script 类型、余额区间、首次/最近活跃高度。
-2. 将样本 scriptPubKey 编码为 `raw(...)` descriptor，分批调用 `scantxoutset`。
-3. 汇总 Core 返回的 unspent outputs，与 stable height 对应的 balance-history 余额和 live UTXO 对拍。
-4. 对部分 live outpoint 再调用 `gettxout`，交叉核对 value 与 scriptPubKey。
+1. 从 stable frontier 之前的确定性随机区块独立抽取 spendable output script，不依赖
+   balance-history script registry。
+2. 将样本 scriptPubKey 编码为 `raw(...)` descriptor，调用 `scantxoutset`，并采用其返回的
+   `height/bestblock` 作为实际扫描锚点。
+3. 排除在 `(stable_height, scan_height]` 内发生过收付的脚本，再将 Core UTXO 汇总与
+   stable height 对应的 balance-history 余额对拍。
+4. 对有界 live outpoint 样本调用 `gettxout(include_mempool=false)`，交叉核对 value 与
+   scriptPubKey。
+5. 结束前复查 Core tip、stable-height canonical hash 和 balance-history block commit，
+   任何重组或断面推进都 fail closed。
 
 该路径不需要 Electrs history 查询，适合验证当前断面的余额和 UTXO。
+实现、主网命令和边界说明见
+[balance-history-bitcoin-core-utxo-audit.md](balance-history-bitcoin-core-utxo-audit.md)。
 
 ### 历史状态
 

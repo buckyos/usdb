@@ -218,7 +218,8 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 | Exact-height snapshot 尚无生产硬件结果与磁盘故障注入 | 已有 1K 可重复容量入口、签名篡改/非信任 signer、发布前失败和恢复覆盖，但尚未记录 100K 正式硬件结果 | 在目标硬件跑 1K/10K/100K warm/cold-advisory 矩阵，并补磁盘满与设备级物理 I/O 采样 |
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | timeseries/flow bucket 聚合仍缺 regtest 覆盖 | Oracle 已对拍 movement range 和 summary，但浏览器使用的 bucket 形状仍主要靠 Rust 测试 | 扩展 oracle 或新增 aggregate RPC 场景 |
-| 主网历史外部审计仍依赖慢 Electrs 路径 | 按地址逐个抓 history/transaction 重复 I/O 大，本机 Electrs 当前需重建 | 先落地 Bitcoin Core `scantxoutset` latest-state 抽样；历史路径增加全局 tx cache、批量/并发、resume，随后评估 sampled block oracle |
+| Bitcoin Core UTXO 抽样尚无主网留档 | 工具的单元测试和真实 regtest 已通过，但本批未在同时运行的主网 Core 与 balance-history 上生成正式报告 | 两个主网服务 query-ready 后用固定 seed 执行一次并保存 JSON 报告、耗时和节点版本 |
+| 主网任意高度历史审计仍依赖慢 Electrs 路径 | Bitcoin Core `scantxoutset/gettxout` 当前断面抽样已落地，但不能证明任意历史高度 movement/history | Electrs 恢复后增加全局 tx cache、批量/并发和 resume，再评估 sampled block replay oracle |
 | 真实 BTC local loader 测试仍需人工提供节点 | local blk 加速路径可能在无日常信号下退化 | 已有显式 real-data test mode；下一步补 fixture/regtest-generated blk subset，让 CI 也能覆盖 local-loader 子集 |
 | shell helper 重复 | 共享库已有 JSON assertion helper，但部分旧脚本仍保留本地副本 | 后续触及对应旧脚本时删除本地副本并复用 `regtest_lib.sh` |
 | 大模块 ownership 不清晰 | DB/server/snapshot/block 文件过大，review 与补测成本高 | lib export 后拆分 helper，并把共享 test builders 移入 `tests/common` |
@@ -228,7 +229,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 1. 将 `correctness` 默认档位接入 fast/manual gate，scale 档位接入后续 nightly/soak。
 2. 增加 timeseries/flow bucket 的独立 oracle 对拍。
 3. 扩展 runner 的 `reorg-full` 与 `snapshot-full` 套件。
-4. 增加 Bitcoin Core UTXO 抽样工具，恢复 Electrs 后优化历史外部审计。
+4. 发布前运行 Bitcoin Core UTXO 抽样；恢复 Electrs 后优化历史外部审计。
 5. 增加 fixture/regtest-generated blk subset，降低真实主网数据测试对本机节点的依赖。
 
 ## 验收标准
@@ -239,7 +240,8 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 - `scripts/run_regtest_suite.sh smoke` 可以无手工端口编辑地执行文档化子集：`regtest_smoke.sh`、`regtest_rpc_semantics.sh`、`regtest_reorg_smoke.sh`、`regtest_snapshot_install_repeat.sh`、`regtest_history_balance_oracle.sh`。
 - `scripts/run_regtest_suite.sh stable-lag-reorg` 可以确定性覆盖 `depth=lag-1/lag/lag+1`，并要求 online、offline restart、fresh joiner 的最终状态一致。
 - `scripts/run_regtest_suite.sh correctness` 可以确定性对拍 balance/delta/range/summary、
-  live/spent UTXO、script registry 和 block commit。
+  live/spent UTXO、script registry 和 block commit，并实际验证 Bitcoin Core
+  `scantxoutset/gettxout` 当前断面抽样。
 - `scripts/run_regtest_suite.sh core` 覆盖普通同步、RPC 语义、一次 reorg、一次 snapshot install 和 oracle balance comparison。
 - 每个新增 balance-history RPC 至少有一个 unit test 和一个 regtest-level consumer test。
 - 真实 BTC 数据测试必须显式 opt-in，不能意外依赖开发者默认配置。

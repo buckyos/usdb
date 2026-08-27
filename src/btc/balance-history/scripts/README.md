@@ -80,6 +80,8 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh stable-lag-reorg
 | --- | --- | --- | --- |
 | `run_regtest_suite.sh` | Runner | N/A | 运行预定义 regtest 套件，当前支持 `smoke`、`correctness`、`stable-lag-reorg` |
 | `run_real_btc_tests.sh` | Real BTC | N/A | 显式 `USDB_BH_REAL_BTC=1` 后运行本机真实 blk/RPC 测试 |
+| `audit_bitcoin_core_utxo_sample.py` | External audit | N/A | 用 Bitcoin Core `scantxoutset/gettxout` 对拍当前 stable snapshot |
+| `regtest_bitcoin_core_utxo_audit.sh` | Oracle | `31032/31033/31010` | 真实 Core RPC 下验证抽样、stable-lag 排除和 UTXO 对拍 |
 | `regtest_smoke.sh` | Smoke | `28132/28133/28110` | 基础同步、网络类型、地址余额查询 |
 | `regtest_rpc_semantics.sh` | Smoke/query | `29032/29033/29010` | latest/exact/range balance、delta、batch 顺序、live UTXO 语义 |
 | `regtest_reorg_smoke.sh` | Reorg | `28232/28233/28210` | 基础 reorg rollback 和 block commit 恢复 |
@@ -153,7 +155,8 @@ bash src/btc/balance-history/scripts/run_regtest_suite.sh correctness
 ```
 
 该 suite 先显式构建一次 `balance-history`，再复用同一二进制执行独立 oracle 单测、
-RPC semantics、spend graph、same-block aggregation、完整历史状态线和 stable-lag smoke。
+RPC semantics、spend graph、same-block aggregation、完整历史状态线、stable-lag smoke 和
+Bitcoin Core UTXO 抽样审计。
 编译时间不会计入服务 readiness 超时。
 
 较大规模的历史状态线可单独参数化运行：
@@ -167,6 +170,9 @@ bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 
 分层设计和 Electrs 后续优化见
 [balance-history-correctness-validation.md](/home/bucky/work/usdb/doc/balance-history/balance-history-correctness-validation.md)。
+
+主网当前断面抽样命令、stable-lag 对齐规则和报告字段见
+[balance-history-bitcoin-core-utxo-audit.md](/home/bucky/work/usdb/doc/balance-history/balance-history-bitcoin-core-utxo-audit.md)。
 
 ### Stable-Lag Reorg Boundary
 

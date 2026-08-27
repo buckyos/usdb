@@ -19,7 +19,7 @@ Usage:
 
 Suites:
   smoke              Curated smoke suite covering sync, RPC semantics, reorg, snapshot repeat install, and oracle balance checks.
-  correctness        Deterministic state-line suite covering oracle, RPC, spend graphs, same-block aggregation, and stable-lag reorg.
+  correctness        Deterministic state-line suite plus Bitcoin Core UTXO sampling and stable-lag checks.
   stable-lag-reorg   Stable-lag reorg depth boundary matrix across online, restart, and fresh-joiner modes.
 
 Options:
@@ -63,11 +63,13 @@ select_suite() {
     correctness)
       SUITE_SCRIPTS=(
         test_regtest_balance_oracle.py
+        test_audit_bitcoin_core_utxo_sample.py
         regtest_rpc_semantics.sh
         regtest_spend_graph_queries.sh
         regtest_multi_input_same_block_queries.sh
         regtest_history_balance_oracle.sh
         regtest_stable_lag_smoke.sh
+        regtest_bitcoin_core_utxo_audit.sh
       )
       ;;
     *)
