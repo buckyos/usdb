@@ -77,6 +77,10 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_candidate_round_trip_is_stable(self) -> None:
         manifest = self.valid_manifest()
+        self.assertEqual(
+            manifest["snapshot"],
+            {"status": "not_used", "bootstrap_mode": "full-sync"},
+        )
         path = self.root / "release-manifest.json"
         RELEASE.write_manifest(path, manifest)
         self.assertEqual(RELEASE.load_manifest(path, self.bundle, self.compatibility_lock), manifest)

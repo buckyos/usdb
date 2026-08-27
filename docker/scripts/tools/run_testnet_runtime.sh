@@ -8,6 +8,7 @@ node_env="${USDB_TESTNET_NODE_ENV:-${bundle_dir}/node.env}"
 project_name="${USDB_TESTNET_PROJECT_NAME:-usdb-testnet-v0}"
 validator="${script_dir}/validate_network_bundle.py"
 bitcoin_runner="${script_dir}/run_testnet_bitcoin.sh"
+readiness_checker="${script_dir}/check_json_rpc_readiness.py"
 
 usage() {
   cat <<EOF
@@ -18,7 +19,11 @@ Actions:
   init-env       Create the private per-node node.env from the example.
   validate       Validate only the checked-in immutable network bundle.
   validate-node  Validate the bundle and this machine's node.env.
-  up             Require a ready Bitcoin project and signed snapshot; start detached.
+  up-data        Start snapshot-loader and balance-history only.
+  data-status    Print the current balance-history readiness response.
+  wait-data      Wait for balance-history consensus readiness; timeout is the first argument.
+  up             Require ready balance-history, start/wait for usdb-indexer, then start the chain.
+  indexer-status Print the current usdb-indexer readiness response.
   down           Stop containers without deleting named volumes.
   ps             Show service state.
   logs           Follow service logs.
@@ -60,6 +65,29 @@ validate_bundle() {
   python3 "${validator}" --bundle-dir "${bundle_dir}" "$@"
 }
 
+node_env_value() {
+  local key="$1"
+  awk -F= -v key="${key}" '$1 == key { print substr($0, length($1) + 2) }' "${node_env}"
+}
+
+host_rpc_url() {
+  local port_key="$1"
+  local default_port="$2"
+  local port
+  port="$(node_env_value "${port_key}")"
+  printf 'http://127.0.0.1:%s\n' "${port:-${default_port}}"
+}
+
+check_readiness() {
+  local url="$1"
+  local service="$2"
+  shift 2
+  python3 "${readiness_checker}" \
+    --url "${url}" \
+    --expected-service "${service}" \
+    "$@"
+}
+
 compose() {
   export USDB_NETWORK_ARTIFACTS_DIR="${bundle_dir}/artifacts"
   export BH_SNAPSHOT_TRUST_HOST_DIR="${bundle_dir}/trust"
@@ -83,6 +111,32 @@ case "${action}" in
     require_node_env
     validate_bundle --node-env "${node_env}"
     ;;
+  up-data)
+    require_node_env
+    command -v docker >/dev/null 2>&1 || {
+      echo "docker is required" >&2
+      exit 1
+    }
+    validate_bundle --node-env "${node_env}" --require-runtime --require-bitcoin-runtime
+    USDB_TESTNET_BUNDLE_DIR="${bundle_dir}" \
+      USDB_TESTNET_NODE_ENV="${node_env}" \
+      "${bitcoin_runner}" wait
+    compose config --quiet
+    compose up -d snapshot-loader balance-history
+    ;;
+  data-status)
+    require_node_env
+    check_readiness "$(host_rpc_url BH_BIND_PORT 28010)" "balance-history"
+    ;;
+  wait-data)
+    require_node_env
+    timeout_secs="${1:-86400}"
+    check_readiness \
+      "$(host_rpc_url BH_BIND_PORT 28010)" \
+      "balance-history" \
+      --require-consensus-ready \
+      --wait-timeout-secs "${timeout_secs}"
+    ;;
   up)
     require_node_env
     command -v docker >/dev/null 2>&1 || {
@@ -94,7 +148,21 @@ case "${action}" in
       USDB_TESTNET_NODE_ENV="${node_env}" \
       "${bitcoin_runner}" wait
     compose config --quiet
-    compose up -d "$@"
+    check_readiness \
+      "$(host_rpc_url BH_BIND_PORT 28010)" \
+      "balance-history" \
+      --require-consensus-ready
+    compose up -d usdb-indexer
+    check_readiness \
+      "$(host_rpc_url USDB_INDEXER_BIND_PORT 28020)" \
+      "usdb-indexer" \
+      --require-consensus-ready \
+      --wait-timeout-secs "${WAIT_FOR_USDB_INDEXER_READY_TIMEOUT_SECS:-1800}"
+    compose up -d usdb-chain-init usdb-chain usdb-control-plane
+    ;;
+  indexer-status)
+    require_node_env
+    check_readiness "$(host_rpc_url USDB_INDEXER_BIND_PORT 28020)" "usdb-indexer"
     ;;
   down)
     require_node_env

@@ -46,6 +46,9 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertEqual(network_env["BTC_MIN_CONNECTIONS"], "1")
         self.assertEqual(env["BTC_P2P_BIND_PORT"], "8333")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
+        self.assertEqual(env["SNAPSHOT_MODE"], "none")
+        self.assertEqual(env["BH_SNAPSHOT_FILE"], "")
+        self.assertEqual(env["BH_SYNC_LOCAL_LOADER_THRESHOLD"], "500")
         limits_gib = sum(
             int(env[name].removesuffix("g"))
             for name in (
@@ -65,6 +68,19 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                 network = content.rsplit("networks:", 1)[1]
                 self.assertIn("external: true", network)
                 self.assertIn("USDB_DOCKER_NETWORK", network)
+
+    def test_full_sync_runtime_mounts_bitcoin_data_read_only(self) -> None:
+        content = (ROOT / "docker/compose.runtime.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin:ro",
+            content,
+        )
+        self.assertIn("SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}", content)
+
+    def test_runtime_runner_exposes_phased_data_start(self) -> None:
+        content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(encoding="utf-8")
+        for action in ("up-data", "data-status", "wait-data", "indexer-status"):
+            self.assertIn(action, content)
 
 
 if __name__ == "__main__":

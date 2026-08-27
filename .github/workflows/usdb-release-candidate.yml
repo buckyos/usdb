@@ -274,6 +274,7 @@ jobs:
           (cd release-output && sha256sum usdb-release-manifest.json >usdb-release-manifest.json.sha256)
           manifest_sha256="$(cut -d ' ' -f 1 release-output/usdb-release-manifest.json.sha256)"
           echo "sha256=$manifest_sha256" >>"$GITHUB_OUTPUT"
+          echo "snapshot_status=$(jq -r '.snapshot.status' "$manifest")" >>"$GITHUB_OUTPUT"
 
       - name: Upload candidate manifest
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -294,5 +295,7 @@ jobs:
             echo
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.sha256 }}\`"
             echo
-            echo "This is a candidate artifact. Snapshot identity and final release approval remain pending."
+            echo "Snapshot status: \`${{ steps.manifest.outputs.snapshot_status }}\`"
+            echo
+            echo "This is a candidate artifact. Final release approval remains pending."
           } >>"$GITHUB_STEP_SUMMARY"

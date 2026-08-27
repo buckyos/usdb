@@ -26,8 +26,8 @@ Release 与节点部署批准仍以可审计的人工流程为基线。
 - `usdb`、`go-ethereum`、`SourceDAO` 的 commit；
 - UIP/activation registry revision 和 chain config/genesis hash；
 - Rust/Go/Node、Bitcoin Core、ord 和容器工具版本；
-- 所有 binary/image/config/contract/snapshot artifact 的 SHA-256 或 OCI digest；
-- snapshot signer ID 和 trusted-key catalog SHA-256；
+- 所有实际使用的 binary/image/config/contract/snapshot artifact 的 SHA-256 或 OCI digest；
+- 使用 snapshot 时记录 signer ID 和 trusted-key catalog SHA-256；不使用时显式记录 `not_used`；
 - 负责构建、复核和批准发布的人员；
 - 已运行的测试集合及原始报告路径。
 
@@ -42,7 +42,7 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 - 冻结目标网络、chain ID、genesis、activation registry binding；
 - 冻结 SourceDAO bootstrap 参数和 system addresses；
-- 冻结 snapshot signer ID、public catalog 和 snapshot 目标 BTC 高度/hash；
+- 选择 balance-history `full-sync` 或 `signed-snapshot`；后者才冻结 signer、catalog 和目标高度/hash；
 - 冻结镜像 tag、binary version 和配置 schema；
 - 列出 development-only、fake policy 和未激活功能，确认不会误入 public profile。
 
@@ -79,7 +79,7 @@ Bitcoin 独立生命周期和同步门禁见
 状态：`partial`
 
 - Snapshot 使用独立 Ed25519 signer 签署 manifest；
-- balance-history release bundle 携带 public trusted-key catalog；
+- balance-history release bundle 可以携带 public trusted-key catalog，但 full-sync 不依赖 catalog 建立状态；
 - SourceDAO/genesis 等其他 artifact 使用各自冻结的签名与 hash 方案；
 - OCI candidate image 已生成 GitHub provenance attestation；binary 和最终 GitHub Release 签名仍待落地，
   且不得复用 snapshot 私钥；
@@ -90,7 +90,7 @@ Bitcoin 独立生命周期和同步门禁见
 状态：`manual`
 
 - 使用最终 artifact，不从 workspace 重新构建；
-- 执行 bootstrap、restart、joiner 和新节点 snapshot install；
+- 执行 bootstrap、restart、joiner；选用 snapshot 时再执行新节点 snapshot install；
 - 验证 activation 边界、SourceDAO readiness、reward/fee/system state；
 - 记录完整服务版本、state-ref、genesis hash、snapshot provenance 和 RPC readiness；
 - 执行失败恢复和回滚演练。
@@ -116,7 +116,7 @@ public release。上线时至少需要：
 - revision、activation、genesis 或 SourceDAO 参数未冻结；
 - worktree 含未审计修改，或 artifact 无法追溯到 commit；
 - snapshot/private bootstrap key 泄露到 bundle、image、日志或 Git；
-- trusted-key catalog 没有独立可信 hash 来源；
+- 选择 snapshot 时，trusted-key catalog 没有独立可信 hash 来源；
 - 必要测试未运行，或报告只来自开发 mock；
 - joiner 无法从公开 artifact 完成冷启动；
 - 没有磁盘、内存、PoW 或服务不可用时的停止条件；balance-history 至少应通过

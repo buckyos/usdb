@@ -19,7 +19,7 @@ x-usdb-service-defaults: &usdb-service-defaults
 
 x-bitcoin-environment: &bitcoin-environment
   BTC_NETWORK: ${BTC_NETWORK:?BTC_NETWORK is required}
-  BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoind}
+  BTC_DATA_DIR: ${BTC_DATA_DIR:-/data/bitcoin}
   BTC_RPC_URL: ${BTC_RPC_URL:?BTC_RPC_URL is required}
   BTC_AUTH_MODE: ${BTC_AUTH_MODE:-userpass}
   BTC_RPC_USER: ${BTC_RPC_USER:-}
@@ -40,9 +40,9 @@ x-balance-history-environment: &balance-history-environment
   BH_SNAPSHOT_TRUST_MODE: ${BH_SNAPSHOT_TRUST_MODE:-signed}
   BH_SNAPSHOT_SIGNING_KEY_FILE: ""
   BH_SNAPSHOT_TRUSTED_KEYS_FILE: ${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-/run/usdb/keys/usdb-mainnet-snapshot-v1.trusted-keys.json}
-  SNAPSHOT_MODE: ${SNAPSHOT_MODE:-balance-history}
-  BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:?BH_SNAPSHOT_FILE is required}
-  BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:?BH_SNAPSHOT_MANIFEST is required}
+  SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+  BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:-}
+  BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:-}
 
 services:
   snapshot-loader:
@@ -69,6 +69,7 @@ services:
       BH_EXTRA_ARGS: ${BH_EXTRA_ARGS:-}
     volumes:
       - balance-history-data:/data/balance-history
+      - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     ports:
       - "${BH_BIND_ADDRESS:-127.0.0.1}:${BH_BIND_PORT:-28010}:28010"

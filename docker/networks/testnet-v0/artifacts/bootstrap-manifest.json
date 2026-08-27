@@ -1,8 +1,8 @@
 {
   "network_bundle_id": "usdb-testnet-v0",
   "btc_network": "bitcoin",
-  "balance_history_snapshot_mode": "balance-history",
-  "balance_history_snapshot_height": 963800,
+  "balance_history_snapshot_mode": "none",
+  "balance_history_snapshot_height": null,
   "usdb_chain_id": 202608250,
   "usdb_network_id": 202608250,
   "sourcedao_bootstrap_required": true

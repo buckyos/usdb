@@ -42,7 +42,10 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_RPCAUTH_HOST_FILE": str(self.root / "bitcoin-rpcauth"),
             "USDB_NODE_ROLE": "full",
             "USDB_P2P_BIND_PORT": "31303",
+            "SNAPSHOT_MODE": "none",
             "BH_SNAPSHOT_HOST_DIR": str(self.root / "snapshot"),
+            "BH_SNAPSHOT_FILE": "",
+            "BH_SNAPSHOT_MANIFEST": "",
         }
         values.update(overrides)
         path = self.root / "node.env"
@@ -82,6 +85,14 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "path escapes bundle"):
             VALIDATOR.validate_network_bundle(self.bundle)
 
+    def test_sourcedao_operational_path_is_rejected(self) -> None:
+        path = self.bundle / "artifacts/sourcedao-bootstrap-config.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["rpcUrl"] = "http://usdb-chain:8545"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "must not freeze an RPC URL"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
     def test_mutable_image_tag_is_rejected(self) -> None:
         path = self.write_node_env(USDB_CHAIN_IMAGE="ghcr.io/buckyos/usdb-chain:latest")
         with self.assertRaisesRegex(ValueError, "must not use latest"):
@@ -107,8 +118,16 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "USDB_MINER_ADDRESS"):
             VALIDATOR.validate_node_env(path, False)
 
-    def test_runtime_requires_signed_snapshot_set(self) -> None:
+    def test_runtime_accepts_full_sync_without_snapshot_files(self) -> None:
         path = self.write_node_env()
+        VALIDATOR.validate_node_env(path, True)
+
+    def test_runtime_requires_signed_snapshot_set_when_enabled(self) -> None:
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE="/snapshots/snapshot_963800.db",
+            BH_SNAPSHOT_MANIFEST="/snapshots/snapshot_963800.manifest.json",
+        )
         snapshot_dir = self.root / "snapshot"
         snapshot_dir.mkdir()
         for name in (
@@ -118,6 +137,20 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         ):
             (snapshot_dir / name).touch()
         VALIDATOR.validate_node_env(path, True)
+
+    def test_full_sync_rejects_stale_snapshot_inputs(self) -> None:
+        path = self.write_node_env(BH_SNAPSHOT_FILE="/snapshots/snapshot_963800.db")
+        with self.assertRaisesRegex(ValueError, "requires empty BH_SNAPSHOT_FILE"):
+            VALIDATOR.validate_node_env(path, True)
+
+    def test_snapshot_mode_requires_canonical_container_paths(self) -> None:
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE="/tmp/snapshot.db",
+            BH_SNAPSHOT_MANIFEST="/snapshots/snapshot_963800.manifest.json",
+        )
+        with self.assertRaisesRegex(ValueError, "canonical snapshot file path"):
+            VALIDATOR.validate_node_env(path, False)
 
     def test_bitcoin_runtime_requires_private_full_node_paths(self) -> None:
         path = self.write_node_env()

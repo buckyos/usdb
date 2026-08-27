@@ -17,7 +17,7 @@
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "0e49eeeba45e96d504038272e99875a5240eb17f71367bba5a0dd08c8a4a9246"
+      "sha256": "d420cc918db3736966b81afd4575044edf652e4750c94ce390d83bf946a081d4"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",
@@ -25,7 +25,7 @@
     },
     "sourcedao_bootstrap": {
       "path": "artifacts/sourcedao-bootstrap-config.json",
-      "sha256": "5339986ce8cbee70c381dab388345571a28f6e8988958bc98b120c36b572d37e"
+      "sha256": "a6437a4e8c3780779dcd9bd0714728db2ddfa1afad393c1bd052b2e912e14e0e"
     },
     "snapshot_trusted_keys": {
       "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",
@@ -33,11 +33,11 @@
     },
     "bootstrap_manifest": {
       "path": "artifacts/bootstrap-manifest.json",
-      "sha256": "573e0383d3fcad3d7ec5b28cc3586ae822a167edfec5db396d10187a3c6a5ce7"
+      "sha256": "3180dc948225d5531f197491df7fd2da46f27ea024469448b69e853e7931b339"
     },
     "network_environment": {
       "path": "network.env",
-      "sha256": "68a79b8f69caa71e956580244e8c0f98465ecd88a2b7cd657fa8207859e47c2b"
+      "sha256": "9c35676e544f90ec0ec8c5fa74eaa67b0cd67bf21004034baf00194d55da385f"
     },
     "compose_overlay": {
       "path": "compose.network.yml",

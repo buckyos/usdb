@@ -89,7 +89,7 @@ release profile 固定使用独立 Compose project 和 `http://btc-node:8332` �
 
 SourceDAO bootstrap 的完整权威输入是
 `artifacts/sourcedao-bootstrap-config.json`，当前 SHA-256 为
-`5339986ce8cbee70c381dab388345571a28f6e8988958bc98b120c36b572d37e`。上线前必须人工复核：
+`a6437a4e8c3780779dcd9bd0714728db2ddfa1afad393c1bd052b2e912e14e0e`。上线前必须人工复核：
 
 - bootstrap admin 地址与实际 signer 一致；private key 不进入 Git、镜像或 bundle；
 - `cycleMinLength=60`、transaction gas limit `8000000`；
@@ -111,7 +111,7 @@ SourceDAO bootstrap 的完整权威输入是
 | PoW 校准 | 目标硬件报告、最终 genesis/minimum difficulty | 若改 genesis 则是 |
 | 三仓 revision | `go-ethereum`、`usdb`、`SourceDAO` commit | 未启动前重新生成 bundle |
 | 发布镜像 | services/chain/Bitcoin Core 三个 OCI digest、构建日志/SBOM | 仅共识兼容替换可不重置 |
-| Snapshot | height/hash、snapshot ID、文件 SHA、manifest/signature、signer key ID | snapshot 本身否；origin 改变则是 |
+| Balance-history bootstrap | `full-sync` 或 snapshot height/hash、snapshot ID、文件 SHA、签名 | snapshot 本身否；BTC origin 改变则是 |
 | BTC origin anchor | BTC block `963800` 的 canonical block hash | origin/hash 身份变化则是 |
 | Bootnodes | enode、外部 IP、端口和节点所有者 | 否 |
 | 初始 miner | active standard pass ID、owner、`usdb_main`、首次 profile/state-ref | 否，但未满足则不能开挖 |
@@ -129,14 +129,14 @@ SourceDAO bootstrap 的完整权威输入是
 | 文件 | 负责内容 |
 | --- | --- |
 | `docker/networks/testnet-v0/network.json` | bundle 身份、状态、公共网络参数和 artifact hash 索引 |
-| `network.env` | Compose 消费的公共、非秘密运行参数 |
+| `network.env` | Compose 消费的公共、非秘密网络运行参数；不选择节点 snapshot 模式 |
 | `artifacts/usdb-chain-bootstrap-config.json` | genesis 可配置输入和 block-0 activation |
 | `artifacts/usdb-genesis.json` | 最终不可变 genesis/chain config/alloc |
 | `artifacts/usdb-genesis.manifest.json` | genesis 文件与生成输入 hash |
 | `artifacts/sourcedao-bootstrap-config.json` | accepted SourceDAO 初始化参数 |
-| `artifacts/bootstrap-manifest.json` | control-plane 启动门禁输入 |
+| `artifacts/bootstrap-manifest.json` | control-plane 默认启动门禁；testnet-v0 首节点为 full-sync |
 | `trust/*.trusted-keys.json` | snapshot public trust catalog；不含 private key |
-| 未提交的 `node.env` | 三个 image digest、Bitcoin 数据/RPC、节点角色、bootnodes、miner、资源限制 |
+| 未提交的 `node.env` | image digest、Bitcoin 数据/RPC、snapshot 模式、节点角色、bootnodes、miner、资源限制 |
 
 `validate_network_bundle.py` 对重复字段执行 fail-closed 解析，并交叉校验 chain ID、BTC source、origin、
 registry、genesis、SourceDAO 地址和 artifact hashes。脚本中的 `EXPECTED_*` 是 testnet-v0 的 validator
@@ -160,7 +160,7 @@ pin，不是另一套可独立修改的配置源。
 
 1. `validate_network_bundle.py` 和 genesis roundtrip 通过。
 2. PoW 校准值已决定；如有变化，重新生成 genesis 和所有 hash。
-3. snapshot 在独立空目录安装/继续同步验证通过。
+3. balance-history full-sync 达到 consensus readiness；使用 snapshot 时再要求独立安装验证。
 4. 三仓 revision、镜像 digest、trusted catalog 和所有 artifact hash 已写入 release manifest。
 5. SourceDAO 配置、管理员、token 分配和委员会完成双人 review。
 6. 初始 miner pass 在选定 BTC state-ref 下为 active standard，recipient 正确。

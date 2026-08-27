@@ -7,7 +7,7 @@
 - `usdb` 和 `go-ethereum` Fast CI 成功后发布 `linux/amd64` 候选镜像；
 - 每个镜像绑定 source commit、OCI digest 和 GitHub provenance attestation；
 - 手工选择 services、chain、Bitcoin Core 三个镜像 digest 与三仓 commit，生成严格校验的跨仓 candidate manifest；
-- candidate manifest 保持 snapshot 为 `pending`，不能直接作为 public release。
+- candidate manifest 从 bundle 派生 `not_used/full-sync` 或 `pending/signed-snapshot`，且不能直接作为 public release。
 
 Snapshot 大文件分发、最终 GitHub Release 和节点部署批准属于后续批次。
 SourceDAO 当前没有独立运行镜像，但其 commit 和 CI check 是 release manifest 的必要输入。
@@ -172,14 +172,16 @@ python3 docker/scripts/tools/release_manifest.py create \
 - 固定平台为 `linux/amd64`；
 - 绑定 `network.json`、genesis、BTC origin/registry 和 snapshot trusted-key catalog hash；
 - 绑定 Go commit 内的 compatibility lock hash，并拒绝混搭其他 `usdb/SourceDAO` revision；
-- snapshot 必须为 `{"status":"pending"}`。
+- snapshot 状态必须与 bundle 一致；当前 full-sync testnet-v0 为
+  `{"status":"not_used","bootstrap_mode":"full-sync"}`。
 
 ## 6. 从 Candidate 到正式 Release
 
 Actions artifact 会过期，因此不能作为节点长期信任入口。后续 promote 流程必须使用同一份 candidate
-manifest，并补齐：
+manifest，并补齐实际采用的发布证据：
 
-- snapshot release record、URL、大小、SHA-256、signer 和 catalog hash；
+- 使用 snapshot 时补 snapshot release record、URL、大小、SHA-256、signer 和 catalog hash；
+- full-sync 时保留 `snapshot.status=not_used` 并归档数据层 readiness/state-ref；
 - PoW 校准报告、完整 E2E 报告与人工批准记录；
 - 最终 manifest 签名/attestation。
 

@@ -155,12 +155,22 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(versions.get("auxPoolPolicyVersion") == 0, "testnet-v0 aux pool policy must be disabled")
 
     require(source_dao.get("chainId") == EXPECTED_CHAIN_ID, "SourceDAO chain ID mismatch")
+    require("rpcUrl" not in source_dao, "SourceDAO release config must not freeze an RPC URL")
+    require("artifactsDir" not in source_dao, "SourceDAO release config must not freeze an artifacts path")
     predeploys = chain.get("predeploys", {})
     require(source_dao.get("daoAddress") == predeploys.get("dao", {}).get("address"), "DAO address mismatch")
     require(source_dao.get("dividendAddress") == predeploys.get("dividend", {}).get("address"), "Dividend address mismatch")
     require(
         source_dao.get("bootstrapAdminAddress") == chain.get("bootstrapAdmin", {}).get("address"),
         "bootstrap admin mismatch",
+    )
+    require(
+        bootstrap_manifest.get("balance_history_snapshot_mode") == "none",
+        "testnet-v0 default balance-history bootstrap mode must be none",
+    )
+    require(
+        bootstrap_manifest.get("balance_history_snapshot_height") is None,
+        "full-sync bootstrap must not declare a snapshot height",
     )
 
     config = genesis.get("config")
@@ -259,8 +269,25 @@ def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime
             "sha256",
         ).hexdigest()
         require(hmac.compare_digest(actual_hmac, expected_hmac.lower()), "Bitcoin rpcauth does not match RPC password")
-    if require_runtime:
-        snapshot_dir = Path(env.get("BH_SNAPSHOT_HOST_DIR", ""))
+    snapshot_mode = env.get("SNAPSHOT_MODE", "none")
+    require(snapshot_mode in {"none", "balance-history"}, "unsupported SNAPSHOT_MODE")
+    snapshot_dir = Path(env.get("BH_SNAPSHOT_HOST_DIR", ""))
+    require(snapshot_dir.is_absolute(), "BH_SNAPSHOT_HOST_DIR must be an absolute path")
+    snapshot_file = env.get("BH_SNAPSHOT_FILE", "")
+    snapshot_manifest = env.get("BH_SNAPSHOT_MANIFEST", "")
+    if snapshot_mode == "none":
+        require(not snapshot_file, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_FILE")
+        require(not snapshot_manifest, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_MANIFEST")
+    else:
+        require(
+            snapshot_file == "/snapshots/snapshot_963800.db",
+            "balance-history snapshot mode requires the canonical snapshot file path",
+        )
+        require(
+            snapshot_manifest == "/snapshots/snapshot_963800.manifest.json",
+            "balance-history snapshot mode requires the canonical manifest path",
+        )
+    if require_runtime and snapshot_mode == "balance-history":
         require(snapshot_dir.is_dir(), f"snapshot host directory does not exist: {snapshot_dir}")
         for name in (
             "snapshot_963800.db",

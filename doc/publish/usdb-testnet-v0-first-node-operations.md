@@ -1,0 +1,328 @@
+# USDB testnet-v0 首节点发布与部署操作手册
+
+## 1. 适用范围
+
+本文面向负责第一个 `usdb-testnet-v0` 节点的发布和运维人员。当前网络是
+`development-resettable` 测试网，不是 public mainnet。本文采用：
+
+- BTC mainnet full node；
+- balance-history 从 BTC 创世全量同步；
+- 不下载、不安装 snapshot；
+- digest-pinned GHCR images；
+- SourceDAO bootstrap 由独立运维机执行，私钥不进入节点 Compose。
+
+Snapshot 只是 balance-history 的启动加速器。`SNAPSHOT_MODE=none` 时，节点仍会建立完整 UTXO、
+balance、block commit 和 state-ref；只有同步耗时不同，最终共识视图不应不同。
+
+## 2. 当前发布级别
+
+本流程允许进行一次 **release candidate bring-up**。开始前仍必须补齐：
+
+1. 最终 `usdb` commit 已进入 `origin/master`；
+2. `go-ethereum/scripts/usdb/ci-revisions.json` 已锁定该 `usdb` commit 和当前 SourceDAO commit；
+3. 三仓 Fast CI 和三张 image workflow 成功；
+4. 取得 services、chain、Bitcoin Core 三个 digest-only image reference；
+5. 生成并保存跨仓 candidate manifest 与 SHA-256；
+6. 确认 bootstrap admin 私钥能够派生出 bundle 中的公开地址；
+7. 确认至少一个 BTC mainnet Active Standard pass 可作为初始 miner。
+
+第 6、7 项未满足时，可以完成 BTC/balance-history 同步和非矿工节点启动，但不能完成 SourceDAO
+bootstrap 或持续出块。
+
+## 3. 机器与网络基线
+
+建议首节点至少具备：
+
+| 资源 | testnet-v0 基线 |
+| --- | --- |
+| 系统 | Ubuntu 24.04 x86-64 |
+| CPU | 8 个逻辑核或以上；首轮只要求低难度 Ethash 可持续出块 |
+| 内存 | 32 GiB；不要在同机运行额外构建任务 |
+| 磁盘 | 至少 2 TiB 可用 NVMe，建议预留扩容空间 |
+| 软件 | Docker Engine、Compose plugin、Git、Python 3、curl、jq |
+| 时间 | Bitcoin IBD 与 balance-history full sync 均按小时到数天规划 |
+
+防火墙只需公开：
+
+- `8333/TCP`：Bitcoin P2P；
+- `31303/TCP+UDP`：USDB devp2p；
+- 运维 SSH。
+
+`8332`、`8545`、`8546`、`28010`、`28020`、`28040` 必须保持 localhost 或 Docker 私网可见，
+不得直接暴露公网。节点需要正常的出站 DNS、NTP、HTTPS 和 Bitcoin P2P。
+
+## 4. 发布协调机流程
+
+### 4.1 冻结 revision
+
+记录三个完整 commit：
+
+```bash
+git -C /path/to/usdb rev-parse HEAD
+git -C /path/to/go-ethereum rev-parse HEAD
+git -C /path/to/SourceDAO rev-parse HEAD
+```
+
+所有 worktree 必须 clean。按 review 流程 push 后，在 GitHub Actions 依次运行：
+
+1. 三仓 Fast CI；
+2. `USDB Services Image`；
+3. `USDB Bitcoin Core Image`；
+4. `USDB Chain Image`；
+5. `USDB Release Candidate Manifest`。
+
+保存三个 `image@sha256:...`、candidate manifest、manifest checksum、workflow URL 和运行时间。
+首轮建议使用 release ID `usdb-testnet-v0-r1`。
+
+### 4.2 发布前人工输入
+
+在启动节点前记录并双人复核：
+
+- bootstrap admin 地址及其 signer custody；
+- active standard pass ID、owner、`usdb_main` recipient；
+- miner recipient 私钥/keystore 的保管位置；
+- 节点公网 IP、P2P 端口和责任人；
+- 当前采用候选 PoW 难度的明确批准记录。
+
+私钥、BTC RPC password 和 `node.env` 不进入 GitHub artifact、聊天记录或工单附件。
+
+## 5. 首节点安装
+
+以下命令以独立系统用户 `usdb` 执行：
+
+```bash
+RELEASE_ID=usdb-testnet-v0-r1
+USDB_REVISION=<candidate-manifest-usdb-revision>
+
+install -d -m 0755 "/home/usdb/releases/${RELEASE_ID}"
+git clone https://github.com/buckyos/usdb "/home/usdb/releases/${RELEASE_ID}/usdb"
+cd "/home/usdb/releases/${RELEASE_ID}/usdb"
+git checkout --detach "$USDB_REVISION"
+git status --short
+```
+
+最后一条命令必须无输出。节点不从 workspace 构建 image。
+
+如果 GHCR package 不是公开读取，先使用只具备 `read:packages` 的 token 登录：
+
+```bash
+docker login ghcr.io
+```
+
+## 6. 节点私有配置
+
+```bash
+cd "/home/usdb/releases/${RELEASE_ID}/usdb"
+docker/scripts/tools/run_testnet_runtime.sh init-env
+chmod 600 docker/networks/testnet-v0/node.env
+```
+
+编辑 `node.env`：
+
+```text
+USDB_SERVICES_IMAGE=ghcr.io/buckyos/usdb-services@sha256:<digest>
+USDB_CHAIN_IMAGE=ghcr.io/buckyos/usdb-chain@sha256:<digest>
+USDB_BITCOIN_IMAGE=ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
+
+SNAPSHOT_MODE=none
+BH_SNAPSHOT_FILE=
+BH_SNAPSHOT_MANIFEST=
+USDB_NODE_ROLE=full
+```
+
+保留默认数据根 `/home/usdb/.usdb`，创建运行目录：
+
+```bash
+install -d -m 0700 /home/usdb/.usdb/secure
+install -d -m 0700 /home/usdb/.usdb/bitcoin/mainnet
+install -d -m 0755 /home/usdb/.usdb/releases/balance-history
+```
+
+生成专用 Bitcoin RPC 凭据：
+
+```bash
+docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet-v0-node1
+```
+
+把命令只显示一次的 user/password 写入 `node.env`。随后执行：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh validate
+docker/scripts/tools/run_testnet_runtime.sh validate-node
+docker/scripts/tools/run_testnet_bitcoin.sh pull
+docker/scripts/tools/run_testnet_runtime.sh pull
+```
+
+## 7. Bitcoin Core 全量同步
+
+```bash
+export BTC_READY_WAIT_TIMEOUT_SECS=604800
+docker/scripts/tools/run_testnet_bitcoin.sh up
+```
+
+SSH 断开或等待超时不会删除 Bitcoin 数据。重新连接后执行：
+
+```bash
+docker/scripts/tools/run_testnet_bitcoin.sh ps
+docker/scripts/tools/run_testnet_bitcoin.sh status
+docker/scripts/tools/run_testnet_bitcoin.sh wait
+```
+
+只有 readiness 同时确认 `chain=main`、`pruned=false`、`initialblockdownload=false`、
+`blocks=headers`、txindex 同高度、tip 新鲜且存在 peer，才进入下一阶段。
+
+## 8. Balance-History 从零同步
+
+启动数据层，不启动 USDB chain：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh up-data
+docker/scripts/tools/run_testnet_runtime.sh data-status
+```
+
+runtime 会把 Bitcoin 数据目录只读挂载为 `/data/bitcoin`，落后超过 500 块时使用 LocalLoader。
+同步数据保存在 Compose named volume 中，重启或 `down` 不会删除。
+
+等待完整共识状态：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh wait-data 604800
+```
+
+最终必须满足：
+
+- `service = balance-history`；
+- `consensus_ready = true`；
+- `stable_height` 接近 BTC tip 减 stable lag；
+- `stable_block_hash`、`latest_block_commit` 非空；
+- `snapshot_origin` 为空；
+- blockers 为空。
+
+## 9. 启动索引器和 USDB 链
+
+首次先保持 `USDB_NODE_ROLE=full`：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh up
+docker/scripts/tools/run_testnet_runtime.sh indexer-status
+docker/scripts/tools/run_testnet_runtime.sh ps
+```
+
+`up` 会拒绝未 ready 的 balance-history，启动 usdb-indexer 后等待其
+`consensus_ready=true`，最后才启动 genesis init、USDB chain 和 control-plane。
+
+检查 chain identity：
+
+```bash
+curl -fsS -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' \
+  http://127.0.0.1:8545 | jq
+
+curl -fsS -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x0",false]}' \
+  http://127.0.0.1:8545 | jq
+```
+
+记录 genesis hash、chain ID 和：
+
+```bash
+curl -fsS -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"admin_nodeInfo","params":[]}' \
+  http://127.0.0.1:8545 | jq '.result.enode, .result.id'
+```
+
+## 10. 开启首个 Miner
+
+先从 `get_candidate_set_view` 或 `get_pass_economic_profile` 复核选定 pass 在最新 external state 下为
+`Active + Standard`，并确认 `usdb_main` 等于准备使用的 miner recipient。
+
+修改 `node.env`：
+
+```text
+USDB_NODE_ROLE=miner
+USDB_MINER_ADDRESS=<matching-usdb-main-address>
+USDB_PASS_ID=<canonical-pass-id>
+USDB_MINER_THREADS=1
+```
+
+然后重新执行：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh validate-node
+docker/scripts/tools/run_testnet_runtime.sh up
+docker/scripts/tools/run_testnet_runtime.sh logs usdb-chain
+```
+
+确认区块持续增长、header selector 可由同一 usdb-indexer state-ref 验证后，才执行 SourceDAO bootstrap。
+
+## 11. SourceDAO Bootstrap
+
+在独立受控运维机 checkout candidate manifest 固定的 SourceDAO revision，安装 Node.js 24 和依赖：
+
+```bash
+cd /path/to/SourceDAO
+git checkout --detach <source-dao-revision>
+npm ci
+npm run test:usdb:compile-and-audit
+```
+
+通过 SSH tunnel 访问节点 `127.0.0.1:8545`。使用 bundle 中未经修改的公开配置；配置不携带
+机器路径，脚本从当前固定 revision 的 `artifacts-usdb` 读取 artifact：
+
+```bash
+SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY="${SOURCE_DAO_BOOTSTRAP_PRIVATE_KEY:?required}" \
+  npx tsx scripts/usdb_bootstrap_full.ts \
+  --config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
+  --rpc-url http://127.0.0.1:8545 \
+  --state-file /secure/release/usdb-testnet-v0-r1-sourcedao-state.json
+```
+
+脚本会拒绝私钥派生地址与 `bootstrapAdminAddress` 不一致。完成后执行严格只读复检：
+
+```bash
+npm run validate:bootstrap -- \
+  --config /path/to/usdb/docker/networks/testnet-v0/artifacts/sourcedao-bootstrap-config.json \
+  --rpc-url http://127.0.0.1:8545 \
+  --state-file /secure/release/usdb-testnet-v0-r1-sourcedao-state.json \
+  --output /secure/release/usdb-testnet-v0-r1-sourcedao-validation.json \
+  --strict
+```
+
+必须在 block `8192` fee gate 前完成 `Dividend.finalizeBootstrap()`。保存每笔交易 hash、完成区块、
+state file 和 strict validation report。
+
+## 12. Restart 与故障处理
+
+安全重启：
+
+```bash
+docker/scripts/tools/run_testnet_runtime.sh down
+docker/scripts/tools/run_testnet_runtime.sh up-data
+docker/scripts/tools/run_testnet_runtime.sh wait-data 3600
+docker/scripts/tools/run_testnet_runtime.sh up
+```
+
+Bitcoin 独立运行，不会被 runtime `down` 停止。不要执行 `docker compose down -v`、删除 named volume、
+删除 Bitcoin 数据目录或替换 genesis。发现以下任一情况时停止 miner 并保留现场：
+
+- genesis/chain ID 不一致；
+- BTC 或 indexer `consensus_ready=false`；
+- pass 不再是 candidate；
+- SourceDAO strict validation 失败；
+- fee gate 已越过但 Dividend 尚未 finalized；
+- reward、difficulty、state-ref 或 selector 验证异常。
+
+测试网允许重置，但重置必须使用新 release ID，记录旧节点最后区块/hash，并由负责人明确批准删除数据。
+
+## 13. 首节点验收记录
+
+至少归档：
+
+- candidate manifest 与 SHA-256；
+- 三仓 revision、三个 image digest 和 attestation URL；
+- `network.json`、genesis SHA-256 和 genesis block hash；
+- Bitcoin readiness、balance-history readiness、indexer readiness；
+- bootnode enode、外部 IP、P2P 检查结果；
+- miner pass/profile、首个区块和连续出块样本；
+- SourceDAO state、strict validation 和 bootstrap 交易列表；
+- restart 后的相同 identity/readiness 结果。

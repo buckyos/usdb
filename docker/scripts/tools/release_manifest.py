@@ -122,6 +122,15 @@ def build_network_identity(bundle_dir: Path, genesis_block_hash: str) -> dict[st
     }
 
 
+def build_snapshot_state(bundle_dir: Path) -> dict[str, str]:
+    bootstrap = read_json(bundle_dir / "artifacts/bootstrap-manifest.json")
+    mode = bootstrap.get("balance_history_snapshot_mode")
+    if mode == "none":
+        return {"status": "not_used", "bootstrap_mode": "full-sync"}
+    require(mode == "balance-history", "unsupported balance-history snapshot mode in bundle")
+    return {"status": "pending", "bootstrap_mode": "signed-snapshot"}
+
+
 def build_compatibility_lock(path: Path, revisions: dict[str, str]) -> dict[str, str]:
     lock = read_json(path)
     require_exact_keys(
@@ -204,7 +213,7 @@ def create_manifest(
         "repositories": repositories,
         "images": images,
         "ci_required_checks": {key: list(value) for key, value in REQUIRED_CHECKS.items()},
-        "snapshot": {"status": "pending"},
+        "snapshot": build_snapshot_state(bundle_dir),
     }
     validate_manifest(manifest, bundle_dir, compatibility_lock_path)
     return manifest
@@ -305,7 +314,10 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
     checks = manifest["ci_required_checks"]
     require(isinstance(checks, dict), "ci_required_checks must be an object")
     require(checks == REQUIRED_CHECKS, "ci_required_checks do not match the v1 release gate")
-    require(manifest["snapshot"] == {"status": "pending"}, "candidate snapshot status must be pending")
+    require(
+        manifest["snapshot"] == build_snapshot_state(bundle_dir),
+        "candidate snapshot state does not match the network bundle",
+    )
 
 
 def load_manifest(path: Path, bundle_dir: Path, compatibility_lock_path: Path) -> dict[str, Any]:

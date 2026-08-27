@@ -3,7 +3,7 @@
 `testnet-v0` 是第一个三节点联调网络的可重置 bundle。它把网络共同身份与每台机器的运行参数分开：
 
 - Git 中的 `network.json`、`network.env`、genesis 和 bootstrap config 是所有节点共享的网络输入。
-- 未提交的 `node.env` 保存镜像引用、BTC RPC 凭据、节点角色、bootnodes 和 miner 参数。
+- 未提交的 `node.env` 保存镜像引用、BTC RPC、snapshot 模式、节点角色、bootnodes 和 miner 参数。
 - `docker/compose.bitcoin.yml` 是独立 Bitcoin full-node project；`docker/compose.runtime.yml` 是 USDB image-only 运行基座。
 
 当前状态是 `development-resettable`，不是 public release 或未来 mainnet 参数。发生不兼容重置时必须发布
@@ -32,8 +32,7 @@
 1. 通过 GitHub image workflows 发布 candidate，并取得 digest-only `USDB_SERVICES_IMAGE`、
    `USDB_CHAIN_IMAGE` 与 `USDB_BITCOIN_IMAGE`。`latest`、`local`、普通 tag 和占位引用不能进入跨仓 release manifest。
 2. 准备独立 Bitcoin 数据目录和 rpcauth；release Compose 仅发布 `8333/TCP`，不发布 `8332`。
-3. 准备 `snapshot_963800.db`、manifest 和 detached signature。默认信任 bundle 中的
-   `usdb-mainnet-snapshot-v1` public key catalog。
+3. 默认使用 `SNAPSHOT_MODE=none`，balance-history 从 BTC 创世全量同步；signed snapshot 是以后可选的节点加速路径。
 4. 确认本机至少 32 GiB 内存；共机模板为 Bitcoin `5g`、balance-history `12g`，全部服务 hard limit 合计 `27g`。
 
 初始化私有节点配置：
@@ -56,14 +55,19 @@ docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet
 docker/scripts/tools/run_testnet_bitcoin.sh up
 docker/scripts/tools/run_testnet_bitcoin.sh status
 docker/scripts/tools/run_testnet_runtime.sh validate-node
+docker/scripts/tools/run_testnet_runtime.sh up-data
+docker/scripts/tools/run_testnet_runtime.sh wait-data 604800
 docker/scripts/tools/run_testnet_runtime.sh up
 docker/scripts/tools/run_testnet_runtime.sh ps
 ```
 
-Bitcoin `up` 会等待 mainnet full sync 和 txindex 同高度。runtime `up` 会再次检查同一 readiness，要求
-snapshot 三件套真实存在，并在启动前执行 `docker compose config --quiet`。
+Bitcoin `up` 会等待 mainnet full sync 和 txindex 同高度。`up-data` 只启动 balance-history；`up`
+要求 balance-history consensus-ready，再启动并等待 indexer，最后才启动 USDB chain。
 共享 runtime 默认把每个容器的 JSON log 限制为 `5 x 100 MiB`，并给长服务 2 分钟优雅停止时间；
 这些是节点运行参数，不进入链共识身份。
+
+首节点从零部署的完整命令和验收项见
+[`doc/publish/usdb-testnet-v0-first-node-operations.md`](../../../doc/publish/usdb-testnet-v0-first-node-operations.md)。
 
 ## 三节点顺序
 
@@ -80,7 +84,7 @@ SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key
 ## 尚未冻结
 
 - 三个发布镜像的 digest 与最终三仓 release manifest；candidate workflow 已具备，但尚待实际 artifact。
-- snapshot artifact 自身的 hash/signature；当前只冻结 signer public key。
+- snapshot 分发 artifact 尚未发布；当前 candidate 明确记录 `snapshot.status=not_used`。
 - 三台机器的 bootnode enode、外部 IP 和 miner pass。
 - 正式 PoW calibration 报告。
 - SourceDAO bootstrap 执行记录和完成 checkpoint。
