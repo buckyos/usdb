@@ -15,6 +15,7 @@
 ## 2. 当前手册
 
 - [USDB Release 总体流程](./usdb-release-process.md)
+- [USDB 节点主机软件基线与准备工具](./usdb-node-host-prerequisites.md)
 - [USDB testnet-v0 参数冻结清单](./usdb-testnet-v0-parameter-freeze.md)
 - [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)
 - [Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)

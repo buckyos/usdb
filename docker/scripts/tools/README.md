@@ -123,6 +123,7 @@ above.
 | [validate_network_bundle.py](/home/bucky/work/usdb/docker/scripts/tools/validate_network_bundle.py) | release input validation | read-only strict JSON/env and hash validation | before pull/up on every testnet node | supports full-sync or explicit signed snapshot; Bitcoin data/rpcauth paths remain mandatory |
 | [check_json_rpc_readiness.py](/home/bucky/work/usdb/docker/scripts/tools/check_json_rpc_readiness.py) | service readiness gate | read-only JSON-RPC polling | between data, indexer and chain startup phases | requires typed `service` and boolean `consensus_ready` |
 | [release_manifest.py](/home/bucky/work/usdb/docker/scripts/tools/release_manifest.py) | release candidate identity | creates or validates the digest-pinned three-repository manifest | after all three GHCR candidates and component CI checks pass | v2 derives snapshot status from the frozen bundle |
+| [prepare_usdb_host.sh](/home/bucky/work/usdb/docker/scripts/tools/prepare_usdb_host.sh) | host prerequisite setup | checks or installs Docker Engine, Compose plugin and operator CLI dependencies | before configuring any testnet or mainnet node | check is Linux-distribution independent; APT install supports selected Ubuntu/Debian releases and fails closed on conflicts |
 
 ## Recommended Documentation Contract For Future Tools
 

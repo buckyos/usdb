@@ -35,7 +35,7 @@ bootstrap 或持续出块。
 
 | 资源 | testnet-v0 基线 |
 | --- | --- |
-| 系统 | Ubuntu 24.04 x86-64 |
+| 系统 | Linux kernel 5.10+、x86-64；Ubuntu 24.04 为优先验证基线 |
 | CPU | 8 个逻辑核或以上；首轮只要求低难度 Ethash 可持续出块 |
 | 内存 | 32 GiB；不要在同机运行额外构建任务 |
 | 磁盘 | 至少 2 TiB 可用 NVMe，建议预留扩容空间 |
@@ -50,6 +50,39 @@ bootstrap 或持续出块。
 
 `8332`、`8545`、`8546`、`28010`、`28020`、`28040` 必须保持 localhost 或 Docker 私网可见，
 不得直接暴露公网。节点需要正常的出站 DNS、NTP、HTTPS 和 Bitcoin P2P。
+
+### 3.1 软件环境自动检查与安装
+
+测试网和正式网共用 [USDB 节点主机软件基线与准备工具](./usdb-node-host-prerequisites.md)。
+`prepare_usdb_host.sh check` 是发行版无关的只读检查；自动 `install` 当前覆盖 Ubuntu
+22.04/24.04 和 Debian 12/13。
+
+在完全空白、尚未安装 Git/curl 的机器上，先从发布协调机传入与 candidate revision 一致的脚本：
+
+```bash
+scp docker/scripts/tools/prepare_usdb_host.sh root@<node-ip>:/tmp/
+ssh root@<node-ip> 'chmod 0755 /tmp/prepare_usdb_host.sh'
+```
+
+创建独立运行用户并安装软件：
+
+```bash
+ssh root@<node-ip>
+id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
+/tmp/prepare_usdb_host.sh install --docker-user usdb
+```
+
+`docker` 组具有等同 root 的主机权限。只加入专用运维用户，不加入普通业务账户。安装完成后必须
+退出 SSH 并重新以 `usdb` 登录，使新组权限生效，然后再次执行只读检查：
+
+```bash
+/tmp/prepare_usdb_host.sh check --docker-user usdb
+```
+
+归档检查输出，其中包含实际 Docker、Compose、Git、Python、curl 和 jq 版本。若目标机器已有
+容器运行时或工作负载，不要直接执行建议的卸载命令，应先人工确认迁移和数据保留方案。
+Docker 发布的容器端口可能绕过 UFW 规则；除 Compose 的 localhost 绑定外，还应在主机
+`DOCKER-USER` 链或上游云防火墙中复核实际暴露面。
 
 ## 4. 发布协调机流程
 

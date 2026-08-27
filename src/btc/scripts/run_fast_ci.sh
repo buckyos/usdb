@@ -52,6 +52,7 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_balan
 log "checking testnet network and release manifests"
 shellcheck \
   "$REPO_DIR/docker/scripts/entrypoints/start_bitcoin_core.sh" \
+  "$REPO_DIR/docker/scripts/tools/prepare_usdb_host.sh" \
   "$REPO_DIR/docker/scripts/tools/run_testnet_bitcoin.sh" \
   "$REPO_DIR/docker/scripts/tools/run_testnet_runtime.sh"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_validate_network_bundle.py"
@@ -60,4 +61,5 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_check
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_check_json_rpc_readiness.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_generate_bitcoin_rpcauth.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_testnet_bitcoin_release.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_prepare_usdb_host.py"
 log "Rust fast gate passed"
