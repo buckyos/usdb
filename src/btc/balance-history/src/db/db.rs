@@ -16,6 +16,10 @@ use std::sync::Mutex;
 use usdb_util::BtcScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOValue};
 
+#[path = "legacy_compare.rs"]
+mod legacy_compare;
+pub use legacy_compare::*;
+
 // Column family names
 pub const BALANCE_HISTORY_CF: &str = "balance_history";
 pub const META_CF: &str = "meta";
@@ -234,6 +238,56 @@ pub struct BalanceHistoryDB {
 }
 
 impl BalanceHistoryDB {
+    /// Opens an existing balance-history database without permitting writes.
+    ///
+    /// This is intended for offline audit tools. Unlike [`Self::open`], it
+    /// never creates directories, column families, or a missing DB identity.
+    pub fn open_read_only(config: BalanceHistoryConfigRef) -> Result<Self, String> {
+        let file = config.db_dir().join("balance_history");
+        if !file.is_dir() {
+            return Err(format!(
+                "Balance-history RocksDB directory does not exist: {}",
+                file.display()
+            ));
+        }
+
+        info!("Opening RocksDB read-only at {}", file.display());
+        let mut options = Self::get_options_on_mode(BalanceHistoryDBMode::Normal);
+        options.create_if_missing(false);
+        options.create_missing_column_families(false);
+        let descriptors = Self::get_cf_descriptors_on_mode(BalanceHistoryDBMode::Normal);
+        let db = DB::open_cf_descriptors_read_only(&options, &file, descriptors, false).map_err(
+            |e| {
+                let msg = format!(
+                    "Failed to open balance-history RocksDB read-only at {}: {}",
+                    file.display(),
+                    e
+                );
+                error!("{}", msg);
+                msg
+            },
+        )?;
+
+        let db = BalanceHistoryDB {
+            file,
+            db,
+            config,
+            mode: Mutex::new(BalanceHistoryDBMode::Normal),
+        };
+        let expected = BalanceHistoryDBIdentity::for_network(db.config.btc.network());
+        match db.get_db_identity()? {
+            Some(actual) if actual == expected => Ok(db),
+            Some(actual) => Err(format!(
+                "Read-only balance-history DB identity mismatch: expected {:?}, found {:?}",
+                expected, actual
+            )),
+            None => Err(format!(
+                "Read-only balance-history DB at {} has no DB identity",
+                db.file.display()
+            )),
+        }
+    }
+
     pub fn open(
         config: BalanceHistoryConfigRef,
         mode: BalanceHistoryDBMode,
@@ -3791,6 +3845,29 @@ mod tests {
 
         let reopened = BalanceHistoryDB::open(config, BalanceHistoryDBMode::Normal).unwrap();
         assert_eq!(reopened.get_db_identity().unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn test_open_read_only_validates_identity_and_rejects_writes() {
+        let mut config = BalanceHistoryConfig::default();
+        let temp_dir = std::env::temp_dir().join("balance_history_db_read_only_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        config.root_dir = temp_dir.clone();
+        config.btc.network = Network::Regtest;
+        let config = Arc::new(config);
+
+        let db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
+        db.put_btc_block_height(7).unwrap();
+        db.flush_all().unwrap();
+        drop(db);
+
+        let read_only = BalanceHistoryDB::open_read_only(config).unwrap();
+        assert_eq!(read_only.get_btc_block_height().unwrap(), 7);
+        let error = read_only.put_btc_block_height(8).unwrap_err();
+        assert!(error.contains("read only") || error.contains("Not implemented"));
+        drop(read_only);
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]

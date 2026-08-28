@@ -11,6 +11,8 @@
 4. 主网抽样用于发现真实数据兼容问题，不能替代可重复的构造场景。
 5. BIP30、Core unspendable、rollback 原子性和 snapshot retention floor 等低频规则，
    必须有可精确断言的 fake-chain/Rust 测试，不能期待随机 regtest 自然命中。
+6. 同高度旧 snapshot 与当前全量重放库的跨版本差异，应使用独立只读 comparator 分类，不能把旧
+   schema 安装进当前服务来完成对拍。
 
 ## 四层验证
 
@@ -112,6 +114,14 @@ balance 与 exact delta，结束时再验证完整 range、summary、UTXO 和 re
 该路径不需要 Electrs history 查询，适合验证当前断面的余额和 UTXO。
 实现、主网命令和边界说明见
 [balance-history-bitcoin-core-utxo-audit.md](balance-history-bitcoin-core-utxo-audit.md)。
+
+### 跨版本全状态对拍
+
+保留的旧主网 snapshot 可以作为一次性的历史实现参考，但不能直接安装到当前 schema。当前
+RocksDB 从创世块重放到完全相同的高度并停止服务后，使用独立 comparator 对拍最新余额、完整
+UTXO 和 rolling block commit；通过后再追加十亿级 script registry。已冻结的 BIP30 和 Bitcoin
+Core unspendable 语义差异单独计数，其余差异一律 fail closed。操作说明见
+[balance-history-legacy-snapshot-semantic-comparison.md](balance-history-legacy-snapshot-semantic-comparison.md)。
 
 ### 历史状态
 

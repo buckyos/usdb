@@ -30,6 +30,7 @@
 - [balance-history-exact-height-snapshot-tool-design.md](./balance-history-exact-height-snapshot-tool-design.md)
 - [balance-history-exact-height-snapshot-capacity.md](./balance-history-exact-height-snapshot-capacity.md)
 - [balance-history-mainnet-exact-height-snapshot-operations.md](./balance-history-mainnet-exact-height-snapshot-operations.md)
+- [balance-history-legacy-snapshot-semantic-comparison.md](./balance-history-legacy-snapshot-semantic-comparison.md)
 - [balance-history-script-registry-snapshot-optimization-memo.md](./balance-history-script-registry-snapshot-optimization-memo.md)
 - [balance-history-regtest-snapshot-recovery.md](./balance-history-regtest-snapshot-recovery.md)
 - [balance-history-regtest-snapshot-restart-recovery.md](./balance-history-regtest-snapshot-restart-recovery.md)

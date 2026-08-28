@@ -1,10 +1,15 @@
-use balance_history::{DEFAULT_CACHE_BUDGET_PERCENT, IndexConfig, derive_cache_limits};
+use balance_history::{
+    BalanceHistoryConfig, BalanceHistoryDB, DEFAULT_CACHE_BUDGET_PERCENT, IndexConfig,
+    LegacySnapshotIntegrityCheck, LegacyStateCompareOptions, LegacyStateCompareProgressRef,
+    derive_cache_limits,
+};
 use balance_history_snapshot_tool::{
     ExactHeightSnapshotBuilder, SnapshotCreateOptions, SnapshotResumeVerifyOptions,
 };
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use usdb_util::{LogConfig, MemoryUsageSnapshot, get_memory_usage_snapshot};
 
@@ -86,6 +91,58 @@ enum Command {
         #[arg(long)]
         block_hash: Option<String>,
     },
+
+    /// Compare a legacy v2 SQLite snapshot with a rebuilt RocksDB at the same exact height.
+    CompareLegacy {
+        /// Service root containing the rebuilt balance-history RocksDB and config.toml.
+        #[arg(long)]
+        balance_history_root: PathBuf,
+
+        /// Immutable legacy SQLite snapshot file.
+        #[arg(long)]
+        snapshot_db: PathBuf,
+
+        /// Exact height at which both stores must be frozen.
+        #[arg(long)]
+        height: u32,
+
+        /// Also compare the auxiliary script registry. This is the longest phase on mainnet.
+        #[arg(long, default_value_t = false)]
+        include_script_registry: bool,
+
+        /// Number of independent key shards compared concurrently.
+        #[arg(long, default_value_t = 4)]
+        parallelism: usize,
+
+        /// Maximum expected and unexpected examples retained per table.
+        #[arg(long, default_value_t = 32)]
+        max_examples: usize,
+
+        /// SQLite integrity check to run before semantic comparison.
+        #[arg(long, value_enum, default_value_t = IntegrityCheckArg::Quick)]
+        integrity_check: IntegrityCheckArg,
+
+        /// Optional JSON report output path.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum IntegrityCheckArg {
+    Off,
+    Quick,
+    Full,
+}
+
+impl From<IntegrityCheckArg> for LegacySnapshotIntegrityCheck {
+    fn from(value: IntegrityCheckArg) -> Self {
+        match value {
+            IntegrityCheckArg::Off => Self::Off,
+            IntegrityCheckArg::Quick => Self::Quick,
+            IntegrityCheckArg::Full => Self::Full,
+        }
+    }
 }
 
 fn main() {
@@ -141,12 +198,109 @@ fn main() {
         Command::Verify { height, block_hash } => builder
             .verify(height, block_hash.as_deref())
             .and_then(|marker| print_value(&marker, cli.json)),
+        Command::CompareLegacy {
+            balance_history_root,
+            snapshot_db,
+            height,
+            include_script_registry,
+            parallelism,
+            max_examples,
+            integrity_check,
+            output,
+        } => compare_legacy(CompareLegacyArgs {
+            balance_history_root,
+            snapshot_db,
+            height,
+            include_script_registry,
+            parallelism,
+            max_examples,
+            integrity_check: integrity_check.into(),
+            output,
+            json: cli.json,
+        }),
     };
 
     if let Err(error) = result {
         eprintln!("{}", error);
         std::process::exit(1);
     }
+}
+
+struct CompareLegacyArgs {
+    balance_history_root: PathBuf,
+    snapshot_db: PathBuf,
+    height: u32,
+    include_script_registry: bool,
+    parallelism: usize,
+    max_examples: usize,
+    integrity_check: LegacySnapshotIntegrityCheck,
+    output: Option<PathBuf>,
+    json: bool,
+}
+
+fn compare_legacy(args: CompareLegacyArgs) -> Result<(), String> {
+    let config = Arc::new(BalanceHistoryConfig::load(&args.balance_history_root)?);
+    eprintln!(
+        "[compare-legacy] opening RocksDB read-only at {} (stop balance-history before the full comparison)",
+        config.db_dir().display()
+    );
+    let db = BalanceHistoryDB::open_read_only(config)?;
+    eprintln!("[compare-legacy] RocksDB opened; validating frozen height and legacy snapshot");
+    let progress: LegacyStateCompareProgressRef = Arc::new(|event| {
+        eprintln!(
+            "[compare-legacy] table={} shards={}/{} legacy_rows={} current_rows={}",
+            event.table,
+            event.completed_shards,
+            event.total_shards,
+            event.legacy_rows,
+            event.current_rows
+        );
+    });
+    let report = db.compare_legacy_snapshot(
+        &LegacyStateCompareOptions {
+            snapshot_db: args.snapshot_db,
+            target_height: args.height,
+            include_script_registry: args.include_script_registry,
+            parallelism: args.parallelism,
+            max_examples: args.max_examples,
+            integrity_check: args.integrity_check,
+        },
+        Some(progress),
+    )?;
+    if let Some(output) = args.output {
+        if let Some(parent) = output
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create comparison report directory {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
+        }
+        std::fs::write(
+            &output,
+            serde_json::to_vec_pretty(&report)
+                .map_err(|e| format!("Failed to serialize comparison report: {}", e))?,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to write comparison report {}: {}",
+                output.display(),
+                e
+            )
+        })?;
+    }
+    print_value(&report, args.json)?;
+    if !report.ok {
+        return Err(format!(
+            "Legacy state comparison found {} unexpected difference rows",
+            report.unexpected_difference_rows
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
