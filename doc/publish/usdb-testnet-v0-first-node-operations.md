@@ -123,12 +123,33 @@ python3 scripts/usdb/prepare_release.py tag \
   --release-id usdb-testnet-v0-r1 --create --push
 ```
 
-tag push 分别触发两个 `USDB Release Build`，重新运行 Fast gate 并构建三张 image。两边成功后手工
-运行 `USDB Release Candidate Manifest`，唯一输入为同一个 release ID。不要手工填写 revisions、
-image digest 或 genesis block hash；workflow 必须从 tag、compatibility lock、OCI provenance 和
-network bundle 派生并校验这些值。
+tag push 分别触发两个 `USDB Release Build`，重新运行 Fast gate 并构建三张 image。两边成功后从
+同名 tag 运行 candidate workflow：
 
-保存三个 `image@sha256:...`、candidate manifest、manifest checksum、workflow URL 和运行时间。
+```bash
+gh workflow run usdb-release-candidate.yml \
+  --repo buckyos/usdb \
+  --ref usdb-testnet-v0-r1 \
+  -f release_id=usdb-testnet-v0-r1
+```
+
+不要手工填写 revisions、image digest 或 genesis block hash；workflow 必须从 tag、compatibility lock、
+OCI provenance 和 network bundle 派生并校验这些值。candidate review 通过后，再从同名 tag 启动
+Environment-protected publish workflow：
+
+```bash
+gh workflow run usdb-release-publish.yml \
+  --repo buckyos/usdb \
+  --ref usdb-testnet-v0-r1 \
+  -f release_id=usdb-testnet-v0-r1
+```
+
+`publish` job 必须等待 `usdb-release` Environment required reviewer 批准。workflow 引用 environment
+名称并不等于 protection rules 已配置；首次发布前必须在 repository settings 确认 required reviewer、
+prevent self-review、禁止 bypass 和 release-tag restrictions。
+
+保存三个 `image@sha256:...`、candidate manifest、manifest checksum、GitHub Release URL、candidate / publish
+workflow URL 和运行时间。
 首轮建议使用 release ID `usdb-testnet-v0-r1`。
 
 ### 4.2 发布前人工输入

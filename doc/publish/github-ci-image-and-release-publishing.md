@@ -177,10 +177,15 @@ ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
    provenance 仍同时写入 GitHub attestation 和 OCI registry。
 2. 首次创建 `usdb-services`、`usdb-chain`、`usdb-bitcoin-core` package 后，将其设为 public，便于节点匿名拉取；如果保持
    private，则必须给 `buckyos/usdb` coordinator 仓库授予三个 package 的 Actions read access。
-3. 创建 `testnet-release-candidate` Environment，配置 required reviewer 并禁止发起人自审。
-4. 为 `master/main` 保持 branch protection，确保 release tag 只能指向已进入主线的 commit。
-5. 为 `usdb-testnet-*` / `usdb-mainnet-*` 配置 tag ruleset，限制创建者并禁止 update/delete。
-6. 不把 snapshot signing key、SourceDAO bootstrap private key 或 BTC RPC secret 放入这些 workflow。
+3. 创建 `testnet-release-candidate` Environment，配置 required reviewer、禁止发起人自审，并把允许部署的
+   tag 限制为 `usdb-testnet-*`。
+4. 创建 `usdb-release` Environment，配置独立 required reviewer、禁止发起人自审、禁止管理员绕过，并只
+   允许 `usdb-testnet-*` / `usdb-mainnet-*` tag。
+5. Environment 名称被 workflow 引用时 GitHub 可以自动创建无保护 environment，因此首次运行前必须在
+   repository settings 中人工确认上述 protection rules 已真实生效。
+6. 为 `master/main` 保持 branch protection，确保 release tag 只能指向已进入主线的 commit。
+7. 为 `usdb-testnet-*` / `usdb-mainnet-*` 配置 tag ruleset，限制创建者并禁止 update/delete。
+8. 不把 snapshot signing key、SourceDAO bootstrap private key 或 BTC RPC secret 放入这些 workflow。
 
 GitHub-hosted runner 是当前 provenance 信任边界。后续若使用 self-hosted release runner，必须重新定义
 runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 self-hosted provenance。
@@ -193,8 +198,17 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 - [manifest tool](../../docker/scripts/tools/release_manifest.py)
 - [manifest tests](../../docker/scripts/tools/test_release_manifest.py)
 
-完成第 3 节的 tag build 后，在 GitHub Actions 中手工运行 `USDB Release Candidate Manifest`，唯一
-输入是 `release_id`，例如 `usdb-testnet-v0-r1`。workflow 会：
+完成第 3 节的 tag build 后，从同一个 release tag 手工运行 `USDB Release Candidate Manifest`。唯一
+input 是 `release_id`，而 workflow ref 也必须是同名 tag：
+
+```bash
+gh workflow run usdb-release-candidate.yml \
+  --repo buckyos/usdb \
+  --ref usdb-testnet-v0-r1 \
+  -f release_id=usdb-testnet-v0-r1
+```
+
+workflow 会：
 
 1. 解析两仓同名 annotated tag 并取得 USDB / Go revision；
 2. 检查两个 tag target 都属于各自 `master` 历史；
@@ -205,7 +219,8 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 6. 严格校验 `testnet-v0` network bundle，并用选中的 Go revision 重算 genesis block hash；
 7. 验证三个 OCI artifact 的 digest、signer workflow 和 source commit；
 8. 使用 USDB annotated tag 的固定 tagger timestamp 生成确定性 manifest；
-9. 再次读取验证 `usdb-release-manifest.json`，上传 manifest 和 SHA-256，保留 30 天供 review。
+9. 再次读取验证 `usdb-release-manifest.json`，上传 manifest 和 SHA-256，保留 30 天供 review；
+10. 拒绝已经存在未过期同名 candidate artifact 的第二次独立 dispatch，避免 publish 阶段自动选择“最新”。
 
 不存在 tag、tag 不是 annotated tag、tag target 不在主线、成功 release build 缺失或存在歧义、
 compatibility lock 不匹配、genesis hash 漂移或 attestation 不匹配时都会 fail closed。自动解析只用于
@@ -240,21 +255,52 @@ python3 docker/scripts/tools/release_manifest.py create \
 
 ## 6. 从 Candidate 到正式 Release
 
-Actions artifact 会过期，因此不能作为节点长期信任入口。后续 promote 流程必须使用同一份 candidate
-manifest，并补齐实际采用的发布证据：
+入口：
 
-- 使用 snapshot 时补 snapshot release record、URL、大小、SHA-256、signer 和 catalog hash；
-- full-sync 时保留 `snapshot.status=not_used` 并归档数据层 readiness/state-ref；
-- PoW 校准报告、完整 E2E 报告与人工批准记录；
-- 最终 manifest 签名/attestation。
+- [publish workflow](../../.github/workflows/usdb-release-publish.yml)
+- [publish resolver](../../docker/scripts/tools/release_publish_resolver.py)
+- [publish resolver tests](../../docker/scripts/tools/test_release_publish_resolver.py)
 
-完成后创建不可变 GitHub Release，并把最终 manifest、checksum、public catalog 和小型报告作为 release
-assets。正式节点只按 release ID 和 digest 安装，不能自动追踪 `latest`。
+Actions artifact 会过期，因此不能作为节点长期信任入口。candidate review 完成后，从同一 release tag
+手工启动 publish workflow：
+
+```bash
+gh workflow run usdb-release-publish.yml \
+  --repo buckyos/usdb \
+  --ref usdb-testnet-v0-r1 \
+  -f release_id=usdb-testnet-v0-r1
+```
+
+preflight job 自动定位唯一成功且未过期的 candidate run/artifact，只拥有 read permission。`publish` job
+引用固定 `usdb-release` Environment；通过 required reviewer 审批后才取得 `contents:write`，然后：
+
+1. 再次验证两仓 annotated tag target 和主线 ancestry；
+2. 下载原 candidate archive，并校验 GitHub Actions artifact digest、archive 文件集合和 manifest checksum；
+3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest 和 network bundle；
+4. 再次验证三张 digest-pinned OCI image 的 signer workflow、source revision 和 provenance；
+5. 从 tagged public network bundle 生成时间、owner 和文件顺序稳定的 `.tar.gz` 及 SHA-256；
+6. testnet 创建 prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
+7. release 已存在时只允许 title、notes、flags、完整 asset 集合和每个 SHA-256 全部一致，否则 fail closed。
+
+当前 Release assets 固定为：
+
+- `usdb-release-manifest.json`；
+- `usdb-release-manifest.json.sha256`；
+- `<release_id>-network-bundle.tar.gz`；
+- `<release_id>-network-bundle.tar.gz.sha256`。
+
+正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。private key、RPC credential、
+节点本地 `node.env` 和实际 snapshot 大文件不得进入 GitHub Release。使用 snapshot 时仍需补 snapshot
+release record、URL、大小、SHA-256、signer 和 catalog hash；full-sync 保持
+`snapshot.status=not_used`。PoW 校准、E2E 与人工批准证据继续保留在对应 workflow/deployment record。
 
 ## 7. 当前限制
 
 - 当前 Dockerfile 的所有 base image 尚未固定 digest；候选 artifact 可审计，但未达到完全可重复构建。
 - services image 仍包含当前 testnet 不使用的 ord binary 和 Web assets，后续可按发布频率拆分。
 - 当前 workflow 只发布 `linux/amd64`，增加架构必须分别完成容量和共识一致性测试。
-- candidate workflow 尚不创建 GitHub Release，也不更新节点 `node.env`。
+- publish workflow 当前只接受已冻结的 `usdb-testnet-v0` bundle；未来 mainnet bundle 冻结后需显式加入映射。
+- GitHub Environment protection rules、tag ruleset 和 release immutability 是 repository settings，不能只靠
+  workflow 文件声明，首次发布前必须人工复核。
+- publish workflow 不更新节点 `node.env`，也不上传实际 snapshot 大文件。
 - `scripts/usdb/ci-revisions.json` 仍是联合 CI baseline，不是 release manifest。

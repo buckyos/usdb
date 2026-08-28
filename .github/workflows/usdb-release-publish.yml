@@ -1,0 +1,455 @@
+name: USDB Release Publish
+run-name: Publish ${{ inputs.release_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Approved immutable release ID, for example usdb-testnet-v0-r1
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: usdb-release-publish-${{ inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Resolve immutable candidate
+    if: github.repository == 'buckyos/usdb'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      artifact_digest: ${{ steps.candidate.outputs.candidate_artifact_digest }}
+      artifact_id: ${{ steps.candidate.outputs.candidate_artifact_id }}
+      candidate_run_attempt: ${{ steps.candidate.outputs.candidate_run_attempt }}
+      candidate_run_id: ${{ steps.candidate.outputs.candidate_run_id }}
+      prerelease: ${{ steps.revision.outputs.prerelease }}
+      usdb_revision: ${{ steps.revision.outputs.usdb_revision }}
+    steps:
+      - name: Validate tag-scoped dispatch
+        shell: bash
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
+            echo "invalid USDB release ID: $RELEASE_ID" >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF" == "refs/tags/${RELEASE_ID}" ]] || {
+            echo "publish workflow must run from refs/tags/${RELEASE_ID}" >&2
+            exit 1
+          }
+
+      - name: Check out tagged USDB source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_id }}
+          path: usdb
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify USDB annotated tag
+        id: revision
+        shell: bash
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          tag_ref="refs/tags/${RELEASE_ID}"
+          [[ "$(git -C usdb cat-file -t "$tag_ref")" == "tag" ]] || {
+            echo "USDB release tag must be annotated: $RELEASE_ID" >&2
+            exit 1
+          }
+          revision="$(git -C usdb rev-list -n 1 "$tag_ref")"
+          [[ "$(git -C usdb rev-parse HEAD)" == "$revision" ]] || {
+            echo "USDB checkout does not match release tag target" >&2
+            exit 1
+          }
+          [[ "$GITHUB_SHA" == "$revision" ]] || {
+            echo "workflow source revision does not match release tag target" >&2
+            exit 1
+          }
+          git -C usdb fetch --no-tags origin refs/heads/master:refs/remotes/origin/master
+          git -C usdb merge-base --is-ancestor "$revision" refs/remotes/origin/master || {
+            echo "USDB release tag target is not in master history" >&2
+            exit 1
+          }
+          prerelease=false
+          [[ "$RELEASE_ID" == usdb-testnet-* ]] && prerelease=true
+          {
+            echo "usdb_revision=$revision"
+            echo "prerelease=$prerelease"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Resolve unique candidate artifact
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          USDB_REVISION: ${{ steps.revision.outputs.usdb_revision }}
+        run: |
+          set -euo pipefail
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${RELEASE_ID}-manifest&per_page=100" \
+            >candidate-artifacts.json
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/usdb-release-candidate.yml/runs?event=workflow_dispatch&status=success&head_sha=${USDB_REVISION}&per_page=100" \
+            >candidate-runs.json
+          python3 usdb/docker/scripts/tools/release_publish_resolver.py \
+            resolve-candidate \
+            --artifacts candidate-artifacts.json \
+            --runs candidate-runs.json \
+            --release-id "$RELEASE_ID" \
+            --usdb-revision "$USDB_REVISION" \
+            --github-output "$GITHUB_OUTPUT"
+
+  publish:
+    name: Approve and publish GitHub Release
+    needs: preflight
+    if: github.repository == 'buckyos/usdb'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: usdb-release
+      url: ${{ steps.release.outputs.release_url }}
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+      packages: read
+    steps:
+      - name: Check out tagged USDB source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.release_id }}
+          path: usdb
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out tagged go-ethereum source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: buckyos/go-ethereum
+          ref: refs/tags/${{ inputs.release_id }}
+          path: go-ethereum
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reverify annotated tag targets
+        id: revisions
+        shell: bash
+        env:
+          EXPECTED_USDB_REVISION: ${{ needs.preflight.outputs.usdb_revision }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          verify_release_tag() {
+            local directory="$1"
+            local branch="$2"
+            local tag_ref="refs/tags/${RELEASE_ID}"
+            local revision
+            [[ "$(git -C "$directory" cat-file -t "$tag_ref")" == "tag" ]] || {
+              echo "$directory release tag must be annotated: $RELEASE_ID" >&2
+              exit 1
+            }
+            revision="$(git -C "$directory" rev-list -n 1 "$tag_ref")"
+            [[ "$(git -C "$directory" rev-parse HEAD)" == "$revision" ]] || {
+              echo "$directory checkout does not match release tag target" >&2
+              exit 1
+            }
+            git -C "$directory" fetch --no-tags origin \
+              "refs/heads/${branch}:refs/remotes/origin/${branch}"
+            git -C "$directory" merge-base --is-ancestor \
+              "$revision" "refs/remotes/origin/${branch}" || {
+              echo "$directory release tag target is not in ${branch} history" >&2
+              exit 1
+            }
+            printf '%s\n' "$revision"
+          }
+
+          usdb_revision="$(verify_release_tag usdb master)"
+          go_revision="$(verify_release_tag go-ethereum master)"
+          [[ "$usdb_revision" == "$EXPECTED_USDB_REVISION" ]] || {
+            echo "preflight USDB revision changed before approval" >&2
+            exit 1
+          }
+          {
+            echo "usdb_revision=$usdb_revision"
+            echo "go_ethereum_revision=$go_revision"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Download and verify candidate archive
+        shell: bash
+        env:
+          ARTIFACT_DIGEST: ${{ needs.preflight.outputs.artifact_digest }}
+          ARTIFACT_ID: ${{ needs.preflight.outputs.artifact_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            --output candidate.zip
+          printf '%s  candidate.zip\n' "${ARTIFACT_DIGEST#sha256:}" | sha256sum -c -
+          mapfile -t entries < <(unzip -Z1 candidate.zip | sort)
+          [[ "${entries[*]}" == \
+            "usdb-release-manifest.json usdb-release-manifest.json.sha256" ]] || {
+            printf 'unexpected candidate archive entries: %s\n' "${entries[*]}" >&2
+            exit 1
+          }
+          mkdir candidate
+          unzip -q candidate.zip -d candidate
+          manifest_sha="$(cut -d ' ' -f 1 \
+            candidate/usdb-release-manifest.json.sha256)"
+          [[ "$manifest_sha" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "candidate manifest checksum is invalid" >&2
+            exit 1
+          }
+          [[ "$(cat candidate/usdb-release-manifest.json.sha256)" == \
+            "${manifest_sha}  usdb-release-manifest.json" ]] || {
+            echo "candidate manifest checksum file is not canonical" >&2
+            exit 1
+          }
+          printf '%s  candidate/usdb-release-manifest.json\n' "$manifest_sha" | \
+            sha256sum -c -
+
+      - name: Revalidate candidate manifest
+        id: manifest
+        shell: bash
+        env:
+          EXPECTED_GO_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
+          EXPECTED_USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          manifest="candidate/usdb-release-manifest.json"
+          [[ "$(jq -er '.release_id' "$manifest")" == "$RELEASE_ID" ]]
+          [[ "$(jq -er '.repositories.usdb.revision' "$manifest")" == \
+            "$EXPECTED_USDB_REVISION" ]]
+          [[ "$(jq -er '.repositories.go_ethereum.revision' "$manifest")" == \
+            "$EXPECTED_GO_REVISION" ]]
+          bundle_id="$(jq -er '.network_bundle.bundle_id' "$manifest")"
+          case "$bundle_id" in
+            usdb-testnet-v0) bundle_dir="usdb/docker/networks/testnet-v0" ;;
+            *)
+              echo "unsupported publish network bundle: $bundle_id" >&2
+              exit 1
+              ;;
+          esac
+          python3 usdb/docker/scripts/tools/release_manifest.py validate \
+            --bundle-dir "$bundle_dir" \
+            --manifest "$manifest" \
+            --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json
+          {
+            echo "bundle_dir=$bundle_dir"
+            echo "bundle_id=$bundle_id"
+            echo "chain_id=$(jq -er '.network_bundle.chain_id' "$manifest")"
+            echo "genesis_hash=$(jq -er '.network_bundle.genesis_block_hash' "$manifest")"
+            echo "btc_registry=$(jq -er '.network_bundle.btc_activation_registry_id' "$manifest")"
+            echo "source_dao_revision=$(jq -er '.repositories.source_dao.revision' "$manifest")"
+            echo "services_image=$(jq -er '.images.usdb_services.reference' "$manifest")"
+            echo "chain_image=$(jq -er '.images.usdb_chain.reference' "$manifest")"
+            echo "bitcoin_image=$(jq -er '.images.bitcoin_core.reference' "$manifest")"
+            echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Reverify OCI image provenance
+        shell: bash
+        env:
+          BITCOIN_IMAGE: ${{ steps.manifest.outputs.bitcoin_image }}
+          CHAIN_IMAGE: ${{ steps.manifest.outputs.chain_image }}
+          GH_TOKEN: ${{ github.token }}
+          GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
+          SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
+          USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
+        run: |
+          set -euo pipefail
+          verify_image() {
+            local reference="$1"
+            local repository="$2"
+            local workflow="$3"
+            local revision="$4"
+            docker buildx imagetools inspect "$reference" >/dev/null
+            gh attestation verify "oci://${reference}" \
+              --bundle-from-oci \
+              --repo "$repository" \
+              --signer-workflow "$workflow" \
+              --source-digest "$revision" \
+              --deny-self-hosted-runners
+          }
+
+          verify_image \
+            "$SERVICES_IMAGE" \
+            buckyos/usdb \
+            buckyos/usdb/.github/workflows/usdb-services-image.yml \
+            "$USDB_REVISION"
+          verify_image \
+            "$CHAIN_IMAGE" \
+            buckyos/go-ethereum \
+            buckyos/go-ethereum/.github/workflows/usdb-chain-image.yml \
+            "$GO_ETHEREUM_REVISION"
+          verify_image \
+            "$BITCOIN_IMAGE" \
+            buckyos/usdb \
+            buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml \
+            "$USDB_REVISION"
+
+      - name: Build immutable public release assets
+        id: assets
+        shell: bash
+        env:
+          BUNDLE_DIR: ${{ steps.manifest.outputs.bundle_dir }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          python3 usdb/docker/scripts/tools/validate_network_bundle.py \
+            --bundle-dir "$BUNDLE_DIR"
+          mkdir dist
+          cp candidate/usdb-release-manifest.json dist/
+          cp candidate/usdb-release-manifest.json.sha256 dist/
+          archive="${RELEASE_ID}-network-bundle.tar.gz"
+          bundle_parent="$(dirname "$BUNDLE_DIR")"
+          bundle_name="$(basename "$BUNDLE_DIR")"
+          tagger_epoch="$(git -C usdb for-each-ref \
+            --format='%(taggerdate:unix)' "refs/tags/${RELEASE_ID}")"
+          [[ "$tagger_epoch" =~ ^[0-9]+$ ]] || {
+            echo "USDB release tag has no canonical tagger timestamp" >&2
+            exit 1
+          }
+          tar --sort=name --mtime="@${tagger_epoch}" \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$bundle_parent" -cf - "$bundle_name" | gzip -n >"dist/$archive"
+          (cd dist && sha256sum "$archive" >"${archive}.sha256")
+          echo "archive=$archive" >>"$GITHUB_OUTPUT"
+
+      - name: Create deterministic release notes
+        shell: bash
+        env:
+          BITCOIN_IMAGE: ${{ steps.manifest.outputs.bitcoin_image }}
+          BTC_REGISTRY: ${{ steps.manifest.outputs.btc_registry }}
+          BUNDLE_ID: ${{ steps.manifest.outputs.bundle_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ needs.preflight.outputs.candidate_run_attempt }}
+          CANDIDATE_RUN_ID: ${{ needs.preflight.outputs.candidate_run_id }}
+          CHAIN_ID: ${{ steps.manifest.outputs.chain_id }}
+          CHAIN_IMAGE: ${{ steps.manifest.outputs.chain_image }}
+          GENESIS_HASH: ${{ steps.manifest.outputs.genesis_hash }}
+          GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
+          MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
+          SOURCE_DAO_REVISION: ${{ steps.manifest.outputs.source_dao_revision }}
+          USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
+        run: |
+          set -euo pipefail
+          cat >dist/release-notes.md <<EOF
+          # ${RELEASE_ID}
+
+          Immutable USDB deployment release for network bundle \`${BUNDLE_ID}\`.
+
+          - Chain ID: \`${CHAIN_ID}\`
+          - Genesis hash: \`${GENESIS_HASH}\`
+          - BTC activation registry: \`${BTC_REGISTRY}\`
+          - USDB revision: \`${USDB_REVISION}\`
+          - Go-Ethereum revision: \`${GO_ETHEREUM_REVISION}\`
+          - SourceDAO revision: \`${SOURCE_DAO_REVISION}\`
+          - Candidate manifest SHA-256: \`${MANIFEST_SHA256}\`
+          - Candidate validation: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/attempts/${CANDIDATE_RUN_ATTEMPT}
+
+          Digest-pinned images:
+
+          - \`${SERVICES_IMAGE}\`
+          - \`${CHAIN_IMAGE}\`
+          - \`${BITCOIN_IMAGE}\`
+
+          Nodes must deploy from the attached manifest and public network bundle. Do not
+          substitute mutable image tags or local configuration. Private keys, RPC credentials,
+          and node-local \`node.env\` files are intentionally excluded.
+          EOF
+
+      - name: Publish or verify immutable GitHub Release
+        id: release
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.assets.outputs.archive }}
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          title="USDB release ${RELEASE_ID}"
+          assets=(
+            dist/usdb-release-manifest.json
+            dist/usdb-release-manifest.json.sha256
+            "dist/${ARCHIVE}"
+            "dist/${ARCHIVE}.sha256"
+          )
+          prerelease_args=()
+          verify_args=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+            verify_args+=(--prerelease)
+          fi
+
+          status="$(curl --silent --show-error --location \
+            --output existing-release.json --write-out '%{http_code}' \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_ID}")"
+          case "$status" in
+            200) ;;
+            404)
+              gh release create "$RELEASE_ID" "${assets[@]}" \
+                --repo "$GITHUB_REPOSITORY" \
+                --verify-tag \
+                --title "$title" \
+                --notes-file dist/release-notes.md \
+                --latest=false \
+                "${prerelease_args[@]}"
+              curl --fail --silent --show-error --location \
+                --output existing-release.json \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_ID}"
+              ;;
+            *)
+              echo "unexpected GitHub Release lookup status: $status" >&2
+              exit 1
+              ;;
+          esac
+
+          python3 usdb/docker/scripts/tools/release_publish_resolver.py \
+            verify-release \
+            --release existing-release.json \
+            --release-id "$RELEASE_ID" \
+            --title "$title" \
+            --notes dist/release-notes.md \
+            --asset "${assets[0]}" \
+            --asset "${assets[1]}" \
+            --asset "${assets[2]}" \
+            --asset "${assets[3]}" \
+            "${verify_args[@]}" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Record published release
+        shell: bash
+        run: |
+          {
+            echo "### Published USDB release"
+            echo
+            echo "Release ID: \`${{ inputs.release_id }}\`"
+            echo
+            echo "Manifest SHA-256: \`${{ steps.manifest.outputs.manifest_sha256 }}\`"
+            echo
+            echo "GitHub Release: ${{ steps.release.outputs.release_url }}"
+          } >>"$GITHUB_STEP_SUMMARY"

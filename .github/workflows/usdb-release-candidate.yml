@@ -1,4 +1,5 @@
 name: USDB Release Candidate Manifest
+run-name: USDB candidate ${{ inputs.release_id }}
 
 on:
   workflow_dispatch:
@@ -30,11 +31,23 @@ jobs:
       - name: Validate release ID
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ inputs.release_id }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
             echo "invalid USDB release ID: $RELEASE_ID" >&2
+            exit 1
+          }
+          [[ "$GITHUB_REF" == "refs/tags/${RELEASE_ID}" ]] || {
+            echo "candidate workflow must run from refs/tags/${RELEASE_ID}" >&2
+            exit 1
+          }
+          active_artifacts="$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${RELEASE_ID}-manifest&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false)] | length')"
+          [[ "$active_artifacts" == "0" ]] || {
+            echo "an active candidate artifact already exists for ${RELEASE_ID}" >&2
             exit 1
           }
 

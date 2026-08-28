@@ -3,8 +3,8 @@
 ## 1. 目标与边界
 
 本文是 USDB 多仓库 release 和上线的编排入口，不替代 UIP、组件设计或具体运维手册。当前已有
-三仓 Fast CI、GHCR candidate image 和跨仓 candidate manifest；最终 snapshot 合并、不可变 GitHub
-Release 与节点部署批准仍以可审计的人工流程为基线。
+三仓 Fast CI、GHCR candidate image、跨仓 candidate manifest 和 Environment-protected GitHub Release；
+最终 snapshot 合并与节点部署批准仍以可审计的人工流程为基线。
 
 涉及的主要代码库和产物：
 
@@ -83,7 +83,8 @@ Bitcoin 独立生命周期和同步门禁见
 - Snapshot 使用独立 Ed25519 signer 签署 manifest；
 - balance-history release bundle 可以携带 public trusted-key catalog，但 full-sync 不依赖 catalog 建立状态；
 - SourceDAO/genesis 等其他 artifact 使用各自冻结的签名与 hash 方案；
-- OCI candidate image 已生成 GitHub provenance attestation；binary 和最终 GitHub Release 签名仍待落地，
+- OCI candidate image 已生成 GitHub provenance attestation；GitHub Release 已固定并复核 asset digest，
+  但 binary 和最终 GitHub Release 独立签名仍待落地，
   且不得复用 snapshot 私钥；
 - 私钥不进入 Git、普通 CI、普通节点镜像或公开 release bundle。
 
