@@ -282,6 +282,26 @@ UIP-0002 one-owner-one-active invariant 覆盖两类 pass。若同一 owner 在�
 aggregate。profile 和 aggregate 必须在同一次查询的派生前后复验同一
 `external_state`。
 
+## Miner Candidate Resolution
+
+miner-side builder 可以用稳定的 USDB-chain reward identity 原子查询：
+
+```text
+resolve_miner_candidate(view_version, usdb_main, block_height, context)
+```
+
+服务必须只考虑目标 `external_state` 下 `usdb_main` 大小写无关匹配的 Active Standard
+pass，并按 `effective_energy DESC, canonical pass_id ASC` 选择一张。响应在完整 profile 字段
+之外必须返回 `selection_rule` 和 `matching_candidate_count`。选择、profile 派生、
+`miner_aggregate` 与最终 state-ref 复验必须属于同一次 RPC；禁止先反查 pass id、再以另一次
+未绑定查询读取 profile。
+
+没有匹配 candidate 时返回 `MINER_CANDIDATE_NOT_FOUND`。旧 pass consume、同地址 remint 后，
+新 context 应自动返回 remint pass；改用不同 `usdb_main` 的 remint 不属于原地址查询结果。
+same-height replacement 后携带旧 `external_state` 的请求必须返回 state mismatch，新请求只能
+在 replacement state 下选择。该接口是 miner 本地选择能力，不替代 UIP-0007 payload 中显式
+的 `pass_id`，validator 也不得使用该接口反查历史区块。
+
 ## Miner Economic Aggregate
 
 审计工具可以不指定 pass，直接查询：
@@ -550,6 +570,9 @@ USDB Economic State View
 - BTC head 前进后旧 profile 仍按历史 context 查询通过。
 - same-height reorg 后旧 `external_state` 返回 state mismatch。
 - 查询派生期间 same-height state ref 变化时，post-check 返回 state mismatch。
+- `resolve_miner_candidate` 在同地址多 pass 时按 effective energy/pass id 稳定选择。
+- consume/remint 使用同一 `usdb_main` 时自动选择新 pass，改地址时原查询无 candidate。
+- same-height replacement 后旧 candidate context 拒绝，新 context 返回 replacement pass。
 - `raw_energy`、`collab_contribution`、`effective_energy`、`level`、`difficulty_factor_bps` 可在同一 context 下重算一致。
 - collab Leader profile 可通过 breakdown 或审计查询重算 aggregate contribution。
 - 所有 Active standard pass 都进入 `candidate_set_view`，包括 `effective_energy = 0` 的 pass。

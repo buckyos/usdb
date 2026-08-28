@@ -193,6 +193,17 @@ v1 必须显式携带 `pass_id`，不得通过 `coinbase`、`usdb_main` 或其�
 - 一个 USDB-chain account address 不一定唯一映射到一张 pass。
 - 后续 `candidate_set_view` 或多 pass 场景需要避免隐式选择歧义。
 
+上述限制约束的是区块 payload 与 validator replay，不禁止 miner 在组块前使用稳定的
+`usdb_main` 作为本地运维身份。miner 可以调用 UIP-0006
+`resolve_miner_candidate(usdb_main, context)`，在一个冻结 `external_state` 下按
+`effective_energy DESC, pass_id ASC` 原子选出具体 Active Standard pass；builder 随后必须把
+返回的具体 `pass_id` 写入本块 payload，并再次校验 profile 的 `usdb_main` 等于本地 miner
+address。validator 仍只按 payload 的 `pass_id` 查询和验证，不调用地址选择接口。
+
+这允许同一 `usdb_main` 的旧 pass 被 consume 后自动跟随 remint，也允许 same-height reorg
+在新 state identity 下重新选择；旧 context 必须被拒绝。如果 remint 改用了另一个
+`usdb_main`，原矿工配置不得自动跟随，必须停止组块并由运维显式更新地址。
+
 # BTC Anchor 推进与新鲜度边界
 
 `btc_anchor_policy_version = 1` 定义 `btc_anchor_age_blocks` 的 bounded-reuse 规则。

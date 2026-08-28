@@ -11,8 +11,8 @@ use usdb_util::{
 pub use usdb_util::{
     USDB_ECONOMIC_PAGE_MAX_LIMIT, USDB_ECONOMIC_STATE_VIEW_VERSION, USDB_INDEXER_API_VERSION,
     USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW, USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN,
-    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF, USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE,
-    USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
+    USDB_INDEXER_FEATURE_HISTORICAL_STATE_REF, USDB_INDEXER_FEATURE_MINER_CANDIDATE_RESOLUTION,
+    USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE, USDB_INDEXER_FEATURE_PASS_ECONOMIC_PROFILE,
 };
 
 /// Business error code returned when the requested height is above local durable sync progress.
@@ -31,6 +31,8 @@ pub const ERR_INVALID_PAGINATION: i64 = -32015;
 pub const ERR_INVALID_HEIGHT_RANGE: i64 = -32016;
 /// Business error code returned when internal state invariants are violated during RPC resolution.
 pub const ERR_INTERNAL_INVARIANT_BROKEN: i64 = -32017;
+/// Business error code returned when `usdb_main` has no active standard candidate.
+pub const ERR_MINER_CANDIDATE_NOT_FOUND: i64 = -32018;
 /// Deterministic candidate-set ordering rule for the first UIP-0006 view.
 pub const CANDIDATE_SET_SELECTION_RULE: &str = USDB_CANDIDATE_SET_SELECTION_RULE;
 /// Hash algorithm name used when deriving `IndexerSnapshotInfo.snapshot_id`.
@@ -1072,6 +1074,37 @@ pub struct PassEconomicProfileView {
     pub miner_aggregate: MinerEconomicAggregate,
 }
 
+/// Parameters for atomically resolving one mining candidate by USDB reward address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveMinerCandidateParams {
+    /// Required UIP-0006 view contract version selector.
+    pub view_version: String,
+    /// Stable USDB-chain mining/reward identity declared by standard passes.
+    pub usdb_main: String,
+    /// Optional query height; `None` resolves from context or current local synced height.
+    pub block_height: Option<u32>,
+    /// Optional consensus selectors pinned by the miner-side builder.
+    pub context: Option<ConsensusQueryContext>,
+}
+
+/// Atomically selected mining candidate and full economic profile.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinerCandidateProfileView {
+    /// Economic state view version used by this response.
+    pub view_version: String,
+    /// Exact historical state identity used for selection and profile derivation.
+    pub external_state: EconomicExternalState,
+    /// Deterministic rule used when several candidates share one `usdb_main`.
+    pub selection_rule: String,
+    /// Number of matching Active Standard candidates before deterministic selection.
+    pub matching_candidate_count: u64,
+    /// Selected pass snapshot and derived economic fields.
+    pub pass: PassEconomicProfile,
+    /// Network-wide BTC miner aggregate from the same exact `external_state`.
+    pub miner_aggregate: MinerEconomicAggregate,
+}
+
 /// Network-wide BTC miner aggregate at one UIP-0006 historical context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MinerEconomicAggregate {
@@ -1445,6 +1478,13 @@ pub trait UsdbIndexerRpc {
         &self,
         params: GetPassEconomicProfileParams,
     ) -> JsonResult<PassEconomicProfileView>;
+
+    /// Atomically resolves one active standard mining candidate by `usdb_main`.
+    #[rpc(name = "resolve_miner_candidate")]
+    fn resolve_miner_candidate(
+        &self,
+        params: ResolveMinerCandidateParams,
+    ) -> JsonResult<MinerCandidateProfileView>;
 
     /// Returns the network-wide UIP-0006 miner BTC aggregate at a historical context.
     #[rpc(name = "get_miner_economic_aggregate")]

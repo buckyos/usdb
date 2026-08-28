@@ -221,6 +221,9 @@ impl MinerPassStorage {
             CREATE INDEX IF NOT EXISTS idx_miner_pass_usdb_main
             ON miner_passes (usdb_main);
 
+            CREATE INDEX IF NOT EXISTS idx_miner_pass_usdb_main_kind_nocase
+            ON miner_passes (usdb_main COLLATE NOCASE, pass_kind);
+
             CREATE INDEX IF NOT EXISTS idx_miner_pass_pass_kind_mint_order
             ON miner_passes (pass_kind, mint_block_height, inscription_number);
 
@@ -4063,6 +4066,108 @@ impl MinerPassStorage {
             &[MinerPassKind::Standard],
             true,
         )
+    }
+
+    /// Return every active standard pass whose `usdb_main` matches at `block_height`.
+    ///
+    /// EVM hex addresses are matched case-insensitively. The query starts from
+    /// the indexed immutable mint fields, then resolves each matching pass's
+    /// latest historical state, so consumed/reminted and reorged candidates are
+    /// selected from the requested height rather than current-state columns.
+    pub fn get_active_standard_passes_by_usdb_main_from_history_at_height(
+        &self,
+        usdb_main: &str,
+        block_height: u32,
+    ) -> Result<Vec<MinerPassSnapshotInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "
+                WITH matching_passes AS (
+                    SELECT inscription_id
+                    FROM miner_passes
+                    WHERE usdb_main = ?2 COLLATE NOCASE
+                        AND pass_kind = ?3
+                ),
+                latest AS (
+                    SELECT h1.id
+                    FROM miner_pass_state_history h1
+                    INNER JOIN matching_passes mp ON mp.inscription_id = h1.inscription_id
+                    WHERE h1.block_height <= ?1
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM miner_pass_state_history h2
+                            WHERE h2.inscription_id = h1.inscription_id
+                                AND h2.block_height <= ?1
+                                AND (
+                                    h2.block_height > h1.block_height
+                                    OR (h2.block_height = h1.block_height AND h2.id > h1.id)
+                                )
+                        )
+                )
+                SELECT
+                    m.inscription_id,
+                    m.inscription_number,
+                    m.mint_txid,
+                    m.mint_block_height,
+                    m.mint_owner,
+                    h.new_satpoint AS satpoint,
+                    m.usdb_main,
+                    m.prev,
+                    h.new_owner AS owner,
+                    h.new_state AS state,
+                    m.invalid_code,
+                    m.invalid_reason,
+                    m.mint_version,
+                    m.pass_kind,
+                    m.leader_pass_id,
+                    m.leader_btc_addr,
+                    m.leader_btc_owner,
+                    h.block_height AS latest_event_height
+                FROM miner_pass_state_history h
+                INNER JOIN latest l ON h.id = l.id
+                INNER JOIN miner_passes m ON m.inscription_id = h.inscription_id
+                WHERE h.new_state = ?4
+                ORDER BY m.inscription_id ASC;
+                ",
+            )
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to prepare active standard pass query by usdb_main: {}",
+                    e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut rows = stmt
+            .query(rusqlite::params![
+                block_height as i64,
+                usdb_main,
+                MinerPassKind::Standard.as_str(),
+                MinerPassState::Active.as_str(),
+            ])
+            .map_err(|e| {
+                let msg = format!(
+                    "Failed to query active standard passes by usdb_main: usdb_main={}, block_height={}, error={}",
+                    usdb_main, block_height, e
+                );
+                error!("{}", msg);
+                msg
+            })?;
+
+        let mut passes = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| {
+            let msg = format!(
+                "Failed to read active standard pass row by usdb_main: usdb_main={}, block_height={}, error={}",
+                usdb_main, block_height, e
+            );
+            error!("{}", msg);
+            msg
+        })? {
+            passes.push(Self::row_to_pass_snapshot_info(row, "usdb-main")?);
+        }
+        Ok(passes)
     }
 
     /// Return active collab pass snapshots at `block_height`.

@@ -643,7 +643,7 @@ multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的
   level multiplier 和 mock reward policy 已删除。UIP-0011 激活后执行 emission、CoinBase
   recipient、reserved system state 与 uncle 禁用规则，激活前才保留既有 Ethash 静态奖励。
 - BTC-side `usdb-indexer` 服务不可用、historical state 不可保留、same-height state replacement 或 profile 字段不一致时均 fail closed；非 USDB chain 继续使用 legacy 行为。
-- 删除 legacy `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留显式的 `--ethash.usdb-indexer.*` / `--miner.usdb-indexer.*` 访问参数、`--miner.usdb.passid` 和 query timeout，不能启用、关闭或改写共识版本。
+- 删除 legacy `--ethash.usdb`、`--miner.usdb` 及两个 runtime `Enabled` 字段。CLI 只保留显式的 `--ethash.usdb-indexer.*` / `--miner.usdb-indexer.*` 访问参数和 query timeout，不能启用、关闭或改写共识版本；miner 使用 `--miner.etherbase` 的 `usdb_main` 原子解析具体 pass。
 
 ### 测试与后续
 
@@ -769,7 +769,7 @@ multi-leader 和并发矩阵已完成并提交：usdb `2b97fbe`。2026-08-02 的
 - UIP-0007/UIP-0009 文件名、标题、激活锚点和 network id 改为 USDB chain；release manifest 使用 `usdb_chain_configs`，USDB activation schedule 继续只由本地 genesis/chain config 决定，不依赖 BTC RPC。
 - BTC Electrum-compatible script hash 类型从易歧义的 `USDBScriptHash` 改为 `BtcScriptHash`；字节/数据库编码不变，RPC 文档明确其为反转字节序的 `SHA-256(scriptPubKey)`。
 - control-plane 链 RPC 配置使用 `usdb_chain_url`，链账户接口使用 `/api/usdb-chain/...` 和 `UsdbChain*` 类型；console 展示区分 USDB 链账户地址、BTC owner 与 USDB 原生资产余额，原生最小单位字段使用 `balance_atoms_hex`。Docker 生成的 TOML 和保留的静态 console 基线同步使用新 schema，不保留 `ethw_*` API 字段。
-- 消除裸 `USDB_RPC_*` 歧义：BTC-side 测试框架和 world simulator 改为 `USDB_INDEXER_RPC_PORT` / `USDB_INDEXER_RPC_URL` / `--usdb-indexer-rpc-url`，USDB chain 节点使用 `USDB_CHAIN_RPC_URL`。geth 访问 indexer 的运行参数改为 `--miner.usdb-indexer.*` / `--ethash.usdb-indexer.*`，而 `--miner.usdb.passid` 仍表示 USDB protocol selector。
+- 消除裸 `USDB_RPC_*` 歧义：BTC-side 测试框架和 world simulator 改为 `USDB_INDEXER_RPC_PORT` / `USDB_INDEXER_RPC_URL` / `--usdb-indexer-rpc-url`，USDB chain 节点使用 `USDB_CHAIN_RPC_URL`。geth 访问 indexer 的运行参数改为 `--miner.usdb-indexer.*` / `--ethash.usdb-indexer.*`；固定 `--miner.usdb.passid` 已删除，具体 selector pass 由稳定 `usdb_main` 在冻结 external state 下解析。
 - world-sim/geth 中原先可能与 BTC owner 混淆的 `USDB_MINER_ADDRESS` 改为 `USDB_CHAIN_MINER_ADDRESS`；对应 CLI、identity marker 和 alignment 字段统一使用 `usdb_chain_miner_*`。这些值始终表示 USDB-chain account/coinbase，不表示 BTC pass owner。
 - go-ethereum 的新增集成文档和 E2E 入口从 `usdb-ethw-*` / `usdb_ethw_*` 改为 `usdb-*` / `usdb_profile_*`；JSON-RPC `eth_*`、`Ethash` 和底层 geth 运维名称继续保留。
 - 本批为开发期直接 schema/API 改名，不保留旧字段、旧 route、旧脚本名或兼容双栈。

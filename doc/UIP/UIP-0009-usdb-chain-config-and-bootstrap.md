@@ -417,8 +417,9 @@ USDB miner 和 validator 都依赖本地 BTC-side `usdb-indexer` service。
   联合 lookup、配置顺序/冲突校验、`CheckCompatible` 和 genesis JSON roundtrip。
 - validator 使用 chain-config binding 和 payload BTC height 查询 Rust registry 生成的本地 Go
   golden set，再校验 companion 返回的 registry/set identity 并按 formula version 分派。
-- miner-side `--miner.usdb-indexer.rpcurl` / `--miner.usdb.passid` /
-  `--miner.usdb-indexer.timeout` 运行参数。
+- miner-side `--miner.etherbase` / `--miner.usdb-indexer.rpcurl` /
+  `--miner.usdb-indexer.timeout` 运行参数；`etherbase` 表示稳定的 `usdb_main`，具体 pass 由
+  context-bound candidate resolver 选择。
 - validator-side `--ethash.usdb-indexer.rpcurl` /
   `--ethash.usdb-indexer.timeout` 运行参数。
 

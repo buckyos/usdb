@@ -488,6 +488,15 @@ impl RpcClient {
             .await
     }
 
+    /// Atomically resolves one mining candidate and its UIP-0006 profile by `usdb_main`.
+    pub async fn resolve_miner_candidate(
+        &self,
+        params: ResolveMinerCandidateParams,
+    ) -> Result<MinerCandidateProfileView, String> {
+        self.rpc_call::<MinerCandidateProfileView>("resolve_miner_candidate", json!([params]))
+            .await
+    }
+
     /// Returns one cursor page of the canonical UIP-0006 candidate set.
     ///
     /// Callers must pass `next_cursor` back unchanged and preserve the request

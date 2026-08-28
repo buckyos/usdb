@@ -75,8 +75,8 @@ Bitcoin `up` 会等待 mainnet full sync 和 txindex 同高度。`up-data` 只�
 1. 第一台以 `USDB_NODE_ROLE=bootnode` 启动，HTTP RPC 只通过 SSH tunnel 或本机访问。
 2. 通过 `admin_nodeInfo` 读取第一台 enode，把它写入另外两台 `USDB_BOOTNODES`。
 3. 第二、三台先以 `full` 加入，确认 genesis hash、chain ID、peer 和同步高度一致。
-4. BTC-side active standard pass 就绪后，再把选定节点改为 `miner`，同时配置
-   `USDB_MINER_ADDRESS` 和 `USDB_PASS_ID`。
+4. BTC-side active standard pass 就绪后，再把选定节点改为 `miner`，配置
+   `USDB_MINER_ADDRESS`。indexer 会在冻结 external state 下按该 `usdb_main` 原子选择具体 pass。
 
 SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key 不进入 Compose 或 Git。
 首次启动应在独立受控步骤中执行 `usdb_bootstrap_full.ts`，并在区块 `8192` fee gate 前完成

@@ -296,15 +296,15 @@ curl -fsS -H 'content-type: application/json' \
 
 ## 10. 开启首个 Miner
 
-先从 `get_candidate_set_view` 或 `get_pass_economic_profile` 复核选定 pass 在最新 external state 下为
-`Active + Standard`，并确认 `usdb_main` 等于准备使用的 miner recipient。
+先调用 `resolve_miner_candidate` 复核该 `usdb_main` 在最新 external state 下能解析出
+`Active + Standard` pass，并记录返回的具体 pass ID、matching count 和 state identity。该 pass
+后续 consume/remint 时，只要新 pass 保持同一 `usdb_main`，miner 会自动跟随；改地址则停止组块。
 
 修改 `node.env`：
 
 ```text
 USDB_NODE_ROLE=miner
-USDB_MINER_ADDRESS=<matching-usdb-main-address>
-USDB_PASS_ID=<canonical-pass-id>
+USDB_MINER_ADDRESS=<stable-usdb-main-address>
 USDB_MINER_THREADS=1
 ```
 

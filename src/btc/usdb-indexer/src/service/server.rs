@@ -10,6 +10,7 @@ use crate::index::{
     calc_level_from_effective_energy,
 };
 use crate::status::StatusManagerRef;
+use crate::storage::MinerPassSnapshotInfo;
 use jsonrpc_core::IoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
@@ -2264,6 +2265,99 @@ impl UsdbIndexerRpcServer {
         Ok((total, ranked))
     }
 
+    fn normalize_usdb_main_query(value: &str) -> Result<String, JsonError> {
+        let bytes = value.as_bytes();
+        let valid = bytes.len() == 42
+            && value.starts_with("0x")
+            && bytes[2..].iter().all(|byte| byte.is_ascii_hexdigit())
+            && bytes[2..].iter().any(|byte| *byte != b'0');
+        if !valid {
+            return Err(Self::to_invalid_params(format!(
+                "Invalid non-zero usdb_main EVM address: {}",
+                value
+            )));
+        }
+        Ok(value.to_ascii_lowercase())
+    }
+
+    fn derive_pass_economic_profile(
+        &self,
+        pass_snapshot: MinerPassSnapshotInfo,
+        query_height: u32,
+    ) -> JsonResult<(PassEconomicProfile, Energy)> {
+        let pass = pass_snapshot.pass;
+        let (raw_energy, collab_contribution, effective_energy, collab_breakdown_count) =
+            if pass.state == MinerPassState::Invalid {
+                (0, 0, 0, 0)
+            } else {
+                let Some(energy) = self
+                    .indexer
+                    .effective_energy_resolver()
+                    .resolve_pass_energy(
+                        &pass.inscription_id,
+                        query_height,
+                        DerivedPassEnergyMode::AtOrBefore,
+                    )
+                    .map_err(Self::to_internal_error)?
+                else {
+                    return Err(Self::to_business_error(
+                        ERR_INTERNAL_INVARIANT_BROKEN,
+                        "INTERNAL_INVARIANT_BROKEN",
+                        json!({
+                            "pass_id": pass.inscription_id.to_string(),
+                            "resolved_height": query_height,
+                            "state": pass.state.as_str(),
+                            "pass_kind": pass.pass_kind.as_str(),
+                            "detail": "Non-invalid pass is missing a raw energy record"
+                        }),
+                    ));
+                };
+
+                if energy.state != pass.state || energy.pass_kind != pass.pass_kind {
+                    return Err(Self::to_business_error(
+                        ERR_INTERNAL_INVARIANT_BROKEN,
+                        "INTERNAL_INVARIANT_BROKEN",
+                        json!({
+                            "pass_id": pass.inscription_id.to_string(),
+                            "resolved_height": query_height,
+                            "pass_state": pass.state.as_str(),
+                            "energy_state": energy.state.as_str(),
+                            "pass_kind": pass.pass_kind.as_str(),
+                            "energy_pass_kind": energy.pass_kind.as_str(),
+                            "detail": "Pass snapshot and derived energy snapshot disagree"
+                        }),
+                    ));
+                }
+
+                (
+                    energy.raw_energy,
+                    energy.collab_contribution,
+                    energy.effective_energy,
+                    energy.collab_breakdown_count,
+                )
+            };
+
+        let level = calc_level_from_effective_energy(effective_energy);
+        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        Ok((
+            PassEconomicProfile {
+                pass_id: pass.inscription_id.to_string(),
+                owner_script_hash: pass.owner.to_string(),
+                owner_btc_addr: None,
+                state: pass.state.as_str().to_string(),
+                pass_kind: pass.pass_kind.as_str().to_string(),
+                usdb_main: (!pass.usdb_main.is_empty()).then_some(pass.usdb_main),
+                raw_energy: encode_energy_decimal(raw_energy),
+                collab_contribution: encode_energy_decimal(collab_contribution),
+                effective_energy: encode_energy_decimal(effective_energy),
+                level,
+                difficulty_factor_bps: difficulty_factor_bps as u64,
+                collab_breakdown_count,
+            },
+            effective_energy,
+        ))
+    }
+
     fn load_miner_economic_aggregate(
         &self,
         resolved_height: u32,
@@ -2330,6 +2424,7 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
                 USDB_INDEXER_FEATURE_CANDIDATE_SET_VIEW.to_string(),
                 USDB_INDEXER_FEATURE_COLLAB_BREAKDOWN.to_string(),
                 USDB_INDEXER_FEATURE_MINER_ECONOMIC_AGGREGATE.to_string(),
+                USDB_INDEXER_FEATURE_MINER_CANDIDATE_RESOLUTION.to_string(),
                 "invalid_passes".to_string(),
                 "stop".to_string(),
             ],
@@ -3114,80 +3209,68 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             ));
         };
 
-        let pass = pass_snapshot.pass;
-        let (raw_energy, collab_contribution, effective_energy, collab_breakdown_count) =
-            if pass.state == MinerPassState::Invalid {
-                (0, 0, 0, 0)
-            } else {
-                let Some(energy) = self
-                    .indexer
-                    .effective_energy_resolver()
-                    .resolve_pass_energy(
-                        &pass.inscription_id,
-                        query_height,
-                        DerivedPassEnergyMode::AtOrBefore,
-                    )
-                    .map_err(Self::to_internal_error)?
-                else {
-                    return Err(Self::to_business_error(
-                        ERR_INTERNAL_INVARIANT_BROKEN,
-                        "INTERNAL_INVARIANT_BROKEN",
-                        json!({
-                            "pass_id": pass.inscription_id.to_string(),
-                            "resolved_height": query_height,
-                            "state": pass.state.as_str(),
-                            "pass_kind": pass.pass_kind.as_str(),
-                            "detail": "Non-invalid pass is missing a raw energy record"
-                        }),
-                    ));
-                };
-
-                if energy.state != pass.state || energy.pass_kind != pass.pass_kind {
-                    return Err(Self::to_business_error(
-                        ERR_INTERNAL_INVARIANT_BROKEN,
-                        "INTERNAL_INVARIANT_BROKEN",
-                        json!({
-                            "pass_id": pass.inscription_id.to_string(),
-                            "resolved_height": query_height,
-                            "pass_state": pass.state.as_str(),
-                            "energy_state": energy.state.as_str(),
-                            "pass_kind": pass.pass_kind.as_str(),
-                            "energy_pass_kind": energy.pass_kind.as_str(),
-                            "detail": "Pass snapshot and derived energy snapshot disagree"
-                        }),
-                    ));
-                }
-
-                (
-                    energy.raw_energy,
-                    energy.collab_contribution,
-                    energy.effective_energy,
-                    energy.collab_breakdown_count,
-                )
-            };
-
-        let level = calc_level_from_effective_energy(effective_energy);
-        let difficulty_factor_bps = calc_difficulty_factor_bps(level);
+        let (pass, _) = self.derive_pass_economic_profile(pass_snapshot, query_height)?;
         let miner_aggregate = self.load_miner_economic_aggregate(query_height)?;
         let state_ref = self.revalidate_economic_query_context(query_height, &state_ref)?;
 
         Ok(PassEconomicProfileView {
             view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
             external_state: EconomicExternalState::from(&state_ref),
-            pass: PassEconomicProfile {
-                pass_id: pass.inscription_id.to_string(),
-                owner_script_hash: pass.owner.to_string(),
-                owner_btc_addr: None,
-                state: pass.state.as_str().to_string(),
-                pass_kind: pass.pass_kind.as_str().to_string(),
-                usdb_main: (!pass.usdb_main.is_empty()).then_some(pass.usdb_main),
-                raw_energy: encode_energy_decimal(raw_energy),
-                collab_contribution: encode_energy_decimal(collab_contribution),
-                effective_energy: encode_energy_decimal(effective_energy),
-                level,
-                difficulty_factor_bps: difficulty_factor_bps as u64,
-                collab_breakdown_count,
-            },
+            pass,
+            miner_aggregate,
+        })
+    }
+
+    fn resolve_miner_candidate(
+        &self,
+        params: ResolveMinerCandidateParams,
+    ) -> JsonResult<MinerCandidateProfileView> {
+        let usdb_main = Self::normalize_usdb_main_query(&params.usdb_main)?;
+        let (query_height, state_ref) = self.resolve_economic_query_context(
+            &params.view_version,
+            params.block_height,
+            params.context.as_ref(),
+        )?;
+        let snapshots = self
+            .indexer
+            .miner_pass_storage()
+            .get_active_standard_passes_by_usdb_main_from_history_at_height(
+                &usdb_main,
+                query_height,
+            )
+            .map_err(Self::to_internal_error)?;
+        if snapshots.is_empty() {
+            return Err(Self::to_business_error(
+                ERR_MINER_CANDIDATE_NOT_FOUND,
+                "MINER_CANDIDATE_NOT_FOUND",
+                json!({
+                    "usdb_main": usdb_main,
+                    "query_block_height": query_height
+                }),
+            ));
+        }
+
+        let matching_candidate_count = snapshots.len() as u64;
+        let mut candidates = Vec::with_capacity(snapshots.len());
+        for snapshot in snapshots {
+            let (profile, effective_energy) =
+                self.derive_pass_economic_profile(snapshot, query_height)?;
+            candidates.push((effective_energy, profile));
+        }
+        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.pass_id.cmp(&b.1.pass_id)));
+        let (_, pass) = candidates
+            .into_iter()
+            .next()
+            .expect("non-empty candidate list checked above");
+        let miner_aggregate = self.load_miner_economic_aggregate(query_height)?;
+        let state_ref = self.revalidate_economic_query_context(query_height, &state_ref)?;
+
+        Ok(MinerCandidateProfileView {
+            view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+            external_state: EconomicExternalState::from(&state_ref),
+            selection_rule: CANDIDATE_SET_SELECTION_RULE.to_string(),
+            matching_candidate_count,
+            pass,
             miner_aggregate,
         })
     }
@@ -3635,6 +3718,21 @@ mod tests {
             .get_pass_economic_profile(GetPassEconomicProfileParams {
                 view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
                 pass_id: pass.inscription_id.to_string(),
+                block_height: Some(block_height),
+                context: None,
+            })
+            .unwrap()
+    }
+
+    fn resolve_miner_candidate_for_test(
+        server: &UsdbIndexerRpcServer,
+        usdb_main: &str,
+        block_height: u32,
+    ) -> MinerCandidateProfileView {
+        server
+            .resolve_miner_candidate(ResolveMinerCandidateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                usdb_main: usdb_main.to_string(),
                 block_height: Some(block_height),
                 context: None,
             })
@@ -5876,6 +5974,156 @@ mod tests {
         assert_eq!(
             rpc_info.economic_page_max_limit,
             USDB_ECONOMIC_PAGE_MAX_LIMIT
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_miner_candidate_sorts_matching_usdb_main_candidates() {
+        let (server, root_dir) = build_server("miner_candidate_sort", 130);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let mut low = make_active_pass(170, 250, 100);
+        low.usdb_main = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd".to_string();
+        let mut high = make_active_pass(171, 251, 101);
+        high.usdb_main = low.usdb_main.to_uppercase().replacen("0X", "0x", 1);
+        let mut tie = make_active_pass(169, 249, 99);
+        tie.usdb_main = low.usdb_main.clone();
+        for pass in [&low, &high, &tie] {
+            storage
+                .add_new_mint_pass_at_height(pass, pass.mint_block_height)
+                .unwrap();
+        }
+        seed_energy_record(&server, &low, 120, 100);
+        seed_energy_record(&server, &high, 120, 200);
+        seed_energy_record(&server, &tie, 120, 200);
+
+        let resolved = resolve_miner_candidate_for_test(
+            &server,
+            "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd",
+            120,
+        );
+        assert_eq!(resolved.selection_rule, CANDIDATE_SET_SELECTION_RULE);
+        assert_eq!(resolved.matching_candidate_count, 3);
+        assert_eq!(
+            resolved.pass.pass_id,
+            std::cmp::min(
+                high.inscription_id.to_string(),
+                tie.inscription_id.to_string()
+            )
+        );
+        assert_eq!(resolved.pass.effective_energy, "200");
+        assert_eq!(resolved.external_state.btc_height, 120);
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_miner_candidate_follows_same_address_remint_only() {
+        let (server, root_dir) = build_server("miner_candidate_remint", 130);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let old = make_active_pass(172, 252, 100);
+        storage
+            .add_new_mint_pass_at_height(&old, old.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &old, 120, 100);
+        let before = resolve_miner_candidate_for_test(&server, &old.usdb_main, 120);
+        assert_eq!(before.pass.pass_id, old.inscription_id.to_string());
+
+        storage
+            .update_state_at_height(
+                &old.inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Active,
+                121,
+            )
+            .unwrap();
+        seed_energy_record_with_state(&server, &old, 121, MinerPassState::Consumed, 0);
+        let mut remint = make_active_pass(173, 253, 121);
+        remint.usdb_main = old.usdb_main.clone();
+        storage
+            .add_new_mint_pass_at_height(&remint, remint.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &remint, 121, 150);
+        seed_state_ref_context(&server, 121);
+
+        let after = resolve_miner_candidate_for_test(&server, &old.usdb_main, 121);
+        assert_eq!(after.matching_candidate_count, 1);
+        assert_eq!(after.pass.pass_id, remint.inscription_id.to_string());
+
+        let missing = server
+            .resolve_miner_candidate(ResolveMinerCandidateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                usdb_main: "0x2222222222222222222222222222222222222222".to_string(),
+                block_height: Some(121),
+                context: None,
+            })
+            .unwrap_err();
+        assert_eq!(
+            missing.code,
+            ErrorCode::ServerError(ERR_MINER_CANDIDATE_NOT_FOUND)
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_miner_candidate_rejects_stale_reorg_context_and_selects_replacement() {
+        let (server, root_dir) = build_server("miner_candidate_same_height_reorg", 120);
+        seed_state_ref_context(&server, 120);
+        let storage = server.indexer.miner_pass_storage();
+        let original = make_active_pass(174, 254, 100);
+        storage
+            .add_new_mint_pass_at_height(&original, original.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &original, 120, 100);
+        let original_view = resolve_miner_candidate_for_test(&server, &original.usdb_main, 120);
+
+        storage
+            .update_state_at_height(
+                &original.inscription_id,
+                MinerPassState::Consumed,
+                MinerPassState::Active,
+                120,
+            )
+            .unwrap();
+        let mut replacement = make_active_pass(175, 255, 120);
+        replacement.usdb_main = original.usdb_main.clone();
+        storage
+            .add_new_mint_pass_at_height(&replacement, replacement.mint_block_height)
+            .unwrap();
+        seed_energy_record(&server, &replacement, 120, 300);
+        let mut replacement_anchor = ready_balance_history_snapshot(120);
+        replacement_anchor.stable_block_hash = Some("cc".repeat(32));
+        replacement_anchor.latest_block_commit = Some("dd".repeat(32));
+        storage
+            .upsert_balance_history_snapshot_anchor(&replacement_anchor)
+            .unwrap();
+
+        let stale = server
+            .resolve_miner_candidate(ResolveMinerCandidateParams {
+                view_version: USDB_ECONOMIC_STATE_VIEW_VERSION.to_string(),
+                usdb_main: original.usdb_main.clone(),
+                block_height: Some(120),
+                context: Some(ConsensusQueryContext::from(&original_view.external_state)),
+            })
+            .unwrap_err();
+        assert_eq!(
+            stale.code,
+            ErrorCode::ServerError(ConsensusRpcErrorCode::SnapshotIdMismatch.code())
+        );
+
+        let fresh = resolve_miner_candidate_for_test(&server, &original.usdb_main, 120);
+        assert_eq!(fresh.matching_candidate_count, 1);
+        assert_eq!(fresh.pass.pass_id, replacement.inscription_id.to_string());
+        assert_ne!(
+            fresh.external_state.snapshot_id,
+            original_view.external_state.snapshot_id
         );
 
         drop(server);

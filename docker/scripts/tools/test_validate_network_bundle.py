@@ -154,9 +154,24 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "USDB_HTTP_BIND_ADDRESS must be loopback-only"):
             VALIDATOR.validate_node_env(path, False)
 
-    def test_miner_requires_address_and_pass(self) -> None:
+    def test_miner_requires_address(self) -> None:
         path = self.write_node_env(USDB_NODE_ROLE="miner")
         with self.assertRaisesRegex(ValueError, "USDB_MINER_ADDRESS"):
+            VALIDATOR.validate_node_env(path, False)
+
+    def test_miner_accepts_address_without_fixed_pass(self) -> None:
+        path = self.write_node_env(
+            USDB_NODE_ROLE="miner",
+            USDB_MINER_ADDRESS="0x1111111111111111111111111111111111111111",
+        )
+        VALIDATOR.validate_node_env(path, False)
+
+    def test_miner_rejects_invalid_address(self) -> None:
+        path = self.write_node_env(
+            USDB_NODE_ROLE="miner",
+            USDB_MINER_ADDRESS="0x1234",
+        )
+        with self.assertRaisesRegex(ValueError, "non-zero EVM address"):
             VALIDATOR.validate_node_env(path, False)
 
     def test_runtime_accepts_full_sync_without_snapshot_files(self) -> None:

@@ -258,8 +258,13 @@ def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime
     role = env.get("USDB_NODE_ROLE", "full")
     require(role in {"bootnode", "full", "miner"}, "unsupported USDB_NODE_ROLE")
     if role == "miner":
-        require(bool(env.get("USDB_MINER_ADDRESS")), "miner role requires USDB_MINER_ADDRESS")
-        require(bool(env.get("USDB_PASS_ID")), "miner role requires USDB_PASS_ID")
+        miner_address = env.get("USDB_MINER_ADDRESS", "")
+        require(bool(miner_address), "miner role requires USDB_MINER_ADDRESS")
+        require(
+            re.fullmatch(r"0x[0-9a-fA-F]{40}", miner_address) is not None
+            and int(miner_address[2:], 16) != 0,
+            "USDB_MINER_ADDRESS must be a non-zero EVM address",
+        )
 
     require(env.get("USDB_P2P_BIND_ADDRESS") == "0.0.0.0", "testnet-v0 P2P must bind public IPv4")
     require(env.get("USDB_P2P_BIND_PORT", "31303") == "31303", "testnet-v0 P2P bind port must be 31303")

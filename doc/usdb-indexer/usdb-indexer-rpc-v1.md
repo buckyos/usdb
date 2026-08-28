@@ -242,7 +242,8 @@ reveal-envelope index；它不是 ord 的 source-local global inscription number
     "pass_economic_profile",
     "candidate_set_view",
     "collab_breakdown",
-    "miner_economic_aggregate"
+    "miner_economic_aggregate",
+    "miner_candidate_resolution"
   ],
   "economic_state_view_version": "uip-0006-usdb-economic-state-view:v1",
   "candidate_set_selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
@@ -254,7 +255,7 @@ reveal-envelope index；它不是 ord 的 source-local global inscription number
 UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 要求：
 
 - `service == "usdb-indexer"` 且 `api_version == "1.0.0"`。
-- `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`、`miner_economic_aggregate`。
+- `features` 同时包含 `historical_state_ref`、`pass_economic_profile`、`candidate_set_view`、`collab_breakdown`、`miner_economic_aggregate`、`miner_candidate_resolution`。
 - `economic_state_view_version` 与请求使用的 `view_version` 一致。
 - `candidate_set_selection_rule` 与 UIP-0006 `candidate_set_view` ordering contract 一致；该字段不声明 USDB block-selection policy。
 - `economic_page_max_limit > 0`；client 的首包 `limit` 不得超过该声明值。
@@ -722,6 +723,36 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - 目标 pass 在该历史 context 下不存在时返回 `PASS_NOT_FOUND`；non-invalid pass 存在但缺少 raw energy 时返回 `INTERNAL_INVARIANT_BROKEN`。
 - 当前实现没有 script hash -> BTC address 历史反查索引，因此 `owner_btc_addr` 为 `null`。
 
+### 17b) `resolve_miner_candidate`
+
+按稳定的 USDB-chain reward address，在一个历史 context 内原子选择具体 mining pass 并返回
+完整 profile。参数：
+
+```json
+{
+  "view_version": "uip-0006-usdb-economic-state-view:v1",
+  "usdb_main": "0x1111111111111111111111111111111111111111",
+  "block_height": 900123,
+  "context": {"requested_height": 900123, "expected_state": {"snapshot_id": "...", "system_state_id": "..."}}
+}
+```
+
+响应与 `get_pass_economic_profile` 共用 `view_version`、`external_state`、`pass` 和
+`miner_aggregate`，并额外返回：
+
+```json
+{
+  "selection_rule": "uip-0006:effective-energy-desc-pass-id-asc:v1",
+  "matching_candidate_count": 2
+}
+```
+
+- 只选择 `usdb_main` 大小写无关匹配的 Active Standard pass。
+- 多张匹配 pass 按 `effective_energy DESC, pass_id ASC` 选择。
+- profile、aggregate 和选择结果绑定同一 `external_state`，响应前再次复验 state identity。
+- 无匹配项返回 `MINER_CANDIDATE_NOT_FOUND`。
+- 该接口只供 miner 组块前选择；最终 payload 仍显式携带具体 `pass_id`，validator 不按地址反查。
+
 ### 18) `get_candidate_set_view`
 
 查询某高度的 UIP-0006 candidate set audit view。
@@ -1050,6 +1081,7 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - `-32015 INVALID_PAGINATION`
 - `-32016 INVALID_HEIGHT_RANGE`
 - `-32017 INTERNAL_INVARIANT_BROKEN`
+- `-32018 MINER_CANDIDATE_NOT_FOUND`
 
 错误对象建议包含：
 
