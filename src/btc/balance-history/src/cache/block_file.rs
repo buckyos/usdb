@@ -18,6 +18,12 @@ pub struct BlockFileCache {
     prefetch_manager: PrefetchManager,
 }
 
+impl Drop for BlockFileCache {
+    fn drop(&mut self) {
+        self.prefetch_manager.stop();
+    }
+}
+
 impl BlockFileCache {
     pub fn new(reader: BlockFileReaderRef) -> Result<Self, String> {
         let cache = Mutex::new(LruCache::new(
@@ -135,6 +141,32 @@ pub type BlockFileCacheRef = std::sync::Arc<BlockFileCache>;
 
 type PrefetchQueue = Arc<Mutex<VecDeque<(usize, Arc<Vec<Block>>)>>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefetchStep {
+    QueueFull,
+    ReachedEnd,
+    Load(usize),
+}
+
+fn plan_prefetch_step(
+    queue_len: usize,
+    last_file_index: Option<usize>,
+    requested_file_index: usize,
+    latest_file_index: usize,
+) -> PrefetchStep {
+    if queue_len >= BLOCK_FILE_PREFETCH_QUEUE_CAPACITY {
+        return PrefetchStep::QueueFull;
+    }
+    let next_file_index = last_file_index
+        .map(|index| index.saturating_add(1))
+        .unwrap_or(requested_file_index);
+    if next_file_index > latest_file_index {
+        PrefetchStep::ReachedEnd
+    } else {
+        PrefetchStep::Load(next_file_index)
+    }
+}
+
 #[derive(Clone)]
 struct PrefetchManager {
     queue: PrefetchQueue,
@@ -179,12 +211,12 @@ impl PrefetchManager {
             .store(latest_blk_file_index, Ordering::SeqCst);
 
         let manager = self.clone();
-        std::thread::spawn(move || {
-            loop {
-                // Wait for prefetch requests
-                if let Ok(file_index) = rx.recv() {
+        std::thread::Builder::new()
+            .name("block-file-prefetch".to_string())
+            .spawn(move || {
+                while let Ok(file_index) = rx.recv() {
+                    // Wait for prefetch requests instead of polling shared state.
                     if file_index == 0 {
-                        // Stop signal
                         info!("Stopping block file prefetch manager");
                         break;
                     }
@@ -195,26 +227,27 @@ impl PrefetchManager {
                             let queue = manager.queue.lock().unwrap();
                             (queue.len(), queue.back().map(|(index, _)| *index))
                         };
-                        if count >= BLOCK_FILE_PREFETCH_QUEUE_CAPACITY {
-                            // Prefetch queue is full, skip this request
-                            continue;
-                        }
-
-                        let prefetch_index = if let Some(last_index) = last_file_index {
-                            last_index + 1
-                        } else {
-                            file_index
+                        let prefetch_index = match plan_prefetch_step(
+                            count,
+                            last_file_index,
+                            file_index,
+                            manager.latest_blk_file_index.load(Ordering::SeqCst),
+                        ) {
+                            PrefetchStep::QueueFull => {
+                                // The consumer sends another request before its next fetch. Return
+                                // to recv() instead of spinning while sync is paused.
+                                break;
+                            }
+                            PrefetchStep::ReachedEnd => {
+                                info!(
+                                    "Reached latest blk file index {}, stop prefetching",
+                                    manager.latest_blk_file_index.load(Ordering::SeqCst)
+                                );
+                                reach_end = true;
+                                break;
+                            }
+                            PrefetchStep::Load(index) => index,
                         };
-
-                        if prefetch_index > manager.latest_blk_file_index.load(Ordering::SeqCst) {
-                            // Reached the latest blk file, stop prefetching
-                            info!(
-                                "Reached latest blk file index {}, stop prefetching",
-                                manager.latest_blk_file_index.load(Ordering::SeqCst)
-                            );
-                            reach_end = true;
-                            break;
-                        }
 
                         let blocks = match manager.reader.load_blk_blocks_by_index(prefetch_index) {
                             Ok(blocks) => {
@@ -234,15 +267,20 @@ impl PrefetchManager {
                         break;
                     }
                 }
-            }
-        });
+                manager.sender.lock().unwrap().take();
+            })
+            .map_err(|error| format!("Failed to start block file prefetch thread: {}", error))?;
 
         Ok(())
     }
 
     pub fn stop(&self) {
         // Use index 0 as stop signal
-        self.notify_prefetch(0);
+        if let Some(sender) = self.sender.lock().unwrap().take()
+            && let Err(error) = sender.send(0)
+        {
+            debug!("Block file prefetch worker already stopped: {}", error);
+        }
     }
 
     pub fn add_prefetch(&self, file_index: usize, blocks: Arc<Vec<Block>>) {
@@ -276,6 +314,32 @@ impl PrefetchManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefetch_plan_pauses_when_queue_is_full() {
+        assert_eq!(
+            plan_prefetch_step(BLOCK_FILE_PREFETCH_QUEUE_CAPACITY, Some(9), 10, 20),
+            PrefetchStep::QueueFull
+        );
+    }
+
+    #[test]
+    fn prefetch_plan_loads_requested_or_next_file_and_stops_at_end() {
+        assert_eq!(plan_prefetch_step(0, None, 10, 20), PrefetchStep::Load(10));
+        assert_eq!(
+            plan_prefetch_step(2, Some(12), 10, 20),
+            PrefetchStep::Load(13)
+        );
+        assert_eq!(
+            plan_prefetch_step(2, Some(20), 10, 20),
+            PrefetchStep::ReachedEnd
+        );
+    }
+}
+
 #[cfg(all(test, usdb_bh_real_btc))]
 mod real_btc_tests {
     use super::*;
@@ -302,8 +366,7 @@ mod real_btc_tests {
             .expect("BTC_BLOCK_MAGIC must be a hex or decimal u32");
             config.btc.block_magic = Some(parsed);
         }
-        let config = std::sync::Arc::new(config);
-        config
+        std::sync::Arc::new(config)
     }
 
     fn env_usize(names: &[&str], default: usize) -> usize {
@@ -385,5 +448,57 @@ mod real_btc_tests {
             "sleep_ms": sleep_ms,
             "duration_ms": started.elapsed().as_millis(),
         }));
+    }
+
+    #[test]
+    fn real_btc_correctness_block_file_cache_live_range_matches_direct_reader() {
+        let config = real_btc_config();
+        let reader =
+            BlockFileReader::new(config.btc.block_magic(), &config.btc.data_dir()).unwrap();
+        let reader = Arc::new(reader);
+        let cache = BlockFileCache::new(reader.clone()).unwrap();
+        let start = env_usize(
+            &[
+                "USDB_BH_REAL_BTC_PROFILE_START_FILE",
+                "USDB_BH_REAL_BTC_CACHE_START_FILE",
+            ],
+            0,
+        );
+        let count = env_usize(
+            &[
+                "USDB_BH_REAL_BTC_PROFILE_FILE_COUNT",
+                "USDB_BH_REAL_BTC_CACHE_FILE_COUNT",
+            ],
+            4,
+        );
+
+        for file_index in start..start + count {
+            let path = reader.get_blk_file_path(file_index);
+            let expected_blocks = reader.read_blk_records2(&path).unwrap();
+            assert!(
+                !expected_blocks.is_empty(),
+                "expected blk file {} to contain at least one block",
+                path.display()
+            );
+
+            let first = cache.get_block_by_file_index(file_index, 0).unwrap();
+            let last_record_index = expected_blocks.len() - 1;
+            let last = cache
+                .get_block_by_file_index(file_index, last_record_index)
+                .unwrap();
+
+            assert_eq!(
+                first.block_hash(),
+                expected_blocks.first().unwrap().block_hash(),
+                "first block hash mismatch for blk file {}",
+                file_index
+            );
+            assert_eq!(
+                last.block_hash(),
+                expected_blocks.last().unwrap().block_hash(),
+                "last block hash mismatch for blk file {}",
+                file_index
+            );
+        }
     }
 }
