@@ -1450,7 +1450,7 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 
 ## Miner System-State 新鲜度监控
 
-状态：2026-08-27 已实现并完成测试，等待 review，尚未提交。
+状态：2026-08-27 已实现、测试并提交：Go `dd6760946` / usdb `fadd079`。
 
 - Go miner 在完整 selector 构建成功后缓存精确 `system_state_id`；独立 goroutine 仅在挖矿期间
   按 sanitized recommit interval 调用轻量 system-state RPC。ID 不变时不解析 candidate，ID
@@ -1462,3 +1462,19 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 - energy-growth 跨进程 E2E 修正为按 BTC stable frontier 查询，完整验证 BTC context 从 `134`
   推进到 `142` 后，新 work 的 raw/effective energy 从 `0` 更新为 `2000`，逐块 reward 与最终余额
   一致。该 E2E 验证刷新后的完整数据链路；自动变化检测由上述 worker 测试单独覆盖。
+
+## Testnet Bootstrap Admin 身份隔离
+
+状态：2026-08-28 已实现并完成定向测试，等待 review，尚未提交。
+
+- 明确区分 development fixture、testnet signer 和 mainnet signer。已公开开发私钥对应的
+  `0xabCd35...7c37` 只保留给 local/world-sim；testnet-v0 冻结独立公开地址
+  `0x0b5223FD...310c9`；mainnet 上线前必须再次生成且不得复用 testnet signer。
+- network bundle 新增显式 `deployment_tier=testnet`。validator 对 testnet/mainnet 先执行已知开发
+  地址 denylist，再 pin testnet-v0 admin，并交叉校验 chain bootstrap、SourceDAO config 与 genesis
+  alloc；genesis 不得继续给已知 development admin 预置余额。
+- 使用当前 Go 源码和冻结 SourceDAO runtime artifact 重新生成 genesis；规范化比较确认除 admin alloc
+  key 外无其他变化。更新 genesis/config/manifest/network artifact hashes 和 genesis block hash。
+- validator 33 项定向测试通过，覆盖 development fixture 允许、testnet/mainnet 拒绝已知开发地址、
+  未冻结 testnet 地址拒绝、chain/SourceDAO 不一致、admin alloc 缺失/余额错误和 development admin
+  残留余额拒绝。

@@ -26,7 +26,8 @@ balance、block commit 和 state-ref；只有同步耗时不同，最终共识�
 5. `USDB Release Candidate Manifest` 已从 release tag builds 解析并验证 services、chain、Bitcoin Core
    三个 digest-only image reference；
 6. 生成并保存跨仓 candidate manifest 与 SHA-256；
-7. 确认 bootstrap admin 私钥能够派生出 bundle 中的公开地址；
+7. 确认 testnet 专用 bootstrap admin 私钥能够派生出 bundle 中的
+   `0x0b5223FD31cDc1536f31b3627e6D7025b52310c9`，且未使用 development fixture 私钥；
 8. 确认至少一个 BTC mainnet Active Standard pass 可作为初始 miner。
 
 第 7、8 项未满足时，可以完成 BTC/balance-history 同步和非矿工节点启动，但不能完成 SourceDAO
@@ -136,6 +137,8 @@ network bundle 派生并校验这些值。
 - 当前采用候选 PoW 难度的明确批准记录。
 
 私钥、BTC RPC password 和 `node.env` 不进入 GitHub artifact、聊天记录或工单附件。
+development fixture、testnet signer、未来 mainnet signer 必须是三个独立身份；mainnet 不得复用
+本 testnet signer。bundle/release record 只登记公开地址和 custody 责任人，不登记私钥材料或助记词。
 
 ## 5. 首节点安装
 

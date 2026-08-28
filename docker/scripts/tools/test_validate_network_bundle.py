@@ -70,6 +70,67 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         network = VALIDATOR.validate_network_bundle(self.bundle)
         self.assertEqual(network["network_bundle_id"], "usdb-testnet-v0")
 
+    def test_testnet_rejects_known_development_bootstrap_admin(self) -> None:
+        path = self.bundle / "artifacts/usdb-chain-bootstrap-config.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["bootstrapAdmin"]["address"] = "0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "known development address"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
+    def test_mainnet_rejects_known_development_bootstrap_admin(self) -> None:
+        with self.assertRaisesRegex(ValueError, "known development address"):
+            VALIDATOR.validate_bootstrap_admin(
+                "mainnet",
+                "0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37",
+            )
+
+    def test_development_fixture_accepts_known_bootstrap_admin(self) -> None:
+        address = "0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37"
+        self.assertEqual(VALIDATOR.validate_bootstrap_admin("development", address), address)
+
+    def test_unfrozen_testnet_bootstrap_admin_is_rejected(self) -> None:
+        path = self.bundle / "artifacts/usdb-chain-bootstrap-config.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["bootstrapAdmin"]["address"] = "0x1111111111111111111111111111111111111111"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unexpected testnet-v0 bootstrap admin"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
+    def test_genesis_bootstrap_admin_allocation_is_required(self) -> None:
+        path = self.bundle / "artifacts/usdb-genesis.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        del value["alloc"][VALIDATOR.EXPECTED_BOOTSTRAP_ADMIN[2:].lower()]
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "admin allocation is missing"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
+    def test_genesis_bootstrap_admin_balance_must_match_config(self) -> None:
+        path = self.bundle / "artifacts/usdb-genesis.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["alloc"][VALIDATOR.EXPECTED_BOOTSTRAP_ADMIN[2:].lower()]["balance"] = "0x1"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "admin balance mismatch"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
+    def test_sourcedao_bootstrap_admin_must_match_chain_config(self) -> None:
+        path = self.bundle / "artifacts/sourcedao-bootstrap-config.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["bootstrapAdminAddress"] = "0x1111111111111111111111111111111111111111"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "bootstrap admin mismatch"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
+    def test_genesis_must_not_fund_known_development_admin(self) -> None:
+        path = self.bundle / "artifacts/usdb-genesis.json"
+        value = json.loads(path.read_text(encoding="utf-8"))
+        value["alloc"]["abcd35afbb4561213feaff01b5f91e18f8df7c37"] = {
+            "balance": "0x1"
+        }
+        path.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "must not fund a known development"):
+            VALIDATOR.validate_network_bundle(self.bundle)
+
     def test_chain_identity_mismatch_is_rejected(self) -> None:
         path = self.bundle / "artifacts/usdb-chain-bootstrap-config.json"
         value = json.loads(path.read_text(encoding="utf-8"))

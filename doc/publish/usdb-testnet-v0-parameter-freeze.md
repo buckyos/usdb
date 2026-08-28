@@ -25,6 +25,7 @@ accepted-bootstrap 身份的修改都必须发布新的 bundle，并使用新的
 | --- | --- | --- | --- |
 | Release / bundle ID | `usdb-testnet-v0` | release | `network.json` |
 | 状态 | `development-resettable` | release | `network.json` |
+| Deployment tier | `testnet` | release security boundary | `network.json` |
 | Chain ID | `202608250` | genesis / replay domain | chain bootstrap config |
 | devp2p network ID | `202608250` | P2P network | `network.json` / `network.env` |
 | 默认 P2P 端口 | `31303/TCP+UDP` | 运维约定 | `network.env` |
@@ -60,12 +61,16 @@ release profile 固定使用独立 Compose project 和 `http://btc-node:8332` �
 | fee split v1 | miner `6000` bps，DAO `4000` bps |
 | K range/window | `8001..20000` bps，`50400` blocks |
 | level difficulty factor | 每级 `100` bps，最低 `5000` bps |
-| genesis SHA-256 | `c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e` |
-| genesis block hash | `0xac89ddec1c12efa4173c67e70772861def1e121c387b612e702805161970e560` |
+| genesis SHA-256 | `da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5` |
+| genesis block hash | `0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23` |
 
 所有 EVM fork block、genesis nonce/timestamp、alloc、system storage 和代码字节不再逐项复制到本文；
 它们统一由冻结的 genesis 文件及其 SHA-256/block hash 约束。上述公式常量由 policy version 和
 冻结的 `go-ethereum` revision 共同确定，不能只更新文档或 JSON 数字。
+
+bootstrap admin 从公开 development fixture 替换为 testnet signer 后，旧 genesis block hash
+`0xac89ddec...70e560` 已废弃。曾使用旧 artifact 初始化的 USDB-chain datadir 必须清空并重新 init；
+该变化本身不改变 BTC source/origin，无需重建 Bitcoin Core、balance-history 或 usdb-indexer 数据。
 
 ## System State 与 SourceDAO
 
@@ -79,17 +84,29 @@ release profile 固定使用独立 Compose project 和 `http://btc-node:8332` �
 | Dao runtime code hash | `0xc6549189a694031f7d94e6b1b8b11b2bc43d1753cdaa7ac885a97c5e6d462593` |
 | Dividend address | `0x0000000000000000000000000000000000001002` |
 | Dividend runtime code hash | `0x24859958e81d46d4a3df2de8b346600d05ed8a3e683ad4c2117fe9e73804144e` |
-| bootstrap admin | `0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37` |
+| bootstrap admin | `0x0b5223FD31cDc1536f31b3627e6D7025b52310c9` |
 | bootstrap admin genesis balance | `10000000000000000000` wei |
 
 合约 artifact SHA-256、runtime bytecode 和 genesis alloc 由
 `artifacts/usdb-chain-bootstrap-config.json` 与冻结 genesis 共同约束。
 
+### Bootstrap admin 身份分层
+
+| 环境 | signer 规则 | 仓库内容 |
+| --- | --- | --- |
+| development fixture | local/world-sim 可继续使用已公开的 `0xabCd35...7c37` | 可记录固定公开地址和测试私钥 |
+| testnet | 使用本 testnet 独立 signer `0x0b5223FD...310c9` | 只记录公开地址 |
+| mainnet | 上线前再次独立生成，不得复用 development 或 testnet signer | 只记录公开地址 |
+
+testnet/mainnet 私钥由对应网络负责人自行托管，不进入 Git、bundle、镜像、普通 CI、聊天记录或
+运维工单。发布 validator 通过显式 `deployment_tier` 区分环境：public tier 会拒绝已知 development
+admin，testnet-v0 还会精确 pin 上述地址，并验证 genesis alloc 只为该地址预置配置余额。
+
 ### Accepted bootstrap
 
 SourceDAO bootstrap 的完整权威输入是
 `artifacts/sourcedao-bootstrap-config.json`，当前 SHA-256 为
-`a6437a4e8c3780779dcd9bd0714728db2ddfa1afad393c1bd052b2e912e14e0e`。上线前必须人工复核：
+`2c36df4f6b90bdd89517eb44841066e4778a7edd6173c6711cbfa2234a749163`。上线前必须人工复核：
 
 - bootstrap admin 地址与实际 signer 一致；private key 不进入 Git、镜像或 bundle；
 - `cycleMinLength=60`、transaction gas limit `8000000`；
@@ -141,6 +158,9 @@ SourceDAO bootstrap 的完整权威输入是
 `validate_network_bundle.py` 对重复字段执行 fail-closed 解析，并交叉校验 chain ID、BTC source、origin、
 registry、genesis、SourceDAO 地址和 artifact hashes。脚本中的 `EXPECTED_*` 是 testnet-v0 的 validator
 pin，不是另一套可独立修改的配置源。
+
+`usdb-network-bundle:v2` 将 `deployment_tier` 设为必需字段，用于区分可使用公开 fixture 的
+development 环境与必须执行 signer 隔离门禁的 testnet/mainnet。
 
 这种分层比把所有参数塞入一个文件更合适：genesis、SourceDAO、snapshot 和节点秘密有不同生命周期。
 集中性由 `network.json` 的 artifact hash 索引、release manifest 和 validator 提供，而不是通过复制所有

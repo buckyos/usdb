@@ -45,6 +45,8 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 - 选择 balance-history `full-sync` 或 `signed-snapshot`；后者才冻结 signer、catalog 和目标高度/hash；
 - 冻结镜像 tag、binary version 和配置 schema；
 - 列出 development-only、fake policy 和未激活功能，确认不会误入 public profile。
+- 将 bootstrap admin 明确分类为 development fixture、testnet signer 或 mainnet signer；testnet 与
+  mainnet 各自使用独立托管身份，public bundle 只记录公开地址并拒绝已知 development admin。
 
 ### 3.2 可重复构建
 
@@ -116,6 +118,7 @@ public release。上线时至少需要：
 - revision、activation、genesis 或 SourceDAO 参数未冻结；
 - worktree 含未审计修改，或 artifact 无法追溯到 commit；
 - snapshot/private bootstrap key 泄露到 bundle、image、日志或 Git；
+- testnet/mainnet bootstrap admin 使用已知 development 地址，或 mainnet 复用 testnet signer；
 - 选择 snapshot 时，trusted-key catalog 没有独立可信 hash 来源；
 - 必要测试未运行，或报告只来自开发 mock；
 - joiner 无法从公开 artifact 完成冷启动；

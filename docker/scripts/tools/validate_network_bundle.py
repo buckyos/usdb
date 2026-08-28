@@ -15,6 +15,14 @@ EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
 EXPECTED_BTC_REGISTRY = "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c"
 EXPECTED_ORIGIN = 963800
+EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
+PUBLIC_DEPLOYMENT_TIERS = frozenset({"testnet", "mainnet"})
+SUPPORTED_DEPLOYMENT_TIERS = frozenset({"development"}) | PUBLIC_DEPLOYMENT_TIERS
+KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
+    {
+        "0xabcd35afbb4561213feaff01b5f91e18f8df7c37",
+    }
+)
 
 
 def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -84,6 +92,25 @@ def require_no_runtime_secrets(value: Any, path: str = "$") -> None:
             require_no_runtime_secrets(item, f"{path}[{index}]")
 
 
+def validate_bootstrap_admin(deployment_tier: str, address: Any) -> str:
+    require(
+        isinstance(deployment_tier, str) and deployment_tier in SUPPORTED_DEPLOYMENT_TIERS,
+        "unsupported deployment tier",
+    )
+    require(
+        isinstance(address, str)
+        and re.fullmatch(r"0x[0-9a-fA-F]{40}", address) is not None
+        and int(address[2:], 16) != 0,
+        "bootstrap admin must be a non-zero EVM address",
+    )
+    if deployment_tier in PUBLIC_DEPLOYMENT_TIERS:
+        require(
+            address.lower() not in KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS,
+            f"{deployment_tier} bootstrap admin must not use a known development address",
+        )
+    return address
+
+
 def validate_artifact_hashes(bundle_dir: Path, network: dict[str, Any]) -> None:
     artifacts = network.get("artifacts")
     require(isinstance(artifacts, dict), "network.json artifacts must be an object")
@@ -115,9 +142,10 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     for value in (network, chain, source_dao, genesis_manifest, bootstrap_manifest):
         require_no_runtime_secrets(value)
 
-    require(network.get("schema_version") == "usdb-network-bundle:v1", "unexpected network bundle schema")
+    require(network.get("schema_version") == "usdb-network-bundle:v2", "unexpected network bundle schema")
     require(network.get("network_bundle_id") == EXPECTED_BUNDLE_ID, "unexpected network bundle ID")
     require(network.get("status") == "development-resettable", "testnet-v0 must remain resettable")
+    require(network.get("deployment_tier") == "testnet", "testnet-v0 deployment tier must be testnet")
     require(network.get("chain_id") == EXPECTED_CHAIN_ID, "unexpected testnet-v0 chain ID")
     require(network.get("network_id") == EXPECTED_CHAIN_ID, "unexpected testnet-v0 network ID")
     require(network.get("p2p_port") == 31303, "testnet-v0 P2P port must be 31303")
@@ -154,6 +182,12 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(versions.get("quotePolicyVersion") == 0, "testnet-v0 quote policy must be disabled")
     require(versions.get("auxPoolPolicyVersion") == 0, "testnet-v0 aux pool policy must be disabled")
 
+    bootstrap_admin = validate_bootstrap_admin(
+        network["deployment_tier"],
+        chain.get("bootstrapAdmin", {}).get("address"),
+    )
+    require(bootstrap_admin == EXPECTED_BOOTSTRAP_ADMIN, "unexpected testnet-v0 bootstrap admin")
+
     require(source_dao.get("chainId") == EXPECTED_CHAIN_ID, "SourceDAO chain ID mismatch")
     require("rpcUrl" not in source_dao, "SourceDAO release config must not freeze an RPC URL")
     require("artifactsDir" not in source_dao, "SourceDAO release config must not freeze an artifacts path")
@@ -161,7 +195,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(source_dao.get("daoAddress") == predeploys.get("dao", {}).get("address"), "DAO address mismatch")
     require(source_dao.get("dividendAddress") == predeploys.get("dividend", {}).get("address"), "Dividend address mismatch")
     require(
-        source_dao.get("bootstrapAdminAddress") == chain.get("bootstrapAdmin", {}).get("address"),
+        source_dao.get("bootstrapAdminAddress") == bootstrap_admin,
         "bootstrap admin mismatch",
     )
     require(
@@ -182,6 +216,30 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     require(genesis_usdb.get("btcNetworkId") == "btc-mainnet", "genesis BTC network mismatch")
     require(genesis_usdb.get("btcIndexOriginHeight") == EXPECTED_ORIGIN, "genesis BTC origin mismatch")
     require(genesis_usdb.get("activations") == activations, "genesis activation schedule mismatch")
+
+    alloc = genesis.get("alloc")
+    require(isinstance(alloc, dict), "genesis alloc is required")
+    admin_alloc = alloc.get(bootstrap_admin[2:].lower())
+    require(isinstance(admin_alloc, dict), "genesis bootstrap admin allocation is missing")
+    expected_admin_balance = chain.get("bootstrapAdmin", {}).get("balanceWei")
+    require(
+        isinstance(expected_admin_balance, str) and expected_admin_balance.isdecimal(),
+        "bootstrap admin balanceWei must be decimal",
+    )
+    actual_admin_balance = admin_alloc.get("balance")
+    try:
+        parsed_admin_balance = int(actual_admin_balance, 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("genesis bootstrap admin balance is invalid") from exc
+    require(
+        parsed_admin_balance == int(expected_admin_balance, 10),
+        "genesis bootstrap admin balance mismatch",
+    )
+    for development_admin in KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS:
+        require(
+            development_admin[2:] not in alloc,
+            "genesis alloc must not fund a known development bootstrap admin",
+        )
 
     require(
         genesis_manifest.get("schema_version") == "usdb-genesis-manifest:v2",
@@ -343,6 +401,7 @@ def main() -> int:
             {
                 "network_bundle_id": network["network_bundle_id"],
                 "status": network["status"],
+                "deployment_tier": network["deployment_tier"],
                 "chain_id": network["chain_id"],
                 "network_id": network["network_id"],
                 "node_env_checked": args.node_env is not None,

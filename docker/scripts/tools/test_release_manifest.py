@@ -83,7 +83,7 @@ class ReleaseManifestTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["network_bundle"]["genesis_block_hash"],
-            "0xac89ddec1c12efa4173c67e70772861def1e121c387b612e702805161970e560",
+            "0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23",
         )
         path = self.root / "release-manifest.json"
         RELEASE.write_manifest(path, manifest)

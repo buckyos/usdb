@@ -4,11 +4,11 @@
   "chain_id": 202608250,
   "network_id": 202608250,
   "genesis_file": "usdb-genesis.json",
-  "file_sha256": "c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e",
-  "block_hash": "0xac89ddec1c12efa4173c67e70772861def1e121c387b612e702805161970e560",
-  "bootstrap_config_sha256": "c41e7f23e70daf36ee97a38ee827dc36240646b2b69445043199e8aacb064ab8",
-  "sourcedao_config_sha256": "a6437a4e8c3780779dcd9bd0714728db2ddfa1afad393c1bd052b2e912e14e0e",
-  "go_ethereum_revision": "28363547055f6c9d1bf2424cb1702231ab7c2fd4",
+  "file_sha256": "da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5",
+  "block_hash": "0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23",
+  "bootstrap_config_sha256": "f70f6bca3eafea899d9abd1fe08469b67db7aff05fcb38fdd337fc1772c7773a",
+  "sourcedao_config_sha256": "2c36df4f6b90bdd89517eb44841066e4778a7edd6173c6711cbfa2234a749163",
+  "go_ethereum_revision": "dd6760946082d14c4d831d99d9c8a66c321320eb",
   "sourcedao_revision": "a6031556848290f9dac02b65a1532cbf93190013",
   "trust": "development-manifest"
 }

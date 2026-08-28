@@ -17,15 +17,22 @@
 | 项目 | testnet-v0 |
 | --- | --- |
 | chain ID | `202608250` |
+| deployment tier | `testnet` |
 | devp2p network ID | `202608250` |
 | P2P | `31303/TCP+UDP` |
 | BTC source | `btc-mainnet` |
 | BTC index origin | `963800` |
 | BTC registry ID | `cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c` |
 | quote / aux | `0 / 0` |
-| genesis SHA-256 | `c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e` |
+| bootstrap admin | `0x0b5223FD31cDc1536f31b3627e6D7025b52310c9` |
+| genesis SHA-256 | `da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5` |
+| genesis block hash | `0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23` |
 
 `0x180000 / 0x100000` 仍是当前目标硬件 bring-up 难度，不是最终 PoW calibration 结果。
+
+本次 bootstrap admin 隔离已经改变 genesis。任何曾用旧 block hash
+`0xac89ddec...70e560` 初始化的 USDB-chain datadir 都必须丢弃并用本 bundle 重新 `geth init`；
+仅因此变化不要求重建 Bitcoin Core 或 BTC-side index 数据。
 
 ## 启动前输入
 
@@ -81,6 +88,10 @@ Bitcoin `up` 会等待 mainnet full sync 和 txindex 同高度。`up-data` 只�
 SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key 不进入 Compose 或 Git。
 首次启动应在独立受控步骤中执行 `usdb_bootstrap_full.ts`，并在区块 `8192` fee gate 前完成
 `Dividend.finalizeBootstrap()`。runtime Compose 不自动消费管理员密钥。
+
+仓库内开发 fixture 使用的 `0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37` 已知对应公开私钥，
+只允许 local/world-sim。bundle validator 会拒绝 testnet/mainnet 使用该地址；未来 mainnet 还必须
+生成与本 testnet 地址不同的 signer。Git 和 bundle 只记录公开地址。
 
 ## 尚未冻结
 

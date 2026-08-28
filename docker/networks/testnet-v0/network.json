@@ -1,7 +1,8 @@
 {
-  "schema_version": "usdb-network-bundle:v1",
+  "schema_version": "usdb-network-bundle:v2",
   "network_bundle_id": "usdb-testnet-v0",
   "status": "development-resettable",
+  "deployment_tier": "testnet",
   "chain_id": 202608250,
   "network_id": 202608250,
   "p2p_port": 31303,
@@ -13,19 +14,19 @@
   "artifacts": {
     "genesis": {
       "path": "artifacts/usdb-genesis.json",
-      "sha256": "c40bc1f7e907701d8fe61c25d0386bce86db6768ca1f583614781a732c45ea3e"
+      "sha256": "da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5"
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "440c4f7c1b53075fc2c1482d7ecb895854787ea1f274b58b256d531b59a7ac99"
+      "sha256": "eb7e95861de8344890fe1e34272ece604325c74c3ed1bcbdcbd80bcefb36bbf6"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",
-      "sha256": "c41e7f23e70daf36ee97a38ee827dc36240646b2b69445043199e8aacb064ab8"
+      "sha256": "f70f6bca3eafea899d9abd1fe08469b67db7aff05fcb38fdd337fc1772c7773a"
     },
     "sourcedao_bootstrap": {
       "path": "artifacts/sourcedao-bootstrap-config.json",
-      "sha256": "a6437a4e8c3780779dcd9bd0714728db2ddfa1afad393c1bd052b2e912e14e0e"
+      "sha256": "2c36df4f6b90bdd89517eb44841066e4778a7edd6173c6711cbfa2234a749163"
     },
     "snapshot_trusted_keys": {
       "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",

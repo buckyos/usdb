@@ -41,7 +41,7 @@
     }
   },
   "bootstrapAdmin": {
-    "address": "0xabCd35AfbB4561213fEAfF01B5F91e18F8Df7c37",
+    "address": "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9",
     "balanceWei": "10000000000000000000"
   },
   "genesisDifficulty": "0x180000",

@@ -593,6 +593,9 @@ ceremony，而不是从 block `0` 开始无条件开放 initializer 竞争。
 候选阶段要求：
 
 - candidate chain 使用最终 canonical genesis、chain config 和 public bootstrap config。
+- development fixture、testnet signer 与 mainnet signer 必须属于不同身份域；testnet/mainnet
+  release validator 必须拒绝已知 development admin。public artifact 只承诺公开地址，私钥由对应
+  网络负责人在仓库、镜像和普通 CI 之外托管。
 - public RPC transaction submission、公开 bootnode、bridge、exchange deposit 和其他不可逆外部
   承诺必须保持关闭。
 - bootstrap signer、候选矿工和审计节点由 release operator 控制；候选阶段允许失败和重试。
