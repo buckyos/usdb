@@ -1258,7 +1258,7 @@ Go `76dcafd35` / usdb `9202107`。
 - 首次运行发现 miner 在 max+1 失败后不会因纯外部 BTC 状态更新重新组块：
   geth recommit timer 原先在无新交易时直接跳过。worker 现仅在 USDB work build
   失败期间保留 retry 标志，按现有 recommit interval 拉取外部状态；首次成功后清除，
-  不给正常成功路径增加永久轮询。
+  正常成功路径则只轻量轮询 `system_state_id`，ID 变化后才触发完整 pass/energy work 重构。
 - 使用 `debug_setHead` 将 USDB canonical head 从 block `8` 回退到 block `5`，
   从保留的 age-0 parent 重新生成 block `6..8`。replacement block hash 必须变化，
   age 必须重新严格计数为 `1..3`。
@@ -1447,3 +1447,18 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   live/spent UTXO 与 registry 交叉验证全部一致。
 - `cargo test -p balance-history` 完整回归通过：137 passed、1 个本机 mainnet snapshot
   手工 fixture ignored、0 failed。
+
+## Miner System-State 新鲜度监控
+
+状态：2026-08-27 已实现并完成测试，等待 review，尚未提交。
+
+- Go miner 在完整 selector 构建成功后缓存精确 `system_state_id`；独立 goroutine 仅在挖矿期间
+  按 sanitized recommit interval 调用轻量 system-state RPC。ID 不变时不解析 candidate，ID
+  变化时通过容量为 1 的通知通道合并重复事件并废弃当前 work，重新构建完整 pass/energy profile。
+- monitor RPC 错误进入既有 fail-closed work retry；完整 rebuild 失败不会推进缓存，因此后续轮询
+  仍能检测同一变化。worker 关闭时先停止并等待 monitor，再关闭共享 RPC client，避免并发关闭。
+- Go 单测覆盖无 baseline、ID 不变、ID 变化、失败 rebuild 不推进 baseline、停止挖矿不轮询、
+  通知合并和 RPC error retry；`go test -race ./internal/usdb ./miner` 通过。
+- energy-growth 跨进程 E2E 修正为按 BTC stable frontier 查询，完整验证 BTC context 从 `134`
+  推进到 `142` 后，新 work 的 raw/effective energy 从 `0` 更新为 `2000`，逐块 reward 与最终余额
+  一致。该 E2E 验证刷新后的完整数据链路；自动变化检测由上述 worker 测试单独覆盖。

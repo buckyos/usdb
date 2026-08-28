@@ -204,6 +204,12 @@ address。validator 仍只按 payload 的 `pass_id` 查询和验证，不调用�
 在新 state identity 下重新选择；旧 context 必须被拒绝。如果 remint 改用了另一个
 `usdb_main`，原矿工配置不得自动跟随，必须停止组块并由运维显式更新地址。
 
+miner 实现应在完整 selector 构建成功后缓存对应的 `system_state_id`，并以受限频率调用
+轻量 system-state RPC。ID 未变化时不得重复执行 pass/energy 聚合；ID 变化时必须废弃当前
+本地 work，重新解析 candidate 与完整 profile，只有完整构建成功后才能推进缓存。该监控是
+miner 本地新鲜度策略，不是 validator 的额外共识输入；validator 继续只重放区块显式携带的
+historical selector。
+
 # BTC Anchor 推进与新鲜度边界
 
 `btc_anchor_policy_version = 1` 定义 `btc_anchor_age_blocks` 的 bounded-reuse 规则。
