@@ -233,9 +233,9 @@ proof 不应直接塞入 `header.Extra`；当前 160-byte outer limit 只足以�
 不能容纳无界 proof。
 
 BTC source network registry 另行固定 `stable_lag_blocks`。当前 draft mainnet/regtest
-registry v2 均取 `5`，balance-history 只能索引并暴露
+registry v2 均取 `10`，balance-history 只能索引并暴露
 `observed_btc_tip - stable_lag_blocks` 及更早的 snapshot，运行参数不得覆盖。该规则使
-深度不超过 5 个 BTC blocks、且尚未越过 stable frontier 的普通 reorg 不进入新生成的
+深度不超过 10 个 BTC blocks、且尚未越过 stable frontier 的普通 reorg 不进入新生成的
 economic state；它是 reorg 风险缓冲，不是 validator 可证明的 tip freshness。
 
 UIP-0006 profile 必须返回 `external_state.stable_lag`。validator 必须将其与目标 USDB
@@ -270,7 +270,7 @@ fresh validator 会拒绝。这是 public-network reorg policy 的实现缺口�
 `btc_anchor_policy_version = 1` 只能视为 bounded stale-replay guard，不能宣称提供完整
 BTC finality。
 
-当前 `stable_lag_blocks = 5` 仅降低上述缺口被普通短 reorg 触发的概率。深度超过 stable
+当前 `stable_lag_blocks = 10` 仅降低上述缺口被普通短 reorg 触发的概率。深度超过 stable
 frontier 的 reorg 仍可能使已提交 selector 指向 orphan snapshot，因此不能据此关闭
 archive/rewind 的后续设计项；public testnet/mainnet 发布前仍需按实测 BTC 风险和运维
 目标复核该值。

@@ -73,8 +73,9 @@ SYNC_TIMEOUT_SEC=300 \
 bash src/btc/balance-history/scripts/regtest_history_balance_oracle.sh
 ```
 
-Nightly 档位产生约 `960` 笔转账和至少 `3,840` 个事件 address-height 点；按当前
-`stable_lag=5`，计入初始高度和确认区间后的完整状态线为 `4,032` 点。每个点同时验证
+Nightly 档位产生约 `960` 笔转账和至少 `3,840` 个事件 address-height 点。历史
+`stable_lag=5` 实跑计入当时的初始高度和确认区间后形成 `4,032` 点；当前 registry
+已升级为 `stable_lag=10`，容量报告不得直接复用该历史点数。每个点同时验证
 balance 与 exact delta，结束时再验证完整 range、summary、UTXO 和 registry。
 
 ## 场景覆盖边界

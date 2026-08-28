@@ -991,12 +991,12 @@ mod tests {
     #[test]
     fn test_compute_stable_sync_target_height_applies_stable_lag() {
         let stable_lag = usdb_util::embedded_btc_stable_lag_blocks(Network::Regtest).unwrap();
-        assert_eq!(stable_lag, 5);
+        assert_eq!(stable_lag, 10);
         assert_eq!(
             compute_stable_sync_target_height(100, u32::MAX, stable_lag),
-            95
+            90
         );
-        assert_eq!(compute_stable_sync_target_height(100, 90, stable_lag), 90);
+        assert_eq!(compute_stable_sync_target_height(100, 85, stable_lag), 85);
     }
 
     #[test]

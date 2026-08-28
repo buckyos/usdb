@@ -562,7 +562,7 @@ UIP-0008 定义 activation/version 的通用语义，但运行时配置按共识
   "usdb": {
     "activations": [{
       "block": 0,
-      "btcActivationRegistryId": "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9",
+      "btcActivationRegistryId": "bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0",
       "btcAnchorMaxAgeBlocks": 6650,
       "versions": {
         "payloadVersion": 1,

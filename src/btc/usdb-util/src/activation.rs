@@ -1230,7 +1230,7 @@ mod tests {
             scope: BtcActivationRegistryScope {
                 network_type: ActivationNetworkType::Regtest,
                 network_id: "btc-regtest".to_string(),
-                stable_lag_blocks: 5,
+                stable_lag_blocks: 10,
             },
             records,
         }
@@ -1271,11 +1271,11 @@ mod tests {
         for (network, expected_registry_id) in [
             (
                 Network::Bitcoin,
-                "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c",
+                "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224",
             ),
             (
                 Network::Regtest,
-                "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9",
+                "bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0",
             ),
         ] {
             let registry = embedded_btc_activation_registry(network).unwrap();
@@ -1283,7 +1283,7 @@ mod tests {
             registry.validate_network(network).unwrap();
             versions.validate_btc_indexer_v1().unwrap();
             assert_eq!(registry.activation_registry_id(), expected_registry_id);
-            assert_eq!(registry.stable_lag_blocks(), 5);
+            assert_eq!(registry.stable_lag_blocks(), 10);
             assert_eq!(
                 versions.active_version_set_id(),
                 "01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691"
@@ -1396,7 +1396,7 @@ mod tests {
             r#"{{
                 "schema_version": "{0}",
                 "schema_version": "{0}",
-                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":5}},
+                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":10}},
                 "records": []
             }}"#,
             ACTIVATION_REGISTRY_SCHEMA_VERSION
@@ -1412,7 +1412,7 @@ mod tests {
         let json = format!(
             r#"{{
                 "schema_version": "{}",
-                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":5}},
+                "scope": {{"network_type":"regtest","network_id":"btc-regtest","stable_lag_blocks":10}},
                 "records": [],
                 "unexpected": true
             }}"#,
@@ -1429,7 +1429,7 @@ mod tests {
         let json = format!(
             r#"{{
                 "schema_version": "{}",
-                "scope": {{"network_type":"mainnet","network_id":"btc-mainnet","stable_lag_blocks":5}},
+                "scope": {{"network_type":"mainnet","network_id":"btc-mainnet","stable_lag_blocks":10}},
                 "records": [{{
                     "uip":"UIP-0003",
                     "version_family":"energy_formula_version",
@@ -1724,7 +1724,7 @@ mod tests {
         mainnet.scope = BtcActivationRegistryScope {
             network_type: ActivationNetworkType::Mainnet,
             network_id: "btc-mainnet".to_string(),
-            stable_lag_blocks: 5,
+            stable_lag_blocks: 10,
         };
         assert_ne!(
             regtest.activation_registry_id(),

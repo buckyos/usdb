@@ -9,20 +9,20 @@
   "btc_source": {
     "network_id": "btc-mainnet",
     "index_origin_height": 963800,
-    "activation_registry_id": "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c"
+    "activation_registry_id": "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
   },
   "artifacts": {
     "genesis": {
       "path": "artifacts/usdb-genesis.json",
-      "sha256": "da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5"
+      "sha256": "ba7fa81fab2388b00acd1df9117124cecea0f5a99379c1c412d79eb938330776"
     },
     "genesis_manifest": {
       "path": "artifacts/usdb-genesis.manifest.json",
-      "sha256": "eb7e95861de8344890fe1e34272ece604325c74c3ed1bcbdcbd80bcefb36bbf6"
+      "sha256": "8403fac8188ace492a9e7830dcf68c52370ce4972d50eacace8aa78b8166feee"
     },
     "chain_bootstrap": {
       "path": "artifacts/usdb-chain-bootstrap-config.json",
-      "sha256": "f70f6bca3eafea899d9abd1fe08469b67db7aff05fcb38fdd337fc1772c7773a"
+      "sha256": "14f79cccc8234690bc8b0279a12ee6bb7d412c4a3011eea5736d241d153906d6"
     },
     "sourcedao_bootstrap": {
       "path": "artifacts/sourcedao-bootstrap-config.json",
@@ -38,7 +38,7 @@
     },
     "network_environment": {
       "path": "network.env",
-      "sha256": "9c35676e544f90ec0ec8c5fa74eaa67b0cd67bf21004034baf00194d55da385f"
+      "sha256": "72158a4828aea67af9e7db13a9d7eb536518103d23973ad6acdb797fd16c865f"
     },
     "compose_overlay": {
       "path": "compose.network.yml",

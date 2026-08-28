@@ -213,7 +213,7 @@ RPC JSON 字段 `context` 表示本文的 `query_context`。`block_height` 与 `
     "btc_height": 900123,
     "snapshot_id": "...",
     "stable_block_hash": "000000...",
-    "stable_lag": 5,
+    "stable_lag": 10,
     "local_state_commit": "...",
     "system_state_id": "...",
     "balance_history_api_version": "1.0.0",

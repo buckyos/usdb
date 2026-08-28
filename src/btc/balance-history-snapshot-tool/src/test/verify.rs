@@ -50,7 +50,7 @@ fn completed_artifact_round_trip_checks_db_manifest_and_marker() {
             network: "regtest".to_string(),
             stable_height: 10,
             stable_block_hash: block_hash.clone(),
-            stable_lag: 5,
+            stable_lag: 10,
             balance_history_api_version: "1.0.0".to_string(),
             balance_history_semantics_version: "1".to_string(),
         },

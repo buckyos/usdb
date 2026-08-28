@@ -33,8 +33,8 @@ accepted-bootstrap 身份的修改都必须发布新的 bundle，并使用新的
 | Bitcoin Core | `28.1`、非裁剪、`txindex=1` | 发布兼容基线 | release record |
 | BTC index origin | `963800` | BTC 索引身份 | chain bootstrap config |
 | BTC registry revision | mainnet revision 1 | consensus | activation registry artifact |
-| BTC registry ID | `cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c` | consensus | activation registry artifact |
-| BTC stable lag | `5` blocks | BTC state view identity | activation registry artifact |
+| BTC registry ID | `a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224` | consensus | activation registry artifact |
+| BTC stable lag | `10` blocks | BTC state view identity | activation registry artifact |
 | BTC anchor max age | `6650` USDB blocks | consensus | chain bootstrap config |
 
 Bitcoin Core 的 image digest、数据目录、RPC userpass 和 P2P bind 是节点本地配置，不进入 genesis。

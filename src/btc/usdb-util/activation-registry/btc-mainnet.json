@@ -3,7 +3,7 @@
   "scope": {
     "network_type": "mainnet",
     "network_id": "btc-mainnet",
-    "stable_lag_blocks": 5
+    "stable_lag_blocks": 10
   },
   "records": [
     {

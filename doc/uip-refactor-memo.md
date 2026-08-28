@@ -1167,13 +1167,13 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
   block，`btc_anchor_age_blocks` 从 `0` 严格连续递增到 `15`；逐块 reward、issued
   supply 与最终 miner balance 交叉核算一致。
 
-## BTC Registry Stable Lag v2 与 Release Drift Guard
+## BTC Registry Stable Lag v2 与 Release Drift Guard（历史 lag=5 基线）
 
 状态：基础实现与首轮验证已提交 `353f466`；2026-07-29 stable-lag 边界矩阵扩展已提交
 `4c92f7d`。
 
 - BTC registry schema/hash domain 升级为 v2，network scope 新增必填
-  `stable_lag_blocks`。mainnet/regtest 当前均固定为 `5`；balance-history 从 registry
+  `stable_lag_blocks`。该批次 mainnet/regtest 均固定为 `5`；balance-history 从 registry
   解析 stable sync target，不再使用全局 `0` 常量或本地覆盖。
 - registry v2 canonical ID：
   `btc-mainnet=cc47923f...c54c1c`、`btc-regtest revision 1=596728fd...330aa9`、
@@ -1187,7 +1187,7 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
   USDB activation checkpoint：registry binding、anchor max age 和全部 policy versions。
 - 新增 Rust `generate_go_release_manifest_golden --check` 和 Go manifest/config test；
   两段校验共同拒绝 Rust manifest 与 Go `USDBChainConfig` / `USDBGenesisHash` 漂移。
-- `stable_lag=5` 仅缓冲普通短 BTC reorg，不解决越过 stable frontier 后既有 USDB
+- 该批次的 `stable_lag=5` 仅缓冲普通短 BTC reorg，不解决越过 stable frontier 后既有 USDB
   selector 的 orphan archive 或 deterministic rewind；该 public-network 边界继续保留。
 
 ### 验证结果
@@ -1200,9 +1200,9 @@ Go `9177f39e0` / usdb `2605d12`。此前 threshold signer/publisher 方案仍只
 - balance-history 隔离 regtest smoke 验证 tip `20` / stable `15`、lag 窗口内
   depth-3 branch replacement、restart identity 不变，以及 tip `23` / stable `18`
   后 replacement branch 正常进入稳定视图。
-- profile 跨进程 E2E 在 mint/top-up 后分别补挖 5 个确认块，balance-history、
+- profile 跨进程 E2E 在 mint/top-up 后分别补挖 5 个稳定窗口块，balance-history、
   usdb-indexer 和 Go verifier 使用同一稳定高度，且 profile 明确返回
-  `external_state.stable_lag=5`。
+  当时返回 `external_state.stable_lag=5`。
 - 该 E2E 完成全部断言并产出 13 个连续 USDB blocks；进程清理日志仍复现既有
   usdb-indexer HTTP worker 的 Tokio runtime drop panic。该问题在本批之前的大量 live
   日志中已存在，不是 stable-lag 回归，但后续应单独修复并让 live harness 对 panic
@@ -1287,8 +1287,8 @@ Go `76dcafd35` / usdb `9202107`。
 - 新矩阵先逐高度比较 raw inscription 和 USDB mint source，再分别使用 bitcoind/ord
   primary indexer 重放，逐字段比较 pass、energy、invalid、candidate、pass commit、
   local state commit 和 system state；两份 canonical view 完全一致。
-- 既有 `transfer_remint` live 与 three-collab breakdown 已补稳定确认块并在
-  `stable_lag=5` 下复跑通过；three-collab 同时校验 profile 返回相同 stable lag。
+- 既有 `transfer_remint` live 与 three-collab breakdown 已补稳定窗口块并在
+  当时的 `stable_lag=5` registry 下复跑通过；three-collab 同时校验 profile 返回相同 stable lag。
 - 验证结果：新 UIP0001-0004 矩阵、基础 transfer/remint 和 UIP0004 three-collab
   targeted live 全部通过；Rust source/content 与 OP_RETURN 单测、ShellCheck 及完整
   crate 回归结果见本批最终 review 记录。
@@ -1478,3 +1478,34 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
 - validator 33 项定向测试通过，覆盖 development fixture 允许、testnet/mainnet 拒绝已知开发地址、
   未冻结 testnet 地址拒绝、chain/SourceDAO 不一致、admin alloc 缺失/余额错误和 development admin
   残留余额拒绝。
+
+## BTC Stable Lag 10 上线前冻结
+
+状态：2026-08-28 已完成实现、artifact 重生成和 live/regtest 复核，等待 review，尚未提交。
+
+- 在首个共享网络启动前将 mainnet、regtest revision 1 和 staged revision 2 的
+  `stable_lag_blocks` 从 `5` 统一调整为 `10`。该字段属于 BTC registry hash domain，不能作为
+  节点本地覆盖项。
+- 新 canonical registry ID：mainnet
+  `a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224`；regtest revision 1
+  `bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0`；regtest revision 2
+  `adcca18bb4eccd4715bb0d6ec69c7b3d5e09065fac0cb33b145db7b621f59fba`。active-version-set ID
+  保持 `01d1d45f342994690d8ae27ac3d8538ad31e5f81f8e948c838067b3b52f94691`。
+- Rust registry/catalog、release manifest、Go golden/config/verifier、testnet-v0 bootstrap/bundle 和
+  RPC/live 脚本全部更新。testnet-v0 canonical genesis block hash 保持
+  `0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23`，但 genesis 文件 SHA-256
+  更新为 `ba7fa81fab2388b00acd1df9117124cecea0f5a99379c1c412d79eb938330776`。
+- snapshot ID 承诺 `stable_lag`。新增负向测试证明内部自洽的旧 `lag=5` manifest 也会在 live DB
+  swap 前被拒绝；开发期旧 snapshot 必须使用当前 binary 重新生成/验证，不提供兼容双栈。
+- balance-history 隔离 smoke 通过：`tip=3` fail closed，`tip=20/stable=10`，restart 与 depth-3
+  window replacement identity 不变，继续推进到 `tip=23/stable=13`。
+- reorg 矩阵在 `depth=9/10/11` 下全部通过；online、offline restart、fresh joiner 均在 stable
+  height `105` 收敛。`depth=11` 证明首次越过 frontier 时可检测并重放，但 lag 仍是索引缓冲，
+  不等价于 BTC finality 或 USDB 深层 reorg 治理策略。
+- Bitcoin Core UTXO audit 在 `scan_height=112/stable_height=102/stable_lag=10` 下抽查 8 个 UTXO，
+  `mismatch_count=0`。
+- 真实 ord/geth profile E2E 在 BTC context `147` 返回新 regtest registry ID 与 lag `10`，连续 3 个
+  USDB block 的 selector、difficulty、reward、issued supply 和最终余额核算一致。energy-growth E2E
+  验证 BTC context `134 -> 147` 后 raw/effective energy `0 -> 2000`，8 个 USDB blocks 全部通过。
+- three-collab targeted live 在 query height `143`、head `144` 下验证 3 个 collab 聚合、candidate、
+  breakdown 两页历史重放和 `external_state.stable_lag=10`。

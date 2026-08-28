@@ -14,6 +14,7 @@ BH_RPC_PORT="${BH_RPC_PORT:-31010}"
 WALLET_NAME="${WALLET_NAME:-bhcoreutxoaudit}"
 SAMPLE_ADDRESS_COUNT="${SAMPLE_ADDRESS_COUNT:-12}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-8}"
+EXPECTED_STABLE_LAG="${EXPECTED_STABLE_LAG:-10}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 AUDIT_REPORT="${AUDIT_REPORT:-$WORK_DIR/bitcoin-core-utxo-audit.json}"
@@ -60,10 +61,9 @@ main() {
     "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount
   )"
 
-  # The protocol registry currently freezes a five-block lag for regtest. Mining
-  # exactly that many blocks makes event_height the service's stable frontier and
+  # Mining exactly the registry lag makes event_height the service's stable frontier and
   # leaves the repeated mining script visibly touched in the excluded lag window.
-  regtest_mine_blocks 5 "$mining_address"
+  regtest_mine_blocks "$EXPECTED_STABLE_LAG" "$mining_address"
 
   regtest_create_balance_history_config
   regtest_start_balance_history
@@ -73,7 +73,7 @@ main() {
 
   stable_lag="$(regtest_get_snapshot_stable_lag)"
   expected_stable_height="$(regtest_get_snapshot_stable_height)"
-  if [[ "$stable_lag" != "5" || "$expected_stable_height" != "$event_height" ]]; then
+  if [[ "$stable_lag" != "$EXPECTED_STABLE_LAG" || "$expected_stable_height" != "$event_height" ]]; then
     regtest_log "Unexpected stable frontier: event=${event_height}, stable=${expected_stable_height}, lag=${stable_lag}"
     exit 1
   fi
@@ -91,15 +91,16 @@ main() {
     --seed 20260827 \
     --output "$AUDIT_REPORT"
 
-  python3 - "$AUDIT_REPORT" "$SAMPLE_SIZE" <<'PY'
+  python3 - "$AUDIT_REPORT" "$SAMPLE_SIZE" "$EXPECTED_STABLE_LAG" <<'PY'
 import json
 import sys
 
 report = json.load(open(sys.argv[1], encoding="utf-8"))
 sample_size = int(sys.argv[2])
+expected_stable_lag = int(sys.argv[3])
 assert report["ok"] is True, report
-assert report["stable_lag"] == 5, report
-assert report["scan_height"] - report["stable_height"] == 5, report
+assert report["stable_lag"] == expected_stable_lag, report
+assert report["scan_height"] - report["stable_height"] == expected_stable_lag, report
 assert report["lag_window_touched_candidate_count"] >= 1, report
 assert report["verified_script_count"] == sample_size, report
 assert report["gettxout_checked_count"] >= 1, report

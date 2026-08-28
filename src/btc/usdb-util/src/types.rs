@@ -487,7 +487,7 @@ mod tests {
             network: "regtest".to_string(),
             stable_height: 100,
             stable_block_hash: "aa".repeat(32),
-            stable_lag: 5,
+            stable_lag: 10,
             balance_history_api_version: "1.0.0".to_string(),
             balance_history_semantics_version: "balance-snapshot-at-or-before:v1".to_string(),
         };
@@ -502,7 +502,7 @@ mod tests {
         assert_ne!(a, build_consensus_snapshot_id(&replacement));
 
         replacement.stable_block_hash = "aa".repeat(32);
-        replacement.stable_lag = 6;
+        replacement.stable_lag = 11;
         assert_ne!(a, build_consensus_snapshot_id(&replacement));
     }
 

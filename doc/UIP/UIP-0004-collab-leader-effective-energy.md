@@ -439,8 +439,9 @@ collab pass 退出统一使用 remint + `prev`，不会产生额外双计数空�
 
 当前 `usdb-indexer` 单元和 RPC 层测试已覆盖上述 core 场景；world simulator 交叉覆盖
 `leader_btc_addr` remint 跟随、fixed binding 不跟随和 old collab consumed。
-three-collab breakdown 已在 `stable_lag=5` 下获得真实 ord targeted smoke 覆盖，并验证
-profile/candidate/breakdown 与历史分页。后续 live 工作集中在更大规模 collab 聚合、
+three-collab breakdown 的历史 targeted smoke 已在当时的 `stable_lag=5` registry 下通过，并验证
+profile/candidate/breakdown 与历史分页；当前 registry 已升级为 `stable_lag=10`，对应 live
+复核结果记录在重构备忘。后续 live 工作集中在更大规模 collab 聚合、
 分页容量和新增跨版本边界，不重复已有 deterministic 状态组合。
 
 # 已确认规则

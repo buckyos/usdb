@@ -518,6 +518,11 @@ snapshot 的发布身份和安装后的 RocksDB identity 是两层不同约束�
 fail closed；非空但没有 identity 的旧数据库也会被拒绝。当前仍处于开发阶段，不提供旧数据
 迁移：应移动或删除旧 RocksDB 后从创世重建，或者向空 root 安装使用当前代码生成的 snapshot。
 
+`snapshot ID` 还承诺 registry 固定的 `stable_lag`。当前 mainnet/regtest 均为 `10`；使用
+旧 `stable_lag=5` 生成的 manifest 即使文件哈希和内部 snapshot ID 自洽，也会在替换 live DB
+前因 expected state-ref 不一致而被拒绝。已有构建工作区必须用当前 binary 重新完成 create、
+verify 和 signed install 演练；禁止手工修改旧 manifest 后重新签名。
+
 当前 data model 为
 `balance-history-data-model:bip30-generations-core-unspendable-v2`。其中 unspendable 与
 Bitcoin Core `CScript::IsUnspendable()` 完全一致：首字节为 `OP_RETURN`，或 script 长度大于

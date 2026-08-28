@@ -116,7 +116,7 @@ Example result:
   "latest_block_commit": "4f7c...",
   "balance_query_floor": 800000,
   "history_query_floor": 800001,
-  "stable_lag": 5,
+  "stable_lag": 10,
   "balance_history_api_version": "1.0.0",
   "balance_history_semantics_version": "balance-snapshot-at-or-before:v1",
   "commit_protocol_version": "1.0.0",

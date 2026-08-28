@@ -2060,8 +2060,8 @@ mod tests {
     }
 
     #[test]
-    fn test_install_rejects_manifest_state_ref_mismatch_before_swap() {
-        let root_dir = temp_root("install_manifest_bad_snapshot_id");
+    fn test_install_rejects_manifest_with_legacy_stable_lag_before_swap() {
+        let root_dir = temp_root("install_manifest_legacy_stable_lag");
         let config = Arc::new(test_config_with_root(&root_dir));
 
         let live_db = BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();
@@ -2100,7 +2100,9 @@ mod tests {
 
         let mut manifest =
             build_manifest_for_snapshot(config.as_ref(), &snapshot_path, 10, &new_commit);
-        manifest.state_ref.snapshot_id = "ff".repeat(32);
+        manifest.state_ref.consensus_identity.stable_lag = 5;
+        manifest.state_ref.snapshot_id =
+            build_consensus_snapshot_id(&manifest.state_ref.consensus_identity);
         manifest.save(&manifest_path).unwrap();
 
         let status = Arc::new(SyncStatusManager::new());
@@ -2113,6 +2115,8 @@ mod tests {
             })
             .unwrap_err();
         assert!(err.contains("state ref mismatch"));
+        assert!(err.contains("stable_lag: 5"));
+        assert!(err.contains("stable_lag: 10"));
 
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();

@@ -38,16 +38,16 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 
 默认参数下，脚本会：
 
-1. 先挖到 BTC tip `3`，保持 `tip < stable_lag=5`；
+1. 先挖到 BTC tip `3`，保持 `tip < stable_lag=10`；
 2. 启动真实 `balance-history`，断言 stable height 为 `0`，snapshot/state-ref 返回 `SNAPSHOT_NOT_READY`；
 3. 在 tip 仍为 `3` 时重启，再次验证相同 fail-closed 状态；
-4. 继续挖到 BTC tip `20`，验证服务追块并收敛到 stable height `15`；
-5. 断言 `get_snapshot_info().stable_lag == 5`，保存 snapshot 与 height `15` state-ref；
+4. 继续挖到 BTC tip `20`，验证服务追块并收敛到 stable height `10`；
+5. 断言 `get_snapshot_info().stable_lag == 10`，保存 snapshot 与 height `10` state-ref；
 6. 干净重启同一数据目录，逐字段比较 snapshot/state-ref；
 7. 停止服务并替换 stable frontier 之上的最后 `3` 个 BTC blocks；
 8. 重启后验证 stable snapshot/state-ref identity 未改变；
 9. 再继续挖 `3` 个块，使替代分支进入 stable view；
-10. 验证 stable height 收敛到 `18`，同时 height `15` 的历史 state-ref 仍可精确重放。
+10. 验证 stable height 收敛到 `13`，同时 height `10` 的历史 state-ref 仍可精确重放。
 
 成功标志：
 
@@ -69,7 +69,7 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 7. `PRE_LAG_TIP_HEIGHT`：首次启动时的 BTC tip，必须小于 lag（默认 `3`）
 8. `TARGET_TIP_HEIGHT`：追块后的 BTC tip 高度（默认 `20`）
 9. `EXTRA_BLOCKS`：初始断言后追加挖的区块数（默认 `3`）
-10. `EXPECTED_STABLE_LAG`：期望的 registry lag（默认 `5`）
+10. `EXPECTED_STABLE_LAG`：期望的 registry lag（默认 `10`）
 11. `REORG_DEPTH`：lag 窗口内替换的 BTC block 数，必须小于 lag（默认 `3`）
 12. `SYNC_TIMEOUT_SEC`：等待稳定高度追平的超时秒数（默认 `120`）
 
@@ -96,7 +96,7 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
 7. Go verifier 再次将 profile `external_state.stable_lag` 与 chain config 绑定的 registry golden 比较，形成独立的下游 fail-closed 检查。
 8. 本测试只验证 lag 窗口内 replacement 与越过 frontier 后的正常推进，不宣称解决深层 BTC reorg 后既有 USDB selector 的 archive/rewind。
 
-## 2026-07-29 执行结果
+## 2026-07-29 历史执行结果（lag=5）
 
 - 默认参数的隔离 regtest 矩阵通过：
   - `tip=3` 时 stable height 为 `0`，snapshot/state-ref 均为 `SNAPSHOT_NOT_READY`；
@@ -109,3 +109,13 @@ src/btc/balance-history/scripts/regtest_stable_lag_smoke.sh
   - 当前、持久化 current、持久化 historical 三类 lag mismatch；
   - 同一 DB 重启后的 snapshot/profile/candidate 首页面与 cursor 续页。
 - 本轮使用独立临时 regtest datadir 和端口，没有访问或修改本机 BTC mainnet 服务。
+
+## 2026-08-28 当前执行结果（lag=10）
+
+- `tip=3` 时 stable height 饱和为 `0`，snapshot/state-ref 均返回
+  `SNAPSHOT_NOT_READY`；重启后结果不变。
+- `tip=20` 时 stable height 为 `10`，clean restart 和 depth-3 lag-window
+  replacement 后 snapshot/state-ref identity 保持不变。
+- replacement branch 推进到 `tip=23` 后 stable height 为 `13`，height `10` 的
+  historical state-ref 仍可重放。
+- 测试使用独立临时 regtest datadir 和端口，没有访问或修改本机 BTC mainnet 服务。

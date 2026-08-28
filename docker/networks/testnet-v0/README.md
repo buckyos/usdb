@@ -22,7 +22,7 @@
 | P2P | `31303/TCP+UDP` |
 | BTC source | `btc-mainnet` |
 | BTC index origin | `963800` |
-| BTC registry ID | `cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c` |
+| BTC registry ID | `a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224` |
 | quote / aux | `0 / 0` |
 | bootstrap admin | `0x0b5223FD31cDc1536f31b3627e6D7025b52310c9` |
 | genesis SHA-256 | `da5d9062d26a75c7ec4d6f3f2b567ffd627c53b5482f1bc702ce37026b06e2e5` |

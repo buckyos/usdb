@@ -92,7 +92,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 \
 bash src/btc/balance-history/scripts/regtest_bitcoin_core_utxo_audit.sh
 ```
 
-该 regtest 构造多地址 UTXO，在 `stable_lag=5` 下实际调用 `scantxoutset`、
+该 regtest 构造多地址 UTXO，在当前 `stable_lag=10` 下实际调用 `scantxoutset`、
 `gettxout` 和 `getblock verbosity=3`，并断言 lag-window 内重复出现的 mining script 被排除。
 它也已加入 `run_regtest_suite.sh correctness`。
 

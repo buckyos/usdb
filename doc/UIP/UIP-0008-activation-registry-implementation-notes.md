@@ -61,7 +61,7 @@ uip-0008-btc-activation-registry:v2
 
 每个文件包含一个顶层
 `scope = network_type + network_id + stable_lag_blocks`。当前 mainnet/regtest 固定
-`stable_lag_blocks = 5`；该值进入 registry canonical ID，balance-history 只能从 scope
+`stable_lag_blocks = 10`；该值进入 registry canonical ID，balance-history 只能从 scope
 读取，禁止本地配置覆盖。同一 catalog 的后续 revision 必须保持整个 scope 不变。
 public freeze 前调整 lag 会重写 draft artifact 并重生成所有下游 identity；public freeze
 后则需要新的 versioned lag 语义或新网络，普通 registry revision 与 USDB activation
@@ -71,9 +71,9 @@ checkpoint 不能单独改变该值。BTC activation record 只包含一个 BTC-
 当前 canonical ID：
 
 ```text
-btc-mainnet = cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c
-btc-regtest revision 1 (current) = 596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9
-btc-regtest revision 2 (staged)  = cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497
+btc-mainnet = a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224
+btc-regtest revision 1 (current) = bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0
+btc-regtest revision 2 (staged)  = adcca18bb4eccd4715bb0d6ec69c7b3d5e09065fac0cb33b145db7b621f59fba
 ```
 
 两个 registry 当前激活相同的九个 BTC v1 family，所以 `active_version_set_id` 相同：

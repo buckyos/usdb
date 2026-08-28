@@ -50,7 +50,7 @@ Standards Track UIP，并通过 UIP-0008 的版本和激活机制生效。当前
 
 当前 draft 基线包含以下保护：
 
-1. BTC activation registry 固定 `stable_lag_blocks = 5`。
+1. BTC activation registry 固定 `stable_lag_blocks = 10`。
 2. `balance-history` 只向下游暴露 stable frontier 及更早的状态。
 3. `snapshot_id` 承诺对应的 `stable_block_hash`。
 4. UIP-0007 anchor policy 禁止子区块 BTC height 回退。
@@ -76,11 +76,11 @@ finality。
 
 ### 3.3 当前参数的含义
 
-`stable_lag_blocks = 5` 是当前开发阶段的风险缓冲参数，不是以下任一承诺：
+`stable_lag_blocks = 10` 是当前开发阶段的风险缓冲参数，不是以下任一承诺：
 
-1. BTC block 在 5 个确认后具有绝对 finality。
+1. BTC block 在进入 stable frontier 后具有绝对 finality。
 2. USDB 节点可以使用本机 BTC tip 判断一个历史 USDB block 是否有效。
-3. 深度超过 5 的 reorg 可以由节点各自自动处理。
+3. 深度超过 10 的 reorg 可以由节点各自自动处理。
 4. UIP-0007 bounded-reuse guard 可以替代 reorg recovery。
 
 public testnet/mainnet 上线前仍需根据实际运行目标复核 stable lag。

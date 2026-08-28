@@ -221,7 +221,7 @@ BTC record 固定以 `btc_height` 为 anchor，不再逐条重复 chain/network/
   "scope": {
     "network_type": "regtest",
     "network_id": "btc-regtest",
-    "stable_lag_blocks": 5
+    "stable_lag_blocks": 10
   },
   "records": [{
     "uip": "UIP-0003",
@@ -405,9 +405,9 @@ public freeze 后若需调整，必须由新 schema 定义按高度可重放的 
 两种 id 都使用 SHA-256。当前网络作用域 registry golden ID 为：
 
 ```text
-btc-mainnet (stable_lag_blocks=5) = cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c
-btc-regtest revision 1 (current, stable_lag_blocks=5) = 596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9
-btc-regtest revision 2 (staged, stable_lag_blocks=5)  = cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497
+btc-mainnet (stable_lag_blocks=10) = a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224
+btc-regtest revision 1 (current, stable_lag_blocks=10) = bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0
+btc-regtest revision 2 (staged, stable_lag_blocks=10)  = adcca18bb4eccd4715bb0d6ec69c7b3d5e09065fac0cb33b145db7b621f59fba
 ```
 
 两个网络当前激活相同的 BTC v1 九 family，因此跨实现 golden `active_version_set_id` 相同：

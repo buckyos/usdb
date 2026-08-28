@@ -3,7 +3,7 @@
   "scope": {
     "network_type": "regtest",
     "network_id": "btc-regtest",
-    "stable_lag_blocks": 5
+    "stable_lag_blocks": 10
   },
   "records": [
     {

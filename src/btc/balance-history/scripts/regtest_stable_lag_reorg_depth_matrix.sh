@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MATRIX_WORK_DIR="${MATRIX_WORK_DIR:-$(mktemp -d /tmp/usdb-bh-stable-lag-matrix-XXXXXX)}"
-EXPECTED_STABLE_LAG="${EXPECTED_STABLE_LAG:-5}"
+EXPECTED_STABLE_LAG="${EXPECTED_STABLE_LAG:-10}"
 BASE_PORT="${BASE_PORT:-30710}"
 PORT_STRIDE="${PORT_STRIDE:-40}"
 REGTEST_LOG_PREFIX="[stable-lag-depth-matrix]"

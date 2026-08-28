@@ -8,7 +8,7 @@
       "artifact": "activation-registry/btc-mainnet.json",
       "revision": 1,
       "current": true,
-      "activation_registry_id": "cc47923f4cdff1875f89771d08e1b89fa22295c92bb816073c3271dc53c54c1c"
+      "activation_registry_id": "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
     },
     {
       "network_type": "regtest",
@@ -16,7 +16,7 @@
       "artifact": "activation-registry/btc-regtest.json",
       "revision": 1,
       "current": true,
-      "activation_registry_id": "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9"
+      "activation_registry_id": "bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0"
     },
     {
       "network_type": "regtest",
@@ -24,7 +24,7 @@
       "artifact": "activation-registry/btc-regtest-revision-2.json",
       "revision": 2,
       "current": false,
-      "activation_registry_id": "cdde4da47ce5748a27ff307c4d8cadc22ef59f636f0ead5d31cf310f6dc33497"
+      "activation_registry_id": "adcca18bb4eccd4715bb0d6ec69c7b3d5e09065fac0cb33b145db7b621f59fba"
     }
   ],
   "usdb_chain_configs": [
@@ -36,7 +36,7 @@
       "activations": [
         {
           "block": 0,
-          "btc_activation_registry_id": "596728fd8ccca69c9421a13083e39e953d082e7b031f1f3731481a200c330aa9",
+          "btc_activation_registry_id": "bfd8c7e41ab4035db64e52eb9ea55050c08211c2ae4c2a88d8b2fc17ae1718b0",
           "btc_anchor_max_age_blocks": 6650,
           "versions": {
             "payload_version": 1,

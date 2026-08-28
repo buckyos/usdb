@@ -134,7 +134,7 @@ src/btc/usdb-indexer/scripts/regtest_live_ord_uip0001_0004_gap_matrix.sh
 27. `ORD_CONTENT_FILE`：live ord 首次铸造时使用的铭文内容文件（默认自动生成合法 usdb mint）
 28. `DIAG_TAIL_LINES`：失败诊断时每个关键日志打印的尾部行数（默认 `120`）
 29. `RUN_UIP0001_0004_LIVE_MATRIX`：`run_regression.sh` 是否执行 UIP0001-0004 集中 live 矩阵（默认 `0`）
-30. `BTC_STABLE_LAG_BLOCKS`：旧 live 脚本为当前 regtest registry 补挖的稳定确认块数（当前必须为 `5`）
+30. `BTC_STABLE_LAG_BLOCKS`：旧 live 脚本为当前 regtest registry 补挖的稳定确认块数（当前必须为 `10`）
 
 示例：
 
