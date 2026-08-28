@@ -22,22 +22,24 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
         self.source_dao_revision = "c" * 40
         self.release_id = "usdb-testnet-v0-r1"
         self.lock = {
-            "schema_version": "usdb-ci-revisions:v1",
-            "coordinator": "go_ethereum",
-            "repositories": {
-                "go_ethereum": {
-                    "repository": "buckyos/go-ethereum",
-                    "revision": "0" * 40,
-                },
+            "schema_version": "usdb-ci-revisions:v2",
+            "coordinator": {
+                "repository": "buckyos/go-ethereum",
+                "directory": "go-ethereum",
+            },
+            "dependencies": {
                 "usdb": {
                     "repository": "buckyos/usdb",
+                    "directory": "usdb",
                     "revision": self.usdb_revision,
                 },
                 "source_dao": {
                     "repository": "buckyos/SourceDAO",
+                    "directory": "SourceDAO",
                     "revision": self.source_dao_revision,
                 },
             },
+            "toolchains": {},
         }
         self.usdb_runs = self.runs(
             revision=self.usdb_revision,
@@ -113,8 +115,18 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
         )
 
     def test_release_coordinator_must_match_go_lock(self) -> None:
-        self.lock["repositories"]["usdb"]["revision"] = "d" * 40
+        self.lock["dependencies"]["usdb"]["revision"] = "d" * 40
         with self.assertRaisesRegex(ValueError, "does not match"):
+            self.resolve()
+
+    def test_v1_compatibility_lock_is_rejected(self) -> None:
+        self.lock["schema_version"] = "usdb-ci-revisions:v1"
+        with self.assertRaisesRegex(ValueError, "unsupported compatibility lock schema"):
+            self.resolve()
+
+    def test_unknown_compatibility_lock_key_is_rejected(self) -> None:
+        self.lock["unknown"] = True
+        with self.assertRaisesRegex(ValueError, "top-level keys mismatch"):
             self.resolve()
 
     def test_missing_image_workflow_is_rejected(self) -> None:

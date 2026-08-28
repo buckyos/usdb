@@ -138,29 +138,43 @@ def build_compatibility_lock(path: Path, revisions: dict[str, str]) -> dict[str,
     lock = read_json(path)
     require_exact_keys(
         lock,
-        {"schema_version", "coordinator", "repositories", "toolchains"},
+        {"schema_version", "coordinator", "dependencies", "toolchains"},
         "compatibility lock",
     )
-    require(lock.get("schema_version") == "usdb-ci-revisions:v1", "unsupported compatibility lock schema")
-    require(lock.get("coordinator") == "go_ethereum", "compatibility lock coordinator must be go_ethereum")
-    repositories = lock.get("repositories")
-    require(isinstance(repositories, dict), "compatibility lock repositories must be an object")
-    require_exact_keys(repositories, set(REPOSITORIES), "compatibility lock repositories")
-    for key, expected_repository in REPOSITORIES.items():
-        entry = repositories[key]
-        require(isinstance(entry, dict), f"compatibility lock repositories.{key} must be an object")
+    require(lock.get("schema_version") == "usdb-ci-revisions:v2", "unsupported compatibility lock schema")
+    coordinator = lock.get("coordinator")
+    require(isinstance(coordinator, dict), "compatibility lock coordinator must be an object")
+    require_exact_keys(coordinator, {"repository", "directory"}, "compatibility lock coordinator")
+    require(
+        coordinator.get("repository") == REPOSITORIES["go_ethereum"],
+        "compatibility lock coordinator repository mismatch",
+    )
+    require(
+        coordinator.get("directory") == REPOSITORY_DIRECTORIES["go_ethereum"],
+        "compatibility lock coordinator directory mismatch",
+    )
+    dependencies = lock.get("dependencies")
+    dependency_keys = {"usdb", "source_dao"}
+    require(isinstance(dependencies, dict), "compatibility lock dependencies must be an object")
+    require_exact_keys(dependencies, dependency_keys, "compatibility lock dependencies")
+    for key in dependency_keys:
+        entry = dependencies[key]
+        require(isinstance(entry, dict), f"compatibility lock dependencies.{key} must be an object")
         require_exact_keys(
             entry,
             {"repository", "directory", "revision"},
-            f"compatibility lock repositories.{key}",
+            f"compatibility lock dependencies.{key}",
         )
-        require(entry.get("repository") == expected_repository, f"compatibility lock repository mismatch for {key}")
-        require(entry.get("directory") == REPOSITORY_DIRECTORIES[key], f"compatibility lock directory mismatch for {key}")
-        require_revision(entry.get("revision"), f"compatibility lock repositories.{key}.revision")
+        require(entry.get("repository") == REPOSITORIES[key], f"compatibility lock repository mismatch for {key}")
+        require(
+            entry.get("directory") == REPOSITORY_DIRECTORIES[key],
+            f"compatibility lock directory mismatch for {key}",
+        )
+        require_revision(entry.get("revision"), f"compatibility lock dependencies.{key}.revision")
     require(isinstance(lock["toolchains"], dict), "compatibility lock toolchains must be an object")
     for key in ("usdb", "source_dao"):
         require(
-            repositories[key]["revision"] == revisions[key],
+            dependencies[key]["revision"] == revisions[key],
             f"selected {key} revision does not match the go-ethereum compatibility lock",
         )
     return {

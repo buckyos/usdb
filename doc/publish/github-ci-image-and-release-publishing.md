@@ -75,17 +75,28 @@ release tag 必须满足：
 6. push 两个 tag，等待两仓 `USDB Release Build` 成功；
 7. 手工运行 manifest workflow，只输入同一个 `release_id`。
 
-示例：
+协调工具位于 Go 仓库 `scripts/usdb/prepare_release.py`。默认从脚本所在 `go-ethereum` checkout
+推导其上级 workspace，因此标准 sibling 布局不需要传 `--workspace-root`；非标准布局可显式覆盖。
+推荐命令：
 
 ```bash
-git -C /path/to/usdb tag -a usdb-testnet-v0-r1 <USDB_COMMIT> \
-  -m "Freeze USDB testnet-v0 release r1"
-git -C /path/to/go-ethereum tag -a usdb-testnet-v0-r1 <GO_ETHEREUM_COMMIT> \
-  -m "Freeze USDB testnet-v0 release r1"
+cd /path/to/go-ethereum
 
-git -C /path/to/usdb push origin refs/tags/usdb-testnet-v0-r1
-git -C /path/to/go-ethereum push origin refs/tags/usdb-testnet-v0-r1
+# 预检，不修改 lock。
+python3 scripts/usdb/prepare_release.py sync-lock
+
+# USDB Fast CI 通过后更新 lock，提交并 push Go master。
+python3 scripts/usdb/prepare_release.py sync-lock --commit --push
+
+# Go Fast CI 通过后预检 tag，再显式创建和 push。
+python3 scripts/usdb/prepare_release.py tag --release-id usdb-testnet-v0-r1
+python3 scripts/usdb/prepare_release.py tag \
+  --release-id usdb-testnet-v0-r1 --create --push
 ```
+
+工具只接受 clean、已发布且等于对应远端主分支的 HEAD。两个远端之间无法原子 push；如果 USDB tag
+已成功而 Go tag push 失败，必须修复问题后继续 push 已创建的同一 Go tag，不能删除、移动或重建
+已经发布的 release tag。`--no-fetch` 仅供明确需要使用现有 remote-tracking refs 的离线检查。
 
 ### 3.2 USDB services
 

@@ -28,14 +28,12 @@ class ReleaseManifestTests(unittest.TestCase):
         self.compatibility_lock.write_text(
             json.dumps(
                 {
-                    "schema_version": "usdb-ci-revisions:v1",
-                    "coordinator": "go_ethereum",
-                    "repositories": {
-                        "go_ethereum": {
-                            "repository": "buckyos/go-ethereum",
-                            "directory": "go-ethereum",
-                            "revision": "0" * 40,
-                        },
+                    "schema_version": "usdb-ci-revisions:v2",
+                    "coordinator": {
+                        "repository": "buckyos/go-ethereum",
+                        "directory": "go-ethereum",
+                    },
+                    "dependencies": {
                         "usdb": {
                             "repository": "buckyos/usdb",
                             "directory": "usdb",
@@ -89,6 +87,13 @@ class ReleaseManifestTests(unittest.TestCase):
         RELEASE.write_manifest(path, manifest)
         self.assertEqual(RELEASE.load_manifest(path, self.bundle, self.compatibility_lock), manifest)
         self.assertTrue(RELEASE.HASH_RE.fullmatch(RELEASE.sha256(path)))
+
+    def test_v1_compatibility_lock_is_rejected(self) -> None:
+        lock = json.loads(self.compatibility_lock.read_text(encoding="utf-8"))
+        lock["schema_version"] = "usdb-ci-revisions:v1"
+        self.compatibility_lock.write_text(json.dumps(lock), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unsupported compatibility lock schema"):
+            self.valid_manifest()
 
     def test_mutable_or_wrong_image_reference_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
@@ -150,7 +155,7 @@ class ReleaseManifestTests(unittest.TestCase):
 
     def test_selected_revision_must_match_go_compatibility_lock(self) -> None:
         lock = json.loads(self.compatibility_lock.read_text(encoding="utf-8"))
-        lock["repositories"]["usdb"]["revision"] = "d" * 40
+        lock["dependencies"]["usdb"]["revision"] = "d" * 40
         self.compatibility_lock.write_text(json.dumps(lock), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "selected usdb revision does not match"):
             self.valid_manifest()

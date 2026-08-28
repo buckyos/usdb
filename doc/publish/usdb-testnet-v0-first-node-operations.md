@@ -104,18 +104,23 @@ git -C /path/to/go-ethereum rev-parse HEAD
 git -C /path/to/SourceDAO rev-parse HEAD
 ```
 
-所有 worktree 必须 clean。先 push USDB commit，再把该 revision 和 SourceDAO revision 写入 Go
-`ci-revisions.json` 并 push Go commit。普通 Fast CI 全部通过后，选择未使用的 release ID，并在
-两个明确 commit 上创建同名 annotated tag：
+所有 worktree 必须 clean。先 push USDB commit并等待 Fast CI，再使用 Go 仓库的协调工具更新
+`ci-revisions.json`。工具默认从当前 Go checkout 推导 sibling workspace；非标准布局才需要在子命令
+前提供 `--workspace-root`：
 
 ```bash
-git -C /path/to/usdb tag -a usdb-testnet-v0-r1 <USDB_COMMIT> \
-  -m "Freeze USDB testnet-v0 release r1"
-git -C /path/to/go-ethereum tag -a usdb-testnet-v0-r1 <GO_ETHEREUM_COMMIT> \
-  -m "Freeze USDB testnet-v0 release r1"
+cd /path/to/go-ethereum
+python3 scripts/usdb/prepare_release.py sync-lock
+python3 scripts/usdb/prepare_release.py sync-lock --commit --push
+```
 
-git -C /path/to/usdb push origin refs/tags/usdb-testnet-v0-r1
-git -C /path/to/go-ethereum push origin refs/tags/usdb-testnet-v0-r1
+Go 普通 Fast CI 通过后，选择未使用的 release ID；先 dry-run 确认三仓 SHA，再显式创建和 push
+两个同名 annotated tag：
+
+```bash
+python3 scripts/usdb/prepare_release.py tag --release-id usdb-testnet-v0-r1
+python3 scripts/usdb/prepare_release.py tag \
+  --release-id usdb-testnet-v0-r1 --create --push
 ```
 
 tag push 分别触发两个 `USDB Release Build`，重新运行 Fast gate 并构建三张 image。两边成功后手工

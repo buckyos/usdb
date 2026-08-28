@@ -184,7 +184,6 @@ jobs:
         run: >-
           python3 go-ethereum/scripts/usdb/ci_revisions.py verify
           --workspace-root "$GITHUB_WORKSPACE"
-          --current-repository go_ethereum
 
       - name: Validate frozen network bundle
         run: >-

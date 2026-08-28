@@ -11,13 +11,20 @@ import sys
 from typing import Any
 
 
-SCHEMA_VERSION = "usdb-ci-revisions:v1"
+SCHEMA_VERSION = "usdb-ci-revisions:v2"
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 RELEASE_WORKFLOW_PATH = ".github/workflows/usdb-release-build.yml"
-EXPECTED_REPOSITORIES = {
-    "usdb": "buckyos/usdb",
-    "source_dao": "buckyos/SourceDAO",
+EXPECTED_COORDINATOR = {
+    "repository": "buckyos/go-ethereum",
+    "directory": "go-ethereum",
+}
+EXPECTED_DEPENDENCIES = {
+    "usdb": {"repository": "buckyos/usdb", "directory": "usdb"},
+    "source_dao": {
+        "repository": "buckyos/SourceDAO",
+        "directory": "SourceDAO",
+    },
 }
 
 
@@ -63,19 +70,30 @@ def resolve_locked_revisions(
     require_revision(go_ethereum_revision, "go-ethereum revision")
     if lock.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("unsupported compatibility lock schema")
-    if lock.get("coordinator") != "go_ethereum":
-        raise ValueError("compatibility lock coordinator must be go_ethereum")
-    repositories = lock.get("repositories")
-    if not isinstance(repositories, dict):
-        raise ValueError("compatibility lock repositories must be an object")
+    expected_top_level = {"schema_version", "coordinator", "dependencies", "toolchains"}
+    if set(lock) != expected_top_level:
+        raise ValueError("compatibility lock top-level keys mismatch")
+    if lock.get("coordinator") != EXPECTED_COORDINATOR:
+        raise ValueError("compatibility lock coordinator identity mismatch")
+    dependencies = lock.get("dependencies")
+    if not isinstance(dependencies, dict) or set(dependencies) != set(
+        EXPECTED_DEPENDENCIES
+    ):
+        raise ValueError("compatibility lock dependencies mismatch")
 
-    for key, repository in EXPECTED_REPOSITORIES.items():
-        entry = repositories.get(key)
-        if not isinstance(entry, dict) or entry.get("repository") != repository:
+    for key, identity in EXPECTED_DEPENDENCIES.items():
+        entry = dependencies.get(key)
+        if not isinstance(entry, dict):
+            raise ValueError(f"compatibility lock dependency mismatch for {key}")
+        if set(entry) != {"repository", "directory", "revision"}:
+            raise ValueError(f"compatibility lock dependency keys mismatch for {key}")
+        if entry.get("repository") != identity["repository"]:
             raise ValueError(f"compatibility lock repository mismatch for {key}")
+        if entry.get("directory") != identity["directory"]:
+            raise ValueError(f"compatibility lock directory mismatch for {key}")
 
     locked_usdb_revision = require_revision(
-        repositories["usdb"].get("revision"),
+        dependencies["usdb"].get("revision"),
         "compatibility lock usdb revision",
     )
     if locked_usdb_revision != usdb_revision:
@@ -83,7 +101,7 @@ def resolve_locked_revisions(
             "release coordinator revision does not match the go-ethereum compatibility lock"
         )
     return require_revision(
-        repositories["source_dao"].get("revision"),
+        dependencies["source_dao"].get("revision"),
         "compatibility lock SourceDAO revision",
     )
 
