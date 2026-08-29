@@ -3485,13 +3485,6 @@ impl UsdbIndexerRpc for UsdbIndexerRpcServer {
             )));
         }
 
-        if let Some(handle) = self.server_handle.lock().unwrap().take() {
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                handle.close();
-            });
-        }
-
         Ok(())
     }
 }
@@ -3927,6 +3920,39 @@ mod tests {
     fn decode_consensus_error_data(err: &JsonError) -> ConsensusRpcErrorData {
         serde_json::from_value(err.data.clone().expect("missing structured error data"))
             .expect("invalid structured error data")
+    }
+
+    #[tokio::test]
+    async fn test_stop_leaves_rpc_close_handle_with_server_owner() {
+        let root_dir = test_root_dir("rpc_stop_owner");
+        let mut config_file = IndexerConfig::default();
+        config_file.usdb.genesis_block_height = 0;
+        config_file.usdb.rpc_server_host = "127.0.0.1".to_string();
+        config_file.usdb.rpc_server_port = 0;
+        std::fs::write(
+            root_dir.join("config.json"),
+            serde_json::to_vec_pretty(&config_file).unwrap(),
+        )
+        .unwrap();
+
+        let config = Arc::new(ConfigManager::load(Some(root_dir.clone())).unwrap());
+        let output = Arc::new(IndexOutput::new());
+        let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
+        let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
+        let server =
+            UsdbIndexerRpcServer::start(config, status.clone(), indexer, shutdown_tx).unwrap();
+
+        server.stop().unwrap();
+
+        shutdown_rx.changed().await.unwrap();
+        assert!(status.get_runtime_readiness().shutdown_requested);
+        assert!(server.server_handle.lock().unwrap().is_some());
+
+        server.close().await;
+        assert!(server.server_handle.lock().unwrap().is_none());
+        assert!(!status.get_runtime_readiness().rpc_alive);
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 
     #[test]

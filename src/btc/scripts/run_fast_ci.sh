@@ -43,6 +43,9 @@ log "checking indexer shell scripts"
 log "running world simulator tests"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_world_simulator.py"
 
+log "running regtest harness lifecycle tests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_reorg_lib.py"
+
 log "checking Docker P2P defaults"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_p2p_defaults.py"
 

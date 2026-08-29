@@ -38,6 +38,7 @@ SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-8}"
 REGTEST_DIAG_TAIL_LINES="${REGTEST_DIAG_TAIL_LINES:-120}"
+REGTEST_FATAL_LOG_PATTERN="${REGTEST_FATAL_LOG_PATTERN:-(^|[[:space:]])thread .* panicked at|panicked at |panic: |fatal runtime error|fatal error:|Fatal:}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 ORD_SERVER_LOG_FILE="${ORD_SERVER_LOG_FILE:-$WORK_DIR/ord-server.log}"
@@ -2115,8 +2116,67 @@ regtest_stop_process() {
   wait "$pid" >/dev/null 2>&1 || true
 }
 
+regtest_assert_managed_process_alive() {
+  local label="$1"
+  local pid="$2"
+  local state
+
+  if [[ -z "$pid" ]]; then
+    return 0
+  fi
+  state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ -z "$state" ]] || [[ "$state" == Z* ]] || ! kill -0 "$pid" 2>/dev/null; then
+    regtest_log "Managed process exited unexpectedly: service=${label}, pid=${pid}, state=${state:-missing}"
+    wait "$pid" >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+regtest_assert_log_has_no_fatal() {
+  local label="$1"
+  local file_path="$2"
+  local matches
+
+  if [[ ! -f "$file_path" ]]; then
+    return 0
+  fi
+  matches="$(grep -Ein -m 5 "$REGTEST_FATAL_LOG_PATTERN" "$file_path" || true)"
+  if [[ -n "$matches" ]]; then
+    regtest_log "Fatal process log detected: service=${label}, log=${file_path}"
+    printf '%s\n' "$matches" >&2
+    return 1
+  fi
+}
+
+regtest_assert_managed_processes_alive() {
+  local failed=0
+
+  regtest_assert_managed_process_alive "bitcoind" "$BITCOIND_PID" || failed=1
+  regtest_assert_managed_process_alive "ord-server" "$ORD_SERVER_PID" || failed=1
+  regtest_assert_managed_process_alive "balance-history" "$BALANCE_HISTORY_PID" || failed=1
+  regtest_assert_managed_process_alive "usdb-indexer" "$USDB_INDEXER_PID" || failed=1
+  return "$failed"
+}
+
+regtest_assert_managed_logs_clean() {
+  local failed=0
+
+  regtest_assert_log_has_no_fatal "ord-server" "$ORD_SERVER_LOG_FILE" || failed=1
+  regtest_assert_log_has_no_fatal "balance-history" "$BALANCE_HISTORY_LOG_FILE" || failed=1
+  regtest_assert_log_has_no_fatal "usdb-indexer" "$USDB_INDEXER_LOG_FILE" || failed=1
+  regtest_assert_log_has_no_fatal \
+    "balance-history-service" \
+    "${BALANCE_HISTORY_ROOT}/logs/balance-history_rCURRENT.log" || failed=1
+  regtest_assert_log_has_no_fatal "bitcoind" "${BITCOIN_DIR}/regtest/debug.log" || failed=1
+  return "$failed"
+}
+
 regtest_stop_balance_history() {
-  if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+  if [[ -n "$BALANCE_HISTORY_PID" ]]; then
+    if ! regtest_assert_managed_process_alive "balance-history" "$BALANCE_HISTORY_PID"; then
+      BALANCE_HISTORY_PID=""
+      return 1
+    fi
     regtest_log "Stopping balance-history process pid=${BALANCE_HISTORY_PID}"
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
       -X POST "http://127.0.0.1:${BH_RPC_PORT}" \
@@ -2128,7 +2188,11 @@ regtest_stop_balance_history() {
 }
 
 regtest_stop_usdb_indexer() {
-  if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
+  if [[ -n "$USDB_INDEXER_PID" ]]; then
+    if ! regtest_assert_managed_process_alive "usdb-indexer" "$USDB_INDEXER_PID"; then
+      USDB_INDEXER_PID=""
+      return 1
+    fi
     regtest_log "Stopping usdb-indexer process pid=${USDB_INDEXER_PID}"
     curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
       -X POST "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
@@ -2140,7 +2204,11 @@ regtest_stop_usdb_indexer() {
 }
 
 regtest_crash_balance_history() {
-  if [[ -n "$BALANCE_HISTORY_PID" ]] && kill -0 "$BALANCE_HISTORY_PID" 2>/dev/null; then
+  if [[ -n "$BALANCE_HISTORY_PID" ]]; then
+    if ! regtest_assert_managed_process_alive "balance-history" "$BALANCE_HISTORY_PID"; then
+      BALANCE_HISTORY_PID=""
+      return 1
+    fi
     regtest_log "Crashing balance-history process pid=${BALANCE_HISTORY_PID}"
     kill -9 "$BALANCE_HISTORY_PID" >/dev/null 2>&1 || true
     wait "$BALANCE_HISTORY_PID" >/dev/null 2>&1 || true
@@ -2149,7 +2217,11 @@ regtest_crash_balance_history() {
 }
 
 regtest_crash_usdb_indexer() {
-  if [[ -n "$USDB_INDEXER_PID" ]] && kill -0 "$USDB_INDEXER_PID" 2>/dev/null; then
+  if [[ -n "$USDB_INDEXER_PID" ]]; then
+    if ! regtest_assert_managed_process_alive "usdb-indexer" "$USDB_INDEXER_PID"; then
+      USDB_INDEXER_PID=""
+      return 1
+    fi
     regtest_log "Crashing usdb-indexer process pid=${USDB_INDEXER_PID}"
     kill -9 "$USDB_INDEXER_PID" >/dev/null 2>&1 || true
     wait "$USDB_INDEXER_PID" >/dev/null 2>&1 || true
@@ -2158,9 +2230,15 @@ regtest_crash_usdb_indexer() {
 }
 
 regtest_stop_ord_server() {
+  local failed=0
+
   if [[ -n "$ORD_SERVER_PID" ]]; then
-    regtest_log "Stopping ord server process pid=${ORD_SERVER_PID}"
-    regtest_stop_process "$ORD_SERVER_PID"
+    if regtest_assert_managed_process_alive "ord-server" "$ORD_SERVER_PID"; then
+      regtest_log "Stopping ord server process pid=${ORD_SERVER_PID}"
+      regtest_stop_process "$ORD_SERVER_PID"
+    else
+      failed=1
+    fi
   fi
 
   # Be defensive: ord server may outlive the original background shell process
@@ -2181,6 +2259,7 @@ regtest_stop_ord_server() {
     )
   fi
   ORD_SERVER_PID=""
+  return "$failed"
 }
 
 regtest_restart_balance_history() {
@@ -2198,6 +2277,10 @@ regtest_restart_usdb_indexer() {
 }
 
 regtest_stop_bitcoind() {
+  if [[ -n "$BITCOIND_PID" ]] && ! regtest_assert_managed_process_alive "bitcoind" "$BITCOIND_PID"; then
+    BITCOIND_PID=""
+    return 1
+  fi
   if [[ -n "$BITCOIN_CLI_BIN" ]] && [[ -x "$BITCOIN_CLI_BIN" ]]; then
     "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" stop >/dev/null 2>&1 || true
   fi
@@ -2491,12 +2574,34 @@ regtest_print_failure_diagnostics() {
 
 regtest_cleanup() {
   local exit_code=$?
-  set +e
-  if [[ "$exit_code" -ne 0 ]]; then
-    regtest_print_failure_diagnostics "$exit_code"
+  local cleanup_failed=0
+  local final_exit_code
+  if [[ $# -gt 0 ]]; then
+    exit_code="$1"
   fi
-  regtest_stop_usdb_indexer
-  regtest_stop_balance_history
-  regtest_stop_ord_server
-  regtest_stop_bitcoind
+  set +e
+
+  if [[ "$exit_code" -eq 0 ]]; then
+    regtest_assert_managed_processes_alive || cleanup_failed=1
+  fi
+  regtest_stop_usdb_indexer || cleanup_failed=1
+  regtest_stop_balance_history || cleanup_failed=1
+  regtest_stop_ord_server || cleanup_failed=1
+  regtest_stop_bitcoind || cleanup_failed=1
+  if [[ "$exit_code" -eq 0 ]]; then
+    regtest_assert_managed_logs_clean || cleanup_failed=1
+  fi
+
+  final_exit_code="$exit_code"
+  if [[ "$final_exit_code" -eq 0 ]] && [[ "$cleanup_failed" -ne 0 ]]; then
+    final_exit_code=1
+  fi
+  if [[ "$final_exit_code" -ne 0 ]]; then
+    regtest_print_failure_diagnostics "$final_exit_code"
+  fi
+
+  # EXIT traps preserve the pre-trap status unless the trap exits explicitly.
+  # Disable recursion so cleanup-detected process failures cannot be reported as success.
+  trap - EXIT
+  exit "$final_exit_code"
 }
