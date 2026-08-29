@@ -1,7 +1,7 @@
 use crate::types::BalanceHistoryData;
 use crate::{BtcScriptHash, ToBtcScriptHash, is_core_unspendable};
 use bitcoincore_rpc::bitcoin::blockdata::transaction::TxOut;
-use bitcoincore_rpc::bitcoin::{Script, ScriptBuf, Transaction, Txid};
+use bitcoincore_rpc::bitcoin::{OutPoint, Script, ScriptBuf, Transaction, Txid};
 use electrum_client::{Client, ElectrumApi, GetBalanceRes, GetHistoryRes, Param};
 
 pub struct TxFullItem {
@@ -19,6 +19,126 @@ pub struct ElectrsBalanceHistory {
 pub struct ElectrsBalanceHistoryList {
     pub history: Vec<BalanceHistoryData>,
     pub script_buf: ScriptBuf,
+}
+
+fn should_replay_history_height(height: i32, target_height: u32) -> bool {
+    height > 0 && height as u32 <= target_height
+}
+
+fn spend_prevouts(tx: &Transaction) -> impl Iterator<Item = OutPoint> + '_ {
+    tx.input
+        .iter()
+        .map(|input| input.previous_output)
+        .filter(|outpoint| !outpoint.is_null())
+}
+
+#[derive(Debug)]
+struct BalanceHistoryReplayResult {
+    history: Vec<BalanceHistoryData>,
+    script_buf: ScriptBuf,
+    balance: u64,
+}
+
+// balance-history stores one terminal balance per block, so all transaction
+// deltas at the same height must be aggregated before the balance is checked.
+struct BalanceHistoryReplay<'a> {
+    script_hash: &'a BtcScriptHash,
+    record_history: bool,
+    history: Vec<BalanceHistoryData>,
+    script_buf: Option<ScriptBuf>,
+    current_height: Option<u32>,
+    current_delta: i64,
+    balance: i64,
+}
+
+impl<'a> BalanceHistoryReplay<'a> {
+    fn new(script_hash: &'a BtcScriptHash, record_history: bool) -> Self {
+        Self {
+            script_hash,
+            record_history,
+            history: Vec::new(),
+            script_buf: None,
+            current_height: None,
+            current_delta: 0,
+            balance: 0,
+        }
+    }
+
+    fn push(&mut self, block_height: u32, delta: i64, script_buf: ScriptBuf) -> Result<(), String> {
+        if let Some(current_height) = self.current_height {
+            if block_height < current_height {
+                return Err(format!(
+                    "Electrs history is not ordered for script hash {}: height {} follows {}",
+                    self.script_hash, block_height, current_height
+                ));
+            }
+            if block_height > current_height {
+                self.flush_block()?;
+                self.current_height = Some(block_height);
+            }
+        } else {
+            self.current_height = Some(block_height);
+        }
+
+        self.current_delta = self.current_delta.checked_add(delta).ok_or_else(|| {
+            format!(
+                "Balance delta overflow for script hash {} at block height {}",
+                self.script_hash, block_height
+            )
+        })?;
+        if self.script_buf.is_none() {
+            self.script_buf = Some(script_buf);
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, target_height: u32) -> Result<BalanceHistoryReplayResult, String> {
+        self.flush_block()?;
+        let script_buf = self.script_buf.ok_or_else(|| {
+            format!(
+                "No spendable confirmed history found for script hash {} at block height {}",
+                self.script_hash, target_height
+            )
+        })?;
+
+        Ok(BalanceHistoryReplayResult {
+            history: self.history,
+            script_buf,
+            balance: self.balance as u64,
+        })
+    }
+
+    fn flush_block(&mut self) -> Result<(), String> {
+        let Some(block_height) = self.current_height.take() else {
+            return Ok(());
+        };
+
+        self.balance = self
+            .balance
+            .checked_add(self.current_delta)
+            .ok_or_else(|| {
+                format!(
+                    "Balance overflow for script hash {} at block height {}",
+                    self.script_hash, block_height
+                )
+            })?;
+        if self.balance < 0 {
+            return Err(format!(
+                "Balance went negative for script hash {} at block height {}",
+                self.script_hash, block_height
+            ));
+        }
+
+        if self.record_history {
+            self.history.push(BalanceHistoryData {
+                block_height,
+                delta: self.current_delta,
+                balance: self.balance as u64,
+            });
+        }
+        self.current_delta = 0;
+        Ok(())
+    }
 }
 
 impl TxFullItem {
@@ -180,46 +300,18 @@ impl ElectrsClient {
         script_hash: &BtcScriptHash,
         block_height: u32,
     ) -> Result<ElectrsBalanceHistory, String> {
-        let history = self.get_history(script_hash).await?;
-
-        let mut balance: i64 = 0;
-        let mut script_buf = None;
-        for item in history {
-            if item.height > block_height as i32 {
-                break;
-            }
-            // Load tx from btc client
-            let tx = self.expand_tx(&item.tx_hash).await?;
-
-            let (delta, script_buf_inner) = tx.amount_delta_from_tx(script_hash)?;
-            if script_buf.is_none() {
-                script_buf = Some(script_buf_inner);
-            }
-            balance = balance
-                .checked_add(delta)
-                .ok_or_else(|| format!("Balance overflow for script hash {}", script_hash))?;
-            if balance < 0 {
-                return Err(format!(
-                    "Balance went negative for script hash {} at block height {}",
-                    script_hash, item.height
-                ));
-            }
-        }
+        let replay = self
+            .replay_confirmed_history(script_hash, block_height, false)
+            .await?;
 
         info!(
             "Calculated balance for script hash {} at block height {}: {}",
-            script_hash, block_height, balance
+            script_hash, block_height, replay.balance
         );
 
-        let script_buf = script_buf.ok_or_else(|| {
-            format!(
-                "No spendable confirmed history found for script hash {} at block height {}",
-                script_hash, block_height
-            )
-        })?;
         let ret = ElectrsBalanceHistory {
-            balance: balance as u64,
-            script_buf,
+            balance: replay.balance,
+            script_buf: replay.script_buf,
         };
         Ok(ret)
     }
@@ -230,58 +322,45 @@ impl ElectrsClient {
         script_hash: &BtcScriptHash,
         block_height: u32,
     ) -> Result<ElectrsBalanceHistoryList, String> {
+        let replay = self
+            .replay_confirmed_history(script_hash, block_height, true)
+            .await?;
+
+        info!(
+            "Calculated balance history for script hash {}: {} entries",
+            script_hash,
+            replay.history.len()
+        );
+
+        Ok(ElectrsBalanceHistoryList {
+            history: replay.history,
+            script_buf: replay.script_buf,
+        })
+    }
+
+    async fn replay_confirmed_history(
+        &self,
+        script_hash: &BtcScriptHash,
+        block_height: u32,
+        record_history: bool,
+    ) -> Result<BalanceHistoryReplayResult, String> {
         let history = self.get_history(script_hash).await?;
 
-        let mut balance: i64 = 0;
-        let mut result = Vec::with_capacity(history.len());
-        let mut script_buf = None;
+        let mut replay = BalanceHistoryReplay::new(script_hash, record_history);
         for item in history {
-            if item.height > block_height as i32 {
-                break;
+            // Electrum appends mempool entries with height 0/-1 after confirmed history.
+            if !should_replay_history_height(item.height, block_height) {
+                continue;
             }
 
             // Load tx from btc client
             let tx = self.expand_tx(&item.tx_hash).await?;
 
             let (delta, script_buf_inner) = tx.amount_delta_from_tx(script_hash)?;
-            if script_buf.is_none() {
-                script_buf = Some(script_buf_inner);
-            }
-            balance = balance
-                .checked_add(delta)
-                .ok_or_else(|| format!("Balance overflow for script hash {}", script_hash))?;
-            if balance < 0 {
-                return Err(format!(
-                    "Balance went negative for script hash {} at block height {}",
-                    script_hash, item.height
-                ));
-            }
-
-            let data = BalanceHistoryData {
-                block_height: item.height as u32,
-                delta,
-                balance: balance as u64,
-            };
-            result.push(data);
+            replay.push(item.height as u32, delta, script_buf_inner)?;
         }
 
-        info!(
-            "Calculated balance history for script hash {}: {} entries",
-            script_hash,
-            result.len()
-        );
-
-        let script_buf = script_buf.ok_or_else(|| {
-            format!(
-                "No spendable confirmed history found for script hash {} at block height {}",
-                script_hash, block_height
-            )
-        })?;
-        let ret = ElectrsBalanceHistoryList {
-            history: result,
-            script_buf,
-        };
-        Ok(ret)
+        replay.finish(block_height)
     }
 
     pub async fn get_transaction(&self, txid: &Txid) -> Result<Transaction, String> {
@@ -303,24 +382,24 @@ impl ElectrsClient {
         })?;
 
         let mut vin = Vec::with_capacity(tx.input.len());
-        for input in tx.input {
+        for previous_output in spend_prevouts(&tx) {
             let vin_tx = self
                 .client
-                .transaction_get(&input.previous_output.txid)
+                .transaction_get(&previous_output.txid)
                 .map_err(|e| {
                     let msg = format!(
                         "Failed to get vin transaction {}: {}",
-                        input.previous_output.txid, e
+                        previous_output.txid, e
                     );
                     error!("{}", msg);
                     msg
                 })?;
 
-            let vin_vout = input.previous_output.vout as usize;
+            let vin_vout = previous_output.vout as usize;
             if vin_vout >= vin_tx.output.len() {
                 let msg = format!(
                     "Invalid vout index {} for transaction {}",
-                    vin_vout, input.previous_output.txid
+                    vin_vout, previous_output.txid
                 );
                 error!("{}", msg);
                 return Err(msg);
@@ -340,8 +419,112 @@ pub type ElectrsClientRef = std::sync::Arc<ElectrsClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoincore_rpc::bitcoin::{Address, Amount, Network, Txid};
+    use bitcoincore_rpc::bitcoin::absolute;
+    use bitcoincore_rpc::bitcoin::transaction;
+    use bitcoincore_rpc::bitcoin::{Address, Amount, Network, Sequence, TxIn, Txid, Witness};
     use std::str::FromStr;
+
+    fn transaction_with_prevouts(prevouts: impl IntoIterator<Item = OutPoint>) -> Transaction {
+        Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: prevouts
+                .into_iter()
+                .map(|previous_output| TxIn {
+                    previous_output,
+                    script_sig: ScriptBuf::new(),
+                    sequence: Sequence::MAX,
+                    witness: Witness::default(),
+                })
+                .collect(),
+            output: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn replay_height_excludes_mempool_and_future_history() {
+        assert!(!should_replay_history_height(-1, 100));
+        assert!(!should_replay_history_height(0, 100));
+        assert!(should_replay_history_height(1, 100));
+        assert!(should_replay_history_height(100, 100));
+        assert!(!should_replay_history_height(101, 100));
+    }
+
+    #[test]
+    fn replay_aggregates_transactions_at_the_same_height() {
+        let script = ScriptBuf::from(vec![0x51]);
+        let script_hash = script.to_btc_script_hash();
+        let mut replay = BalanceHistoryReplay::new(&script_hash, true);
+
+        replay.push(10, 100, script.clone()).unwrap();
+        replay.push(10, -40, script.clone()).unwrap();
+        replay.push(12, 25, script.clone()).unwrap();
+        let result = replay.finish(12).unwrap();
+
+        assert_eq!(result.script_buf, script);
+        assert_eq!(result.history.len(), 2);
+        assert_eq!(result.history[0].block_height, 10);
+        assert_eq!(result.history[0].delta, 60);
+        assert_eq!(result.history[0].balance, 60);
+        assert_eq!(result.history[1].block_height, 12);
+        assert_eq!(result.history[1].delta, 25);
+        assert_eq!(result.history[1].balance, 85);
+    }
+
+    #[test]
+    fn final_balance_replay_does_not_retain_timeline() {
+        let script = ScriptBuf::from(vec![0x51]);
+        let script_hash = script.to_btc_script_hash();
+        let mut replay = BalanceHistoryReplay::new(&script_hash, false);
+
+        replay.push(10, 100, script.clone()).unwrap();
+        replay.push(11, -40, script).unwrap();
+        let result = replay.finish(11).unwrap();
+
+        assert_eq!(result.balance, 60);
+        assert!(result.history.is_empty());
+    }
+
+    #[test]
+    fn replay_rejects_negative_block_terminal_balance() {
+        let script = ScriptBuf::from(vec![0x51]);
+        let script_hash = script.to_btc_script_hash();
+        let mut replay = BalanceHistoryReplay::new(&script_hash, true);
+
+        replay.push(10, -1, script).unwrap();
+        let error = replay.finish(10).unwrap_err();
+
+        assert!(error.contains("Balance went negative"));
+        assert!(error.contains("block height 10"));
+    }
+
+    #[test]
+    fn replay_rejects_descending_confirmed_heights() {
+        let script = ScriptBuf::from(vec![0x51]);
+        let script_hash = script.to_btc_script_hash();
+        let mut replay = BalanceHistoryReplay::new(&script_hash, true);
+
+        replay.push(11, 1, script.clone()).unwrap();
+        let error = replay.push(10, 1, script).unwrap_err();
+
+        assert!(error.contains("history is not ordered"));
+        assert!(error.contains("height 10 follows 11"));
+    }
+
+    #[test]
+    fn spend_prevouts_excludes_coinbase_null_outpoint() {
+        let coinbase = transaction_with_prevouts([OutPoint::null()]);
+        assert_eq!(spend_prevouts(&coinbase).count(), 0);
+
+        let prev_txid =
+            Txid::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let regular = transaction_with_prevouts([OutPoint::new(prev_txid, 2)]);
+        assert_eq!(
+            spend_prevouts(&regular).collect::<Vec<_>>(),
+            vec![OutPoint::new(prev_txid, 2)]
+        );
+    }
 
     #[test]
     fn amount_delta_excludes_core_unspendable_outputs() {
