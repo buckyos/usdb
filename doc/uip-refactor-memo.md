@@ -1509,3 +1509,26 @@ go-ethereum `729046503` / SourceDAO `e320fdc` / usdb `e208bb4`。
   验证 BTC context `134 -> 147` 后 raw/effective energy `0 -> 2000`，8 个 USDB blocks 全部通过。
 - three-collab targeted live 在 query height `143`、head `144` 下验证 3 个 collab 聚合、candidate、
   breakdown 两页历史重放和 `external_state.stable_lag=10`。
+
+## Testnet-v0 深 BTC 重组停链与整网重置
+
+状态：2026-08-29 已实现并完成源码级 deterministic regtest 演练，等待 review，尚未提交。
+
+- testnet-v0 冻结为 `safe halt + new network generation reset`，不自动 `debug_setHead`，也不允许
+  删除 latch 后在旧 genesis/datadir 上恢复。新 generation 必须更换 `vN`、chain/network ID、
+  genesis，并使用空 chain datadir；BTC-side replacement 数据可在一致性复核后继续使用。
+- usdb-indexer 在 upstream-reorg 专用 pass rollback 事务内递增 durable
+  `upstream_reorg_epoch`，并通过 `get_readiness` 暴露。普通 rollback、replacement replay、
+  restart 和继续索引不会重复递增。
+- chain runtime 首次启动在自身 datadir 保存 epoch baseline；变化时原子写入 `halted.json`，停止
+  geth 并保持容器 halted。同 datadir restart 在访问 RPC 前即拒绝启动，新空 datadir 则以当前
+  epoch 建立新 baseline。
+- Python 单测覆盖 epoch 前进/回退、严格 JSON 与 restart latch；runtime 进程测试覆盖 chain process
+  终止、旧 generation restart 拒绝及空 generation 启动。testnet-v0 bundle validator 40 项、
+  Compose 渲染、ShellCheck 以及 `usdb-indexer` 完整回归 `301 passed / 6 ignored` 均通过。完整
+  回归同时修正了 RPC shutdown 测试在 async runtime 内直接启动同步 JSON-RPC runtime 的测试隔离问题。
+- 隔离真实服务演练使用 Bitcoin Core 28.1 regtest、balance-history 与 usdb-indexer，完成
+  `stable 40 -> rollback 29 -> replacement 40 -> continue 41`。epoch 仅 `0 -> 1`，三份旧 generation
+  latch 均持久拒绝，三份新 generation baseline 均为 1。
+- 候选 release 上线前仍需使用 digest-pinned 镜像完成 BTC 双节点 depth 9/10 边界、三个真实 geth
+  停机、空 generation 重新出块、两个 validator/late joiner 收敛及旧 network identity 隔离测试。

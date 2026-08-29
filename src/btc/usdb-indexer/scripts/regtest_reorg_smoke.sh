@@ -21,6 +21,8 @@ SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-180}"
 BALANCE_HISTORY_LOG_FILE="${BALANCE_HISTORY_LOG_FILE:-$WORK_DIR/balance-history.log}"
 USDB_INDEXER_LOG_FILE="${USDB_INDEXER_LOG_FILE:-$WORK_DIR/usdb-indexer.log}"
 REGTEST_LOG_PREFIX="[usdb-reorg-smoke]"
+USDB_DEEP_REORG_GUARD_SCRIPT="${USDB_DEEP_REORG_GUARD_SCRIPT:-}"
+USDB_DEEP_REORG_GUARD_ROOT="${USDB_DEEP_REORG_GUARD_ROOT:-$WORK_DIR/deep-reorg-guards}"
 
 source "${SCRIPT_DIR}/regtest_reorg_lib.sh"
 
@@ -28,6 +30,70 @@ assert_empty_surface_state() {
   local block_height="$1"
   regtest_assert_usdb_miner_economic_aggregate_zero "$block_height"
   regtest_assert_usdb_pass_stats_zero "$block_height"
+}
+
+run_guard_check() {
+  local state_dir="$1"
+  local expected_status="$2"
+  local label="$3"
+  local status
+
+  set +e
+  python3 "$USDB_DEEP_REORG_GUARD_SCRIPT" check \
+    --state-dir "$state_dir" \
+    --indexer-rpc-url "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
+    --chain-rpc-url "http://127.0.0.1:1" \
+    --request-timeout-secs 1
+  status=$?
+  set -e
+  if (( status != expected_status )); then
+    regtest_log "${label} guard status mismatch: have=${status}, want=${expected_status}"
+    exit 1
+  fi
+}
+
+initialize_three_guard_baselines() {
+  [[ -n "$USDB_DEEP_REORG_GUARD_SCRIPT" ]] || return 0
+  [[ -f "$USDB_DEEP_REORG_GUARD_SCRIPT" ]] || {
+    regtest_log "USDB_DEEP_REORG_GUARD_SCRIPT is missing: ${USDB_DEEP_REORG_GUARD_SCRIPT}"
+    exit 1
+  }
+  local node
+  for node in 1 2 3; do
+    run_guard_check "$USDB_DEEP_REORG_GUARD_ROOT/old-node${node}" 0 "old node ${node} baseline"
+  done
+}
+
+assert_three_old_generation_guards_halted() {
+  [[ -n "$USDB_DEEP_REORG_GUARD_SCRIPT" ]] || return 0
+  local node state_dir
+  for node in 1 2 3; do
+    state_dir="$USDB_DEEP_REORG_GUARD_ROOT/old-node${node}"
+    run_guard_check "$state_dir" 42 "old node ${node} incident detection"
+    [[ -f "$state_dir/halted.json" ]] || {
+      regtest_log "old node ${node} did not persist halted.json"
+      exit 1
+    }
+    run_guard_check "$state_dir" 42 "old node ${node} restart latch"
+  done
+}
+
+initialize_new_generation_guards() {
+  [[ -n "$USDB_DEEP_REORG_GUARD_SCRIPT" ]] || return 0
+  local node state_dir epoch
+  for node in 1 2 3; do
+    state_dir="$USDB_DEEP_REORG_GUARD_ROOT/new-node${node}"
+    run_guard_check "$state_dir" 0 "new generation node ${node} baseline"
+    [[ ! -f "$state_dir/halted.json" ]] || {
+      regtest_log "new generation node ${node} unexpectedly inherited halted.json"
+      exit 1
+    }
+    epoch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["upstream_reorg_epoch"])' "$state_dir/baseline.json")"
+    if [[ "$epoch" != "1" ]]; then
+      regtest_log "new generation node ${node} baseline epoch mismatch: have=${epoch}, want=1"
+      exit 1
+    fi
+  done
 }
 
 main() {
@@ -73,6 +139,14 @@ main() {
   regtest_wait_usdb_rpc_ready
   regtest_wait_until_usdb_synced_eq "$TARGET_HEIGHT"
   regtest_wait_usdb_consensus_ready
+  regtest_wait_until_rpc_expr_eq \
+    "initial upstream reorg epoch" \
+    regtest_rpc_call_usdb_indexer \
+    "get_readiness" \
+    "[]" \
+    "(data.get('result') or {}).get('upstream_reorg_epoch')" \
+    "0"
+  initialize_three_guard_baselines
 
   original_hash="$(regtest_get_bitcoin_block_hash "$TARGET_HEIGHT")"
   old_bh_commit_resp="$(regtest_rpc_call_balance_history "get_block_commit" "[${TARGET_HEIGHT}]")"
@@ -148,6 +222,18 @@ main() {
     "SELECT COUNT(*) FROM state WHERE name = 'upstream_reorg_recovery_pending_height';" \
     "0" \
     "pending recovery marker cleared after rollback"
+  regtest_assert_usdb_db_scalar \
+    "SELECT value FROM state WHERE name = 'upstream_reorg_epoch';" \
+    "1" \
+    "durable upstream reorg epoch after stable rollback"
+  regtest_wait_until_rpc_expr_eq \
+    "upstream reorg epoch after stable rollback" \
+    regtest_rpc_call_usdb_indexer \
+    "get_readiness" \
+    "[]" \
+    "(data.get('result') or {}).get('upstream_reorg_epoch')" \
+    "1"
+  assert_three_old_generation_guards_halted
 
   replacement_address="$(regtest_get_new_address)"
   regtest_mine_blocks "$((BTC_STABLE_LAG_BLOCKS + 1))" "$replacement_address"
@@ -188,6 +274,25 @@ main() {
     "$new_bh_commit"
 
   assert_empty_surface_state "$TARGET_HEIGHT"
+  regtest_assert_usdb_db_scalar \
+    "SELECT value FROM state WHERE name = 'upstream_reorg_epoch';" \
+    "1" \
+    "replacement replay does not duplicate upstream reorg epoch"
+
+  regtest_log "Restarting usdb-indexer to verify the reorg epoch is durable"
+  regtest_stop_usdb_indexer
+  regtest_start_usdb_indexer
+  regtest_wait_usdb_rpc_ready
+  regtest_wait_until_usdb_synced_eq "$TARGET_HEIGHT"
+  regtest_wait_usdb_consensus_ready
+  regtest_wait_until_rpc_expr_eq \
+    "upstream reorg epoch after indexer restart" \
+    regtest_rpc_call_usdb_indexer \
+    "get_readiness" \
+    "[]" \
+    "(data.get('result') or {}).get('upstream_reorg_epoch')" \
+    "1"
+  initialize_new_generation_guards
 
   continue_address="$(regtest_get_new_address)"
   regtest_mine_blocks 1 "$continue_address"
@@ -195,6 +300,13 @@ main() {
   regtest_wait_balance_history_consensus_ready
   regtest_wait_until_usdb_synced_eq "$((TARGET_HEIGHT + 1))"
   regtest_wait_usdb_consensus_ready
+  regtest_wait_until_rpc_expr_eq \
+    "upstream reorg epoch after continued indexing" \
+    regtest_rpc_call_usdb_indexer \
+    "get_readiness" \
+    "[]" \
+    "(data.get('result') or {}).get('upstream_reorg_epoch')" \
+    "1"
 
   regtest_log "USDB indexer height-regression reorg smoke test succeeded."
   regtest_log "Logs: ${BALANCE_HISTORY_LOG_FILE}, ${USDB_INDEXER_LOG_FILE}"

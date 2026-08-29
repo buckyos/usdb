@@ -38,7 +38,7 @@
     },
     "network_environment": {
       "path": "network.env",
-      "sha256": "72158a4828aea67af9e7db13a9d7eb536518103d23973ad6acdb797fd16c865f"
+      "sha256": "c23451664509ca83e748cf27d2cc9166a439dc7dd0fd581c72788175c210cd43"
     },
     "compose_overlay": {
       "path": "compose.network.yml",

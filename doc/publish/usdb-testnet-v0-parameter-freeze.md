@@ -21,6 +21,12 @@ accepted-bootstrap 身份的修改都必须发布新的 bundle，并使用新的
 优先重置网络。registry revision 和 policy version 的未来升级仍可在新的 USDB 高度加入 activation，
 但不作为 testnet-v0 首次启动的补救手段。
 
+testnet-v0 对越过 BTC stable frontier 的重组采用 `safe halt + new generation reset`：节点观察到
+usdb-indexer 的 durable `upstream_reorg_epoch` 超过本 chain datadir 的启动基线后，必须写入本地 latch、
+停止 geth 并拒绝以原 datadir 重启。该版本不执行自动 `debug_setHead` 或 deterministic rewind；恢复必须
+归档旧网络后使用新的 `vN`、chain/network ID、genesis 和空 chain datadir。完整流程见
+[深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)。
+
 ## 网络与 BTC 输入
 
 | 参数 | testnet-v0 | 身份类别 | 权威来源 |

@@ -574,6 +574,8 @@ pub struct ReadinessInfo {
     pub local_state_commit: Option<String>,
     /// Current top-level system-state id, when available.
     pub system_state_id: Option<String>,
+    /// Durable count of upstream stable-state reorgs adopted by this indexer database.
+    pub upstream_reorg_epoch: u64,
     /// Current progress counter mirrored from sync status.
     pub current: u32,
     /// Total progress target mirrored from sync status.

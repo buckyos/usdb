@@ -404,7 +404,14 @@ Bitcoin 独立运行，不会被 runtime `down` 停止。不要执行 `docker co
 - fee gate 已越过但 Dividend 尚未 finalized；
 - reward、difficulty、state-ref 或 selector 验证异常。
 
-测试网允许重置，但重置必须使用新 release ID，记录旧节点最后区块/hash，并由负责人明确批准删除数据。
+testnet-v0 默认启用 deep-reorg guard。每个节点在
+`<USDB_CHAIN_DATA_DIR>/recovery/deep-btc-reorg/` 保存 epoch 基线；发现 indexer 的 durable epoch 变化后，
+写入 `halted.json`、停止 geth，并保持容器处于无 RPC 的 halted 状态。普通 restart 不会删除 latch。
+
+测试网允许重置，但重置必须使用新的 network generation `vN`，记录旧节点最后区块/hash，并由负责人
+批准归档旧 chain volume。不得把同一 genesis 下的 `rN` 更新当成深重组恢复，也不得直接删除
+`halted.json` 后续跑旧链。具体步骤见
+[深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)。
 
 ## 13. 首节点验收记录
 

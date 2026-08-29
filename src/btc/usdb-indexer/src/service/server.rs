@@ -1594,6 +1594,11 @@ impl UsdbIndexerRpcServer {
             .is_some();
         let reorg_recovery_pending =
             runtime.upstream_reorg_recovery_pending || durable_reorg_recovery_pending;
+        let upstream_reorg_epoch = self
+            .indexer
+            .miner_pass_storage()
+            .get_upstream_reorg_epoch()
+            .map_err(Self::to_internal_error)?;
 
         let upstream_readiness = self.status.balance_history_readiness();
         let upstream_snapshot = match self.upstream_snapshot_info() {
@@ -1703,6 +1708,7 @@ impl UsdbIndexerRpcServer {
             system_state_id: system_state
                 .as_ref()
                 .map(|system_state| system_state.system_state_id.clone()),
+            upstream_reorg_epoch,
             current: sync_status.current,
             total: sync_status.total,
             message: sync_status.message,
@@ -3943,8 +3949,13 @@ mod tests {
         let status = Arc::new(StatusManager::new(config.clone(), output).unwrap());
         let indexer = Arc::new(InscriptionIndexer::new(config.clone(), status.clone()).unwrap());
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
-        let server =
-            UsdbIndexerRpcServer::start(config, status.clone(), indexer, shutdown_tx).unwrap();
+        let server_status = status.clone();
+        let server = tokio::task::spawn_blocking(move || {
+            UsdbIndexerRpcServer::start(config, server_status, indexer, shutdown_tx)
+        })
+        .await
+        .unwrap()
+        .unwrap();
 
         server.stop().unwrap();
 
@@ -4072,6 +4083,7 @@ mod tests {
         assert!(readiness.consensus_ready);
         assert_eq!(readiness.synced_block_height, Some(120));
         assert_eq!(readiness.balance_history_stable_height, Some(120));
+        assert_eq!(readiness.upstream_reorg_epoch, 0);
         assert!(readiness.upstream_snapshot_id.is_some());
         assert!(readiness.local_state_commit.is_some());
         assert!(readiness.system_state_id.is_some());

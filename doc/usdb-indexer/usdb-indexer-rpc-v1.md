@@ -328,6 +328,15 @@ UIP-0006 client 不应仅凭服务可达性推断经济视图可用。当前 v1 
 - 成功时返回 `system_state_id` 及其 identity；
 - 若当前还没有完整的 current local/system state，则返回共享共识错误 `SNAPSHOT_NOT_READY`。
 
+### 7a) `get_readiness`
+
+返回服务存活、本地查询与下游共识三层 readiness，以及当前采用的状态 identity。新增字段：
+
+- `upstream_reorg_epoch`：当前 usdb-indexer DB 已采用的 stable-state reorg 累计次数；
+- 只在 upstream-reorg 专用 rollback 与 durable recovery marker 的同一事务中递增；
+- 普通本地 rollback、restart 和 replacement branch replay 不会清零或重复递增；
+- 该字段是 testnet-v0 节点运维 guard 的事件输入，不是 BTC finality 证明，也不改变 UIP-0007 header payload。
+
 ### 7.x) `get_state_ref_at_height`
 
 这条接口已作为第一版历史 state ref 查询落地。

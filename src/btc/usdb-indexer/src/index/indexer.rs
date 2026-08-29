@@ -864,6 +864,11 @@ impl InscriptionIndexer {
             error!("{}", msg);
             return Err(msg);
         }
+        let reorg_epoch = self.miner_pass_storage.get_upstream_reorg_epoch()?;
+        warn!(
+            "Recorded durable upstream reorg event: module=indexer, upstream_reorg_epoch={}, local_height={}, upstream_height={}, rollback_target={}",
+            reorg_epoch, current_height, latest_height, rollback_target
+        );
 
         self.resume_pending_upstream_reorg_recovery(genesis_block_height)
             .await?;

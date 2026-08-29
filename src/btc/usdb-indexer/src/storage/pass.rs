@@ -23,6 +23,7 @@ const BALANCE_HISTORY_SNAPSHOT_COMMIT_PROTOCOL_VERSION_KEY: &str =
 const BALANCE_HISTORY_SNAPSHOT_COMMIT_HASH_ALGO_KEY: &str =
     "balance_history_snapshot_commit_hash_algo";
 const UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY: &str = "upstream_reorg_recovery_pending_height";
+const UPSTREAM_REORG_EPOCH_KEY: &str = "upstream_reorg_epoch";
 
 // Default savepoint name for miner pass operations
 const SAVEPOINT_MINER_PASS_OPS: &str = "miner_pass_ops";
@@ -847,6 +848,51 @@ impl MinerPassStorage {
         Self::delete_numeric_state_with_conn(&conn, UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)
     }
 
+    /// Return the durable count of adopted upstream stable-state reorgs.
+    ///
+    /// The counter is diagnostic input for a chain-node operational guard. It is
+    /// never decremented by ordinary rollback/replay and defaults to zero for a
+    /// fresh indexer database.
+    pub fn get_upstream_reorg_epoch(&self) -> Result<u64, String> {
+        let value = self
+            .get_numeric_state(UPSTREAM_REORG_EPOCH_KEY)?
+            .unwrap_or(0);
+        if value < 0 {
+            let msg = format!("Invalid negative upstream reorg epoch: {}", value);
+            error!("{}", msg);
+            return Err(msg);
+        }
+        Ok(value as u64)
+    }
+
+    fn increment_upstream_reorg_epoch_with_conn(conn: &Connection) -> Result<u64, String> {
+        let current = conn
+            .query_row(
+                "SELECT value FROM state WHERE name = ?1",
+                [UPSTREAM_REORG_EPOCH_KEY],
+                |row| row.get::<usize, i64>(0),
+            )
+            .optional()
+            .map_err(|e| {
+                let msg = format!("Failed to read upstream reorg epoch: {}", e);
+                error!("{}", msg);
+                msg
+            })?
+            .unwrap_or(0);
+        if current < 0 {
+            let msg = format!("Invalid negative upstream reorg epoch: {}", current);
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let next = current.checked_add(1).ok_or_else(|| {
+            let msg = "Upstream reorg epoch overflow".to_string();
+            error!("{}", msg);
+            msg
+        })?;
+        Self::upsert_numeric_state_with_conn(conn, UPSTREAM_REORG_EPOCH_KEY, next)?;
+        Ok(next as u64)
+    }
+
     // Persist the "pass rollback is durable, downstream recovery still pending" marker
     // inside the same sqlite transaction as the pass rollback itself.
     fn mark_upstream_reorg_recovery_pending_with_conn(
@@ -1138,6 +1184,7 @@ impl MinerPassStorage {
 
         if mark_upstream_reorg_recovery_pending {
             Self::mark_upstream_reorg_recovery_pending_with_conn(&tx, target_height)?;
+            Self::increment_upstream_reorg_epoch_with_conn(&tx)?;
         } else {
             Self::delete_numeric_state_with_conn(&tx, UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)?;
         }
@@ -7539,6 +7586,41 @@ mod tests {
         assert_eq!(history_after_rollback.state, MinerPassState::Active);
 
         storage.assert_no_data_after_block_height(110).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn test_upstream_reorg_rollback_increments_durable_epoch_only_for_reorg_path() {
+        let dir = test_data_dir("upstream_reorg_epoch");
+        let storage = MinerPassStorage::new(&dir).unwrap();
+
+        assert_eq!(storage.get_upstream_reorg_epoch().unwrap(), 0);
+        storage
+            .rollback_to_block_height_with_upstream_reorg_recovery_pending(10, None)
+            .unwrap();
+        assert_eq!(storage.get_upstream_reorg_epoch().unwrap(), 1);
+        assert_eq!(
+            storage
+                .get_upstream_reorg_recovery_pending_height()
+                .unwrap(),
+            Some(10)
+        );
+
+        storage
+            .clear_upstream_reorg_recovery_pending_height()
+            .unwrap();
+        storage
+            .rollback_to_block_height_with_upstream_reorg_recovery_pending(9, None)
+            .unwrap();
+        assert_eq!(storage.get_upstream_reorg_epoch().unwrap(), 2);
+
+        storage.rollback_to_block_height(8, None).unwrap();
+        assert_eq!(storage.get_upstream_reorg_epoch().unwrap(), 2);
+
+        drop(storage);
+        let reopened = MinerPassStorage::new(&dir).unwrap();
+        assert_eq!(reopened.get_upstream_reorg_epoch().unwrap(), 2);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
