@@ -2793,6 +2793,15 @@ mod tests {
             usdb_main: "0x1111111111111111111111111111111111111111".to_string(),
         };
         assert_eq!(
+            build_btc_mint_inscription_payload(&standard, &[]),
+            json!({
+                "p": "usdb",
+                "op": "mint",
+                "v": 1,
+                "usdb_main": "0x1111111111111111111111111111111111111111",
+            })
+        );
+        assert_eq!(
             build_btc_mint_inscription_payload(&standard, &[prev.to_string()]),
             json!({
                 "p": "usdb",
