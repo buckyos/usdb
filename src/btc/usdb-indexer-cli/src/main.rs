@@ -7,10 +7,13 @@ use usdb_indexer_service::UsdbIndexerService;
 
 #[tokio::main]
 async fn main() {
-    let log_config = usdb_util::LogConfig::new(usdb_util::USDB_INDEXER_CLI_TOOL_NAME)
+    let log_config = usdb_util::current_process_log_config!(usdb_util::USDB_INDEXER_CLI_TOOL_NAME)
         .enable_file(false)
         .enable_console(true);
-    usdb_util::init_log(log_config);
+    let _log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize usdb-indexer CLI logging: {error}");
+        std::process::exit(1);
+    });
 
     let cli = Cli::parse();
     let service = UsdbIndexerService::new(&cli.url)

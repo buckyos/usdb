@@ -9,7 +9,7 @@ extern crate log;
 use clap::Parser;
 use config::ControlPlaneConfig;
 use std::path::PathBuf;
-use usdb_util::{LogConfig, USDB_CONTROL_PLANE_SERVICE_NAME};
+use usdb_util::USDB_CONTROL_PLANE_SERVICE_NAME;
 
 #[derive(Parser, Debug)]
 #[command(name = "usdb-control-plane")]
@@ -50,10 +50,13 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let log_config = LogConfig::new(USDB_CONTROL_PLANE_SERVICE_NAME)
+    let log_config = usdb_util::current_process_log_config!(USDB_CONTROL_PLANE_SERVICE_NAME)
         .with_service_root_dir(root_dir.clone())
         .enable_console(false);
-    usdb_util::init_log(log_config);
+    let _log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize USDB control-plane logging: {error}");
+        std::process::exit(1);
+    });
 
     let config = match ControlPlaneConfig::load(&root_dir) {
         Ok(config) => config,

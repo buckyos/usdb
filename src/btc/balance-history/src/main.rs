@@ -10,9 +10,8 @@ use balance_history::output::IndexOutput;
 use balance_history::runtime::run_service;
 use balance_history::{status, tool, web_server};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use usdb_util::LogConfig;
 
 #[derive(Parser, Debug)]
 #[command(name = "balance-history")]
@@ -140,6 +139,21 @@ enum BalanceHistoryCommands {
     },
 }
 
+fn init_command_logging(
+    root_dir: &Path,
+    file_name: &str,
+    console: bool,
+) -> usdb_util::ProcessLogger {
+    let config = usdb_util::current_process_log_config!(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+        .with_service_root_dir(root_dir.to_path_buf())
+        .with_file_name(file_name)
+        .enable_console(console);
+    usdb_util::init_log(config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize balance-history logging: {error}");
+        std::process::exit(1);
+    })
+}
+
 #[tokio::main]
 async fn main() {
     let cli = BalanceHistoryCli::parse();
@@ -150,13 +164,8 @@ async fn main() {
 
     match cli.command {
         Some(BalanceHistoryCommands::ClearDb {}) => {
-            // Init file logging
             let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(true);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, true);
 
             println!("Will clear database files in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -176,13 +185,8 @@ async fn main() {
             return;
         }
         Some(BalanceHistoryCommands::IndexAddress {}) => {
-            // Init file logging
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(false);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, false);
 
             println!("Indexing addresses in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -214,13 +218,8 @@ async fn main() {
             block_height,
             with_utxo,
         }) => {
-            // Init file logging
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(false);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, false);
 
             println!("Generating snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -262,16 +261,11 @@ async fn main() {
             return;
         }
         Some(BalanceHistoryCommands::InstallSnapshot { source, manifest }) => {
-            // Init file logging
             let file_name = format!(
                 "{}_install_snapshot",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(false);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, false);
 
             println!("Installing snapshot in directory: {:?}", root_dir);
 
@@ -380,11 +374,7 @@ async fn main() {
                 "{}_snapshot_keygen",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(true);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, true);
 
             let out_dir = if let Some(path) = args.out_dir.as_ref() {
                 if path.is_absolute() {
@@ -410,16 +400,11 @@ async fn main() {
             return;
         }
         Some(BalanceHistoryCommands::VerifySnapshot {}) => {
-            // Init file logging
             let file_name = format!(
                 "{}_verify_snapshot",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(false);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, false);
 
             println!("Verifying snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -486,13 +471,8 @@ async fn main() {
             height,
             from,
         }) => {
-            // Init file logging
             let file_name = format!("{}_verify", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(true);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, true);
 
             println!("Verifying balance history in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
@@ -630,11 +610,7 @@ async fn main() {
         }
         Some(BalanceHistoryCommands::ServeWeb { port, web_root }) => {
             let file_name = format!("{}_web", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-                .with_service_root_dir(root_dir.clone())
-                .with_file_name(&file_name)
-                .enable_console(true);
-            usdb_util::init_log(config);
+            let _log_handle = init_command_logging(&root_dir, &file_name, true);
 
             let web_root = std::path::PathBuf::from(web_root);
             if let Err(e) = web_server::serve_static_files(port, &web_root) {

@@ -19,7 +19,6 @@ use config::ConfigManager;
 use index::InscriptionIndexer;
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::LogConfig;
 
 #[derive(Parser, Debug)]
 #[command(name = "usdb-indexer")]
@@ -52,12 +51,18 @@ async fn main() {
     let root_dir = cli
         .root_dir
         .unwrap_or_else(|| usdb_util::get_service_dir(usdb_util::USDB_INDEXER_SERVICE_NAME));
-
-    // Init file logging
-    let config = LogConfig::new(usdb_util::USDB_INDEXER_SERVICE_NAME)
+    let log_config = usdb_util::current_process_log_config!(usdb_util::USDB_INDEXER_SERVICE_NAME)
         .with_service_root_dir(root_dir.clone())
         .enable_console(false);
-    usdb_util::init_log(config);
+    let log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize usdb-indexer logging: {error}");
+        std::process::exit(1);
+    });
+    info!(
+        "USDB indexer startup options: root_dir={}, skip_process_lock={}",
+        root_dir.display(),
+        cli.skip_process_lock
+    );
 
     let output = output::IndexOutput::new();
     let output = Arc::new(output);
@@ -173,9 +178,5 @@ async fn main() {
     }
 
     output.println("Indexer has shut down gracefully.");
-
-    // Sleep a moment to ensure all logs are flushed
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
-    std::process::exit(0);
+    log_handle.shutdown();
 }

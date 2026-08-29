@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use usdb_util::{LogConfig, MemoryUsageSnapshot, get_memory_usage_snapshot};
+use usdb_util::{MemoryUsageSnapshot, get_memory_usage_snapshot};
 
 const TOOL_NAME: &str = "balance-history-snapshot-tool";
 const DEFAULT_SNAPSHOT_MAX_MEMORY_PERCENT: usize = 80;
@@ -151,10 +151,13 @@ fn main() {
         .root_dir
         .clone()
         .unwrap_or_else(|| usdb_util::get_service_dir("balance-history-snapshot-builder"));
-    let log_config = LogConfig::new(TOOL_NAME)
+    let log_config = usdb_util::current_process_log_config!(TOOL_NAME)
         .with_service_root_dir(root_dir.clone())
         .enable_console(!cli.json);
-    usdb_util::init_log(log_config);
+    let _log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize snapshot tool logging: {error}");
+        std::process::exit(1);
+    });
 
     let builder = ExactHeightSnapshotBuilder::new(root_dir);
     let result = match cli.command {

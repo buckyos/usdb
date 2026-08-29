@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::Instant;
-use usdb_util::{BTCRpcClient, LogConfig};
+use usdb_util::BTCRpcClient;
 
 static TEST_LOGGER_INIT: Once = Once::new();
 
@@ -83,11 +83,12 @@ fn load_compare_config(config_root: Option<PathBuf>) -> Arc<ConfigManager> {
 
 fn init_test_logging() {
     TEST_LOGGER_INIT.call_once(|| {
-        usdb_util::init_log(
-            LogConfig::new(usdb_util::USDB_INDEXER_SERVICE_NAME)
+        let _log_handle = usdb_util::init_log(
+            usdb_util::current_process_log_config!(usdb_util::USDB_INDEXER_SERVICE_NAME)
                 .enable_file(false)
                 .enable_console(true),
-        );
+        )
+        .expect("Failed to initialize source comparison test logging");
     });
 }
 

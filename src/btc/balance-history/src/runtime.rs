@@ -4,7 +4,6 @@ use crate::output::IndexOutput;
 use crate::service::BalanceHistoryRpcServer;
 use std::path::PathBuf;
 use std::sync::Arc;
-use usdb_util::LogConfig;
 
 /// Runs the balance-history indexing service until an external shutdown signal
 /// or an indexer error stops the process.
@@ -21,24 +20,25 @@ pub async fn run_service(
         ))
     };
 
-    std::fs::create_dir_all(&root_dir).unwrap_or_else(|e| {
-        println!(
-            "Failed to create balance-history root directory {}: {}",
-            root_dir.display(),
-            e
-        );
+    let log_config =
+        usdb_util::current_process_log_config!(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
+            .with_service_root_dir(root_dir.clone())
+            .enable_console(false);
+    let log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        eprintln!("Failed to initialize balance-history logging: {error}");
         std::process::exit(1);
     });
+    info!(
+        "Balance-history startup options: root_dir={}, max_block_height={:?}, skip_process_lock={}",
+        root_dir.display(),
+        max_block_height,
+        skip_process_lock
+    );
 
     let status = crate::status::SyncStatusManager::new();
     let status = Arc::new(status);
     let output = IndexOutput::new(status);
     let output = Arc::new(output);
-
-    let config = LogConfig::new(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
-        .with_service_root_dir(root_dir.clone())
-        .enable_console(false);
-    usdb_util::init_log(config);
 
     output.println(&format!("Using service directory: {}", root_dir.display()));
 
@@ -163,7 +163,6 @@ pub async fn run_service(
 
     rpc_server.close().await;
 
-    println!("Shutdown complete.");
-
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    output.println("Shutdown complete.");
+    log_handle.shutdown();
 }
