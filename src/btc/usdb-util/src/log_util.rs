@@ -3,6 +3,7 @@ use flexi_logger::{Cleanup, Criterion, FileSpec, Logger, LoggerHandle, Naming, d
 use std::backtrace::Backtrace;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Environment variable used to override the process log specification.
 pub const PROCESS_LOG_LEVEL_ENV: &str = "USDB_PROCESS_LOG_LEVEL";
@@ -17,6 +18,82 @@ pub const DEFAULT_PROCESS_LOG_LEVEL: &str = "info";
 pub const DEFAULT_PROCESS_LOG_MAX_FILE_BYTES: u64 = 100_000_000;
 /// Default number of rotated process log files retained per basename.
 pub const DEFAULT_PROCESS_LOG_KEEP_FILES: usize = 20;
+
+/// One sampled observation in a consecutive failure sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureLogEvent {
+    /// One-based consecutive failure attempt.
+    pub attempt: u64,
+    /// Time elapsed since the first failure in this sequence.
+    pub elapsed: Duration,
+    /// Whether the caller should emit a repeated failure log for this attempt.
+    pub should_log: bool,
+}
+
+/// Summary returned when a previously failing operation succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureRecoveryEvent {
+    /// Number of consecutive failures before recovery.
+    pub failed_attempts: u64,
+    /// Total time from the first failure until recovery.
+    pub elapsed: Duration,
+}
+
+/// Tracks consecutive failures and samples repeated log records.
+///
+/// Attempts 1-3, powers of two, and every `report_every` attempt are reported.
+/// This keeps long dependency outages observable without writing one identical
+/// error per retry. A zero `report_every` disables the periodic rule while
+/// retaining the initial and power-of-two samples.
+#[derive(Debug)]
+pub struct ConsecutiveFailureTracker {
+    report_every: u64,
+    failed_attempts: u64,
+    first_failure_at: Option<Instant>,
+}
+
+impl ConsecutiveFailureTracker {
+    /// Creates an empty consecutive-failure tracker.
+    pub fn new(report_every: u64) -> Self {
+        Self {
+            report_every,
+            failed_attempts: 0,
+            first_failure_at: None,
+        }
+    }
+
+    /// Records one failed attempt and returns its sampling decision.
+    pub fn record_failure(&mut self) -> FailureLogEvent {
+        self.record_failure_at(Instant::now())
+    }
+
+    /// Clears a failure sequence and returns its recovery summary, if any.
+    pub fn record_success(&mut self) -> Option<FailureRecoveryEvent> {
+        self.record_success_at(Instant::now())
+    }
+
+    fn record_failure_at(&mut self, now: Instant) -> FailureLogEvent {
+        let first_failure_at = *self.first_failure_at.get_or_insert(now);
+        self.failed_attempts = self.failed_attempts.saturating_add(1);
+        let attempt = self.failed_attempts;
+        let periodic = self.report_every > 0 && attempt.is_multiple_of(self.report_every);
+
+        FailureLogEvent {
+            attempt,
+            elapsed: now.saturating_duration_since(first_failure_at),
+            should_log: attempt <= 3 || attempt.is_power_of_two() || periodic,
+        }
+    }
+
+    fn record_success_at(&mut self, now: Instant) -> Option<FailureRecoveryEvent> {
+        let first_failure_at = self.first_failure_at.take()?;
+        let failed_attempts = std::mem::take(&mut self.failed_attempts);
+        Some(FailureRecoveryEvent {
+            failed_attempts,
+            elapsed: now.saturating_duration_since(first_failure_at),
+        })
+    }
+}
 
 /// Configuration used to initialize logging for one USDB process.
 ///
@@ -499,5 +576,44 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("logging destination"));
+    }
+
+    #[test]
+    fn failure_tracker_samples_initial_power_of_two_and_periodic_attempts() {
+        let start = Instant::now();
+        let mut tracker = ConsecutiveFailureTracker::new(10);
+        let mut sampled = Vec::new();
+
+        for attempt in 1..=20u64 {
+            let event = tracker.record_failure_at(start + Duration::from_secs(attempt));
+            assert_eq!(event.attempt, attempt);
+            if event.should_log {
+                sampled.push(attempt);
+            }
+        }
+
+        assert_eq!(sampled, vec![1, 2, 3, 4, 8, 10, 16, 20]);
+    }
+
+    #[test]
+    fn failure_tracker_reports_recovery_and_resets_sequence() {
+        let start = Instant::now();
+        let mut tracker = ConsecutiveFailureTracker::new(60);
+        tracker.record_failure_at(start);
+        tracker.record_failure_at(start + Duration::from_secs(2));
+
+        let recovery = tracker
+            .record_success_at(start + Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(recovery.failed_attempts, 2);
+        assert_eq!(recovery.elapsed, Duration::from_secs(5));
+        assert_eq!(
+            tracker.record_success_at(start + Duration::from_secs(6)),
+            None
+        );
+
+        let next = tracker.record_failure_at(start + Duration::from_secs(7));
+        assert_eq!(next.attempt, 1);
+        assert_eq!(next.elapsed, Duration::ZERO);
     }
 }

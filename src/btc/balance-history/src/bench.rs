@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::time::Duration;
 
 pub struct BatchBlockBenchMark {
     // Global cache info
@@ -68,9 +69,15 @@ impl BatchBlockBenchMark {
         }
     }
 
-    pub fn log(&self) {
+    /// Logs one completed block batch with its range, total latency, phase
+    /// latencies, mutation counts, and resulting cache sizes.
+    pub fn log(&self, block_range: &std::ops::Range<u32>, total_elapsed: Duration) {
         info!(
-            "BatchBlockBenchMark: balance_cache_counts={}, utxo_cache_counts={}, load_blocks_duration_micros={}, preprocess_utxos_duration_micros={}, preload_utxos_duration_micros={}, preload_utxos_counts={}, preload_utxos_from_none_memory_counts={}, preload_utxos_from_none_memory_duration_micros={}, preload_balances_duration_micros={}, preload_balances_counts={}, preload_balances_from_db_counts={}, process_balances_duration_micros={}, batch_put_utxo_counts={}, batch_spent_utxo_counts={}, batch_update_utxo_duration_micros={}, batch_update_balance_cache_counts={}, batch_put_balance_counts={}, batch_update_balances_duration_micros={}",
+            "Balance-history batch metrics: module=batch_block_processor, start_height={}, end_height={}, block_count={}, total_elapsed_ms={}, balance_cache_count={}, utxo_cache_count={}, load_blocks_duration_micros={}, preprocess_utxos_duration_micros={}, preload_utxos_duration_micros={}, preload_utxos_count={}, preload_utxos_from_storage_count={}, preload_utxos_from_storage_duration_micros={}, preload_balances_duration_micros={}, preload_balances_count={}, preload_balances_from_db_count={}, process_balances_duration_micros={}, batch_put_utxo_count={}, batch_spent_utxo_count={}, batch_update_utxo_duration_micros={}, batch_update_balance_cache_count={}, batch_put_balance_count={}, batch_update_balances_duration_micros={}",
+            block_range.start,
+            block_range.end.saturating_sub(1),
+            block_range.len(),
+            total_elapsed.as_millis(),
             self.balance_cache_counts
                 .load(std::sync::atomic::Ordering::Relaxed),
             self.utxo_cache_counts

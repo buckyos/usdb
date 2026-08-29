@@ -12,9 +12,9 @@ use bitcoincore_rpc::bitcoin::constants::genesis_block;
 use bitcoincore_rpc::bitcoin::{BlockHash, Network};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use usdb_util::BtcScriptHash;
+use usdb_util::{BtcScriptHash, ConsecutiveFailureTracker};
 
 // Use to keep the balance history result for a block
 type BlockHistoryResult = HashMap<BtcScriptHash, BalanceHistoryEntry>;
@@ -549,12 +549,20 @@ impl BalanceHistoryIndexer {
     fn run_loop(&self) {
         info!("Starting Balance History Indexer...");
 
-        let mut failed_attempts = 0;
+        let mut sync_failures = ConsecutiveFailureTracker::new(30);
+        let mut wait_failures = ConsecutiveFailureTracker::new(30);
         let mut output_mode_warning = false;
         loop {
             match self.sync_once() {
                 Ok(latest_height) => {
-                    failed_attempts = 0;
+                    if let Some(recovery) = sync_failures.record_success() {
+                        info!(
+                            "Balance-history sync recovered: failed_attempts={}, outage_elapsed_ms={}, latest_synced_height={}",
+                            recovery.failed_attempts,
+                            recovery.elapsed.as_millis(),
+                            latest_height
+                        );
+                    }
                     info!(
                         "Sync iteration completed successfully. Latest synced height: {}",
                         latest_height
@@ -611,6 +619,14 @@ impl BalanceHistoryIndexer {
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {
                         Ok(Some(new_height)) => {
+                            if let Some(recovery) = wait_failures.record_success() {
+                                info!(
+                                    "Balance-history BTC polling recovered: failed_attempts={}, outage_elapsed_ms={}, latest_stable_height={}",
+                                    recovery.failed_attempts,
+                                    recovery.elapsed.as_millis(),
+                                    new_height
+                                );
+                            }
                             info!(
                                 "New block detected at height {}. Continuing sync...",
                                 new_height
@@ -620,17 +636,32 @@ impl BalanceHistoryIndexer {
                             self.output.set_index_message(&msg);
                         }
                         Ok(None) => {
+                            let _ = wait_failures.record_success();
                             info!("Indexer shutdown requested while waiting for new blocks");
                             break;
                         }
                         Err(e) => {
-                            error!(
-                                "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
-                                e
-                            );
+                            let failure = wait_failures.record_failure();
+                            if failure.should_log {
+                                if failure.attempt == 1 {
+                                    error!(
+                                        "Balance-history BTC polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        e
+                                    );
+                                } else {
+                                    warn!(
+                                        "Balance-history BTC polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        e
+                                    );
+                                }
+                            }
                             let msg = format!(
-                                "Error while waiting for new blocks: {}. Retrying in 10 seconds...",
-                                e
+                                "Error while waiting for new blocks (attempt {}): {}. Retrying in 10 seconds...",
+                                failure.attempt, e
                             );
                             self.output.set_index_message(&msg);
 
@@ -645,16 +676,28 @@ impl BalanceHistoryIndexer {
                     }
                 }
                 Err(e) => {
-                    failed_attempts += 1;
-
-                    error!(
-                        "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
-                        failed_attempts, e
-                    );
+                    let failure = sync_failures.record_failure();
+                    if failure.should_log {
+                        if failure.attempt == 1 {
+                            error!(
+                                "Balance-history sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                failure.attempt,
+                                failure.elapsed.as_millis(),
+                                e
+                            );
+                        } else {
+                            warn!(
+                                "Balance-history sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=10, error={}",
+                                failure.attempt,
+                                failure.elapsed.as_millis(),
+                                e
+                            );
+                        }
+                    }
 
                     let msg = format!(
                         "Error during sync with attempt {}: {}. Retrying in 10 seconds...",
-                        failed_attempts, e
+                        failure.attempt, e
                     );
                     self.output.set_index_message(&msg);
 
@@ -755,14 +798,29 @@ impl BalanceHistoryIndexer {
             current_height, ancestor_height
         ));
 
+        let rollback_begin = Instant::now();
         self.output.status().set_rollback_in_progress(true);
-        let rollback_result = self.db.rollback_to_block_height(ancestor_height);
-        if rollback_result.is_ok() {
-            self.output.status().set_rollback_in_progress(false);
+        if let Err(error) = self.db.rollback_to_block_height(ancestor_height) {
+            error!(
+                "Balance-history reorg rollback failed: from_height={}, to_height={}, depth={}, elapsed_ms={}, error={}",
+                current_height,
+                ancestor_height,
+                current_height.saturating_sub(ancestor_height),
+                rollback_begin.elapsed().as_millis(),
+                error
+            );
+            return Err(error);
         }
-        rollback_result?;
+        self.output.status().set_rollback_in_progress(false);
         self.utxo_cache.clear();
         self.balance_cache.clear();
+        info!(
+            "Balance-history reorg rollback completed: from_height={}, to_height={}, depth={}, elapsed_ms={}",
+            current_height,
+            ancestor_height,
+            current_height.saturating_sub(ancestor_height),
+            rollback_begin.elapsed().as_millis()
+        );
 
         Ok(ancestor_height)
     }
@@ -770,6 +828,7 @@ impl BalanceHistoryIndexer {
     // Return the last synced block height
     /// Runs one bounded sync iteration against the configured BTC client.
     pub fn sync_once(&self) -> Result<u32, String> {
+        let sync_begin = Instant::now();
         // Check and resume pending rollback if needed before getting latest block height, to ensure we are checking the reorg against the correct local state
         self.resume_pending_rollback_if_needed()?;
 
@@ -783,6 +842,7 @@ impl BalanceHistoryIndexer {
         // Check for reorg and reconcile local state if needed. This will also update the last_synced_height to the reconciled height.
         let last_synced_height =
             self.reconcile_reorg_if_needed(last_synced_height, latest_btc_height)?;
+        let sync_start_height = last_synced_height;
         info!("Last synced block height: {}", last_synced_height);
 
         // Update output to current status
@@ -819,6 +879,7 @@ impl BalanceHistoryIndexer {
         // Process blocks in batches
         let batch_size = self.config.sync.batch_size;
         let mut current_height = last_synced_height + 1;
+        let mut batch_count = 0usize;
 
         while current_height <= latest_btc_height {
             let end_height =
@@ -827,6 +888,7 @@ impl BalanceHistoryIndexer {
             let last_height =
                 self.process_block_batch(current_height..(end_height + 1), latest_btc_height)?;
             current_height = last_height + 1;
+            batch_count += 1;
 
             // Check for shutdown signal between batches
             if self.check_shutdown() {
@@ -836,7 +898,27 @@ impl BalanceHistoryIndexer {
         }
 
         // Finally flush the db to ensure all data is persisted
-        self.db.flush_all()?;
+        let flush_begin = Instant::now();
+        self.db.flush_all().map_err(|error| {
+            let msg = format!(
+                "Failed to flush balance-history after sync iteration: from_height={}, to_height={}, error={}",
+                sync_start_height.saturating_add(1),
+                current_height.saturating_sub(1),
+                error
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        let flush_elapsed_ms = flush_begin.elapsed().as_millis();
+        info!(
+            "Balance-history sync iteration persisted: from_height={}, to_height={}, block_count={}, batch_count={}, flush_elapsed_ms={}, total_elapsed_ms={}",
+            sync_start_height.saturating_add(1),
+            current_height.saturating_sub(1),
+            current_height.saturating_sub(sync_start_height),
+            batch_count,
+            flush_elapsed_ms,
+            sync_begin.elapsed().as_millis()
+        );
 
         Ok(current_height - 1)
     }
@@ -850,7 +932,10 @@ impl BalanceHistoryIndexer {
         latest_btc_height: u32,
     ) -> Result<u32, String> {
         assert!(!height_range.is_empty(), "Height range should not be empty");
+        let batch_begin = Instant::now();
         let batch_start_height = height_range.start;
+        let batch_end_height = height_range.end - 1;
+        let block_count = height_range.len();
 
         for block_height in height_range.clone() {
             validate_activation_at_height(&self.config, block_height)?;
@@ -860,23 +945,51 @@ impl BalanceHistoryIndexer {
             "Processing block batch [{} - {})",
             height_range.start, height_range.end
         ));
-        self.batch_block_processor.process_blocks(
-            height_range.clone(),
-            latest_btc_height,
-            self.config.sync.undo_retention_blocks,
-        )?;
+        self.batch_block_processor
+            .process_blocks(
+                height_range.clone(),
+                latest_btc_height,
+                self.config.sync.undo_retention_blocks,
+            )
+            .map_err(|error| {
+                let msg = format!(
+                    "Balance-history block batch failed: stage=process, start_height={}, end_height={}, block_count={}, elapsed_ms={}, error={}",
+                    batch_start_height,
+                    batch_end_height,
+                    block_count,
+                    batch_begin.elapsed().as_millis(),
+                    error
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
         // self.db.flush_all()?;
 
         let last_height = height_range.end - 1;
 
-        self.prune_undo_journal_if_needed(batch_start_height, last_height)?;
+        self.prune_undo_journal_if_needed(batch_start_height, last_height)
+            .map_err(|error| {
+                let msg = format!(
+                    "Balance-history block batch failed: stage=prune_undo, start_height={}, end_height={}, block_count={}, elapsed_ms={}, error={}",
+                    batch_start_height,
+                    last_height,
+                    block_count,
+                    batch_begin.elapsed().as_millis(),
+                    error
+                );
+                error!("{}", msg);
+                msg
+            })?;
 
         self.output.update_current_height(last_height as u64);
 
         info!(
-            "Finished processing blocks [{} - {}]",
-            height_range.start, last_height,
+            "Balance-history block batch completed: start_height={}, end_height={}, block_count={}, elapsed_ms={}",
+            height_range.start,
+            last_height,
+            block_count,
+            batch_begin.elapsed().as_millis()
         );
 
         Ok(last_height)

@@ -2034,6 +2034,7 @@ impl BatchBlockProcessor {
         latest_btc_height: u32,
         undo_retention_blocks: u32,
     ) -> Result<(), String> {
+        let total_begin = std::time::Instant::now();
         let preloader = BatchBlockPreloader::new(
             self.btc_client.clone(),
             self.db.clone(),
@@ -2075,7 +2076,8 @@ impl BatchBlockProcessor {
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        data.bench_mark.log();
+        data.bench_mark
+            .log(&block_height_range, total_begin.elapsed());
 
         Ok(())
     }

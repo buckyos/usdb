@@ -24,7 +24,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use usdb_util::{
     ActivationRegistryError, ActiveVersionSet, BTCRpcClient, BTCRpcClientRef,
-    BtcActivationRegistry, BtcActivationRegistryCatalog, embedded_btc_activation_registry_catalog,
+    BtcActivationRegistry, BtcActivationRegistryCatalog, ConsecutiveFailureTracker,
+    embedded_btc_activation_registry_catalog,
 };
 
 #[path = "indexer/block_events.rs"]
@@ -481,6 +482,8 @@ impl InscriptionIndexer {
     }
 
     pub async fn run(&self) -> Result<(), String> {
+        let mut sync_failures = ConsecutiveFailureTracker::new(60);
+        let mut wait_failures = ConsecutiveFailureTracker::new(60);
         loop {
             if self.check_shutdown() {
                 info!("Indexer shutdown requested. Exiting run loop.");
@@ -489,22 +492,72 @@ impl InscriptionIndexer {
 
             match self.sync_once().await {
                 Ok(last_synced_height) => {
+                    if let Some(recovery) = sync_failures.record_success() {
+                        info!(
+                            "USDB indexer sync recovered: failed_attempts={}, outage_elapsed_ms={}, last_synced_height={}",
+                            recovery.failed_attempts,
+                            recovery.elapsed.as_millis(),
+                            last_synced_height
+                        );
+                    }
                     // Successfully synced once, and sleep for a while before next sync
                     match self.wait_for_new_blocks(last_synced_height).await {
                         Ok(new_height) => {
+                            if let Some(recovery) = wait_failures.record_success() {
+                                info!(
+                                    "USDB indexer upstream polling recovered: failed_attempts={}, outage_elapsed_ms={}, latest_height={}",
+                                    recovery.failed_attempts,
+                                    recovery.elapsed.as_millis(),
+                                    new_height
+                                );
+                            }
                             info!(
                                 "New blocks detected. Last synced height: {}, new height: {}",
                                 last_synced_height, new_height
                             );
                         }
                         Err(e) => {
-                            error!("Failed while waiting for new blocks: {}", e);
+                            let failure = wait_failures.record_failure();
+                            if failure.should_log {
+                                if failure.attempt == 1 {
+                                    error!(
+                                        "USDB indexer upstream polling failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        e
+                                    );
+                                } else {
+                                    warn!(
+                                        "USDB indexer upstream polling still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        e
+                                    );
+                                }
+                            }
                             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                         }
                     }
                 }
                 Err(e) => {
-                    error!("Failed to sync inscriptions: {}", e);
+                    let failure = sync_failures.record_failure();
+                    if failure.should_log {
+                        if failure.attempt == 1 {
+                            error!(
+                                "USDB indexer sync failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                failure.attempt,
+                                failure.elapsed.as_millis(),
+                                e
+                            );
+                        } else {
+                            warn!(
+                                "USDB indexer sync still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=5, error={}",
+                                failure.attempt,
+                                failure.elapsed.as_millis(),
+                                e
+                            );
+                        }
+                    }
 
                     // Sleep and retry
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -518,19 +571,16 @@ impl InscriptionIndexer {
 
     // Get latest stable height from balance-history, which is the only sync height dependency.
     fn get_balance_history_stable_height(&self) -> Result<u32, String> {
-        self.status.balance_history_stable_height().ok_or_else(|| {
-            let msg = "Balance-history stable height is not ready yet".to_string();
-            error!("{}", msg);
-            msg
-        })
+        self.status
+            .balance_history_stable_height()
+            .ok_or_else(|| "Balance-history stable height is not ready yet".to_string())
     }
 
     fn current_balance_history_snapshot(&self) -> Result<BalanceHistorySnapshotInfo, String> {
-        let snapshot = self.status.balance_history_snapshot().ok_or_else(|| {
-            let msg = "Balance-history snapshot is not ready yet".to_string();
-            error!("{}", msg);
-            msg
-        })?;
+        let snapshot = self
+            .status
+            .balance_history_snapshot()
+            .ok_or_else(|| "Balance-history snapshot is not ready yet".to_string())?;
         self.validate_upstream_stable_lag(
             snapshot.stable_height,
             snapshot.stable_lag,
@@ -1114,6 +1164,7 @@ impl InscriptionIndexer {
 
     // Returns the latest synced block height after this sync
     async fn sync_once(&self) -> Result<u32, String> {
+        let sync_once_begin = Instant::now();
         let balance_history_snapshot = self.current_balance_history_snapshot()?;
         let latest_height = self.get_balance_history_stable_height()?;
         let genesis_block_height = self.config.config().usdb.genesis_block_height;
@@ -1232,6 +1283,7 @@ impl InscriptionIndexer {
 
         let next_height = current_height + 1;
         let block_range = next_height..=latest_height;
+        let sync_start_height = current_height;
         let ret = self.sync_blocks(block_range.clone()).await;
         if let Err(e) = ret {
             let msg = format!(
@@ -1247,9 +1299,22 @@ impl InscriptionIndexer {
 
         let current_height = ret.unwrap();
 
+        let persist_anchor_begin = Instant::now();
         self.persist_balance_history_snapshot_anchor(current_height, &balance_history_snapshot)?;
+        let persist_anchor_elapsed_ms = persist_anchor_begin.elapsed().as_millis();
+        let backfill_begin = Instant::now();
         self.backfill_balance_history_snapshot_history(genesis_block_height, current_height)
             .await?;
+        let backfill_elapsed_ms = backfill_begin.elapsed().as_millis();
+        info!(
+            "USDB indexer sync iteration completed: from_height={}, to_height={}, block_count={}, persist_snapshot_anchor_elapsed_ms={}, backfill_snapshot_history_elapsed_ms={}, total_elapsed_ms={}",
+            sync_start_height.saturating_add(1),
+            current_height,
+            current_height.saturating_sub(sync_start_height),
+            persist_anchor_elapsed_ms,
+            backfill_elapsed_ms,
+            sync_once_begin.elapsed().as_millis()
+        );
 
         Ok(current_height)
     }
@@ -1262,9 +1327,18 @@ impl InscriptionIndexer {
             block_range
         );
 
-        let mut current_height = *block_range.start();
+        let sync_blocks_begin = Instant::now();
+        let start_height = *block_range.start();
+        let end_height = *block_range.end();
+        let block_count = end_height.saturating_sub(start_height).saturating_add(1);
+        info!(
+            "USDB indexer block range started: start_height={}, end_height={}, block_count={}",
+            start_height, end_height, block_count
+        );
+
+        let mut current_height = start_height;
         for height in block_range {
-            info!("Syncing inscriptions at block height {}", height);
+            debug!("Syncing inscriptions at block height {}", height);
             let sync_single_block_begin = Instant::now();
             let durable_pass_synced_height = self
                 .miner_pass_storage
@@ -1330,6 +1404,14 @@ impl InscriptionIndexer {
             );
         }
 
+        info!(
+            "USDB indexer block range completed: start_height={}, end_height={}, block_count={}, elapsed_ms={}",
+            start_height,
+            current_height,
+            block_count,
+            sync_blocks_begin.elapsed().as_millis()
+        );
+
         Ok(current_height)
     }
 
@@ -1367,44 +1449,99 @@ impl InscriptionIndexer {
     }
 
     async fn sync_block(&self, height: u32) -> Result<(), String> {
-        info!("Processing inscriptions at block height {}", height);
+        debug!("Processing inscriptions at block height {}", height);
         let sync_block_begin = Instant::now();
         let mut energy_finalized = false;
 
         // Version selection must succeed before any per-block state is mutated.
-        self.active_version_set_at(height)
-            .map_err(|error| error.to_string())?;
-
-        // Mark energy sync as pending first so crashes can be detected and repaired on restart.
-        self.pass_energy_manager.begin_block_sync(height)?;
-        let mutation_collection_guard =
-            BlockMutationCollectionGuard::begin(&self.miner_pass_manager, height)?;
-        let block_hint = self.block_hint_provider.load_block_hint(height)?;
-        let block_hint = block_hint.ok_or_else(|| {
+        self.active_version_set_at(height).map_err(|error| {
             let msg = format!(
-                "Missing required block hint at block height {}. Aborting for protocol safety.",
-                height
+                "Failed to resolve active protocol versions before block sync: module=indexer, block_height={}, error={}",
+                height, error
             );
             error!("{}", msg);
             msg
         })?;
 
+        // Mark energy sync as pending first so crashes can be detected and repaired on restart.
+        self.pass_energy_manager
+            .begin_block_sync(height)
+            .map_err(|error| {
+                let msg = format!(
+                    "Failed to begin energy block sync: module=indexer, block_height={}, error={}",
+                    height, error
+                );
+                error!("{}", msg);
+                msg
+            })?;
+        let mutation_collection_guard =
+            match BlockMutationCollectionGuard::begin(&self.miner_pass_manager, height) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    let msg = self
+                        .recover_failed_block_sync(height, false, energy_finalized, error)
+                        .await;
+                    return Err(msg);
+                }
+            };
+        let block_hint = match self.block_hint_provider.load_block_hint(height) {
+            Ok(Some(block_hint)) => block_hint,
+            Ok(None) => {
+                let error = format!(
+                    "Missing required block hint at block height {}. Aborting for protocol safety.",
+                    height
+                );
+                let msg = self
+                    .recover_failed_block_sync(height, false, energy_finalized, error)
+                    .await;
+                return Err(msg);
+            }
+            Err(error) => {
+                let error = format!(
+                    "Failed to load required block hint at height {}: {}",
+                    height, error
+                );
+                let msg = self
+                    .recover_failed_block_sync(height, false, energy_finalized, error)
+                    .await;
+                return Err(msg);
+            }
+        };
+
         // Collect mint events and transfer events first, then apply in tx order.
         let process_inscriptions_begin = Instant::now();
-        let collected_mints = self
+        let collected_mints = match self
             .collect_block_inscription_mints(height, Some(block_hint.clone()))
-            .await?;
+            .await
+        {
+            Ok(collected_mints) => collected_mints,
+            Err(error) => {
+                let msg = self
+                    .recover_failed_block_sync(height, false, energy_finalized, error)
+                    .await;
+                return Err(msg);
+            }
+        };
         let process_inscriptions_elapsed_ms = process_inscriptions_begin.elapsed().as_millis();
 
         let transfer_track_seeds = Self::build_transfer_track_seeds(&collected_mints.valid_items);
         let process_transfers_begin = Instant::now();
-        let transfer_items = self
+        let transfer_items = match self
             .collect_block_inscription_transfer_items(
                 height,
                 Some(block_hint.clone()),
                 transfer_track_seeds,
             )
-            .await?;
+            .await
+        {
+            Ok(transfer_items) => transfer_items,
+            Err(error) => {
+                let msg = self
+                    .recover_failed_block_sync(height, true, energy_finalized, error)
+                    .await;
+                return Err(msg);
+            }
+        };
         let process_transfers_elapsed_ms = process_transfers_begin.elapsed().as_millis();
 
         let process_events_begin = Instant::now();
@@ -1533,7 +1670,7 @@ impl InscriptionIndexer {
         let total_elapsed_ms = sync_block_begin.elapsed().as_millis();
 
         if new_inscriptions_count == 0 && transfer_count == 0 {
-            info!(
+            debug!(
                 "No unknown inscriptions and transfers found at block height {}",
                 height
             );
@@ -1582,6 +1719,7 @@ impl InscriptionIndexer {
         energy_finalized: bool,
         original_error: String,
     ) -> String {
+        let original_error_for_log = original_error.clone();
         // There are two distinct recovery windows here:
         // 1) energy_finalized == false:
         //    energy writes may exist, but the pending marker still exists, so we abort the
@@ -1614,6 +1752,7 @@ impl InscriptionIndexer {
         } else {
             "energy abort after pending block failure"
         };
+        let energy_recovery_error = energy_recovery_result.clone();
         let msg = Self::merge_block_failure_with_recovery(
             original_error,
             energy_recovery_result,
@@ -1623,6 +1762,10 @@ impl InscriptionIndexer {
         // Transfer tracking is staged per block as well. If staging happened, discard it on the
         // same failure path so retry starts from a clean transfer-tracker state.
         if !transfer_staged {
+            error!(
+                "USDB block sync failed; recovery attempted: module=indexer, block_height={}, transfer_staged=false, energy_finalized={}, energy_recovery_error={:?}, original_error={}, final_error={}",
+                block_height, energy_finalized, energy_recovery_error, original_error_for_log, msg
+            );
             return msg;
         }
 
@@ -1631,11 +1774,22 @@ impl InscriptionIndexer {
             .rollback_staged_block(block_height)
             .await
             .err();
-        Self::merge_block_failure_with_recovery(
+        let transfer_rollback_error_for_log = transfer_rollback_error.clone();
+        let final_error = Self::merge_block_failure_with_recovery(
             msg,
             transfer_rollback_error,
             "transfer rollback after block failure",
-        )
+        );
+        error!(
+            "USDB block sync failed; recovery attempted: module=indexer, block_height={}, transfer_staged=true, energy_finalized={}, energy_recovery_error={:?}, transfer_rollback_error={:?}, original_error={}, final_error={}",
+            block_height,
+            energy_finalized,
+            energy_recovery_error,
+            transfer_rollback_error_for_log,
+            original_error_for_log,
+            final_error
+        );
+        final_error
     }
 
     async fn persist_pass_block_commit(
@@ -1733,7 +1887,7 @@ impl InscriptionIndexer {
             )
             .await?;
         if discovered_batch.valid_mints.is_empty() && discovered_batch.invalid_mints.is_empty() {
-            info!("No inscriptions found at block height {}", block_height);
+            debug!("No inscriptions found at block height {}", block_height);
             return Ok(CollectedMintItems {
                 valid_items: Vec::new(),
                 invalid_items: Vec::new(),
@@ -1937,7 +2091,7 @@ impl InscriptionIndexer {
             .process_block_with_hint(block_height, block_hint, extra_tracked_inscriptions)
             .await?;
         if transfer_items.is_empty() {
-            info!(
+            debug!(
                 "No inscription transfers found at block height {}",
                 block_height
             );

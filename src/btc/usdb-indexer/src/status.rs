@@ -6,7 +6,7 @@ use balance_history::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use usdb_util::{BTCRpcClient, BTCRpcClientRef};
+use usdb_util::{BTCRpcClient, BTCRpcClientRef, ConsecutiveFailureTracker};
 
 pub struct USDBInscriptionIndexStatus {
     pub genesis_block_height: u32,
@@ -192,10 +192,38 @@ impl StatusManager {
         tokio::spawn({
             let status_manager = self.clone();
             async move {
+                let mut failures = ConsecutiveFailureTracker::new(60);
                 loop {
-                    if let Err(e) = status_manager.update_status().await {
-                        error!("Failed to update status: {}", e);
-                        // status_manager.output.println(&format!("Failed to update status: {}", e));
+                    match status_manager.update_status().await {
+                        Ok(()) => {
+                            if let Some(recovery) = failures.record_success() {
+                                info!(
+                                    "USDB status monitor recovered: failed_attempts={}, outage_elapsed_ms={}",
+                                    recovery.failed_attempts,
+                                    recovery.elapsed.as_millis()
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            let failure = failures.record_failure();
+                            if failure.should_log {
+                                if failure.attempt == 1 {
+                                    error!(
+                                        "USDB status monitor failed: attempt={}, outage_elapsed_ms={}, retry_delay_secs=1, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        error
+                                    );
+                                } else {
+                                    warn!(
+                                        "USDB status monitor still failing: attempt={}, outage_elapsed_ms={}, retry_delay_secs=1, error={}",
+                                        failure.attempt,
+                                        failure.elapsed.as_millis(),
+                                        error
+                                    );
+                                }
+                            }
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
@@ -206,7 +234,6 @@ impl StatusManager {
     async fn update_status(&self) -> Result<(), String> {
         let btc_height = self.btc_client.get_latest_block_height().map_err(|e| {
             let msg = format!("Failed to get BTC block height: {}", e);
-            error!("{}", msg);
             self.output.btc_bar().set_message(msg.clone());
             msg
         })?;
@@ -226,7 +253,6 @@ impl StatusManager {
             .await
             .map_err(|e| {
                 let msg = format!("Failed to get Balance History sync status: {}", e);
-                error!("{}", msg);
                 self.output.balance_history_bar().set_message(msg.clone());
                 self.set_balance_history_snapshot(None);
                 self.set_balance_history_readiness(None);
@@ -253,7 +279,6 @@ impl StatusManager {
             .await
             .map_err(|e| {
                 let msg = format!("Failed to get Balance History snapshot info: {}", e);
-                error!("{}", msg);
                 self.set_balance_history_snapshot(None);
                 self.set_balance_history_readiness(None);
                 msg
@@ -266,7 +291,6 @@ impl StatusManager {
                 .await
                 .map_err(|e| {
                     let msg = format!("Failed to get Balance History readiness: {}", e);
-                    error!("{}", msg);
                     self.set_balance_history_readiness(None);
                     msg
                 })?;

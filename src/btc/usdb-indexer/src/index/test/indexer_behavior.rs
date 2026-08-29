@@ -908,6 +908,15 @@ async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
             .indexer
             .has_active_block_mutation_collection_for_test()
     );
+    assert_eq!(
+        fixture
+            .indexer
+            .pass_energy_manager()
+            .get_pending_block_height_for_test()
+            .unwrap(),
+        None
+    );
+    assert_eq!(fixture.transfer_tracker.rollback_call_count(), 0);
 
     let second_err = fixture
         .indexer
@@ -920,6 +929,14 @@ async fn test_sync_block_missing_block_hint_does_not_leak_collector_state() {
         !fixture
             .indexer
             .has_active_block_mutation_collection_for_test()
+    );
+    assert_eq!(
+        fixture
+            .indexer
+            .pass_energy_manager()
+            .get_pending_block_height_for_test()
+            .unwrap(),
+        None
     );
 
     cleanup_temp_dir(&fixture.root_dir);

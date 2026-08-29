@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 use usdb_util::BtcScriptHash;
 use usdb_util::{BalanceHistoryData, OutPointRef, UTXOEntry, UTXOEntryRef, UTXOValue};
 
@@ -243,6 +244,7 @@ impl BalanceHistoryDB {
     /// This is intended for offline audit tools. Unlike [`Self::open`], it
     /// never creates directories, column families, or a missing DB identity.
     pub fn open_read_only(config: BalanceHistoryConfigRef) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let file = config.db_dir().join("balance_history");
         if !file.is_dir() {
             return Err(format!(
@@ -276,7 +278,14 @@ impl BalanceHistoryDB {
         };
         let expected = BalanceHistoryDBIdentity::for_network(db.config.btc.network());
         match db.get_db_identity()? {
-            Some(actual) if actual == expected => Ok(db),
+            Some(actual) if actual == expected => {
+                info!(
+                    "Opened balance-history RocksDB: mode=read_only, path={}, elapsed_ms={}",
+                    db.file.display(),
+                    open_begin.elapsed().as_millis()
+                );
+                Ok(db)
+            }
             Some(actual) => Err(format!(
                 "Read-only balance-history DB identity mismatch: expected {:?}, found {:?}",
                 expected, actual
@@ -292,6 +301,7 @@ impl BalanceHistoryDB {
         config: BalanceHistoryConfigRef,
         mode: BalanceHistoryDBMode,
     ) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let db_dir = config.db_dir();
         if !db_dir.exists() {
             std::fs::create_dir_all(&db_dir).map_err(|e| {
@@ -326,6 +336,12 @@ impl BalanceHistoryDB {
             mode: Mutex::new(mode),
         };
         db.ensure_db_identity()?;
+        info!(
+            "Opened balance-history RocksDB: mode={:?}, path={}, elapsed_ms={}",
+            mode,
+            db.file.display(),
+            open_begin.elapsed().as_millis()
+        );
         Ok(db)
     }
 
