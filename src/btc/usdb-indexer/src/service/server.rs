@@ -3886,7 +3886,7 @@ mod tests {
             snapshot_signing_key_id: None,
             script_registry: balance_history::ScriptRegistryStatus {
                 available: true,
-                count: Some(0),
+                estimated_count: Some(0),
                 policy: "auxiliary_seen_scripts_non_consensus_v1".to_string(),
             },
             blockers: Vec::new(),

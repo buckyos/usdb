@@ -230,7 +230,7 @@ impl SnapshotIndexer {
         // exported in full so snapshot-installed nodes can resolve script_hash values to the
         // original scriptPubKey for address display, without changing consensus state_ref.
         {
-            let total = self.db.get_script_registry_count()?;
+            let total = self.db.get_estimated_script_registry_count()?;
             self.output.println(&format!(
                 "Will generate script registry snapshot with approximately {} entries",
                 total

@@ -2968,7 +2968,8 @@ impl BalanceHistoryDB {
         get_approx_cf_key_count(&self.db, UTXO_CF)
     }
 
-    pub fn get_script_registry_count(&self) -> Result<u64, String> {
+    /// Returns RocksDB's approximate key count for progress and diagnostics.
+    pub fn get_estimated_script_registry_count(&self) -> Result<u64, String> {
         get_approx_cf_key_count(&self.db, SCRIPT_REGISTRY_CF)
     }
 
@@ -4196,7 +4197,7 @@ mod tests {
             .get_script_registry_entries(&[script_hash_b, missing_hash, script_hash_a])
             .unwrap();
         assert_eq!(entries, vec![Some(script_b), None, Some(script_a)]);
-        assert!(db.get_script_registry_count().unwrap() >= 2);
+        assert!(db.get_estimated_script_registry_count().unwrap() >= 2);
     }
 
     #[test]

@@ -36,7 +36,8 @@ struct BalanceHistoryCli {
     #[arg(short, long)]
     daemon: bool,
 
-    /// Specify the maximum block height to index addresses up to, defaults to the latest block height
+    /// Freeze indexing at this block height and keep RPC serving until shutdown.
+    /// Without this option, the service follows the latest stable BTC height.
     #[arg(short, long)]
     max_block_height: Option<u32>,
 }

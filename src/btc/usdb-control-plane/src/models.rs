@@ -280,7 +280,7 @@ pub struct BalanceHistoryServiceSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceHistoryScriptRegistryStatus {
     pub available: bool,
-    pub count: Option<u64>,
+    pub estimated_count: Option<u64>,
     pub policy: String,
 }
 

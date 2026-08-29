@@ -862,17 +862,17 @@ impl BalanceHistoryRpcServer {
     }
 
     fn script_registry_status(&self) -> ScriptRegistryStatus {
-        match self.db.get_script_registry_count() {
-            Ok(count) => ScriptRegistryStatus {
+        match self.db.get_estimated_script_registry_count() {
+            Ok(estimated_count) => ScriptRegistryStatus {
                 available: true,
-                count: Some(count),
+                estimated_count: Some(estimated_count),
                 policy: SCRIPT_REGISTRY_POLICY.to_string(),
             },
             Err(e) => {
                 log::warn!("Failed to read script registry status: {}", e);
                 ScriptRegistryStatus {
                     available: false,
-                    count: None,
+                    estimated_count: None,
                     policy: SCRIPT_REGISTRY_POLICY.to_string(),
                 }
             }
@@ -1943,7 +1943,7 @@ mod tests {
                 .contains(&ReadinessBlocker::LatestBlockCommitMissing)
         );
         assert!(readiness.script_registry.available);
-        assert!(readiness.script_registry.count.is_some());
+        assert!(readiness.script_registry.estimated_count.is_some());
         assert_eq!(readiness.script_registry.policy, SCRIPT_REGISTRY_POLICY);
     }
 
@@ -1997,7 +1997,13 @@ mod tests {
             Some(encode_hex(&commit.block_commit))
         );
         assert!(readiness.script_registry.available);
-        assert!(readiness.script_registry.count.unwrap_or_default() >= 1);
+        assert!(
+            readiness
+                .script_registry
+                .estimated_count
+                .unwrap_or_default()
+                >= 1
+        );
         assert_eq!(readiness.script_registry.policy, SCRIPT_REGISTRY_POLICY);
         assert!(readiness.blockers.is_empty());
     }

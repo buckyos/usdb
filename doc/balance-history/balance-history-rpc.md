@@ -166,7 +166,7 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
   "history_query_floor": 0,
   "script_registry": {
     "available": true,
-    "count": 123456,
+    "estimated_count": 123456,
     "policy": "auxiliary_seen_scripts_non_consensus_v1"
   },
   "blockers": ["CatchingUp"]
@@ -183,7 +183,7 @@ block commit、snapshot/state-ref 和 script registry 查询返回结构化
 `script_registry` 字段说明：
 
 - `available`：当前节点是否能查询辅助 registry；
-- `count`：当前 registry 中已知 `script_hash -> scriptPubKey` 映射的近似数量；
+- `estimated_count`：RocksDB 对当前 registry 映射数量的估算值，仅用于展示和进度诊断，不是精确行数；
 - `policy`：机器可读语义策略。当前策略表示 registry 是由索引和 snapshot 导入填充的非共识 seen-script cache。
 
 ### 5) `get_snapshot_info`

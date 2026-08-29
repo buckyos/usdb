@@ -27,6 +27,10 @@ fn compute_stable_sync_target_height(
     max_sync_block_height.min(rpc_tip_height.saturating_sub(stable_lag))
 }
 
+fn configured_max_height_reached(max_sync_block_height: u32, synced_height: u32) -> bool {
+    max_sync_block_height != u32::MAX && synced_height >= max_sync_block_height
+}
+
 fn validate_activation_at_height(
     config: &BalanceHistoryConfigRef,
     block_height: u32,
@@ -589,9 +593,24 @@ impl BalanceHistoryIndexer {
                         output_mode_warning = true;
                     }
 
+                    if configured_max_height_reached(
+                        self.config.sync.max_sync_block_height,
+                        latest_height,
+                    ) {
+                        self.output.finish_index();
+                        let message = format!(
+                            "Configured maximum block height {} reached; state is frozen until restart",
+                            latest_height
+                        );
+                        info!("{}", message);
+                        self.output.set_index_message(&message);
+                        self.wait_for_shutdown_at_configured_max_height(latest_height);
+                        break;
+                    }
+
                     // Wait for new blocks
                     match self.wait_for_new_blocks(latest_height) {
-                        Ok(new_height) => {
+                        Ok(Some(new_height)) => {
                             info!(
                                 "New block detected at height {}. Continuing sync...",
                                 new_height
@@ -599,6 +618,10 @@ impl BalanceHistoryIndexer {
 
                             let msg = format!("New block detected at height {}", new_height);
                             self.output.set_index_message(&msg);
+                        }
+                        Ok(None) => {
+                            info!("Indexer shutdown requested while waiting for new blocks");
+                            break;
                         }
                         Err(e) => {
                             error!(
@@ -669,7 +692,7 @@ impl BalanceHistoryIndexer {
         false
     }
 
-    fn wait_for_new_blocks(&self, last_height: u32) -> Result<u32, String> {
+    fn wait_for_new_blocks(&self, last_height: u32) -> Result<Option<u32>, String> {
         loop {
             let latest_height = self.get_latest_block_height()?;
             if should_wake_for_chain_update(&self.db, &self.btc_client, last_height, latest_height)?
@@ -678,7 +701,7 @@ impl BalanceHistoryIndexer {
                     "BTC chain update detected while waiting: local_height={}, canonical_height={}",
                     last_height, latest_height
                 );
-                return Ok(latest_height);
+                return Ok(Some(latest_height));
             }
 
             std::thread::sleep(std::time::Duration::from_secs(1));
@@ -686,8 +709,25 @@ impl BalanceHistoryIndexer {
             // Check for shutdown signal while waiting
             if self.check_shutdown() {
                 info!("Indexer shutdown requested. Exiting wait for new blocks.");
-                return Ok(last_height);
+                return Ok(None);
             }
+        }
+    }
+
+    fn wait_for_shutdown_at_configured_max_height(&self, frozen_height: u32) {
+        info!(
+            "Waiting for shutdown without polling BTC because configured maximum height {} is frozen",
+            frozen_height
+        );
+        loop {
+            if self.check_shutdown() {
+                info!(
+                    "Indexer shutdown requested at frozen maximum height {}",
+                    frozen_height
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 
@@ -1018,6 +1058,14 @@ mod tests {
             compute_stable_sync_target_height(stable_lag + 1, u32::MAX, stable_lag),
             1
         );
+    }
+
+    #[test]
+    fn test_configured_max_height_reached_only_for_finite_completed_target() {
+        assert!(!configured_max_height_reached(u32::MAX, u32::MAX));
+        assert!(!configured_max_height_reached(100, 99));
+        assert!(configured_max_height_reached(100, 100));
+        assert!(configured_max_height_reached(100, 101));
     }
 
     #[test]

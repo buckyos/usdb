@@ -411,8 +411,10 @@ pub struct ReadinessInfo {
 pub struct ScriptRegistryStatus {
     /// True when the local DB can query the registry column family.
     pub available: bool,
-    /// Approximate number of known script hash mappings, when available.
-    pub count: Option<u64>,
+    /// RocksDB estimate of known script hash mappings, when available.
+    ///
+    /// This is diagnostic progress metadata and must not be interpreted as an exact row count.
+    pub estimated_count: Option<u64>,
     /// Machine-readable policy describing registry semantics.
     pub policy: String,
 }

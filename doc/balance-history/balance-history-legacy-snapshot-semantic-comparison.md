@@ -37,6 +37,8 @@ commit 链差异均属于 unexpected difference，命令返回非零状态。
 ## 3. 执行前置条件
 
 1. 当前代码重放的 RocksDB 已经到达目标高度，且服务使用 `--max-block-height` 冻结在该高度。
+   达到有限目标后服务进入 `Synced`，继续提供 RPC，但不再轮询 BTC 或自动响应目标高度的后续重组；
+   改变目标或恢复跟随链需要重启并调整配置。
 2. 目标高度和旧 snapshot 的 BTC block hash 已经独立确认一致。
 3. 停止 `balance-history` 服务。只读 RocksDB 可以与服务并存，但主网库打开和全表扫描会消耗
    大量 CPU、内存和磁盘 I/O，不应与同步进程并行运行。

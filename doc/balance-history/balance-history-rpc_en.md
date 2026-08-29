@@ -93,14 +93,15 @@ The response also includes `script_registry`, a display-only diagnostic summary:
 {
   "script_registry": {
     "available": true,
-    "count": 123456,
+    "estimated_count": 123456,
     "policy": "auxiliary_seen_scripts_non_consensus_v1"
   }
 }
 ```
 
 - `available`: whether this node can query the auxiliary registry.
-- `count`: approximate number of known `script_hash -> scriptPubKey` mappings.
+- `estimated_count`: RocksDB's estimated number of known `script_hash -> scriptPubKey`
+  mappings. It is display/progress metadata, not an exact row count.
 - `policy`: machine-readable semantics. The current policy means the registry is a non-consensus seen-script cache populated by indexing and snapshot import.
 
 ### 5) `get_snapshot_info`

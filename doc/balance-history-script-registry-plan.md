@@ -329,7 +329,7 @@ resolve_script_hashes(script_hashes[], include_script_pubkey?)
 - 新增 storage 查询接口：
   - `resolve_script_hashes`
   - `get_script_registry_entries`
-  - `get_script_registry_count`
+  - `get_estimated_script_registry_count`（只用于进度和诊断，不是精确行数）
 - 增加单元测试：
   - 标准 P2TR/P2WPKH/P2SH script 可解析 address。
   - non-standard script 返回 `address=null`。
