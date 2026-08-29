@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use usdb_util::BtcScriptHash;
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ pub struct PassEnergyStorage {
 
 impl PassEnergyStorage {
     pub fn new(data_dir: &Path) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::PASS_ENERGY_DB_DIR);
 
         if db_path.exists() {
@@ -101,7 +103,11 @@ impl PassEnergyStorage {
             msg
         })?;
 
-        info!("Opened Pass Energy RocksDB at {}", db_path.display());
+        info!(
+            "Opened pass energy RocksDB: path={}, elapsed_ms={}",
+            db_path.display(),
+            open_begin.elapsed().as_millis()
+        );
 
         let ret = Self {
             file: db_path,
@@ -732,6 +738,7 @@ impl PassEnergyStorage {
 
     // Clear all pass energy records from given block height (inclusive)
     pub fn clear_records_from_height(&self, from_block_height: u32) -> Result<(), String> {
+        let rollback_begin = Instant::now();
         let cf = self.db.cf_handle(PASS_ENERGY_CF).ok_or_else(|| {
             let msg = format!("Column family {} not found", PASS_ENERGY_CF);
             error!("{}", msg);
@@ -762,6 +769,7 @@ impl PassEnergyStorage {
             }
         }
 
+        let deleted_count = keys_to_delete.len();
         let mut delete_batch = rocksdb::WriteBatch::default();
         for key in keys_to_delete {
             delete_batch.delete_cf(cf, key);
@@ -779,6 +787,14 @@ impl PassEnergyStorage {
             Some(height) => self.set_meta_u32(META_KEY_MAX_RECORD_BLOCK_HEIGHT, height)?,
             None => self.delete_meta_key(META_KEY_MAX_RECORD_BLOCK_HEIGHT)?,
         }
+
+        info!(
+            "Pass energy rollback completed: from_block_height={}, deleted_record_count={}, max_kept_height={:?}, elapsed_ms={}",
+            from_block_height,
+            deleted_count,
+            max_kept_height,
+            rollback_begin.elapsed().as_millis()
+        );
 
         Ok(())
     }

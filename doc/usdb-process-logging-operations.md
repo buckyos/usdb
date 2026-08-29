@@ -35,6 +35,7 @@
 | `USDB_PROCESS_LOG_LEVEL` | `info,balance_history::index=debug` | 必须是合法的 `flexi_logger` spec |
 | `USDB_PROCESS_LOG_MAX_FILE_BYTES` | `200000000` | 必须大于 0 |
 | `USDB_PROCESS_LOG_KEEP_FILES` | `30` | 必须大于 0 |
+| `USDB_SLOW_RPC_THRESHOLD_MS` | `500` | 慢 RPC 阈值，默认 500 ms，必须大于 0 |
 
 例如，仅临时提高 `balance-history` 索引模块的详细度：
 
@@ -79,21 +80,44 @@ stderr。代码显式设置的 logger builder 参数优先于环境变量，环�
 恢复高度。连续失败计数按调用链独立维护，避免一个上游恢复错误地清除另一个上游的故障
 状态。
 
+## RPC 错误与慢调用
+
+两套索引服务通过共享 JSON-RPC middleware 对最终响应统一分类，不再依赖错误 message
+字符串：
+
+| `error_class` | 范围 | 默认级别 |
+| --- | --- | --- |
+| `client` | parse error、invalid request、method not found、invalid params | `debug` |
+| `expected` | 已知 consensus state error 和服务显式登记的业务错误 | `debug` |
+| `internal` | internal error、未知 server error、状态不变量错误 | `error` |
+
+`usdb-indexer` 的 height/pass/energy/snapshot not found、分页/高度范围错误和无候选结果属于
+预期业务拒绝；duplicate active owner 与 internal invariant broken 仍属于内部错误。未知
+server error 默认按内部错误处理，避免新增错误码未登记时静默降级。
+
+所有超过 `USDB_SLOW_RPC_THRESHOLD_MS` 的成功调用记录为 `warn`。慢速 client/expected
+拒绝也记录为 `warn`；internal failure 只写一条包含 `slow=true/false` 的 `error`，避免重复
+日志。RPC 日志包含 service、method、code、class 和 elapsed，不记录 params 或结构化 error
+data。
+
 ## 核心同步阶段
 
 `balance-history` 的关键记录包括：
 
-- RocksDB 成功打开后的 mode、path 和 elapsed；失败仍由启动调用链记录并终止启动
+- RocksDB 成功打开后的 engine open、identity/schema validation 和总耗时；失败仍由启动调用链记录并终止启动
 - 每个 block batch 的高度范围、块数、总耗时、各 preload/process/write 阶段耗时、变更数和 cache 数量
-- 每轮同步的范围、batch 数、最终 flush 耗时和总耗时
-- reorg rollback 的起止高度、深度、耗时和失败原因；失败时 readiness 保持 recovery pending
+- 每轮同步的范围、batch 数、底层及调用层 flush 耗时和总耗时
+- reorg rollback 的 undo validation、marker、逐块回滚、marker 清理和总耗时；失败时 readiness 保持 recovery pending
+- snapshot create/install 的 balance、UTXO、block commit、script registry、finalize、file hash、source verification、staging 和 swap 耗时
 
 `usdb-indexer` 的关键记录包括：
 
+- miner-pass/sync-state SQLite 与 energy RocksDB 的 open、schema validation 和总耗时
 - 每段 block range 的起止高度、块数和耗时
 - 每个 block 的 mint、invalid mint、transfer、active balance、energy update 数量及阶段耗时
 - snapshot anchor 持久化、历史 snapshot backfill 和整轮同步耗时
 - block transaction 任一阶段失败后的 energy/transfer 即时恢复结果；日志同时保留原始错误和恢复错误
+- miner-pass transaction 与 energy record truncate 的 rollback 数量及耗时
 
 无铭文、无 transfer 和逐块开始提示属于正常高频事件，默认降为 `debug`。每块最终状态提交和
 durable savepoint 进度仍保留为 `info`，用于定位跨存储一致性边界。

@@ -11,7 +11,7 @@ use crate::db::BalanceHistoryDBRef;
 use crate::snapshot_provenance::SnapshotInstallProvenance;
 use crate::status::{SyncStatus, SyncStatusManagerRef};
 use bitcoincore_rpc::bitcoin::{Address, OutPoint, Script};
-use jsonrpc_core::IoHandler;
+use jsonrpc_core::MetaIoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ use usdb_util::{
     ActivationRegistryError, BALANCE_HISTORY_SERVICE_NAME, BalanceHistoryData,
     CONSENSUS_SNAPSHOT_ID_HASH_ALGO, CONSENSUS_SNAPSHOT_ID_VERSION, ConsensusQueryContext,
     ConsensusRpcErrorCode, ConsensusRpcErrorData, ConsensusSnapshotIdentity,
-    ConsensusStateReference, build_consensus_snapshot_id,
+    ConsensusStateReference, RpcDiagnosticsMiddleware, build_consensus_snapshot_id,
 };
 
 const MAX_ADDRESS_AGGREGATE_BUCKETS: u64 = 2_000;
@@ -84,7 +84,9 @@ impl BalanceHistoryRpcServer {
 
         let ret = Self::new(config.clone(), addr, status, db, shutdown_tx.clone());
 
-        let mut io = IoHandler::new();
+        let mut io: MetaIoHandler<(), RpcDiagnosticsMiddleware> = MetaIoHandler::with_middleware(
+            RpcDiagnosticsMiddleware::new(BALANCE_HISTORY_SERVICE_NAME, std::iter::empty()),
+        );
         io.extend_with(ret.clone().to_delegate());
 
         let server = ServerBuilder::new(io)
@@ -1138,14 +1140,9 @@ impl BalanceHistoryRpc for BalanceHistoryRpcServer {
 
             Ok(balances)
         } else {
-            let msg =
-                "Block height or block range must be specified to get balance delta".to_string();
-            error!("{}", msg);
-            Err(JsonError {
-                code: ErrorCode::InvalidParams,
-                message: msg,
-                data: None,
-            })
+            Err(Self::to_invalid_params(
+                "Block height or block range must be specified to get balance delta".to_string(),
+            ))
         }
     }
 

@@ -5242,6 +5242,7 @@ dependencies = [
  "electrum-client",
  "flexi_logger",
  "futures",
+ "jsonrpc-core",
  "log",
  "named-lock",
  "num-bigint",

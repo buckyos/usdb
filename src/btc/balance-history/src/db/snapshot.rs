@@ -5,7 +5,7 @@ use bitcoincore_rpc::bitcoin::hashes::Hash;
 use bitcoincore_rpc::bitcoin::{BlockHash, OutPoint, ScriptBuf};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, OutPointCodec, UTXOEntry};
 
 /// Current SQLite snapshot schema version.
@@ -89,20 +89,25 @@ pub struct SnapshotDB {
 impl SnapshotDB {
     /// Create or open a snapshot database at the specified path
     pub fn open(path: &Path) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let conn = Connection::open(path).map_err(|e| {
             let msg = format!("Failed to open connection: {}", e);
             error!("{}", msg);
             msg
         })?;
+        let open_connection_elapsed_ms = open_begin.elapsed().as_millis();
 
         // Initialize schema
+        let schema_begin = Instant::now();
         conn.execute_batch(include_str!("schema.sql"))
             .map_err(|e| {
                 let msg = format!("Failed to execute schema: {}", e);
                 error!("{}", msg);
                 msg
             })?;
+        let schema_elapsed_ms = schema_begin.elapsed().as_millis();
 
+        let pragma_begin = Instant::now();
         conn.execute_batch(
             r#"
                 PRAGMA journal_mode = WAL;
@@ -115,6 +120,14 @@ impl SnapshotDB {
             error!("{}", msg);
             msg
         })?;
+        info!(
+            "Opened snapshot SQLite: mode=read_write, path={}, open_connection_elapsed_ms={}, schema_elapsed_ms={}, pragma_elapsed_ms={}, total_elapsed_ms={}",
+            path.display(),
+            open_connection_elapsed_ms,
+            schema_elapsed_ms,
+            pragma_begin.elapsed().as_millis(),
+            open_begin.elapsed().as_millis()
+        );
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -124,6 +137,7 @@ impl SnapshotDB {
 
     /// Opens an existing snapshot without applying schema migrations or writable pragmas.
     pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let conn =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
                 let msg = format!(
@@ -134,6 +148,11 @@ impl SnapshotDB {
                 error!("{}", msg);
                 msg
             })?;
+        info!(
+            "Opened snapshot SQLite: mode=read_only, path={}, elapsed_ms={}",
+            path.display(),
+            open_begin.elapsed().as_millis()
+        );
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -150,6 +169,7 @@ impl SnapshotDB {
         path: &Path,
         cache_size_kib: u32,
     ) -> Result<Self, String> {
+        let open_begin = Instant::now();
         if cache_size_kib == 0 {
             return Err("Snapshot verification cache size must be greater than zero".to_string());
         }
@@ -205,11 +225,18 @@ impl SnapshotDB {
                 error!("{}", msg);
                 msg
             })?;
+        info!(
+            "Opened snapshot SQLite: mode=verification, path={}, cache_size_kib={}, elapsed_ms={}",
+            snapshot.path.display(),
+            cache_size_kib,
+            open_begin.elapsed().as_millis()
+        );
         Ok(snapshot)
     }
 
     /// Runs SQLite's full integrity check and rejects any non-`ok` result.
     pub fn verify_integrity(&self) -> Result<(), String> {
+        let verify_begin = Instant::now();
         let result: String = self
             .conn
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
@@ -229,6 +256,11 @@ impl SnapshotDB {
                 result
             ));
         }
+        info!(
+            "Verified snapshot SQLite integrity: path={}, elapsed_ms={}",
+            self.path.display(),
+            verify_begin.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -294,6 +326,7 @@ impl SnapshotDB {
     /// durable snapshot artifact. This helper performs the checkpoint and then closes the
     /// connection by consuming `self`.
     pub fn finalize_for_distribution(self) -> Result<PathBuf, String> {
+        let finalize_begin = Instant::now();
         self.conn
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
             .map_err(|e| {
@@ -308,6 +341,11 @@ impl SnapshotDB {
 
         let path = self.path.clone();
         drop(self);
+        info!(
+            "Finalized snapshot SQLite for distribution: path={}, elapsed_ms={}",
+            path.display(),
+            finalize_begin.elapsed().as_millis()
+        );
         Ok(path)
     }
 

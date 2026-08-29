@@ -269,6 +269,7 @@ impl BalanceHistoryDB {
                 msg
             },
         )?;
+        let open_engine_elapsed_ms = open_begin.elapsed().as_millis();
 
         let db = BalanceHistoryDB {
             file,
@@ -277,11 +278,14 @@ impl BalanceHistoryDB {
             mode: Mutex::new(BalanceHistoryDBMode::Normal),
         };
         let expected = BalanceHistoryDBIdentity::for_network(db.config.btc.network());
+        let identity_begin = Instant::now();
         match db.get_db_identity()? {
             Some(actual) if actual == expected => {
                 info!(
-                    "Opened balance-history RocksDB: mode=read_only, path={}, elapsed_ms={}",
+                    "Opened balance-history RocksDB: mode=read_only, path={}, open_engine_elapsed_ms={}, identity_validation_elapsed_ms={}, total_elapsed_ms={}",
                     db.file.display(),
+                    open_engine_elapsed_ms,
+                    identity_begin.elapsed().as_millis(),
                     open_begin.elapsed().as_millis()
                 );
                 Ok(db)
@@ -328,6 +332,7 @@ impl BalanceHistoryDB {
             error!("{}", msg);
             msg
         })?;
+        let open_engine_elapsed_ms = open_begin.elapsed().as_millis();
 
         let db = BalanceHistoryDB {
             file,
@@ -335,11 +340,14 @@ impl BalanceHistoryDB {
             config,
             mode: Mutex::new(mode),
         };
+        let identity_begin = Instant::now();
         db.ensure_db_identity()?;
         info!(
-            "Opened balance-history RocksDB: mode={:?}, path={}, elapsed_ms={}",
+            "Opened balance-history RocksDB: mode={:?}, path={}, open_engine_elapsed_ms={}, identity_validation_elapsed_ms={}, total_elapsed_ms={}",
             mode,
             db.file.display(),
+            open_engine_elapsed_ms,
+            identity_begin.elapsed().as_millis(),
             open_begin.elapsed().as_millis()
         );
         Ok(db)
@@ -734,6 +742,7 @@ impl BalanceHistoryDB {
 
     // Flush secondary DB to catch up with primary in read-only mode
     pub fn flush_with_primary(&self) -> Result<(), String> {
+        let flush_begin = Instant::now();
         self.db.try_catch_up_with_primary().map_err(|e| {
             let msg = format!(
                 "Failed to flush secondary RocksDB at {}: {}",
@@ -744,11 +753,16 @@ impl BalanceHistoryDB {
             msg
         })?;
 
-        info!("Flushed secondary RocksDB at {}", self.file.display());
+        info!(
+            "Flushed secondary balance-history RocksDB: path={}, elapsed_ms={}",
+            self.file.display(),
+            flush_begin.elapsed().as_millis()
+        );
         Ok(())
     }
 
     pub fn flush_all(&self) -> Result<(), String> {
+        let flush_begin = Instant::now();
         let mut flush_opts = rocksdb::FlushOptions::default();
         flush_opts.set_wait(true); // Wait until flush is done
 
@@ -756,7 +770,13 @@ impl BalanceHistoryDB {
             let msg = format!("Failed to flush RocksDB at {}: {}", self.file.display(), e);
             error!("{}", msg);
             msg
-        })
+        })?;
+        info!(
+            "Flushed balance-history RocksDB: scope=all, path={}, elapsed_ms={}",
+            self.file.display(),
+            flush_begin.elapsed().as_millis()
+        );
+        Ok(())
     }
 
     pub fn flush_balance_history(&self) -> Result<(), String> {
@@ -1727,6 +1747,7 @@ impl BalanceHistoryDB {
 
     // Roll back committed forward state down to the inclusive target height.
     pub fn rollback_to_block_height(&self, target_height: u32) -> Result<(), String> {
+        let rollback_begin = Instant::now();
         if self.get_rollback_state()?.is_some() {
             let msg = "A rollback is already in progress; resume it before starting another one"
                 .to_string();
@@ -1748,10 +1769,15 @@ impl BalanceHistoryDB {
             return Ok(());
         }
 
+        let validate_begin = Instant::now();
         self.ensure_rollback_undo_available(target_height, current_height)?;
+        let validate_elapsed_ms = validate_begin.elapsed().as_millis();
 
+        let marker_begin = Instant::now();
         self.begin_rollback(target_height, current_height)?;
+        let marker_elapsed_ms = marker_begin.elapsed().as_millis();
 
+        let apply_begin = Instant::now();
         let result = (|| {
             let mut next_height = current_height;
             while next_height > target_height {
@@ -1761,10 +1787,23 @@ impl BalanceHistoryDB {
             }
             Ok::<(), String>(())
         })();
+        let apply_elapsed_ms = apply_begin.elapsed().as_millis();
 
         match result {
             Ok(()) => {
+                let clear_marker_begin = Instant::now();
                 self.clear_rollback_state()?;
+                info!(
+                    "Balance-history storage rollback completed: from_height={}, to_height={}, depth={}, validate_undo_elapsed_ms={}, begin_marker_elapsed_ms={}, apply_blocks_elapsed_ms={}, clear_marker_elapsed_ms={}, total_elapsed_ms={}",
+                    current_height,
+                    target_height,
+                    current_height.saturating_sub(target_height),
+                    validate_elapsed_ms,
+                    marker_elapsed_ms,
+                    apply_elapsed_ms,
+                    clear_marker_begin.elapsed().as_millis(),
+                    rollback_begin.elapsed().as_millis()
+                );
                 Ok(())
             }
             Err(e) => Err(e),

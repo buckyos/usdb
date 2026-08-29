@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const BTC_SYNCED_BLOCK_HEIGHT_KEY: &str = "btc_synced_block_height";
 
@@ -11,6 +12,7 @@ pub struct SyncStateStorage {
 
 impl SyncStateStorage {
     pub fn new(data_dir: &Path) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::SYNC_STATE_DB_FILE);
 
         let conn = Connection::open(&db_path).map_err(|e| {
@@ -18,8 +20,10 @@ impl SyncStateStorage {
             log::error!("{}", msg);
             msg
         })?;
+        let open_connection_elapsed_ms = open_begin.elapsed().as_millis();
 
         // Initialize the database schema if necessary
+        let schema_begin = Instant::now();
         conn.execute(
             "CREATE TABLE IF NOT EXISTS state (
                     name TEXT PRIMARY KEY,
@@ -37,6 +41,13 @@ impl SyncStateStorage {
             db_path,
             conn: Mutex::new(conn),
         };
+        info!(
+            "Opened sync state SQLite: path={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
+            storage.db_path.display(),
+            open_connection_elapsed_ms,
+            schema_begin.elapsed().as_millis(),
+            open_begin.elapsed().as_millis()
+        );
 
         Ok(storage)
     }

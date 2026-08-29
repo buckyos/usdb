@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, UTXOEntry};
 
 /// Current external snapshot manifest sidecar schema version.
@@ -72,6 +72,7 @@ impl SnapshotIndexer {
         with_utxo: bool,
         db_path: &Path,
     ) -> Result<SnapshotCreationResult, String> {
+        let snapshot_begin = Instant::now();
         info!(
             "Starting snapshot generation up to block height {}, with_utxo={}",
             target_block_height, with_utxo
@@ -138,6 +139,7 @@ impl SnapshotIndexer {
 
         // First generate balance history snapshot
         {
+            let stage_begin = Instant::now();
             let total = self.db.get_history_balance_count()?;
             self.output.println(&format!(
                 "Will generate balance history snapshot with approximately {} source entries at block height {}",
@@ -164,10 +166,17 @@ impl SnapshotIndexer {
                 "Balance history snapshot complete: {} rows written",
                 total_count
             ));
+            info!(
+                "Snapshot creation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                total_count,
+                stage_begin.elapsed().as_millis()
+            );
         }
 
         // Then generate UTXO snapshot if needed
         if with_utxo {
+            let stage_begin = Instant::now();
             let total = self.db.get_utxo_count()?;
             self.output.println(&format!(
                 "Will generate UTXO snapshot with approximately {} entries at block height {}",
@@ -193,9 +202,16 @@ impl SnapshotIndexer {
                 "UTXO snapshot complete: {} rows written",
                 total_count
             ));
+            info!(
+                "Snapshot creation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                total_count,
+                stage_begin.elapsed().as_millis()
+            );
         }
 
         {
+            let stage_begin = Instant::now();
             let estimated_total = self
                 .db
                 .get_block_commit_count()?
@@ -224,12 +240,19 @@ impl SnapshotIndexer {
                 "Block commit snapshot complete: {} rows written",
                 total_count
             ));
+            info!(
+                "Snapshot creation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                total_count,
+                stage_begin.elapsed().as_millis()
+            );
         }
 
         // Script registry is an auxiliary seen-script cache without per-height state. It is
         // exported in full so snapshot-installed nodes can resolve script_hash values to the
         // original scriptPubKey for address display, without changing consensus state_ref.
         {
+            let stage_begin = Instant::now();
             let total = self.db.get_estimated_script_registry_count()?;
             self.output.println(&format!(
                 "Will generate script registry snapshot with approximately {} entries",
@@ -254,9 +277,16 @@ impl SnapshotIndexer {
                 "Script registry snapshot complete: {} rows written",
                 total_count
             ));
+            info!(
+                "Snapshot creation stage completed: stage=script_registry, block_height={}, row_count={}, elapsed_ms={}",
+                target_block_height,
+                total_count,
+                stage_begin.elapsed().as_millis()
+            );
         }
 
         // Finally, update snapshot meta with counts
+        let finalize_begin = Instant::now();
         snapshot_db.lock().unwrap().update_meta(&snapshot_meta)?;
         let snapshot_db = Arc::try_unwrap(snapshot_db).map_err(|_| {
             let msg =
@@ -282,7 +312,14 @@ impl SnapshotIndexer {
             "Snapshot database created at {}",
             db_path.display()
         ));
+        info!(
+            "Snapshot creation stage completed: stage=finalize_database, block_height={}, elapsed_ms={}",
+            target_block_height,
+            finalize_begin.elapsed().as_millis()
+        );
 
+        let artifact_begin = Instant::now();
+        let hash_begin = Instant::now();
         let file_hash = SnapshotHash::calc_hash(&db_path).map_err(|e| {
             let msg = format!(
                 "Failed to calculate snapshot hash for {}: {}",
@@ -292,6 +329,12 @@ impl SnapshotIndexer {
             self.output.eprintln(&msg);
             msg
         })?;
+        info!(
+            "Snapshot creation stage completed: stage=file_hash, block_height={}, path={}, elapsed_ms={}",
+            target_block_height,
+            db_path.display(),
+            hash_begin.elapsed().as_millis()
+        );
         let state_ref = build_historical_state_ref_at_height(
             &self.config,
             self.db.as_ref(),
@@ -356,6 +399,17 @@ impl SnapshotIndexer {
         } else {
             None
         };
+        info!(
+            "Snapshot creation completed: block_height={}, with_utxo={}, artifact_elapsed_ms={}, total_elapsed_ms={}, balance_history_count={}, utxo_count={}, block_commit_count={}, script_registry_count={}",
+            target_block_height,
+            with_utxo,
+            artifact_begin.elapsed().as_millis(),
+            snapshot_begin.elapsed().as_millis(),
+            snapshot_meta.balance_history_count,
+            snapshot_meta.utxo_count,
+            snapshot_meta.block_commit_count,
+            snapshot_meta.script_registry_count
+        );
 
         Ok(SnapshotCreationResult {
             db_path,
@@ -823,10 +877,12 @@ impl SnapshotInstaller {
     }
 
     pub fn install(self, data: SnapshotData) -> Result<(), String> {
+        let install_begin = Instant::now();
         info!("Starting snapshot installation from {:?}", data,);
 
         self.output.start_load(0);
         let trust_mode = self.config.snapshot.trust_mode.clone();
+        let verification_begin = Instant::now();
 
         let manifest = if let Some(manifest_file) = data.manifest_file.as_ref() {
             self.output.println(&format!(
@@ -989,6 +1045,7 @@ impl SnapshotInstaller {
 
         if let Some(hash) = expected_hash {
             self.output.println("Verifying snapshot file hash...");
+            let hash_begin = Instant::now();
             let file_hash = SnapshotHash::calc_hash(&data.file)?;
             if !file_hash.eq_ignore_ascii_case(&hash) {
                 let msg = format!(
@@ -998,6 +1055,11 @@ impl SnapshotInstaller {
                 error!("{}", msg);
                 return Err(msg);
             }
+            info!(
+                "Snapshot installation stage completed: stage=file_hash, path={}, elapsed_ms={}",
+                data.file.display(),
+                hash_begin.elapsed().as_millis()
+            );
         } else {
             self.output
                 .println("No snapshot file hash provided, skipping verification");
@@ -1066,7 +1128,15 @@ impl SnapshotInstaller {
             meta.block_commit_count,
             meta.script_registry_count
         ));
+        info!(
+            "Snapshot installation stage completed: stage=verify_source, block_height={}, trust_mode={:?}, signature_verified={}, elapsed_ms={}",
+            meta.block_height,
+            trust_mode,
+            signature_verified,
+            verification_begin.elapsed().as_millis()
+        );
 
+        let staging_open_begin = Instant::now();
         let staging_root = self.prepare_staging_root()?;
         let staging_config = self.make_staging_config(staging_root.clone());
         let staging_db = BalanceHistoryDB::open(staging_config, BalanceHistoryDBMode::BestEffort)
@@ -1075,13 +1145,47 @@ impl SnapshotInstaller {
             self.output.println(&msg);
             msg
         })?;
+        info!(
+            "Snapshot installation stage completed: stage=open_staging_db, block_height={}, elapsed_ms={}",
+            meta.block_height,
+            staging_open_begin.elapsed().as_millis()
+        );
 
         // Install into staging DB first, then atomically switch the live DB directory.
+        let balance_history_begin = Instant::now();
         self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
+        info!(
+            "Snapshot installation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
+            meta.block_height,
+            meta.balance_history_count,
+            balance_history_begin.elapsed().as_millis()
+        );
+        let utxo_begin = Instant::now();
         self.install_utxo_snapshot(&staging_db, &snapshot_db, &meta)?;
+        info!(
+            "Snapshot installation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
+            meta.block_height,
+            meta.utxo_count,
+            utxo_begin.elapsed().as_millis()
+        );
+        let block_commit_begin = Instant::now();
         self.install_block_commit_snapshot(&staging_db, &snapshot_db, &meta)?;
+        info!(
+            "Snapshot installation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
+            meta.block_height,
+            meta.block_commit_count,
+            block_commit_begin.elapsed().as_millis()
+        );
+        let script_registry_begin = Instant::now();
         self.install_script_registry_snapshot(&staging_db, &snapshot_db, &meta)?;
+        info!(
+            "Snapshot installation stage completed: stage=script_registry, block_height={}, row_count={}, elapsed_ms={}",
+            meta.block_height,
+            meta.script_registry_count,
+            script_registry_begin.elapsed().as_millis()
+        );
 
+        let finalize_begin = Instant::now();
         staging_db
             .put_btc_block_height(meta.block_height)
             .map_err(|e| {
@@ -1159,15 +1263,25 @@ impl SnapshotInstaller {
             error!("{}", msg);
             msg
         })?;
+        let finalize_elapsed_ms = finalize_begin.elapsed().as_millis();
 
+        let swap_begin = Instant::now();
         let output = self.output.clone();
         self.swap_staging_db_into_place(staging_db, staging_root)?;
+        let swap_elapsed_ms = swap_begin.elapsed().as_millis();
 
         output.println(&format!(
             "Completed snapshot installation up to block height {}",
             meta.block_height
         ));
         output.finish_load();
+        info!(
+            "Snapshot installation completed: block_height={}, finalize_metadata_elapsed_ms={}, swap_elapsed_ms={}, total_elapsed_ms={}",
+            meta.block_height,
+            finalize_elapsed_ms,
+            swap_elapsed_ms,
+            install_begin.elapsed().as_millis()
+        );
 
         Ok(())
     }

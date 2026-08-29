@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
+use std::time::Instant;
 use usdb_util::BtcScriptHash;
 
 // Key for storing the last synced BTC block height
@@ -143,6 +144,7 @@ pub struct MinerPassStorage {
 
 impl MinerPassStorage {
     pub fn new(data_dir: &Path) -> Result<Self, String> {
+        let open_begin = Instant::now();
         let db_path = data_dir.join(crate::constants::MINER_PASS_DB_FILE);
 
         let conn = Connection::open(&db_path).map_err(|e| {
@@ -153,13 +155,22 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })?;
+        let open_connection_elapsed_ms = open_begin.elapsed().as_millis();
 
         // Init the database
         let storage = MinerPassStorage {
             db_path,
             conn: Mutex::new(conn),
         };
+        let schema_begin = Instant::now();
         storage.init_db()?;
+        info!(
+            "Opened miner pass SQLite: path={}, open_connection_elapsed_ms={}, schema_validation_elapsed_ms={}, total_elapsed_ms={}",
+            storage.db_path.display(),
+            open_connection_elapsed_ms,
+            schema_begin.elapsed().as_millis(),
+            open_begin.elapsed().as_millis()
+        );
 
         Ok(storage)
     }
@@ -862,6 +873,7 @@ impl MinerPassStorage {
         target_anchor: Option<&BalanceHistorySnapshotInfo>,
         mark_upstream_reorg_recovery_pending: bool,
     ) -> Result<(), String> {
+        let rollback_begin = Instant::now();
         if let Some(anchor) = target_anchor
             && anchor.stable_height != target_height
         {
@@ -873,6 +885,7 @@ impl MinerPassStorage {
             return Err(msg);
         }
 
+        let transaction_begin = Instant::now();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| {
             let msg = format!(
@@ -882,6 +895,8 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })?;
+        let transaction_open_elapsed_ms = transaction_begin.elapsed().as_millis();
+        let transaction_work_begin = Instant::now();
 
         let surviving_pass_count: i64 = tx
             .query_row(
@@ -1127,6 +1142,8 @@ impl MinerPassStorage {
             Self::delete_numeric_state_with_conn(&tx, UPSTREAM_REORG_RECOVERY_PENDING_HEIGHT_KEY)?;
         }
 
+        let transaction_work_elapsed_ms = transaction_work_begin.elapsed().as_millis();
+        let commit_begin = Instant::now();
         tx.commit().map_err(|e| {
             let msg = format!(
                 "Failed to commit miner pass rollback transaction at height {}: {}",
@@ -1135,6 +1152,16 @@ impl MinerPassStorage {
             error!("{}", msg);
             msg
         })?;
+        info!(
+            "Miner pass rollback completed: target_height={}, surviving_pass_count={}, recovery_pending={}, transaction_open_elapsed_ms={}, transaction_work_elapsed_ms={}, commit_elapsed_ms={}, total_elapsed_ms={}",
+            target_height,
+            surviving_pass_count,
+            mark_upstream_reorg_recovery_pending,
+            transaction_open_elapsed_ms,
+            transaction_work_elapsed_ms,
+            commit_begin.elapsed().as_millis(),
+            rollback_begin.elapsed().as_millis()
+        );
 
         Ok(())
     }

@@ -11,7 +11,7 @@ use crate::index::{
 };
 use crate::status::StatusManagerRef;
 use crate::storage::MinerPassSnapshotInfo;
-use jsonrpc_core::IoHandler;
+use jsonrpc_core::MetaIoHandler;
 use jsonrpc_core::{Error as JsonError, ErrorCode, Result as JsonResult};
 use jsonrpc_http_server::{AccessControlAllowOrigin, DomainsValidation, ServerBuilder};
 use ord::InscriptionId;
@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use usdb_util::{
     ActivationRegistryError, ConsensusQueryContext, ConsensusRpcErrorCode, ConsensusRpcErrorData,
     ConsensusStateReference, LocalStateActiveBalanceSnapshot, LocalStatePassCommitIdentity,
-    USDB_INDEXER_SERVICE_NAME, VersionFamily,
+    RpcDiagnosticsMiddleware, USDB_INDEXER_SERVICE_NAME, VersionFamily,
 };
 use usdb_util::{BtcScriptHash, parse_script_hash_any};
 #[cfg(test)]
@@ -44,6 +44,15 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 const MAX_RPC_PAGE_SIZE: usize = 1_000;
 const ECONOMIC_VIEW_CACHE_MAX_ENTRIES: usize = 2;
+const EXPECTED_RPC_SERVER_ERROR_CODES: [i64; 7] = [
+    ERR_HEIGHT_NOT_SYNCED,
+    ERR_PASS_NOT_FOUND,
+    ERR_ENERGY_NOT_FOUND,
+    ERR_SNAPSHOT_NOT_FOUND,
+    ERR_INVALID_PAGINATION,
+    ERR_INVALID_HEIGHT_RANGE,
+    ERR_MINER_CANDIDATE_NOT_FOUND,
+];
 
 // Coordinate cold misses per full query key. Weak gate references avoid turning
 // in-flight coordination into a second, unbounded historical-state cache.
@@ -334,7 +343,11 @@ impl UsdbIndexerRpcServer {
         })?;
 
         let ret = Self::new(config, status, indexer, addr, shutdown_tx);
-        let mut io = IoHandler::new();
+        let mut io: MetaIoHandler<(), RpcDiagnosticsMiddleware> =
+            MetaIoHandler::with_middleware(RpcDiagnosticsMiddleware::new(
+                USDB_INDEXER_SERVICE_NAME,
+                EXPECTED_RPC_SERVER_ERROR_CODES,
+            ));
         io.extend_with(ret.clone().to_delegate());
 
         let server = ServerBuilder::new(io)
@@ -967,10 +980,6 @@ impl UsdbIndexerRpcServer {
 
     fn invalid_economic_pagination(detail: impl Into<String>) -> JsonError {
         let detail = detail.into();
-        warn!(
-            "Rejected UIP-0006 cursor pagination request: module=rpc_server, detail={}",
-            detail
-        );
         Self::to_business_error(
             ERR_INVALID_PAGINATION,
             "INVALID_PAGINATION",
@@ -1010,13 +1019,7 @@ impl UsdbIndexerRpcServer {
     }
 
     fn encode_cursor(cursor: EconomicPageCursor) -> Result<String, JsonError> {
-        encode_economic_cursor(cursor).map_err(|e| {
-            error!(
-                "Failed to encode UIP-0006 cursor: module=rpc_server, error={}",
-                e
-            );
-            Self::to_internal_error(e)
-        })
+        encode_economic_cursor(cursor).map_err(Self::to_internal_error)
     }
 
     fn validate_cursor_request_context(
