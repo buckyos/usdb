@@ -346,6 +346,8 @@ docker/scripts/tools/run_testnet_runtime.sh logs usdb-chain
 ```
 
 确认区块持续增长、header selector 可由同一 usdb-indexer state-ref 验证后，才执行 SourceDAO bootstrap。
+后续节点以 `full -> late joiner -> second miner` 的顺序加入，CPU-only Ethash 的线程限制和验收指标见
+[测试网节点角色与 CPU 挖矿方案](./usdb-testnet-node-roles-and-cpu-mining.md)。
 
 ## 11. SourceDAO Bootstrap
 
