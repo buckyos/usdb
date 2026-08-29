@@ -22,8 +22,13 @@ pub fn serve_static_files(port: u16, web_root: &Path) -> Result<(), String> {
         port,
         web_root.display()
     );
-    println!("Web server started at http://127.0.0.1:{}", port);
-    println!("Serving static files from {}", web_root.display());
+    log::info!(
+        "Balance-history web server started: listen=http://127.0.0.1:{}, web_root={}",
+        port,
+        web_root.display()
+    );
+    eprintln!("Web server started at http://127.0.0.1:{}", port);
+    eprintln!("Serving static files from {}", web_root.display());
 
     for stream in listener.incoming() {
         match stream {

@@ -262,6 +262,21 @@ macro_rules! current_process_log_config {
     };
 }
 
+/// Builds a console-only [`LogConfig`] for a short-lived CLI process.
+///
+/// CLI diagnostics are written to stderr and no service-root log directory is
+/// created. Command results remain the responsibility of the CLI's stdout
+/// writer. Stateful operational tools should use
+/// [`current_process_log_config!`] and an explicit service root instead.
+#[macro_export]
+macro_rules! current_cli_log_config {
+    ($service_name:expr) => {
+        $crate::current_process_log_config!($service_name)
+            .enable_file(false)
+            .enable_console(true)
+    };
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedLogConfig {
     service_name: String,
@@ -505,6 +520,22 @@ mod tests {
         assert_eq!(resolved.level, DEFAULT_PROCESS_LOG_LEVEL);
         assert_eq!(resolved.max_file_bytes, DEFAULT_PROCESS_LOG_MAX_FILE_BYTES);
         assert_eq!(resolved.keep_files, DEFAULT_PROCESS_LOG_KEEP_FILES);
+    }
+
+    #[test]
+    fn cli_profile_is_console_only_and_does_not_require_a_log_directory() {
+        let resolved = resolve_with_environment(
+            LogConfig::new("test-cli")
+                .enable_file(false)
+                .enable_console(true),
+            &[],
+        )
+        .unwrap();
+
+        assert!(!resolved.file);
+        assert!(resolved.console);
+        assert_eq!(resolved.file_name, "test-cli");
+        assert_eq!(resolved.level, DEFAULT_PROCESS_LOG_LEVEL);
     }
 
     #[test]

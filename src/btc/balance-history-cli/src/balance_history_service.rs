@@ -13,7 +13,7 @@ pub struct BalanceHistoryService {
 
 impl BalanceHistoryService {
     pub async fn new(url: &str) -> Result<Self, String> {
-        println!("Connecting to Balance History Service at {}", url);
+        log::info!("Connecting to configured balance-history RPC endpoint");
         let client = RpcClient::new(url)?;
 
         // Try get network type to verify connection
@@ -24,7 +24,7 @@ impl BalanceHistoryService {
             msg
         })?;
 
-        println!("Connected to network type: {}", network);
+        log::info!("Connected to balance-history: network={network}");
 
         Ok(Self { network, client })
     }
@@ -45,7 +45,7 @@ impl BalanceHistoryService {
             }
             Commands::Stop => {
                 // Handle Stop command
-                println!("Sending stop command to the service...");
+                log::info!("Sending stop command to balance-history");
                 self.client.stop().await?;
             }
             Commands::Balance { user, mut position } => {
@@ -54,7 +54,6 @@ impl BalanceHistoryService {
                     Ok(id) => id,
                     Err(e) => {
                         let msg = format!("Invalid user ID '{}': {}", user, e);
-                        println!("{}", msg);
                         return Err(msg);
                     }
                 };
@@ -88,7 +87,6 @@ impl BalanceHistoryService {
                         Ok(id) => id,
                         Err(e) => {
                             let msg = format!("Invalid user ID '{}': {}", user, e);
-                            println!("{}", msg);
                             return Err(msg);
                         }
                     };

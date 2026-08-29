@@ -87,10 +87,7 @@ impl FromStr for UserId {
         } else if let Ok(script_hash) = s.parse::<BtcScriptHash>() {
             Ok(UserId::ScriptHash(script_hash))
         } else {
-            let msg = format!("Invalid user ID: {}", s);
-            println!("{}", msg);
-
-            Err(msg)
+            Err(format!("Invalid user ID: {}", s))
         }
     }
 }
@@ -100,11 +97,10 @@ impl UserId {
         match self {
             UserId::Address(addr) => {
                 // First convert to a NetworkChecked address
-                let checked_addr = addr.clone().require_network(network).map_err(|e| {
-                    let msg = format!("Address network mismatch: {}", e);
-                    println!("{}", msg);
-                    msg
-                })?;
+                let checked_addr = addr
+                    .clone()
+                    .require_network(network)
+                    .map_err(|e| format!("Address network mismatch: {}", e))?;
 
                 Ok(checked_addr.script_pubkey().to_btc_script_hash())
             }
@@ -116,22 +112,19 @@ impl UserId {
 fn parse_range(s: &str) -> Result<Range<u32>, String> {
     let parts: Vec<&str> = s.split("..").collect();
     if parts.len() != 2 {
-        let msg = format!("Invalid range format: {}. Expected format is start..end", s);
-        println!("{}", msg);
-        return Err(msg);
+        return Err(format!(
+            "Invalid range format: {}. Expected format is start..end",
+            s
+        ));
     }
 
-    let start = parts[0].parse::<u32>().map_err(|e| {
-        let msg = format!("Invalid start of range: {}", e);
-        println!("{}", msg);
-        msg
-    })?;
+    let start = parts[0]
+        .parse::<u32>()
+        .map_err(|e| format!("Invalid start of range: {}", e))?;
 
-    let end = parts[1].parse::<u32>().map_err(|e| {
-        let msg = format!("Invalid end of range: {}", e);
-        println!("{}", msg);
-        msg
-    })?;
+    let end = parts[1]
+        .parse::<u32>()
+        .map_err(|e| format!("Invalid end of range: {}", e))?;
 
     Ok(start..end)
 }

@@ -11,7 +11,22 @@
 - `balance-history`: `${root_dir}/logs/balance-history_rCURRENT.log`
 - `usdb-indexer`: `${root_dir}/logs/usdb-indexer_rCURRENT.log`
 - 子命令和工具可能使用独立 basename，例如 `balance-history_snapshot`
-- CLI 默认只输出到 stderr，不创建日志文件
+
+CLI 按是否持有本地状态分为两类，不能混用输出通道：
+
+| 类型 | 进程 | stdout | stderr | 文件日志 |
+| --- | --- | --- | --- | --- |
+| 无状态 RPC CLI | `balance-history-cli`、`usdb-indexer-cli` | 仅命令结果 | 启动身份、连接状态、失败诊断 | 不创建 |
+| 状态型运维工具 | `balance-history` 子命令、`balance-history-snapshot-tool` | 命令结果 | 交互进度和直接失败原因 | `${root_dir}/logs/` |
+
+无状态 RPC CLI 使用共享 `current_cli_log_config!` profile，默认 console-only。它们先完成
+Clap 参数解析，再初始化 runtime logger，因此 `--help`/`--version` 不会附带启动日志。
+状态型工具会修改或扫描本地数据库，必须保留独立文件日志；`balance-history` 子命令使用
+`balance-history_<command>` basename，snapshot tool 使用自己的 tool name。
+
+`balance-history-snapshot-tool --json` 的 stdout 必须始终是单个可解析 JSON 结果。正常运行
+时 stderr 保持安静，阶段日志写入 builder root；失败时 stderr 输出直接原因，同时文件日志
+保留带时间和进程身份的错误记录。日志中不输出带认证信息的 RPC URL。
 
 默认参数如下：
 
@@ -46,6 +61,8 @@ USDB_PROCESS_LOG_LEVEL='info,balance_history::index=debug' \
 
 环境变量非法时，服务在打开数据库和启动 RPC 之前 fail closed，并把原因输出到
 stderr。代码显式设置的 logger builder 参数优先于环境变量，环境变量优先于默认值。
+同一组 `USDB_PROCESS_LOG_*` 环境变量也适用于 CLI；其中轮转参数会被 console-only RPC
+CLI 解析校验，但只有启用文件输出的进程才实际使用。
 
 ## 启动与异常记录
 
@@ -130,6 +147,29 @@ durable savepoint 进度仍保留为 `info`，用于定位跨存储一致性边�
 4. 修改保留策略前确认磁盘预算。默认上限按单个 basename 约为 2 GB，不包含当前文件、
    其他子命令 basename 和 Docker runtime 日志。
 5. 日志初始化失败属于启动阻断错误，不应通过禁用文件和控制台两种目的地来绕过。
+
+## 日志行为回归测试
+
+日志测试分成配置单元测试和真实子进程测试：
+
+- `usdb-util` 验证 daemon 默认 profile、console-only CLI profile、环境变量优先级和非法配置拒绝；
+- 两个 RPC CLI 验证 `--help` 不初始化 logger，以及 RPC 失败时 stdout 为空、stderr 有诊断、HOME 下不生成日志目录；
+- `balance-history` 运维子命令验证失败时 stdout 为空、直接原因进入 stderr，且 `process::exit` 前文件日志已经 flush；
+- snapshot tool 验证 `--json memory-plan` stdout 可直接反序列化、成功时 stderr 为空，并在子进程退出后读取到已 flush 的启动身份日志。
+
+本地定向运行：
+
+```bash
+cd /home/bucky/work/usdb/src/btc
+cargo test -p usdb-util log_util::tests
+cargo test -p balance-history --test cli_logging_behavior
+cargo test -p balance-history-cli --test logging_behavior
+cargo test -p usdb-indexer-cli --test logging_behavior
+cargo test -p balance-history-snapshot-tool --test logging_behavior
+```
+
+这些测试只使用临时目录和不可达的本地回环端口，不连接或停止正在运行的
+`balance-history`、`usdb-indexer`、Bitcoin Core 服务，也不打开正式数据库。
 
 日志是诊断证据，不参与共识或恢复决策。错误分支仍必须向调用方返回失败；日志写入成功
 不能把失败降级为成功，恢复日志也不能替代 readiness、pending marker 和 durable

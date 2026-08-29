@@ -9,6 +9,7 @@ use balance_history_snapshot_tool::{
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 use usdb_util::{MemoryUsageSnapshot, get_memory_usage_snapshot};
@@ -145,7 +146,7 @@ impl From<IntegrityCheckArg> for LegacySnapshotIntegrityCheck {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     let root_dir = cli
         .root_dir
@@ -153,8 +154,8 @@ fn main() {
         .unwrap_or_else(|| usdb_util::get_service_dir("balance-history-snapshot-builder"));
     let log_config = usdb_util::current_process_log_config!(TOOL_NAME)
         .with_service_root_dir(root_dir.clone())
-        .enable_console(!cli.json);
-    let _log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
+        .enable_console(false);
+    let log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
         eprintln!("Failed to initialize snapshot tool logging: {error}");
         std::process::exit(1);
     });
@@ -223,10 +224,16 @@ fn main() {
         }),
     };
 
-    if let Err(error) = result {
-        eprintln!("{}", error);
-        std::process::exit(1);
-    }
+    let exit_code = match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            log::error!("Snapshot tool command failed: {error}");
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    };
+    log_handle.shutdown();
+    exit_code
 }
 
 struct CompareLegacyArgs {

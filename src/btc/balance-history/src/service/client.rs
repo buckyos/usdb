@@ -297,7 +297,7 @@ impl RpcClient {
             .send()
             .await
             .map_err(|e| {
-                let msg = format!("Failed to send RPC request: {}", e);
+                let msg = format!("Failed to send RPC request: {}", e.without_url());
                 log::error!("{}", msg);
                 msg
             })?

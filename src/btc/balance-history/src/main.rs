@@ -139,19 +139,20 @@ enum BalanceHistoryCommands {
     },
 }
 
-fn init_command_logging(
-    root_dir: &Path,
-    file_name: &str,
-    console: bool,
-) -> usdb_util::ProcessLogger {
+fn init_command_logging(root_dir: &Path, file_name: &str) -> usdb_util::ProcessLogger {
     let config = usdb_util::current_process_log_config!(usdb_util::BALANCE_HISTORY_SERVICE_NAME)
         .with_service_root_dir(root_dir.to_path_buf())
         .with_file_name(file_name)
-        .enable_console(console);
+        .enable_console(false);
     usdb_util::init_log(config).unwrap_or_else(|error| {
         eprintln!("Failed to initialize balance-history logging: {error}");
         std::process::exit(1);
     })
+}
+
+fn exit_command_failure() -> ! {
+    log::logger().flush();
+    std::process::exit(1);
 }
 
 #[tokio::main]
@@ -165,36 +166,37 @@ async fn main() {
     match cli.command {
         Some(BalanceHistoryCommands::ClearDb {}) => {
             let file_name = format!("{}_clear_db", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let _log_handle = init_command_logging(&root_dir, &file_name, true);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Will clear database files in directory: {:?}", root_dir);
+            eprintln!("Will clear database files in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
 
             if let Err(e) = tool::clear_db_files(&config.db_dir()) {
                 error!("Failed to clear database files: {}", e);
-                std::process::exit(1);
+                exit_command_failure();
             }
             println!("Database files cleared successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::IndexAddress {}) => {
             let file_name = format!("{}_index_address", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let _log_handle = init_command_logging(&root_dir, &file_name, false);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Indexing addresses in directory: {:?}", root_dir);
+            eprintln!("Indexing addresses in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
             let config = Arc::new(config);
@@ -208,10 +210,11 @@ async fn main() {
                 index::AddressIndexer::new(&root_dir, config.clone(), output.clone()).unwrap();
             if let Err(e) = address_index.build_index() {
                 output.eprintln(&format!("Failed to build address index: {}", e));
-                std::process::exit(1);
+                exit_command_failure();
             }
 
             println!("Address index built successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::CreateSnapshot {
@@ -219,15 +222,15 @@ async fn main() {
             with_utxo,
         }) => {
             let file_name = format!("{}_snapshot", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let _log_handle = init_command_logging(&root_dir, &file_name, false);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Generating snapshot in directory: {:?}", root_dir);
+            eprintln!("Generating snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
             let config = Arc::new(config);
@@ -244,7 +247,7 @@ async fn main() {
                 Err(e) => {
                     error!("Failed to initialize database: {}", e);
                     output.println(&format!("Failed to initialize database: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let db = Arc::new(db);
@@ -254,10 +257,11 @@ async fn main() {
             if let Err(e) = snapshot_indexer.run(block_height, with_utxo) {
                 error!("Failed to generate snapshot: {}", e);
                 output.println(&format!("Failed to generate snapshot: {}", e));
-                std::process::exit(1);
+                exit_command_failure();
             }
 
             println!("Snapshot generated successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::InstallSnapshot { source, manifest }) => {
@@ -265,9 +269,9 @@ async fn main() {
                 "{}_install_snapshot",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let _log_handle = init_command_logging(&root_dir, &file_name, false);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Installing snapshot in directory: {:?}", root_dir);
+            eprintln!("Installing snapshot in directory: {:?}", root_dir);
 
             let file_path = if let Some(ref f) = source.file {
                 let mut file_path = std::path::PathBuf::from(f);
@@ -275,41 +279,41 @@ async fn main() {
                     file_path = root_dir.clone();
                     file_path.push("snapshots");
                     file_path.push(source.file.as_ref().unwrap());
-                    println!("Resolved relative snapshot file path to: {:?}", file_path);
+                    eprintln!("Resolved relative snapshot file path to: {:?}", file_path);
                 }
                 file_path
             } else if let Some(block_height) = source.block_height {
                 let mut file_path = root_dir.clone();
                 file_path.push("snapshots");
                 file_path.push(format!("snapshot_{}.db", block_height));
-                println!(
+                eprintln!(
                     "Using snapshot file for block height {}: {:?}",
                     block_height, file_path
                 );
                 file_path
             } else {
                 error!("No snapshot file or block height specified for installation.");
-                println!("No snapshot file or block height specified for installation.");
-                std::process::exit(1);
+                eprintln!("No snapshot file or block height specified for installation.");
+                exit_command_failure();
             };
 
             if !file_path.exists() {
                 error!("Snapshot file does not exist: {:?}", file_path);
-                println!("Snapshot file does not exist: {:?}", file_path);
-                std::process::exit(1);
+                eprintln!("Snapshot file does not exist: {:?}", file_path);
+                exit_command_failure();
             }
 
             let manifest_path = if let Some(ref manifest) = manifest {
                 let mut path = PathBuf::from(manifest);
                 if path.is_relative() {
                     path = root_dir.join("snapshots").join(manifest);
-                    println!("Resolved relative snapshot manifest path to: {:?}", path);
+                    eprintln!("Resolved relative snapshot manifest path to: {:?}", path);
                 }
                 Some(path)
             } else {
                 let auto_manifest = index::manifest_path_for_snapshot_file(&file_path);
                 if auto_manifest.exists() {
-                    println!(
+                    eprintln!(
                         "Using snapshot manifest discovered next to snapshot file: {:?}",
                         auto_manifest
                     );
@@ -323,16 +327,16 @@ async fn main() {
                 && !manifest_path.exists()
             {
                 error!("Snapshot manifest does not exist: {:?}", manifest_path);
-                println!("Snapshot manifest does not exist: {:?}", manifest_path);
-                std::process::exit(1);
+                eprintln!("Snapshot manifest does not exist: {:?}", manifest_path);
+                exit_command_failure();
             }
 
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
             let config = Arc::new(config);
@@ -348,7 +352,7 @@ async fn main() {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to initialize database: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let db = Arc::new(db);
@@ -363,10 +367,11 @@ async fn main() {
                 let message = format!("Failed to install snapshot: {}", e);
                 output.eprintln(&message);
                 eprintln!("{message}");
-                std::process::exit(1);
+                exit_command_failure();
             }
 
             println!("Snapshot installed successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::SnapshotKeygen { args }) => {
@@ -374,7 +379,7 @@ async fn main() {
                 "{}_snapshot_keygen",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let _log_handle = init_command_logging(&root_dir, &file_name, true);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
             let out_dir = if let Some(path) = args.out_dir.as_ref() {
                 if path.is_absolute() {
@@ -389,14 +394,15 @@ async fn main() {
             let output = tool::generate_snapshot_key_files(&out_dir, &args.key_id, args.force)
                 .unwrap_or_else(|e| {
                     error!("Failed to generate snapshot signing key files: {}", e);
-                    println!("Failed to generate snapshot signing key files: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to generate snapshot signing key files: {}", e);
+                    exit_command_failure();
                 });
 
             println!("Snapshot signing key generated successfully.");
             println!("signing_key_file={}", output.signing_key_file.display());
             println!("public_key_file={}", output.public_key_file.display());
             println!("trusted_keys_file={}", output.trusted_keys_file.display());
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::VerifySnapshot {}) => {
@@ -404,15 +410,15 @@ async fn main() {
                 "{}_verify_snapshot",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
             );
-            let _log_handle = init_command_logging(&root_dir, &file_name, false);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Verifying snapshot in directory: {:?}", root_dir);
+            eprintln!("Verifying snapshot in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
             let config = Arc::new(config);
@@ -426,7 +432,7 @@ async fn main() {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to open address database: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let address_db = Arc::new(db);
@@ -436,7 +442,7 @@ async fn main() {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to open snapshot database: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             #[allow(clippy::arc_with_non_send_sync)]
@@ -446,7 +452,7 @@ async fn main() {
                 Ok(client) => client,
                 Err(e) => {
                     output.eprintln(&format!("Failed to create electrs client: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let electrs_client = Arc::new(electrs_client);
@@ -459,10 +465,11 @@ async fn main() {
             );
             if let Err(e) = verifier.verify(1).await {
                 output.eprintln(&format!("Failed to verify snapshot: {}", e));
-                std::process::exit(1);
+                exit_command_failure();
             }
 
             println!("Snapshot verified successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::Verify {
@@ -472,15 +479,15 @@ async fn main() {
             from,
         }) => {
             let file_name = format!("{}_verify", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let _log_handle = init_command_logging(&root_dir, &file_name, true);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
-            println!("Verifying balance history in directory: {:?}", root_dir);
+            eprintln!("Verifying balance history in directory: {:?}", root_dir);
             let config = match BalanceHistoryConfig::load(&root_dir) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Failed to load config: {}", e);
-                    println!("Failed to load config: {}", e);
-                    std::process::exit(1);
+                    eprintln!("Failed to load config: {}", e);
+                    exit_command_failure();
                 }
             };
             let config = Arc::new(config);
@@ -497,7 +504,7 @@ async fn main() {
                 Ok(database) => database,
                 Err(e) => {
                     output.eprintln(&format!("Failed to initialize database: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let db = Arc::new(db);
@@ -506,7 +513,7 @@ async fn main() {
                 Ok(client) => client,
                 Err(e) => {
                     output.eprintln(&format!("Failed to create electrs client: {}", e));
-                    std::process::exit(1);
+                    exit_command_failure();
                 }
             };
             let electrs_client = Arc::new(electrs_client);
@@ -524,7 +531,7 @@ async fn main() {
                     Err(e) => {
                         output
                             .eprintln(&format!("Failed to convert address to script hash: {}", e));
-                        std::process::exit(1);
+                        exit_command_failure();
                     }
                 }
             } else if let Some(sh_str) = script_hash {
@@ -532,7 +539,7 @@ async fn main() {
                     Ok(sh) => Some(sh),
                     Err(e) => {
                         output.eprintln(&format!("Failed to parse script hash: {}", e));
-                        std::process::exit(1);
+                        exit_command_failure();
                     }
                 }
             } else {
@@ -547,7 +554,7 @@ async fn main() {
                             "Failed to parse 'from' script hash or address: {}",
                             e
                         ));
-                        std::process::exit(1);
+                        exit_command_failure();
                     }
                 }
             } else {
@@ -563,7 +570,7 @@ async fn main() {
                         ));
                         if let Err(e) = verifier.verify_address_at_height(&script_hash, height) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
-                            std::process::exit(1);
+                            exit_command_failure();
                         }
                         println!(
                             "Balance history verified successfully for script_hash {} at height {}.",
@@ -576,7 +583,7 @@ async fn main() {
                         ));
                         if let Err(e) = verifier.verify_address_latest(&script_hash) {
                             output.eprintln(&format!("Failed to verify balance history: {}", e));
-                            std::process::exit(1);
+                            exit_command_failure();
                         }
                         println!(
                             "Balance history verified successfully for script_hash {} at current stable height.",
@@ -590,7 +597,7 @@ async fn main() {
                     ));
                     if let Err(e) = verifier.verify_at_height(height, from) {
                         output.eprintln(&format!("Failed to verify balance history: {}", e));
-                        std::process::exit(1);
+                        exit_command_failure();
                     }
                 } else {
                     output.println(
@@ -598,7 +605,7 @@ async fn main() {
                     );
                     if let Err(e) = verifier.verify_latest(from) {
                         output.eprintln(&format!("Failed to verify balance history: {}", e));
-                        std::process::exit(1);
+                        exit_command_failure();
                     }
                 }
             })
@@ -606,19 +613,21 @@ async fn main() {
             .unwrap();
 
             println!("Balance history verified successfully.");
+            log_handle.shutdown();
             return;
         }
         Some(BalanceHistoryCommands::ServeWeb { port, web_root }) => {
             let file_name = format!("{}_web", usdb_util::BALANCE_HISTORY_SERVICE_NAME);
-            let _log_handle = init_command_logging(&root_dir, &file_name, true);
+            let log_handle = init_command_logging(&root_dir, &file_name);
 
             let web_root = std::path::PathBuf::from(web_root);
             if let Err(e) = web_server::serve_static_files(port, &web_root) {
                 error!("Failed to start web server: {}", e);
-                println!("Failed to start web server: {}", e);
-                std::process::exit(1);
+                eprintln!("Failed to start web server: {}", e);
+                exit_command_failure();
             }
 
+            log_handle.shutdown();
             return;
         }
         None => {}

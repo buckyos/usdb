@@ -12,11 +12,12 @@ pub struct UsdbIndexerService {
 
 impl UsdbIndexerService {
     pub async fn new(url: &str) -> Result<Self, String> {
-        println!("Connecting to USDB indexer at {}", url);
+        log::info!("Connecting to configured usdb-indexer RPC endpoint");
         let client = RpcClient::new(url)?;
 
         // Probe endpoint during initialization to fail fast on connectivity issues.
         let _ = client.call("get_rpc_info", json!([])).await?;
+        log::info!("Connected to usdb-indexer RPC endpoint");
 
         Ok(Self { client })
     }
@@ -76,7 +77,7 @@ impl UsdbIndexerService {
                 }
             }
             Commands::Stop => {
-                println!("Sending stop signal to usdb-indexer...");
+                log::info!("Sending stop signal to usdb-indexer");
                 let result = self.client.call("stop", json!([])).await?;
                 print_pretty_json(&result)?;
             }
@@ -460,44 +461,46 @@ impl RpcClient {
             .await
             .map_err(|e| {
                 format!(
-                    "Failed to send usdb-indexer RPC request: method={}, url={}, error={}",
-                    method, self.url, e
+                    "Failed to send usdb-indexer RPC request: method={}, error={}",
+                    method,
+                    e.without_url()
                 )
             })?;
 
         let status = response.status();
         let body = response.text().await.map_err(|e| {
             format!(
-                "Failed to read usdb-indexer RPC response body: method={}, url={}, error={}",
-                method, self.url, e
+                "Failed to read usdb-indexer RPC response body: method={}, error={}",
+                method,
+                e.without_url()
             )
         })?;
 
         if !status.is_success() {
             return Err(format!(
-                "USDB indexer RPC HTTP error: method={}, url={}, status={}, body={}",
-                method, self.url, status, body
+                "USDB indexer RPC HTTP error: method={}, status={}, body={}",
+                method, status, body
             ));
         }
 
         let parsed: JsonRpcResponse = serde_json::from_str(&body).map_err(|e| {
             format!(
-                "Failed to parse usdb-indexer RPC response JSON: method={}, url={}, error={}, body={}",
-                method, self.url, e, body
+                "Failed to parse usdb-indexer RPC response JSON: method={}, error={}, body={}",
+                method, e, body
             )
         })?;
 
         if let Some(err) = parsed.error {
             return Err(format!(
-                "USDB indexer RPC returned error: method={}, url={}, error={}",
-                method, self.url, err
+                "USDB indexer RPC returned error: method={}, error={}",
+                method, err
             ));
         }
 
         parsed.result.ok_or_else(|| {
             format!(
-                "USDB indexer RPC missing result field: method={}, url={}, body={}",
-                method, self.url, body
+                "USDB indexer RPC missing result field: method={}, body={}",
+                method, body
             )
         })
     }
