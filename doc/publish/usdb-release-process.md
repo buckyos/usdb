@@ -20,6 +20,22 @@
 
 ## 2. Release 身份
 
+Release ID 使用以下格式：
+
+```text
+usdb-{testnet|mainnet}-v{network-generation}-r{release-sequence}
+```
+
+- `vN` 是 network generation。改变 chain ID、genesis、block-0 identity 或其他需要清空链数据的
+  网络身份时递增，并从 `r1` 重新开始。
+- `rN` 是同一 network generation 上不可移动的 deployment release sequence。兼容 binary/image、
+  运维配置、部署 artifact 或对未来 activation 的代码支持变化时递增。
+- 在线 UIP/policy 升级由 activation matrix 的 policy version 表达，不用 `vN` 代替。
+- 两仓同名 annotated tag 和 release manifest 必须使用同一个 release ID；已发布 tag 不得移动或复用。
+
+例如 `usdb-testnet-v0-r2` 可以继续运行在 `v0` genesis 上；只有重置为新的网络身份时才进入
+`usdb-testnet-v1-r1`。
+
 每次 release 必须先冻结一份 release manifest，至少记录：
 
 - release ID、目标网络和生成时间；
@@ -42,7 +58,10 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 - 冻结目标网络、chain ID、genesis、activation registry binding；
 - 冻结 SourceDAO bootstrap 参数和 system addresses；
-- 选择 balance-history `full-sync` 或 `signed-snapshot`；后者才冻结 signer、catalog 和目标高度/hash；
+- 选择 balance-history `full-sync` 或 `signed-snapshot`；后者在 deployment release 中冻结 signer、
+  catalog 和所选 artifact 的高度/hash，但 snapshot 高度不进入 network/genesis identity；
+- 每个 network bundle 独立冻结自己的 BTC `index_origin_height`。全新 indexer 使用 snapshot 时，
+  snapshot 高度不得高于该网络的 origin；推荐发布恰好位于 origin 的 full-UTXO snapshot；
 - 冻结镜像 tag、binary version 和配置 schema；
 - 列出 development-only、fake policy 和未激活功能，确认不会误入 public profile。
 - 将 bootstrap admin 明确分类为 development fixture、testnet signer 或 mainnet signer；testnet 与

@@ -12,8 +12,10 @@ accepted-bootstrap 身份的修改都必须发布新的 bundle，并使用新的
 
 - Chain ID 和 devp2p network ID 使用 `202608250`。`20260323` 是内置开发链和本地 regtest
   基线，测试网复用它会增加误连、错误数据目录复用和交易 replay domain 混淆风险。
-- BTC index origin 使用 `963800`。它必须与 exact-height full-UTXO snapshot 高度一致；不能把
-  origin 设置成 `900000` 后直接安装 `963800` snapshot。
+- BTC index origin 使用 `963800`。这是 testnet-v0 自己冻结的 BTC 索引起点，不是跨网络全局常量；
+  未来 testnet/mainnet bundle 可以分别冻结不同的 `index_origin_height`。
+- Snapshot 是节点启动 artifact，不是网络身份。全新 usdb-indexer 只能使用高度不高于本网络 origin
+  的 balance-history snapshot；官方首发 snapshot 推荐恰好位于 origin，以获得最大启动加速。
 
 首次测试网不做在线修补。block-0 policy、genesis、SourceDAO accepted-bootstrap 参数如需修改，
 优先重置网络。registry revision 和 policy version 的未来升级仍可在新的 USDB 高度加入 activation，
@@ -156,8 +158,19 @@ SourceDAO bootstrap 的完整权威输入是
 | 未提交的 `node.env` | image digest、Bitcoin 数据/RPC、snapshot 模式、节点角色、bootnodes、miner、资源限制 |
 
 `validate_network_bundle.py` 对重复字段执行 fail-closed 解析，并交叉校验 chain ID、BTC source、origin、
-registry、genesis、SourceDAO 地址和 artifact hashes。脚本中的 `EXPECTED_*` 是 testnet-v0 的 validator
-pin，不是另一套可独立修改的配置源。
+registry、genesis、SourceDAO 地址和 artifact hashes。`index_origin_height` 从当前 bundle 的
+`network.json` 读取并与 env、chain bootstrap 和 genesis 交叉验证，不在 validator 中维护全局高度。
+脚本中其余 `EXPECTED_*` 是 testnet-v0 的 validator pin，不是另一套可独立修改的配置源。
+
+启用 signed snapshot 时，节点 preflight 从 manifest 读取实际 snapshot 高度，不依赖固定文件名，并要求：
+
+- snapshot BTC network 与当前 bundle 一致；
+- `balance_query_floor == snapshot_height`，`history_query_floor == snapshot_height + 1`；
+- 对全新 usdb-indexer，`snapshot_height <= index_origin_height`；
+- manifest 声明受支持的签名方案，且 DB、manifest、signature sidecar 均存在。
+
+低于 origin 的 snapshot 可以先增量同步到 origin；高于 origin 的 snapshot 只有在未来同时提供匹配的
+usdb-indexer checkpoint/state-ref 时才可使用，不能单独作为全新节点的启动输入。
 
 `usdb-network-bundle:v2` 将 `deployment_tier` 设为必需字段，用于区分可使用公开 fixture 的
 development 环境与必须执行 signer 隔离门禁的 testnet/mainnet。

@@ -30,6 +30,10 @@
 
 `0x180000 / 0x100000` 仍是当前目标硬件 bring-up 难度，不是最终 PoW calibration 结果。
 
+`963800` 只属于 testnet-v0 bundle。其他测试网或未来 mainnet bundle 可以冻结不同的
+`index_origin_height`。Snapshot 不属于网络身份：全新 indexer 可使用任意通过签名和身份校验、且高度
+不高于本网络 origin 的 snapshot；官方推荐 artifact 使用与 origin 相同的高度。
+
 本次 bootstrap admin 隔离已经改变 genesis。任何曾用旧 block hash
 `0xac89ddec...70e560` 初始化的 USDB-chain datadir 都必须丢弃并用本 bundle 重新 `geth init`；
 仅因此变化不要求重建 Bitcoin Core 或 BTC-side index 数据。

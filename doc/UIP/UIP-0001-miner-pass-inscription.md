@@ -174,8 +174,7 @@ v1 schema 必须包含：
   "p": "usdb",
   "op": "mint",
   "v": 1,
-  "usdb_main": "0x1111111111111111111111111111111111111111",
-  "prev": []
+  "usdb_main": "0x1111111111111111111111111111111111111111"
 }
 ```
 
@@ -186,8 +185,7 @@ v1 schema 必须包含：
   "p": "usdb",
   "op": "mint",
   "v": 1,
-  "leader_pass_id": "1111111111111111111111111111111111111111111111111111111111111111i0",
-  "prev": []
+  "leader_pass_id": "1111111111111111111111111111111111111111111111111111111111111111i0"
 }
 ```
 
@@ -198,10 +196,12 @@ v1 schema 必须包含：
   "p": "usdb",
   "op": "mint",
   "v": 1,
-  "leader_btc_addr": "bc1qexampleleaderaddressxxxxxxxxxxxxxxxxxxxxxx",
-  "prev": []
+  "leader_btc_addr": "bc1qexampleleaderaddressxxxxxxxxxxxxxxxxxxxxxx"
 }
 ```
+
+首次 mint 的规范示例省略空 `prev` 以减少铭文字节；显式 `"prev": []` 仍然合法且语义相同。
+consume/remint 需要继承旧 pass 时必须提供非空 `prev`。
 
 # Leader 绑定模式
 

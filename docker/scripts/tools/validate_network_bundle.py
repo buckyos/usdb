@@ -8,14 +8,15 @@ import hashlib
 import hmac
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
 EXPECTED_BTC_REGISTRY = "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa29075aae57224"
-EXPECTED_ORIGIN = 963800
 EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
+EXPECTED_SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
+EXPECTED_SNAPSHOT_SIGNATURE_SCHEME = "ed25519"
 PUBLIC_DEPLOYMENT_TIERS = frozenset({"testnet", "mainnet"})
 SUPPORTED_DEPLOYMENT_TIERS = frozenset({"development"}) | PUBLIC_DEPLOYMENT_TIERS
 KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
@@ -76,6 +77,101 @@ def sha256(path: Path) -> str:
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise ValueError(message)
+
+
+def require_u32(value: Any, message: str) -> int:
+    require(
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 0xFFFFFFFF,
+        message,
+    )
+    return value
+
+
+def network_index_origin_height(network: dict[str, Any]) -> int:
+    btc_source = network.get("btc_source")
+    require(isinstance(btc_source, dict), "network btc_source is required")
+    return require_u32(
+        btc_source.get("index_origin_height"),
+        "BTC index origin must be a u32",
+    )
+
+
+def snapshot_container_path(
+    value: str,
+    label: str,
+    expected_suffix: str,
+) -> PurePosixPath:
+    require(bool(value), f"{label} is required in balance-history snapshot mode")
+    path = PurePosixPath(value)
+    require(
+        path.is_absolute()
+        and path.parent == PurePosixPath("/snapshots")
+        and path.name not in {"", ".", ".."},
+        f"{label} must be a direct child of /snapshots",
+    )
+    require(
+        path.name.endswith(expected_suffix),
+        f"{label} must end with {expected_suffix}",
+    )
+    return path
+
+
+def validate_runtime_snapshot(
+    snapshot_dir: Path,
+    snapshot_file: PurePosixPath,
+    snapshot_manifest: PurePosixPath,
+    index_origin_height: int,
+    btc_network: str,
+) -> None:
+    require(
+        snapshot_dir.is_dir(),
+        f"snapshot host directory does not exist: {snapshot_dir}",
+    )
+    file_path = snapshot_dir / snapshot_file.name
+    manifest_path = snapshot_dir / snapshot_manifest.name
+    signature_path = manifest_path.with_suffix(".sig")
+    for path in (file_path, manifest_path, signature_path):
+        require(path.is_file(), f"required snapshot artifact is missing: {path}")
+
+    manifest = read_json(manifest_path)
+    require(
+        manifest.get("manifest_version") == EXPECTED_SNAPSHOT_MANIFEST_VERSION,
+        "unsupported balance-history snapshot manifest version",
+    )
+    require(
+        manifest.get("file_name") == snapshot_file.name,
+        "snapshot manifest file_name mismatch",
+    )
+    require(
+        manifest.get("signature_scheme") == EXPECTED_SNAPSHOT_SIGNATURE_SCHEME
+        and isinstance(manifest.get("signing_key_id"), str)
+        and bool(manifest["signing_key_id"]),
+        "release snapshot manifest must declare an Ed25519 signer",
+    )
+
+    state_ref = manifest.get("state_ref")
+    require(isinstance(state_ref, dict), "snapshot manifest state_ref is required")
+    snapshot_height = require_u32(
+        state_ref.get("block_height"),
+        "snapshot height must be a u32",
+    )
+    require(
+        snapshot_height <= index_origin_height,
+        f"snapshot height {snapshot_height} exceeds network index origin {index_origin_height}",
+    )
+    require(
+        manifest.get("balance_query_floor") == snapshot_height,
+        "snapshot balance_query_floor must equal snapshot height",
+    )
+    require(
+        manifest.get("history_query_floor") == min(snapshot_height + 1, 0xFFFFFFFF),
+        "snapshot history_query_floor must immediately follow snapshot height",
+    )
+    db_identity = manifest.get("db_identity")
+    require(isinstance(db_identity, dict), "snapshot manifest db_identity is required")
+    require(db_identity.get("btc_network") == btc_network, "snapshot Bitcoin network mismatch")
 
 
 def require_no_runtime_secrets(value: Any, path: str = "$") -> None:
@@ -152,18 +248,18 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
 
     btc_source = network.get("btc_source")
     require(isinstance(btc_source, dict), "network btc_source is required")
+    index_origin_height = network_index_origin_height(network)
     require(btc_source.get("network_id") == "btc-mainnet", "testnet-v0 must consume BTC mainnet")
-    require(btc_source.get("index_origin_height") == EXPECTED_ORIGIN, "unexpected BTC index origin")
     require(btc_source.get("activation_registry_id") == EXPECTED_BTC_REGISTRY, "unexpected BTC registry")
 
     require(env.get("USDB_NETWORK_BUNDLE_ID") == EXPECTED_BUNDLE_ID, "network.env bundle ID mismatch")
     require(env.get("USDB_CHAIN_ID") == str(EXPECTED_CHAIN_ID), "network.env chain ID mismatch")
     require(env.get("USDB_NETWORK_ID") == str(EXPECTED_CHAIN_ID), "network.env network ID mismatch")
     require(env.get("BTC_NETWORK") == "bitcoin", "network.env BTC network must be bitcoin")
-    require(env.get("BTC_MIN_READY_HEIGHT") == str(EXPECTED_ORIGIN), "network.env Bitcoin readiness height mismatch")
+    require(env.get("BTC_MIN_READY_HEIGHT") == str(index_origin_height), "network.env Bitcoin readiness height mismatch")
     require(env.get("BTC_MAX_TIP_AGE_SECS") == "7200", "network.env Bitcoin maximum tip age mismatch")
     require(env.get("BTC_MIN_CONNECTIONS") == "1", "network.env Bitcoin minimum connections mismatch")
-    require(env.get("USDB_GENESIS_BLOCK_HEIGHT") == str(EXPECTED_ORIGIN), "network.env origin mismatch")
+    require(env.get("USDB_GENESIS_BLOCK_HEIGHT") == str(index_origin_height), "network.env origin mismatch")
     require(env.get("BTC_ACTIVATION_REGISTRY_ID") == EXPECTED_BTC_REGISTRY, "network.env registry mismatch")
     require(env.get("USDB_P2P_PORT") == "31303", "network.env P2P port mismatch")
 
@@ -172,7 +268,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     chain_btc = chain.get("btcSource")
     require(isinstance(chain_btc, dict), "chain bootstrap btcSource is required")
     require(chain_btc.get("networkId") == "btc-mainnet", "chain bootstrap BTC network mismatch")
-    require(chain_btc.get("indexOriginHeight") == EXPECTED_ORIGIN, "chain bootstrap origin mismatch")
+    require(chain_btc.get("indexOriginHeight") == index_origin_height, "chain bootstrap origin mismatch")
     activations = chain.get("usdbConsensus", {}).get("activations")
     require(isinstance(activations, list) and activations, "chain bootstrap activations are required")
     require(activations[0].get("block") == 0, "activation schedule must start at block 0")
@@ -214,7 +310,7 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     genesis_usdb = config.get("usdb")
     require(isinstance(genesis_usdb, dict), "genesis config.usdb is required")
     require(genesis_usdb.get("btcNetworkId") == "btc-mainnet", "genesis BTC network mismatch")
-    require(genesis_usdb.get("btcIndexOriginHeight") == EXPECTED_ORIGIN, "genesis BTC origin mismatch")
+    require(genesis_usdb.get("btcIndexOriginHeight") == index_origin_height, "genesis BTC origin mismatch")
     require(genesis_usdb.get("activations") == activations, "genesis activation schedule mismatch")
 
     alloc = genesis.get("alloc")
@@ -284,8 +380,14 @@ def validate_image_ref(name: str, value: str, expected_image: str) -> None:
     )
 
 
-def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime: bool = False) -> None:
+def validate_node_env(
+    path: Path,
+    network: dict[str, Any],
+    require_runtime: bool,
+    require_bitcoin_runtime: bool = False,
+) -> None:
     env = read_env(path)
+    index_origin_height = network_index_origin_height(network)
     validate_image_ref(
         "USDB_SERVICES_IMAGE",
         env.get("USDB_SERVICES_IMAGE", ""),
@@ -365,21 +467,27 @@ def validate_node_env(path: Path, require_runtime: bool, require_bitcoin_runtime
         require(not snapshot_manifest, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_MANIFEST")
     else:
         require(
-            snapshot_file == "/snapshots/snapshot_963800.db",
-            "balance-history snapshot mode requires the canonical snapshot file path",
+            env.get("BH_SNAPSHOT_TRUST_MODE", "signed") == "signed",
+            "release snapshot mode must use signed trust",
+        )
+        snapshot_file_path = snapshot_container_path(snapshot_file, "BH_SNAPSHOT_FILE", ".db")
+        snapshot_manifest_path = snapshot_container_path(
+            snapshot_manifest,
+            "BH_SNAPSHOT_MANIFEST",
+            ".manifest.json",
         )
         require(
-            snapshot_manifest == "/snapshots/snapshot_963800.manifest.json",
-            "balance-history snapshot mode requires the canonical manifest path",
+            snapshot_manifest_path == snapshot_file_path.with_suffix(".manifest.json"),
+            "balance-history snapshot file and manifest basenames must match",
         )
     if require_runtime and snapshot_mode == "balance-history":
-        require(snapshot_dir.is_dir(), f"snapshot host directory does not exist: {snapshot_dir}")
-        for name in (
-            "snapshot_963800.db",
-            "snapshot_963800.manifest.json",
-            "snapshot_963800.manifest.sig",
-        ):
-            require((snapshot_dir / name).is_file(), f"required snapshot artifact is missing: {snapshot_dir / name}")
+        validate_runtime_snapshot(
+            snapshot_dir,
+            snapshot_file_path,
+            snapshot_manifest_path,
+            index_origin_height,
+            env.get("BTC_NETWORK", "bitcoin"),
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -395,7 +503,12 @@ def main() -> int:
     args = parse_args()
     network = validate_network_bundle(args.bundle_dir.resolve())
     if args.node_env is not None:
-        validate_node_env(args.node_env.resolve(), args.require_runtime, args.require_bitcoin_runtime)
+        validate_node_env(
+            args.node_env.resolve(),
+            network,
+            args.require_runtime,
+            args.require_bitcoin_runtime,
+        )
     print(
         json.dumps(
             {

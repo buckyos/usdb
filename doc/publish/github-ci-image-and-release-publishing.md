@@ -48,9 +48,11 @@ usdb-testnet-v<network-version>-r<release-sequence>
 usdb-mainnet-v<network-version>-r<release-sequence>
 ```
 
-例如 `usdb-testnet-v0-r1`。`rN` 表示同一 network bundle 上的部署 release；只更新兼容 binary/image
-时递增 `rN`。genesis 或其他 block-0 identity 变化时必须创建新的 network version，例如从
-`usdb-testnet-v0-r3` 转为 `usdb-testnet-v1-r1`，不能继续沿用 `v0`。
+例如 `usdb-testnet-v0-r1`。这里的 `vN` 是 network generation，不是 UIP 或软件大版本；`rN` 是同一
+network generation 上不可移动的 deployment release sequence。兼容 binary/image、运维配置、部署
+artifact 或支持未来 activation 的代码发生变化时递增 `rN`。genesis、chain ID 或其他 block-0
+identity 变化时必须创建新的 network generation，例如从 `usdb-testnet-v0-r3` 转为
+`usdb-testnet-v1-r1`，不能继续沿用 `v0`。在线协议升级仍由 activation matrix 的 policy version 表达。
 
 release tag 必须满足：
 

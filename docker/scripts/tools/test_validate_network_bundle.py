@@ -23,7 +23,12 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         source = MODULE_PATH.parents[2] / "networks/testnet-v0"
         self.bundle = self.root / "testnet-v0"
-        shutil.copytree(source, self.bundle, ignore=shutil.ignore_patterns("node.env", "runtime"))
+        shutil.copytree(
+            source,
+            self.bundle,
+            ignore=shutil.ignore_patterns("node.env", "runtime"),
+        )
+        self.network = VALIDATOR.validate_network_bundle(self.bundle)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -66,9 +71,51 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         path.write_text(f"test-user:{salt}${digest}\n", encoding="utf-8")
         path.chmod(mode)
 
+    def validate_node_env(
+        self,
+        path: Path,
+        require_runtime: bool,
+        require_bitcoin_runtime: bool = False,
+    ) -> None:
+        VALIDATOR.validate_node_env(
+            path,
+            self.network,
+            require_runtime,
+            require_bitcoin_runtime,
+        )
+
+    def write_snapshot_artifacts(self, height: int, stem: str) -> tuple[str, str]:
+        snapshot_dir = self.root / "snapshot"
+        snapshot_dir.mkdir(exist_ok=True)
+        file_name = f"{stem}.db"
+        manifest_name = f"{stem}.manifest.json"
+        (snapshot_dir / file_name).touch()
+        manifest = {
+            "manifest_version": VALIDATOR.EXPECTED_SNAPSHOT_MANIFEST_VERSION,
+            "file_name": file_name,
+            "file_sha256": "0" * 64,
+            "state_ref": {"block_height": height},
+            "db_identity": {"btc_network": "bitcoin"},
+            "balance_query_floor": height,
+            "history_query_floor": min(height + 1, 0xFFFFFFFF),
+            "signature_scheme": VALIDATOR.EXPECTED_SNAPSHOT_SIGNATURE_SCHEME,
+            "signing_key_id": "test-snapshot-signer",
+        }
+        (snapshot_dir / manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
+        (snapshot_dir / f"{stem}.manifest.sig").touch()
+        return f"/snapshots/{file_name}", f"/snapshots/{manifest_name}"
+
     def test_checked_in_bundle_is_valid(self) -> None:
         network = VALIDATOR.validate_network_bundle(self.bundle)
         self.assertEqual(network["network_bundle_id"], "usdb-testnet-v0")
+
+    def test_index_origin_is_read_from_each_network_bundle(self) -> None:
+        self.assertEqual(
+            VALIDATOR.network_index_origin_height(
+                {"btc_source": {"index_origin_height": 123456}}
+            ),
+            123456,
+        )
 
     def test_testnet_rejects_known_development_bootstrap_admin(self) -> None:
         path = self.bundle / "artifacts/usdb-chain-bootstrap-config.json"
@@ -179,53 +226,53 @@ class NetworkBundleValidatorTests(unittest.TestCase):
     def test_mutable_image_tag_is_rejected(self) -> None:
         path = self.write_node_env(USDB_CHAIN_IMAGE="ghcr.io/buckyos/usdb-chain:latest")
         with self.assertRaisesRegex(ValueError, "must not use latest"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_versioned_image_tag_is_rejected(self) -> None:
         path = self.write_node_env(USDB_CHAIN_IMAGE="ghcr.io/buckyos/usdb-chain:testnet-v0-r1")
         with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_mutable_bitcoin_image_is_rejected(self) -> None:
         path = self.write_node_env(USDB_BITCOIN_IMAGE="ghcr.io/buckyos/usdb-bitcoin-core:28.1")
         with self.assertRaisesRegex(ValueError, "canonical GHCR digest reference"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_external_bitcoin_rpc_is_rejected(self) -> None:
         path = self.write_node_env(BTC_RPC_URL="http://host.docker.internal:8332")
         with self.assertRaisesRegex(ValueError, "private btc-node endpoint"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_public_bitcoin_p2p_bind_is_supported(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="0.0.0.0")
-        VALIDATOR.validate_node_env(path, False)
+        self.validate_node_env(path, False)
 
     def test_noncanonical_bitcoin_p2p_bind_is_rejected(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="192.0.2.10")
         with self.assertRaisesRegex(ValueError, "must be explicit loopback-only or public"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_empty_bitcoin_p2p_bind_is_rejected(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="")
         with self.assertRaisesRegex(ValueError, "must be explicit loopback-only or public"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_public_operator_rpc_bind_is_rejected(self) -> None:
         path = self.write_node_env(USDB_HTTP_BIND_ADDRESS="0.0.0.0")
         with self.assertRaisesRegex(ValueError, "USDB_HTTP_BIND_ADDRESS must be loopback-only"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_miner_requires_address(self) -> None:
         path = self.write_node_env(USDB_NODE_ROLE="miner")
         with self.assertRaisesRegex(ValueError, "USDB_MINER_ADDRESS"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_miner_accepts_address_without_fixed_pass(self) -> None:
         path = self.write_node_env(
             USDB_NODE_ROLE="miner",
             USDB_MINER_ADDRESS="0x1111111111111111111111111111111111111111",
         )
-        VALIDATOR.validate_node_env(path, False)
+        self.validate_node_env(path, False)
 
     def test_miner_rejects_invalid_address(self) -> None:
         path = self.write_node_env(
@@ -233,32 +280,50 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             USDB_MINER_ADDRESS="0x1234",
         )
         with self.assertRaisesRegex(ValueError, "non-zero EVM address"):
-            VALIDATOR.validate_node_env(path, False)
+            self.validate_node_env(path, False)
 
     def test_runtime_accepts_full_sync_without_snapshot_files(self) -> None:
         path = self.write_node_env()
-        VALIDATOR.validate_node_env(path, True)
+        self.validate_node_env(path, True)
 
     def test_runtime_requires_signed_snapshot_set_when_enabled(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
+            963800,
+            "snapshot_963800",
+        )
         path = self.write_node_env(
             SNAPSHOT_MODE="balance-history",
-            BH_SNAPSHOT_FILE="/snapshots/snapshot_963800.db",
-            BH_SNAPSHOT_MANIFEST="/snapshots/snapshot_963800.manifest.json",
+            BH_SNAPSHOT_FILE=snapshot_file,
+            BH_SNAPSHOT_MANIFEST=snapshot_manifest,
         )
-        snapshot_dir = self.root / "snapshot"
-        snapshot_dir.mkdir()
-        for name in (
-            "snapshot_963800.db",
-            "snapshot_963800.manifest.json",
-            "snapshot_963800.manifest.sig",
-        ):
-            (snapshot_dir / name).touch()
-        VALIDATOR.validate_node_env(path, True)
+        self.validate_node_env(path, True)
+
+    def test_runtime_accepts_snapshot_below_network_origin_with_dynamic_name(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
+            963700,
+            "release-bootstrap-a",
+        )
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE=snapshot_file,
+            BH_SNAPSHOT_MANIFEST=snapshot_manifest,
+        )
+        self.validate_node_env(path, True)
+
+    def test_runtime_rejects_snapshot_above_network_origin(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(963801, "future-snapshot")
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE=snapshot_file,
+            BH_SNAPSHOT_MANIFEST=snapshot_manifest,
+        )
+        with self.assertRaisesRegex(ValueError, "exceeds network index origin 963800"):
+            self.validate_node_env(path, True)
 
     def test_full_sync_rejects_stale_snapshot_inputs(self) -> None:
         path = self.write_node_env(BH_SNAPSHOT_FILE="/snapshots/snapshot_963800.db")
         with self.assertRaisesRegex(ValueError, "requires empty BH_SNAPSHOT_FILE"):
-            VALIDATOR.validate_node_env(path, True)
+            self.validate_node_env(path, True)
 
     def test_snapshot_mode_requires_canonical_container_paths(self) -> None:
         path = self.write_node_env(
@@ -266,35 +331,44 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             BH_SNAPSHOT_FILE="/tmp/snapshot.db",
             BH_SNAPSHOT_MANIFEST="/snapshots/snapshot_963800.manifest.json",
         )
-        with self.assertRaisesRegex(ValueError, "canonical snapshot file path"):
-            VALIDATOR.validate_node_env(path, False)
+        with self.assertRaisesRegex(ValueError, "direct child of /snapshots"):
+            self.validate_node_env(path, False)
+
+    def test_snapshot_mode_requires_matching_dynamic_basenames(self) -> None:
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE="/snapshots/bootstrap-a.db",
+            BH_SNAPSHOT_MANIFEST="/snapshots/bootstrap-b.manifest.json",
+        )
+        with self.assertRaisesRegex(ValueError, "basenames must match"):
+            self.validate_node_env(path, False)
 
     def test_bitcoin_runtime_requires_private_full_node_paths(self) -> None:
         path = self.write_node_env()
         bitcoin_dir = self.root / "bitcoin"
         bitcoin_dir.mkdir()
         self.write_rpcauth()
-        VALIDATOR.validate_node_env(path, False, True)
+        self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_public_auth_file(self) -> None:
         path = self.write_node_env()
         (self.root / "bitcoin").mkdir()
         self.write_rpcauth(0o644)
         with self.assertRaisesRegex(ValueError, "group/world accessible"):
-            VALIDATOR.validate_node_env(path, False, True)
+            self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_password_mismatch(self) -> None:
         path = self.write_node_env(BTC_RPC_PASSWORD="wrong-password")
         (self.root / "bitcoin").mkdir()
         self.write_rpcauth()
         with self.assertRaisesRegex(ValueError, "does not match RPC password"):
-            VALIDATOR.validate_node_env(path, False, True)
+            self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_relative_data_path(self) -> None:
         path = self.write_node_env(BTC_NODE_DATA_HOST_DIR="relative/bitcoin")
         self.write_rpcauth()
         with self.assertRaisesRegex(ValueError, "must be an absolute path"):
-            VALIDATOR.validate_node_env(path, False, True)
+            self.validate_node_env(path, False, True)
 
 
 if __name__ == "__main__":
