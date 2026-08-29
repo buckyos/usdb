@@ -58,10 +58,12 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 
 - 冻结目标网络、chain ID、genesis、activation registry binding；
 - 冻结 SourceDAO bootstrap 参数和 system addresses；
-- 选择 balance-history `full-sync` 或 `signed-snapshot`；后者在 deployment release 中冻结 signer、
-  catalog 和所选 artifact 的高度/hash，但 snapshot 高度不进入 network/genesis identity；
+- 选择 balance-history `full-sync`、fresh-indexer `signed-snapshot` 或 `paired-checkpoint`；artifact 模式在
+  deployment release 中冻结 signer、catalog 和所选 artifact 的高度/hash，但 checkpoint 高度不进入
+  network/genesis identity；
 - 每个 network bundle 独立冻结自己的 BTC `index_origin_height`。全新 indexer 使用 snapshot 时，
-  snapshot 高度不得高于该网络的 origin；推荐发布恰好位于 origin 的 full-UTXO snapshot；
+  snapshot 高度不得高于该网络的 origin；推荐发布恰好位于 origin 的 full-UTXO snapshot。更高 snapshot
+  必须配对已签名 indexer checkpoint，并通过恢复后的历史 state-ref 重算；
 - 冻结镜像 tag、binary version 和配置 schema；
 - 列出 development-only、fake policy 和未激活功能，确认不会误入 public profile。
 - 将 bootstrap admin 明确分类为 development fixture、testnet signer 或 mainnet signer；testnet 与
@@ -82,6 +84,8 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)。
 Bitcoin 独立生命周期和同步门禁见
 [Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)。
+Snapshot 与 fresh-indexer/paired-checkpoint 的兼容边界见
+[Balance-history Snapshot 与 Indexer Checkpoint 兼容规则](./balance-history-indexer-checkpoint-compatibility.md)。
 
 ### 3.3 组件测试
 
@@ -112,7 +116,7 @@ Bitcoin 独立生命周期和同步门禁见
 状态：`manual`
 
 - 使用最终 artifact，不从 workspace 重新构建；
-- 执行 bootstrap、restart、joiner；选用 snapshot 时再执行新节点 snapshot install；
+- 执行 bootstrap、restart、joiner；选用 paired checkpoint 时再执行中断续跑和恢复后 state-ref 门禁；
 - 验证 activation 边界、SourceDAO readiness、reward/fee/system state；
 - 记录完整服务版本、state-ref、genesis hash、snapshot provenance 和 RPC readiness；
 - 执行失败恢复和回滚演练。

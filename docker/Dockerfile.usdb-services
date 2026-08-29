@@ -11,7 +11,7 @@ RUN apt-get update \
 
 COPY src/btc /workspace/src/btc
 
-RUN cargo build --release -p balance-history -p usdb-indexer -p usdb-control-plane
+RUN cargo build --release -p balance-history -p usdb-indexer -p usdb-indexer-checkpoint-tool -p usdb-control-plane
 
 FROM rust:1.89.0-bookworm AS ord-builder
 
@@ -66,6 +66,7 @@ RUN apt-get update \
 
 COPY --from=builder /workspace/src/btc/target/release/balance-history /usr/local/bin/balance-history
 COPY --from=builder /workspace/src/btc/target/release/usdb-indexer /usr/local/bin/usdb-indexer
+COPY --from=builder /workspace/src/btc/target/release/usdb-indexer-checkpoint-tool /usr/local/bin/usdb-indexer-checkpoint-tool
 COPY --from=builder /workspace/src/btc/target/release/usdb-control-plane /usr/local/bin/usdb-control-plane
 COPY --from=ord-builder /opt/ord/bin/ord /opt/ord/bin/ord
 COPY docker/scripts /opt/usdb/docker/scripts

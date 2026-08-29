@@ -166,11 +166,13 @@ registry、genesis、SourceDAO 地址和 artifact hashes。`index_origin_height`
 
 - snapshot BTC network 与当前 bundle 一致；
 - `balance_query_floor == snapshot_height`，`history_query_floor == snapshot_height + 1`；
-- 对全新 usdb-indexer，`snapshot_height <= index_origin_height`；
+- 对全新 usdb-indexer，`snapshot_height <= index_origin_height`；paired checkpoint 则要求两侧高度相等且
+  `checkpoint_height >= index_origin_height`；
 - manifest 声明受支持的签名方案，且 DB、manifest、signature sidecar 均存在。
 
-低于 origin 的 snapshot 可以先增量同步到 origin；高于 origin 的 snapshot 只有在未来同时提供匹配的
-usdb-indexer checkpoint/state-ref 时才可使用，不能单独作为全新节点的启动输入。
+低于 origin 的 snapshot 可以先增量同步到 origin；高于 origin 的 snapshot 只有在同时提供匹配并签名的
+usdb-indexer checkpoint、完成 staging install，并在重启后重算完整 state-ref 时才可使用，不能单独作为
+全新节点的启动输入。
 
 `usdb-network-bundle:v2` 将 `deployment_tier` 设为必需字段，用于区分可使用公开 fixture 的
 development 环境与必须执行 signer 隔离门禁的 testnet/mainnet。

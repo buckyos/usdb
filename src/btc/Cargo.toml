@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "usdb-indexer",
+    "usdb-indexer-checkpoint-tool",
     "usdb-indexer-cli",
     "balance-history",
     "balance-history-cli",

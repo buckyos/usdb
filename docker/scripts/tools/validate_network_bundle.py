@@ -17,6 +17,8 @@ EXPECTED_BTC_REGISTRY = "a6350cd6a68755ea64edf537f35c1eca4421a970e2ecfd67aaa2907
 EXPECTED_BOOTSTRAP_ADMIN = "0x0b5223FD31cDc1536f31b3627e6D7025b52310c9"
 EXPECTED_SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
 EXPECTED_SNAPSHOT_SIGNATURE_SCHEME = "ed25519"
+EXPECTED_INDEXER_CHECKPOINT_MANIFEST_VERSION = "usdb-indexer-checkpoint-manifest:v1"
+EXPECTED_INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION = "usdb-indexer-data:v1"
 PUBLIC_DEPLOYMENT_TIERS = frozenset({"testnet", "mainnet"})
 SUPPORTED_DEPLOYMENT_TIERS = frozenset({"development"}) | PUBLIC_DEPLOYMENT_TIERS
 KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
@@ -124,7 +126,8 @@ def validate_runtime_snapshot(
     snapshot_manifest: PurePosixPath,
     index_origin_height: int,
     btc_network: str,
-) -> None:
+    allow_above_origin: bool = False,
+) -> dict[str, Any]:
     require(
         snapshot_dir.is_dir(),
         f"snapshot host directory does not exist: {snapshot_dir}",
@@ -157,10 +160,11 @@ def validate_runtime_snapshot(
         state_ref.get("block_height"),
         "snapshot height must be a u32",
     )
-    require(
-        snapshot_height <= index_origin_height,
-        f"snapshot height {snapshot_height} exceeds network index origin {index_origin_height}",
-    )
+    if not allow_above_origin:
+        require(
+            snapshot_height <= index_origin_height,
+            f"snapshot height {snapshot_height} exceeds network index origin {index_origin_height}",
+        )
     require(
         manifest.get("balance_query_floor") == snapshot_height,
         "snapshot balance_query_floor must equal snapshot height",
@@ -172,6 +176,170 @@ def validate_runtime_snapshot(
     db_identity = manifest.get("db_identity")
     require(isinstance(db_identity, dict), "snapshot manifest db_identity is required")
     require(db_identity.get("btc_network") == btc_network, "snapshot Bitcoin network mismatch")
+    return manifest
+
+
+def checkpoint_container_path(value: str) -> PurePosixPath:
+    require(bool(value), "USDB_INDEXER_CHECKPOINT_MANIFEST is required in paired-checkpoint mode")
+    path = PurePosixPath(value)
+    require(
+        path.is_absolute()
+        and path.parent.parent == PurePosixPath("/snapshots")
+        and path.name == "usdb-indexer-checkpoint.manifest.json"
+        and path.parent.name not in {"", ".", ".."},
+        "USDB_INDEXER_CHECKPOINT_MANIFEST must be /snapshots/<artifact-dir>/usdb-indexer-checkpoint.manifest.json",
+    )
+    return path
+
+
+def nested_string(value: dict[str, Any], *keys: str) -> str | None:
+    current: Any = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, str) else None
+
+
+def validate_runtime_checkpoint(
+    snapshot_dir: Path,
+    checkpoint_path: PurePosixPath,
+    balance_history_manifest_path: Path,
+    balance_history_manifest: dict[str, Any],
+    network: dict[str, Any],
+    index_origin_height: int,
+    btc_network: str,
+) -> None:
+    artifact_dir = snapshot_dir / checkpoint_path.parent.name
+    manifest_path = artifact_dir / checkpoint_path.name
+    signature_path = artifact_dir / "usdb-indexer-checkpoint.manifest.sig"
+    data_dir = artifact_dir / "data"
+    require(manifest_path.is_file(), f"indexer checkpoint manifest is missing: {manifest_path}")
+    require(signature_path.is_file(), f"indexer checkpoint signature is missing: {signature_path}")
+    require(data_dir.is_dir(), f"indexer checkpoint data directory is missing: {data_dir}")
+
+    manifest = read_json(manifest_path)
+    require(
+        manifest.get("manifest_version") == EXPECTED_INDEXER_CHECKPOINT_MANIFEST_VERSION,
+        "unsupported usdb-indexer checkpoint manifest version",
+    )
+    require(
+        manifest.get("data_schema_version") == EXPECTED_INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION,
+        "unsupported usdb-indexer checkpoint data schema",
+    )
+    require(
+        isinstance(manifest.get("tool_version"), str) and bool(manifest["tool_version"]),
+        "indexer checkpoint tool_version is required",
+    )
+    require(
+        manifest.get("signature_scheme") == EXPECTED_SNAPSHOT_SIGNATURE_SCHEME
+        and isinstance(manifest.get("signing_key_id"), str)
+        and bool(manifest["signing_key_id"]),
+        "release indexer checkpoint must declare an Ed25519 signer",
+    )
+    require(
+        isinstance(manifest.get("operation_id"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest["operation_id"]) is not None,
+        "invalid paired checkpoint operation ID",
+    )
+    require(
+        manifest.get("artifact_dir_name") == checkpoint_path.parent.name,
+        "checkpoint artifact directory name mismatch",
+    )
+    require(
+        manifest.get("network_bundle_id") == network.get("network_bundle_id"),
+        "checkpoint network bundle mismatch",
+    )
+    require(manifest.get("chain_id") == network.get("chain_id"), "checkpoint chain ID mismatch")
+    require(
+        manifest.get("index_origin_height") == index_origin_height,
+        "checkpoint index origin mismatch",
+    )
+    require(
+        manifest.get("btc_network") == btc_network,
+        "checkpoint Bitcoin network mismatch",
+    )
+    checkpoint_height = require_u32(
+        manifest.get("checkpoint_height"),
+        "checkpoint height must be a u32",
+    )
+    require(
+        checkpoint_height >= index_origin_height,
+        "paired indexer checkpoint height must not precede network index origin",
+    )
+
+    upstream = manifest.get("balance_history")
+    require(isinstance(upstream, dict), "checkpoint balance_history binding is required")
+    upstream_state = upstream.get("state_ref")
+    snapshot_state = balance_history_manifest.get("state_ref")
+    require(isinstance(upstream_state, dict), "checkpoint upstream state_ref is required")
+    require(upstream_state == snapshot_state, "checkpoint upstream state_ref mismatch")
+    require(
+        upstream.get("manifest_file_name") == balance_history_manifest_path.name
+        and upstream.get("manifest_sha256") == sha256(balance_history_manifest_path),
+        "checkpoint balance-history manifest binding mismatch",
+    )
+    require(
+        upstream.get("snapshot_file_name") == balance_history_manifest.get("file_name")
+        and upstream.get("snapshot_file_sha256") == balance_history_manifest.get("file_sha256"),
+        "checkpoint balance-history snapshot binding mismatch",
+    )
+    require(
+        upstream.get("balance_query_floor") == balance_history_manifest.get("balance_query_floor")
+        and upstream.get("history_query_floor") == balance_history_manifest.get("history_query_floor"),
+        "checkpoint balance-history retention floor mismatch",
+    )
+    require(
+        isinstance(snapshot_state, dict) and snapshot_state.get("block_height") == checkpoint_height,
+        "paired checkpoint heights do not match",
+    )
+
+    identity = manifest.get("state_identity")
+    indexer_state_ref = manifest.get("indexer_state_ref")
+    require(isinstance(identity, dict), "checkpoint state_identity is required")
+    require(isinstance(indexer_state_ref, dict), "checkpoint full indexer_state_ref is required")
+    require(identity.get("block_height") == checkpoint_height, "checkpoint identity height mismatch")
+    require(
+        identity.get("stable_block_hash") == snapshot_state.get("stable_block_hash")
+        and identity.get("latest_block_commit") == snapshot_state.get("latest_block_commit")
+        and identity.get("snapshot_id") == snapshot_state.get("snapshot_id"),
+        "checkpoint normalized upstream identity mismatch",
+    )
+    require(
+        identity.get("stable_block_hash")
+        == nested_string(indexer_state_ref, "snapshot_info", "stable_block_hash")
+        and identity.get("latest_block_commit")
+        == nested_string(indexer_state_ref, "snapshot_info", "latest_block_commit")
+        and identity.get("snapshot_id")
+        == nested_string(indexer_state_ref, "snapshot_info", "snapshot_id")
+        and identity.get("activation_registry_id")
+        == nested_string(indexer_state_ref, "local_state_commit_info", "activation_registry_id")
+        and identity.get("active_version_set_id")
+        == nested_string(indexer_state_ref, "local_state_commit_info", "active_version_set_id")
+        and identity.get("local_state_commit")
+        == nested_string(indexer_state_ref, "local_state_commit_info", "local_state_commit")
+        and identity.get("system_state_id")
+        == nested_string(indexer_state_ref, "system_state_info", "system_state_id"),
+        "checkpoint normalized identity does not match full state-ref",
+    )
+
+    files = manifest.get("files")
+    require(isinstance(files, list) and bool(files), "checkpoint file inventory is required")
+    seen: set[str] = set()
+    for item in files:
+        require(isinstance(item, dict), "checkpoint file entry must be an object")
+        relative_text = item.get("path")
+        require(isinstance(relative_text, str) and bool(relative_text), "checkpoint file path is required")
+        relative = PurePosixPath(relative_text)
+        require(
+            not relative.is_absolute() and ".." not in relative.parts and relative_text not in seen,
+            "checkpoint file path is unsafe or duplicated",
+        )
+        seen.add(relative_text)
+        file_path = data_dir.joinpath(*relative.parts)
+        require(file_path.is_file(), f"checkpoint data file is missing: {file_path}")
+        require(item.get("size") == file_path.stat().st_size, f"checkpoint file size mismatch: {relative_text}")
+        require(item.get("sha256") == sha256(file_path), f"checkpoint file SHA-256 mismatch: {relative_text}")
 
 
 def require_no_runtime_secrets(value: Any, path: str = "$") -> None:
@@ -457,14 +625,22 @@ def validate_node_env(
         ).hexdigest()
         require(hmac.compare_digest(actual_hmac, expected_hmac.lower()), "Bitcoin rpcauth does not match RPC password")
     snapshot_mode = env.get("SNAPSHOT_MODE", "none")
-    require(snapshot_mode in {"none", "balance-history"}, "unsupported SNAPSHOT_MODE")
+    require(
+        snapshot_mode in {"none", "balance-history", "paired-checkpoint"},
+        "unsupported SNAPSHOT_MODE",
+    )
     snapshot_dir = Path(env.get("BH_SNAPSHOT_HOST_DIR", ""))
     require(snapshot_dir.is_absolute(), "BH_SNAPSHOT_HOST_DIR must be an absolute path")
     snapshot_file = env.get("BH_SNAPSHOT_FILE", "")
     snapshot_manifest = env.get("BH_SNAPSHOT_MANIFEST", "")
+    checkpoint_manifest = env.get("USDB_INDEXER_CHECKPOINT_MANIFEST", "")
     if snapshot_mode == "none":
         require(not snapshot_file, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_FILE")
         require(not snapshot_manifest, "SNAPSHOT_MODE=none requires empty BH_SNAPSHOT_MANIFEST")
+        require(
+            not checkpoint_manifest,
+            "SNAPSHOT_MODE=none requires empty USDB_INDEXER_CHECKPOINT_MANIFEST",
+        )
     else:
         require(
             env.get("BH_SNAPSHOT_TRUST_MODE", "signed") == "signed",
@@ -480,14 +656,32 @@ def validate_node_env(
             snapshot_manifest_path == snapshot_file_path.with_suffix(".manifest.json"),
             "balance-history snapshot file and manifest basenames must match",
         )
-    if require_runtime and snapshot_mode == "balance-history":
-        validate_runtime_snapshot(
+        if snapshot_mode == "balance-history":
+            require(
+                not checkpoint_manifest,
+                "SNAPSHOT_MODE=balance-history requires empty USDB_INDEXER_CHECKPOINT_MANIFEST",
+            )
+        else:
+            checkpoint_manifest_path = checkpoint_container_path(checkpoint_manifest)
+    if require_runtime and snapshot_mode in {"balance-history", "paired-checkpoint"}:
+        balance_history_runtime_manifest = validate_runtime_snapshot(
             snapshot_dir,
             snapshot_file_path,
             snapshot_manifest_path,
             index_origin_height,
             env.get("BTC_NETWORK", "bitcoin"),
+            allow_above_origin=snapshot_mode == "paired-checkpoint",
         )
+        if snapshot_mode == "paired-checkpoint":
+            validate_runtime_checkpoint(
+                snapshot_dir,
+                checkpoint_manifest_path,
+                snapshot_dir / snapshot_manifest_path.name,
+                balance_history_runtime_manifest,
+                network,
+                index_origin_height,
+                env.get("BTC_NETWORK", "bitcoin"),
+            )
 
 
 def parse_args() -> argparse.Namespace:

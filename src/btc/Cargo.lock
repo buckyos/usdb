@@ -5220,6 +5220,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "usdb-indexer-checkpoint-tool"
+version = "0.1.0"
+dependencies = [
+ "balance-history",
+ "base64 0.22.1",
+ "bitcoincore-rpc",
+ "clap",
+ "ed25519-dalek",
+ "jsonrpc-core",
+ "jsonrpc-http-server",
+ "log",
+ "named-lock",
+ "reqwest 0.13.1",
+ "rusqlite",
+ "rust-rocksdb",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "toml 0.9.10+spec-1.1.0",
+ "usdb-util",
+]
+
+[[package]]
 name = "usdb-indexer-cli"
 version = "0.1.0"
 dependencies = [

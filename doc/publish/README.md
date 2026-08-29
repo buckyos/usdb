@@ -21,6 +21,7 @@
 - [Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)
 - [USDB testnet-v0 首节点发布与部署操作](./usdb-testnet-v0-first-node-operations.md)
 - [Balance-History 发布与 Snapshot 分发](./balance-history-release-and-snapshot-distribution.md)
+- [Balance-history Snapshot 与 Indexer Checkpoint 兼容规则](./balance-history-indexer-checkpoint-compatibility.md)
 - [USDB testnet-v0 Network Bundle](./usdb-testnet-v0-network-bundle.md)
 
 ## 3. 关联文档

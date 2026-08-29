@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../helpers/snapshot_marker.sh
 source "${script_dir}/../helpers/snapshot_marker.sh"
 
 root_dir="${BH_ROOT_DIR:-/data/balance-history}"
@@ -21,11 +22,11 @@ btc_port="${btc_target##*:}"
   "${btc_port}" \
   "${WAIT_FOR_BTC_TIMEOUT_SECS:-120}"
 
-if [[ "${snapshot_mode}" == "balance-history" ]]; then
+if [[ "${snapshot_mode}" == "balance-history" || "${snapshot_mode}" == "paired-checkpoint" ]]; then
   snapshot_file="${BH_SNAPSHOT_FILE:-}"
   snapshot_manifest="${BH_SNAPSHOT_MANIFEST:-}"
   if ! snapshot_marker_matches "${marker_path}" "${snapshot_mode}" "${snapshot_file}" "${snapshot_manifest}"; then
-    echo "SNAPSHOT_MODE=balance-history requires a matching snapshot install marker at ${marker_path}" >&2
+    echo "SNAPSHOT_MODE=${snapshot_mode} requires a matching snapshot install marker at ${marker_path}" >&2
     exit 1
   fi
 elif [[ "${snapshot_mode}" != "none" ]]; then

@@ -8,6 +8,9 @@ services:
   usdb-indexer:
     labels:
       org.usdb.network-bundle: usdb-testnet-v0
+  paired-checkpoint-recovery:
+    labels:
+      org.usdb.network-bundle: usdb-testnet-v0
   usdb-chain-init:
     labels:
       org.usdb.network-bundle: usdb-testnet-v0

@@ -42,7 +42,7 @@
     },
     "compose_overlay": {
       "path": "compose.network.yml",
-      "sha256": "08df021012a73b8b4952af770bdeea6f06d21ac3bf7b1903380212486a78ceb3"
+      "sha256": "856c6cb38e915dcadca5b8c7df8d820cc9218c1f32d0bf337922ef96783b9dd8"
     }
   }
 }

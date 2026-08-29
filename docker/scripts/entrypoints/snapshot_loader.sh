@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../helpers/snapshot_marker.sh
 source "${script_dir}/../helpers/snapshot_marker.sh"
 
 snapshot_mode="${SNAPSHOT_MODE:-none}"
@@ -9,6 +10,8 @@ root_dir="${BH_ROOT_DIR:-/data/balance-history}"
 config_path="${root_dir}/config.toml"
 db_dir="${root_dir}/db"
 marker_path="$(snapshot_marker_path "${root_dir}")"
+indexer_root="${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}"
+indexer_config_path="${indexer_root}/config.json"
 
 "${script_dir}/../helpers/render_balance_history_config.sh" "${config_path}"
 
@@ -18,6 +21,32 @@ case "${snapshot_mode}" in
     exit 0
     ;;
   balance-history)
+    ;;
+  paired-checkpoint)
+    "${script_dir}/../helpers/render_usdb_indexer_config.sh" "${indexer_config_path}"
+    checkpoint_manifest="${USDB_INDEXER_CHECKPOINT_MANIFEST:-}"
+    snapshot_manifest="${BH_SNAPSHOT_MANIFEST:-}"
+    trusted_keys="${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-}"
+    if [[ -z "${checkpoint_manifest}" || -z "${snapshot_manifest}" || -z "${trusted_keys}" ]]; then
+      echo "SNAPSHOT_MODE=paired-checkpoint requires USDB_INDEXER_CHECKPOINT_MANIFEST, BH_SNAPSHOT_MANIFEST, and BH_SNAPSHOT_TRUSTED_KEYS_FILE" >&2
+      exit 1
+    fi
+    args=(
+      install-pair
+      --checkpoint-manifest "${checkpoint_manifest}"
+      --balance-history-manifest "${snapshot_manifest}"
+      --trusted-keys "${trusted_keys}"
+      --indexer-root "${indexer_root}"
+      --balance-history-root "${root_dir}"
+      --network-bundle-id "${USDB_NETWORK_BUNDLE_ID:?USDB_NETWORK_BUNDLE_ID is required}"
+      --chain-id "${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}"
+      --index-origin-height "${USDB_GENESIS_BLOCK_HEIGHT:?USDB_GENESIS_BLOCK_HEIGHT is required}"
+      --lock-timeout-secs "${USDB_CHECKPOINT_LOCK_TIMEOUT_SECS:-10}"
+    )
+    usdb-indexer-checkpoint-tool "${args[@]}"
+    snapshot_marker_write "${marker_path}" "${snapshot_mode}" "${BH_SNAPSHOT_FILE:-}" "${snapshot_manifest}"
+    echo "Paired checkpoint install completed and marker written to ${marker_path}"
+    exit 0
     ;;
   *)
     echo "Unsupported SNAPSHOT_MODE=${snapshot_mode}" >&2

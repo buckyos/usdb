@@ -43,6 +43,7 @@ x-balance-history-environment: &balance-history-environment
   SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
   BH_SNAPSHOT_FILE: ${BH_SNAPSHOT_FILE:-}
   BH_SNAPSHOT_MANIFEST: ${BH_SNAPSHOT_MANIFEST:-}
+  USDB_INDEXER_CHECKPOINT_MANIFEST: ${USDB_INDEXER_CHECKPOINT_MANIFEST:-}
 
 services:
   snapshot-loader:
@@ -51,8 +52,13 @@ services:
     entrypoint: ["/opt/usdb/docker/scripts/entrypoints/snapshot_loader.sh"]
     environment:
       <<: *balance-history-environment
+      USDB_INDEXER_ROOT_DIR: /data/usdb-indexer
+      USDB_NETWORK_BUNDLE_ID: ${USDB_NETWORK_BUNDLE_ID:?USDB_NETWORK_BUNDLE_ID is required}
+      USDB_CHAIN_ID: ${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}
+      USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:?USDB_GENESIS_BLOCK_HEIGHT is required}
     volumes:
       - balance-history-data:/data/balance-history
+      - usdb-indexer-data:/data/usdb-indexer
       - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     mem_limit: ${BH_MEMORY_LIMIT:-20g}
@@ -138,6 +144,31 @@ services:
     networks:
       - usdb-runtime
 
+  paired-checkpoint-recovery:
+    <<: *usdb-service-defaults
+    restart: "no"
+    entrypoint: ["/opt/usdb/docker/scripts/entrypoints/verify_paired_checkpoint_recovery.sh"]
+    depends_on:
+      balance-history:
+        condition: service_healthy
+      usdb-indexer:
+        condition: service_healthy
+    environment:
+      SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}
+      USDB_INDEXER_CHECKPOINT_MANIFEST: ${USDB_INDEXER_CHECKPOINT_MANIFEST:-}
+      BH_SNAPSHOT_TRUSTED_KEYS_FILE: ${BH_SNAPSHOT_TRUSTED_KEYS_FILE:-/run/usdb/keys/usdb-mainnet-snapshot-v1.trusted-keys.json}
+      USDB_INDEXER_ROOT_DIR: /data/usdb-indexer
+      USDB_INDEXER_RPC_URL: http://usdb-indexer:28020
+      BALANCE_HISTORY_RPC_URL: http://balance-history:28010
+      USDB_CHECKPOINT_RECOVERY_TIMEOUT_SECS: ${USDB_CHECKPOINT_RECOVERY_TIMEOUT_SECS:-300}
+    volumes:
+      - usdb-indexer-data:/data/usdb-indexer
+      - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
+      - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
+    mem_limit: ${USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT:-1g}
+    networks:
+      - usdb-runtime
+
   usdb-chain:
     image: ${USDB_CHAIN_IMAGE:?USDB_CHAIN_IMAGE must reference a versioned release image}
     restart: unless-stopped
@@ -154,6 +185,8 @@ services:
         condition: service_completed_successfully
       usdb-indexer:
         condition: service_healthy
+      paired-checkpoint-recovery:
+        condition: service_completed_successfully
     environment:
       USDB_CHAIN_DATA_DIR: /data/usdb-chain
       USDB_CHAIN_ID: ${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}
