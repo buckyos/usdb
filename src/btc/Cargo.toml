@@ -6,6 +6,7 @@ members = [
     "usdb-indexer-cli",
     "balance-history",
     "balance-history-cli",
+    "balance-history-electrs-audit",
     "balance-history-snapshot-tool",
     "usdb-control-plane",
     "usdb-util",

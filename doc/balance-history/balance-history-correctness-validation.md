@@ -94,8 +94,9 @@ balance 与 exact delta，结束时再验证完整 range、summary、UTXO 和 re
 
 ## 主网外部审计
 
-本地 Electrs 数据库当前不作为这批测试的前置条件。重建后也建议把它降级为发布前
-抽样审计，而不是日常 correctness 的唯一 oracle。
+本地 Electrs 不作为默认测试的前置条件。它通过独立的
+`src/btc/balance-history-electrs-audit` 执行发布前抽样审计，而不是日常 correctness 的
+唯一 oracle。
 
 ### 最新状态
 
@@ -127,12 +128,17 @@ Core unspendable 语义差异单独计数，其余差异一律 fail closed。操
 ### 历史状态
 
 Electrs 没有直接的任意高度余额接口。旧流程按地址逐个读取 history、再逐笔读取交易，
-会产生大量重复 I/O。恢复 Electrs 后应至少加入：
+会产生大量重复 I/O。当前 `balance-history-electrs-audit` 已实现：
 
 - 固定 seed 的分层样本清单和可审计输出；
 - 全局 txid 去重缓存，而不是每个地址重复下载同一交易；
-- 有界并发、批量请求、重试和 checkpoint/resume；
-- 将 latest balance 快速审计与 historical replay 慢审计拆成两个任务。
+- 有界 worker、无自动重试、原子 checkpoint/resume；
+- electrs `index_lookup_limit` 配置校验、重启确认和 script-hash/address 黑名单；
+- 正余额终态与零余额终态的独立 keyspace 抽样；
+- mempool 排除、coinbase null prevout、同区块 delta 聚合及 BIP30 歧义分类。
+
+使用方式与安全约束见 `src/btc/balance-history-electrs-audit/README.md`。正式运行仍应保存
+32 条 smoke、256 条基线和 1000 条扩展报告，并确保 skipped 默认 fail closed。
 
 更稳妥的中期方案是实现一个只读 sampled block oracle：给定一组 script hash，按区块顺序
 只扫描一次本地 blk/Bitcoin Core block，维护这些样本的 outpoint 与余额。它的成本主要随
@@ -144,6 +150,6 @@ Electrs 没有直接的任意高度余额接口。旧流程按地址逐个读取
 1. 默认 Rust 测试和 `correctness` regtest suite 全部通过。
 2. 涉及 rollback/snapshot 时追加对应 reorg 和 snapshot suite。
 3. Nightly 档位保存 seed、参数、耗时和失败现场。
-4. 主网至少完成一次 Bitcoin Core UTXO 分层抽样；Electrs 恢复后再执行历史慢审计。
+4. 主网至少完成一次 Bitcoin Core UTXO 分层抽样和一次 Electrs 历史断面慢审计。
 5. 任一 external oracle mismatch 都必须保存 script、height、block hash、outpoint 和双方结果，
    不能只输出地址与最终余额。

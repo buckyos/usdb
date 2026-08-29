@@ -27,6 +27,7 @@
 | Rust unit tests | `cargo test -p balance-history -p balance-history-snapshot-tool` | 是 | 无 | DB primitives、RPC 语义、block commit helpers、rollback metadata、snapshot helpers、exact-height builder state、readiness、script registry unit paths | 本地可运行并已通过 |
 | Real BTC data tests | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh loader-index --size tiny` | 否 | 本机 bitcoind 和本机 blk 文件 | local loader、block file reader/cache、真实 blk/RPC 对齐 | 显式 env-gated，支持 suite/size 切片 |
 | Regtest scripts | `bash src/btc/balance-history/scripts/run_regtest_suite.sh <suite>` | 否 | 本机 bitcoind binary | 端到端 smoke、独立历史状态线、stable-lag reorg boundary、snapshot install/recovery、RPC 语义 | 已有 `smoke`、`correctness` 和 `stable-lag-reorg` runner；更大套件仍为手工入口 |
+| Electrs 历史断面审计 | `cargo run --release -p balance-history-electrs-audit -- ...` | 否 | immutable snapshot、受限 electrs | 固定 seed 正/零余额抽样、目标高度交易重放、JSON report、checkpoint/resume | 工具与 fixture 已落地；963800 snapshot sampling smoke 已通过，正式主网 report 待运行 |
 | Web/browser consumers | `web/balance-history-browser` via hosted console or Vite | 否 | balance-history RPC proxy/service | UI 侧使用 summary/timeseries/flow/resolve RPC | 不作为服务正确性 gate |
 | Performance/manual profiling | `USDB_BH_REAL_BTC=1 ... bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size tiny` | 否 | 本机 blk 文件或 full node data | local loader 内存/吞吐、block file cache prefetch | 仅手工使用，支持横向抽样 |
 
@@ -219,7 +220,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 | 没有 crate-level integration tests | 多模块流程嵌在大型生产文件的 unit tests 中 | 从 lib 导出核心模块，并增加 `src/btc/balance-history/tests/` |
 | timeseries/flow bucket 聚合仍缺 regtest 覆盖 | Oracle 已对拍 movement range 和 summary，但浏览器使用的 bucket 形状仍主要靠 Rust 测试 | 扩展 oracle 或新增 aggregate RPC 场景 |
 | Bitcoin Core UTXO 抽样尚无主网留档 | 工具的单元测试和真实 regtest 已通过，但本批未在同时运行的主网 Core 与 balance-history 上生成正式报告 | 两个主网服务 query-ready 后用固定 seed 执行一次并保存 JSON 报告、耗时和节点版本 |
-| 主网任意高度历史审计仍依赖慢 Electrs 路径 | Bitcoin Core `scantxoutset/gettxout` 当前断面抽样已落地，但不能证明任意历史高度 movement/history | Electrs 恢复后增加全局 tx cache、批量/并发和 resume，再评估 sampled block replay oracle |
+| 主网任意高度历史审计尚无正式报告 | `balance-history-electrs-audit` 已提供固定 seed、全局 tx cache、有界并发、热门地址保护和 resume，但尚未对 963800 生成正式审计结果 | 在 electrs 启用非零 `index_lookup_limit` 并重启后运行 32/256/1000 样本矩阵；另行评估 sampled block replay oracle |
 | 真实 BTC local loader 测试仍需人工提供节点 | local blk 加速路径可能在无日常信号下退化 | 已有显式 real-data test mode；下一步补 fixture/regtest-generated blk subset，让 CI 也能覆盖 local-loader 子集 |
 | shell helper 重复 | 共享库已有 JSON assertion helper，但部分旧脚本仍保留本地副本 | 后续触及对应旧脚本时删除本地副本并复用 `regtest_lib.sh` |
 | 大模块 ownership 不清晰 | DB/server/snapshot/block 文件过大，review 与补测成本高 | lib export 后拆分 helper，并把共享 test builders 移入 `tests/common` |
@@ -229,7 +230,7 @@ bash src/btc/balance-history/scripts/run_real_btc_tests.sh profile-cache --size 
 1. 将 `correctness` 默认档位接入 fast/manual gate，scale 档位接入后续 nightly/soak。
 2. 增加 timeseries/flow bucket 的独立 oracle 对拍。
 3. 扩展 runner 的 `reorg-full` 与 `snapshot-full` 套件。
-4. 发布前运行 Bitcoin Core UTXO 抽样；恢复 Electrs 后优化历史外部审计。
+4. 发布前运行 Bitcoin Core UTXO 抽样和 `balance-history-electrs-audit` 历史断面审计。
 5. 增加 fixture/regtest-generated blk subset，降低真实主网数据测试对本机节点的依赖。
 
 ## 验收标准
