@@ -183,22 +183,32 @@ export PATH="${HOME}/.local/bin:${PATH}"
 password/rpcauth，并保持 operator RPC 只监听 loopback：
 
 ```bash
+usdb-node prepare-host
 usdb-node setup
 usdb-node doctor
 ```
 
-向导默认选择 `/home/usdb/.usdb`、full role 和 private Bitcoin P2P。RPC username 自动使用
-bundle ID 与 hostname 派生，password 自动生成。只有角色、miner 地址、bootnode 和确实需要开放
-Bitcoin 入站时才需要运维输入。专用数据盘可在向导中选择 `/data/usdb`。
+`prepare-host` 统一包装主机软件检查，并只在失败后询问是否安装；如果安装修改了 docker 用户组，退出后重新
+登录再继续。`doctor` 是可选的显式预检：它会执行完整主机、release/network identity、节点配置、image
+digest 和 UFW 只读检查，不会拉取 image、启动服务或修改配置。读取 UFW 状态可能请求 sudo。后面的
+`usdb-node up` 会自动再次执行同一检查。节点运行后的服务状态使用 `usdb-node status` 查看，`doctor` 不是
+常驻监控程序。
 
-配置防火墙后，一条命令完成拉取镜像和 readiness-ordered 启动：
+向导默认选择 `/home/usdb/.usdb`、full role 和 private Bitcoin P2P。RPC username 自动使用
+bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当前 SSH 会话检测并要求确认，随后写入
+节点本地配置。只有角色、miner 地址、bootnode、SSH port 无法正确检测和确实需要开放 Bitcoin 入站时才需要
+运维修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
+
+`setup` 最后询问是否应用 UFW，默认 `yes`。它会先保留确认的 SSH 端口，再开放 `31303/TCP+UDP`，并按
+Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：
 
 ```bash
-sudo "/home/usdb/.local/share/usdb/releases/usdb-testnet-v0-r1/docker/scripts/tools/prepare_usdb_firewall.sh" apply \
-  --node-env /home/usdb/.config/usdb/usdb-testnet-v0/node.env \
-  --ssh-port <actual-ssh-port> \
-  --bitcoin-p2p private \
-  --confirm
+usdb-node firewall apply --confirm
+```
+
+防火墙通过后，一条命令完成拉取镜像和 readiness-ordered 启动：
+
+```bash
 usdb-node up
 usdb-node status
 ```
@@ -206,6 +216,11 @@ usdb-node status
 SSH 中断不会删除数据。重新执行 `usdb-node up` 会从 Bitcoin/balance-history 的现有同步状态继续。
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
+
+首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
+同一 `usdb-testnet-v0` bundle 的新 `rN`、并继续复用现有 `node.env` 时，才按
+`activate-release -> doctor -> up -> status` 升级。新的 `vN`、chain ID 或 genesis 不得复用本配置，必须
+按新 network bundle 重新执行 `setup` 并遵循对应的数据处置方案。
 
 ### 5.2 手工回退路径
 
@@ -259,6 +274,7 @@ SNAPSHOT_MODE=none
 BH_SNAPSHOT_FILE=
 BH_SNAPSHOT_MANIFEST=
 USDB_NODE_ROLE=full
+USDB_OPERATOR_SSH_PORT=<actual-ssh-port>
 ```
 
 保留默认数据根 `/home/usdb/.usdb`，创建运行目录：

@@ -53,12 +53,14 @@
 bash <(curl -fsSL \
   "https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r1/install-usdb-testnet-v0-r1.sh")
 export PATH="${HOME}/.local/bin:${PATH}"
+usdb-node prepare-host
 usdb-node setup
 usdb-node doctor
 usdb-node up
 ```
 
-`usdb-node setup` 从 release manifest 写入三张 image digest，并在本机生成 Bitcoin RPC secret；
+`usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，并确认 SSH
+port 与 UFW profile；
 `usdb-node up` 依次等待 Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
 中断后重复执行会从现有数据继续。详细契约见
 [`doc/publish/usdb-release-node-kit-and-deployment.md`](../../../doc/publish/usdb-release-node-kit-and-deployment.md)。

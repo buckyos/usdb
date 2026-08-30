@@ -46,6 +46,7 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_RPC_PASSWORD": "test-password",
             "BTC_P2P_BIND_ADDRESS": "127.0.0.1",
             "BTC_P2P_BIND_PORT": "8333",
+            "USDB_OPERATOR_SSH_PORT": "22",
             "USDB_DATA_ROOT": str(data_root),
             "BTC_NODE_DATA_HOST_DIR": str(data_root / "bitcoin/mainnet"),
             "BH_DATA_HOST_DIR": str(data_root / "balance-history"),
@@ -343,6 +344,13 @@ class NetworkBundleValidatorTests(unittest.TestCase):
     def test_public_bitcoin_p2p_bind_is_supported(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="0.0.0.0")
         self.validate_node_env(path, False)
+
+    def test_operator_ssh_port_must_be_valid(self) -> None:
+        for value in ("", "0", "65536", "not-a-port"):
+            with self.subTest(value=value):
+                path = self.write_node_env(USDB_OPERATOR_SSH_PORT=value)
+                with self.assertRaisesRegex(ValueError, "USDB_OPERATOR_SSH_PORT"):
+                    self.validate_node_env(path, False)
 
     def test_noncanonical_bitcoin_p2p_bind_is_rejected(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="192.0.2.10")

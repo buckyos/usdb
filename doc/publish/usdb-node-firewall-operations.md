@@ -3,11 +3,14 @@
 ## 1. 适用范围
 
 本文定义 USDB 测试网和正式网节点的主机入站基线。具体网络的 P2P 端口来自 network bundle；
-当前 `testnet-v0` 使用 `31303/TCP+UDP`。工具位于：
+当前 `testnet-v0` 使用 `31303/TCP+UDP`。Release node kit 的首选入口是：
 
-```text
-docker/scripts/tools/prepare_usdb_firewall.sh
+```bash
+usdb-node firewall check
+usdb-node firewall apply --confirm
 ```
+
+底层实现是 `docker/scripts/tools/prepare_usdb_firewall.sh`，保留给源码 checkout、测试和故障排查。
 
 当前自动处理后端为 UFW，适用于项目优先验证的 Ubuntu/Debian 节点。云安全组、机房 ACL、路由器
 端口转发和托管防火墙不由本工具修改，必须在部署记录中单独复核。
@@ -45,23 +48,21 @@ deny 规则：
 
 ## 4. 默认私有 Bitcoin P2P
 
-先生成并编辑未提交的 `node.env`，保留：
+先通过 `usdb-node setup` 生成私有 `node.env`，保留：
 
 ```text
 BTC_P2P_BIND_ADDRESS=127.0.0.1
 BTC_P2P_BIND_PORT=8333
 USDB_P2P_BIND_ADDRESS=0.0.0.0
 USDB_P2P_BIND_PORT=31303
+USDB_OPERATOR_SSH_PORT=22
 ```
 
-应用规则前必须明确填写当前 SSH 端口。以下示例采用 `22`：
+`setup` 从当前 `SSH_CONNECTION` 读取 server-side port 并要求确认；它不是客户端临时端口，也不是云 NAT
+映射后的外部端口。确认值保存在 `USDB_OPERATOR_SSH_PORT`，后续命令无需重复输入：
 
 ```bash
-sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port 22 \
-  --bitcoin-p2p private \
-  --confirm
+usdb-node firewall apply --confirm
 ```
 
 `apply` 会在 APT 主机缺少 UFW 时安装 UFW，先允许 SSH，再设置默认拒绝入站、允许出站，最后放行
@@ -71,11 +72,10 @@ sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
 只读复检：
 
 ```bash
-sudo docker/scripts/tools/prepare_usdb_firewall.sh check \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port 22 \
-  --bitcoin-p2p private
+usdb-node firewall check
 ```
+
+`doctor` 会调用该只读检查。读取 UFW 状态可能请求 sudo；`--ssh-port` 只用于紧急或自动化场景下覆盖已保存值。
 
 ## 5. 可选公开 Bitcoin P2P
 
@@ -85,14 +85,12 @@ sudo docker/scripts/tools/prepare_usdb_firewall.sh check \
 BTC_P2P_BIND_ADDRESS=0.0.0.0
 ```
 
-然后应用和检查 public profile：
+然后应用和检查 public profile。Controller 会从 `BTC_P2P_BIND_ADDRESS` 自动推导 private/public，不需要
+再提供模式参数：
 
 ```bash
-sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port 22 \
-  --bitcoin-p2p public \
-  --confirm
+usdb-node firewall apply --confirm
+usdb-node firewall check
 ```
 
 该模式额外允许 `8333/TCP`。Bitcoin RPC `8332` 仍保持 Docker 私网可见，不得随 P2P 一起开放。
@@ -102,10 +100,7 @@ sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
 每台节点至少归档以下非敏感信息：
 
 ```bash
-sudo docker/scripts/tools/prepare_usdb_firewall.sh check \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port <actual-ssh-port> \
-  --bitcoin-p2p private
+usdb-node firewall check
 
 sudo ufw status verbose
 docker compose --env-file docker/networks/testnet-v0/node.env \

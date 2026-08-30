@@ -94,6 +94,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["BTC_RPC_USER"], "node-a")
         self.assertTrue(env["BTC_RPC_PASSWORD"])
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
+        self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
         self.assertEqual(env["USDB_NAT"], "extip:203.0.113.10")
         self.assertEqual(stat.S_IMODE(node_env.stat().st_mode), 0o600)
@@ -128,17 +129,26 @@ class UsdbNodeTests(unittest.TestCase):
                 "2",
                 "enode://example",
                 "n",
+                "2222",
                 "y",
+                "n",
             ]
         )
         output = io.StringIO()
-        NODE.setup_node(layout, input_fn=lambda _prompt: next(answers), output=output)
+        node_env, apply_firewall = NODE.setup_node(
+            layout,
+            input_fn=lambda _prompt: next(answers),
+            output=output,
+        )
         env = NODE.read_env(layout.node_env)
+        self.assertEqual(node_env, layout.node_env)
+        self.assertFalse(apply_firewall)
         self.assertEqual(env["USDB_NODE_ROLE"], "miner")
         self.assertEqual(env["USDB_MINER_ADDRESS"], address)
         self.assertEqual(env["USDB_MINER_THREADS"], "2")
         self.assertEqual(env["USDB_BOOTNODES"], "enode://example")
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
+        self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "2222")
         self.assertEqual(
             env["BTC_RPC_USER"],
             NODE.default_bitcoin_rpc_user(layout),
@@ -148,7 +158,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "cancelled-data"
-        answers = iter([str(data_root), "full", "", "n", "n"])
+        answers = iter([str(data_root), "full", "", "n", "22", "n"])
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
@@ -157,6 +167,16 @@ class UsdbNodeTests(unittest.TestCase):
             )
         self.assertFalse(layout.node_env.exists())
         self.assertFalse((data_root / "secure/bitcoin-mainnet-rpcauth").exists())
+
+    def test_detect_ssh_server_port_uses_server_side_port(self) -> None:
+        self.assertEqual(
+            NODE.detect_ssh_server_port(
+                {"SSH_CONNECTION": "198.51.100.8 50000 203.0.113.5 2222"}
+            ),
+            2222,
+        )
+        self.assertEqual(NODE.detect_ssh_server_port({}), 22)
+        self.assertEqual(NODE.detect_ssh_server_port({"SSH_CONNECTION": "invalid"}), 22)
 
     def test_default_rpc_user_is_bundle_and_host_scoped(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -215,6 +235,112 @@ class UsdbNodeTests(unittest.TestCase):
                 ("run_testnet_runtime.sh", ("up",)),
             ],
         )
+
+    def test_host_and_firewall_actions_delegate_with_frozen_node_configuration(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        NODE.configure_node(
+            layout,
+            data_root=Path(self.temporary.name) / "node-data",
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="public",
+            ssh_port=2222,
+        )
+        calls: list[tuple[str, tuple[str, ...], bool]] = []
+
+        def record(
+            _layout: object,
+            helper: str,
+            arguments: list[str],
+            *,
+            check: bool = True,
+            **_kwargs: object,
+        ) -> object:
+            calls.append((helper, tuple(arguments), check))
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(NODE, "run_helper", side_effect=record):
+            NODE.run_host_action(layout, "check", docker_user="usdb")
+            NODE.run_firewall_action(layout, "apply", confirm=True)
+
+        self.assertEqual(
+            calls,
+            [
+                ("prepare_usdb_host.sh", ("check", "--docker-user", "usdb"), True),
+                (
+                    "prepare_usdb_firewall.sh",
+                    (
+                        "apply",
+                        "--node-env",
+                        str(layout.node_env),
+                        "--ssh-port",
+                        "2222",
+                        "--bitcoin-p2p",
+                        "public",
+                        "--confirm",
+                    ),
+                    True,
+                ),
+            ],
+        )
+
+    def test_prepare_host_only_installs_after_interactive_confirmation(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        calls: list[tuple[str, bool]] = []
+
+        def record(
+            _layout: object,
+            action: str,
+            *,
+            check: bool = True,
+            **_kwargs: object,
+        ) -> object:
+            calls.append((action, check))
+            return mock.Mock(returncode=1 if action == "check" else 0)
+
+        with (
+            mock.patch.object(NODE, "run_host_action", side_effect=record),
+            mock.patch.object(NODE.sys, "stdin", mock.Mock(isatty=lambda: True)),
+            mock.patch.object(NODE.sys, "stdout", mock.Mock(isatty=lambda: True)),
+        ):
+            NODE.prepare_host(
+                layout,
+                docker_user="usdb",
+                input_fn=lambda _prompt: "yes",
+                output=io.StringIO(),
+            )
+        self.assertEqual(calls, [("check", False), ("install", True)])
+
+    def test_doctor_checks_host_runtime_identity_and_firewall(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        NODE.configure_node(
+            layout,
+            data_root=Path(self.temporary.name) / "node-data",
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        with (
+            mock.patch.object(NODE, "run_host_action") as host,
+            mock.patch.object(NODE, "run_helper") as helper,
+            mock.patch.object(NODE, "run_firewall_action") as firewall,
+        ):
+            NODE.doctor(layout)
+        host.assert_called_once_with(
+            layout,
+            "check",
+            docker_user=NODE.default_docker_user(),
+        )
+        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["validate-node"])
+        firewall.assert_called_once_with(layout, "check")
 
     def test_render_env_rejects_missing_keys_and_newlines(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing keys"):

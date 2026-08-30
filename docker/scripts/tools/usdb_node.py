@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
 import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -195,6 +195,27 @@ def _require_role(role: str, miner_address: str, miner_threads: int) -> None:
         raise ValueError("--miner-address is only valid for the miner role")
 
 
+def _require_port(label: str, value: int) -> int:
+    if value < 1 or value > 65535:
+        raise ValueError(f"{label} must be between 1 and 65535")
+    return value
+
+
+def detect_ssh_server_port(environment: dict[str, str] | None = None) -> int:
+    values = os.environ if environment is None else environment
+    connection = values.get("SSH_CONNECTION", "").split()
+    if len(connection) == 4:
+        try:
+            return _require_port("detected SSH server port", int(connection[3]))
+        except ValueError:
+            pass
+    return 22
+
+
+def default_docker_user() -> str:
+    return "" if os.geteuid() == 0 else getpass.getuser()
+
+
 def default_bitcoin_rpc_user(layout: ReleaseLayout, hostname: str | None = None) -> str:
     host = hostname if hostname is not None else socket.gethostname()
     normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", host).strip("-._") or "node"
@@ -217,6 +238,7 @@ def configure_node(
     nat: str,
     bitcoin_rpc_user: str | None,
     bitcoin_p2p: str,
+    ssh_port: int = 22,
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -226,6 +248,7 @@ def configure_node(
     _require_role(role, miner_address, miner_threads)
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
+    _require_port("operator SSH port", ssh_port)
     root = data_root.expanduser().resolve()
     secure_dir = root / "secure"
     snapshot_dir = root / "releases/balance-history"
@@ -255,6 +278,7 @@ def configure_node(
             "BTC_RPC_USER": credentials["username"],
             "BTC_RPC_PASSWORD": credentials["password"],
             "BTC_P2P_BIND_ADDRESS": "0.0.0.0" if bitcoin_p2p == "public" else "127.0.0.1",
+            "USDB_OPERATOR_SSH_PORT": str(ssh_port),
             "BTC_CONTAINER_UID": str(os.getuid()),
             "BTC_CONTAINER_GID": str(os.getgid()),
             "BH_SNAPSHOT_HOST_DIR": str(snapshot_dir),
@@ -319,7 +343,7 @@ def setup_node(
     *,
     input_fn: Any = input,
     output: Any = sys.stdout,
-) -> Path:
+) -> tuple[Path, bool]:
     if layout.node_env.exists():
         raise ValueError(
             f"node is already configured: {layout.node_env}; use set-role or activate-release"
@@ -357,11 +381,21 @@ def setup_node(
         input_fn=input_fn,
         output=output,
     )
+    ssh_port_text = _prompt(
+        "Operator SSH server port",
+        default=str(detect_ssh_server_port()),
+        input_fn=input_fn,
+    )
+    try:
+        ssh_port = _require_port("operator SSH port", int(ssh_port_text))
+    except ValueError as error:
+        raise ValueError("operator SSH port must be an integer between 1 and 65535") from error
     print("", file=output)
     print(f"Data root: {data_root.expanduser().resolve()}", file=output)
     print(f"Role: {role}", file=output)
     print("USDB P2P: public TCP/UDP 31303", file=output)
     print(f"Bitcoin P2P: {'public' if bitcoin_public else 'private'}", file=output)
+    print(f"Operator SSH port preserved by UFW: {ssh_port}", file=output)
     if not _prompt_yes_no(
         "Write this node configuration",
         default=True,
@@ -369,7 +403,7 @@ def setup_node(
         output=output,
     ):
         raise ValueError("setup cancelled; no configuration was written")
-    return configure_node(
+    path = configure_node(
         layout,
         data_root=data_root,
         role=role,
@@ -379,7 +413,15 @@ def setup_node(
         nat="",
         bitcoin_rpc_user=None,
         bitcoin_p2p="public" if bitcoin_public else "private",
+        ssh_port=ssh_port,
     )
+    apply_firewall = _prompt_yes_no(
+        "Apply and verify the UFW firewall profile now",
+        default=True,
+        input_fn=input_fn,
+        output=output,
+    )
+    return path, apply_firewall
 
 
 def set_role(
@@ -464,18 +506,91 @@ def run_helper(
     )
 
 
+def run_host_action(
+    layout: ReleaseLayout,
+    action: str,
+    *,
+    docker_user: str = "",
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    if action not in {"check", "install"}:
+        raise ValueError(f"unsupported host action: {action}")
+    arguments = [action]
+    if docker_user:
+        arguments.extend(["--docker-user", docker_user])
+    return run_helper(layout, "prepare_usdb_host.sh", arguments, check=check)
+
+
+def prepare_host(
+    layout: ReleaseLayout,
+    *,
+    docker_user: str,
+    input_fn: Any = input,
+    output: Any = sys.stdout,
+) -> None:
+    result = run_host_action(layout, "check", docker_user=docker_user, check=False)
+    if result.returncode == 0:
+        return
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise ValueError("host prerequisites failed; run 'usdb-node host install' explicitly")
+    if not _prompt_yes_no(
+        "Host prerequisites failed; install supported packages now",
+        default=False,
+        input_fn=input_fn,
+        output=output,
+    ):
+        raise ValueError("host preparation cancelled; no packages were installed")
+    run_host_action(layout, "install", docker_user=docker_user)
+
+
+def run_firewall_action(
+    layout: ReleaseLayout,
+    action: str,
+    *,
+    confirm: bool = False,
+    ssh_port: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if action not in {"check", "apply"}:
+        raise ValueError(f"unsupported firewall action: {action}")
+    env = read_env(layout.node_env)
+    configured_ssh_port = env.get("USDB_OPERATOR_SSH_PORT", "")
+    try:
+        effective_ssh_port = _require_port(
+            "operator SSH port",
+            ssh_port if ssh_port is not None else int(configured_ssh_port),
+        )
+    except ValueError as error:
+        raise ValueError("node configuration contains an invalid operator SSH port") from error
+    bitcoin_bind = env.get("BTC_P2P_BIND_ADDRESS", "")
+    if bitcoin_bind == "127.0.0.1":
+        bitcoin_p2p = "private"
+    elif bitcoin_bind == "0.0.0.0":
+        bitcoin_p2p = "public"
+    else:
+        raise ValueError("node configuration contains an invalid Bitcoin P2P bind address")
+    arguments = [
+        action,
+        "--node-env",
+        str(layout.node_env),
+        "--ssh-port",
+        str(effective_ssh_port),
+        "--bitcoin-p2p",
+        bitcoin_p2p,
+    ]
+    if confirm:
+        arguments.append("--confirm")
+    return run_helper(layout, "prepare_usdb_firewall.sh", arguments)
+
+
 def doctor(layout: ReleaseLayout) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
-    for command in ("docker", "python3", "curl"):
-        if shutil.which(command) is None:
-            raise ValueError(f"required command is not installed: {command}")
-    subprocess.run(["docker", "version"], check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["docker", "compose", "version"], check=True, stdout=subprocess.DEVNULL)
+    run_host_action(layout, "check", docker_user=default_docker_user())
     network = validate_network_bundle(layout.bundle_dir)
     validate_node_env(layout.node_env, network, True, True)
     _validate_node_release_images(layout)
     run_helper(layout, "run_testnet_runtime.sh", ["validate-node"])
+    run_firewall_action(layout, "check")
 
 
 def start_node(layout: ReleaseLayout, *, sync_timeout_secs: int, pull: bool) -> None:
@@ -514,6 +629,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    prepare_host_parser = subparsers.add_parser(
+        "prepare-host",
+        help="Check host prerequisites and offer explicit installation when needed",
+    )
+    prepare_host_parser.add_argument("--docker-user", default=default_docker_user())
+
+    host = subparsers.add_parser("host", help="Check or install host prerequisites")
+    host_actions = host.add_subparsers(dest="host_action", required=True)
+    for action in ("check", "install"):
+        host_action = host_actions.add_parser(action)
+        host_action.add_argument("--docker-user", default=default_docker_user())
+
     subparsers.add_parser("setup", help="Interactively create a safe node configuration")
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
@@ -528,6 +655,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="advanced override; defaults to a bundle- and host-scoped username",
     )
     configure.add_argument("--bitcoin-p2p", choices=("private", "public"), default="private")
+    configure.add_argument(
+        "--ssh-port",
+        type=int,
+        default=detect_ssh_server_port(),
+        help="host SSH server port preserved by the managed firewall profile",
+    )
 
     role = subparsers.add_parser("set-role", help="Update only the local full/bootnode/miner role")
     role.add_argument("--role", choices=("bootnode", "full", "miner"), required=True)
@@ -539,7 +672,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Update only release-owned image digests in existing private config",
     )
 
-    subparsers.add_parser("doctor", help="Validate release identity, local config and Docker")
+    subparsers.add_parser(
+        "doctor",
+        help="Read-only host, firewall, release identity and local configuration preflight",
+    )
+
+    firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
+    firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
+    firewall_check = firewall_actions.add_parser("check")
+    firewall_check.add_argument("--ssh-port", type=int)
+    firewall_apply = firewall_actions.add_parser("apply")
+    firewall_apply.add_argument("--ssh-port", type=int)
+    firewall_apply.add_argument("--confirm", action="store_true")
+
     up = subparsers.add_parser("up", help="Pull and start all services in readiness order")
     up.add_argument("--sync-timeout-secs", type=int, default=604800)
     up.add_argument("--skip-pull", action="store_true")
@@ -558,11 +703,22 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         layout = load_release_layout(args.kit_root, args.node_env)
-        if args.command == "setup":
+        if args.command == "prepare-host":
+            prepare_host(layout, docker_user=args.docker_user)
+            print("USDB host prerequisites are ready.")
+            print("If Docker group membership changed, start a new login session before doctor/up.")
+        elif args.command == "host":
+            run_host_action(layout, args.host_action, docker_user=args.docker_user)
+        elif args.command == "setup":
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise ValueError("setup requires an interactive terminal; use configure for automation")
-            path = setup_node(layout)
+            path, apply_firewall = setup_node(layout)
             print(f"Configured {layout.release_id} node: {path}")
+            if apply_firewall:
+                run_firewall_action(layout, "apply", confirm=True)
+                print("Applied and verified the host UFW firewall profile.")
+            else:
+                print("Firewall was not changed. Run 'usdb-node firewall apply --confirm' before startup.")
             print("Run usdb-node doctor, then usdb-node up.")
         elif args.command == "configure":
             path = configure_node(
@@ -575,6 +731,7 @@ def main() -> int:
                 nat=args.nat,
                 bitcoin_rpc_user=args.bitcoin_rpc_user,
                 bitcoin_p2p=args.bitcoin_p2p,
+                ssh_port=args.ssh_port,
             )
             print(f"Configured {layout.release_id} node: {path}")
             print("Bitcoin RPC credentials were generated locally and were not printed.")
@@ -592,6 +749,15 @@ def main() -> int:
         elif args.command == "doctor":
             doctor(layout)
             print(f"USDB node preflight passed: {layout.release_id}")
+        elif args.command == "firewall":
+            if args.firewall_action == "apply" and not args.confirm:
+                raise ValueError("firewall apply requires --confirm")
+            run_firewall_action(
+                layout,
+                args.firewall_action,
+                confirm=getattr(args, "confirm", False),
+                ssh_port=args.ssh_port,
+            )
         elif args.command == "up":
             if args.sync_timeout_secs <= 0:
                 raise ValueError("sync timeout must be positive")

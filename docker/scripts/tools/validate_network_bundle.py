@@ -600,6 +600,9 @@ def validate_node_env(
         "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",
     )
     require(env.get("BTC_P2P_BIND_PORT", "8333") == "8333", "Bitcoin mainnet P2P bind port must be 8333")
+    ssh_port = env.get("USDB_OPERATOR_SSH_PORT", "")
+    require(re.fullmatch(r"[0-9]+", ssh_port) is not None, "USDB_OPERATOR_SSH_PORT must be a decimal port")
+    require(1 <= int(ssh_port) <= 65535, "USDB_OPERATOR_SSH_PORT must be between 1 and 65535")
 
     role = env.get("USDB_NODE_ROLE", "full")
     require(role in {"bootnode", "full", "miner"}, "unsupported USDB_NODE_ROLE")

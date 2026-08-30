@@ -35,13 +35,19 @@ Ubuntu 24.04 是当前优先验证的运维基线，但不是协议或运行时�
 
 ## 3. 工具接口
 
-工具位于：
+Release node kit 安装后，首选统一入口：
 
-```text
-docker/scripts/tools/prepare_usdb_host.sh
+```bash
+usdb-node prepare-host
+usdb-node host check
+usdb-node host install
 ```
 
-只读检查：
+`prepare-host` 先运行只读检查，仅在失败时询问是否安装。`host check/install` 是无人值守和故障排查入口；
+非 root 运行时默认检查当前用户的 Docker group membership。底层实现仍是 node kit 内的
+`docker/scripts/tools/prepare_usdb_host.sh`。
+
+源码 checkout 或 node kit 尚不可用时，可以直接执行底层只读检查：
 
 ```bash
 docker/scripts/tools/prepare_usdb_host.sh check
@@ -55,7 +61,7 @@ docker/scripts/tools/prepare_usdb_host.sh check --docker-user usdb
 - Docker daemon、Linux engine 类型和 cgroup v1/v2；
 - 可选运行用户的 `docker` 组成员关系。
 
-自动安装：
+底层自动安装：
 
 ```bash
 sudo docker/scripts/tools/prepare_usdb_host.sh install --docker-user usdb
@@ -96,16 +102,15 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 
 ## 5. 防火墙准备
 
-软件准备工具不会修改防火墙。生成该网络的私有 `node.env` 后，使用独立的
-`prepare_usdb_firewall.sh` 同时校验 Docker bind address 和 UFW：
+软件准备工具不会修改防火墙。Release node kit 的 `setup` 生成私有 `node.env`、检测并确认 SSH port 后，
+默认询问是否应用 UFW。跳过时使用统一入口：
 
 ```bash
-sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port <actual-ssh-port> \
-  --bitcoin-p2p private \
-  --confirm
+usdb-node firewall apply --confirm
+usdb-node firewall check
 ```
+
+`doctor` 会再次执行同一只读 firewall check。源码 checkout 的直接脚本接口保留为手工回退路径。
 
 测试网和正式网共用该工具，但具体端口和 public/private P2P 决策必须服从对应 network bundle 与
 发布手册。完整边界见 [USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)。
