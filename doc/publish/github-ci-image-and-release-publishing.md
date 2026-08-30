@@ -280,7 +280,7 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 2. 下载原 candidate archive，并校验 GitHub Actions artifact digest、archive 文件集合和 manifest checksum；
 3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest 和 network bundle；
 4. 再次验证三张 digest-pinned OCI image 的 signer workflow、source revision 和 provenance；
-5. 从 tagged public network bundle 生成时间、owner 和文件顺序稳定的 `.tar.gz` 及 SHA-256；
+5. 从 tagged source 生成稳定的 public network bundle、self-contained node kit 及 SHA-256；
 6. testnet 创建 prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
 7. release 已存在时只允许 title、notes、flags、完整 asset 集合和每个 SHA-256 全部一致，否则 fail closed。
 
@@ -289,7 +289,17 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 - `usdb-release-manifest.json`；
 - `usdb-release-manifest.json.sha256`；
 - `<release_id>-network-bundle.tar.gz`；
-- `<release_id>-network-bundle.tar.gz.sha256`。
+- `<release_id>-network-bundle.tar.gz.sha256`；
+- `<release_id>-node-kit.tar.gz`；
+- `<release_id>-node-kit.tar.gz.sha256`；
+- `install-<release_id>.sh`；
+- `install-<release_id>.sh.sha256`；
+- `install-usdb-node.sh`；
+- `install-usdb-node.sh.sha256`。
+
+node kit 内含 release manifest、network bundle、部署 Compose 和 `usdb-node` 控制器。它将 image digest
+和服务顺序从人工输入改为 release-owned 输入，但仍不包含 secret、snapshot 或节点数据。安装和运行
+流程见 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
 正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。private key、RPC credential、
 节点本地 `node.env` 和实际 snapshot 大文件不得进入 GitHub Release。使用 snapshot 时仍需补 snapshot

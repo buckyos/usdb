@@ -41,6 +41,12 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         env = read_env(ROOT / "docker/networks/testnet-v0/node.env.example")
         network_env = read_env(ROOT / "docker/networks/testnet-v0/network.env")
         self.assertEqual(env["BTC_RPC_URL"], "http://btc-node:8332")
+        self.assertEqual(env["USDB_DATA_ROOT"], "/home/usdb/.usdb")
+        self.assertEqual(env["BTC_NODE_DATA_HOST_DIR"], "/home/usdb/.usdb/bitcoin/mainnet")
+        self.assertEqual(env["BH_DATA_HOST_DIR"], "/home/usdb/.usdb/balance-history")
+        self.assertEqual(env["USDB_INDEXER_DATA_HOST_DIR"], "/home/usdb/.usdb/usdb-indexer")
+        self.assertEqual(env["USDB_CHAIN_DATA_HOST_DIR"], "/home/usdb/.usdb/usdb-chain")
+        self.assertEqual(env["CONTROL_PLANE_DATA_HOST_DIR"], "/home/usdb/.usdb/control-plane")
         self.assertEqual(network_env["BTC_MIN_READY_HEIGHT"], "963800")
         self.assertEqual(network_env["BTC_MAX_TIP_AGE_SECS"], "7200")
         self.assertEqual(network_env["BTC_MIN_CONNECTIONS"], "1")
@@ -77,6 +83,17 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
             content,
         )
         self.assertIn("SNAPSHOT_MODE: ${SNAPSHOT_MODE:-none}", content)
+        for host_key, container_path in (
+            ("BH_DATA_HOST_DIR", "/data/balance-history"),
+            ("USDB_INDEXER_DATA_HOST_DIR", "/data/usdb-indexer"),
+            ("USDB_CHAIN_DATA_HOST_DIR", "/data/usdb-chain"),
+            ("CONTROL_PLANE_DATA_HOST_DIR", "/data/usdb-control-plane"),
+        ):
+            self.assertIn(f"${{{host_key}:?{host_key} is required}}:{container_path}", content)
+        self.assertNotIn("balance-history-data:", content)
+        self.assertNotIn("usdb-indexer-data:", content)
+        self.assertNotIn("usdb-chain-data:", content)
+        self.assertNotIn("control-plane-data:", content)
 
     def test_runtime_runner_exposes_phased_data_start(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(encoding="utf-8")

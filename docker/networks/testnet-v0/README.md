@@ -47,34 +47,21 @@
 3. 默认使用 `SNAPSHOT_MODE=none`，balance-history 从 BTC 创世全量同步；signed snapshot 是以后可选的节点加速路径。
 4. 确认本机至少 32 GiB 内存；共机模板为 Bitcoin `5g`、balance-history `12g`，全部服务 hard limit 合计 `27g`。
 
-初始化私有节点配置：
+发布节点优先从 GitHub Release node kit 安装，不再 clone 仓库或手工填写 image digest：
 
 ```bash
-cd /home/bucky/work/usdb
-docker/scripts/tools/run_testnet_runtime.sh init-env
+bash <(curl -fsSL \
+  "https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r1/install-usdb-testnet-v0-r1.sh")
+export PATH="${HOME}/.local/bin:${PATH}"
+usdb-node setup
+usdb-node doctor
+usdb-node up
 ```
 
-先编辑 `docker/networks/testnet-v0/node.env` 中的 image、Bitcoin 数据/rpcauth 路径和节点参数，保留
-RPC user/password 为空并生成专用凭据：
-
-```bash
-docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet
-```
-
-把命令只输出一次的 username/password 写回 `node.env`，然后执行：
-
-```bash
-docker/scripts/tools/run_testnet_bitcoin.sh up
-docker/scripts/tools/run_testnet_bitcoin.sh status
-docker/scripts/tools/run_testnet_runtime.sh validate-node
-docker/scripts/tools/run_testnet_runtime.sh up-data
-docker/scripts/tools/run_testnet_runtime.sh wait-data 604800
-docker/scripts/tools/run_testnet_runtime.sh up
-docker/scripts/tools/run_testnet_runtime.sh ps
-```
-
-Bitcoin `up` 会等待 mainnet full sync 和 txindex 同高度。`up-data` 只启动 balance-history；`up`
-要求 balance-history consensus-ready，再启动并等待 indexer，最后才启动 USDB chain。
+`usdb-node setup` 从 release manifest 写入三张 image digest，并在本机生成 Bitcoin RPC secret；
+`usdb-node up` 依次等待 Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
+中断后重复执行会从现有数据继续。详细契约见
+[`doc/publish/usdb-release-node-kit-and-deployment.md`](../../../doc/publish/usdb-release-node-kit-and-deployment.md)。
 共享 runtime 默认把每个容器的 JSON log 限制为 `5 x 100 MiB`，并给长服务 2 分钟优雅停止时间；
 这些是节点运行参数，不进入链共识身份。
 

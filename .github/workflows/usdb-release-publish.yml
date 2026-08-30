@@ -329,7 +329,38 @@ jobs:
             --owner=0 --group=0 --numeric-owner \
             -C "$bundle_parent" -cf - "$bundle_name" | gzip -n >"dist/$archive"
           (cd dist && sha256sum "$archive" >"${archive}.sha256")
-          echo "archive=$archive" >>"$GITHUB_OUTPUT"
+
+          node_kit_archive="${RELEASE_ID}-node-kit.tar.gz"
+          node_kit_root="release-node-kit/usdb-node-kit"
+          python3 usdb/docker/scripts/tools/prepare_release_node_kit.py \
+            --repository-root usdb \
+            --bundle-dir "$BUNDLE_DIR" \
+            --manifest candidate/usdb-release-manifest.json \
+            --manifest-checksum candidate/usdb-release-manifest.json.sha256 \
+            --output-dir "$node_kit_root"
+          tar --sort=name --mtime="@${tagger_epoch}" \
+            --owner=0 --group=0 --numeric-owner \
+            -C release-node-kit -cf - usdb-node-kit | \
+            gzip -n >"dist/${node_kit_archive}"
+          (cd dist && sha256sum "$node_kit_archive" >"${node_kit_archive}.sha256")
+
+          cp usdb/docker/scripts/tools/install_usdb_node.sh dist/
+          chmod 0755 dist/install_usdb_node.sh
+          (cd dist && sha256sum install_usdb_node.sh >install_usdb_node.sh.sha256)
+
+          release_installer="install-${RELEASE_ID}.sh"
+          python3 usdb/docker/scripts/tools/prepare_release_installer.py \
+            --release-id "$RELEASE_ID" \
+            --installer dist/install_usdb_node.sh \
+            --manifest dist/usdb-release-manifest.json \
+            --node-kit "dist/${node_kit_archive}" \
+            --output "dist/${release_installer}"
+          (cd dist && sha256sum "$release_installer" >"${release_installer}.sha256")
+          {
+            echo "archive=$archive"
+            echo "node_kit_archive=$node_kit_archive"
+            echo "release_installer=$release_installer"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Create deterministic release notes
         shell: bash
@@ -373,6 +404,17 @@ jobs:
           Nodes must deploy from the attached manifest and public network bundle. Do not
           substitute mutable image tags or local configuration. Private keys, RPC credentials,
           and node-local \`node.env\` files are intentionally excluded.
+
+          The attached node kit contains the validated network bundle, release manifest,
+          Compose definitions, and the \`usdb-node\` deployment controller. It does not
+          contain secrets or node data.
+
+          Release-bound installer:
+
+          \`bash <(curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_ID}/install-${RELEASE_ID}.sh)\`
+
+          For mainnet, download the script and its SHA-256 asset, verify and review it
+          before execution instead of using process substitution.
           EOF
 
       - name: Publish or verify immutable GitHub Release
@@ -380,6 +422,8 @@ jobs:
         shell: bash
         env:
           ARCHIVE: ${{ steps.assets.outputs.archive }}
+          NODE_KIT_ARCHIVE: ${{ steps.assets.outputs.node_kit_archive }}
+          RELEASE_INSTALLER: ${{ steps.assets.outputs.release_installer }}
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           RELEASE_ID: ${{ inputs.release_id }}
@@ -391,6 +435,12 @@ jobs:
             dist/usdb-release-manifest.json.sha256
             "dist/${ARCHIVE}"
             "dist/${ARCHIVE}.sha256"
+            "dist/${NODE_KIT_ARCHIVE}"
+            "dist/${NODE_KIT_ARCHIVE}.sha256"
+            dist/install_usdb_node.sh
+            dist/install_usdb_node.sh.sha256
+            "dist/${RELEASE_INSTALLER}"
+            "dist/${RELEASE_INSTALLER}.sha256"
           )
           prerelease_args=()
           verify_args=()
@@ -438,6 +488,12 @@ jobs:
             --asset "${assets[1]}" \
             --asset "${assets[2]}" \
             --asset "${assets[3]}" \
+            --asset "${assets[4]}" \
+            --asset "${assets[5]}" \
+            --asset "${assets[6]}" \
+            --asset "${assets[7]}" \
+            --asset "${assets[8]}" \
+            --asset "${assets[9]}" \
             "${verify_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
 

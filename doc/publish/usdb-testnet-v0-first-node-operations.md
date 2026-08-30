@@ -168,6 +168,47 @@ development fixture、testnet signer、未来 mainnet signer 必须是三个独�
 
 ## 5. 首节点安装
 
+### 5.1 推荐：Release Node Kit
+
+发布完成后不再读取 commit、clone 仓库、填写 asset base URL 或手工复制三个 image digest。每个
+release 都有绑定自身 RID 和 SHA-256 的唯一安装脚本：
+
+```bash
+bash <(curl -fsSL \
+  "https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r1/install-usdb-testnet-v0-r1.sh")
+export PATH="${HOME}/.local/bin:${PATH}"
+```
+
+生成节点私有配置。该命令自动写入 manifest 中的 image digest、创建数据目录、生成 Bitcoin RPC
+password/rpcauth，并保持 operator RPC 只监听 loopback：
+
+```bash
+usdb-node setup
+usdb-node doctor
+```
+
+向导默认选择 `/home/usdb/.usdb`、full role 和 private Bitcoin P2P。RPC username 自动使用
+bundle ID 与 hostname 派生，password 自动生成。只有角色、miner 地址、bootnode 和确实需要开放
+Bitcoin 入站时才需要运维输入。专用数据盘可在向导中选择 `/data/usdb`。
+
+配置防火墙后，一条命令完成拉取镜像和 readiness-ordered 启动：
+
+```bash
+sudo "/home/usdb/.local/share/usdb/releases/usdb-testnet-v0-r1/docker/scripts/tools/prepare_usdb_firewall.sh" apply \
+  --node-env /home/usdb/.config/usdb/usdb-testnet-v0/node.env \
+  --ssh-port <actual-ssh-port> \
+  --bitcoin-p2p private \
+  --confirm
+usdb-node up
+usdb-node status
+```
+
+SSH 中断不会删除数据。重新执行 `usdb-node up` 会从 Bitcoin/balance-history 的现有同步状态继续。
+SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
+[Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
+
+### 5.2 手工回退路径
+
 以下命令以独立系统用户 `usdb` 执行：
 
 ```bash
@@ -191,6 +232,9 @@ docker login ghcr.io
 
 ## 6. 节点私有配置
 
+本节以及第 7 至第 9 节保留为手工回退和故障排查参考。使用 node kit 时，`usdb-node setup`
+已经完成本节，`usdb-node up` 会执行后续服务顺序，不要再手工生成第二份 `node.env` 或 RPC secret。
+
 ```bash
 cd "/home/usdb/releases/${RELEASE_ID}/usdb"
 docker/scripts/tools/run_testnet_runtime.sh init-env
@@ -204,6 +248,13 @@ USDB_SERVICES_IMAGE=ghcr.io/buckyos/usdb-services@sha256:<digest>
 USDB_CHAIN_IMAGE=ghcr.io/buckyos/usdb-chain@sha256:<digest>
 USDB_BITCOIN_IMAGE=ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
 
+USDB_DATA_ROOT=/home/usdb/.usdb
+BTC_NODE_DATA_HOST_DIR=/home/usdb/.usdb/bitcoin/mainnet
+BH_DATA_HOST_DIR=/home/usdb/.usdb/balance-history
+USDB_INDEXER_DATA_HOST_DIR=/home/usdb/.usdb/usdb-indexer
+USDB_CHAIN_DATA_HOST_DIR=/home/usdb/.usdb/usdb-chain
+CONTROL_PLANE_DATA_HOST_DIR=/home/usdb/.usdb/control-plane
+
 SNAPSHOT_MODE=none
 BH_SNAPSHOT_FILE=
 BH_SNAPSHOT_MANIFEST=
@@ -215,6 +266,10 @@ USDB_NODE_ROLE=full
 ```bash
 install -d -m 0700 /home/usdb/.usdb/secure
 install -d -m 0700 /home/usdb/.usdb/bitcoin/mainnet
+install -d -m 0700 /home/usdb/.usdb/balance-history
+install -d -m 0700 /home/usdb/.usdb/usdb-indexer
+install -d -m 0700 /home/usdb/.usdb/usdb-chain
+install -d -m 0700 /home/usdb/.usdb/control-plane
 install -d -m 0755 /home/usdb/.usdb/releases/balance-history
 ```
 
@@ -273,7 +328,7 @@ docker/scripts/tools/run_testnet_runtime.sh data-status
 ```
 
 runtime 会把 Bitcoin 数据目录只读挂载为 `/data/bitcoin`，落后超过 500 块时使用 LocalLoader。
-同步数据保存在 Compose named volume 中，重启或 `down` 不会删除。
+同步数据保存在 `USDB_DATA_ROOT/balance-history` bind mount 中，重启或 `down` 不会删除。
 
 等待完整共识状态：
 
@@ -329,7 +384,20 @@ curl -fsS -H 'content-type: application/json' \
 `Active + Standard` pass，并记录返回的具体 pass ID、matching count 和 state identity。该 pass
 后续 consume/remint 时，只要新 pass 保持同一 `usdb_main`，miner 会自动跟随；改地址则停止组块。
 
-修改 `node.env`：
+确认 candidate 后切换节点角色：
+
+使用 node kit 时执行：
+
+```bash
+usdb-node set-role \
+  --role miner \
+  --miner-address <stable-usdb-main-address> \
+  --miner-threads 1
+usdb-node up
+usdb-node logs usdb-chain
+```
+
+以下是手工回退路径对应的 `node.env` 修改：
 
 ```text
 USDB_NODE_ROLE=miner
@@ -387,17 +455,15 @@ state file 和 strict validation report。
 
 ## 12. Restart 与故障处理
 
-安全重启：
+使用 node kit 安全重启：
 
 ```bash
-docker/scripts/tools/run_testnet_runtime.sh down
-docker/scripts/tools/run_testnet_runtime.sh up-data
-docker/scripts/tools/run_testnet_runtime.sh wait-data 3600
-docker/scripts/tools/run_testnet_runtime.sh up
+usdb-node down
+usdb-node up
 ```
 
-Bitcoin 独立运行，不会被 runtime `down` 停止。不要执行 `docker compose down -v`、删除 named volume、
-删除 Bitcoin 数据目录或替换 genesis。发现以下任一情况时停止 miner 并保留现场：
+Bitcoin 独立运行，不会被默认 `down` 停止。不要删除 `USDB_DATA_ROOT` 下的服务目录、Bitcoin 数据目录
+或替换 genesis。发现以下任一情况时停止 miner 并保留现场：
 
 - genesis/chain ID 不一致；
 - BTC 或 indexer `consensus_ready=false`；
@@ -411,7 +477,7 @@ testnet-v0 默认启用 deep-reorg guard。每个节点在
 写入 `halted.json`、停止 geth，并保持容器处于无 RPC 的 halted 状态。普通 restart 不会删除 latch。
 
 测试网允许重置，但重置必须使用新的 network generation `vN`，记录旧节点最后区块/hash，并由负责人
-批准归档旧 chain volume。不得把同一 genesis 下的 `rN` 更新当成深重组恢复，也不得直接删除
+批准归档旧 `USDB_DATA_ROOT/usdb-chain` 目录。不得把同一 genesis 下的 `rN` 更新当成深重组恢复，也不得直接删除
 `halted.json` 后续跑旧链。具体步骤见
 [深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)。
 

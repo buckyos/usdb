@@ -35,6 +35,7 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def write_node_env(self, **overrides: str) -> Path:
+        data_root = self.root / "node-data"
         values = {
             "USDB_SERVICES_IMAGE": "ghcr.io/buckyos/usdb-services@sha256:" + "a" * 64,
             "USDB_CHAIN_IMAGE": "ghcr.io/buckyos/usdb-chain@sha256:" + "b" * 64,
@@ -45,7 +46,12 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_RPC_PASSWORD": "test-password",
             "BTC_P2P_BIND_ADDRESS": "127.0.0.1",
             "BTC_P2P_BIND_PORT": "8333",
-            "BTC_NODE_DATA_HOST_DIR": str(self.root / "bitcoin"),
+            "USDB_DATA_ROOT": str(data_root),
+            "BTC_NODE_DATA_HOST_DIR": str(data_root / "bitcoin/mainnet"),
+            "BH_DATA_HOST_DIR": str(data_root / "balance-history"),
+            "USDB_INDEXER_DATA_HOST_DIR": str(data_root / "usdb-indexer"),
+            "USDB_CHAIN_DATA_HOST_DIR": str(data_root / "usdb-chain"),
+            "CONTROL_PLANE_DATA_HOST_DIR": str(data_root / "control-plane"),
             "BTC_RPCAUTH_HOST_FILE": str(self.root / "bitcoin-rpcauth"),
             "USDB_NODE_ROLE": "full",
             "USDB_P2P_BIND_ADDRESS": "0.0.0.0",
@@ -62,6 +68,10 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
         }
         values.update(overrides)
+        for key in VALIDATOR.PERSISTENT_DATA_PATHS:
+            candidate = Path(values[key])
+            if candidate.is_absolute():
+                candidate.mkdir(parents=True, exist_ok=True)
         path = self.root / "node.env"
         path.write_text("".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
         return path
@@ -498,30 +508,30 @@ class NetworkBundleValidatorTests(unittest.TestCase):
 
     def test_bitcoin_runtime_requires_private_full_node_paths(self) -> None:
         path = self.write_node_env()
-        bitcoin_dir = self.root / "bitcoin"
-        bitcoin_dir.mkdir()
         self.write_rpcauth()
         self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_public_auth_file(self) -> None:
         path = self.write_node_env()
-        (self.root / "bitcoin").mkdir()
         self.write_rpcauth(0o644)
         with self.assertRaisesRegex(ValueError, "group/world accessible"):
             self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_password_mismatch(self) -> None:
         path = self.write_node_env(BTC_RPC_PASSWORD="wrong-password")
-        (self.root / "bitcoin").mkdir()
         self.write_rpcauth()
         with self.assertRaisesRegex(ValueError, "does not match RPC password"):
             self.validate_node_env(path, False, True)
 
     def test_bitcoin_runtime_rejects_relative_data_path(self) -> None:
         path = self.write_node_env(BTC_NODE_DATA_HOST_DIR="relative/bitcoin")
-        self.write_rpcauth()
         with self.assertRaisesRegex(ValueError, "must be an absolute path"):
-            self.validate_node_env(path, False, True)
+            self.validate_node_env(path, False)
+
+    def test_rejects_persistent_data_path_outside_root(self) -> None:
+        path = self.write_node_env(BH_DATA_HOST_DIR=str(self.root / "other-balance-history"))
+        with self.assertRaisesRegex(ValueError, "derived from USDB_DATA_ROOT"):
+            self.validate_node_env(path, False)
 
 
 if __name__ == "__main__":

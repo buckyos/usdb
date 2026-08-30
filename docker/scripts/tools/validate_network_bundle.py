@@ -26,6 +26,13 @@ KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
         "0xabcd35afbb4561213feaff01b5f91e18f8df7c37",
     }
 )
+PERSISTENT_DATA_PATHS = {
+    "BTC_NODE_DATA_HOST_DIR": "bitcoin/mainnet",
+    "BH_DATA_HOST_DIR": "balance-history",
+    "USDB_INDEXER_DATA_HOST_DIR": "usdb-indexer",
+    "USDB_CHAIN_DATA_HOST_DIR": "usdb-chain",
+    "CONTROL_PLANE_DATA_HOST_DIR": "control-plane",
+}
 
 
 def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -577,6 +584,17 @@ def validate_node_env(
     require(bool(env.get("BTC_RPC_USER")), "BTC_RPC_USER is required")
     require(bool(env.get("BTC_RPC_PASSWORD")), "BTC_RPC_PASSWORD is required")
     require(env.get("BTC_RPC_URL") == "http://btc-node:8332", "BTC_RPC_URL must use the private btc-node endpoint")
+    data_root = Path(env.get("USDB_DATA_ROOT", ""))
+    require(data_root.is_absolute(), "USDB_DATA_ROOT must be an absolute path")
+    for key, relative_path in PERSISTENT_DATA_PATHS.items():
+        path_value = Path(env.get(key, ""))
+        require(path_value.is_absolute(), f"{key} must be an absolute path")
+        require(
+            path_value == data_root / relative_path,
+            f"{key} must be derived from USDB_DATA_ROOT",
+        )
+        if require_runtime:
+            require(path_value.is_dir(), f"persistent data directory does not exist: {path_value}")
     require(
         env.get("BTC_P2P_BIND_ADDRESS") in {"127.0.0.1", "0.0.0.0"},
         "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",
@@ -606,7 +624,6 @@ def validate_node_env(
         require(env.get(key) == "127.0.0.1", f"{key} must be loopback-only")
     if require_bitcoin_runtime:
         data_dir = Path(env.get("BTC_NODE_DATA_HOST_DIR", ""))
-        require(data_dir.is_absolute(), "BTC_NODE_DATA_HOST_DIR must be an absolute path")
         require(data_dir.is_dir(), f"Bitcoin data directory does not exist: {data_dir}")
         rpcauth_file = Path(env.get("BTC_RPCAUTH_HOST_FILE", ""))
         require(rpcauth_file.is_absolute(), "BTC_RPCAUTH_HOST_FILE must be an absolute path")

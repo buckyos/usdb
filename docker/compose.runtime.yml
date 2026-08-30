@@ -57,8 +57,8 @@ services:
       USDB_CHAIN_ID: ${USDB_CHAIN_ID:?USDB_CHAIN_ID is required}
       USDB_GENESIS_BLOCK_HEIGHT: ${USDB_GENESIS_BLOCK_HEIGHT:?USDB_GENESIS_BLOCK_HEIGHT is required}
     volumes:
-      - balance-history-data:/data/balance-history
-      - usdb-indexer-data:/data/usdb-indexer
+      - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history
+      - ${USDB_INDEXER_DATA_HOST_DIR:?USDB_INDEXER_DATA_HOST_DIR is required}:/data/usdb-indexer
       - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     mem_limit: ${BH_MEMORY_LIMIT:-20g}
@@ -74,7 +74,7 @@ services:
       WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-300}
       BH_EXTRA_ARGS: ${BH_EXTRA_ARGS:-}
     volumes:
-      - balance-history-data:/data/balance-history
+      - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history
       - ${BTC_NODE_DATA_HOST_DIR:?BTC_NODE_DATA_HOST_DIR is required}:/data/bitcoin:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     ports:
@@ -109,7 +109,7 @@ services:
       WAIT_FOR_BTC_TIMEOUT_SECS: ${WAIT_FOR_BTC_TIMEOUT_SECS:-300}
       USDB_INDEXER_EXTRA_ARGS: ${USDB_INDEXER_EXTRA_ARGS:-}
     volumes:
-      - usdb-indexer-data:/data/usdb-indexer
+      - ${USDB_INDEXER_DATA_HOST_DIR:?USDB_INDEXER_DATA_HOST_DIR is required}:/data/usdb-indexer
     ports:
       - "${USDB_INDEXER_BIND_ADDRESS:-127.0.0.1}:${USDB_INDEXER_BIND_PORT:-28020}:28020"
     mem_limit: ${USDB_INDEXER_MEMORY_LIMIT:-4g}
@@ -139,7 +139,7 @@ services:
       USDB_GENESIS_FILE: /network/usdb-genesis.json
       USDB_GENESIS_MANIFEST_FILE: /network/usdb-genesis.manifest.json
     volumes:
-      - usdb-chain-data:/data/usdb-chain
+      - ${USDB_CHAIN_DATA_HOST_DIR:?USDB_CHAIN_DATA_HOST_DIR is required}:/data/usdb-chain
       - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
     networks:
       - usdb-runtime
@@ -162,7 +162,7 @@ services:
       BALANCE_HISTORY_RPC_URL: http://balance-history:28010
       USDB_CHECKPOINT_RECOVERY_TIMEOUT_SECS: ${USDB_CHECKPOINT_RECOVERY_TIMEOUT_SECS:-300}
     volumes:
-      - usdb-indexer-data:/data/usdb-indexer
+      - ${USDB_INDEXER_DATA_HOST_DIR:?USDB_INDEXER_DATA_HOST_DIR is required}:/data/usdb-indexer
       - ${BH_SNAPSHOT_HOST_DIR:?BH_SNAPSHOT_HOST_DIR is required}:/snapshots:ro
       - ${BH_SNAPSHOT_TRUST_HOST_DIR:?BH_SNAPSHOT_TRUST_HOST_DIR is required}:/run/usdb/keys:ro
     mem_limit: ${USDB_CHECKPOINT_VERIFY_MEMORY_LIMIT:-1g}
@@ -213,7 +213,7 @@ services:
       USDB_MINER_THREADS: ${USDB_MINER_THREADS:-1}
       USDB_CHAIN_EXTRA_ARGS: ${USDB_CHAIN_EXTRA_ARGS:-}
     volumes:
-      - usdb-chain-data:/data/usdb-chain
+      - ${USDB_CHAIN_DATA_HOST_DIR:?USDB_CHAIN_DATA_HOST_DIR is required}:/data/usdb-chain
       - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
     ports:
       - "${USDB_HTTP_BIND_ADDRESS:-127.0.0.1}:${USDB_HTTP_BIND_PORT:-8545}:8545"
@@ -258,9 +258,9 @@ services:
       CONTROL_PLANE_SOURCEDAO_WEB_URL: ${CONTROL_PLANE_SOURCEDAO_WEB_URL:-}
       CONTROL_PLANE_EXTRA_ARGS: ${CONTROL_PLANE_EXTRA_ARGS:-}
     volumes:
-      - control-plane-data:/data/usdb-control-plane
-      - balance-history-data:/data/balance-history:ro
-      - usdb-chain-data:/data/usdb-chain:ro
+      - ${CONTROL_PLANE_DATA_HOST_DIR:?CONTROL_PLANE_DATA_HOST_DIR is required}:/data/usdb-control-plane
+      - ${BH_DATA_HOST_DIR:?BH_DATA_HOST_DIR is required}:/data/balance-history:ro
+      - ${USDB_CHAIN_DATA_HOST_DIR:?USDB_CHAIN_DATA_HOST_DIR is required}:/data/usdb-chain:ro
       - ${USDB_NETWORK_ARTIFACTS_DIR:?USDB_NETWORK_ARTIFACTS_DIR is required}:/network:ro
     ports:
       - "${CONTROL_PLANE_BIND_ADDRESS:-127.0.0.1}:${CONTROL_PLANE_BIND_PORT:-28040}:28040"
@@ -271,12 +271,6 @@ services:
       timeout: 3s
       retries: 20
       start_period: 30s
-
-volumes:
-  balance-history-data:
-  usdb-indexer-data:
-  usdb-chain-data:
-  control-plane-data:
 
 networks:
   usdb-runtime:

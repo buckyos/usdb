@@ -24,7 +24,7 @@ Actions:
   wait-data      Wait for balance-history consensus readiness; timeout is the first argument.
   up             Require ready balance-history, start/wait for usdb-indexer, then start the chain.
   indexer-status Print the current usdb-indexer readiness response.
-  down           Stop containers without deleting named volumes.
+  down           Stop containers without deleting bind-mounted node data.
   ps             Show service state.
   logs           Follow service logs.
   pull           Pull the explicitly configured release images.
