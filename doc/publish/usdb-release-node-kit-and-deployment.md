@@ -34,7 +34,7 @@ node kit 是自包含的部署控制面，包含：
 - 对应 network bundle；
 - `compose.bitcoin.yml` 和 `compose.runtime.yml`；
 - network、release 和 readiness validators；
-- `usdb-node`、Bitcoin/runtime helper、主机与防火墙工具。
+- `usdb-node`、Bitcoin/runtime helper、主机、防火墙和 snapshot download/install 工具。
 
 节点不再 clone Git 仓库，也不根据 source revision 构建镜像。Node kit 不包含容器 image、secret、
 snapshot 大文件或任何节点数据库。
@@ -109,6 +109,19 @@ P2P 和 operator API 的实际 bind policy。高级入口为 `usdb-node firewall
 `usdb-node firewall apply --confirm`；`--ssh-port` 仅用于显式覆盖已经保存的端口。
 
 `setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。角色切换使用 `set-role`，不重新生成 secret。
+
+正式 snapshot 是可选启动加速器。取得经过 review 的 content-addressed record URL 后，在第一次
+`up` 前执行：
+
+```bash
+usdb-node snapshot install --record-url \
+  https://usdb-snapshot.tbudr.top/snapshot-records/v1/<record-sha256>.json
+```
+
+该命令不需要 S3 凭证；它先校验小 record 与 bundle trusted-key catalog，再断点下载大文件、逐文件
+校验、原子发布并更新 `node.env`。snapshot 高度高于当前 bundle index origin、network/catalog 不匹配、
+或 balance-history DB 已初始化时都会失败关闭。完整操作见
+[Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
 
 `doctor` 是一次性、只读的启动前检查，不是后台健康监控服务。它会检查：
 
@@ -247,6 +260,7 @@ SourceDAO bootstrap 保持独立，是因为 node kit 不应接触管理员私�
 - 配置拒绝覆盖和 role 原子更新；
 - Bitcoin/runtime 启动调用顺序；
 - installer checksum、release identity 和幂等安装。
+- snapshot content-addressed record、断点 staging、原子选择和已有 DB 拒绝。
 
-仍需在新 release ID 上完成 GitHub workflow 产物检查，并在空白目标机执行一次从 installer 到三类
-image、Bitcoin IBD/resume 和完整 runtime readiness 的跨进程 E2E。
+仍需在新 release ID 上完成 GitHub workflow 产物检查，并在空白目标机执行一次从 installer、可选
+R2 snapshot 到三类 image、Bitcoin IBD/resume 和完整 runtime readiness 的跨进程 E2E。

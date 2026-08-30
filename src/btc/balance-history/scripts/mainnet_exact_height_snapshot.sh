@@ -23,11 +23,19 @@ BITCOIND="${BITCOIND:-${BITCOIN_BIN_DIR}/bitcoind}"
 
 BALANCE_HISTORY="${BALANCE_HISTORY_BIN:-${REPO_ROOT}/src/btc/target/release/balance-history}"
 SNAPSHOT_TOOL="${SNAPSHOT_TOOL_BIN:-${REPO_ROOT}/src/btc/target/release/balance-history-snapshot-tool}"
+DISTRIBUTION_TOOL="${SNAPSHOT_DISTRIBUTION_TOOL:-${REPO_ROOT}/docker/scripts/tools/snapshot_distribution.py}"
 SIGNER_ID="${SNAPSHOT_SIGNER_ID:-usdb-mainnet-snapshot-v1}"
 MIN_CONFIRMATIONS="${SNAPSHOT_MIN_CONFIRMATIONS:-144}"
 POLL_INTERVAL_SECS="${SNAPSHOT_POLL_INTERVAL_SECS:-30}"
 CACHE_BUDGET_PERCENT="${SNAPSHOT_CACHE_BUDGET_PERCENT:-66}"
 MAX_MEMORY_PERCENT="${SNAPSHOT_MAX_MEMORY_PERCENT:-80}"
+RECORD_ROOT="${SNAPSHOT_RECORD_ROOT:-${RELEASE_ROOT}/records}"
+S3_BUCKET="${SNAPSHOT_S3_BUCKET:-usdb-snapshot}"
+S3_ENDPOINT_URL="${SNAPSHOT_S3_ENDPOINT_URL:-https://87e0bdf811b13ee87fd0bcec7a4fd1e7.r2.cloudflarestorage.com}"
+PUBLIC_BASE_URL="${SNAPSHOT_PUBLIC_BASE_URL:-https://usdb-snapshot.tbudr.top}"
+AWS_REGION="${SNAPSHOT_AWS_REGION:-auto}"
+AWS_PROFILE="${SNAPSHOT_AWS_PROFILE-usdb-snapshot-publisher}"
+AWS_EXECUTABLE="${SNAPSHOT_AWS_EXECUTABLE:-aws}"
 
 BUILDER_CONFIG="${CONFIG_ROOT}/builder.toml"
 SIGNING_KEY="${KEY_ROOT}/${SIGNER_ID}.signing-key.json"
@@ -54,6 +62,9 @@ Usage:
   mainnet_exact_height_snapshot.sh list
   mainnet_exact_height_snapshot.sh verify --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh finalize --height H [--block-hash HASH]
+  mainnet_exact_height_snapshot.sh archive --height H [--block-hash HASH]
+  mainnet_exact_height_snapshot.sh prepare-release --height H [--block-hash HASH]
+  mainnet_exact_height_snapshot.sh publish --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh paths
 
 Commands:
@@ -65,7 +76,11 @@ Commands:
   status     Show the persisted builder/job state.
   list       List all persisted snapshot jobs.
   verify     Reopen the completed artifact and recheck the current canonical hash.
-  finalize   Verify, perform an independent signed install, and create the release tar/checksum.
+  finalize   Verify and perform an independent signed install required by every release path.
+  archive    Optionally create and checksum an offline tar from one finalized artifact.
+  prepare-release
+             Infer finalized artifact inputs and create a content-addressed release record.
+  publish    Prepare the release record and idempotently upload it and its files to object storage.
   paths      Print all resolved operational paths without modifying them.
 
 Primary overrides:
@@ -77,6 +92,10 @@ Primary overrides:
   SNAPSHOT_CACHE_BUDGET_PERCENT
                               Effective memory assigned to both caches. Default: 66
   SNAPSHOT_MAX_MEMORY_PERCENT Whole-host/cgroup pressure threshold. Default: 80
+  SNAPSHOT_AWS_PROFILE       AWS CLI profile used by publish. Default: usdb-snapshot-publisher
+  SNAPSHOT_S3_BUCKET         S3-compatible bucket. Default: usdb-snapshot
+  SNAPSHOT_S3_ENDPOINT_URL   Private S3-compatible endpoint.
+  SNAPSHOT_PUBLIC_BASE_URL   Public HTTPS base recorded for downloads.
 
 The snapshot root must be independent from the live balance-history root. For a dedicated disk,
 mount it at SNAPSHOT_ROOT or set SNAPSHOT_ROOT to a directory on that filesystem.
@@ -164,7 +183,7 @@ existing_ancestor() {
 
 create_operational_dirs() {
   check_path_isolation
-  mkdir -p "$BUILDER_ROOT" "$RELEASE_ROOT/reports" "$VALIDATION_BASE" \
+  mkdir -p "$BUILDER_ROOT" "$RELEASE_ROOT/reports" "$RECORD_ROOT" "$VALIDATION_BASE" \
     "$KEY_ROOT" "$CONFIG_ROOT" "$TARGET_ROOT"
   chmod 700 "$KEY_ROOT"
 }
@@ -559,7 +578,6 @@ PY
 
 run_finalize() {
   local height_dir artifact_dir complete snapshot_file file_hash validation_root marker
-  local package_name package temp_package
 
   run_verify
   height_dir="$(printf '%012d' "$HEIGHT")"
@@ -603,22 +621,111 @@ with open(path, "x", encoding="utf-8") as output:
     os.fsync(output.fileno())
 PY
   fi
+  log "Finalized height=${HEIGHT} hash=${REQUESTED_HASH} validation_root=${validation_root}"
+}
 
+resolve_finalized_snapshot() {
+  local target_record height_dir complete file_hash marker_file_hash
+
+  check_static_preflight
+  create_operational_dirs
+  require_height
+  target_record="$(target_file)"
+  [[ -f "$target_record" ]] || \
+    die "Pinned target record is missing: ${target_record}; run create and finalize first"
+  resolve_target 0
+
+  height_dir="$(printf '%012d' "$HEIGHT")"
+  FINALIZED_ARTIFACT_DIR="${BUILDER_ROOT}/snapshots/${height_dir}/${REQUESTED_HASH}"
+  FINALIZED_VALIDATION_MARKER="${VALIDATION_BASE}/${height_dir}-${REQUESTED_HASH}/signed-install-complete.json"
+  FINALIZED_PRODUCER_REVISION="$(jq -er '.code_revision' "$target_record")" || \
+    die "Pinned target record has no producer code revision: ${target_record}"
+  [[ "$FINALIZED_PRODUCER_REVISION" =~ ^[0-9a-f]{40}$ ]] || \
+    die "Pinned target producer revision is invalid: ${FINALIZED_PRODUCER_REVISION}"
+  complete="${FINALIZED_ARTIFACT_DIR}/complete.json"
+  [[ -f "$complete" ]] || die "Finalized snapshot artifact is missing: ${complete}"
+  [[ -f "$FINALIZED_VALIDATION_MARKER" ]] || \
+    die "Independent signed-install marker is missing: ${FINALIZED_VALIDATION_MARKER}; run finalize first"
+  file_hash="$(jq -er '.file_sha256' "$complete")" || die "Completed artifact has no file SHA-256: ${complete}"
+  marker_file_hash="$(jq -er '.file_sha256' "$FINALIZED_VALIDATION_MARKER")" || \
+    die "Independent signed-install marker has no file SHA-256: ${FINALIZED_VALIDATION_MARKER}"
+  [[ "$file_hash" =~ ^[0-9a-f]{64}$ ]] || die "Completed artifact file SHA-256 is invalid: ${file_hash}"
+  [[ "$marker_file_hash" == "$file_hash" ]] || \
+    die "Independent signed-install marker does not match finalized artifact"
+}
+
+run_archive() {
+  local package_name package temp_package
+
+  resolve_finalized_snapshot
+  require_command tar
+  require_command sha256sum
   package_name="balance-history-mainnet-${HEIGHT}-${REQUESTED_HASH}.tar"
   package="${RELEASE_ROOT}/${package_name}"
   if [[ -f "$package" && -f "$package.sha256" ]]; then
     (cd "$RELEASE_ROOT" && sha256sum -c "${package_name}.sha256")
-    log "Release package already exists and passed checksum verification: ${package}"
-  else
-    [[ ! -e "$package" && ! -e "$package.sha256" ]] || \
-      die "Partial release package exists; inspect ${package} and ${package}.sha256"
-    temp_package="${package}.partial.$$"
-    tar -C "$artifact_dir" -cf "$temp_package" .
-    mv "$temp_package" "$package"
-    (cd "$RELEASE_ROOT" && sha256sum "$package_name" >"${package_name}.sha256")
-    log "Published release package ${package}"
+    log "Archive already exists and passed checksum verification: ${package}"
+    return
   fi
-  log "Finalized height=${HEIGHT} hash=${REQUESTED_HASH} validation_root=${validation_root}"
+  temp_package="${package}.partial"
+  [[ ! -e "$package" && ! -e "$package.sha256" && ! -e "$temp_package" ]] || \
+    die "Partial archive exists; inspect ${package}, ${package}.sha256, and ${temp_package}"
+  tar -C "$FINALIZED_ARTIFACT_DIR" -cf "$temp_package" .
+  mv "$temp_package" "$package"
+  (cd "$RELEASE_ROOT" && sha256sum "$package_name" >"${package_name}.sha256")
+  log "Created optional offline archive ${package}"
+}
+
+prepare_snapshot_release() {
+  local report prepare_output
+
+  resolve_finalized_snapshot
+  [[ -f "$TRUSTED_KEYS" ]] || die "Trusted-key catalog is missing: ${TRUSTED_KEYS}"
+  [[ -f "$DISTRIBUTION_TOOL" ]] || die "Snapshot distribution tool is missing: ${DISTRIBUTION_TOOL}"
+
+  report="${RELEASE_ROOT}/reports/prepare-release-${HEIGHT}-${REQUESTED_HASH}.json"
+  prepare_output="$(
+    python3 "$DISTRIBUTION_TOOL" prepare \
+      --artifact-dir "$FINALIZED_ARTIFACT_DIR" \
+      --trusted-keys "$TRUSTED_KEYS" \
+      --validation-marker "$FINALIZED_VALIDATION_MARKER" \
+      --producer-revision "$FINALIZED_PRODUCER_REVISION" \
+      --public-base-url "$PUBLIC_BASE_URL" \
+      --output-dir "$RECORD_ROOT"
+  )"
+  jq -e . >/dev/null <<<"$prepare_output" || die "Snapshot distribution tool returned invalid JSON"
+  printf '%s\n' "$prepare_output" | tee "$report"
+  PREPARED_RECORD="$(jq -er '.record_path' <<<"$prepare_output")" || \
+    die "Snapshot distribution prepare output has no record_path"
+  [[ -f "$PREPARED_RECORD" ]] || die "Prepared release record does not exist: ${PREPARED_RECORD}"
+  log "Release record report: ${report}"
+}
+
+run_prepare_release() {
+  prepare_snapshot_release
+}
+
+run_publish() {
+  local report
+  local -a upload_args
+
+  prepare_snapshot_release
+  require_command "$AWS_EXECUTABLE"
+  upload_args=(
+    "$DISTRIBUTION_TOOL" upload
+    --record "$PREPARED_RECORD"
+    --source-dir "$FINALIZED_ARTIFACT_DIR"
+    --bucket "$S3_BUCKET"
+    --endpoint-url "$S3_ENDPOINT_URL"
+    --aws-region "$AWS_REGION"
+    --aws-executable "$AWS_EXECUTABLE"
+  )
+  if [[ -n "$AWS_PROFILE" ]]; then
+    upload_args+=(--aws-profile "$AWS_PROFILE")
+  fi
+  report="${RELEASE_ROOT}/reports/publish-${HEIGHT}-${REQUESTED_HASH}.json"
+  python3 "${upload_args[@]}" | tee "$report"
+  log "Publish report: ${report}"
 }
 
 print_paths() {
@@ -635,10 +742,17 @@ TARGET_ROOT=${TARGET_ROOT}
 BITCOIN_DATA_DIR=${BITCOIN_DATA_DIR}
 BALANCE_HISTORY=${BALANCE_HISTORY}
 SNAPSHOT_TOOL=${SNAPSHOT_TOOL}
+DISTRIBUTION_TOOL=${DISTRIBUTION_TOOL}
 SIGNER_ID=${SIGNER_ID}
 MIN_CONFIRMATIONS=${MIN_CONFIRMATIONS}
 CACHE_BUDGET_PERCENT=${CACHE_BUDGET_PERCENT}
 MAX_MEMORY_PERCENT=${MAX_MEMORY_PERCENT}
+RECORD_ROOT=${RECORD_ROOT}
+S3_BUCKET=${S3_BUCKET}
+S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
+PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+AWS_REGION=${AWS_REGION}
+AWS_PROFILE=${AWS_PROFILE}
 EOF
 }
 
@@ -693,6 +807,18 @@ case "$COMMAND" in
   finalize)
     parse_target_args "$@"
     run_finalize
+    ;;
+  archive)
+    parse_target_args "$@"
+    run_archive
+    ;;
+  prepare-release)
+    parse_target_args "$@"
+    run_prepare_release
+    ;;
+  publish)
+    parse_target_args "$@"
+    run_publish
     ;;
   paths)
     (($# == 0)) || die "paths does not accept arguments"

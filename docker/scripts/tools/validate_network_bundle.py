@@ -114,11 +114,18 @@ def snapshot_container_path(
 ) -> PurePosixPath:
     require(bool(value), f"{label} is required in balance-history snapshot mode")
     path = PurePosixPath(value)
+    snapshots_root = PurePosixPath("/snapshots")
     require(
         path.is_absolute()
-        and path.parent == PurePosixPath("/snapshots")
-        and path.name not in {"", ".", ".."},
-        f"{label} must be a direct child of /snapshots",
+        and path.name not in {"", ".", ".."}
+        and (
+            path.parent == snapshots_root
+            or (
+                path.parent.parent == snapshots_root
+                and path.parent.name not in {"", ".", ".."}
+            )
+        ),
+        f"{label} must be a direct child of /snapshots or one immutable release directory below it",
     )
     require(
         path.name.endswith(expected_suffix),
@@ -139,11 +146,21 @@ def validate_runtime_snapshot(
         snapshot_dir.is_dir(),
         f"snapshot host directory does not exist: {snapshot_dir}",
     )
-    file_path = snapshot_dir / snapshot_file.name
-    manifest_path = snapshot_dir / snapshot_manifest.name
+    snapshot_root = PurePosixPath("/snapshots")
+    file_relative = snapshot_file.relative_to(snapshot_root)
+    manifest_relative = snapshot_manifest.relative_to(snapshot_root)
+    require(
+        file_relative.parent == manifest_relative.parent,
+        "snapshot file and manifest must belong to the same release directory",
+    )
+    file_path = snapshot_dir.joinpath(*file_relative.parts)
+    manifest_path = snapshot_dir.joinpath(*manifest_relative.parts)
     signature_path = manifest_path.with_suffix(".sig")
     for path in (file_path, manifest_path, signature_path):
-        require(path.is_file(), f"required snapshot artifact is missing: {path}")
+        require(
+            path.is_file() and not path.is_symlink(),
+            f"required snapshot artifact is missing or not regular: {path}",
+        )
 
     manifest = read_json(manifest_path)
     require(

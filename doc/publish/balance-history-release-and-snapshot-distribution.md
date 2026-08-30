@@ -22,16 +22,19 @@ release-manifest.json
 install.sh
 ```
 
-可选 snapshot 独立分发：
+可选 snapshot 独立分发。节点下载路径发布原始 immutable files，tar 仅保留为离线归档：
 
 ```text
-balance-history-mainnet-<H>-<BTC_HASH>.tar
-balance-history-mainnet-<H>-<BTC_HASH>.tar.sha256
-snapshot-release-record.json
+snapshot_<H>.db
+snapshot_<H>.manifest.json
+snapshot_<H>.manifest.sig
+complete.json
+snapshot-records/v1/<record-sha256>.json
 ```
 
-Snapshot tar 内只包含 immutable artifact，不包含 signing private key、builder workspace、job
-state、接收方 trusted-key catalog 或 validation DB。
+发布对象不包含 signing private key、builder workspace、job state、接收方 trusted-key catalog 或
+validation DB。对象存储具体契约和命令见
+[Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
 
 ## 3. Public trusted-key catalog
 
@@ -79,7 +82,7 @@ installer。实现后至少执行：
 
 ## 5. Snapshot 生成和发布
 
-状态：`implemented/manual`
+状态：`implemented`；真实 R2 大文件发布验收 pending。
 
 在生成机执行：
 
@@ -92,29 +95,38 @@ bash "$SCRIPT" create --height "$H"
 bash "$SCRIPT" resume-verify --height "$H" # interrupted verifying jobs only
 bash "$SCRIPT" verify --height "$H"
 bash "$SCRIPT" finalize --height "$H"
+bash "$SCRIPT" prepare-release --height "$H" # optional review gate
+bash "$SCRIPT" publish --height "$H"
+bash "$SCRIPT" archive --height "$H" # optional offline archive only
 ```
+
+日常对象存储发布只需要高度参数。脚本从 pinned target 和 finalize 结果推导 BTC hash、producer
+revision、artifact、validation marker 和 trusted catalog；对象存储默认值与高级覆盖项见
+[Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
+`publish` 不依赖且不会生成 tar；离线介质或冷备明确需要单文件归档时才执行 `archive`。
 
 发布前必须确认：
 
 - target `H/hash`、确认深度和代码 revision 已固定；
 - create/verify 的 snapshot ID、state-ref、计数和 file SHA-256 一致；
 - 独立 validation root 的 signed install 成功；
-- tar checksum 可在 release 目录中复核；
+- direct-file release record 可重算；若选择生成离线 archive，其 tar checksum 可在 release 目录中复核；
 - manifest signer 存在于即将随 binary bundle 发布的 trusted-key catalog；
-- snapshot release record 引用 binary bundle 和 catalog hash；
+- snapshot release record 引用 producer revision 和 catalog hash；接收方 binary/network compatibility
+  由 release manifest 与 runtime validator 独立校验；
 - 生成机私钥和 mutable builder 内容不在待发布目录中。
 
 ## 6. 接收方安装流程
 
-状态：`manual`
+状态：`implemented`，目标机 live 验收 pending。
 
 正确顺序是：
 
 1. 安装或解包 balance-history release bundle；
 2. 通过独立渠道核对 release manifest 和 trusted-key catalog hash；
 3. 安装 catalog 并生成 `trust_mode = "signed"` 配置；
-4. 下载 snapshot tar/checksum 和 snapshot release record；
-5. 校验 tar hash 并保持 DB、manifest、signature 相邻；
+4. 通过 content-addressed release record 断点下载 snapshot files；
+5. 校验逐文件 size/SHA-256，并保持 DB、manifest、signature 相邻；
 6. 停止现有 balance-history，或使用全新 root；
 7. 执行 `install-snapshot`；
 8. 检查 snapshot provenance 后启动服务；
@@ -147,9 +159,9 @@ trusted_keys_file = "/etc/usdb/snapshot-keys/usdb-mainnet-snapshot-v1.trusted-ke
 
 - 正式 mainnet signer 和 public catalog 尚未冻结；
 - binary bundle/install script 尚未实现；
-- 最终 published release manifest 的 snapshot/promotion 扩展尚未冻结；
+- 最终 published release manifest 的 snapshot record URL/hash 扩展尚未冻结；
 - binary/OCI signing、SBOM 和正式 CI 尚未落地；
 - catalog rotation/revocation 的公开渠道和演练尚未完成。
 
-在这些事项完成前，可以生成和验证正式候选 snapshot，但面向第三方的 public distribution 仍应
-标记为 manual candidate，而不是最终自动化 release。
+在这些事项完成前，可以通过 R2 工具链生成和验证正式候选 snapshot，但面向第三方的 public
+distribution 仍应标记为 candidate，而不是最终 promoted release。

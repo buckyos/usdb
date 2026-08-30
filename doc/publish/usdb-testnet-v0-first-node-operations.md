@@ -6,13 +6,14 @@
 `development-resettable` 测试网，不是 public mainnet。本文采用：
 
 - BTC mainnet full node；
-- balance-history 从 BTC 创世全量同步；
-- 不下载、不安装 snapshot；
+- balance-history 默认从 BTC 创世全量同步，也可在首次启动前选择已发布 signed snapshot；
 - digest-pinned GHCR images；
 - SourceDAO bootstrap 由独立运维机执行，私钥不进入节点 Compose。
 
-Snapshot 只是 balance-history 的启动加速器。`SNAPSHOT_MODE=none` 时，节点仍会建立完整 UTXO、
-balance、block commit 和 state-ref；只有同步耗时不同，最终共识视图不应不同。
+Snapshot 只是 balance-history 的启动加速器。没有正式 record URL 时保持 `SNAPSHOT_MODE=none`，节点仍会
+建立完整 UTXO、balance、block commit 和 state-ref；只有同步耗时不同，最终共识视图不应不同。若使用
+snapshot，应在 `setup` 后、首次 `up` 前运行 `usdb-node snapshot install --record-url ...`，不得手工改写
+高度或文件路径。
 
 ## 2. 当前发布级别
 

@@ -375,6 +375,101 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(updated["BTC_RPC_PASSWORD"], original["BTC_RPC_PASSWORD"])
         self.assertEqual(updated["USDB_BOOTNODES"], "enode://example")
 
+    def _installed_snapshot_fixture(self, data_root: Path) -> mock.Mock:
+        release_id = "balance-history-bitcoin-h963800-0123456789abcdef"
+        release_dir = data_root / "releases/balance-history" / release_id
+        release_dir.mkdir(parents=True)
+        snapshot = release_dir / "bootstrap.db"
+        snapshot.write_bytes(b"snapshot")
+        manifest = release_dir / "bootstrap.manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "manifest_version": "balance-history-snapshot-manifest:v3",
+                    "file_name": snapshot.name,
+                    "file_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                    "state_ref": {"block_height": 963800},
+                    "db_identity": {"btc_network": "bitcoin"},
+                    "balance_query_floor": 963800,
+                    "history_query_floor": 963801,
+                    "signature_scheme": "ed25519",
+                    "signing_key_id": "mainnet-snapshot-1",
+                }
+            ),
+            encoding="utf-8",
+        )
+        signature = release_dir / "bootstrap.manifest.sig"
+        signature.write_text("signature", encoding="utf-8")
+        return mock.Mock(
+            release_id=release_id,
+            release_dir=release_dir,
+            snapshot_file=snapshot,
+            manifest_file=manifest,
+            signature_file=signature,
+            height=963800,
+            network="bitcoin",
+        )
+
+    def test_snapshot_install_selects_nested_release_before_first_start(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "snapshot-node-data"
+        NODE.configure_node(
+            layout,
+            data_root=data_root,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        installed = self._installed_snapshot_fixture(data_root)
+        with mock.patch.object(NODE, "install_snapshot_artifact", return_value=installed) as install:
+            result = NODE.install_snapshot_release(
+                layout,
+                record_url="https://snapshots.example.test/snapshot-records/v1/" + "1" * 64 + ".json",
+            )
+        self.assertEqual(result, installed.release_dir)
+        env = NODE.read_env(layout.node_env)
+        self.assertEqual(env["SNAPSHOT_MODE"], "balance-history")
+        self.assertEqual(
+            env["BH_SNAPSHOT_FILE"],
+            f"/snapshots/{installed.release_id}/bootstrap.db",
+        )
+        self.assertEqual(
+            env["BH_SNAPSHOT_MANIFEST"],
+            f"/snapshots/{installed.release_id}/bootstrap.manifest.json",
+        )
+        install.assert_called_once()
+        self.assertEqual(install.call_args.kwargs["expected_network"], "bitcoin")
+        self.assertEqual(install.call_args.kwargs["max_height"], 963800)
+
+    def test_snapshot_install_rejects_initialized_database_before_download(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "initialized-node-data"
+        NODE.configure_node(
+            layout,
+            data_root=data_root,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        database = data_root / "balance-history/db"
+        database.mkdir()
+        (database / "CURRENT").write_text("initialized", encoding="utf-8")
+        with mock.patch.object(NODE, "install_snapshot_artifact") as install:
+            with self.assertRaisesRegex(ValueError, "after balance-history DB initialization"):
+                NODE.install_snapshot_release(
+                    layout,
+                    record_url="https://snapshots.example.test/snapshot-records/v1/" + "1" * 64 + ".json",
+                )
+        install.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

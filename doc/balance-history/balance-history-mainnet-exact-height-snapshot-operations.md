@@ -122,7 +122,7 @@ network + H + BTC block hash at H + snapshot ID
 │   ├── config/                         # 首次 init 后冻结的 builder config
 │   ├── targets/                        # 固定的 H -> BTC block hash
 │   ├── validation/                     # 每个 artifact 的独立 signed install
-│   └── releases/                       # reports、tar 和 SHA-256
+│   └── releases/                       # reports、records 和可选 tar/SHA-256
 └── secure/snapshot-keys/               # 私钥和公开 key material
 ```
 
@@ -162,6 +162,9 @@ bash "$SNAPSHOT_SCRIPT" create --height "$H"
 bash "$SNAPSHOT_SCRIPT" resume-verify --height "$H" # 仅在 status 为 verifying 时执行
 bash "$SNAPSHOT_SCRIPT" status --height "$H"
 bash "$SNAPSHOT_SCRIPT" finalize --height "$H"
+bash "$SNAPSHOT_SCRIPT" prepare-release --height "$H" # 可选：上传前审查 release record
+bash "$SNAPSHOT_SCRIPT" publish --height "$H"
+bash "$SNAPSHOT_SCRIPT" archive --height "$H" # 可选：仅在需要离线归档时执行
 ```
 
 日常创建只要求显式提供目标高度。第一次 `create` 会查询并持久化该高度的 canonical block
@@ -190,17 +193,20 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 - `resume-verify`：复用已经生成的临时 SQLite，仅执行验证和发布，不打开 RocksDB/indexer；
 - `status/list`：查看持久化 builder/job 状态；
 - `verify`：重开 immutable artifact 并再次检查 canonical hash；
-- `finalize`：verify、独立 `trust_mode=signed` 安装、tar 和 checksum 发布。
+- `finalize`：verify 并完成所有发布路径都要求的独立 `trust_mode=signed` 安装，不创建 tar；
+- `archive`：从已经 finalize 的 immutable artifact 创建可选 tar 和 checksum；
+- `prepare-release`：从 pinned target 和 finalized 目录推导全部 provenance，生成 content-addressed record；
+- `publish`：幂等 prepare 后，通过 AWS CLI 上传 artifact，最后发布 release record。
 
 `init` 可重复执行，但不会覆盖已有私钥。网络、路径、signer 等冻结字段不一致时仍会要求恢复
 原参数或使用新的 `SNAPSHOT_ROOT`；只有 `utxo_max_cache_bytes`、
 `balance_max_cache_bytes`、`max_memory_percent` 三个非共识运行参数可以原子刷新，下一次
 `create` 会在开始同步前同步更新已有 workspace config。因此 OOM 或人工停止后可以调整内存
 预算并从 durable height 继续，不需要删除数据库。`finalize` 也可重复执行，只会复核已有
-validation marker 和 package checksum。
+validation marker；`archive` 单独复核或创建 tar/checksum。
 
 下面第 3 至第 13 节保留展开后的手工步骤，主要用于审计、排障和理解脚本行为。正常生产操作
-优先使用上述脚本，避免手工漏掉 hash pin、signed validation 或 package checksum。
+优先使用上述脚本，避免手工漏掉 hash pin、signed validation 或 release record 校验。
 
 ## 3. 生产前检查
 
@@ -250,7 +256,7 @@ snapshot 文件大小：
 mutable RocksDB workspace
   + temporary/final snapshot artifact
   + validation install DB
-  + release tar or compressed package
+  + optional offline archive
   + filesystem safety margin
 ```
 
@@ -589,24 +595,30 @@ SNAPSHOT_FILE="$ARTIFACT_PATH/snapshot_${H}.db"
 只有该命令在 `trust_mode = "signed"` 下成功后才能继续发布。此 validation root 可保留用于
 发布审计，也可以在确认没有进程使用后删除并重建；不要把它当成生产 builder 的增量基础。
 
-## 10. 打包和分发
+## 10. 发布和可选离线归档
 
 Balance-history binary、public trusted-key catalog 和 snapshot 的整体发布编排见
 [Balance-History 发布与 Snapshot 分发](../publish/balance-history-release-and-snapshot-distribution.md)。
+S3-compatible object storage 的 direct-file 发布、content-addressed record 和断点下载见
+[Snapshot 对象存储发布与安装](../publish/balance-history-snapshot-object-storage.md)。
 
-不要发布 mutable workspace、job state 或签名私钥，只打包已验证的 immutable artifact：
+默认节点分发使用 direct-file release record，不创建 tar：
 
 ```bash
-PACKAGE_NAME="balance-history-mainnet-${H}-${H_HASH}.tar"
-PACKAGE="$RELEASE_ROOT/$PACKAGE_NAME"
-tar -C "$ARTIFACT_PATH" -cf "$PACKAGE" .
-(
-  cd "$RELEASE_ROOT"
-  sha256sum "$PACKAGE_NAME" >"$PACKAGE_NAME.sha256"
-)
+bash "$SNAPSHOT_SCRIPT" publish --height "$H"
 ```
 
-分发集合至少包括：
+不要发布 mutable workspace、job state、签名私钥或 validation DB。Direct-file 发布集合由
+content-addressed record 固定，包含 snapshot DB、manifest、signature 和 `complete.json` 的逐文件
+size/SHA-256/object key，以及 trusted catalog hash 和 producer revision。
+
+只有离线介质或冷备明确要求单文件时才额外执行：
+
+```bash
+bash "$SNAPSHOT_SCRIPT" archive --height "$H"
+```
+
+可选离线归档交付集合包括：
 
 - snapshot tar 和 tar 的 SHA-256；
 - signer 的 public key 或 trusted-keys 文件；
@@ -614,13 +626,19 @@ tar -C "$ARTIFACT_PATH" -cf "$PACKAGE" .
 - 生产代码 revision、Bitcoin Core 版本和生成时间；
 - 接收方应使用的 trust mode。
 
-tar hash 用于传输完整性；真正的内容信任链是可信渠道提供的 public key、manifest detached
+tar hash 只用于可选归档的传输完整性；真正的内容信任链是可信渠道提供的 public key、manifest detached
 signature，以及 manifest 内固定的 snapshot DB SHA-256 和 state-ref。
+
+面向节点的默认分发不要求下载 tar。`snapshot_distribution.py prepare` 从本节 artifact、trusted
+catalog 和 `finalize` 生成的 `signed-install-complete.json` 建立逐文件 release record；`upload` 使用
+AWS CLI 发布原始 DB/sidecars，并最后发布 content-addressed record。这样不会在接收方产生 tar 与解包 DB
+同时存在的额外峰值空间。
 
 ## 11. 接收方安装
 
-接收方应使用新的或已停止服务的 balance-history root。解包时保持 DB、manifest 和 signature
-三个文件相邻：
+默认接收方应按对象存储文档执行 `usdb-node snapshot install --record-url ...`。以下步骤只用于可选
+离线 tar 交付；接收方应使用新的或已停止服务的 balance-history root，并保持 DB、manifest 和
+signature 三个文件相邻：
 
 ```bash
 TARGET_ROOT="$HOME/.usdb/balance-history"

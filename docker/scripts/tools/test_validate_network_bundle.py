@@ -97,12 +97,19 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             require_bitcoin_runtime,
         )
 
-    def write_snapshot_artifacts(self, height: int, stem: str) -> tuple[str, str]:
+    def write_snapshot_artifacts(
+        self,
+        height: int,
+        stem: str,
+        release_dir: str | None = None,
+    ) -> tuple[str, str]:
         snapshot_dir = self.root / "snapshot"
         snapshot_dir.mkdir(exist_ok=True)
+        artifact_dir = snapshot_dir / release_dir if release_dir else snapshot_dir
+        artifact_dir.mkdir(exist_ok=True)
         file_name = f"{stem}.db"
         manifest_name = f"{stem}.manifest.json"
-        (snapshot_dir / file_name).touch()
+        (artifact_dir / file_name).touch()
         state_ref = {
             "block_height": height,
             "stable_block_hash": "1" * 64,
@@ -121,9 +128,10 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "signature_scheme": VALIDATOR.EXPECTED_SNAPSHOT_SIGNATURE_SCHEME,
             "signing_key_id": "test-snapshot-signer",
         }
-        (snapshot_dir / manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
-        (snapshot_dir / f"{stem}.manifest.sig").touch()
-        return f"/snapshots/{file_name}", f"/snapshots/{manifest_name}"
+        (artifact_dir / manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
+        (artifact_dir / f"{stem}.manifest.sig").touch()
+        prefix = f"/snapshots/{release_dir}" if release_dir else "/snapshots"
+        return f"{prefix}/{file_name}", f"{prefix}/{manifest_name}"
 
     def write_indexer_checkpoint_artifacts(
         self,
@@ -407,6 +415,19 @@ class NetworkBundleValidatorTests(unittest.TestCase):
         snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
             963700,
             "release-bootstrap-a",
+        )
+        path = self.write_node_env(
+            SNAPSHOT_MODE="balance-history",
+            BH_SNAPSHOT_FILE=snapshot_file,
+            BH_SNAPSHOT_MANIFEST=snapshot_manifest,
+        )
+        self.validate_node_env(path, True)
+
+    def test_runtime_accepts_snapshot_in_immutable_release_directory(self) -> None:
+        snapshot_file, snapshot_manifest = self.write_snapshot_artifacts(
+            963800,
+            "release-bootstrap-b",
+            "balance-history-bitcoin-h963800-0123456789abcdef",
         )
         path = self.write_node_env(
             SNAPSHOT_MODE="balance-history",

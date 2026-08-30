@@ -25,6 +25,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from generate_bitcoin_rpcauth import generate as generate_rpcauth  # noqa: E402
 from release_manifest import build_network_identity  # noqa: E402
+from snapshot_distribution import install_release as install_snapshot_artifact  # noqa: E402
 from validate_network_bundle import (  # noqa: E402
     PERSISTENT_DATA_PATHS,
     read_env,
@@ -476,6 +477,59 @@ def activate_release(layout: ReleaseLayout) -> None:
         raise
 
 
+def _snapshot_trusted_keys(layout: ReleaseLayout) -> Path:
+    candidates = sorted((layout.bundle_dir / "trust").glob("*.trusted-keys.json"))
+    if len(candidates) != 1:
+        raise ValueError(
+            f"network bundle must contain exactly one snapshot trusted-key catalog, got {len(candidates)}"
+        )
+    return candidates[0]
+
+
+def install_snapshot_release(layout: ReleaseLayout, *, record_url: str) -> Path:
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run setup or configure first")
+    env = read_env(layout.node_env)
+    snapshot_root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
+    balance_history_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()
+    database = balance_history_root / "db"
+    if database.is_dir() and any(database.iterdir()):
+        raise ValueError(
+            "refusing to change snapshot selection after balance-history DB initialization; "
+            "use a fresh data root or an explicit reviewed recovery procedure"
+        )
+    network = validate_network_bundle(layout.bundle_dir)
+    btc_source = network.get("btc_source")
+    if not isinstance(btc_source, dict) or not isinstance(btc_source.get("index_origin_height"), int):
+        raise ValueError("network bundle is missing BTC index origin")
+    installed = install_snapshot_artifact(
+        record_url=record_url,
+        destination_root=snapshot_root,
+        trusted_keys=_snapshot_trusted_keys(layout),
+        expected_network=env.get("BTC_NETWORK", "bitcoin"),
+        max_height=btc_source["index_origin_height"],
+    )
+    snapshot_relative = installed.snapshot_file.relative_to(snapshot_root)
+    manifest_relative = installed.manifest_file.relative_to(snapshot_root)
+    updates = {
+        "SNAPSHOT_MODE": "balance-history",
+        "BH_SNAPSHOT_FILE": f"/snapshots/{snapshot_relative.as_posix()}",
+        "BH_SNAPSHOT_MANIFEST": f"/snapshots/{manifest_relative.as_posix()}",
+        "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
+    }
+    if all(env.get(key, "") == value for key, value in updates.items()):
+        validate_node_env(layout.node_env, network, True, False)
+        return installed.release_dir
+    original = layout.node_env.read_text(encoding="utf-8")
+    try:
+        _atomic_write_private(layout.node_env, render_env(original, updates))
+        validate_node_env(layout.node_env, network, True, False)
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+    return installed.release_dir
+
+
 def _helper_environment(layout: ReleaseLayout, sync_timeout_secs: int | None = None) -> dict[str, str]:
     environment = os.environ.copy()
     environment["USDB_TESTNET_BUNDLE_DIR"] = str(layout.bundle_dir)
@@ -677,6 +731,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read-only host, firewall, release identity and local configuration preflight",
     )
 
+    snapshot = subparsers.add_parser("snapshot", help="Install an immutable signed snapshot release")
+    snapshot_actions = snapshot.add_subparsers(dest="snapshot_action", required=True)
+    snapshot_install = snapshot_actions.add_parser(
+        "install",
+        help="Resume download, verify, atomically stage, and select one snapshot",
+    )
+    snapshot_install.add_argument("--record-url", required=True)
+
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
     firewall_check = firewall_actions.add_parser("check")
@@ -749,6 +811,9 @@ def main() -> int:
         elif args.command == "doctor":
             doctor(layout)
             print(f"USDB node preflight passed: {layout.release_id}")
+        elif args.command == "snapshot":
+            release_dir = install_snapshot_release(layout, record_url=args.record_url)
+            print(f"Installed and selected signed balance-history snapshot: {release_dir}")
         elif args.command == "firewall":
             if args.firewall_action == "apply" and not args.confirm:
                 raise ValueError("firewall apply requires --confirm")
