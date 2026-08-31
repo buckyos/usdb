@@ -301,6 +301,14 @@ jobs:
             buckyos/usdb/.github/workflows/usdb-bitcoin-image.yml \
             "$USDB_REVISION"
 
+      - name: Verify approved snapshot publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 usdb/docker/scripts/tools/snapshot_distribution.py verify-public \
+            --record usdb/docker/networks/testnet-v0/snapshots/balance-history-snapshot-release-record.json \
+            --trusted-keys usdb/docker/networks/testnet-v0/trust/usdb-mainnet-snapshot-v1.trusted-keys.json
+
       - name: Create and revalidate cross-repository manifest
         id: manifest
         shell: bash
@@ -337,6 +345,8 @@ jobs:
           manifest_sha256="$(cut -d ' ' -f 1 release-output/usdb-release-manifest.json.sha256)"
           echo "sha256=$manifest_sha256" >>"$GITHUB_OUTPUT"
           echo "snapshot_status=$(jq -r '.snapshot.status' "$manifest")" >>"$GITHUB_OUTPUT"
+          echo "snapshot_height=$(jq -r '.snapshot.height' "$manifest")" >>"$GITHUB_OUTPUT"
+          echo "snapshot_record_url=$(jq -r '.snapshot.record.url' "$manifest")" >>"$GITHUB_OUTPUT"
 
       - name: Upload candidate manifest
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -358,6 +368,10 @@ jobs:
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.sha256 }}\`"
             echo
             echo "Snapshot status: \`${{ steps.manifest.outputs.snapshot_status }}\`"
+            echo
+            echo "Snapshot height: \`${{ steps.manifest.outputs.snapshot_height }}\`"
+            echo
+            echo "Snapshot record: ${{ steps.manifest.outputs.snapshot_record_url }}"
             echo
             echo "This is a candidate artifact. Final release approval remains pending."
           } >>"$GITHUB_STEP_SUMMARY"

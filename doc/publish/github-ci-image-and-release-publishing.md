@@ -10,9 +10,12 @@
 - 每个镜像绑定 source commit、OCI digest 和 GitHub provenance attestation；
 - manifest workflow 只接收 release ID，从两仓同名 tag、compatibility lock、tag build 和 network bundle
   派生 revisions、三个镜像 digest 与 genesis identity；
-- candidate manifest 从 bundle 派生 `not_used/full-sync` 或 `pending/signed-snapshot`，且不能直接作为 public release。
+- candidate manifest 从 bundle 派生并冻结 release-approved snapshot record、可信公钥目录及公开下载身份；
+- candidate 与 publish workflow 都必须确认 record 和全部对象已在公开 HTTPS 端点完整可用，节点是否采用该
+  snapshot 仍由 `usdb-node setup` 显式选择。
 
-Snapshot 大文件分发、最终 GitHub Release 和节点部署批准属于后续批次。
+Snapshot 大文件由独立对象存储分发，不进入 GitHub Release；最终 GitHub Release 和节点部署批准仍由
+受保护的 publish workflow 负责。
 SourceDAO 当前没有独立运行镜像，但其 commit 和 CI check 是 release manifest 的必要输入。
 
 GitHub 官方参考：
@@ -249,15 +252,18 @@ python3 docker/scripts/tools/release_manifest.py create \
   --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
 ```
 
-当前 v3 candidate manifest 固定以下边界：
+当前 v4 candidate manifest 固定以下边界：
 
 - 只接受 canonical `buckyos` repositories 和 GHCR image names；
 - 只接受完整 lowercase Git SHA 和 digest-only image reference；
 - 固定平台为 `linux/amd64`；
 - 绑定 `network.json`、genesis、BTC origin/registry 和 snapshot trusted-key catalog hash；
 - 绑定 Go commit 内的 compatibility lock hash，并拒绝混搭其他 `usdb/SourceDAO` revision；
-- snapshot 状态必须与 bundle 一致；当前 full-sync testnet-v0 为
-  `{"status":"not_used","bootstrap_mode":"full-sync"}`。
+- 可选 snapshot record、record SHA-256/URL、height、BTC block hash、snapshot ID、下载规模、signer 和
+  trusted-key catalog 必须与 tagged bundle 完全一致，且 height 不得超过 BTC index origin；
+- candidate 和 publish 都会精确比对公开 content-addressed record，对四个对象执行 HTTPS/Content-Length
+  availability 检查，并对 DB 执行 1-byte Range 探测。record 由 uploader 最后发布，因此未完成的大文件
+  上传不能进入 candidate；远端整文件 SHA-256 不在 CI 中重复下载计算，节点安装时仍会逐文件完整校验。
 
 ## 6. 从 Candidate 到正式 Release
 
@@ -306,14 +312,15 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 - `install-usdb-node.sh`；
 - `install-usdb-node.sh.sha256`。
 
-node kit 内含 release manifest、network bundle、部署 Compose 和 `usdb-node` 控制器。它将 image digest
-和服务顺序从人工输入改为 release-owned 输入，但仍不包含 secret、snapshot 或节点数据。安装和运行
+node kit 内含 release manifest、network bundle、批准的 snapshot record、部署 Compose 和 `usdb-node`
+控制器。它将 image digest、snapshot 来源和服务顺序从人工输入改为 release-owned 输入，但仍不包含
+secret、snapshot DB 或节点数据。安装和运行
 流程见 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
 正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。private key、RPC credential、
-节点本地 `node.env` 和实际 snapshot 大文件不得进入 GitHub Release。使用 snapshot 时仍需补 snapshot
-release record、URL、大小、SHA-256、signer 和 catalog hash；full-sync 保持
-`snapshot.status=not_used`。PoW 校准、E2E 与人工批准证据继续保留在对应 workflow/deployment record。
+节点本地 `node.env` 和实际 snapshot 大文件不得进入 GitHub Release。v4 manifest 已冻结 snapshot release
+record、URL、大小、SHA-256、signer 和 catalog hash；节点仍可在 `setup` 中选择 full sync。PoW 校准、
+E2E 与人工批准证据继续保留在对应 workflow/deployment record。
 
 ## 7. 当前限制
 

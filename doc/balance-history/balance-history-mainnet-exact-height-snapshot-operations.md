@@ -651,7 +651,8 @@ AWS CLI 发布原始 DB/sidecars，并最后发布 content-addressed record。�
 
 ## 11. 接收方安装
 
-默认接收方应按对象存储文档执行 `usdb-node snapshot install --record-url ...`。以下步骤只用于可选
+默认接收方应使用 release node kit 的 `usdb-node setup` 选择官方 snapshot；中断后执行
+`usdb-node snapshot install` 续传。以下步骤只用于可选
 离线 tar 交付；接收方应使用新的或已停止服务的 balance-history root，并保持 DB、manifest 和
 signature 三个文件相邻：
 

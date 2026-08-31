@@ -1,0 +1,54 @@
+{
+  "artifact_completed_at": 1788157548,
+  "artifact_set_id": "99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d",
+  "artifact_type": "balance-history",
+  "btc_block_hash": "000000000000000000012c999b5f6d2043b1d3d76dcf06ee007b5f86290c0551",
+  "files": [
+    {
+      "object_key": "snapshots/v2/balance-history/bitcoin/000000963800/99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d/snapshot_963800.db",
+      "path": "snapshot_963800.db",
+      "role": "snapshot_db",
+      "sha256": "78c39573a43ab1bd0279f99244e906242f1fab1dd1d87be12a42adbf89f36154",
+      "size": 272421588992
+    },
+    {
+      "object_key": "snapshots/v2/balance-history/bitcoin/000000963800/99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d/snapshot_963800.manifest.json",
+      "path": "snapshot_963800.manifest.json",
+      "role": "snapshot_manifest",
+      "sha256": "c2f9db0e4b408ea2a777410fde6da228d44a9da51043d3502be7d92bf148d363",
+      "size": 1612
+    },
+    {
+      "object_key": "snapshots/v2/balance-history/bitcoin/000000963800/99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d/snapshot_963800.manifest.sig",
+      "path": "snapshot_963800.manifest.sig",
+      "role": "snapshot_signature",
+      "sha256": "39b6e90389d91b45253c1a6bdd5b62e1a119109b6dd53a773872c886e4e414e6",
+      "size": 88
+    },
+    {
+      "object_key": "snapshots/v2/balance-history/bitcoin/000000963800/99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d/complete.json",
+      "path": "complete.json",
+      "role": "completion_marker",
+      "sha256": "dc03f73f0e1db3ed7c4cda9118342696999f0bcb6ecdf82226e90b0405d2f50d",
+      "size": 631
+    }
+  ],
+  "height": 963800,
+  "network": "bitcoin",
+  "object_prefix": "snapshots/v2/balance-history/bitcoin/000000963800/99ef3fb1f13b8609ace2539aad296e8efc795c22d09e6738d8fcb8e71964993d",
+  "producer": {
+    "artifact_finalization_marker_sha256": "56da176b4ddf83711332feabe8a75451a6b9109ff663d28551be3e9af7042125",
+    "artifact_finalized_at_utc": "2026-08-31T07:44:09.852070+00:00",
+    "artifact_finalizer_revision": "1ec2c7a0f2a4fd6af30901c18002a954ae5a1ae8",
+    "artifact_producer_revision": "e488bce62d1ba94295db27235a34a47117afc759"
+  },
+  "public_base_url": "https://usdb-snapshot.tbudr.top",
+  "schema_version": "usdb-snapshot-release-record:v2",
+  "snapshot_id": "7b1cf69a6922b55a90f378c3d03daa8e64c4dba48145cae6e0989be5c9730562",
+  "snapshot_release_id": "balance-history-bitcoin-h963800-99ef3fb1f13b8609",
+  "trusted_keys": {
+    "file_name": "usdb-mainnet-snapshot-v1.trusted-keys.json",
+    "sha256": "ba92705824a6de913de2b64b9804687c50dc9d2e5b3aa6f61de5c169e5afc1d6",
+    "signing_key_id": "usdb-mainnet-snapshot-v1"
+  }
+}

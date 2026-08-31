@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -24,7 +25,11 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from generate_bitcoin_rpcauth import generate as generate_rpcauth  # noqa: E402
-from release_manifest import build_network_identity  # noqa: E402
+from release_manifest import (  # noqa: E402
+    SCHEMA_VERSION as RELEASE_MANIFEST_SCHEMA_VERSION,
+    build_network_identity,
+    build_snapshot_state,
+)
 from snapshot_distribution import install_release as install_snapshot_artifact  # noqa: E402
 from validate_network_bundle import (  # noqa: E402
     PERSISTENT_DATA_PATHS,
@@ -49,6 +54,14 @@ class ReleaseLayout:
     bundle_dir: Path
     node_env: Path
     images: dict[str, str]
+    snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SetupResult:
+    node_env: Path
+    apply_firewall: bool
+    install_snapshot: bool
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -107,7 +120,7 @@ def load_release_layout(
         raise ValueError(f"release node kit is missing its manifest: {manifest_path}")
     _verify_checksum(manifest_path)
     manifest = _load_json(manifest_path)
-    if manifest.get("schema_version") != "usdb-release-manifest:v3":
+    if manifest.get("schema_version") != RELEASE_MANIFEST_SCHEMA_VERSION:
         raise ValueError("unsupported USDB release manifest schema")
     release_id = manifest.get("release_id")
     if not isinstance(release_id, str) or RELEASE_ID_RE.fullmatch(release_id) is None:
@@ -124,6 +137,9 @@ def load_release_layout(
         raise ValueError("release manifest network identity does not match the bundled network")
     if network.get("network_bundle_id") != bundle_id:
         raise ValueError("bundled network ID does not match the release manifest")
+    snapshot = build_snapshot_state(bundle_dir)
+    if manifest.get("snapshot") != snapshot:
+        raise ValueError("release manifest snapshot binding does not match the bundled network")
     images = {
         "USDB_SERVICES_IMAGE": _require_image(manifest, "usdb_services", "usdb-services"),
         "USDB_CHAIN_IMAGE": _require_image(manifest, "usdb_chain", "usdb-chain"),
@@ -142,6 +158,7 @@ def load_release_layout(
         bundle_dir=bundle_dir,
         node_env=private_node_env,
         images=images,
+        snapshot=snapshot,
     )
 
 
@@ -339,12 +356,35 @@ def _prompt_yes_no(label: str, *, default: bool, input_fn: Any, output: Any) -> 
         print("Enter yes or no.", file=output)
 
 
+def _human_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024 or unit == "TiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    raise AssertionError("unreachable")
+
+
+def _snapshot_required_free_bytes(snapshot: dict[str, Any]) -> int:
+    download_size = snapshot["download_size_bytes"]
+    database_size = snapshot["snapshot_db_size_bytes"]
+    safety_margin = max(64 * 1024**3, database_size // 5)
+    return download_size + database_size + safety_margin
+
+
+def _disk_free_bytes(path: Path) -> int:
+    candidate = path.expanduser().resolve()
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return shutil.disk_usage(candidate).free
+
+
 def setup_node(
     layout: ReleaseLayout,
     *,
     input_fn: Any = input,
     output: Any = sys.stdout,
-) -> tuple[Path, bool]:
+) -> SetupResult:
     if layout.node_env.exists():
         raise ValueError(
             f"node is already configured: {layout.node_env}; use set-role or activate-release"
@@ -391,6 +431,24 @@ def setup_node(
         ssh_port = _require_port("operator SSH port", int(ssh_port_text))
     except ValueError as error:
         raise ValueError("operator SSH port must be an integer between 1 and 65535") from error
+    install_snapshot = False
+    snapshot = layout.snapshot
+    if snapshot.get("status") == "available":
+        required_free = _snapshot_required_free_bytes(snapshot)
+        available_free = _disk_free_bytes(data_root)
+        print("", file=output)
+        print("Release-approved balance-history snapshot:", file=output)
+        print(f"  ID: {snapshot['snapshot_release_id']}", file=output)
+        print(f"  BTC height: {snapshot['height']}", file=output)
+        print(f"  Download: {_human_bytes(snapshot['download_size_bytes'])}", file=output)
+        print(f"  Recommended free space: {_human_bytes(required_free)}", file=output)
+        print(f"  Current free space: {_human_bytes(available_free)}", file=output)
+        install_snapshot = _prompt_yes_no(
+            "Use this release-approved snapshot",
+            default=available_free >= required_free,
+            input_fn=input_fn,
+            output=output,
+        )
     print("", file=output)
     print(f"Data root: {data_root.expanduser().resolve()}", file=output)
     print(f"Role: {role}", file=output)
@@ -422,7 +480,11 @@ def setup_node(
         input_fn=input_fn,
         output=output,
     )
-    return path, apply_firewall
+    return SetupResult(
+        node_env=path,
+        apply_firewall=apply_firewall,
+        install_snapshot=install_snapshot,
+    )
 
 
 def set_role(
@@ -478,15 +540,37 @@ def activate_release(layout: ReleaseLayout) -> None:
 
 
 def _snapshot_trusted_keys(layout: ReleaseLayout) -> Path:
-    candidates = sorted((layout.bundle_dir / "trust").glob("*.trusted-keys.json"))
-    if len(candidates) != 1:
-        raise ValueError(
-            f"network bundle must contain exactly one snapshot trusted-key catalog, got {len(candidates)}"
-        )
-    return candidates[0]
+    path = layout.bundle_dir / layout.snapshot["trusted_keys"]["path"]
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"release-approved snapshot trusted-key catalog is missing: {path}")
+    if _sha256(path) != layout.snapshot["trusted_keys"]["sha256"]:
+        raise ValueError("release-approved snapshot trusted-key catalog hash mismatch")
+    return path
 
 
-def install_snapshot_release(layout: ReleaseLayout, *, record_url: str) -> Path:
+def _approved_snapshot_record(layout: ReleaseLayout) -> dict[str, Any]:
+    if layout.snapshot.get("status") != "available":
+        raise ValueError(f"release {layout.release_id} has no approved snapshot")
+    record_path = layout.bundle_dir / layout.snapshot["record"]["path"]
+    if not record_path.is_file() or record_path.is_symlink():
+        raise ValueError(f"release-approved snapshot record is missing: {record_path}")
+    if _sha256(record_path) != layout.snapshot["record"]["sha256"]:
+        raise ValueError("release-approved snapshot record hash mismatch")
+    return _load_json(record_path)
+
+
+def _snapshot_env_updates(record: dict[str, Any]) -> dict[str, str]:
+    by_role = {item["role"]: item for item in record["files"]}
+    release_root = f"/snapshots/{record['snapshot_release_id']}"
+    return {
+        "SNAPSHOT_MODE": "balance-history",
+        "BH_SNAPSHOT_FILE": f"{release_root}/{by_role['snapshot_db']['path']}",
+        "BH_SNAPSHOT_MANIFEST": f"{release_root}/{by_role['snapshot_manifest']['path']}",
+        "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
+    }
+
+
+def install_snapshot_release(layout: ReleaseLayout) -> Path:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run setup or configure first")
     env = read_env(layout.node_env)
@@ -498,35 +582,31 @@ def install_snapshot_release(layout: ReleaseLayout, *, record_url: str) -> Path:
             "refusing to change snapshot selection after balance-history DB initialization; "
             "use a fresh data root or an explicit reviewed recovery procedure"
         )
+    record = _approved_snapshot_record(layout)
+    updates = _snapshot_env_updates(record)
     network = validate_network_bundle(layout.bundle_dir)
     btc_source = network.get("btc_source")
     if not isinstance(btc_source, dict) or not isinstance(btc_source.get("index_origin_height"), int):
         raise ValueError("network bundle is missing BTC index origin")
+    original = layout.node_env.read_text(encoding="utf-8")
+    if not all(env.get(key, "") == value for key, value in updates.items()):
+        try:
+            _atomic_write_private(layout.node_env, render_env(original, updates))
+            validate_node_env(layout.node_env, network, False, False)
+        except BaseException:
+            _atomic_write_private(layout.node_env, original)
+            raise
+
     installed = install_snapshot_artifact(
-        record_url=record_url,
+        record_url=layout.snapshot["record"]["url"],
         destination_root=snapshot_root,
         trusted_keys=_snapshot_trusted_keys(layout),
         expected_network=env.get("BTC_NETWORK", "bitcoin"),
         max_height=btc_source["index_origin_height"],
     )
-    snapshot_relative = installed.snapshot_file.relative_to(snapshot_root)
-    manifest_relative = installed.manifest_file.relative_to(snapshot_root)
-    updates = {
-        "SNAPSHOT_MODE": "balance-history",
-        "BH_SNAPSHOT_FILE": f"/snapshots/{snapshot_relative.as_posix()}",
-        "BH_SNAPSHOT_MANIFEST": f"/snapshots/{manifest_relative.as_posix()}",
-        "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
-    }
-    if all(env.get(key, "") == value for key, value in updates.items()):
-        validate_node_env(layout.node_env, network, True, False)
-        return installed.release_dir
-    original = layout.node_env.read_text(encoding="utf-8")
-    try:
-        _atomic_write_private(layout.node_env, render_env(original, updates))
-        validate_node_env(layout.node_env, network, True, False)
-    except BaseException:
-        _atomic_write_private(layout.node_env, original)
-        raise
+    if installed.release_id != record["snapshot_release_id"]:
+        raise ValueError("installed snapshot release ID differs from the approved record")
+    validate_node_env(layout.node_env, network, True, False)
     return installed.release_dir
 
 
@@ -733,11 +813,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot = subparsers.add_parser("snapshot", help="Install an immutable signed snapshot release")
     snapshot_actions = snapshot.add_subparsers(dest="snapshot_action", required=True)
-    snapshot_install = snapshot_actions.add_parser(
+    snapshot_actions.add_parser(
         "install",
         help="Resume download, verify, atomically stage, and select one snapshot",
     )
-    snapshot_install.add_argument("--record-url", required=True)
 
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
     firewall_actions = firewall.add_subparsers(dest="firewall_action", required=True)
@@ -774,9 +853,12 @@ def main() -> int:
         elif args.command == "setup":
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 raise ValueError("setup requires an interactive terminal; use configure for automation")
-            path, apply_firewall = setup_node(layout)
-            print(f"Configured {layout.release_id} node: {path}")
-            if apply_firewall:
+            result = setup_node(layout)
+            print(f"Configured {layout.release_id} node: {result.node_env}")
+            if result.install_snapshot:
+                release_dir = install_snapshot_release(layout)
+                print(f"Installed and selected signed balance-history snapshot: {release_dir}")
+            if result.apply_firewall:
                 run_firewall_action(layout, "apply", confirm=True)
                 print("Applied and verified the host UFW firewall profile.")
             else:
@@ -812,7 +894,7 @@ def main() -> int:
             doctor(layout)
             print(f"USDB node preflight passed: {layout.release_id}")
         elif args.command == "snapshot":
-            release_dir = install_snapshot_release(layout, record_url=args.record_url)
+            release_dir = install_snapshot_release(layout)
             print(f"Installed and selected signed balance-history snapshot: {release_dir}")
         elif args.command == "firewall":
             if args.firewall_action == "apply" and not args.confirm:

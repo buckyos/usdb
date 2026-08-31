@@ -39,9 +39,10 @@ class UsdbNodeTests(unittest.TestCase):
         self.manifest_path = self.release_dir / "usdb-release-manifest.json"
         digest = "1" * 64
         self.manifest = {
-            "schema_version": "usdb-release-manifest:v3",
+            "schema_version": "usdb-release-manifest:v4",
             "release_id": "usdb-testnet-v0-r1",
             "network_bundle": NODE.build_network_identity(self.bundle),
+            "snapshot": NODE.build_snapshot_state(self.bundle),
             "images": {
                 "usdb_services": {
                     "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"
@@ -130,19 +131,21 @@ class UsdbNodeTests(unittest.TestCase):
                 "enode://example",
                 "n",
                 "2222",
+                "n",
                 "y",
                 "n",
             ]
         )
         output = io.StringIO()
-        node_env, apply_firewall = NODE.setup_node(
+        result = NODE.setup_node(
             layout,
             input_fn=lambda _prompt: next(answers),
             output=output,
         )
         env = NODE.read_env(layout.node_env)
-        self.assertEqual(node_env, layout.node_env)
-        self.assertFalse(apply_firewall)
+        self.assertEqual(result.node_env, layout.node_env)
+        self.assertFalse(result.apply_firewall)
+        self.assertFalse(result.install_snapshot)
         self.assertEqual(env["USDB_NODE_ROLE"], "miner")
         self.assertEqual(env["USDB_MINER_ADDRESS"], address)
         self.assertEqual(env["USDB_MINER_THREADS"], "2")
@@ -154,11 +157,12 @@ class UsdbNodeTests(unittest.TestCase):
             NODE.default_bitcoin_rpc_user(layout),
         )
         self.assertIn("USDB P2P: public TCP/UDP 31303", output.getvalue())
+        self.assertIn("Release-approved balance-history snapshot", output.getvalue())
 
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "cancelled-data"
-        answers = iter([str(data_root), "full", "", "n", "22", "n"])
+        answers = iter([str(data_root), "full", "", "n", "22", "n", "n"])
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
@@ -167,6 +171,24 @@ class UsdbNodeTests(unittest.TestCase):
             )
         self.assertFalse(layout.node_env.exists())
         self.assertFalse((data_root / "secure/bitcoin-mainnet-rpcauth").exists())
+
+    def test_setup_can_select_the_release_approved_snapshot(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "snapshot-setup-data"
+        answers = iter([str(data_root), "full", "", "n", "22", "y", "y", "n"])
+        with mock.patch.object(
+            NODE,
+            "_disk_free_bytes",
+            return_value=NODE._snapshot_required_free_bytes(layout.snapshot),
+        ):
+            result = NODE.setup_node(
+                layout,
+                input_fn=lambda _prompt: next(answers),
+                output=io.StringIO(),
+            )
+        self.assertTrue(result.install_snapshot)
+        self.assertFalse(result.apply_firewall)
+        self.assertEqual(NODE.read_env(result.node_env)["SNAPSHOT_MODE"], "none")
 
     def test_detect_ssh_server_port_uses_server_side_port(self) -> None:
         self.assertEqual(
@@ -376,29 +398,35 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(updated["USDB_BOOTNODES"], "enode://example")
 
     def _installed_snapshot_fixture(self, data_root: Path) -> mock.Mock:
-        release_id = "balance-history-bitcoin-h963800-0123456789abcdef"
+        record = NODE._approved_snapshot_record(NODE.load_release_layout(self.root, self.node_env))
+        release_id = record["snapshot_release_id"]
+        by_role = {item["role"]: item for item in record["files"]}
         release_dir = data_root / "releases/balance-history" / release_id
         release_dir.mkdir(parents=True)
-        snapshot = release_dir / "bootstrap.db"
+        snapshot = release_dir / by_role["snapshot_db"]["path"]
         snapshot.write_bytes(b"snapshot")
-        manifest = release_dir / "bootstrap.manifest.json"
+        manifest = release_dir / by_role["snapshot_manifest"]["path"]
         manifest.write_text(
             json.dumps(
                 {
                     "manifest_version": "balance-history-snapshot-manifest:v3",
                     "file_name": snapshot.name,
                     "file_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
-                    "state_ref": {"block_height": 963800},
+                    "state_ref": {
+                        "block_height": 963800,
+                        "stable_block_hash": record["btc_block_hash"],
+                        "snapshot_id": record["snapshot_id"],
+                    },
                     "db_identity": {"btc_network": "bitcoin"},
                     "balance_query_floor": 963800,
                     "history_query_floor": 963801,
                     "signature_scheme": "ed25519",
-                    "signing_key_id": "mainnet-snapshot-1",
+                    "signing_key_id": record["trusted_keys"]["signing_key_id"],
                 }
             ),
             encoding="utf-8",
         )
-        signature = release_dir / "bootstrap.manifest.sig"
+        signature = release_dir / by_role["snapshot_signature"]["path"]
         signature.write_text("signature", encoding="utf-8")
         return mock.Mock(
             release_id=release_id,
@@ -426,24 +454,25 @@ class UsdbNodeTests(unittest.TestCase):
         )
         installed = self._installed_snapshot_fixture(data_root)
         with mock.patch.object(NODE, "install_snapshot_artifact", return_value=installed) as install:
-            result = NODE.install_snapshot_release(
-                layout,
-                record_url="https://snapshots.example.test/snapshot-records/v2/" + "1" * 64 + ".json",
-            )
+            result = NODE.install_snapshot_release(layout)
         self.assertEqual(result, installed.release_dir)
         env = NODE.read_env(layout.node_env)
         self.assertEqual(env["SNAPSHOT_MODE"], "balance-history")
         self.assertEqual(
             env["BH_SNAPSHOT_FILE"],
-            f"/snapshots/{installed.release_id}/bootstrap.db",
+            f"/snapshots/{installed.release_id}/{installed.snapshot_file.name}",
         )
         self.assertEqual(
             env["BH_SNAPSHOT_MANIFEST"],
-            f"/snapshots/{installed.release_id}/bootstrap.manifest.json",
+            f"/snapshots/{installed.release_id}/{installed.manifest_file.name}",
         )
         install.assert_called_once()
         self.assertEqual(install.call_args.kwargs["expected_network"], "bitcoin")
         self.assertEqual(install.call_args.kwargs["max_height"], 963800)
+        self.assertEqual(
+            install.call_args.kwargs["record_url"],
+            layout.snapshot["record"]["url"],
+        )
 
     def test_snapshot_install_rejects_initialized_database_before_download(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -464,11 +493,48 @@ class UsdbNodeTests(unittest.TestCase):
         (database / "CURRENT").write_text("initialized", encoding="utf-8")
         with mock.patch.object(NODE, "install_snapshot_artifact") as install:
             with self.assertRaisesRegex(ValueError, "after balance-history DB initialization"):
-                NODE.install_snapshot_release(
-                    layout,
-                    record_url="https://snapshots.example.test/snapshot-records/v2/" + "1" * 64 + ".json",
-                )
+                NODE.install_snapshot_release(layout)
         install.assert_not_called()
+
+    def test_snapshot_selection_survives_interrupted_download_and_blocks_runtime(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "interrupted-snapshot-data"
+        NODE.configure_node(
+            layout,
+            data_root=data_root,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        with mock.patch.object(
+            NODE,
+            "install_snapshot_artifact",
+            side_effect=ValueError("download interrupted"),
+        ):
+            with self.assertRaisesRegex(ValueError, "download interrupted"):
+                NODE.install_snapshot_release(layout)
+        env = NODE.read_env(layout.node_env)
+        self.assertEqual(env["SNAPSHOT_MODE"], "balance-history")
+        network = NODE.validate_network_bundle(layout.bundle_dir)
+        with self.assertRaisesRegex(ValueError, "required snapshot artifact is missing"):
+            NODE.validate_node_env(layout.node_env, network, True, False)
+
+    def test_snapshot_cli_rejects_arbitrary_record_url(self) -> None:
+        parser = NODE.build_parser()
+        with mock.patch("sys.stderr", new=io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(
+                    [
+                        "snapshot",
+                        "install",
+                        "--record-url",
+                        "https://unapproved.example/snapshot-record.json",
+                    ]
+                )
 
 
 if __name__ == "__main__":

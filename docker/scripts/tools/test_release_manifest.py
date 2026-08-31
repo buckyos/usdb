@@ -75,9 +75,17 @@ class ReleaseManifestTests(unittest.TestCase):
     def test_candidate_round_trip_is_stable(self) -> None:
         manifest = self.valid_manifest()
         self.assertEqual(manifest, self.valid_manifest())
+        snapshot = manifest["snapshot"]
+        self.assertEqual(snapshot["status"], "available")
+        self.assertEqual(snapshot["bootstrap_mode"], "optional-signed-snapshot")
+        self.assertEqual(snapshot["height"], 963800)
         self.assertEqual(
-            manifest["snapshot"],
-            {"status": "not_used", "bootstrap_mode": "full-sync"},
+            snapshot["record"]["sha256"],
+            "aca7ac6a9c083e840977d846018514945ab089e7a804cafbfb1c65a40583338f",
+        )
+        self.assertEqual(
+            snapshot["trusted_keys"]["sha256"],
+            "ba92705824a6de913de2b64b9804687c50dc9d2e5b3aa6f61de5c169e5afc1d6",
         )
         self.assertEqual(
             manifest["network_bundle"]["genesis_block_hash"],
@@ -152,6 +160,30 @@ class ReleaseManifestTests(unittest.TestCase):
         network_path.write_text(json.dumps(network), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "unexpected testnet-v0 chain ID"):
             RELEASE.validate_manifest(manifest, self.bundle, self.compatibility_lock)
+
+    def test_snapshot_record_or_release_binding_tamper_is_rejected(self) -> None:
+        manifest = self.valid_manifest()
+        tampered = copy.deepcopy(manifest)
+        tampered["snapshot"]["record"]["url"] = "https://example.test/record.json"
+        with self.assertRaisesRegex(ValueError, "snapshot state does not match"):
+            RELEASE.validate_manifest(tampered, self.bundle, self.compatibility_lock)
+
+        record_path = self.bundle / RELEASE.SNAPSHOT_RECORD_RELATIVE_PATH
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["height"] += 1
+        record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "snapshot release ID does not match"):
+            self.valid_manifest()
+
+    def test_snapshot_catalog_bytes_must_match_release_record(self) -> None:
+        catalog = self.bundle / "trust/usdb-mainnet-snapshot-v1.trusted-keys.json"
+        catalog.write_bytes(catalog.read_bytes() + b"\n")
+        network_path = self.bundle / "network.json"
+        network = json.loads(network_path.read_text(encoding="utf-8"))
+        network["artifacts"]["snapshot_trusted_keys"]["sha256"] = RELEASE.sha256(catalog)
+        network_path.write_text(json.dumps(network, indent=2) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "trusted-key catalog hash mismatch"):
+            self.valid_manifest()
 
     def test_selected_revision_must_match_go_compatibility_lock(self) -> None:
         lock = json.loads(self.compatibility_lock.read_text(encoding="utf-8"))

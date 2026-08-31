@@ -89,7 +89,9 @@ SourceDAO full bootstrap config 已随 bundle 冻结，但 bootstrap private key
 ## 尚未冻结
 
 - 三个发布镜像的 digest 与最终三仓 release manifest；candidate workflow 已具备，但尚待实际 artifact。
-- snapshot 分发 artifact 尚未发布；当前 candidate 明确记录 `snapshot.status=not_used`。
+- release-approved snapshot record 已冻结为 BTC height `963800` 的 content-addressed artifact；candidate
+  和 publish 必须确认公开 record、对象长度和 DB byte-range 可用。节点仍可在 `setup` 中选择 full sync，
+  选择 snapshot 时再逐文件完成 SHA-256 与签名校验。
 - 三台机器的 bootnode enode、外部 IP 和 miner pass。
 - 正式 PoW calibration 报告。
 - SourceDAO bootstrap 执行记录和完成 checkpoint。

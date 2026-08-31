@@ -136,7 +136,7 @@ SourceDAO bootstrap 的完整权威输入是
 | PoW 校准 | 目标硬件报告、最终 genesis/minimum difficulty | 若改 genesis 则是 |
 | 三仓 revision | `go-ethereum`、`usdb`、`SourceDAO` commit | 未启动前重新生成 bundle |
 | 发布镜像 | services/chain/Bitcoin Core 三个 OCI digest、构建日志/SBOM | 仅共识兼容替换可不重置 |
-| Balance-history bootstrap | `full-sync` 或 snapshot height/hash、snapshot ID、文件 SHA、签名 | snapshot 本身否；BTC origin 改变则是 |
+| Balance-history bootstrap | release-approved snapshot record、height/hash、snapshot ID、文件 SHA、签名；节点可选择 full sync | snapshot 本身否；BTC origin 改变则是 |
 | BTC origin anchor | BTC block `963800` 的 canonical block hash | origin/hash 身份变化则是 |
 | Bootnodes | enode、外部 IP、端口和节点所有者 | 否 |
 | 初始 miner | active standard pass ID、owner、`usdb_main`、首次 profile/state-ref | 否，但未满足则不能开挖 |
@@ -159,8 +159,9 @@ SourceDAO bootstrap 的完整权威输入是
 | `artifacts/usdb-genesis.json` | 最终不可变 genesis/chain config/alloc |
 | `artifacts/usdb-genesis.manifest.json` | genesis 文件与生成输入 hash |
 | `artifacts/sourcedao-bootstrap-config.json` | accepted SourceDAO 初始化参数 |
-| `artifacts/bootstrap-manifest.json` | control-plane 默认启动门禁；testnet-v0 首节点为 full-sync |
+| `artifacts/bootstrap-manifest.json` | control-plane 默认启动门禁；保持 `none`，snapshot 是节点显式选择而非网络强制模式 |
 | `trust/*.trusted-keys.json` | snapshot public trust catalog；不含 private key |
+| `snapshots/balance-history-snapshot-release-record.json` | release-approved 可选 snapshot record；不属于 genesis/chain identity |
 | 未提交的 `node.env` | image digest、Bitcoin 数据/RPC、snapshot 模式、节点角色、bootnodes、miner、资源限制 |
 
 `validate_network_bundle.py` 对重复字段执行 fail-closed 解析，并交叉校验 chain ID、BTC source、origin、
@@ -201,7 +202,9 @@ development 环境与必须执行 signer 隔离门禁的 testnet/mainnet。
 
 1. `validate_network_bundle.py` 和 genesis roundtrip 通过。
 2. PoW 校准值已决定；如有变化，重新生成 genesis 和所有 hash。
-3. balance-history full-sync 达到 consensus readiness；使用 snapshot 时再要求独立安装验证。
+3. candidate/publish 已验证 release-approved snapshot 的公开 record、对象长度与 DB byte-range；节点选择
+   snapshot 时完成签名、逐文件哈希和原子安装验证，选择 full sync 时等待 balance-history 达到
+   consensus readiness。
 4. 三仓 revision、镜像 digest、trusted catalog 和所有 artifact hash 已写入 release manifest。
 5. SourceDAO 配置、管理员、token 分配和委员会完成双人 review。
 6. 初始 miner pass 在选定 BTC state-ref 下为 active standard，recipient 正确。

@@ -325,6 +325,66 @@ class SnapshotDistributionTests(unittest.TestCase):
                     trusted_keys=wrong_catalog,
                 )
 
+    def test_public_verifier_checks_record_and_every_object_size(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        calls: list[tuple[str, str]] = []
+
+        def read_public(url: str, *, method: str) -> tuple[bytes, int, str]:
+            calls.append((method, url))
+            if method == "GET":
+                content = record_path.read_bytes()
+                return content, len(content), url
+            item = next(item for item in record["files"] if url.endswith(item["object_key"]))
+            return b"", item["size"], url
+
+        with mock.patch.object(DISTRIBUTION, "_read_public_url", side_effect=read_public):
+            with mock.patch.object(DISTRIBUTION, "_probe_public_byte_range") as probe_range:
+                verified = DISTRIBUTION.verify_public_release(record_path, self.trusted_keys)
+        self.assertEqual(verified["record_sha256"], record_sha256)
+        self.assertEqual(verified["verified_file_count"], 4)
+        self.assertTrue(verified["snapshot_db_byte_range_verified"])
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(calls[0][0], "GET")
+        self.assertTrue(all(method == "HEAD" for method, _url in calls[1:]))
+        snapshot_file = next(item for item in record["files"] if item["role"] == "snapshot_db")
+        probe_range.assert_called_once_with(
+            f"{record['public_base_url']}/{snapshot_file['object_key']}",
+            snapshot_file["size"],
+        )
+
+    def test_public_verifier_rejects_incomplete_object(self) -> None:
+        record_path, record, _record_sha256 = self.prepare()
+
+        def read_public(url: str, *, method: str) -> tuple[bytes, int, str]:
+            if method == "GET":
+                content = record_path.read_bytes()
+                return content, len(content), url
+            item = next(item for item in record["files"] if url.endswith(item["object_key"]))
+            return b"", item["size"] - 1, url
+
+        with mock.patch.object(DISTRIBUTION, "_read_public_url", side_effect=read_public):
+            with mock.patch.object(DISTRIBUTION, "_probe_public_byte_range"):
+                with self.assertRaisesRegex(ValueError, "public snapshot object size mismatch"):
+                    DISTRIBUTION.verify_public_release(record_path, self.trusted_keys)
+
+    def test_public_byte_range_probe_requires_partial_content(self) -> None:
+        url = "https://snapshots.example/snapshot.db"
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.geturl.return_value = url
+        response.status = 206
+        response.headers = {"Content-Range": "bytes 0-0/10"}
+        response.read.return_value = b"x"
+        with mock.patch.object(DISTRIBUTION, "urlopen", return_value=response) as open_url:
+            DISTRIBUTION._probe_public_byte_range(url, 10)
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.get_header("Range"), "bytes=0-0")
+
+        response.status = 200
+        with mock.patch.object(DISTRIBUTION, "urlopen", return_value=response):
+            with self.assertRaisesRegex(ValueError, "does not support byte ranges"):
+                DISTRIBUTION._probe_public_byte_range(url, 10)
+
 
 if __name__ == "__main__":
     unittest.main()

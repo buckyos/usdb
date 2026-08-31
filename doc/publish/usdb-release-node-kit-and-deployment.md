@@ -95,6 +95,7 @@ bootnode，以及是否开放 Bitcoin 入站 P2P。它从当前 `SSH_CONNECTION`
 - 写入权限为 `0600` 的 `node.env`；
 - 校验 release/network identity、RPC credential 和所有安全 bind address。
 - 保存已确认的 operator SSH port；
+- 显示 release-approved snapshot 的高度、下载量和建议剩余空间，并询问使用 snapshot 还是 full sync；
 - 询问是否立即应用并验证 UFW profile，默认是 `yes`。
 
 UFW 写操作会再次显示确认问题，并通过 sudo 在放行 SSH 后才启用默认拒绝入站策略。选择不应用时，`setup`
@@ -110,17 +111,21 @@ P2P 和 operator API 的实际 bind policy。高级入口为 `usdb-node firewall
 
 `setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。角色切换使用 `set-role`，不重新生成 secret。
 
-正式 snapshot 是可选启动加速器。取得经过 review 的 content-addressed record URL 后，在第一次
-`up` 前执行：
+正式 snapshot 是可选启动加速器。release manifest 已冻结经过 review 的 content-addressed record、
+高度、BTC block hash、snapshot ID、下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
+询问是否使用；选择后会直接执行可续传安装，不要求运维人员填写 URL。
+
+若 `setup` 中选择 full sync，之后仍可在 balance-history 第一次启动前执行：
 
 ```bash
-usdb-node snapshot install --record-url \
-  https://usdb-snapshot.tbudr.top/snapshot-records/v2/<record-sha256>.json
+usdb-node snapshot install
 ```
 
-该命令不需要 S3 凭证；它先校验小 record 与 bundle trusted-key catalog，再断点下载大文件、逐文件
-校验、原子发布并更新 `node.env`。snapshot 高度高于当前 bundle index origin、network/catalog 不匹配、
-或 balance-history DB 已初始化时都会失败关闭。完整操作见
+该命令只使用当前 release 批准的 record，不接受任意 URL，也不需要 S3 凭证。它先把 snapshot 选择写入
+`node.env`，再校验小 record 与 bundle trusted-key catalog、断点下载大文件、逐文件校验并原子发布。
+下载中断后 `up` 会因 runtime artifact 缺失而失败关闭；重跑同一命令会续传。snapshot 高度高于当前
+bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-history DB 已初始化时都会失败关闭。
+完整操作见
 [Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
 
 `doctor` 是一次性、只读的启动前检查，不是后台健康监控服务。它会检查：
@@ -246,7 +251,7 @@ GPU remote sealer 使用 `--miner-threads 0`。Joiner 在首次 `configure` 时�
 - SourceDAO Bootstrap Admin 私钥使用和链上 bootstrap；
 - miner address 与 Active Standard pass 的上线复核；
 - PoW calibration、release approval 和深 BTC reorg 整网重置批准；
-- snapshot 来源、签名和 paired checkpoint 选择。
+- 是否采用 release-approved snapshot，以及 paired checkpoint 恢复选择。
 
 SourceDAO bootstrap 保持独立，是因为 node kit 不应接触管理员私钥。未来可以增加一个只生成待签交易和
 验收报告的子命令，但不能把 signer secret 放入 Compose environment。
@@ -260,7 +265,7 @@ SourceDAO bootstrap 保持独立，是因为 node kit 不应接触管理员私�
 - 配置拒绝覆盖和 role 原子更新；
 - Bitcoin/runtime 启动调用顺序；
 - installer checksum、release identity 和幂等安装。
-- snapshot content-addressed record、断点 staging、原子选择和已有 DB 拒绝。
+- release-approved snapshot binding、setup 选择、断点 staging、原子安装、中断阻断和已有 DB 拒绝。
 
 仍需在新 release ID 上完成 GitHub workflow 产物检查，并在空白目标机执行一次从 installer、可选
 R2 snapshot 到三类 image、Bitcoin IBD/resume 和完整 runtime readiness 的跨进程 E2E。

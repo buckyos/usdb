@@ -10,10 +10,10 @@
 - digest-pinned GHCR images；
 - SourceDAO bootstrap 由独立运维机执行，私钥不进入节点 Compose。
 
-Snapshot 只是 balance-history 的启动加速器。没有正式 record URL 时保持 `SNAPSHOT_MODE=none`，节点仍会
-建立完整 UTXO、balance、block commit 和 state-ref；只有同步耗时不同，最终共识视图不应不同。若使用
-snapshot，应在 `setup` 后、首次 `up` 前运行 `usdb-node snapshot install --record-url ...`，不得手工改写
-高度或文件路径。
+Snapshot 只是 balance-history 的启动加速器。release 未批准 snapshot 或在 `setup` 中选择 full sync 时，
+节点保持 `SNAPSHOT_MODE=none`，仍会建立完整 UTXO、balance、block commit 和 state-ref；只有同步耗时不同，
+最终共识视图不应不同。使用 snapshot 时由 `setup` 读取 release manifest 并执行安装；中断后运行
+`usdb-node snapshot install` 续传，不得手工填写 URL、改写高度或文件路径。
 
 ## 2. 当前发布级别
 
@@ -205,6 +205,10 @@ digest 和 UFW 只读检查，不会拉取 image、启动服务或修改配置�
 bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当前 SSH 会话检测并要求确认，随后写入
 节点本地配置。只有角色、miner 地址、bootnode、SSH port 无法正确检测和确实需要开放 Bitcoin 入站时才需要
 运维修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
+
+release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
+建议剩余空间和当前磁盘空间，并询问是否使用；选择后直接开始可断点续传安装，不需要填写 URL 或 S3 凭证。
+选择 full sync 仍受支持。下载中断时重跑 `usdb-node snapshot install`，完成后再执行 `doctor/up`。
 
 `setup` 最后询问是否应用 UFW，默认 `yes`。它会先保留确认的 SSH 端口，再开放 `31303/TCP+UDP`，并按
 Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：

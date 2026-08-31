@@ -177,13 +177,11 @@ trusted_keys_file = "/etc/usdb/snapshot-keys/usdb-mainnet-snapshot-v1.trusted-ke
 | joiner | 仅使用公开 bundle、catalog 和 snapshot 即可启动 |
 | 无 snapshot | 仍可从创世同步，snapshot 不是共识前提 |
 
-## 8. 尚未完成
+## 8. 后续工作
 
-- 正式 mainnet signer 和 public catalog 尚未冻结；
-- binary bundle/install script 尚未实现；
-- 最终 published release manifest 的 snapshot record URL/hash 扩展尚未冻结；
-- binary/OCI signing、SBOM 和正式 CI 尚未落地；
-- catalog rotation/revocation 的公开渠道和演练尚未完成。
+- mainnet 使用独立 signer/catalog，并完成 rotation/revocation 公开渠道和演练；
+- 为 snapshot 发布补充独立 SBOM/长期 provenance 归档；
+- 在 `r3` 真机部署中完成公开 R2 下载、断点恢复、安装后 state-ref 和多节点 joiner 验证。
 
-在这些事项完成前，可以通过 R2 工具链生成和验证正式候选 snapshot，但面向第三方的 public
-distribution 仍应标记为 candidate，而不是最终 promoted release。
+testnet-v0 release manifest v4 已冻结官方 record URL/hash、signer、catalog、height 和文件 inventory；
+snapshot DB 仍独立存放在对象存储，不进入 GitHub Release。

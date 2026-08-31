@@ -19,7 +19,7 @@ BUILDER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BUILDER
 SPEC.loader.exec_module(BUILDER)
 
-from release_manifest import build_network_identity
+from release_manifest import build_network_identity, build_snapshot_state
 
 REPOSITORY_ROOT = MODULE_PATH.resolve().parents[3]
 SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
@@ -35,9 +35,10 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.manifest = self.root / "usdb-release-manifest.json"
         content = json.dumps(
             {
-                "schema_version": "usdb-release-manifest:v3",
+                "schema_version": "usdb-release-manifest:v4",
                 "release_id": "usdb-testnet-v0-r1",
                 "network_bundle": build_network_identity(self.bundle),
+                "snapshot": build_snapshot_state(self.bundle),
                 "images": {
                     "usdb_services": {
                         "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"

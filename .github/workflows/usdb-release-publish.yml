@@ -262,7 +262,18 @@ jobs:
             echo "chain_image=$(jq -er '.images.usdb_chain.reference' "$manifest")"
             echo "bitcoin_image=$(jq -er '.images.bitcoin_core.reference' "$manifest")"
             echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+            echo "snapshot_height=$(jq -er '.snapshot.height' "$manifest")"
+            echo "snapshot_record_url=$(jq -er '.snapshot.record.url' "$manifest")"
+            echo "snapshot_release_id=$(jq -er '.snapshot.snapshot_release_id' "$manifest")"
           } >>"$GITHUB_OUTPUT"
+
+      - name: Reverify approved snapshot publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 usdb/docker/scripts/tools/snapshot_distribution.py verify-public \
+            --record usdb/docker/networks/testnet-v0/snapshots/balance-history-snapshot-release-record.json \
+            --trusted-keys usdb/docker/networks/testnet-v0/trust/usdb-mainnet-snapshot-v1.trusted-keys.json
 
       - name: Reverify OCI image provenance
         shell: bash
@@ -379,6 +390,9 @@ jobs:
           MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
           RELEASE_ID: ${{ inputs.release_id }}
           SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
+          SNAPSHOT_HEIGHT: ${{ steps.manifest.outputs.snapshot_height }}
+          SNAPSHOT_RECORD_URL: ${{ steps.manifest.outputs.snapshot_record_url }}
+          SNAPSHOT_RELEASE_ID: ${{ steps.manifest.outputs.snapshot_release_id }}
           SOURCE_DAO_REVISION: ${{ steps.manifest.outputs.source_dao_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
         run: |
@@ -396,6 +410,8 @@ jobs:
           - SourceDAO revision: \`${SOURCE_DAO_REVISION}\`
           - Candidate manifest SHA-256: \`${MANIFEST_SHA256}\`
           - Candidate validation: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/attempts/${CANDIDATE_RUN_ATTEMPT}
+          - Optional balance-history snapshot: \`${SNAPSHOT_RELEASE_ID}\` at BTC height \`${SNAPSHOT_HEIGHT}\`
+          - Snapshot record: ${SNAPSHOT_RECORD_URL}
 
           Digest-pinned images:
 

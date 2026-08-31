@@ -23,8 +23,12 @@ from validate_network_bundle import (  # noqa: E402
     sha256,
     validate_network_bundle,
 )
+from snapshot_distribution import validate_release_record  # noqa: E402
 
-SCHEMA_VERSION = "usdb-release-manifest:v3"
+SCHEMA_VERSION = "usdb-release-manifest:v4"
+SNAPSHOT_RECORD_RELATIVE_PATH = Path(
+    "snapshots/balance-history-snapshot-release-record.json"
+)
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -125,13 +129,74 @@ def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def build_snapshot_state(bundle_dir: Path) -> dict[str, str]:
+def _canonical_json(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def build_snapshot_state(bundle_dir: Path) -> dict[str, Any]:
     bootstrap = read_json(bundle_dir / "artifacts/bootstrap-manifest.json")
     mode = bootstrap.get("balance_history_snapshot_mode")
-    if mode == "none":
+    require(mode == "none", "release-approved snapshot must remain an optional node choice")
+    record_path = bundle_dir / SNAPSHOT_RECORD_RELATIVE_PATH
+    if not record_path.exists():
         return {"status": "not_used", "bootstrap_mode": "full-sync"}
-    require(mode == "balance-history", "unsupported balance-history snapshot mode in bundle")
-    return {"status": "pending", "bootstrap_mode": "signed-snapshot"}
+    require(record_path.is_file() and not record_path.is_symlink(), "snapshot release record must be a regular file")
+    record = read_json(record_path)
+    validate_release_record(record)
+    require(
+        record_path.read_bytes() == _canonical_json(record),
+        "snapshot release record must use canonical JSON encoding",
+    )
+
+    network = validate_network_bundle(bundle_dir)
+    network_names = {"btc-mainnet": "bitcoin", "btc-regtest": "regtest"}
+    expected_network = network_names.get(network["btc_source"]["network_id"])
+    require(expected_network is not None, "network bundle has no snapshot network mapping")
+    require(record["network"] == expected_network, "snapshot release record Bitcoin network mismatch")
+    require(
+        record["height"] <= network["btc_source"]["index_origin_height"],
+        "snapshot release record height exceeds BTC index origin",
+    )
+
+    trusted_artifact = network["artifacts"]["snapshot_trusted_keys"]
+    trusted_path = bundle_dir / trusted_artifact["path"]
+    require(
+        trusted_path.name == record["trusted_keys"]["file_name"],
+        "snapshot release record trusted-key catalog name mismatch",
+    )
+    trusted_sha256 = sha256(trusted_path)
+    require(
+        trusted_sha256 == trusted_artifact["sha256"] == record["trusted_keys"]["sha256"],
+        "snapshot release record trusted-key catalog hash mismatch",
+    )
+
+    record_sha256 = sha256(record_path)
+    record_url = (
+        f"{record['public_base_url']}/snapshot-records/v2/{record_sha256}.json"
+    )
+    download_size = sum(item["size"] for item in record["files"])
+    snapshot_file = next(item for item in record["files"] if item["role"] == "snapshot_db")
+    return {
+        "status": "available",
+        "bootstrap_mode": "optional-signed-snapshot",
+        "record": {
+            "path": SNAPSHOT_RECORD_RELATIVE_PATH.as_posix(),
+            "url": record_url,
+            "sha256": record_sha256,
+        },
+        "snapshot_release_id": record["snapshot_release_id"],
+        "artifact_set_id": record["artifact_set_id"],
+        "height": record["height"],
+        "btc_block_hash": record["btc_block_hash"],
+        "snapshot_id": record["snapshot_id"],
+        "download_size_bytes": download_size,
+        "snapshot_db_size_bytes": snapshot_file["size"],
+        "trusted_keys": {
+            "path": trusted_artifact["path"],
+            "sha256": trusted_sha256,
+            "signing_key_id": record["trusted_keys"]["signing_key_id"],
+        },
+    }
 
 
 def build_compatibility_lock(path: Path, revisions: dict[str, str]) -> dict[str, str]:
@@ -263,7 +328,7 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
     )
     require(manifest["schema_version"] == SCHEMA_VERSION, "unsupported release manifest schema")
     require(isinstance(manifest["release_id"], str) and RELEASE_ID_RE.fullmatch(manifest["release_id"]) is not None, "invalid release_id")
-    require(manifest["stage"] == "candidate", "v1 generator only accepts candidate manifests")
+    require(manifest["stage"] == "candidate", "release generator only accepts candidate manifests")
     require_created_at(manifest["created_at_utc"])
     require_no_runtime_secrets(manifest)
 

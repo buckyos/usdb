@@ -30,7 +30,7 @@
     },
     "snapshot_trusted_keys": {
       "path": "trust/usdb-mainnet-snapshot-v1.trusted-keys.json",
-      "sha256": "ae6d48debc9e665d48c2316e715308f59065421a6f490107cbafc794a758c8ef"
+      "sha256": "ba92705824a6de913de2b64b9804687c50dc9d2e5b3aa6f61de5c169e5afc1d6"
     },
     "bootstrap_manifest": {
       "path": "artifacts/bootstrap-manifest.json",

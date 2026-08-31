@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 
 RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v2"
@@ -651,6 +652,94 @@ def upload_release(record_path: Path, source_dir: Path, client: Any) -> dict[str
     }
 
 
+def _read_public_url(url: str, *, method: str) -> tuple[bytes, int, str]:
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            request = Request(url, method=method, headers={"User-Agent": "usdb-snapshot-verifier/1"})
+            with urlopen(request, timeout=30) as response:  # noqa: S310 - URL is validated below.
+                final_url = response.geturl()
+                _require(urlparse(final_url).scheme == "https", "public snapshot redirect must remain HTTPS")
+                length_value = response.headers.get("Content-Length")
+                _require(length_value is not None and length_value.isdigit(), f"public object has no valid Content-Length: {url}")
+                return (response.read() if method == "GET" else b"", int(length_value), final_url)
+        except OSError as error:
+            last_error = error
+            if attempt < 3:
+                time.sleep(2**attempt)
+    assert last_error is not None
+    raise ValueError(f"public snapshot request failed for {url}: {last_error}") from last_error
+
+
+def _probe_public_byte_range(url: str, expected_size: int) -> None:
+    last_error: OSError | None = None
+    for attempt in range(4):
+        try:
+            request = Request(
+                url,
+                method="GET",
+                headers={
+                    "Range": "bytes=0-0",
+                    "User-Agent": "usdb-snapshot-verifier/1",
+                },
+            )
+            with urlopen(request, timeout=30) as response:  # noqa: S310 - URL is validated by the signed record.
+                _require(
+                    urlparse(response.geturl()).scheme == "https",
+                    "public snapshot redirect must remain HTTPS",
+                )
+                _require(response.status == 206, f"public snapshot object does not support byte ranges: {url}")
+                _require(
+                    response.headers.get("Content-Range") == f"bytes 0-0/{expected_size}",
+                    f"public snapshot object returned an invalid Content-Range: {url}",
+                )
+                _require(len(response.read(2)) == 1, f"public snapshot byte-range response is invalid: {url}")
+                return
+        except OSError as error:
+            last_error = error
+            if attempt < 3:
+                time.sleep(2**attempt)
+    assert last_error is not None
+    raise ValueError(f"public snapshot byte-range request failed for {url}: {last_error}") from last_error
+
+
+def verify_public_release(record_path: Path, trusted_keys: Path) -> dict[str, Any]:
+    record_file = record_path.expanduser().resolve()
+    record = _load_json(record_file)
+    validate_release_record(record)
+    record_content = record_file.read_bytes()
+    _require(record_content == _canonical_json(record), "snapshot release record is not canonical JSON")
+
+    trusted_path = trusted_keys.expanduser().resolve()
+    _require(trusted_path.is_file() and not trusted_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_path}")
+    _require(trusted_path.name == record["trusted_keys"]["file_name"], "trusted-key catalog file name does not match snapshot release record")
+    _require(_sha256(trusted_path) == record["trusted_keys"]["sha256"], "trusted-key catalog does not match snapshot release record")
+    _validate_trusted_catalog(trusted_path, record["trusted_keys"]["signing_key_id"])
+
+    record_sha256 = _sha256_bytes(record_content)
+    record_url = f"{record['public_base_url']}/snapshot-records/v2/{record_sha256}.json"
+    downloaded_record, record_size, _ = _read_public_url(record_url, method="GET")
+    _require(record_size == len(record_content), "public snapshot release record size mismatch")
+    _require(downloaded_record == record_content, "public snapshot release record content mismatch")
+
+    verified_size = 0
+    for item in record["files"]:
+        object_url = _quoted_object_url(record["public_base_url"], item["object_key"])
+        _, size, _ = _read_public_url(object_url, method="HEAD")
+        _require(size == item["size"], f"public snapshot object size mismatch: {item['object_key']}")
+        if item["role"] == "snapshot_db":
+            _probe_public_byte_range(object_url, item["size"])
+        verified_size += size
+    return {
+        "record_url": record_url,
+        "record_sha256": record_sha256,
+        "snapshot_release_id": record["snapshot_release_id"],
+        "verified_file_count": len(record["files"]),
+        "verified_size_bytes": verified_size,
+        "snapshot_db_byte_range_verified": True,
+    }
+
+
 def _quoted_object_url(base_url: str, object_key: str) -> str:
     return f"{base_url}/{'/'.join(quote(part, safe='') for part in PurePosixPath(object_key).parts)}"
 
@@ -862,6 +951,12 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--expected-network")
     install.add_argument("--max-height", type=int)
     install.add_argument("--curl-executable", default="curl", help=argparse.SUPPRESS)
+    verify_public = subparsers.add_parser(
+        "verify-public",
+        help="Verify the content-addressed record and public object availability",
+    )
+    verify_public.add_argument("--record", type=Path, required=True)
+    verify_public.add_argument("--trusted-keys", type=Path, required=True)
     return parser
 
 
@@ -895,7 +990,7 @@ def main() -> int:
                 executable=args.aws_executable,
             )
             _print_json(upload_release(args.record, args.source_dir, client))
-        else:
+        elif args.command == "install":
             installed = install_release(
                 record_url=args.record_url,
                 destination_root=args.destination_root,
@@ -915,6 +1010,8 @@ def main() -> int:
                     "snapshot_release_id": installed.release_id,
                 }
             )
+        else:
+            _print_json(verify_public_release(args.record, args.trusted_keys))
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Snapshot distribution failed: {error}", file=sys.stderr)

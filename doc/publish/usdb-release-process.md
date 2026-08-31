@@ -43,7 +43,8 @@ usdb-{testnet|mainnet}-v{network-generation}-r{release-sequence}
 - UIP/activation registry revision 和 chain config/genesis hash；
 - Rust/Go/Node、Bitcoin Core、ord 和容器工具版本；
 - 所有实际使用的 binary/image/config/contract/snapshot artifact 的 SHA-256 或 OCI digest；
-- 使用 snapshot 时记录 signer ID 和 trusted-key catalog SHA-256；不使用时显式记录 `not_used`；
+- release 提供 snapshot 时记录 content-addressed record URL/hash、height、BTC block hash、snapshot ID、
+  signer ID 和 trusted-key catalog SHA-256；节点是否采用它仍属于本地显式选择；
 - 负责构建、复核和批准发布的人员；
 - 已运行的测试集合及原始报告路径。
 
@@ -155,7 +156,7 @@ public release。上线时至少需要：
 
 随着流程落地，本目录建议继续增加：
 
-- `release-manifest-promotion.md`：从 candidate schema 补齐 snapshot、测试证据和批准记录后发布；
+- `release-manifest-promotion.md`：复核 candidate 已冻结的 snapshot identity，补齐测试证据和批准记录后发布；
 - `usdb-chain-genesis-release.md`：genesis、chain config 和 activation binding 发布；
 - `sourcedao-release-and-bootstrap.md`：合约 artifact 和 bootstrap；
 - `github-ci-image-and-release-publishing.md`：OCI candidate build、SBOM、digest、attestation 和跨仓 manifest；

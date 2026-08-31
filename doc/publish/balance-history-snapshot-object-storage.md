@@ -192,19 +192,21 @@ curl -fsSL "${RECORD_URL}" | sha256sum
 
 ```bash
 usdb-node setup
-usdb-node snapshot install --record-url "${RECORD_URL}"
+# setup 选择 snapshot 后会直接安装；中断时执行：
+usdb-node snapshot install
 usdb-node doctor
 usdb-node up
 ```
 
-`snapshot install` 会：
+标准节点命令不接受自由输入的 record URL；它从当前 release manifest 读取并复核已批准 URL/哈希。
+`RECORD_URL` 仅用于本页前面的发布者审计。`snapshot install` 会：
 
 1. 先下载较小的 content-addressed release record；
 2. 在下载 DB 前校验 record schema、network、network bundle 的 index origin 和本地 trusted catalog；
 3. 使用 `curl --continue-at -` 下载到 `.part`；
 4. 对每个文件校验 size 和 SHA-256；
 5. 原子发布到 `<USDB_DATA_ROOT>/releases/balance-history/<snapshot-release-id>`；
-6. 原子更新 bundle-scoped `node.env` 中的 snapshot mode 和 `/snapshots/<release-id>/...` 路径；
+6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
 7. 重新执行 runtime snapshot validator。
 
 中断后重跑同一命令会复用 `.part` 和 staging 文件。已有同 ID 完整目录会逐文件复核；不同内容不会被
@@ -235,5 +237,5 @@ indexer 在大文件下载前拒绝该 record。不要通过修改 node.env 绕�
 - 使用真实 R2 凭证的小文件 upload/head/download smoke；
 - 最新主网大 DB 的中断上传和 HTTP Range 恢复；
 - 空白目标机通过 `usdb-node snapshot install` 启动并核对 provenance/state-ref；
-- 将 review 后的 record URL/hash 纳入未来 release manifest，而不是使用 mutable latest alias；
+- 完成 manifest v4 已冻结 record URL/hash 的首个真实节点下载、安装和 state-ref 验收；
 - paired-checkpoint 对象存储 schema 和真实 joiner 演练。
