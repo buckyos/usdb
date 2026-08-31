@@ -71,9 +71,10 @@ def resolve_candidate(
     matching_runs = [
         run
         for run in runs
+        # display_title is presentation text; immutable run/ref fields below
+        # and the artifact's workflow_run linkage define candidate identity.
         if isinstance(run, dict)
         and _workflow_path_matches(run.get("path"))
-        and run.get("display_title") == f"USDB candidate {release_id}"
         and run.get("event") == "workflow_dispatch"
         and run.get("status") == "completed"
         and run.get("conclusion") == "success"

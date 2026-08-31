@@ -93,6 +93,12 @@ class ReleasePublishResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one successful candidate"):
             self.resolve()
 
+    def test_display_title_is_not_part_of_candidate_identity(self) -> None:
+        self.run["display_title"] = (
+            f"USDB candidate {self.release_id} from {self.release_id}"
+        )
+        self.assertEqual(self.resolve()["candidate_run_id"], str(self.run_id))
+
     def test_release_workflows_derive_release_id_only_from_selected_tag(self) -> None:
         candidate = CANDIDATE_WORKFLOW.read_text(encoding="utf-8")
         publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
