@@ -497,6 +497,7 @@ version = "0.1.0"
 dependencies = [
  "balance-history",
  "bitcoincore-rpc",
+ "chrono",
  "clap",
  "log",
  "named-lock",

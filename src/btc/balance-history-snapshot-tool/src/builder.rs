@@ -10,6 +10,7 @@ use balance_history::{
     BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotIndexer, SyncStatusManager,
     build_historical_state_ref_at_height, manifest_path_for_snapshot_file,
 };
+use chrono::Local;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -17,10 +18,67 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use usdb_util::{BTCRpcClient, get_memory_usage_snapshot};
 
 const VERIFICATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+fn verification_phase_name(phase: SnapshotVerificationPhase) -> &'static str {
+    match phase {
+        SnapshotVerificationPhase::FileHash => "file_hash",
+        SnapshotVerificationPhase::IntegrityCheck => "integrity_check",
+        SnapshotVerificationPhase::BalanceHistoryCount => "balance_history_count",
+        SnapshotVerificationPhase::UtxoCount => "utxo_count",
+        SnapshotVerificationPhase::BlockCommitCount => "block_commit_count",
+        SnapshotVerificationPhase::ScriptRegistryCount => "script_registry_count",
+        SnapshotVerificationPhase::CommitIdentity => "commit_identity",
+    }
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    format!("{hours:02}:{minutes:02}:{seconds:02}")
+}
+
+fn format_verification_progress_line(
+    timestamp: &str,
+    event: &str,
+    height: u32,
+    phase: SnapshotVerificationPhase,
+    phase_elapsed: Duration,
+    verification_elapsed: Duration,
+) -> String {
+    format!(
+        "[{timestamp}] Snapshot verification {event}: height={height}, phase={}, phase_elapsed={}, verify_elapsed={}",
+        verification_phase_name(phase),
+        format_elapsed(phase_elapsed),
+        format_elapsed(verification_elapsed)
+    )
+}
+
+fn print_verification_progress(
+    event: &str,
+    height: u32,
+    phase: SnapshotVerificationPhase,
+    phase_elapsed: Duration,
+    verification_elapsed: Duration,
+) {
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+    eprintln!(
+        "{}",
+        format_verification_progress_line(
+            &timestamp.to_string(),
+            event,
+            height,
+            phase,
+            phase_elapsed,
+            verification_elapsed,
+        )
+    );
+}
 
 /// Inputs controlling one exact-height create or resume operation.
 #[derive(Clone, Debug)]
@@ -799,34 +857,73 @@ impl ExactHeightSnapshotBuilder {
             .map_err(|e| format!("Failed to start snapshot verification worker: {}", e))?;
         drop(sender);
 
-        let mut current_phase = None;
+        let verification_started = Instant::now();
+        let mut current_phase: Option<(SnapshotVerificationPhase, Instant)> = None;
         let mut persistence_error = None;
         loop {
             match receiver.recv_timeout(VERIFICATION_HEARTBEAT_INTERVAL) {
                 Ok(VerificationMessage::Phase(phase)) => {
-                    current_phase = Some(phase);
+                    if let Some((previous_phase, previous_started)) = current_phase.take() {
+                        print_verification_progress(
+                            "phase_completed",
+                            expected_height,
+                            previous_phase,
+                            previous_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
+                    }
+                    current_phase = Some((phase, Instant::now()));
                     if let Err(e) = self.persist_verification_progress(job, job_file, phase, true) {
                         error!("{}", e);
                         persistence_error.get_or_insert(e);
                     }
+                    print_verification_progress(
+                        "phase_started",
+                        expected_height,
+                        phase,
+                        Duration::ZERO,
+                        verification_started.elapsed(),
+                    );
                 }
                 Ok(VerificationMessage::Finished(result)) => {
                     worker.join().map_err(|_| {
                         "Snapshot verification worker panicked after reporting completion"
                             .to_string()
                     })?;
+                    if let Some((phase, phase_started)) = current_phase.take() {
+                        let event = if result.is_ok() {
+                            "phase_completed"
+                        } else {
+                            "phase_failed"
+                        };
+                        print_verification_progress(
+                            event,
+                            expected_height,
+                            phase,
+                            phase_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
+                    }
                     if let Some(error) = persistence_error {
                         return Err(error);
                     }
                     return *result;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(phase) = current_phase
-                        && let Err(e) =
-                            self.persist_verification_progress(job, job_file, phase, false)
-                    {
-                        error!("{}", e);
-                        persistence_error.get_or_insert(e);
+                    if let Some((phase, phase_started)) = current_phase.as_ref() {
+                        if let Err(e) =
+                            self.persist_verification_progress(job, job_file, *phase, false)
+                        {
+                            error!("{}", e);
+                            persistence_error.get_or_insert(e);
+                        }
+                        print_verification_progress(
+                            "heartbeat",
+                            expected_height,
+                            *phase,
+                            phase_started.elapsed(),
+                            verification_started.elapsed(),
+                        );
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -1334,6 +1431,23 @@ mod tests {
             snapshot_id: format!("snapshot-{height}"),
             artifact_dir: format!("snapshots/{height}"),
         }
+    }
+
+    #[test]
+    fn verification_progress_line_is_timestamped_and_human_readable() {
+        let line = format_verification_progress_line(
+            "2026-08-30 20:26:56 -07:00",
+            "heartbeat",
+            963_800,
+            SnapshotVerificationPhase::IntegrityCheck,
+            Duration::from_secs(4_441),
+            Duration::from_secs(5_732),
+        );
+
+        assert_eq!(
+            line,
+            "[2026-08-30 20:26:56 -07:00] Snapshot verification heartbeat: height=963800, phase=integrity_check, phase_elapsed=01:14:01, verify_elapsed=01:35:32"
+        );
     }
 
     #[test]

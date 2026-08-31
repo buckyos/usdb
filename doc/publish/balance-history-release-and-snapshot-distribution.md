@@ -100,6 +100,15 @@ bash "$SCRIPT" publish --height "$H"
 bash "$SCRIPT" archive --height "$H" # optional offline archive only
 ```
 
+`create` 和 `resume-verify` 在验证期间每 30 秒向终端 `stderr` 输出一次带本地时间的进度，
+包括当前 phase、phase elapsed 和本轮 verify elapsed；phase 开始、完成或失败时也会立即输出。
+机器可读的最终 JSON 仍独占 `stdout`。终端断开或需要从另一个会话观察时，可运行：
+
+```bash
+bash "$SCRIPT" status --height "$H"
+tail -F ~/.usdb/balance-history-snapshot-mainnet/builder/logs/balance-history-snapshot-tool_rCURRENT.log
+```
+
 日常对象存储发布只需要高度参数。脚本从 pinned target 和 finalize 结果推导 BTC hash、producer
 revision、artifact、validation marker 和 trusted catalog；对象存储默认值与高级覆盖项见
 [Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
