@@ -135,7 +135,9 @@ bash "$SNAPSHOT_SCRIPT" publish --height "$H"
 ```
 
 `publish` 会先幂等执行 `prepare-release`，再使用默认 profile `usdb-snapshot-publisher` 上传。bucket、S3
-endpoint、region 和 public base 已使用本文第 1 节的固定默认值。正常发布不再通过命令行重复传入。
+endpoint、region 和 public base 已使用本文第 1 节的固定默认值。大文件默认使用 AWS CLI classic transfer
+client、`16` 个并发 multipart request 和 `64 MiB` part。工具把原 profile 复制到权限 `0600` 的临时
+`AWS_CONFIG_FILE` 后注入本次参数，不修改 `~/.aws/config`。正常发布不再通过命令行重复传入。
 
 镜像站、隔离演练或标准 AWS 环境凭证才使用高级环境覆盖：
 
@@ -147,6 +149,14 @@ endpoint、region 和 public base 已使用本文第 1 节的固定默认值。�
 | `SNAPSHOT_PUBLIC_BASE_URL` | `https://usdb-snapshot.tbudr.top` | 写入 release record 的公开下载 base |
 | `SNAPSHOT_AWS_REGION` | `auto` | Cloudflare R2 region |
 | `SNAPSHOT_RECORD_ROOT` | `<SNAPSHOT_ROOT>/releases/records` | 本地 content-addressed record 目录 |
+| `SNAPSHOT_S3_UPLOAD_CONCURRENCY` | `16` | AWS CLI multipart 并发 request；允许 `1..64` |
+| `SNAPSHOT_S3_CHUNK_SIZE_MIB` | `64` | multipart threshold/part size；允许 `5..1024` MiB |
+| `SNAPSHOT_UPLOAD_PROGRESS` | `1` | wrapper 是否强制显示上传进度；自动化可设为 `0` |
+
+这些值对应 AWS CLI 的 `s3.max_concurrent_requests`、`s3.multipart_threshold` 和
+`s3.multipart_chunksize`，不是 `aws s3 cp` 自身的 `--s3-*` 参数。配置语义见
+[AWS CLI S3 Configuration](https://docs.aws.amazon.com/cli/latest/topic/s3-config.html)。增加并发不能突破
+宿主机上行、R2 endpoint 或中间网络的实际带宽，应先比较 `8/16/24` 三档吞吐和错误率再继续提高。
 
 底层 `snapshot_distribution.py prepare/upload` 接口仍保留，用于审计、排障和其他 storage backend；日常
 主网发布不应手工拼接这些路径和 provenance 参数。
@@ -167,11 +177,12 @@ bash "$SNAPSHOT_SCRIPT" archive --height "$H"
 替代 SHA-256。
 
 交互式发布时，本地 SHA-256 阶段显示已读/总字节、吞吐和 ETA；AWS CLI 上传阶段显示已上传字节
-进度。进度统一写入 `stderr`，发布结果 JSON 仍保持在 `stdout`。重定向到非 TTY 的自动化环境默认
-使用安静模式；排障时可设置 `USDB_SNAPSHOT_FORCE_PROGRESS=1`。
+进度。进度统一写入 `stderr`，发布结果 JSON 仍保持在 `stdout`。wrapper 默认强制显示进度；自动化可设置
+`SNAPSHOT_UPLOAD_PROGRESS=0`，底层工具也可通过 `USDB_SNAPSHOT_FORCE_PROGRESS=1` 强制打开。
 
 AWS CLI 对单次大文件上传提供 multipart 和重试，但不保证进程退出后的跨进程 multipart resume。上传中断后
-重跑同一命令是安全的，可能会重新发送该大文件。下载侧提供持久 `.part` 断点续传。
+重跑同一命令是安全的，可能会重新发送该大文件并留下待生命周期规则清理的 incomplete multipart upload。
+并发/chunk 参数只在新启动的 AWS CLI 进程生效，不能热更新当前上传；不要仅为切换参数中断已接近完成的上传。
 
 发布结果也会保存到
 `<SNAPSHOT_ROOT>/releases/reports/publish-<height>-<block-hash>.json`，脚本最后会输出该精确路径。从
@@ -203,8 +214,9 @@ usdb-node up
 
 1. 先下载较小的 content-addressed release record；
 2. 在下载 DB 前校验 record schema、network、network bundle 的 index origin 和本地 trusted catalog；
-3. 使用 `curl --continue-at -` 下载到 `.part`；
-4. 对每个文件校验 size 和 SHA-256；
+3. 对大于等于 `128 MiB` 的 DB 默认使用 `8 x 64 MiB` 并行 HTTP Range；预分配 `.part`，将已 fsync 的
+   chunk 记录到 `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
+4. 汇总分片后对完整 `.part` 校验 size 和 SHA-256；
 5. 原子发布到 `<USDB_DATA_ROOT>/releases/balance-history/<snapshot-release-id>`；
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
 7. 重新执行 runtime snapshot validator。
@@ -212,6 +224,17 @@ usdb-node up
 中断后重跑同一命令会复用 `.part` 和 staging 文件。已有同 ID 完整目录会逐文件复核；不同内容不会被
 覆盖。若 `<BH_DATA_HOST_DIR>/db` 已初始化，命令会在下载前拒绝修改配置；应使用新的 data root，或执行
 单独 review 的显式恢复流程。
+
+默认参数适合普通 1 Gbps 级节点。确认 CDN、网络、磁盘和 CPU 有余量时可覆盖：
+
+```bash
+usdb-node snapshot install \
+  --download-concurrency 16 \
+  --download-chunk-size-mib 64
+```
+
+Range worker 只同时保留每个 worker 的一个临时 chunk，不额外保留完整分片副本；目标 DB 仍会在开始时
+预分配全尺寸空间。调整 concurrency 不改变已有 `.ranges.json` 的 chunk 划分，调整 chunk size 只影响新任务。
 
 安装命令只校验传输和 release identity。容器内 `snapshot-loader` 随后仍会使用 balance-history 原生
 Ed25519 校验和 staging install；两层校验不能互相替代。
@@ -231,8 +254,9 @@ indexer 在大文件下载前拒绝该 record。不要通过修改 node.env 绕�
 
 ## 8. 当前验证边界
 
-自动化已覆盖 release record 一致性、DB 篡改拒绝、S3 record-last 顺序、重复上传幂等、错误 catalog、
-高度提前拒绝、断点 staging、原子安装、node.env 选择和已有 DB 拒绝。仍需完成：
+自动化已覆盖 release record 一致性、DB 篡改拒绝、S3 record-last 顺序、重复上传幂等、临时 AWS upload
+配置、错误 catalog、高度提前拒绝、并行 Range 缺片恢复/HTTP 200 拒绝、断点 staging、原子安装、
+node.env 选择和已有 DB 拒绝。仍需完成：
 
 - 使用真实 R2 凭证的小文件 upload/head/download smoke；
 - 最新主网大 DB 的中断上传和 HTTP Range 恢复；

@@ -122,7 +122,9 @@ usdb-node snapshot install
 ```
 
 该命令只使用当前 release 批准的 record，不接受任意 URL，也不需要 S3 凭证。它先把 snapshot 选择写入
-`node.env`，再校验小 record 与 bundle trusted-key catalog、断点下载大文件、逐文件校验并原子发布。
+`node.env`，再校验小 record 与 bundle trusted-key catalog、默认用 `8 x 64 MiB` HTTP Range 并行续传
+大文件、逐文件校验并原子发布。高级硬件可通过 `--download-concurrency` 和
+`--download-chunk-size-mib` 覆盖本次下载参数。
 下载中断后 `up` 会因 runtime artifact 缺失而失败关闭；重跑同一命令会续传。snapshot 高度高于当前
 bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-history DB 已初始化时都会失败关闭。
 完整操作见

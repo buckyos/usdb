@@ -278,6 +278,9 @@ else:
         )
         self.assertEqual(arguments[arguments.index("--aws-region") + 1], "auto")
         self.assertEqual(arguments[arguments.index("--aws-profile") + 1], "usdb-snapshot-publisher")
+        self.assertEqual(arguments[arguments.index("--s3-upload-concurrency") + 1], "16")
+        self.assertEqual(arguments[arguments.index("--s3-chunk-size-mib") + 1], "64")
+        self.assertIn("--progress", arguments)
         self.assertEqual(list((self.snapshot_root / "releases").glob("*.tar")), [])
 
     def test_archive_is_explicit_and_idempotent(self) -> None:

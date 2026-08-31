@@ -266,22 +266,49 @@ class SnapshotDistributionTests(unittest.TestCase):
             bucket=DISTRIBUTION.DEFAULT_BUCKET,
             region="auto",
             profile="publisher",
+            upload_concurrency=16,
+            multipart_chunk_size_mib=64,
         )
         output = io.StringIO()
-        with redirect_stderr(output):
-            with mock.patch.object(DISTRIBUTION, "_progress_enabled", return_value=True):
-                with mock.patch.object(DISTRIBUTION.subprocess, "run") as run:
-                    client.upload(
-                        self.snapshot,
-                        "snapshots/v2/test/snapshot_42.db",
-                        sha256(self.snapshot),
-                        self.snapshot.stat().st_size,
-                        "application/octet-stream",
-                    )
-        command = run.call_args.args[0]
+        source_config = self.root / "aws-config"
+        source_config.write_text("[profile publisher]\nregion = auto\n", encoding="utf-8")
+        original_config = source_config.read_bytes()
+        with mock.patch.dict(
+            DISTRIBUTION.os.environ,
+            {"AWS_CONFIG_FILE": str(source_config)},
+            clear=False,
+        ):
+            with redirect_stderr(output):
+                with mock.patch.object(DISTRIBUTION, "_progress_enabled", return_value=True):
+                    response = mock.Mock(returncode=0, stdout="", stderr="")
+                    with mock.patch.object(DISTRIBUTION.subprocess, "run", return_value=response) as run:
+                        client.upload(
+                            self.snapshot,
+                            "snapshots/v2/test/snapshot_42.db",
+                            sha256(self.snapshot),
+                            self.snapshot.stat().st_size,
+                            "application/octet-stream",
+                        )
+        calls = run.call_args_list
+        self.assertEqual(len(calls), 5)
+        configured = {
+            call.args[0][-2]: call.args[0][-1]
+            for call in calls[:-1]
+        }
+        self.assertEqual(configured["s3.max_concurrent_requests"], "16")
+        self.assertEqual(configured["s3.multipart_threshold"], "64MB")
+        self.assertEqual(configured["s3.multipart_chunksize"], "64MB")
+        self.assertEqual(configured["s3.preferred_transfer_client"], "classic")
+        command = calls[-1].args[0]
         self.assertNotIn("--only-show-errors", command)
-        self.assertIs(run.call_args.kwargs["stdout"], output)
+        self.assertIs(calls[-1].kwargs["stdout"], output)
+        temporary_config = Path(calls[-1].kwargs["env"]["AWS_CONFIG_FILE"])
+        self.assertTrue(temporary_config.is_file())
+        self.assertEqual(temporary_config.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(source_config.read_bytes(), original_config)
         self.assertIn("Upload snapshot_42.db: complete", output.getvalue())
+        client.close()
+        self.assertFalse(temporary_config.exists())
 
     def test_upload_rejects_snapshot_db_tamper_before_remote_write(self) -> None:
         record_path, _record, _digest = self.prepare()
@@ -324,6 +351,44 @@ class SnapshotDistributionTests(unittest.TestCase):
                     destination_root=self.root / "catalog-rejected",
                     trusted_keys=wrong_catalog,
                 )
+
+    def test_install_uses_parallel_ranges_only_for_snapshot_database(self) -> None:
+        record_path, record, _digest = self.prepare()
+        object_root = self.root / "parallel-install-objects"
+        published = DISTRIBUTION.upload_release(
+            record_path,
+            self.artifact,
+            FakeAwsClient(object_root),
+        )
+        sequential_calls: list[str] = []
+        parallel_calls: list[str] = []
+
+        def copy_object(url: str, destination: Path) -> None:
+            source = object_root / urlparse(url).path.lstrip("/")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+
+        def sequential(url: str, destination: Path, _curl: str) -> None:
+            sequential_calls.append(url)
+            copy_object(url, destination)
+
+        def parallel(url: str, destination: Path, **_kwargs: object) -> None:
+            parallel_calls.append(url)
+            copy_object(url, destination)
+
+        with mock.patch.object(DISTRIBUTION, "PARALLEL_DOWNLOAD_MIN_SIZE", 1):
+            with mock.patch.object(DISTRIBUTION, "_download_with_resume", side_effect=sequential):
+                with mock.patch.object(DISTRIBUTION, "_download_parallel_ranges", side_effect=parallel):
+                    installed = DISTRIBUTION.install_release(
+                        record_url=published["record_url"],
+                        destination_root=self.root / "parallel-installed",
+                        trusted_keys=self.trusted_keys,
+                    )
+        snapshot_entry = next(item for item in record["files"] if item["role"] == "snapshot_db")
+        self.assertEqual(len(parallel_calls), 1)
+        self.assertTrue(parallel_calls[0].endswith(snapshot_entry["object_key"]))
+        self.assertFalse(any(url.endswith(snapshot_entry["object_key"]) for url in sequential_calls))
+        self.assertEqual(installed.snapshot_file.read_bytes(), self.snapshot.read_bytes())
 
     def test_public_verifier_checks_record_and_every_object_size(self) -> None:
         record_path, record, record_sha256 = self.prepare()
@@ -384,6 +449,86 @@ class SnapshotDistributionTests(unittest.TestCase):
         with mock.patch.object(DISTRIBUTION, "urlopen", return_value=response):
             with self.assertRaisesRegex(ValueError, "does not support byte ranges"):
                 DISTRIBUTION._probe_public_byte_range(url, 10)
+
+    def test_parallel_range_download_resumes_only_missing_chunks(self) -> None:
+        chunk_size = 1024 * 1024
+        content = b"a" * chunk_size + b"b" * chunk_size + b"c" * (chunk_size // 2)
+        destination = self.root / "parallel-snapshot.db.part"
+        calls: list[tuple[int, int]] = []
+
+        def run(command: list[str], **_kwargs: object) -> mock.Mock:
+            start_text, end_text = command[command.index("--range") + 1].split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            output = Path(command[command.index("--output") + 1])
+            output.write_bytes(content[start : end + 1])
+            calls.append((start, end))
+            return mock.Mock(returncode=0, stdout="206", stderr="")
+
+        with mock.patch.object(DISTRIBUTION.subprocess, "run", side_effect=run):
+            DISTRIBUTION._download_parallel_ranges(
+                "https://snapshots.example/snapshot.db",
+                destination,
+                expected_size=len(content),
+                expected_sha256=hashlib.sha256(content).hexdigest(),
+                concurrency=3,
+                chunk_size=chunk_size,
+            )
+        self.assertEqual(destination.read_bytes(), content)
+        self.assertEqual(len(calls), 3)
+
+        state_path, _work_dir = DISTRIBUTION._range_download_paths(destination)
+        state = DISTRIBUTION._load_json(state_path)
+        state["completed_chunks"] = [0, 2]
+        DISTRIBUTION._write_range_state(state_path, state)
+        with destination.open("r+b") as output:
+            output.seek(chunk_size)
+            output.write(b"x" * chunk_size)
+        calls.clear()
+        with mock.patch.object(DISTRIBUTION.subprocess, "run", side_effect=run):
+            DISTRIBUTION._download_parallel_ranges(
+                "https://snapshots.example/snapshot.db",
+                destination,
+                expected_size=len(content),
+                expected_sha256=hashlib.sha256(content).hexdigest(),
+                concurrency=3,
+                chunk_size=chunk_size,
+            )
+        self.assertEqual(calls, [(chunk_size, chunk_size * 2 - 1)])
+        self.assertEqual(destination.read_bytes(), content)
+        DISTRIBUTION._cleanup_range_download(destination)
+
+    def test_parallel_range_download_rejects_full_object_response(self) -> None:
+        content = b"x" * (1024 * 1024)
+        destination = self.root / "range-rejected.db.part"
+
+        def run(command: list[str], **_kwargs: object) -> mock.Mock:
+            output = Path(command[command.index("--output") + 1])
+            output.write_bytes(content)
+            return mock.Mock(returncode=0, stdout="200", stderr="")
+
+        with mock.patch.object(DISTRIBUTION.subprocess, "run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "did not return HTTP 206"):
+                DISTRIBUTION._download_parallel_ranges(
+                    "https://snapshots.example/snapshot.db",
+                    destination,
+                    expected_size=len(content),
+                    expected_sha256=hashlib.sha256(content).hexdigest(),
+                    concurrency=2,
+                    chunk_size=1024 * 1024,
+                )
+
+    def test_pwrite_all_retries_short_writes(self) -> None:
+        writes: list[tuple[bytes, int]] = []
+
+        def pwrite(_descriptor: int, data: memoryview, offset: int) -> int:
+            written = min(2, len(data))
+            writes.append((bytes(data[:written]), offset))
+            return written
+
+        with mock.patch.object(DISTRIBUTION.os, "pwrite", side_effect=pwrite):
+            DISTRIBUTION._pwrite_all(7, b"abcde", 11)
+        self.assertEqual(writes, [(b"ab", 11), (b"cd", 13), (b"e", 15)])
 
 
 if __name__ == "__main__":

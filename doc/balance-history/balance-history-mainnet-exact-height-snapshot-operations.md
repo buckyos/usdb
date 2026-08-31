@@ -647,7 +647,9 @@ signature，以及 manifest 内固定的 snapshot DB SHA-256 和 state-ref。
 面向节点的默认分发不要求下载 tar。`snapshot_distribution.py prepare` 从本节 artifact、trusted
 catalog 和 `finalize` 生成的 `artifact-finalized.json` 建立逐文件 release record；`upload` 使用
 AWS CLI 发布原始 DB/sidecars，并最后发布 content-addressed record。这样不会在接收方产生 tar 与解包 DB
-同时存在的额外峰值空间。
+同时存在的额外峰值空间。默认上传参数是 classic transfer client、`16` 并发和 `64 MiB` multipart part；
+通过临时 AWS config 注入，不修改运维 profile。接收方的大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载，
+中断后依靠持久 chunk 状态只补缺失范围，最终仍执行整文件 SHA-256。
 
 ## 11. 接收方安装
 

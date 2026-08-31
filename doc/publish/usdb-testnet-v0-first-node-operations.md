@@ -208,7 +208,8 @@ bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当�
 
 release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
 建议剩余空间和当前磁盘空间，并询问是否使用；选择后直接开始可断点续传安装，不需要填写 URL 或 S3 凭证。
-选择 full sync 仍受支持。下载中断时重跑 `usdb-node snapshot install`，完成后再执行 `doctor/up`。
+大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载。选择 full sync 仍受支持；下载中断时重跑
+`usdb-node snapshot install` 只补缺失 chunk，完成后再执行 `doctor/up`。
 
 `setup` 最后询问是否应用 UFW，默认 `yes`。它会先保留确认的 SSH 端口，再开放 `31303/TCP+UDP`，并按
 Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：

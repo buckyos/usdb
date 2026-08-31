@@ -38,6 +38,9 @@ PUBLIC_BASE_URL="${SNAPSHOT_PUBLIC_BASE_URL:-https://usdb-snapshot.tbudr.top}"
 AWS_REGION="${SNAPSHOT_AWS_REGION:-auto}"
 AWS_PROFILE="${SNAPSHOT_AWS_PROFILE-usdb-snapshot-publisher}"
 AWS_EXECUTABLE="${SNAPSHOT_AWS_EXECUTABLE:-aws}"
+S3_UPLOAD_CONCURRENCY="${SNAPSHOT_S3_UPLOAD_CONCURRENCY:-16}"
+S3_CHUNK_SIZE_MIB="${SNAPSHOT_S3_CHUNK_SIZE_MIB:-64}"
+UPLOAD_PROGRESS="${SNAPSHOT_UPLOAD_PROGRESS:-1}"
 
 BUILDER_CONFIG="${CONFIG_ROOT}/builder.toml"
 SIGNING_KEY="${KEY_ROOT}/${SIGNER_ID}.signing-key.json"
@@ -101,6 +104,10 @@ Primary overrides:
   SNAPSHOT_S3_BUCKET         S3-compatible bucket. Default: usdb-snapshot
   SNAPSHOT_S3_ENDPOINT_URL   Private S3-compatible endpoint.
   SNAPSHOT_PUBLIC_BASE_URL   Public HTTPS base recorded for downloads.
+  SNAPSHOT_S3_UPLOAD_CONCURRENCY
+                              Concurrent AWS CLI multipart requests. Default: 16
+  SNAPSHOT_S3_CHUNK_SIZE_MIB AWS CLI multipart part size in MiB. Default: 64
+  SNAPSHOT_UPLOAD_PROGRESS   Force upload progress when set to 1. Default: 1
 
 The snapshot root must be independent from the live balance-history root. For a dedicated disk,
 mount it at SNAPSHOT_ROOT or set SNAPSHOT_ROOT to a directory on that filesystem.
@@ -862,10 +869,17 @@ run_publish() {
     --bucket "$S3_BUCKET"
     --endpoint-url "$S3_ENDPOINT_URL"
     --aws-region "$AWS_REGION"
+    --s3-upload-concurrency "$S3_UPLOAD_CONCURRENCY"
+    --s3-chunk-size-mib "$S3_CHUNK_SIZE_MIB"
     --aws-executable "$AWS_EXECUTABLE"
   )
   if [[ -n "$AWS_PROFILE" ]]; then
     upload_args+=(--aws-profile "$AWS_PROFILE")
+  fi
+  if [[ "$UPLOAD_PROGRESS" == "1" ]]; then
+    upload_args+=(--progress)
+  elif [[ "$UPLOAD_PROGRESS" != "0" ]]; then
+    die "SNAPSHOT_UPLOAD_PROGRESS must be 0 or 1"
   fi
   report="${RELEASE_ROOT}/reports/publish-${HEIGHT}-${REQUESTED_HASH}.json"
   python3 "${upload_args[@]}" | tee "$report"
@@ -899,6 +913,9 @@ S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
 PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
 AWS_REGION=${AWS_REGION}
 AWS_PROFILE=${AWS_PROFILE}
+S3_UPLOAD_CONCURRENCY=${S3_UPLOAD_CONCURRENCY}
+S3_CHUNK_SIZE_MIB=${S3_CHUNK_SIZE_MIB}
+UPLOAD_PROGRESS=${UPLOAD_PROGRESS}
 EOF
 }
 

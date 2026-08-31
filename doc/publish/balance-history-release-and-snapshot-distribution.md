@@ -111,9 +111,10 @@ tail -F ~/.usdb/balance-history-snapshot-mainnet/builder/logs/balance-history-sn
 ```
 
 `finalize` 的整文件 SHA-256 扫描会在交互式终端显示已读取字节、文件总量、吞吐、百分比和 ETA。
-`publish` 会先显示上传前本地 SHA-256 扫描进度，再显示 AWS CLI 的实际上传字节进度。两者都写入
-`stderr`，不会混入最终 JSON/report；非交互式 CI 默认关闭动态进度，必要时可设置
-`USDB_SNAPSHOT_FORCE_PROGRESS=1` 强制打开 publish 侧进度。
+`publish` 会先显示上传前本地 SHA-256 扫描进度，再显示 AWS CLI 的实际上传字节进度。大文件默认使用
+classic transfer client、`16` 并发和 `64 MiB` multipart part；临时 AWS config 不改写用户 profile。
+两类进度都写入 `stderr`，不会混入最终 JSON/report；wrapper 默认打开，自动化可设置
+`SNAPSHOT_UPLOAD_PROGRESS=0`。
 
 `create` 已包含完整 SQLite integrity/count 验证。`finalize` 只重新核对 artifact/manifest/complete
 identity、整文件 SHA-256 和 Ed25519 签名，不打开 SQLite，也不创建 RocksDB；因此生产机上传不再
@@ -147,7 +148,7 @@ revision、artifact、artifact-finalization marker 和 trusted catalog；对象�
 1. 安装或解包 balance-history release bundle；
 2. 通过独立渠道核对 release manifest 和 trusted-key catalog hash；
 3. 安装 catalog 并生成 `trust_mode = "signed"` 配置；
-4. 通过 content-addressed release record 断点下载 snapshot files；
+4. 通过 content-addressed release record 下载 snapshot files；大 DB 使用持久 Range chunk 状态并行续传；
 5. 校验逐文件 size/SHA-256，并保持 DB、manifest、signature 相邻；
 6. 停止现有 balance-history，或使用全新 root；
 7. 执行 `install-snapshot`；

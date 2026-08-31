@@ -470,6 +470,14 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(install.call_args.kwargs["expected_network"], "bitcoin")
         self.assertEqual(install.call_args.kwargs["max_height"], 963800)
         self.assertEqual(
+            install.call_args.kwargs["download_concurrency"],
+            NODE.DEFAULT_DOWNLOAD_CONCURRENCY,
+        )
+        self.assertEqual(
+            install.call_args.kwargs["download_chunk_size_mib"],
+            NODE.DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
+        )
+        self.assertEqual(
             install.call_args.kwargs["record_url"],
             layout.snapshot["record"]["url"],
         )
@@ -535,6 +543,30 @@ class UsdbNodeTests(unittest.TestCase):
                         "https://unapproved.example/snapshot-record.json",
                     ]
                 )
+
+    def test_snapshot_cli_accepts_advanced_parallel_download_overrides(self) -> None:
+        args = NODE.build_parser().parse_args(
+            [
+                "snapshot",
+                "install",
+                "--download-concurrency",
+                "12",
+                "--download-chunk-size-mib",
+                "128",
+            ]
+        )
+        self.assertEqual(args.download_concurrency, 12)
+        self.assertEqual(args.download_chunk_size_mib, 128)
+
+    def test_snapshot_install_rejects_invalid_parallel_download_settings_before_node_env_read(self) -> None:
+        layout = mock.Mock()
+        layout.node_env = mock.Mock()
+        layout.node_env.is_file.side_effect = AssertionError("node env should not be inspected")
+
+        with self.assertRaisesRegex(ValueError, "download concurrency"):
+            NODE.install_snapshot_release(layout, download_concurrency=0)
+        with self.assertRaisesRegex(ValueError, "download chunk size"):
+            NODE.install_snapshot_release(layout, download_chunk_size_mib=0)
 
 
 if __name__ == "__main__":

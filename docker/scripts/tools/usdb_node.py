@@ -30,7 +30,11 @@ from release_manifest import (  # noqa: E402
     build_network_identity,
     build_snapshot_state,
 )
-from snapshot_distribution import install_release as install_snapshot_artifact  # noqa: E402
+from snapshot_distribution import (  # noqa: E402
+    DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
+    DEFAULT_DOWNLOAD_CONCURRENCY,
+    install_release as install_snapshot_artifact,
+)
 from validate_network_bundle import (  # noqa: E402
     PERSISTENT_DATA_PATHS,
     read_env,
@@ -570,7 +574,16 @@ def _snapshot_env_updates(record: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def install_snapshot_release(layout: ReleaseLayout) -> Path:
+def install_snapshot_release(
+    layout: ReleaseLayout,
+    *,
+    download_concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
+    download_chunk_size_mib: int = DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
+) -> Path:
+    if not 1 <= download_concurrency <= 64:
+        raise ValueError("download concurrency must be between 1 and 64")
+    if not 1 <= download_chunk_size_mib <= 1024:
+        raise ValueError("download chunk size must be between 1 and 1024 MiB")
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run setup or configure first")
     env = read_env(layout.node_env)
@@ -603,6 +616,8 @@ def install_snapshot_release(layout: ReleaseLayout) -> Path:
         trusted_keys=_snapshot_trusted_keys(layout),
         expected_network=env.get("BTC_NETWORK", "bitcoin"),
         max_height=btc_source["index_origin_height"],
+        download_concurrency=download_concurrency,
+        download_chunk_size_mib=download_chunk_size_mib,
     )
     if installed.release_id != record["snapshot_release_id"]:
         raise ValueError("installed snapshot release ID differs from the approved record")
@@ -813,9 +828,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     snapshot = subparsers.add_parser("snapshot", help="Install an immutable signed snapshot release")
     snapshot_actions = snapshot.add_subparsers(dest="snapshot_action", required=True)
-    snapshot_actions.add_parser(
+    snapshot_install = snapshot_actions.add_parser(
         "install",
         help="Resume download, verify, atomically stage, and select one snapshot",
+    )
+    snapshot_install.add_argument(
+        "--download-concurrency",
+        type=int,
+        default=DEFAULT_DOWNLOAD_CONCURRENCY,
+        help="advanced HTTP Range worker override",
+    )
+    snapshot_install.add_argument(
+        "--download-chunk-size-mib",
+        type=int,
+        default=DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
+        help="advanced HTTP Range chunk size override",
     )
 
     firewall = subparsers.add_parser("firewall", help="Check or apply the host UFW profile")
@@ -894,7 +921,11 @@ def main() -> int:
             doctor(layout)
             print(f"USDB node preflight passed: {layout.release_id}")
         elif args.command == "snapshot":
-            release_dir = install_snapshot_release(layout)
+            release_dir = install_snapshot_release(
+                layout,
+                download_concurrency=args.download_concurrency,
+                download_chunk_size_mib=args.download_chunk_size_mib,
+            )
             print(f"Installed and selected signed balance-history snapshot: {release_dir}")
         elif args.command == "firewall":
             if args.firewall_action == "apply" and not args.confirm:

@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import fcntl
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -27,6 +30,11 @@ DEFAULT_BUCKET = "usdb-snapshot"
 DEFAULT_ENDPOINT_URL = "https://87e0bdf811b13ee87fd0bcec7a4fd1e7.r2.cloudflarestorage.com"
 DEFAULT_PUBLIC_BASE_URL = "https://usdb-snapshot.tbudr.top"
 DEFAULT_AWS_REGION = "auto"
+DEFAULT_S3_UPLOAD_CONCURRENCY = 16
+DEFAULT_S3_CHUNK_SIZE_MIB = 64
+DEFAULT_DOWNLOAD_CONCURRENCY = 8
+DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB = 64
+PARALLEL_DOWNLOAD_MIN_SIZE = 128 * 1024 * 1024
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^balance-history-[a-z0-9-]+-h[0-9]+-[0-9a-f]{16}$")
@@ -523,14 +531,30 @@ def _validate_local_files(record: dict[str, Any], source_dir: Path) -> None:
 
 
 class AwsCliClient:
-    def __init__(self, *, endpoint_url: str, bucket: str, region: str, profile: str | None, executable: str = "aws") -> None:
+    def __init__(
+        self,
+        *,
+        endpoint_url: str,
+        bucket: str,
+        region: str,
+        profile: str | None,
+        upload_concurrency: int = DEFAULT_S3_UPLOAD_CONCURRENCY,
+        multipart_chunk_size_mib: int = DEFAULT_S3_CHUNK_SIZE_MIB,
+        executable: str = "aws",
+    ) -> None:
         self.endpoint_url = _normalize_https_base(endpoint_url, "S3 endpoint URL")
         _require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", bucket) is not None, "invalid S3 bucket name")
         _require(isinstance(region, str) and bool(region) and re.fullmatch(r"[A-Za-z0-9-]+", region) is not None, "invalid AWS region")
+        _require(1 <= upload_concurrency <= 64, "S3 upload concurrency must be between 1 and 64")
+        _require(5 <= multipart_chunk_size_mib <= 1024, "S3 multipart chunk size must be between 5 and 1024 MiB")
         self.bucket = bucket
         self.region = region
         self.profile = profile
+        self.upload_concurrency = upload_concurrency
+        self.multipart_chunk_size_mib = multipart_chunk_size_mib
         self.executable = executable
+        self._temporary_config: tempfile.TemporaryDirectory[str] | None = None
+        self._upload_environment: dict[str, str] | None = None
 
     def _base_command(self) -> list[str]:
         command = [self.executable]
@@ -538,6 +562,58 @@ class AwsCliClient:
             command.extend(["--profile", self.profile])
         command.extend(["--region", self.region, "--endpoint-url", self.endpoint_url])
         return command
+
+    def _configure_upload_environment(self) -> dict[str, str]:
+        if self._upload_environment is not None:
+            return self._upload_environment
+        self._temporary_config = tempfile.TemporaryDirectory(prefix="usdb-aws-config-")
+        temporary_config = Path(self._temporary_config.name) / "config"
+        configured_path = Path(
+            os.environ.get("AWS_CONFIG_FILE", str(Path.home() / ".aws/config"))
+        ).expanduser()
+        if configured_path.is_file():
+            shutil.copyfile(configured_path, temporary_config)
+        else:
+            temporary_config.write_text("", encoding="utf-8")
+        temporary_config.chmod(0o600)
+        environment = os.environ.copy()
+        environment["AWS_CONFIG_FILE"] = str(temporary_config)
+        command = [self.executable]
+        if self.profile:
+            command.extend(["--profile", self.profile])
+        settings = {
+            "s3.max_concurrent_requests": str(self.upload_concurrency),
+            "s3.multipart_threshold": f"{self.multipart_chunk_size_mib}MB",
+            "s3.multipart_chunksize": f"{self.multipart_chunk_size_mib}MB",
+            "s3.preferred_transfer_client": "classic",
+        }
+        for key, value in settings.items():
+            result = subprocess.run(
+                [*command, "configure", "set", key, value],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            if result.returncode != 0:
+                raise ValueError(
+                    f"AWS CLI failed to configure temporary upload setting {key}: "
+                    f"{result.stderr.strip()}"
+                )
+        self._upload_environment = environment
+        return environment
+
+    def close(self) -> None:
+        if self._temporary_config is not None:
+            self._temporary_config.cleanup()
+        self._temporary_config = None
+        self._upload_environment = None
+
+    def __enter__(self) -> "AwsCliClient":
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
+        self.close()
 
     def head(self, object_key: str) -> dict[str, Any] | None:
         result = subprocess.run(
@@ -576,7 +652,8 @@ class AwsCliClient:
             command.append("--only-show-errors")
         if show_progress:
             print(
-                f"Upload {source.name}: size={_human_bytes(size)} object={object_key}",
+                f"Upload {source.name}: size={_human_bytes(size)} object={object_key} "
+                f"concurrency={self.upload_concurrency} chunk={self.multipart_chunk_size_mib}MiB",
                 file=sys.stderr,
                 flush=True,
             )
@@ -584,6 +661,7 @@ class AwsCliClient:
             command,
             check=True,
             stdout=sys.stderr if show_progress else subprocess.DEVNULL,
+            env=self._configure_upload_environment(),
         )
         if show_progress:
             print(f"Upload {source.name}: complete", file=sys.stderr, flush=True)
@@ -772,6 +850,254 @@ def _download_with_resume(url: str, destination_part: Path, curl_executable: str
     )
 
 
+def _range_download_paths(destination_part: Path) -> tuple[Path, Path]:
+    return (
+        destination_part.with_name(destination_part.name + ".ranges.json"),
+        destination_part.with_name(destination_part.name + ".ranges"),
+    )
+
+
+def _write_range_state(path: Path, state: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
+    content = _canonical_json(state)
+    try:
+        with temporary.open("xb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _cleanup_range_download(destination_part: Path) -> None:
+    state_path, work_dir = _range_download_paths(destination_part)
+    state_path.unlink(missing_ok=True)
+    if work_dir.exists():
+        _require(work_dir.is_dir() and not work_dir.is_symlink(), f"invalid range download work directory: {work_dir}")
+        shutil.rmtree(work_dir)
+
+
+def _chunk_length(index: int, chunk_size: int, expected_size: int) -> int:
+    return min(chunk_size, expected_size - index * chunk_size)
+
+
+def _pwrite_all(descriptor: int, data: bytes, offset: int) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.pwrite(descriptor, view, offset)
+        _require(written > 0, "parallel snapshot range write made no progress")
+        view = view[written:]
+        offset += written
+
+
+def _download_range_chunk(
+    *,
+    url: str,
+    index: int,
+    chunk_size: int,
+    expected_size: int,
+    work_dir: Path,
+    destination_descriptor: int,
+    curl_executable: str,
+) -> tuple[int, int]:
+    start = index * chunk_size
+    length = _chunk_length(index, chunk_size, expected_size)
+    end = start + length - 1
+    chunk_path = work_dir / f"{index:08d}.part"
+    chunk_path.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            curl_executable,
+            "--fail",
+            "--location",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--retry",
+            "8",
+            "--retry-delay",
+            "2",
+            "--retry-all-errors",
+            "--connect-timeout",
+            "30",
+            "--silent",
+            "--show-error",
+            "--range",
+            f"{start}-{end}",
+            "--max-filesize",
+            str(length),
+            "--output",
+            str(chunk_path),
+            "--write-out",
+            "%{http_code}",
+            url,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"parallel snapshot range {start}-{end} failed: {result.stderr.strip()}"
+        )
+    _require(result.stdout.strip() == "206", f"parallel snapshot range {start}-{end} did not return HTTP 206")
+    _require(
+        chunk_path.is_file() and chunk_path.stat().st_size == length,
+        f"parallel snapshot range {start}-{end} returned the wrong length",
+    )
+    offset = start
+    with chunk_path.open("rb") as source:
+        for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            _pwrite_all(destination_descriptor, block, offset)
+            offset += len(block)
+    chunk_path.unlink()
+    return index, length
+
+
+def _download_parallel_ranges(
+    url: str,
+    destination_part: Path,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    concurrency: int,
+    chunk_size: int,
+    curl_executable: str = "curl",
+) -> None:
+    _require(2 <= concurrency <= 64, "parallel download concurrency must be between 2 and 64")
+    _require(chunk_size >= 1024 * 1024, "parallel download chunk size must be at least 1 MiB")
+    _require(expected_size > 0, "parallel download expected size must be positive")
+    _require(SHA256_RE.fullmatch(expected_sha256) is not None, "parallel download expected SHA-256 is invalid")
+    destination_part.parent.mkdir(parents=True, exist_ok=True)
+    state_path, work_dir = _range_download_paths(destination_part)
+    url_sha256 = _sha256_bytes(url.encode("utf-8"))
+
+    _require(not destination_part.is_symlink(), f"parallel download target must not be a symlink: {destination_part}")
+    if state_path.exists() and not destination_part.is_file():
+        _cleanup_range_download(destination_part)
+    if state_path.is_file():
+        _require(not state_path.is_symlink(), f"parallel download state must not be a symlink: {state_path}")
+        state = _load_json(state_path)
+        _require_exact_keys(
+            state,
+            {
+                "chunk_size_bytes",
+                "completed_chunks",
+                "expected_sha256",
+                "expected_size",
+                "url_sha256",
+                "version",
+            },
+            "parallel download state",
+        )
+        _require(state["version"] == 1, "unsupported parallel download state version")
+        _require(state["url_sha256"] == url_sha256, "parallel download URL identity mismatch")
+        _require(state["expected_size"] == expected_size, "parallel download size identity mismatch")
+        _require(state["expected_sha256"] == expected_sha256, "parallel download hash identity mismatch")
+        _require(
+            isinstance(state["chunk_size_bytes"], int)
+            and not isinstance(state["chunk_size_bytes"], bool)
+            and state["chunk_size_bytes"] >= 1024 * 1024,
+            "parallel download chunk size is invalid",
+        )
+        chunk_size = state["chunk_size_bytes"]
+        _require(
+            destination_part.stat().st_size == expected_size,
+            "parallel download preallocated file size mismatch",
+        )
+    else:
+        if destination_part.exists():
+            destination_part.unlink()
+        state = {
+            "version": 1,
+            "url_sha256": url_sha256,
+            "expected_size": expected_size,
+            "expected_sha256": expected_sha256,
+            "chunk_size_bytes": chunk_size,
+            "completed_chunks": [],
+        }
+        descriptor = os.open(destination_part, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            os.ftruncate(descriptor, expected_size)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _write_range_state(state_path, state)
+
+    chunk_count = (expected_size + chunk_size - 1) // chunk_size
+    completed_value = state["completed_chunks"]
+    _require(isinstance(completed_value, list), "parallel download completed chunk set is invalid")
+    _require(
+        all(isinstance(index, int) and not isinstance(index, bool) and 0 <= index < chunk_count for index in completed_value),
+        "parallel download completed chunk index is invalid",
+    )
+    completed = set(completed_value)
+    _require(len(completed) == len(completed_value), "parallel download completed chunk set is duplicated")
+    if work_dir.exists():
+        _require(work_dir.is_dir() and not work_dir.is_symlink(), f"invalid range download work directory: {work_dir}")
+    work_dir.mkdir(mode=0o755, exist_ok=True)
+    progress = _FileReadProgress(f"Download {destination_part.name}", expected_size)
+    completed_bytes = sum(_chunk_length(index, chunk_size, expected_size) for index in completed)
+    progress.update(completed_bytes, force=True)
+    remaining = [index for index in range(chunk_count) if index not in completed]
+    descriptor = os.open(destination_part, os.O_RDWR)
+    pending: list[tuple[int, int]] = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = {
+                executor.submit(
+                    _download_range_chunk,
+                    url=url,
+                    index=index,
+                    chunk_size=chunk_size,
+                    expected_size=expected_size,
+                    work_dir=work_dir,
+                    destination_descriptor=descriptor,
+                    curl_executable=curl_executable,
+                ): index
+                for index in remaining
+            }
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    pending.append(future.result())
+                    if len(pending) < concurrency:
+                        continue
+                    # A chunk becomes resumable only after its bytes are durable.
+                    os.fsync(descriptor)
+                    for index, length in pending:
+                        completed.add(index)
+                        completed_bytes += length
+                    pending.clear()
+                    state["completed_chunks"] = sorted(completed)
+                    _write_range_state(state_path, state)
+                    progress.update(completed_bytes)
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+        if pending:
+            os.fsync(descriptor)
+            for index, length in pending:
+                completed.add(index)
+                completed_bytes += length
+            state["completed_chunks"] = sorted(completed)
+            _write_range_state(state_path, state)
+        _require(len(completed) == chunk_count, "parallel download did not complete every chunk")
+        progress.finish(expected_size, success=True)
+    except BaseException:
+        progress.finish(completed_bytes, success=False)
+        raise
+    finally:
+        os.close(descriptor)
+
+
 def _verify_download(path: Path, expected_size: int, expected_sha256: str) -> None:
     _require(path.is_file() and not path.is_symlink(), f"downloaded snapshot file is missing or not regular: {path}")
     _require(path.stat().st_size == expected_size, f"downloaded snapshot file size mismatch: {path}")
@@ -829,7 +1155,11 @@ def install_release(
     curl_executable: str = "curl",
     expected_network: str | None = None,
     max_height: int | None = None,
+    download_concurrency: int = DEFAULT_DOWNLOAD_CONCURRENCY,
+    download_chunk_size_mib: int = DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
 ) -> InstalledSnapshot:
+    _require(1 <= download_concurrency <= 64, "download concurrency must be between 1 and 64")
+    _require(1 <= download_chunk_size_mib <= 1024, "download chunk size must be between 1 and 1024 MiB")
     parsed_record_url = urlparse(record_url)
     _require(
         parsed_record_url.scheme == "https"
@@ -897,17 +1227,48 @@ def install_release(
                 except ValueError:
                     final_path.unlink(missing_ok=True)
             part_path = final_path.with_name(final_path.name + ".part")
-            if part_path.is_file() and part_path.stat().st_size == item["size"] and _sha256(part_path) == item["sha256"]:
+            range_state_path, _range_work_dir = _range_download_paths(part_path)
+            range_state_exists = range_state_path.is_file()
+            if (
+                part_path.is_file()
+                and not range_state_exists
+                and part_path.stat().st_size == item["size"]
+                and _sha256(part_path) == item["sha256"]
+            ):
                 part_path.replace(final_path)
                 continue
-            if part_path.is_file() and part_path.stat().st_size >= item["size"]:
+            if part_path.is_file() and not range_state_exists and part_path.stat().st_size >= item["size"]:
                 part_path.unlink()
-            _download_with_resume(_quoted_object_url(record_base, item["object_key"]), part_path, curl_executable)
+            object_url = _quoted_object_url(record_base, item["object_key"])
+            use_parallel_ranges = (
+                item["role"] == "snapshot_db"
+                and item["size"] >= PARALLEL_DOWNLOAD_MIN_SIZE
+                and download_concurrency > 1
+            )
+            legacy_partial = (
+                part_path.is_file()
+                and not range_state_exists
+                and 0 < part_path.stat().st_size < item["size"]
+            )
+            if use_parallel_ranges and not legacy_partial:
+                _download_parallel_ranges(
+                    object_url,
+                    part_path,
+                    expected_size=item["size"],
+                    expected_sha256=item["sha256"],
+                    concurrency=download_concurrency,
+                    chunk_size=download_chunk_size_mib * 1024 * 1024,
+                    curl_executable=curl_executable,
+                )
+            else:
+                _download_with_resume(object_url, part_path, curl_executable)
             try:
                 _verify_download(part_path, item["size"], item["sha256"])
             except ValueError:
                 part_path.unlink(missing_ok=True)
+                _cleanup_range_download(part_path)
                 raise
+            _cleanup_range_download(part_path)
             part_path.replace(final_path)
         _write_new_or_identical(staging / "snapshot-release-record.json", record_content)
         for item in record["files"]:
@@ -942,6 +1303,17 @@ def build_parser() -> argparse.ArgumentParser:
     upload.add_argument("--endpoint-url", default=DEFAULT_ENDPOINT_URL)
     upload.add_argument("--aws-region", default=DEFAULT_AWS_REGION)
     upload.add_argument("--aws-profile")
+    upload.add_argument(
+        "--s3-upload-concurrency",
+        type=int,
+        default=DEFAULT_S3_UPLOAD_CONCURRENCY,
+    )
+    upload.add_argument(
+        "--s3-chunk-size-mib",
+        type=int,
+        default=DEFAULT_S3_CHUNK_SIZE_MIB,
+    )
+    upload.add_argument("--progress", action="store_true")
     upload.add_argument("--aws-executable", default="aws", help=argparse.SUPPRESS)
 
     install = subparsers.add_parser("install", help="Resume, verify, and atomically install one public snapshot release")
@@ -950,6 +1322,16 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--trusted-keys", type=Path, required=True)
     install.add_argument("--expected-network")
     install.add_argument("--max-height", type=int)
+    install.add_argument(
+        "--download-concurrency",
+        type=int,
+        default=DEFAULT_DOWNLOAD_CONCURRENCY,
+    )
+    install.add_argument(
+        "--download-chunk-size-mib",
+        type=int,
+        default=DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
+    )
     install.add_argument("--curl-executable", default="curl", help=argparse.SUPPRESS)
     verify_public = subparsers.add_parser(
         "verify-public",
@@ -982,14 +1364,18 @@ def main() -> int:
                 }
             )
         elif args.command == "upload":
-            client = AwsCliClient(
+            if args.progress:
+                os.environ["USDB_SNAPSHOT_FORCE_PROGRESS"] = "1"
+            with AwsCliClient(
                 endpoint_url=args.endpoint_url,
                 bucket=args.bucket,
                 region=args.aws_region,
                 profile=args.aws_profile,
+                upload_concurrency=args.s3_upload_concurrency,
+                multipart_chunk_size_mib=args.s3_chunk_size_mib,
                 executable=args.aws_executable,
-            )
-            _print_json(upload_release(args.record, args.source_dir, client))
+            ) as client:
+                _print_json(upload_release(args.record, args.source_dir, client))
         elif args.command == "install":
             installed = install_release(
                 record_url=args.record_url,
@@ -998,6 +1384,8 @@ def main() -> int:
                 curl_executable=args.curl_executable,
                 expected_network=args.expected_network,
                 max_height=args.max_height,
+                download_concurrency=args.download_concurrency,
+                download_chunk_size_mib=args.download_chunk_size_mib,
             )
             _print_json(
                 {
