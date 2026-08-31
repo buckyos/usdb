@@ -59,7 +59,7 @@ enum Command {
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Seconds between retries while the target waits to enter the stable range.
+        /// Seconds between stable-range polls and retryable BTC RPC failures.
         #[arg(long, default_value_t = 5)]
         poll_interval_secs: u64,
     },

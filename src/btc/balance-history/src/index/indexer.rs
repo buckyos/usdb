@@ -31,6 +31,14 @@ fn configured_max_height_reached(max_sync_block_height: u32, synced_height: u32)
     max_sync_block_height != u32::MAX && synced_height >= max_sync_block_height
 }
 
+// BTCClient currently exposes string errors. Keep this classifier intentionally narrow so the
+// snapshot builder retries upstream availability failures without hiding DB or consensus errors.
+fn is_retryable_exact_height_sync_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("json-rpc error: transport error")
+        || (normalized.contains("rpc error") && normalized.contains("code: -28"))
+}
+
 fn validate_activation_at_height(
     config: &BalanceHistoryConfigRef,
     block_height: u32,
@@ -398,8 +406,54 @@ impl BalanceHistoryIndexer {
         }
 
         let sync_result = (|| {
+            let mut sync_failures = ConsecutiveFailureTracker::new(30);
             loop {
-                let synced_height = self.sync_once()?;
+                let synced_height = match self.sync_once() {
+                    Ok(height) => {
+                        if let Some(recovery) = sync_failures.record_success() {
+                            info!(
+                                "Exact-height snapshot sync recovered: failed_attempts={}, outage_elapsed_ms={}, latest_synced_height={}",
+                                recovery.failed_attempts,
+                                recovery.elapsed.as_millis(),
+                                height
+                            );
+                        }
+                        height
+                    }
+                    Err(error) if is_retryable_exact_height_sync_error(&error) => {
+                        let failure = sync_failures.record_failure();
+                        if failure.should_log {
+                            if failure.attempt == 1 {
+                                error!(
+                                    "Exact-height snapshot sync encountered a retryable BTC RPC failure: target_height={}, attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
+                                    target_height,
+                                    failure.attempt,
+                                    failure.elapsed.as_millis(),
+                                    poll_interval.as_millis(),
+                                    error
+                                );
+                            } else {
+                                warn!(
+                                    "Exact-height snapshot sync BTC RPC failure persists: target_height={}, attempt={}, outage_elapsed_ms={}, retry_delay_ms={}, error={}",
+                                    target_height,
+                                    failure.attempt,
+                                    failure.elapsed.as_millis(),
+                                    poll_interval.as_millis(),
+                                    error
+                                );
+                            }
+                        }
+                        self.output.set_index_message(&format!(
+                            "Exact-height snapshot sync failed due to a temporary BTC RPC error (attempt {}): {}. Retrying in {} ms...",
+                            failure.attempt,
+                            error,
+                            poll_interval.as_millis()
+                        ));
+                        std::thread::sleep(poll_interval);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
                 self.btc_client
                     .on_sync_complete(synced_height)
                     .map_err(|e| {
@@ -968,7 +1022,11 @@ impl BalanceHistoryIndexer {
 
         let last_height = height_range.end - 1;
 
-        self.prune_undo_journal_if_needed(batch_start_height, last_height)
+        self.prune_undo_journal_if_needed(
+            batch_start_height,
+            last_height,
+            latest_btc_height,
+        )
             .map_err(|error| {
                 let msg = format!(
                     "Balance-history block batch failed: stage=prune_undo, start_height={}, end_height={}, block_count={}, elapsed_ms={}, error={}",
@@ -999,6 +1057,7 @@ impl BalanceHistoryIndexer {
         &self,
         batch_start_height: u32,
         last_height: u32,
+        latest_btc_height: u32,
     ) -> Result<(), String> {
         let retention_blocks = self.config.sync.undo_retention_blocks;
         let cleanup_interval_blocks = self.config.sync.undo_cleanup_interval_blocks;
@@ -1014,7 +1073,6 @@ impl BalanceHistoryIndexer {
             return Ok(());
         }
 
-        let latest_btc_height = self.get_latest_block_height()?;
         let hot_window_start = latest_btc_height.saturating_sub(retention_blocks.saturating_sub(1));
         if last_height < hot_window_start {
             return Ok(());
@@ -1179,6 +1237,19 @@ mod tests {
         assert!(!configured_max_height_reached(100, 99));
         assert!(configured_max_height_reached(100, 100));
         assert!(configured_max_height_reached(100, 101));
+    }
+
+    #[test]
+    fn test_exact_height_retry_classifier_is_narrow_and_fail_closed() {
+        assert!(is_retryable_exact_height_sync_error(
+            "get_block_count failed: JSON-RPC error: transport error: connection reset"
+        ));
+        assert!(is_retryable_exact_height_sync_error(
+            "JSON-RPC error: RPC error response: RpcError { code: -28, message: Loading block index }"
+        ));
+        assert!(!is_retryable_exact_height_sync_error(
+            "Failed to flush balance-history after sync iteration: injected DB error"
+        ));
     }
 
     #[test]

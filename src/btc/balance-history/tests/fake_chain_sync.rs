@@ -20,6 +20,8 @@ struct FakeChain {
 
 struct FakeChainState {
     latest_height: u32,
+    latest_height_failures_remaining: usize,
+    latest_height_error: Option<String>,
     blocks: BTreeMap<u32, Block>,
 }
 
@@ -28,6 +30,8 @@ impl FakeChain {
         Self {
             state: Arc::new(RwLock::new(FakeChainState {
                 latest_height,
+                latest_height_failures_remaining: 0,
+                latest_height_error: None,
                 blocks,
             })),
         }
@@ -35,6 +39,12 @@ impl FakeChain {
 
     fn replace_block(&self, height: u32, block: Block) {
         self.state.write().unwrap().blocks.insert(height, block);
+    }
+
+    fn fail_next_latest_height_requests(&self, count: usize, error: &str) {
+        let mut state = self.state.write().unwrap();
+        state.latest_height_failures_remaining = count;
+        state.latest_height_error = Some(error.to_string());
     }
 }
 
@@ -57,7 +67,15 @@ impl BTCClient for FakeChain {
     }
 
     fn get_latest_block_height(&self) -> Result<u32, String> {
-        Ok(self.state.read().unwrap().latest_height)
+        let mut state = self.state.write().unwrap();
+        if state.latest_height_failures_remaining > 0 {
+            state.latest_height_failures_remaining -= 1;
+            return Err(state
+                .latest_height_error
+                .clone()
+                .expect("latest-height failure must have an error"));
+        }
+        Ok(state.latest_height)
     }
 
     fn get_block_hash(&self, block_height: u32) -> Result<BlockHash, String> {
@@ -382,6 +400,56 @@ fn sync_to_height_stops_at_exact_configured_target() {
     assert_eq!(synced, 3);
     assert_eq!(harness.indexer.db().get_btc_block_height().unwrap(), 3);
     assert!(harness.indexer.db().get_utxo_count().unwrap() > 0);
+}
+
+#[test]
+fn sync_to_height_retries_transient_btc_transport_failure() {
+    let scenario = build_scenario();
+    scenario.chain.fail_next_latest_height_requests(
+        1,
+        "get_block_count failed: JSON-RPC error: transport error: Resource temporarily unavailable (os error 11)",
+    );
+    let harness = Harness::new("sync_to_exact_height_transport_retry", scenario.chain, 3);
+
+    let synced = harness
+        .indexer
+        .sync_to_height(3, std::time::Duration::from_millis(1))
+        .unwrap();
+
+    assert_eq!(synced, 3);
+    assert_eq!(harness.indexer.db().get_btc_block_height().unwrap(), 3);
+}
+
+#[test]
+fn sync_to_height_fails_fast_for_non_rpc_error() {
+    let scenario = build_scenario();
+    scenario
+        .chain
+        .fail_next_latest_height_requests(1, "injected durable database error");
+    let harness = Harness::new("sync_to_exact_height_non_rpc_failure", scenario.chain, 3);
+
+    let error = harness
+        .indexer
+        .sync_to_height(3, std::time::Duration::from_millis(1))
+        .unwrap_err();
+
+    assert_eq!(error, "injected durable database error");
+    assert_eq!(harness.indexer.db().get_btc_block_height().unwrap(), 0);
+}
+
+#[test]
+fn process_block_batch_reuses_stable_tip_for_undo_pruning() {
+    let scenario = build_scenario();
+    scenario.chain.fail_next_latest_height_requests(
+        1,
+        "get_block_count failed: JSON-RPC error: transport error: injected failure",
+    );
+    let harness = Harness::new("undo_prune_reuses_stable_tip", scenario.chain, 3);
+
+    let synced = harness.indexer.process_block_batch(1..4, 3).unwrap();
+
+    assert_eq!(synced, 3);
+    assert_eq!(harness.indexer.db().get_btc_block_height().unwrap(), 3);
 }
 
 #[test]
