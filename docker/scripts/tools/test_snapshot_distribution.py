@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from urllib.parse import urlparse
 from unittest import mock
@@ -243,6 +245,43 @@ class SnapshotDistributionTests(unittest.TestCase):
             DISTRIBUTION.DEFAULT_ENDPOINT_URL,
         ])
         self.assertNotIn("access-key", " ".join(command).lower())
+
+    def test_forced_local_hash_progress_reports_bytes_and_completion(self) -> None:
+        output = io.StringIO()
+        with mock.patch.dict(DISTRIBUTION.os.environ, {"USDB_SNAPSHOT_FORCE_PROGRESS": "1"}):
+            with redirect_stderr(output):
+                digest = DISTRIBUTION._sha256(
+                    self.snapshot,
+                    progress_label=f"Local verify {self.snapshot.name}",
+                )
+        progress = output.getvalue()
+        self.assertEqual(digest, sha256(self.snapshot))
+        self.assertIn("Local verify snapshot_42.db", progress)
+        self.assertIn("100.00%", progress)
+        self.assertIn("complete", progress)
+
+    def test_aws_cli_upload_progress_is_redirected_away_from_json_stdout(self) -> None:
+        client = DISTRIBUTION.AwsCliClient(
+            endpoint_url=DISTRIBUTION.DEFAULT_ENDPOINT_URL,
+            bucket=DISTRIBUTION.DEFAULT_BUCKET,
+            region="auto",
+            profile="publisher",
+        )
+        output = io.StringIO()
+        with redirect_stderr(output):
+            with mock.patch.object(DISTRIBUTION, "_progress_enabled", return_value=True):
+                with mock.patch.object(DISTRIBUTION.subprocess, "run") as run:
+                    client.upload(
+                        self.snapshot,
+                        "snapshots/v2/test/snapshot_42.db",
+                        sha256(self.snapshot),
+                        self.snapshot.stat().st_size,
+                        "application/octet-stream",
+                    )
+        command = run.call_args.args[0]
+        self.assertNotIn("--only-show-errors", command)
+        self.assertIs(run.call_args.kwargs["stdout"], output)
+        self.assertIn("Upload snapshot_42.db: complete", output.getvalue())
 
     def test_upload_rejects_snapshot_db_tamper_before_remote_write(self) -> None:
         record_path, _record, _digest = self.prepare()

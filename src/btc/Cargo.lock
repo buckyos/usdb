@@ -499,6 +499,7 @@ dependencies = [
  "bitcoincore-rpc",
  "chrono",
  "clap",
+ "indicatif",
  "log",
  "named-lock",
  "serde",

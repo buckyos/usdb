@@ -110,6 +110,11 @@ bash "$SCRIPT" status --height "$H"
 tail -F ~/.usdb/balance-history-snapshot-mainnet/builder/logs/balance-history-snapshot-tool_rCURRENT.log
 ```
 
+`finalize` 的整文件 SHA-256 扫描会在交互式终端显示已读取字节、文件总量、吞吐、百分比和 ETA。
+`publish` 会先显示上传前本地 SHA-256 扫描进度，再显示 AWS CLI 的实际上传字节进度。两者都写入
+`stderr`，不会混入最终 JSON/report；非交互式 CI 默认关闭动态进度，必要时可设置
+`USDB_SNAPSHOT_FORCE_PROGRESS=1` 强制打开 publish 侧进度。
+
 `create` 已包含完整 SQLite integrity/count 验证。`finalize` 只重新核对 artifact/manifest/complete
 identity、整文件 SHA-256 和 Ed25519 签名，不打开 SQLite，也不创建 RocksDB；因此生产机上传不再
 需要额外预留一份恢复后 RocksDB 的磁盘空间。`validate-install` 才执行完整的接收方视角恢复，并写入

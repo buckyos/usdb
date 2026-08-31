@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -59,11 +60,83 @@ def _canonical_json(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _sha256(path: Path) -> str:
+def _progress_enabled() -> bool:
+    return sys.stderr.isatty() or os.environ.get("USDB_SNAPSHOT_FORCE_PROGRESS") == "1"
+
+
+def _human_bytes(value: float) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    size = max(value, 0.0)
+    for unit in units[:-1]:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} {units[-1]}"
+
+
+class _FileReadProgress:
+    def __init__(self, label: str, total_bytes: int) -> None:
+        self.label = label
+        self.total_bytes = total_bytes
+        self.started = time.monotonic()
+        self.last_rendered = 0.0
+        self.enabled = _progress_enabled()
+
+    def update(self, processed_bytes: int, *, force: bool = False, status: str = "") -> None:
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_rendered < 0.25:
+            return
+        elapsed = max(now - self.started, 0.001)
+        fraction = 1.0 if self.total_bytes == 0 else min(processed_bytes / self.total_bytes, 1.0)
+        width = 32
+        completed = min(int(fraction * width), width)
+        bar = "#" * completed + "-" * (width - completed)
+        rate = processed_bytes / elapsed
+        remaining = max(self.total_bytes - processed_bytes, 0)
+        eta = remaining / rate if rate > 0 else 0.0
+        suffix = f" {status}" if status else ""
+        sys.stderr.write(
+            f"\r{self.label} [{bar}] {fraction * 100:6.2f}% "
+            f"{_human_bytes(processed_bytes)}/{_human_bytes(self.total_bytes)} "
+            f"{_human_bytes(rate)}/s ETA {eta:,.0f}s{suffix}"
+        )
+        sys.stderr.flush()
+        self.last_rendered = now
+
+    def finish(self, processed_bytes: int, *, success: bool) -> None:
+        if not self.enabled:
+            return
+        self.update(
+            processed_bytes,
+            force=True,
+            status="complete" if success else "failed",
+        )
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+
+def _sha256(path: Path, *, progress_label: str | None = None) -> str:
     digest = hashlib.sha256()
+    total_bytes = path.stat().st_size
+    progress = _FileReadProgress(progress_label, total_bytes) if progress_label else None
+    processed_bytes = 0
+    if progress is not None:
+        progress.update(0, force=True)
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
+        try:
+            for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+                digest.update(chunk)
+                processed_bytes += len(chunk)
+                if progress is not None:
+                    progress.update(processed_bytes)
+        except BaseException:
+            if progress is not None:
+                progress.finish(processed_bytes, success=False)
+            raise
+    if progress is not None:
+        progress.finish(processed_bytes, success=True)
     return digest.hexdigest()
 
 
@@ -442,7 +515,10 @@ def _validate_local_files(record: dict[str, Any], source_dir: Path) -> None:
         path = source_dir / item["path"]
         _require(path.is_file() and not path.is_symlink(), f"snapshot release source file is missing or not regular: {path}")
         _require(path.stat().st_size == item["size"], f"snapshot release source file size mismatch: {path}")
-        _require(_sha256(path) == item["sha256"], f"snapshot release source file SHA-256 mismatch: {path}")
+        _require(
+            _sha256(path, progress_label=f"Local verify {path.name}") == item["sha256"],
+            f"snapshot release source file SHA-256 mismatch: {path}",
+        )
 
 
 class AwsCliClient:
@@ -481,23 +557,35 @@ class AwsCliClient:
         raise ValueError(f"AWS CLI head-object failed for {object_key}: {result.stderr.strip()}")
 
     def upload(self, source: Path, object_key: str, sha256: str, size: int, content_type: str) -> None:
+        show_progress = _progress_enabled()
+        command = [
+            *self._base_command(),
+            "s3",
+            "cp",
+            str(source),
+            f"s3://{self.bucket}/{object_key}",
+            "--content-type",
+            content_type,
+            "--cache-control",
+            "public,max-age=31536000,immutable",
+            "--metadata",
+            f"usdb-sha256={sha256},usdb-size={size}",
+        ]
+        if not show_progress:
+            command.append("--only-show-errors")
+        if show_progress:
+            print(
+                f"Upload {source.name}: size={_human_bytes(size)} object={object_key}",
+                file=sys.stderr,
+                flush=True,
+            )
         subprocess.run(
-            [
-                *self._base_command(),
-                "s3",
-                "cp",
-                str(source),
-                f"s3://{self.bucket}/{object_key}",
-                "--only-show-errors",
-                "--content-type",
-                content_type,
-                "--cache-control",
-                "public,max-age=31536000,immutable",
-                "--metadata",
-                f"usdb-sha256={sha256},usdb-size={size}",
-            ],
+            command,
             check=True,
+            stdout=sys.stderr if show_progress else subprocess.DEVNULL,
         )
+        if show_progress:
+            print(f"Upload {source.name}: complete", file=sys.stderr, flush=True)
 
 
 def _head_matches(head: dict[str, Any], sha256: str, size: int) -> bool:
@@ -514,6 +602,8 @@ def _publish_object(client: Any, source: Path, object_key: str, sha256: str, siz
     existing = client.head(object_key)
     if existing is not None:
         _require(_head_matches(existing, sha256, size), f"refusing to replace existing S3 object with different identity: {object_key}")
+        if _progress_enabled():
+            print(f"Upload {source.name}: already exists, skipping", file=sys.stderr, flush=True)
         return "existing"
     client.upload(source, object_key, sha256, size, content_type)
     published = client.head(object_key)

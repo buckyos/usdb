@@ -166,6 +166,10 @@ bash "$SNAPSHOT_SCRIPT" archive --height "$H"
 已存在且身份完全一致的对象会跳过；已存在但 metadata/size 不同会失败关闭。不要使用 multipart ETag
 替代 SHA-256。
 
+交互式发布时，本地 SHA-256 阶段显示已读/总字节、吞吐和 ETA；AWS CLI 上传阶段显示已上传字节
+进度。进度统一写入 `stderr`，发布结果 JSON 仍保持在 `stdout`。重定向到非 TTY 的自动化环境默认
+使用安静模式；排障时可设置 `USDB_SNAPSHOT_FORCE_PROGRESS=1`。
+
 AWS CLI 对单次大文件上传提供 multipart 和重试，但不保证进程退出后的跨进程 multipart resume。上传中断后
 重跑同一命令是安全的，可能会重新发送该大文件。下载侧提供持久 `.part` 断点续传。
 

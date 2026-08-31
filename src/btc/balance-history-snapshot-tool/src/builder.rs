@@ -12,6 +12,7 @@ use balance_history::{
     manifest_path_for_snapshot_file, verify_snapshot_manifest_signature,
 };
 use chrono::Local;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -23,6 +24,37 @@ use std::time::{Duration, Instant};
 use usdb_util::{BTCRpcClient, get_memory_usage_snapshot};
 
 const VERIFICATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+
+fn snapshot_hash_progress_bar(path: &Path) -> Result<ProgressBar, String> {
+    let total_bytes = std::fs::metadata(path)
+        .map_err(|e| {
+            format!(
+                "Failed to read snapshot file metadata {}: {}",
+                path.display(),
+                e
+            )
+        })?
+        .len();
+    let progress = ProgressBar::new(total_bytes);
+    progress.set_draw_target(ProgressDrawTarget::stderr_with_hz(4));
+    progress.set_style(
+        ProgressStyle::default_bar()
+            .template(
+                "{prefix:.bold} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} {percent}% ({eta_precise} remaining) {msg}",
+            )
+            .expect("Invalid snapshot hash progress template")
+            .progress_chars("#>-"),
+    );
+    progress.set_prefix("Finalize hash");
+    progress.set_message(
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("snapshot.db")
+            .to_string(),
+    );
+    progress.enable_steady_tick(Duration::from_millis(250));
+    Ok(progress)
+}
 
 fn verification_phase_name(phase: SnapshotVerificationPhase) -> &'static str {
     match phase {
@@ -871,7 +903,20 @@ impl ExactHeightSnapshotBuilder {
         let signing_key_id =
             verify_snapshot_manifest_signature(&manifest, &manifest_path, trusted_keys_path)?;
 
-        let actual_file_sha256 = SnapshotHash::calc_hash(&snapshot_path)?;
+        let hash_progress = snapshot_hash_progress_bar(&snapshot_path)?;
+        let actual_file_sha256 =
+            match SnapshotHash::calc_hash_with_progress(&snapshot_path, |processed, _| {
+                hash_progress.set_position(processed);
+            }) {
+                Ok(hash) => {
+                    hash_progress.finish_with_message("hash verified");
+                    hash
+                }
+                Err(error) => {
+                    hash_progress.abandon_with_message("hash failed");
+                    return Err(error);
+                }
+            };
         if !actual_file_sha256.eq_ignore_ascii_case(&marker.file_sha256) {
             return Err(format!(
                 "Snapshot file hash mismatch during release finalization: marker={}, actual={}",

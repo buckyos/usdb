@@ -48,7 +48,16 @@ impl SnapshotMeta {
 pub struct SnapshotHash;
 
 impl SnapshotHash {
+    /// Calculates the file SHA-256 without reporting read progress.
     pub fn calc_hash(path: &Path) -> Result<String, String> {
+        Self::calc_hash_with_progress(path, |_, _| {})
+    }
+
+    /// Calculates the file SHA-256 and reports processed and total bytes after each read.
+    pub fn calc_hash_with_progress<F>(path: &Path, mut on_progress: F) -> Result<String, String>
+    where
+        F: FnMut(u64, u64),
+    {
         use sha2::{Digest, Sha256};
         use std::fs::File;
         use std::io::{BufReader, Read};
@@ -58,9 +67,19 @@ impl SnapshotHash {
             error!("{}", msg);
             msg
         })?;
+        let total_bytes = file
+            .metadata()
+            .map_err(|e| {
+                let msg = format!("Failed to read snapshot file metadata for hashing: {}", e);
+                error!("{}", msg);
+                msg
+            })?
+            .len();
         let mut reader = BufReader::new(file);
         let mut hasher = Sha256::new();
-        let mut buffer = [0; 1024 * 64];
+        let mut buffer = vec![0; 8 * 1024 * 1024];
+        let mut processed_bytes = 0u64;
+        on_progress(0, total_bytes);
 
         loop {
             let n = reader.read(&mut buffer).map_err(|e| {
@@ -73,6 +92,8 @@ impl SnapshotHash {
                 break;
             }
             hasher.update(&buffer[..n]);
+            processed_bytes = processed_bytes.saturating_add(n as u64);
+            on_progress(processed_bytes, total_bytes);
         }
 
         let hash_result = hasher.finalize();
@@ -1268,6 +1289,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn snapshot_hash_progress_reports_zero_and_complete_byte_counts() {
+        let root = TestRoot::new("snapshot_hash_progress");
+        let path = root.path().join("snapshot.db");
+        let contents = vec![0x5au8; 9 * 1024 * 1024 + 17];
+        std::fs::write(&path, &contents).unwrap();
+        let mut positions = Vec::new();
+
+        let hash = SnapshotHash::calc_hash_with_progress(&path, |processed, total| {
+            positions.push((processed, total));
+        })
+        .unwrap();
+
+        assert_eq!(hash, SnapshotHash::calc_hash(&path).unwrap());
+        assert_eq!(positions.first(), Some(&(0, contents.len() as u64)));
+        assert_eq!(
+            positions.last(),
+            Some(&(contents.len() as u64, contents.len() as u64))
+        );
+        assert!(positions.windows(2).all(|pair| pair[0].0 <= pair[1].0));
     }
 
     #[test]
