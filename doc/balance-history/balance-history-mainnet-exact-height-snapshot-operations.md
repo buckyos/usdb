@@ -121,8 +121,8 @@ network + H + BTC block hash at H + snapshot ID
 │   ├── builder/                        # workspace、jobs 和 immutable artifacts
 │   ├── config/                         # 首次 init 后冻结的 builder config
 │   ├── targets/                        # 固定的 H -> BTC block hash
-│   ├── validation/                     # 每个 artifact 的独立 signed install
-│   └── releases/                       # reports、records 和可选 tar/SHA-256
+│   ├── validation/                     # 显式 validate-install 的临时/专用 RocksDB
+│   └── releases/                       # finalization、validation reports、records 和可选 tar
 └── secure/snapshot-keys/               # 私钥和公开 key material
 ```
 
@@ -162,6 +162,7 @@ bash "$SNAPSHOT_SCRIPT" create --height "$H"
 bash "$SNAPSHOT_SCRIPT" resume-verify --height "$H" # 仅在 status 为 verifying 时执行
 bash "$SNAPSHOT_SCRIPT" status --height "$H"
 bash "$SNAPSHOT_SCRIPT" finalize --height "$H"
+bash "$SNAPSHOT_SCRIPT" validate-install --height "$H" # 可选：独立主机/磁盘恢复演练
 bash "$SNAPSHOT_SCRIPT" prepare-release --height "$H" # 可选：上传前审查 release record
 bash "$SNAPSHOT_SCRIPT" publish --height "$H"
 bash "$SNAPSHOT_SCRIPT" archive --height "$H" # 可选：仅在需要离线归档时执行
@@ -193,7 +194,9 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 - `resume-verify`：复用已经生成的临时 SQLite，仅执行验证和发布，不打开 RocksDB/indexer；
 - `status/list`：查看持久化 builder/job 状态；
 - `verify`：重开 immutable artifact 并再次检查 canonical hash；
-- `finalize`：verify 并完成所有发布路径都要求的独立 `trust_mode=signed` 安装，不创建 tar；
+- `finalize`：重算 DB SHA-256，并核对 complete/manifest identity、trusted catalog 与签名；不打开
+  SQLite、不恢复 RocksDB；
+- `validate-install`：显式在独立 validation root 中执行 `trust_mode=signed` 完整恢复并保留审计报告；
 - `archive`：从已经 finalize 的 immutable artifact 创建可选 tar 和 checksum；
 - `prepare-release`：从 pinned target 和 finalized 目录推导全部 provenance，生成 content-addressed record；
 - `publish`：幂等 prepare 后，通过 AWS CLI 上传 artifact，最后发布 release record。
@@ -202,11 +205,12 @@ hash；后续恢复、verify 和 finalize 都复用该记录。如果 hash 已�
 原参数或使用新的 `SNAPSHOT_ROOT`；只有 `utxo_max_cache_bytes`、
 `balance_max_cache_bytes`、`max_memory_percent` 三个非共识运行参数可以原子刷新，下一次
 `create` 会在开始同步前同步更新已有 workspace config。因此 OOM 或人工停止后可以调整内存
-预算并从 durable height 继续，不需要删除数据库。`finalize` 也可重复执行，只会复核已有
-validation marker；`archive` 单独复核或创建 tar/checksum。
+预算并从 durable height 继续，不需要删除数据库。`finalize` 可重复执行，每次都会重新扫描文件 hash
+和签名，并复核已有 artifact-finalization marker；`validate-install` 有匹配审计报告时幂等返回；
+`archive` 单独复核或创建 tar/checksum。
 
 下面第 3 至第 13 节保留展开后的手工步骤，主要用于审计、排障和理解脚本行为。正常生产操作
-优先使用上述脚本，避免手工漏掉 hash pin、signed validation 或 release record 校验。
+优先使用上述脚本，避免手工漏掉 hash pin、artifact finalization 或 release record 校验。
 
 ## 3. 生产前检查
 
@@ -544,9 +548,10 @@ staging 四者一致后才原子替换 live DB。旧 SQLite schema、旧 manifes
 
 ### 9.2 用接收方信任策略试安装
 
-`snapshot-tool verify` 会重开 artifact 并核对 DB、manifest、state-ref、计数和文件 hash；正式
-发布前还必须在独立 validation root 中执行一次 signed install，以接收方视角验证 detached
-signature 和 trusted key。
+`snapshot-tool verify` 会重开 artifact 并核对 DB、manifest、state-ref、计数和文件 hash；`create`
+完成时已经执行同等完整校验。`finalize` 随后只执行发布所需的轻量 hash/signature 门禁。独立
+signed install 属于恢复能力演练：首次主网 snapshot、SQLite schema/installer 变更或周期性演练时
+应执行，普通增量 snapshot 上传不再强制执行。
 
 创建 `/home/bucky/.usdb/balance-history-snapshot-mainnet/validation/manual/config.toml`：
 
@@ -592,8 +597,18 @@ SNAPSHOT_FILE="$ARTIFACT_PATH/snapshot_${H}.db"
   --file "$SNAPSHOT_FILE"
 ```
 
-只有该命令在 `trust_mode = "signed"` 下成功后才能继续发布。此 validation root 可保留用于
-发布审计，也可以在确认没有进程使用后删除并重建；不要把它当成生产 builder 的增量基础。
+生产脚本对应命令为：
+
+```bash
+bash "$SNAPSHOT_SCRIPT" validate-install --height "$H"
+```
+
+成功后审计结果按 `height/hash/validation revision` 写入 `releases/validation-reports/`；installer
+revision 改变后不会复用旧报告。Validation RocksDB 不属于发布物，也不作为
+builder 的增量基础。Installer 不复制或移动 SQLite，而是顺序读取 SQLite、写入新的 staged
+RocksDB，再原子切换为 validation root 的 `db/`；因此它仍需要额外容纳一份恢复后 RocksDB 的
+磁盘空间。该演练应位于专用磁盘/临时主机，脚本不会自动删除结果，确认没有进程使用后再由运维
+显式清理。
 
 ## 10. 发布和可选离线归档
 
@@ -610,7 +625,7 @@ bash "$SNAPSHOT_SCRIPT" publish --height "$H"
 
 不要发布 mutable workspace、job state、签名私钥或 validation DB。Direct-file 发布集合由
 content-addressed record 固定，包含 snapshot DB、manifest、signature 和 `complete.json` 的逐文件
-size/SHA-256/object key，以及 trusted catalog hash 和 producer revision。
+size/SHA-256/object key，以及 trusted catalog hash、artifact producer revision 和 finalizer revision。
 
 只有离线介质或冷备明确要求单文件时才额外执行：
 
@@ -630,7 +645,7 @@ tar hash 只用于可选归档的传输完整性；真正的内容信任链是�
 signature，以及 manifest 内固定的 snapshot DB SHA-256 和 state-ref。
 
 面向节点的默认分发不要求下载 tar。`snapshot_distribution.py prepare` 从本节 artifact、trusted
-catalog 和 `finalize` 生成的 `signed-install-complete.json` 建立逐文件 release record；`upload` 使用
+catalog 和 `finalize` 生成的 `artifact-finalized.json` 建立逐文件 release record；`upload` 使用
 AWS CLI 发布原始 DB/sidecars，并最后发布 content-addressed record。这样不会在接收方产生 tar 与解包 DB
 同时存在的额外峰值空间。
 

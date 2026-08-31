@@ -65,7 +65,8 @@ class SnapshotDistributionTests(unittest.TestCase):
         self.snapshot_id = "2" * 64
         self.signing_key_id = "snapshot-signer-1"
         self.snapshot = self.artifact / "snapshot_42.db"
-        self.snapshot.write_bytes(b"tiny immutable snapshot database")
+        self.snapshot_bytes = b"tiny immutable snapshot database"
+        self.snapshot.write_bytes(self.snapshot_bytes)
         self.manifest = self.artifact / "snapshot_42.manifest.json"
         manifest_value = {
             "manifest_version": DISTRIBUTION.SNAPSHOT_MANIFEST_VERSION,
@@ -117,15 +118,24 @@ class SnapshotDistributionTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.validation = self.root / "signed-install-complete.json"
-        self.validation.write_text(
+        self.finalization = self.root / "artifact-finalized.json"
+        self.finalization.write_text(
             json.dumps(
                 {
                     "version": 1,
                     "height": self.height,
+                    "network": "bitcoin",
                     "btc_block_hash": self.block_hash,
+                    "snapshot_id": self.snapshot_id,
+                    "snapshot_file": self.snapshot.name,
+                    "manifest_file": self.manifest.name,
+                    "signature_file": self.signature.name,
                     "file_sha256": sha256(self.snapshot),
-                    "verified_at_utc": "2026-08-30T00:00:00+00:00",
+                    "signing_key_id": self.signing_key_id,
+                    "trusted_keys_sha256": sha256(self.trusted_keys),
+                    "producer_revision": "a" * 40,
+                    "finalizer_revision": "b" * 40,
+                    "finalized_at_utc": "2026-08-30T00:00:00+00:00",
                 }
             ),
             encoding="utf-8",
@@ -138,7 +148,7 @@ class SnapshotDistributionTests(unittest.TestCase):
         return DISTRIBUTION.prepare_release_record(
             artifact_dir=self.artifact,
             trusted_keys=self.trusted_keys,
-            validation_marker=self.validation,
+            finalization_marker=self.finalization,
             public_base_url="https://snapshots.example.test",
             producer_revision="a" * 40,
             output_dir=self.root / "records",
@@ -149,11 +159,13 @@ class SnapshotDistributionTests(unittest.TestCase):
         self.assertEqual(sha256(record_path), record_sha256)
         self.assertEqual(record["height"], self.height)
         self.assertEqual(record["trusted_keys"]["sha256"], sha256(self.trusted_keys))
+        self.assertEqual(record["producer"]["artifact_producer_revision"], "a" * 40)
+        self.assertEqual(record["producer"]["artifact_finalizer_revision"], "b" * 40)
 
         object_root = self.root / "objects"
         client = FakeAwsClient(object_root)
         published = DISTRIBUTION.upload_release(record_path, self.artifact, client)
-        record_key = f"snapshot-records/v1/{record_sha256}.json"
+        record_key = f"snapshot-records/v2/{record_sha256}.json"
         self.assertEqual(published["record_object_key"], record_key)
         upload_events = [event for event in client.events if event[0] == "upload"]
         self.assertEqual(upload_events[-1], ("upload", record_key))
@@ -219,7 +231,7 @@ class SnapshotDistributionTests(unittest.TestCase):
             stderr="",
         )
         with mock.patch.object(DISTRIBUTION.subprocess, "run", return_value=response) as run:
-            client.head("snapshot-records/v1/" + "1" * 64 + ".json")
+            client.head("snapshot-records/v2/" + "1" * 64 + ".json")
         command = run.call_args.args[0]
         self.assertEqual(command[:7], [
             "aws",
@@ -232,10 +244,13 @@ class SnapshotDistributionTests(unittest.TestCase):
         ])
         self.assertNotIn("access-key", " ".join(command).lower())
 
-    def test_prepare_rejects_snapshot_db_tamper(self) -> None:
-        self.snapshot.write_bytes(b"tampered")
-        with self.assertRaisesRegex(ValueError, "snapshot DB SHA-256 verification failed"):
-            self.prepare()
+    def test_upload_rejects_snapshot_db_tamper_before_remote_write(self) -> None:
+        record_path, _record, _digest = self.prepare()
+        self.snapshot.write_bytes(b"x" * len(self.snapshot_bytes))
+        client = FakeAwsClient(self.root / "objects")
+        with self.assertRaisesRegex(ValueError, "snapshot release source file SHA-256 mismatch"):
+            DISTRIBUTION.upload_release(record_path, self.artifact, client)
+        self.assertEqual(client.events, [])
 
     def test_install_rejects_wrong_catalog_and_height_before_artifact_download(self) -> None:
         record_path, _record, _digest = self.prepare()

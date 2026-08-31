@@ -428,7 +428,7 @@ class UsdbNodeTests(unittest.TestCase):
         with mock.patch.object(NODE, "install_snapshot_artifact", return_value=installed) as install:
             result = NODE.install_snapshot_release(
                 layout,
-                record_url="https://snapshots.example.test/snapshot-records/v1/" + "1" * 64 + ".json",
+                record_url="https://snapshots.example.test/snapshot-records/v2/" + "1" * 64 + ".json",
             )
         self.assertEqual(result, installed.release_dir)
         env = NODE.read_env(layout.node_env)
@@ -466,7 +466,7 @@ class UsdbNodeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "after balance-history DB initialization"):
                 NODE.install_snapshot_release(
                     layout,
-                    record_url="https://snapshots.example.test/snapshot-records/v1/" + "1" * 64 + ".json",
+                    record_url="https://snapshots.example.test/snapshot-records/v2/" + "1" * 64 + ".json",
                 )
         install.assert_not_called()
 

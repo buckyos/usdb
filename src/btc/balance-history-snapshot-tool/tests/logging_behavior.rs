@@ -95,3 +95,39 @@ fn json_failure_uses_stderr_and_is_persisted_before_exit() {
         .unwrap();
     assert!(log.contains("Snapshot tool command failed"));
 }
+
+#[test]
+fn status_uses_query_log_without_rotating_active_builder_log() {
+    let root = TestRoot::new("snapshot-tool-query-logging");
+    let log_dir = root.path().join("logs");
+    fs::create_dir_all(&log_dir).unwrap();
+    let builder_log = log_dir.join("balance-history-snapshot-tool_rCURRENT.log");
+    fs::write(&builder_log, "active-builder-log\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_balance-history-snapshot-tool"))
+        .arg("--root-dir")
+        .arg(root.path())
+        .args(["--json", "status"])
+        .env("USDB_PROCESS_LOG_LEVEL", "info")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<Value>(&output.stdout).unwrap();
+    assert_eq!(
+        fs::read_to_string(builder_log).unwrap(),
+        "active-builder-log\n"
+    );
+    assert!(
+        fs::read_dir(log_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .any(|name| name
+                .to_string_lossy()
+                .starts_with("balance-history-snapshot-tool-query"))
+    );
+}

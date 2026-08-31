@@ -4,7 +4,7 @@ Status: first implementation complete; live R2 upload and target-host installati
 
 ## 1. 边界
 
-本文规定已完成 exact-height 构建、签名和独立 signed install 验证的 balance-history snapshot 如何
+本文规定已完成 exact-height 构建、完整校验和轻量 release finalization 的 balance-history snapshot 如何
 发布到 S3-compatible object storage，以及节点如何通过公开 HTTPS 下载并安装。Snapshot 不是 network
 identity，也不绑定某一个 USDB `rN` release；fresh indexer 仍要求 snapshot 高度不高于该 network
 bundle 的 `index_origin_height`。
@@ -32,14 +32,15 @@ complete.json
 ```
 
 这样可以直接断点续传 DB，避免节点同时保留 tar 和解包后的 DB 所造成的接近双倍磁盘占用。`finalize`
-只完成独立 signed install 验证，不再生成 tar；只有明确需要离线归档时才执行独立 `archive` 命令。
+只重算 DB SHA-256 并验证 marker/manifest/Ed25519 签名，不打开 SQLite 或恢复 RocksDB；完整恢复演练由
+独立 `validate-install` 命令承担。只有明确需要离线归档时才执行 `archive`。
 
 每个 release record 固定：
 
 - network、height、BTC block hash 和 snapshot ID；
 - 四个文件的 basename、size、SHA-256 和 object key；
-- producer USDB revision；
-- 独立 signed install marker 的 SHA-256 和时间；
+- artifact producer USDB revision 与执行轻量 finalization 的 USDB revision；
+- artifact-finalization marker 的 SHA-256 和时间；
 - signer key ID、public trusted-key catalog basename 和 SHA-256；
 - public HTTPS base。
 
@@ -47,7 +48,7 @@ complete.json
 签名、manifest 时间或任一 sidecar 变化都会进入新目录，不覆盖旧对象。Release record 自身写入：
 
 ```text
-snapshot-records/v1/<record-sha256>.json
+snapshot-records/v2/<record-sha256>.json
 ```
 
 上传顺序固定为“数据文件在前，release record 最后”。不发布可信语义不明确的 `latest.json`；运维或
@@ -59,7 +60,7 @@ USDB release 必须记录明确的 content-addressed record URL。
 
 - `mainnet_exact_height_snapshot.sh finalize --height H` 已成功；
 - artifact 的 `complete.json`、DB、manifest 和 detached signature 相邻；
-- 对应 validation root 存在 `signed-install-complete.json`；
+- 对应 release finalization 目录存在 `artifact-finalized.json`；
 - public trusted-key catalog 已 review，且包含 manifest 的 signer；
 - 已安装 AWS CLI，并通过 profile 或标准 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` 提供凭证；
 - Cloudflare R2 region 使用 `auto`；工具默认显式传递，也可用 `--aws-region` 覆盖。
@@ -100,12 +101,12 @@ Cloudflare 自定义域名应支持公开 GET/HEAD 和 HTTP Range；正式大文
 
 ## 4. 生成 Release Record
 
-正常发布不需要重新填写 block hash、artifact 目录、validation marker、trusted catalog 或 producer
+正常发布不需要重新填写 block hash、artifact 目录、finalization marker、trusted catalog 或 producer
 revision。主网 snapshot 脚本会从首次 `create` 固定的 target record 和 `finalize` 目录推导并交叉检查：
 
 - `targets/<height>.json`：BTC block hash 和生成任务固定的 USDB revision；
 - `builder/snapshots/<height>/<hash>/`：immutable artifact 与 `complete.json`；
-- `validation/<height>-<hash>/signed-install-complete.json`：独立 signed install 结果；
+- `releases/finalized/<height>-<hash>/artifact-finalized.json`：轻量 release finalization 结果；
 - `~/.usdb/secure/snapshot-keys/<signer>.trusted-keys.json`：公开 trusted catalog。
 
 从 USDB 仓库执行：
@@ -119,10 +120,11 @@ H=<snapshot-height>
 bash "$SNAPSHOT_SCRIPT" prepare-release --height "$H"
 ```
 
-`prepare-release` 会重新确认高度对应的 BTC canonical hash，并完整读取、校验 DB 一次。输出 JSON 中包含
+`prepare-release` 会重新确认高度对应的 BTC canonical hash，并使用 finalize 已固定的 DB hash 构造
+release record，不再重复扫描整个 SQLite。输出 JSON 中包含
 record path、record SHA-256 和最终公开 URL，报告同时写入 snapshot release 目录。同一输入重跑是幂等
 的；同名但内容不同的本地 record 会被拒绝覆盖。缺少 pinned target、`complete.json` 或 independent
-signed-install marker 时会失败关闭。
+artifact-finalization marker 时会失败关闭。
 
 ## 5. 上传 R2
 
@@ -159,7 +161,7 @@ bash "$SNAPSHOT_SCRIPT" archive --height "$H"
 `balance-history-mainnet-<height>-<block-hash>.tar` 及 `.tar.sha256`。不要在空间不足时执行；`publish`
 不会隐式调用它，也不会自动删除历史 archive。
 
-上传前工具会再次完整计算本地文件 SHA-256，防止 prepare 后文件变化。每个对象写入
+上传前工具会完整计算本地文件 SHA-256，防止 finalize/prepare 后文件变化。每个对象写入
 `usdb-sha256` 和 `usdb-size` metadata，上传后使用 `head-object` 校验 metadata 与 ContentLength。
 已存在且身份完全一致的对象会跳过；已存在但 metadata/size 不同会失败关闭。不要使用 multipart ETag
 替代 SHA-256。

@@ -29,7 +29,7 @@ snapshot_<H>.db
 snapshot_<H>.manifest.json
 snapshot_<H>.manifest.sig
 complete.json
-snapshot-records/v1/<record-sha256>.json
+snapshot-records/v2/<record-sha256>.json
 ```
 
 发布对象不包含 signing private key、builder workspace、job state、接收方 trusted-key catalog 或
@@ -93,8 +93,9 @@ bash "$SCRIPT" init
 bash "$SCRIPT" preflight --height "$H"
 bash "$SCRIPT" create --height "$H"
 bash "$SCRIPT" resume-verify --height "$H" # interrupted verifying jobs only
-bash "$SCRIPT" verify --height "$H"
+bash "$SCRIPT" verify --height "$H" # optional full re-verification
 bash "$SCRIPT" finalize --height "$H"
+bash "$SCRIPT" validate-install --height "$H" # optional independent restore drill
 bash "$SCRIPT" prepare-release --height "$H" # optional review gate
 bash "$SCRIPT" publish --height "$H"
 bash "$SCRIPT" archive --height "$H" # optional offline archive only
@@ -109,8 +110,14 @@ bash "$SCRIPT" status --height "$H"
 tail -F ~/.usdb/balance-history-snapshot-mainnet/builder/logs/balance-history-snapshot-tool_rCURRENT.log
 ```
 
+`create` 已包含完整 SQLite integrity/count 验证。`finalize` 只重新核对 artifact/manifest/complete
+identity、整文件 SHA-256 和 Ed25519 签名，不打开 SQLite，也不创建 RocksDB；因此生产机上传不再
+需要额外预留一份恢复后 RocksDB 的磁盘空间。`validate-install` 才执行完整的接收方视角恢复，并写入
+独立 validation report；首次主网发布、snapshot schema/installer 升级和周期性恢复演练建议执行，
+但它不是每次对象存储上传的硬门槛。
+
 日常对象存储发布只需要高度参数。脚本从 pinned target 和 finalize 结果推导 BTC hash、producer
-revision、artifact、validation marker 和 trusted catalog；对象存储默认值与高级覆盖项见
+revision、artifact、artifact-finalization marker 和 trusted catalog；对象存储默认值与高级覆盖项见
 [Snapshot 对象存储发布与安装](./balance-history-snapshot-object-storage.md)。
 `publish` 不依赖且不会生成 tar；离线介质或冷备明确需要单文件归档时才执行 `archive`。
 
@@ -118,10 +125,11 @@ revision、artifact、validation marker 和 trusted catalog；对象存储默认
 
 - target `H/hash`、确认深度和代码 revision 已固定；
 - create/verify 的 snapshot ID、state-ref、计数和 file SHA-256 一致；
-- 独立 validation root 的 signed install 成功；
+- artifact-finalization marker 与 complete/manifest、producer revision 和 trusted catalog 一致；
+- 首次正式发布或 installer/schema 变更时，独立 `validate-install` 恢复演练成功；
 - direct-file release record 可重算；若选择生成离线 archive，其 tar checksum 可在 release 目录中复核；
 - manifest signer 存在于即将随 binary bundle 发布的 trusted-key catalog；
-- snapshot release record 引用 producer revision 和 catalog hash；接收方 binary/network compatibility
+- snapshot release record 分别引用 artifact producer/finalizer revision 和 catalog hash；接收方 binary/network compatibility
   由 release manifest 与 runtime validator 独立校验；
 - 生成机私钥和 mutable builder 内容不在待发布目录中。
 

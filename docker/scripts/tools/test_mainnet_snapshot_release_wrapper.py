@@ -24,6 +24,8 @@ class MainnetSnapshotReleaseWrapperTests(unittest.TestCase):
         self.bitcoin_data = self.root / "bitcoin"
         self.bitcoin_bin = self.root / "bitcoin-bin"
         self.invocations = self.root / "distribution-invocations.jsonl"
+        self.snapshot_tool_invocations = self.root / "snapshot-tool-invocations.jsonl"
+        self.balance_history_invocations = self.root / "balance-history-invocations.jsonl"
         self.height = 42
         self.height_dir = f"{self.height:012d}"
         self.block_hash = "1" * 64
@@ -50,6 +52,26 @@ esac
         )
         self.aws = self.root / "aws"
         self._write_executable(self.aws, "#!/usr/bin/env bash\nexit 0\n")
+        self.snapshot_tool = self.root / "balance-history-snapshot-tool"
+        self._write_executable(
+            self.snapshot_tool,
+            f'''#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_SNAPSHOT_TOOL_INVOCATIONS"
+case "$*" in
+  *memory-plan*) printf '%s\n' '{{"source":"test","memory_limit_bytes":1000000,"total_cache_bytes":660000,"utxo_cache_bytes":165000,"balance_cache_bytes":495000,"max_memory_percent":80}}' ;;
+  *finalize-artifact*) printf '%s\n' '{{"height":{self.height},"network":"bitcoin","btc_block_hash":"{self.block_hash}","snapshot_id":"{'2' * 64}","artifact_dir":"snapshots/{self.height_dir}/{self.block_hash}","snapshot_file":"snapshot_{self.height}.db","manifest_file":"snapshot_{self.height}.manifest.json","signature_file":"snapshot_{self.height}.manifest.sig","file_sha256":"{self.file_hash}","signing_key_id":"test-signer","trusted_keys_sha256":"{'4' * 64}"}}' ;;
+  *) printf 'unexpected snapshot-tool invocation: %s\n' "$*" >&2; exit 2 ;;
+esac
+''',
+        )
+        self.balance_history = self.root / "balance-history"
+        self._write_executable(
+            self.balance_history,
+            '''#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_BALANCE_HISTORY_INVOCATIONS"
+exit 0
+''',
+        )
 
         target_root = self.snapshot_root / "targets"
         target_root.mkdir(parents=True)
@@ -69,13 +91,35 @@ esac
         artifact.mkdir(parents=True)
         (artifact / f"snapshot_{self.height}.db").write_bytes(b"test snapshot")
         (artifact / "complete.json").write_text(
-            json.dumps({"file_sha256": self.file_hash}),
+            json.dumps(
+                {
+                    "snapshot_file": f"snapshot_{self.height}.db",
+                    "file_sha256": self.file_hash,
+                }
+            ),
             encoding="utf-8",
         )
-        marker = self.snapshot_root / "validation" / f"{self.height_dir}-{self.block_hash}"
+        marker = self.snapshot_root / "releases/finalized" / f"{self.height_dir}-{self.block_hash}"
         marker.mkdir(parents=True)
-        (marker / "signed-install-complete.json").write_text(
-            json.dumps({"file_sha256": self.file_hash}),
+        (marker / "artifact-finalized.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "height": self.height,
+                    "network": "bitcoin",
+                    "btc_block_hash": self.block_hash,
+                    "snapshot_id": "2" * 64,
+                    "snapshot_file": f"snapshot_{self.height}.db",
+                    "manifest_file": f"snapshot_{self.height}.manifest.json",
+                    "signature_file": f"snapshot_{self.height}.manifest.sig",
+                    "file_sha256": self.file_hash,
+                    "signing_key_id": "test-signer",
+                    "trusted_keys_sha256": "4" * 64,
+                    "producer_revision": self.revision,
+                    "finalizer_revision": "b" * 40,
+                    "finalized_at_utc": "2026-08-30T00:00:00+00:00",
+                }
+            ),
             encoding="utf-8",
         )
         key_root = self.root / "keys"
@@ -106,11 +150,11 @@ if command == "prepare":
     print(json.dumps({
         "record_path": str(record),
         "record_sha256": "2" * 64,
-        "record_url": value("--public-base-url") + "/snapshot-records/v1/" + "2" * 64 + ".json",
+        "record_url": value("--public-base-url") + "/snapshot-records/v2/" + "2" * 64 + ".json",
         "snapshot_release_id": "test-release",
     }))
 elif command == "upload":
-    print(json.dumps({"record_url": "https://usdb-snapshot.tbudr.top/snapshot-records/v1/test.json"}))
+    print(json.dumps({"record_url": "https://usdb-snapshot.tbudr.top/snapshot-records/v2/test.json"}))
 else:
     raise SystemExit("unexpected command")
 ''',
@@ -121,13 +165,17 @@ else:
         self.environment.update(
             {
                 "BALANCE_HISTORY_ROOT": str(self.live_root),
+                "BALANCE_HISTORY_BIN": str(self.balance_history),
                 "BITCOIN_BIN_DIR": str(self.bitcoin_bin),
                 "BITCOIN_DATA_DIR": str(self.bitcoin_data),
                 "FAKE_INVOCATIONS": str(self.invocations),
+                "FAKE_BALANCE_HISTORY_INVOCATIONS": str(self.balance_history_invocations),
+                "FAKE_SNAPSHOT_TOOL_INVOCATIONS": str(self.snapshot_tool_invocations),
                 "SNAPSHOT_AWS_EXECUTABLE": str(self.aws),
                 "SNAPSHOT_KEY_ROOT": str(key_root),
                 "SNAPSHOT_ROOT": str(self.snapshot_root),
                 "SNAPSHOT_SIGNER_ID": "test-signer",
+                "SNAPSHOT_TOOL_BIN": str(self.snapshot_tool),
                 "SNAPSHOT_DISTRIBUTION_TOOL": str(self.distribution_tool),
             }
         )
@@ -165,18 +213,57 @@ else:
             str(self.snapshot_root / "builder/snapshots" / self.height_dir / self.block_hash),
         )
         self.assertEqual(
-            arguments[arguments.index("--validation-marker") + 1],
+            arguments[arguments.index("--finalization-marker") + 1],
             str(
                 self.snapshot_root
-                / "validation"
+                / "releases/finalized"
                 / f"{self.height_dir}-{self.block_hash}"
-                / "signed-install-complete.json"
+                / "artifact-finalized.json"
             ),
         )
         self.assertEqual(
             arguments[arguments.index("--public-base-url") + 1],
             "https://usdb-snapshot.tbudr.top",
         )
+
+    def test_finalize_checks_hash_and_signature_without_restoring_rocksdb(self) -> None:
+        marker = (
+            self.snapshot_root
+            / "releases/finalized"
+            / f"{self.height_dir}-{self.block_hash}"
+            / "artifact-finalized.json"
+        )
+        marker.unlink()
+        result = self._run("finalize")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        finalized = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(finalized["file_sha256"], self.file_hash)
+        self.assertEqual(finalized["producer_revision"], self.revision)
+        snapshot_calls = self.snapshot_tool_invocations.read_text(encoding="utf-8")
+        self.assertIn("finalize-artifact", snapshot_calls)
+        self.assertNotIn(" verify ", snapshot_calls)
+        self.assertFalse(self.balance_history_invocations.exists())
+
+    def test_validate_install_is_explicit_and_idempotently_attested(self) -> None:
+        first = self._run("validate-install")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        reports = list(
+            (self.snapshot_root / "releases/validation-reports").glob(
+                f"validate-install-{self.height}-{self.block_hash}-*.json"
+            )
+        )
+        self.assertEqual(len(reports), 1)
+        report = reports[0]
+        attestation = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual(attestation["file_sha256"], self.file_hash)
+        invocations = self.balance_history_invocations.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(invocations), 1)
+        self.assertIn("install-snapshot", invocations[0])
+
+        second = self._run("validate-install")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        replayed = self.balance_history_invocations.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(replayed, invocations)
 
     def test_publish_uses_r2_defaults_and_profile_after_prepare(self) -> None:
         result = self._run("publish")
@@ -217,14 +304,14 @@ else:
     def test_prepare_release_rejects_missing_finalization_marker(self) -> None:
         marker = (
             self.snapshot_root
-            / "validation"
+            / "releases/finalized"
             / f"{self.height_dir}-{self.block_hash}"
-            / "signed-install-complete.json"
+            / "artifact-finalized.json"
         )
         marker.unlink()
         result = self._run("prepare-release")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Independent signed-install marker is missing", result.stderr)
+        self.assertIn("Artifact finalization marker is missing", result.stderr)
         self.assertFalse(self.invocations.exists())
 
 

@@ -7,8 +7,9 @@ use crate::{
     verify_snapshot_files_with_progress,
 };
 use balance_history::{
-    BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotIndexer, SyncStatusManager,
-    build_historical_state_ref_at_height, manifest_path_for_snapshot_file,
+    BalanceHistoryConfig, BalanceHistoryIndexer, IndexOutput, SnapshotHash, SnapshotIndexer,
+    SnapshotManifest, SyncStatusManager, build_historical_state_ref_at_height,
+    manifest_path_for_snapshot_file, verify_snapshot_manifest_signature,
 };
 use chrono::Local;
 use log::{error, info};
@@ -140,6 +141,33 @@ pub struct SnapshotCreateReport {
     pub block_commit_count: u64,
     /// Verified number of script registry rows.
     pub script_registry_count: u64,
+}
+
+/// Lightweight release-finalization result for one immutable snapshot artifact.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotArtifactFinalizationReport {
+    /// Exact BTC height represented by the artifact.
+    pub height: u32,
+    /// BTC network bound to the artifact.
+    pub network: String,
+    /// Canonical BTC block hash represented by the artifact.
+    pub btc_block_hash: String,
+    /// Consensus snapshot identity from the signed manifest.
+    pub snapshot_id: String,
+    /// Artifact directory relative to the builder root.
+    pub artifact_dir: String,
+    /// Snapshot DB file name relative to the artifact directory.
+    pub snapshot_file: String,
+    /// Manifest file name relative to the artifact directory.
+    pub manifest_file: String,
+    /// Detached signature file name relative to the artifact directory.
+    pub signature_file: String,
+    /// Recomputed SHA-256 digest of the immutable snapshot DB.
+    pub file_sha256: String,
+    /// Trusted signer that produced the detached manifest signature.
+    pub signing_key_id: String,
+    /// SHA-256 digest of the trusted-key catalog used for finalization.
+    pub trusted_keys_sha256: String,
 }
 
 /// Persisted builder state together with the selected per-height job, if one exists.
@@ -815,6 +843,62 @@ impl ExactHeightSnapshotBuilder {
             self.find_single_artifact_dir(height)?
         };
         verify_published_artifact(&artifact_dir, &state.network, height, block_hash)
+    }
+
+    /// Rechecks artifact identity, DB hash, and detached signature without opening SQLite.
+    pub fn finalize_artifact(
+        &self,
+        height: u32,
+        block_hash: Option<&str>,
+        trusted_keys_path: &Path,
+    ) -> Result<SnapshotArtifactFinalizationReport, String> {
+        let state: SnapshotBuilderState = load_json(&self.paths.state_file)?.ok_or_else(|| {
+            format!(
+                "Snapshot builder state does not exist at {}",
+                self.paths.state_file.display()
+            )
+        })?;
+        let artifact_dir = if let Some(block_hash) = block_hash {
+            self.paths.snapshot_artifact_dir(height, block_hash)
+        } else {
+            self.find_single_artifact_dir(height)?
+        };
+        let marker =
+            verify_published_artifact_marker(&artifact_dir, &state.network, height, block_hash)?;
+        let snapshot_path = artifact_dir.join(&marker.snapshot_file);
+        let manifest_path = artifact_dir.join(&marker.manifest_file);
+        let manifest = SnapshotManifest::load(&manifest_path)?;
+        let signing_key_id =
+            verify_snapshot_manifest_signature(&manifest, &manifest_path, trusted_keys_path)?;
+
+        let actual_file_sha256 = SnapshotHash::calc_hash(&snapshot_path)?;
+        if !actual_file_sha256.eq_ignore_ascii_case(&marker.file_sha256) {
+            return Err(format!(
+                "Snapshot file hash mismatch during release finalization: marker={}, actual={}",
+                marker.file_sha256, actual_file_sha256
+            ));
+        }
+        let trusted_keys_sha256 = SnapshotHash::calc_hash(trusted_keys_path)?;
+        let signature_file = marker.signature_file.ok_or_else(|| {
+            format!(
+                "Signed snapshot artifact {} has no detached signature in complete.json",
+                artifact_dir.display()
+            )
+        })?;
+
+        Ok(SnapshotArtifactFinalizationReport {
+            height: marker.height,
+            network: marker.network,
+            btc_block_hash: marker.btc_block_hash,
+            snapshot_id: marker.snapshot_id,
+            artifact_dir: display_relative(&self.paths.root, &artifact_dir),
+            snapshot_file: marker.snapshot_file,
+            manifest_file: marker.manifest_file,
+            signature_file,
+            file_sha256: actual_file_sha256,
+            signing_key_id,
+            trusted_keys_sha256,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

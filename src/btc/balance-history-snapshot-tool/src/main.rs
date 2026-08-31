@@ -93,6 +93,20 @@ enum Command {
         block_hash: Option<String>,
     },
 
+    /// Verify artifact identity, DB hash, and signature without opening SQLite.
+    FinalizeArtifact {
+        #[arg(long)]
+        height: u32,
+
+        /// Required when more than one same-height branch artifact exists.
+        #[arg(long)]
+        block_hash: Option<String>,
+
+        /// Trusted-key catalog used to verify the detached manifest signature.
+        #[arg(long)]
+        trusted_keys: PathBuf,
+    },
+
     /// Compare a legacy v2 SQLite snapshot with a rebuilt RocksDB at the same exact height.
     CompareLegacy {
         /// Service root containing the rebuilt balance-history RocksDB and config.toml.
@@ -152,8 +166,18 @@ fn main() -> ExitCode {
         .root_dir
         .clone()
         .unwrap_or_else(|| usdb_util::get_service_dir("balance-history-snapshot-builder"));
+    let read_only_status = matches!(
+        &cli.command,
+        Command::MemoryPlan { .. } | Command::Status { .. } | Command::List
+    );
+    let log_file_name = if read_only_status {
+        "balance-history-snapshot-tool-query"
+    } else {
+        TOOL_NAME
+    };
     let log_config = usdb_util::current_process_log_config!(TOOL_NAME)
         .with_service_root_dir(root_dir.clone())
+        .with_file_name(log_file_name)
         .enable_console(false);
     let log_handle = usdb_util::init_log(log_config).unwrap_or_else(|error| {
         eprintln!("Failed to initialize snapshot tool logging: {error}");
@@ -202,6 +226,13 @@ fn main() -> ExitCode {
         Command::Verify { height, block_hash } => builder
             .verify(height, block_hash.as_deref())
             .and_then(|marker| print_value(&marker, cli.json)),
+        Command::FinalizeArtifact {
+            height,
+            block_hash,
+            trusted_keys,
+        } => builder
+            .finalize_artifact(height, block_hash.as_deref(), &trusted_keys)
+            .and_then(|report| print_value(&report, cli.json)),
         Command::CompareLegacy {
             balance_history_root,
             snapshot_db,

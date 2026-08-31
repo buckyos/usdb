@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 
-RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v1"
+RECORD_SCHEMA_VERSION = "usdb-snapshot-release-record:v2"
 ARTIFACT_TYPE = "balance-history"
 SNAPSHOT_MANIFEST_VERSION = "balance-history-snapshot-manifest:v3"
 SIGNATURE_SCHEME = "ed25519"
@@ -159,7 +159,7 @@ def prepare_release_record(
     *,
     artifact_dir: Path,
     trusted_keys: Path,
-    validation_marker: Path,
+    finalization_marker: Path,
     public_base_url: str,
     producer_revision: str,
     output_dir: Path,
@@ -240,18 +240,45 @@ def prepare_release_record(
     _require(trusted_keys_path.is_file() and not trusted_keys_path.is_symlink(), f"trusted-key catalog does not exist: {trusted_keys_path}")
     trusted_keys_sha256 = _validate_trusted_catalog(trusted_keys_path, signing_key_id)
 
-    validation_path = validation_marker.expanduser().resolve()
-    _require(validation_path.is_file() and not validation_path.is_symlink(), f"signed-install validation marker is missing or not regular: {validation_path}")
-    validation = _load_json(validation_path)
-    _require_exact_keys(validation, {"btc_block_hash", "file_sha256", "height", "verified_at_utc", "version"}, "signed-install validation marker")
-    _require(
-        validation.get("version") == 1
-        and validation.get("height") == height
-        and validation.get("btc_block_hash") == btc_block_hash
-        and validation.get("file_sha256") == expected_db_sha256,
-        "signed-install validation marker does not match snapshot artifact",
+    finalization_path = finalization_marker.expanduser().resolve()
+    _require(finalization_path.is_file() and not finalization_path.is_symlink(), f"artifact finalization marker is missing or not regular: {finalization_path}")
+    finalization = _load_json(finalization_path)
+    _require_exact_keys(
+        finalization,
+        {
+            "btc_block_hash",
+            "file_sha256",
+            "finalized_at_utc",
+            "finalizer_revision",
+            "height",
+            "manifest_file",
+            "network",
+            "producer_revision",
+            "signature_file",
+            "signing_key_id",
+            "snapshot_file",
+            "snapshot_id",
+            "trusted_keys_sha256",
+            "version",
+        },
+        "artifact finalization marker",
     )
-    _require(isinstance(validation.get("verified_at_utc"), str) and bool(validation["verified_at_utc"]), "signed-install validation timestamp is required")
+    _require(
+        finalization.get("version") == 1
+        and finalization.get("height") == height
+        and finalization.get("network") == network
+        and finalization.get("btc_block_hash") == btc_block_hash
+        and finalization.get("snapshot_id") == snapshot_id
+        and finalization.get("snapshot_file") == snapshot_name
+        and finalization.get("manifest_file") == manifest_name
+        and finalization.get("signature_file") == signature_name
+        and finalization.get("file_sha256") == expected_db_sha256
+        and finalization.get("signing_key_id") == signing_key_id
+        and finalization.get("trusted_keys_sha256") == trusted_keys_sha256
+        and finalization.get("producer_revision") == producer_revision,
+        "artifact finalization marker does not match snapshot artifact",
+    )
+    _require(isinstance(finalization.get("finalized_at_utc"), str) and bool(finalization["finalized_at_utc"]), "artifact finalization timestamp is required")
 
     preliminary_files = [
         ("snapshot_db", snapshot_path),
@@ -259,12 +286,14 @@ def prepare_release_record(
         ("snapshot_signature", signature_path),
         ("completion_marker", complete_path),
     ]
-    identity_files = [
-        {"path": path.name, "role": role, "sha256": _sha256(path), "size": path.stat().st_size}
-        for role, path in preliminary_files
-    ]
+    identity_files = []
+    for role, path in preliminary_files:
+        digest = expected_db_sha256 if role == "snapshot_db" else _sha256(path)
+        identity_files.append(
+            {"path": path.name, "role": role, "sha256": digest, "size": path.stat().st_size}
+        )
     snapshot_entry = next(item for item in identity_files if item["role"] == "snapshot_db")
-    _require(snapshot_entry["sha256"] == expected_db_sha256, "snapshot DB SHA-256 verification failed")
+    _require(snapshot_entry["sha256"] == expected_db_sha256, "snapshot DB SHA-256 identity mismatch")
     artifact_set_id = _sha256_bytes(
         json.dumps(
             {
@@ -278,7 +307,7 @@ def prepare_release_record(
         ).encode("utf-8")
     )
     release_id = f"balance-history-{network}-h{height}-{artifact_set_id[:16]}"
-    object_prefix = f"snapshots/v1/balance-history/{network}/{height:012d}/{artifact_set_id}"
+    object_prefix = f"snapshots/v2/balance-history/{network}/{height:012d}/{artifact_set_id}"
     files = [
         {**item, "object_key": f"{object_prefix}/{item['path']}"}
         for item in identity_files
@@ -294,9 +323,10 @@ def prepare_release_record(
         "network": network,
         "object_prefix": object_prefix,
         "producer": {
-            "signed_install_marker_sha256": _sha256(validation_path),
-            "signed_install_verified_at_utc": validation["verified_at_utc"],
-            "usdb_revision": producer_revision,
+            "artifact_finalization_marker_sha256": _sha256(finalization_path),
+            "artifact_finalized_at_utc": finalization["finalized_at_utc"],
+            "artifact_finalizer_revision": finalization["finalizer_revision"],
+            "artifact_producer_revision": producer_revision,
         },
         "public_base_url": public_base,
         "schema_version": RECORD_SCHEMA_VERSION,
@@ -348,17 +378,27 @@ def validate_release_record(record: dict[str, Any]) -> None:
     release_id = record["snapshot_release_id"]
     _require(isinstance(release_id, str) and RELEASE_ID_RE.fullmatch(release_id) is not None, "invalid snapshot release ID")
     _require(release_id == f"balance-history-{network}-h{height}-{artifact_set_id[:16]}", "snapshot release ID does not match artifact identity")
-    expected_prefix = f"snapshots/v1/balance-history/{network}/{height:012d}/{artifact_set_id}"
+    expected_prefix = f"snapshots/v2/balance-history/{network}/{height:012d}/{artifact_set_id}"
     _require(record["object_prefix"] == expected_prefix, "snapshot object prefix does not match artifact identity")
     _normalize_https_base(record["public_base_url"], "public base URL")
     _require(isinstance(record["artifact_completed_at"], int) and not isinstance(record["artifact_completed_at"], bool) and record["artifact_completed_at"] >= 0, "artifact completion time must be a Unix timestamp")
 
     producer = record["producer"]
     _require(isinstance(producer, dict), "snapshot producer must be an object")
-    _require_exact_keys(producer, {"signed_install_marker_sha256", "signed_install_verified_at_utc", "usdb_revision"}, "snapshot producer")
-    _require_sha256(producer["signed_install_marker_sha256"], "signed-install marker SHA-256")
-    _require(isinstance(producer["signed_install_verified_at_utc"], str) and bool(producer["signed_install_verified_at_utc"]), "signed-install verification timestamp is required")
-    _require(isinstance(producer["usdb_revision"], str) and REVISION_RE.fullmatch(producer["usdb_revision"]) is not None, "invalid producer revision")
+    _require_exact_keys(
+        producer,
+        {
+            "artifact_finalization_marker_sha256",
+            "artifact_finalized_at_utc",
+            "artifact_finalizer_revision",
+            "artifact_producer_revision",
+        },
+        "snapshot producer",
+    )
+    _require_sha256(producer["artifact_finalization_marker_sha256"], "artifact finalization marker SHA-256")
+    _require(isinstance(producer["artifact_finalized_at_utc"], str) and bool(producer["artifact_finalized_at_utc"]), "artifact finalization timestamp is required")
+    _require(isinstance(producer["artifact_producer_revision"], str) and REVISION_RE.fullmatch(producer["artifact_producer_revision"]) is not None, "invalid artifact producer revision")
+    _require(isinstance(producer["artifact_finalizer_revision"], str) and REVISION_RE.fullmatch(producer["artifact_finalizer_revision"]) is not None, "invalid artifact finalizer revision")
 
     trusted = record["trusted_keys"]
     _require(isinstance(trusted, dict), "trusted_keys must be an object")
@@ -503,7 +543,7 @@ def upload_release(record_path: Path, source_dir: Path, client: Any) -> dict[str
     record_content = record_file.read_bytes()
     record_sha256 = _sha256_bytes(record_content)
     _require(record_content == _canonical_json(record), "snapshot release record is not canonical JSON")
-    record_key = f"snapshot-records/v1/{record_sha256}.json"
+    record_key = f"snapshot-records/v2/{record_sha256}.json"
     statuses[record_key] = _publish_object(
         client,
         record_file,
@@ -711,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = subparsers.add_parser("prepare", help="Build a content-addressed release record from one finalized snapshot")
     prepare.add_argument("--artifact-dir", type=Path, required=True)
     prepare.add_argument("--trusted-keys", type=Path, required=True)
-    prepare.add_argument("--validation-marker", type=Path, required=True)
+    prepare.add_argument("--finalization-marker", type=Path, required=True)
     prepare.add_argument("--producer-revision", required=True)
     prepare.add_argument("--public-base-url", default=DEFAULT_PUBLIC_BASE_URL)
     prepare.add_argument("--output-dir", type=Path, required=True)
@@ -742,17 +782,17 @@ def main() -> int:
             path, record, digest = prepare_release_record(
                 artifact_dir=args.artifact_dir,
                 trusted_keys=args.trusted_keys,
-                validation_marker=args.validation_marker,
+                finalization_marker=args.finalization_marker,
                 public_base_url=args.public_base_url,
                 producer_revision=args.producer_revision,
                 output_dir=args.output_dir,
             )
             _print_json(
                 {
-                    "record_object_key": f"snapshot-records/v1/{digest}.json",
+                    "record_object_key": f"snapshot-records/v2/{digest}.json",
                     "record_path": str(path),
                     "record_sha256": digest,
-                    "record_url": f"{record['public_base_url']}/snapshot-records/v1/{digest}.json",
+                    "record_url": f"{record['public_base_url']}/snapshot-records/v2/{digest}.json",
                     "snapshot_release_id": record["snapshot_release_id"],
                 }
             )

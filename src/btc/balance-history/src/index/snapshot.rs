@@ -861,6 +861,78 @@ fn load_signature_file(path: &Path) -> Result<Signature, String> {
     Ok(Signature::from_bytes(&signature_bytes))
 }
 
+/// Verifies a manifest's detached Ed25519 signature against one trusted-key catalog.
+///
+/// This intentionally verifies only the signed manifest identity. Callers that publish or install
+/// an artifact must separately verify the snapshot DB hash recorded by the manifest.
+pub fn verify_snapshot_manifest_signature(
+    manifest: &SnapshotManifest,
+    manifest_path: &Path,
+    trusted_keys_path: &Path,
+) -> Result<String, String> {
+    let signature_scheme = manifest.signature_scheme.as_deref().ok_or_else(|| {
+        let msg = format!(
+            "Signed snapshot manifest {} is missing signature_scheme",
+            manifest_path.display()
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    if signature_scheme != SNAPSHOT_SIGNATURE_SCHEME_ED25519 {
+        let msg = format!(
+            "Unsupported snapshot signature scheme {} for {} (expected {})",
+            signature_scheme,
+            manifest_path.display(),
+            SNAPSHOT_SIGNATURE_SCHEME_ED25519
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    let signing_key_id = manifest.signing_key_id.as_deref().ok_or_else(|| {
+        let msg = format!(
+            "Signed snapshot manifest {} is missing signing_key_id",
+            manifest_path.display()
+        );
+        error!("{}", msg);
+        msg
+    })?;
+    let signature_path = signature_path_for_manifest_file(manifest_path);
+    if !signature_path.is_file() {
+        let msg = format!(
+            "Signed snapshot manifest requires signature sidecar {}, but it does not exist",
+            signature_path.display()
+        );
+        error!("{}", msg);
+        return Err(msg);
+    }
+    let trusted_keys = SnapshotTrustedKeySet::load(trusted_keys_path)?;
+    let verifying_key = trusted_keys
+        .find_verifying_key(signing_key_id)?
+        .ok_or_else(|| {
+            let msg = format!(
+                "Snapshot signer {} is not trusted by {}",
+                signing_key_id,
+                trusted_keys_path.display()
+            );
+            error!("{}", msg);
+            msg
+        })?;
+    let signature = load_signature_file(&signature_path)?;
+    verifying_key
+        .verify(&manifest.canonical_bytes()?, &signature)
+        .map_err(|e| {
+            let msg = format!(
+                "Snapshot signature verification failed for manifest {} signed by {}: {}",
+                manifest_path.display(),
+                signing_key_id,
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+    Ok(signing_key_id.to_string())
+}
+
 pub struct SnapshotInstaller {
     config: BalanceHistoryConfigRef,
     db: BalanceHistoryDBRef,
@@ -926,48 +998,14 @@ impl SnapshotInstaller {
                 error!("{}", msg);
                 msg
             })?;
-            let signature_scheme = manifest.signature_scheme.as_deref().ok_or_else(|| {
+            let manifest_file = data.manifest_file.as_ref().ok_or_else(|| {
                 let msg = format!(
-                    "Signed snapshot install requires manifest.signature_scheme for {}",
+                    "Signed snapshot install requires a manifest path for {}",
                     data.file.display()
                 );
                 error!("{}", msg);
                 msg
             })?;
-            if signature_scheme != SNAPSHOT_SIGNATURE_SCHEME_ED25519 {
-                let msg = format!(
-                    "Unsupported snapshot signature scheme {} for {} (expected {})",
-                    signature_scheme,
-                    data.file.display(),
-                    SNAPSHOT_SIGNATURE_SCHEME_ED25519
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
-            let signing_key_id = manifest.signing_key_id.as_deref().ok_or_else(|| {
-                let msg = format!(
-                    "Signed snapshot install requires manifest.signing_key_id for {}",
-                    data.file.display()
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            let signature_path = signature_path.as_ref().ok_or_else(|| {
-                let msg = format!(
-                    "Signed snapshot install requires a signature sidecar path for {}",
-                    data.file.display()
-                );
-                error!("{}", msg);
-                msg
-            })?;
-            if !signature_path.exists() {
-                let msg = format!(
-                    "Signed snapshot install requires signature sidecar {}, but it does not exist",
-                    signature_path.display()
-                );
-                error!("{}", msg);
-                return Err(msg);
-            }
             let trusted_keys_path = self.config.snapshot_trusted_keys_path().ok_or_else(|| {
                 let msg = format!(
                     "Signed snapshot install requires snapshot.trusted_keys_file in config for {}",
@@ -976,34 +1014,7 @@ impl SnapshotInstaller {
                 error!("{}", msg);
                 msg
             })?;
-            let trusted_keys = SnapshotTrustedKeySet::load(&trusted_keys_path)?;
-            let verifying_key = trusted_keys
-                .find_verifying_key(signing_key_id)?
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "Snapshot signer {} is not trusted by {}",
-                        signing_key_id,
-                        trusted_keys_path.display()
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
-            let signature = load_signature_file(signature_path)?;
-            verifying_key
-                .verify(&manifest.canonical_bytes()?, &signature)
-                .map_err(|e| {
-                    let msg = format!(
-                        "Snapshot signature verification failed for manifest {} signed by {}: {}",
-                        data.manifest_file
-                            .as_ref()
-                            .map(|path| path.display().to_string())
-                            .unwrap_or_else(|| "<unknown>".to_string()),
-                        signing_key_id,
-                        e
-                    );
-                    error!("{}", msg);
-                    msg
-                })?;
+            verify_snapshot_manifest_signature(manifest, manifest_file, &trusted_keys_path)?;
             true
         } else {
             false

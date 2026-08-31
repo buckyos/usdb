@@ -186,7 +186,8 @@ release 前必须冻结 catalog 更新和安全公告渠道。
 - Ed25519 keygen、manifest signing 和 detached signature；
 - signed install、未知 signer/错误签名/篡改拒绝测试；
 - snapshot install provenance；
-- 主网 wrapper 的生成端 key/config 初始化和发布前独立 signed install。
+- 主网 wrapper 的生成端 key/config 初始化、轻量 artifact finalization，以及显式独立
+  `validate-install` 恢复演练。
 
 仍需在发布阶段完成：
 

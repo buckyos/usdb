@@ -115,7 +115,7 @@ P2P 和 operator API 的实际 bind policy。高级入口为 `usdb-node firewall
 
 ```bash
 usdb-node snapshot install --record-url \
-  https://usdb-snapshot.tbudr.top/snapshot-records/v1/<record-sha256>.json
+  https://usdb-snapshot.tbudr.top/snapshot-records/v2/<record-sha256>.json
 ```
 
 该命令不需要 S3 凭证；它先校验小 record 与 bundle trusted-key catalog，再断点下载大文件、逐文件

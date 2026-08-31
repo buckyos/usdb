@@ -10,7 +10,9 @@ LIVE_SERVICE_ROOT="${BALANCE_HISTORY_ROOT:-${USDB_ROOT}/balance-history}"
 SNAPSHOT_ROOT="${SNAPSHOT_ROOT:-${USDB_ROOT}/balance-history-snapshot-mainnet}"
 BUILDER_ROOT="${SNAPSHOT_BUILDER_ROOT:-${SNAPSHOT_ROOT}/builder}"
 RELEASE_ROOT="${SNAPSHOT_RELEASE_ROOT:-${SNAPSHOT_ROOT}/releases}"
+FINALIZATION_BASE="${SNAPSHOT_FINALIZATION_ROOT:-${RELEASE_ROOT}/finalized}"
 VALIDATION_BASE="${SNAPSHOT_VALIDATION_ROOT:-${SNAPSHOT_ROOT}/validation}"
+VALIDATION_REPORT_ROOT="${SNAPSHOT_VALIDATION_REPORT_ROOT:-${RELEASE_ROOT}/validation-reports}"
 KEY_ROOT="${SNAPSHOT_KEY_ROOT:-${USDB_ROOT}/secure/snapshot-keys}"
 CONFIG_ROOT="${SNAPSHOT_CONFIG_ROOT:-${SNAPSHOT_ROOT}/config}"
 TARGET_ROOT="${SNAPSHOT_TARGET_ROOT:-${SNAPSHOT_ROOT}/targets}"
@@ -62,6 +64,7 @@ Usage:
   mainnet_exact_height_snapshot.sh list
   mainnet_exact_height_snapshot.sh verify --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh finalize --height H [--block-hash HASH]
+  mainnet_exact_height_snapshot.sh validate-install --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh archive --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh prepare-release --height H [--block-hash HASH]
   mainnet_exact_height_snapshot.sh publish --height H [--block-hash HASH]
@@ -76,7 +79,9 @@ Commands:
   status     Show the persisted builder/job state.
   list       List all persisted snapshot jobs.
   verify     Reopen the completed artifact and recheck the current canonical hash.
-  finalize   Verify and perform an independent signed install required by every release path.
+  finalize   Recheck artifact identity, DB hash, and signature without opening SQLite or RocksDB.
+  validate-install
+             Independently restore one finalized artifact into a dedicated RocksDB validation root.
   archive    Optionally create and checksum an offline tar from one finalized artifact.
   prepare-release
              Infer finalized artifact inputs and create a content-addressed release record.
@@ -164,7 +169,8 @@ check_path_isolation() {
   if [[ "$snapshot" == "$live" || "$snapshot" == "$live/"* || "$live" == "$snapshot/"* ]]; then
     die "SNAPSHOT_ROOT and live root must not overlap: snapshot=${snapshot}, live=${live}"
   fi
-  for candidate in "$BUILDER_ROOT" "$RELEASE_ROOT" "$VALIDATION_BASE" "$CONFIG_ROOT" "$TARGET_ROOT"; do
+  for candidate in "$BUILDER_ROOT" "$RELEASE_ROOT" "$FINALIZATION_BASE" "$VALIDATION_BASE" \
+    "$VALIDATION_REPORT_ROOT" "$CONFIG_ROOT" "$TARGET_ROOT"; do
     candidate_path="$(real_path "$candidate")"
     if [[ "$candidate_path" == "$live" || "$candidate_path" == "$live/"* ]]; then
       die "Snapshot operational path must not equal or reside inside live root: ${candidate_path}"
@@ -183,8 +189,8 @@ existing_ancestor() {
 
 create_operational_dirs() {
   check_path_isolation
-  mkdir -p "$BUILDER_ROOT" "$RELEASE_ROOT/reports" "$RECORD_ROOT" "$VALIDATION_BASE" \
-    "$KEY_ROOT" "$CONFIG_ROOT" "$TARGET_ROOT"
+  mkdir -p "$BUILDER_ROOT" "$RELEASE_ROOT/reports" "$RECORD_ROOT" "$FINALIZATION_BASE" \
+    "$VALIDATION_BASE" "$VALIDATION_REPORT_ROOT" "$KEY_ROOT" "$CONFIG_ROOT" "$TARGET_ROOT"
   chmod 700 "$KEY_ROOT"
 }
 
@@ -577,51 +583,106 @@ PY
 }
 
 run_finalize() {
-  local height_dir artifact_dir complete snapshot_file file_hash validation_root marker
+  local height_dir marker_dir marker report finalization_output target_record producer_revision finalizer_revision
 
-  run_verify
+  check_static_preflight
+  create_operational_dirs
+  require_release_binaries
+  [[ -f "$TRUSTED_KEYS" ]] || die "Trusted key set is missing: ${TRUSTED_KEYS}; run init"
+  resolve_target 0
   height_dir="$(printf '%012d' "$HEIGHT")"
-  artifact_dir="${BUILDER_ROOT}/snapshots/${height_dir}/${REQUESTED_HASH}"
-  complete="${artifact_dir}/complete.json"
-  [[ -f "$complete" ]] || die "Completed artifact marker is missing: ${complete}"
-  snapshot_file="$(jq -r '.snapshot_file' "$complete")"
-  file_hash="$(jq -r '.file_sha256' "$complete")"
-  [[ -f "$artifact_dir/$snapshot_file" ]] || die "Snapshot file is missing: ${artifact_dir}/${snapshot_file}"
+  target_record="$(target_file)"
+  producer_revision="$(jq -er '.code_revision' "$target_record")" || \
+    die "Pinned target record has no producer code revision: ${target_record}"
+  [[ "$producer_revision" =~ ^[0-9a-f]{40}$ ]] || \
+    die "Pinned target producer revision is invalid: ${producer_revision}"
+  finalizer_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
-  validation_root="${VALIDATION_BASE}/${height_dir}-${REQUESTED_HASH}"
-  marker="${validation_root}/signed-install-complete.json"
-  generate_validation_config "$validation_root"
+  report="${RELEASE_ROOT}/reports/finalize-${HEIGHT}-${REQUESTED_HASH}.json"
+  finalization_output="$(
+    "$SNAPSHOT_TOOL" \
+      --root-dir "$BUILDER_ROOT" \
+      --json \
+      finalize-artifact \
+      --height "$HEIGHT" \
+      --block-hash "$REQUESTED_HASH" \
+      --trusted-keys "$TRUSTED_KEYS"
+  )"
+  jq -e . >/dev/null <<<"$finalization_output" || \
+    die "Snapshot finalization tool returned invalid JSON"
+  printf '%s\n' "$finalization_output" | tee "$report"
+
+  marker_dir="${FINALIZATION_BASE}/${height_dir}-${REQUESTED_HASH}"
+  marker="${marker_dir}/artifact-finalized.json"
+  mkdir -p "$marker_dir"
   if [[ -f "$marker" ]]; then
-    [[ "$(jq -r '.file_sha256' "$marker")" == "$file_hash" ]] || \
-      die "Existing validation marker does not match artifact hash: ${marker}"
-    log "Independent signed install already verified: ${validation_root}"
+    jq -e \
+      --arg producer_revision "$producer_revision" \
+      --arg finalizer_revision "$finalizer_revision" \
+      --slurpfile report "$report" '
+      .version == 1
+      and .height == $report[0].height
+      and .network == $report[0].network
+      and .btc_block_hash == $report[0].btc_block_hash
+      and .snapshot_id == $report[0].snapshot_id
+      and .snapshot_file == $report[0].snapshot_file
+      and .manifest_file == $report[0].manifest_file
+      and .signature_file == $report[0].signature_file
+      and .file_sha256 == $report[0].file_sha256
+      and .signing_key_id == $report[0].signing_key_id
+      and .trusted_keys_sha256 == $report[0].trusted_keys_sha256
+      and .producer_revision == $producer_revision
+      and .finalizer_revision == $finalizer_revision
+      and (.finalized_at_utc | type == "string" and length > 0)
+    ' "$marker" >/dev/null || die "Existing finalization marker does not match artifact: ${marker}"
+    log "Artifact finalization already verified: ${marker}"
   else
-    "$BALANCE_HISTORY" \
-      --root-dir "$validation_root" \
-      install-snapshot \
-      --file "$artifact_dir/$snapshot_file"
-    python3 - "$marker" "$HEIGHT" "$REQUESTED_HASH" "$file_hash" <<'PY'
+    python3 - "$marker" "$report" "$producer_revision" "$finalizer_revision" <<'PY'
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-path, height, block_hash, file_hash = sys.argv[1:]
+path, report_path, producer_revision, finalizer_revision = sys.argv[1:]
+with open(report_path, encoding="utf-8") as source:
+    report = json.load(source)
 record = {
     "version": 1,
-    "height": int(height),
-    "btc_block_hash": block_hash,
-    "file_sha256": file_hash,
-    "verified_at_utc": datetime.now(timezone.utc).isoformat(),
+    "height": report["height"],
+    "network": report["network"],
+    "btc_block_hash": report["btc_block_hash"],
+    "snapshot_id": report["snapshot_id"],
+    "snapshot_file": report["snapshot_file"],
+    "manifest_file": report["manifest_file"],
+    "signature_file": report["signature_file"],
+    "file_sha256": report["file_sha256"],
+    "signing_key_id": report["signing_key_id"],
+    "trusted_keys_sha256": report["trusted_keys_sha256"],
+    "producer_revision": producer_revision,
+    "finalizer_revision": finalizer_revision,
+    "finalized_at_utc": datetime.now(timezone.utc).isoformat(),
 }
-with open(path, "x", encoding="utf-8") as output:
-    json.dump(record, output, indent=2, sort_keys=True)
-    output.write("\n")
-    output.flush()
-    os.fsync(output.fileno())
+temporary = f"{path}.tmp.{os.getpid()}"
+try:
+    with open(temporary, "x", encoding="utf-8") as output:
+        json.dump(record, output, indent=2, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+    directory = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
 PY
   fi
-  log "Finalized height=${HEIGHT} hash=${REQUESTED_HASH} validation_root=${validation_root}"
+  log "Finalized artifact height=${HEIGHT} hash=${REQUESTED_HASH} marker=${marker}"
 }
 
 resolve_finalized_snapshot() {
@@ -637,21 +698,104 @@ resolve_finalized_snapshot() {
 
   height_dir="$(printf '%012d' "$HEIGHT")"
   FINALIZED_ARTIFACT_DIR="${BUILDER_ROOT}/snapshots/${height_dir}/${REQUESTED_HASH}"
-  FINALIZED_VALIDATION_MARKER="${VALIDATION_BASE}/${height_dir}-${REQUESTED_HASH}/signed-install-complete.json"
+  FINALIZED_FINALIZATION_MARKER="${FINALIZATION_BASE}/${height_dir}-${REQUESTED_HASH}/artifact-finalized.json"
   FINALIZED_PRODUCER_REVISION="$(jq -er '.code_revision' "$target_record")" || \
     die "Pinned target record has no producer code revision: ${target_record}"
   [[ "$FINALIZED_PRODUCER_REVISION" =~ ^[0-9a-f]{40}$ ]] || \
     die "Pinned target producer revision is invalid: ${FINALIZED_PRODUCER_REVISION}"
   complete="${FINALIZED_ARTIFACT_DIR}/complete.json"
   [[ -f "$complete" ]] || die "Finalized snapshot artifact is missing: ${complete}"
-  [[ -f "$FINALIZED_VALIDATION_MARKER" ]] || \
-    die "Independent signed-install marker is missing: ${FINALIZED_VALIDATION_MARKER}; run finalize first"
+  [[ -f "$FINALIZED_FINALIZATION_MARKER" ]] || \
+    die "Artifact finalization marker is missing: ${FINALIZED_FINALIZATION_MARKER}; run finalize first"
   file_hash="$(jq -er '.file_sha256' "$complete")" || die "Completed artifact has no file SHA-256: ${complete}"
-  marker_file_hash="$(jq -er '.file_sha256' "$FINALIZED_VALIDATION_MARKER")" || \
-    die "Independent signed-install marker has no file SHA-256: ${FINALIZED_VALIDATION_MARKER}"
+  marker_file_hash="$(jq -er '.file_sha256' "$FINALIZED_FINALIZATION_MARKER")" || \
+    die "Artifact finalization marker has no file SHA-256: ${FINALIZED_FINALIZATION_MARKER}"
   [[ "$file_hash" =~ ^[0-9a-f]{64}$ ]] || die "Completed artifact file SHA-256 is invalid: ${file_hash}"
   [[ "$marker_file_hash" == "$file_hash" ]] || \
-    die "Independent signed-install marker does not match finalized artifact"
+    die "Artifact finalization marker does not match finalized artifact"
+  jq -e \
+    --argjson height "$HEIGHT" \
+    --arg block_hash "$REQUESTED_HASH" \
+    --arg producer_revision "$FINALIZED_PRODUCER_REVISION" '
+      .version == 1
+      and .height == $height
+      and .network == "bitcoin"
+      and .btc_block_hash == $block_hash
+      and .producer_revision == $producer_revision
+      and (.finalizer_revision | type == "string" and test("^[0-9a-f]{40}$"))
+      and (.snapshot_id | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.signing_key_id | type == "string" and length > 0)
+      and (.trusted_keys_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.finalized_at_utc | type == "string" and length > 0)
+    ' "$FINALIZED_FINALIZATION_MARKER" >/dev/null || \
+    die "Artifact finalization marker identity is invalid: ${FINALIZED_FINALIZATION_MARKER}"
+  FINALIZED_FILE_SHA256="$file_hash"
+  FINALIZED_FINALIZER_REVISION="$(jq -er '.finalizer_revision' "$FINALIZED_FINALIZATION_MARKER")"
+}
+
+run_validate_install() {
+  local height_dir validation_root report validation_revision
+
+  resolve_finalized_snapshot
+  require_release_binaries
+  [[ -f "$TRUSTED_KEYS" ]] || die "Trusted key set is missing: ${TRUSTED_KEYS}; run init"
+  height_dir="$(printf '%012d' "$HEIGHT")"
+  validation_root="${VALIDATION_BASE}/${height_dir}-${REQUESTED_HASH}"
+  validation_revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  report="${VALIDATION_REPORT_ROOT}/validate-install-${HEIGHT}-${REQUESTED_HASH}-${validation_revision}.json"
+  if [[ -f "$report" ]]; then
+    jq -e \
+      --argjson height "$HEIGHT" \
+      --arg block_hash "$REQUESTED_HASH" \
+      --arg file_hash "$FINALIZED_FILE_SHA256" \
+      --arg producer_revision "$FINALIZED_PRODUCER_REVISION" \
+      --arg finalizer_revision "$FINALIZED_FINALIZER_REVISION" \
+      --arg validation_revision "$validation_revision" '
+        .version == 1
+        and .height == $height
+        and .btc_block_hash == $block_hash
+        and .file_sha256 == $file_hash
+        and .producer_revision == $producer_revision
+        and .finalizer_revision == $finalizer_revision
+        and .validation_revision == $validation_revision
+        and (.validated_at_utc | type == "string" and length > 0)
+      ' "$report" >/dev/null || die "Existing install-validation report is invalid: ${report}"
+    log "Independent signed install already validated: ${report}"
+    return
+  fi
+
+  generate_validation_config "$validation_root"
+  "$BALANCE_HISTORY" \
+    --root-dir "$validation_root" \
+    install-snapshot \
+    --file "${FINALIZED_ARTIFACT_DIR}/$(jq -er '.snapshot_file' "${FINALIZED_ARTIFACT_DIR}/complete.json")"
+  python3 - "$report" "$HEIGHT" "$REQUESTED_HASH" "$FINALIZED_FILE_SHA256" \
+    "$FINALIZED_PRODUCER_REVISION" "$FINALIZED_FINALIZER_REVISION" "$validation_revision" \
+    "$validation_root" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+path, height, block_hash, file_hash, producer_revision, finalizer_revision, validation_revision, validation_root = sys.argv[1:]
+record = {
+    "version": 1,
+    "height": int(height),
+    "btc_block_hash": block_hash,
+    "file_sha256": file_hash,
+    "producer_revision": producer_revision,
+    "finalizer_revision": finalizer_revision,
+    "validation_revision": validation_revision,
+    "validation_root": validation_root,
+    "validated_at_utc": datetime.now(timezone.utc).isoformat(),
+}
+with open(path, "x", encoding="utf-8") as output:
+    json.dump(record, output, indent=2, sort_keys=True)
+    output.write("\n")
+    output.flush()
+    os.fsync(output.fileno())
+PY
+  log "Independent signed install validated: report=${report} validation_root=${validation_root}"
 }
 
 run_archive() {
@@ -688,7 +832,7 @@ prepare_snapshot_release() {
     python3 "$DISTRIBUTION_TOOL" prepare \
       --artifact-dir "$FINALIZED_ARTIFACT_DIR" \
       --trusted-keys "$TRUSTED_KEYS" \
-      --validation-marker "$FINALIZED_VALIDATION_MARKER" \
+      --finalization-marker "$FINALIZED_FINALIZATION_MARKER" \
       --producer-revision "$FINALIZED_PRODUCER_REVISION" \
       --public-base-url "$PUBLIC_BASE_URL" \
       --output-dir "$RECORD_ROOT"
@@ -735,7 +879,9 @@ LIVE_SERVICE_ROOT=${LIVE_SERVICE_ROOT}
 SNAPSHOT_ROOT=${SNAPSHOT_ROOT}
 BUILDER_ROOT=${BUILDER_ROOT}
 RELEASE_ROOT=${RELEASE_ROOT}
+FINALIZATION_BASE=${FINALIZATION_BASE}
 VALIDATION_BASE=${VALIDATION_BASE}
+VALIDATION_REPORT_ROOT=${VALIDATION_REPORT_ROOT}
 KEY_ROOT=${KEY_ROOT}
 CONFIG_ROOT=${CONFIG_ROOT}
 TARGET_ROOT=${TARGET_ROOT}
@@ -807,6 +953,10 @@ case "$COMMAND" in
   finalize)
     parse_target_args "$@"
     run_finalize
+    ;;
+  validate-install)
+    parse_target_args "$@"
+    run_validate_install
     ;;
   archive)
     parse_target_args "$@"

@@ -297,7 +297,8 @@ bash src/btc/balance-history/scripts/regtest_exact_height_snapshot_capacity.sh
 
 在正式硬件上制作并签名分发主网 checkpoint 时，使用
 `mainnet_exact_height_snapshot.sh` 封装的
-`init/preflight/create/resume-verify/status/verify/finalize/prepare-release/publish` 流程；只有离线归档
+`init/preflight/create/resume-verify/status/verify/finalize/prepare-release/publish` 流程。`finalize`
+只复核 artifact hash/signature；完整 RocksDB 恢复通过独立 `validate-install` 演练。只有离线归档
 明确需要 tar 时才额外执行 `archive`。按
 [balance-history-mainnet-exact-height-snapshot-operations.md](/home/bucky/work/usdb/doc/balance-history/balance-history-mainnet-exact-height-snapshot-operations.md)
 完成目录规划、artifact 复核和接收方安装。脚本默认使用独立的
