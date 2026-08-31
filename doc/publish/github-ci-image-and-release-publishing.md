@@ -203,6 +203,10 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 完成第 3 节的 tag build 后，从同一个 release tag 手工运行 `USDB Release Candidate Manifest`。唯一
 input 是 `release_id`，而 workflow ref 也必须是同名 tag：
 
+在 GitHub Actions 页面点击 `Run workflow` 时，必须先在 `Use workflow from` 下拉框选择同名
+release tag，再填写相同的 `release_id`；不要保留默认的 `master`。`release_id` 只是表单 input，
+不会自动改变 workflow 的运行 ref。命令行方式更不容易漏掉这一步：
+
 ```bash
 gh workflow run usdb-release-candidate.yml \
   --repo buckyos/usdb \
@@ -266,6 +270,10 @@ python3 docker/scripts/tools/release_manifest.py create \
 Actions artifact 会过期，因此不能作为节点长期信任入口。candidate review 完成后，从同一 release tag
 手工启动 publish workflow：
 
+在网页操作时同样需要把 `Use workflow from` 设为该 release tag，并保持 `release_id` 完全一致。
+publish 的 preflight 会重新校验唯一 candidate artifact、tag target 和 release identity，之后才进入
+`usdb-release` Environment 审批；审批通过才会创建或验证 GitHub Release。
+
 ```bash
 gh workflow run usdb-release-publish.yml \
   --repo buckyos/usdb \
@@ -281,7 +289,8 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest 和 network bundle；
 4. 再次验证三张 digest-pinned OCI image 的 signer workflow、source revision 和 provenance；
 5. 从 tagged source 生成稳定的 public network bundle、self-contained node kit 及 SHA-256；
-6. testnet 创建 prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
+6. GitHub Release title 直接使用完整 `release_id`，确保窄列表也优先显示网络和版本；testnet 创建
+   prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
 7. release 已存在时只允许 title、notes、flags、完整 asset 集合和每个 SHA-256 全部一致，否则 fail closed。
 
 当前 Release assets 固定为：

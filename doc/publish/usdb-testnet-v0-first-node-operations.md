@@ -134,6 +134,9 @@ gh workflow run usdb-release-candidate.yml \
   -f release_id=usdb-testnet-v0-r1
 ```
 
+若从 GitHub Actions 页面执行，`Use workflow from` 必须选择同一个 release tag，不能使用默认
+`master`；填写 `release_id` 不会自动切换 workflow ref。
+
 不要手工填写 revisions、image digest 或 genesis block hash；workflow 必须从 tag、compatibility lock、
 OCI provenance 和 network bundle 派生并校验这些值。candidate review 通过后，再从同名 tag 启动
 Environment-protected publish workflow：
@@ -144,6 +147,9 @@ gh workflow run usdb-release-publish.yml \
   --ref usdb-testnet-v0-r1 \
   -f release_id=usdb-testnet-v0-r1
 ```
+
+网页执行 publish 时也必须选择同名 tag。publish 会先重新验证 candidate artifact，再等待
+`usdb-release` Environment 审批，通过后才发布 GitHub Release。
 
 `publish` job 必须等待 `usdb-release` Environment required reviewer 批准。workflow 引用 environment
 名称并不等于 protection rules 已配置；首次发布前必须在 repository settings 确认 required reviewer、

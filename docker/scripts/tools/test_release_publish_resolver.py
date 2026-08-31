@@ -100,7 +100,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             notes = "release notes\n"
             release = {
                 "tag_name": self.release_id,
-                "name": f"USDB release {self.release_id}",
+                "name": self.release_id,
                 "body": notes,
                 "draft": False,
                 "prerelease": True,
@@ -121,7 +121,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             url = RESOLVER.verify_existing_release(
                 release,
                 release_id=self.release_id,
-                title=f"USDB release {self.release_id}",
+                title=self.release_id,
                 notes=notes,
                 assets=[first, second],
                 prerelease=True,
@@ -133,7 +133,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
                 RESOLVER.verify_existing_release(
                     release,
                     release_id=self.release_id,
-                    title=f"USDB release {self.release_id}",
+                    title=self.release_id,
                     notes=notes,
                     assets=[first, second],
                     prerelease=True,

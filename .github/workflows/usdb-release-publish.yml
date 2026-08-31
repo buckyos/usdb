@@ -1,11 +1,11 @@
-name: USDB Release Publish
-run-name: Publish ${{ inputs.release_id }}
+name: USDB Release Publish (select release tag)
+run-name: Publish ${{ inputs.release_id }} from ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
     inputs:
       release_id:
-        description: Approved immutable release ID, for example usdb-testnet-v0-r1
+        description: Approved candidate ID; must match selected Use workflow from tag, not master
         required: true
         type: string
 
@@ -42,7 +42,9 @@ jobs:
             exit 1
           }
           [[ "$GITHUB_REF" == "refs/tags/${RELEASE_ID}" ]] || {
-            echo "publish workflow must run from refs/tags/${RELEASE_ID}" >&2
+            echo "::error title=Wrong workflow ref::Select tag ${RELEASE_ID} in 'Use workflow from'; current ref is ${GITHUB_REF}."
+            echo "publish workflow must run from refs/tags/${RELEASE_ID}; current ref is ${GITHUB_REF}" >&2
+            echo "Retry: gh workflow run usdb-release-publish.yml --repo ${GITHUB_REPOSITORY} --ref ${RELEASE_ID} -f release_id=${RELEASE_ID}" >&2
             exit 1
           }
 
@@ -429,7 +431,9 @@ jobs:
           RELEASE_ID: ${{ inputs.release_id }}
         run: |
           set -euo pipefail
-          title="USDB release ${RELEASE_ID}"
+          # GitHub's narrow release list truncates suffixes, so keep the immutable
+          # release ID first and avoid a redundant repository-name prefix.
+          title="${RELEASE_ID}"
           assets=(
             dist/usdb-release-manifest.json
             dist/usdb-release-manifest.json.sha256
