@@ -55,6 +55,10 @@ manifest/node-kit digest。它安装到
 `~/.local/share/usdb/releases/<release_id>`，并创建 `~/.local/bin/usdb-node`。对同一不可变 release
 重复执行是幂等的；如果目标目录内容不同则拒绝覆盖。
 
+该安装脚本只安装经过校验的 node kit 和 launcher，不自动修改宿主机、生成节点配置或启动服务。成功后会明确
+输出首次部署的 `prepare-host -> setup -> doctor -> up -> status` 路径，以及同 bundle 升级的
+`activate-release -> doctor -> up -> status` 路径。
+
 mainnet 或需要先审阅脚本时，下载 `install-<release_id>.sh` 及其 checksum，执行 `sha256sum -c` 后
 再运行。`install-usdb-node.sh --release-id ...` 保留为镜像站和故障排查使用的高级入口，不作为默认操作。
 

@@ -10,6 +10,9 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).with_name("release_publish_resolver.py")
+REPOSITORY_ROOT = MODULE_PATH.parents[3]
+CANDIDATE_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/usdb-release-candidate.yml"
+PUBLISH_WORKFLOW = REPOSITORY_ROOT / ".github/workflows/usdb-release-publish.yml"
 SPEC = importlib.util.spec_from_file_location("release_publish_resolver", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 RESOLVER = importlib.util.module_from_spec(SPEC)
@@ -89,6 +92,17 @@ class ReleasePublishResolverTests(unittest.TestCase):
         self.run["head_branch"] = "master"
         with self.assertRaisesRegex(ValueError, "exactly one successful candidate"):
             self.resolve()
+
+    def test_release_workflows_derive_release_id_only_from_selected_tag(self) -> None:
+        candidate = CANDIDATE_WORKFLOW.read_text(encoding="utf-8")
+        publish = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertNotIn("inputs.release_id", candidate)
+        self.assertNotIn("inputs.release_id", publish)
+        self.assertIn("run-name: USDB candidate ${{ github.ref_name }}", candidate)
+        self.assertIn("run-name: Publish ${{ github.ref_name }}", publish)
+        self.assertIn("RELEASE_ID: ${{ github.ref_name }}", candidate)
+        self.assertIn("RELEASE_ID: ${{ github.ref_name }}", publish)
 
     def test_verifies_exact_existing_release(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

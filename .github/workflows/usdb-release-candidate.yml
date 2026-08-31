@@ -1,13 +1,8 @@
 name: USDB Release Candidate Manifest (select release tag)
-run-name: USDB candidate ${{ inputs.release_id }} from ${{ github.ref_name }}
+run-name: USDB candidate ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
-    inputs:
-      release_id:
-        description: Must match the selected Use workflow from tag; do not select master
-        required: true
-        type: string
 
 permissions:
   actions: read
@@ -17,12 +12,12 @@ permissions:
   packages: read
 
 concurrency:
-  group: usdb-release-candidate-${{ inputs.release_id }}
+  group: usdb-release-candidate-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   manifest:
-    name: Verify inputs and create manifest
+    name: Verify selected tag and create manifest
     if: github.repository == 'buckyos/usdb'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -32,7 +27,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
@@ -42,7 +37,7 @@ jobs:
           [[ "$GITHUB_REF" == "refs/tags/${RELEASE_ID}" ]] || {
             echo "::error title=Wrong workflow ref::Select tag ${RELEASE_ID} in 'Use workflow from'; current ref is ${GITHUB_REF}."
             echo "candidate workflow must run from refs/tags/${RELEASE_ID}; current ref is ${GITHUB_REF}" >&2
-            echo "Retry: gh workflow run usdb-release-candidate.yml --repo ${GITHUB_REPOSITORY} --ref ${RELEASE_ID} -f release_id=${RELEASE_ID}" >&2
+            echo "Retry: gh workflow run usdb-release-candidate.yml --repo ${GITHUB_REPOSITORY} --ref ${RELEASE_ID}" >&2
             exit 1
           }
           active_artifacts="$(gh api \
@@ -56,7 +51,7 @@ jobs:
       - name: Check out release coordinator revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.release_id }}
+          ref: refs/tags/${{ github.ref_name }}
           path: usdb
           fetch-depth: 0
           persist-credentials: false
@@ -65,7 +60,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: buckyos/go-ethereum
-          ref: refs/tags/${{ inputs.release_id }}
+          ref: refs/tags/${{ github.ref_name }}
           path: go-ethereum
           fetch-depth: 0
           persist-credentials: false
@@ -74,7 +69,7 @@ jobs:
         id: revisions
         shell: bash
         env:
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           verify_release_tag() {
@@ -128,7 +123,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
         run: |
@@ -313,7 +308,7 @@ jobs:
         id: manifest
         shell: bash
         env:
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
           CREATED_AT_UTC: ${{ steps.revisions.outputs.created_at_utc }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           SOURCE_DAO_REVISION: ${{ steps.candidate.outputs.source_dao_revision }}
@@ -351,7 +346,7 @@ jobs:
       - name: Upload candidate manifest
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: ${{ inputs.release_id }}-manifest
+          name: ${{ github.ref_name }}-manifest
           path: release-output/
           if-no-files-found: error
           retention-days: 30
@@ -363,7 +358,7 @@ jobs:
           {
             echo "### USDB release candidate manifest"
             echo
-            echo "Release ID: \`${{ inputs.release_id }}\`"
+            echo "Release ID: \`${{ github.ref_name }}\`"
             echo
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.sha256 }}\`"
             echo

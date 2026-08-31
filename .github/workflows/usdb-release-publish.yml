@@ -1,20 +1,15 @@
 name: USDB Release Publish (select release tag)
-run-name: Publish ${{ inputs.release_id }} from ${{ github.ref_name }}
+run-name: Publish ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
-    inputs:
-      release_id:
-        description: Approved candidate ID; must match selected Use workflow from tag, not master
-        required: true
-        type: string
 
 permissions:
   actions: read
   contents: read
 
 concurrency:
-  group: usdb-release-publish-${{ inputs.release_id }}
+  group: usdb-release-publish-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +29,7 @@ jobs:
       - name: Validate tag-scoped dispatch
         shell: bash
         env:
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           [[ "$RELEASE_ID" =~ ^usdb-(testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$ ]] || {
@@ -44,14 +39,14 @@ jobs:
           [[ "$GITHUB_REF" == "refs/tags/${RELEASE_ID}" ]] || {
             echo "::error title=Wrong workflow ref::Select tag ${RELEASE_ID} in 'Use workflow from'; current ref is ${GITHUB_REF}."
             echo "publish workflow must run from refs/tags/${RELEASE_ID}; current ref is ${GITHUB_REF}" >&2
-            echo "Retry: gh workflow run usdb-release-publish.yml --repo ${GITHUB_REPOSITORY} --ref ${RELEASE_ID} -f release_id=${RELEASE_ID}" >&2
+            echo "Retry: gh workflow run usdb-release-publish.yml --repo ${GITHUB_REPOSITORY} --ref ${RELEASE_ID}" >&2
             exit 1
           }
 
       - name: Check out tagged USDB source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.release_id }}
+          ref: refs/tags/${{ github.ref_name }}
           path: usdb
           fetch-depth: 0
           persist-credentials: false
@@ -60,7 +55,7 @@ jobs:
         id: revision
         shell: bash
         env:
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           tag_ref="refs/tags/${RELEASE_ID}"
@@ -94,7 +89,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
           USDB_REVISION: ${{ steps.revision.outputs.usdb_revision }}
         run: |
           set -euo pipefail
@@ -130,7 +125,7 @@ jobs:
       - name: Check out tagged USDB source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.release_id }}
+          ref: refs/tags/${{ github.ref_name }}
           path: usdb
           fetch-depth: 0
           persist-credentials: false
@@ -139,7 +134,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: buckyos/go-ethereum
-          ref: refs/tags/${{ inputs.release_id }}
+          ref: refs/tags/${{ github.ref_name }}
           path: go-ethereum
           fetch-depth: 0
           persist-credentials: false
@@ -149,7 +144,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_USDB_REVISION: ${{ needs.preflight.outputs.usdb_revision }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           verify_release_tag() {
@@ -230,7 +225,7 @@ jobs:
         env:
           EXPECTED_GO_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           EXPECTED_USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           manifest="candidate/usdb-release-manifest.json"
@@ -321,7 +316,7 @@ jobs:
         shell: bash
         env:
           BUNDLE_DIR: ${{ steps.manifest.outputs.bundle_dir }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           python3 usdb/docker/scripts/tools/validate_network_bundle.py \
@@ -388,7 +383,7 @@ jobs:
           GENESIS_HASH: ${{ steps.manifest.outputs.genesis_hash }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
           SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
           SNAPSHOT_HEIGHT: ${{ steps.manifest.outputs.snapshot_height }}
           SNAPSHOT_RECORD_URL: ${{ steps.manifest.outputs.snapshot_record_url }}
@@ -444,7 +439,7 @@ jobs:
           RELEASE_INSTALLER: ${{ steps.assets.outputs.release_installer }}
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
-          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_ID: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           # GitHub's narrow release list truncates suffixes, so keep the immutable
@@ -523,7 +518,7 @@ jobs:
           {
             echo "### Published USDB release"
             echo
-            echo "Release ID: \`${{ inputs.release_id }}\`"
+            echo "Release ID: \`${{ github.ref_name }}\`"
             echo
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.manifest_sha256 }}\`"
             echo

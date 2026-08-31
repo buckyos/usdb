@@ -92,6 +92,12 @@ class InstallUsdbNodeTests(unittest.TestCase):
             launcher.resolve(),
             self.install_root / RELEASE_ID / "docker/scripts/tools/usdb_node.py",
         )
+        self.assertIn("usdb-node prepare-host", first.stdout)
+        self.assertIn("usdb-node setup", first.stdout)
+        self.assertIn("usdb-node doctor", first.stdout)
+        self.assertIn("usdb-node up", first.stdout)
+        self.assertIn("usdb-node status", first.stdout)
+        self.assertIn("does not run these commands automatically", first.stdout)
 
         second = self.install()
         self.assertEqual(second.returncode, 0, second.stderr)

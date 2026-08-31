@@ -78,7 +78,7 @@ release tag 必须满足：
 4. 人工确定尚未使用的 `release_id`；
 5. 分别在 `U`、`G` 上创建同名 annotated tag，不能隐式使用可能继续变化的本地 `HEAD`；
 6. push 两个 tag，等待两仓 `USDB Release Build` 成功；
-7. 手工运行 manifest workflow，只输入同一个 `release_id`。
+7. 从同名 release tag 手工运行 manifest workflow；release ID 自动取自该 tag，不再重复输入。
 
 协调工具位于 Go 仓库 `scripts/usdb/prepare_release.py`。默认从脚本所在 `go-ethereum` checkout
 推导其上级 workspace，因此标准 sibling 布局不需要传 `--workspace-root`；非标准布局可显式覆盖。
@@ -203,18 +203,16 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 - [manifest tool](../../docker/scripts/tools/release_manifest.py)
 - [manifest tests](../../docker/scripts/tools/test_release_manifest.py)
 
-完成第 3 节的 tag build 后，从同一个 release tag 手工运行 `USDB Release Candidate Manifest`。唯一
-input 是 `release_id`，而 workflow ref 也必须是同名 tag：
+完成第 3 节的 tag build 后，从同一个 release tag 手工运行 `USDB Release Candidate Manifest`。
+workflow 不再接受 `release_id` input，而是直接把所选 tag 的 `github.ref_name` 作为 release ID：
 
 在 GitHub Actions 页面点击 `Run workflow` 时，必须先在 `Use workflow from` 下拉框选择同名
-release tag，再填写相同的 `release_id`；不要保留默认的 `master`。`release_id` 只是表单 input，
-不会自动改变 workflow 的运行 ref。命令行方式更不容易漏掉这一步：
+release tag，不要保留默认的 `master`；选定后不再需要填写其他字段。命令行只需要提供 `--ref`：
 
 ```bash
 gh workflow run usdb-release-candidate.yml \
   --repo buckyos/usdb \
-  --ref usdb-testnet-v0-r1 \
-  -f release_id=usdb-testnet-v0-r1
+  --ref usdb-testnet-v0-r1
 ```
 
 workflow 会：
@@ -276,15 +274,14 @@ python3 docker/scripts/tools/release_manifest.py create \
 Actions artifact 会过期，因此不能作为节点长期信任入口。candidate review 完成后，从同一 release tag
 手工启动 publish workflow：
 
-在网页操作时同样需要把 `Use workflow from` 设为该 release tag，并保持 `release_id` 完全一致。
-publish 的 preflight 会重新校验唯一 candidate artifact、tag target 和 release identity，之后才进入
+在网页操作时同样只需要把 `Use workflow from` 设为该 release tag，不再填写重复的 release ID。
+publish 直接从 tag 推导 ID；preflight 会重新校验唯一 candidate artifact、tag target 和 release identity，之后才进入
 `usdb-release` Environment 审批；审批通过才会创建或验证 GitHub Release。
 
 ```bash
 gh workflow run usdb-release-publish.yml \
   --repo buckyos/usdb \
-  --ref usdb-testnet-v0-r1 \
-  -f release_id=usdb-testnet-v0-r1
+  --ref usdb-testnet-v0-r1
 ```
 
 preflight job 自动定位唯一成功且未过期的 candidate run/artifact，只拥有 read permission。`publish` job

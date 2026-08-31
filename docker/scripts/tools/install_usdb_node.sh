@@ -220,5 +220,26 @@ if [[ -e "$launcher" && ! -L "$launcher" ]]; then
 fi
 ln -sfn "${release_dir}/docker/scripts/tools/usdb_node.py" "$launcher"
 echo "Installed launcher: $launcher"
-echo "First install: $launcher setup"
-echo "Existing node upgrade: $launcher activate-release"
+cat <<EOF
+
+Next steps for a first node install:
+  1. Ensure ${bin_dir} is in PATH:
+       export PATH="${bin_dir}:\$PATH"
+  2. Check or install supported host prerequisites:
+       usdb-node prepare-host
+     If Docker group membership changes, log out and back in before continuing.
+  3. Configure node identity, data paths, snapshot, and firewall:
+       usdb-node setup
+  4. Run the explicit read-only preflight, then start services:
+       usdb-node doctor
+       usdb-node up
+       usdb-node status
+
+Existing node upgrade within the same network bundle:
+  usdb-node activate-release
+  usdb-node doctor
+  usdb-node up
+  usdb-node status
+
+The installer does not run these commands automatically.
+EOF

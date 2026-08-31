@@ -130,12 +130,11 @@ tag push 分别触发两个 `USDB Release Build`，重新运行 Fast gate 并构
 ```bash
 gh workflow run usdb-release-candidate.yml \
   --repo buckyos/usdb \
-  --ref usdb-testnet-v0-r1 \
-  -f release_id=usdb-testnet-v0-r1
+  --ref usdb-testnet-v0-r1
 ```
 
 若从 GitHub Actions 页面执行，`Use workflow from` 必须选择同一个 release tag，不能使用默认
-`master`；填写 `release_id` 不会自动切换 workflow ref。
+`master`。workflow 直接使用该 tag 名作为 release ID，选择后不再填写其他 input。
 
 不要手工填写 revisions、image digest 或 genesis block hash；workflow 必须从 tag、compatibility lock、
 OCI provenance 和 network bundle 派生并校验这些值。candidate review 通过后，再从同名 tag 启动
@@ -144,8 +143,7 @@ Environment-protected publish workflow：
 ```bash
 gh workflow run usdb-release-publish.yml \
   --repo buckyos/usdb \
-  --ref usdb-testnet-v0-r1 \
-  -f release_id=usdb-testnet-v0-r1
+  --ref usdb-testnet-v0-r1
 ```
 
 网页执行 publish 时也必须选择同名 tag。publish 会先重新验证 candidate artifact，再等待
@@ -185,6 +183,9 @@ bash <(curl -fsSL \
   "https://github.com/buckyos/usdb/releases/download/usdb-testnet-v0-r1/install-usdb-testnet-v0-r1.sh")
 export PATH="${HOME}/.local/bin:${PATH}"
 ```
+
+安装脚本只校验并安装当前 release 的 node kit 和 `usdb-node` launcher，不会自动执行下面的宿主机准备、
+私有配置或服务启动；完成时会在终端打印这些后续命令。
 
 生成节点私有配置。该命令自动写入 manifest 中的 image digest、创建数据目录、生成 Bitcoin RPC
 password/rpcauth，并保持 operator RPC 只监听 loopback：
