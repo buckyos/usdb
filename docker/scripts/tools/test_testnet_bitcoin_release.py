@@ -42,11 +42,35 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         network_env = read_env(ROOT / "docker/networks/testnet-v0/network.env")
         self.assertEqual(env["BTC_RPC_URL"], "http://btc-node:8332")
         self.assertEqual(env["USDB_DATA_ROOT"], "/home/usdb/.usdb")
-        self.assertEqual(env["BTC_NODE_DATA_HOST_DIR"], "/home/usdb/.usdb/bitcoin/mainnet")
-        self.assertEqual(env["BH_DATA_HOST_DIR"], "/home/usdb/.usdb/balance-history")
-        self.assertEqual(env["USDB_INDEXER_DATA_HOST_DIR"], "/home/usdb/.usdb/usdb-indexer")
-        self.assertEqual(env["USDB_CHAIN_DATA_HOST_DIR"], "/home/usdb/.usdb/usdb-chain")
-        self.assertEqual(env["CONTROL_PLANE_DATA_HOST_DIR"], "/home/usdb/.usdb/control-plane")
+        self.assertEqual(env["USDB_DATA_LAYOUT"], "usdb-node-data-layout:v2")
+        self.assertRegex(env["USDB_RUNTIME_COMPATIBILITY_ID"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            env["BTC_NODE_DATA_HOST_DIR"],
+            "/home/usdb/.usdb/datasets/bitcoin/btc-mainnet",
+        )
+        self.assertTrue(
+            env["BH_DATA_HOST_DIR"].startswith(
+                "/home/usdb/.usdb/datasets/balance-history/btc-mainnet/"
+            )
+        )
+        self.assertRegex(Path(env["BH_DATA_HOST_DIR"]).name, r"^[0-9a-f]{64}$")
+        self.assertTrue(
+            env["USDB_INDEXER_DATA_HOST_DIR"].startswith(
+                "/home/usdb/.usdb/datasets/usdb-indexer/"
+            )
+        )
+        self.assertRegex(
+            Path(env["USDB_INDEXER_DATA_HOST_DIR"]).name,
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertEqual(
+            env["USDB_CHAIN_DATA_HOST_DIR"],
+            "/home/usdb/.usdb/networks/usdb-testnet-v0/usdb-chain",
+        )
+        self.assertEqual(
+            env["CONTROL_PLANE_DATA_HOST_DIR"],
+            "/home/usdb/.usdb/networks/usdb-testnet-v0/control-plane",
+        )
         self.assertEqual(network_env["BTC_MIN_READY_HEIGHT"], "963800")
         self.assertEqual(network_env["BTC_MAX_TIP_AGE_SECS"], "7200")
         self.assertEqual(network_env["BTC_MIN_CONNECTIONS"], "1")

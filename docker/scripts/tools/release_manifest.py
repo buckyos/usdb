@@ -24,8 +24,9 @@ from validate_network_bundle import (  # noqa: E402
     validate_network_bundle,
 )
 from snapshot_distribution import validate_release_record  # noqa: E402
+from runtime_compatibility import build_runtime_compatibility  # noqa: E402
 
-SCHEMA_VERSION = "usdb-release-manifest:v4"
+SCHEMA_VERSION = "usdb-release-manifest:v5"
 SNAPSHOT_RECORD_RELATIVE_PATH = Path(
     "snapshots/balance-history-snapshot-release-record.json"
 )
@@ -304,6 +305,7 @@ def create_manifest(
         "images": images,
         "ci_required_checks": {key: list(value) for key, value in REQUIRED_CHECKS.items()},
         "snapshot": build_snapshot_state(bundle_dir),
+        "runtime_compatibility": build_runtime_compatibility(network_identity),
     }
     validate_manifest(manifest, bundle_dir, compatibility_lock_path)
     return manifest
@@ -323,6 +325,7 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
             "images",
             "ci_required_checks",
             "snapshot",
+            "runtime_compatibility",
         },
         "release manifest",
     )
@@ -415,6 +418,10 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
     require(
         manifest["snapshot"] == build_snapshot_state(bundle_dir),
         "candidate snapshot state does not match the network bundle",
+    )
+    require(
+        manifest["runtime_compatibility"] == build_runtime_compatibility(expected_network),
+        "runtime compatibility does not match the selected network and service contracts",
     )
 
 

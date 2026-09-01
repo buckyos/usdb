@@ -41,6 +41,7 @@ usdb-{testnet|mainnet}-v{network-generation}-r{release-sequence}
 - release ID、目标网络和生成时间；
 - `usdb`、`go-ethereum`、`SourceDAO` 的 commit；
 - UIP/activation registry revision 和 chain config/genesis hash；
+- node data layout、各服务 storage/source identity 和 runtime compatibility ID；
 - Rust/Go/Node、Bitcoin Core、ord 和容器工具版本；
 - 所有实际使用的 binary/image/config/contract/snapshot artifact 的 SHA-256 或 OCI digest；
 - release 提供 snapshot 时记录 content-addressed record URL/hash、height、BTC block hash、snapshot ID、

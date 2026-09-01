@@ -51,16 +51,16 @@ network。默认 endpoint 为 `http://btc-node:8332`：
 - `run_testnet_runtime.sh down` 不停止 Bitcoin、不删除 shared network、不触碰 Bitcoin 数据；
 - `run_testnet_bitcoin.sh down` 只停止容器，不删除 bind-mounted data directory。
 
-默认部署目录是：
+新节点的默认部署目录由 `usdb-node` 生成，例如 testnet-v0：
 
 ```text
-/home/usdb/.usdb/bitcoin/mainnet
-/home/usdb/.usdb/secure/bitcoin-mainnet-rpcauth
+/home/usdb/.usdb/datasets/bitcoin/btc-mainnet
+/home/usdb/.usdb/networks/usdb-testnet-v0/secure/bitcoin-mainnet-rpcauth
 ```
 
-已有非裁剪、`txindex=1` 的 mainnet 数据目录可以直接配置为 `BTC_NODE_DATA_HOST_DIR`，但同一目录在
-任意时刻只能由一个 bitcoind 进程打开。切换前必须等待旧进程完整退出，并确认容器 UID/GID 对目录
-有读写权限。
+实际路径以 bundle-scoped `node.env` 为准。已有非裁剪、`txindex=1` 的 mainnet 数据目录不能由新工具
+自动认领；需先按兼容契约完成显式审核和 marker 建立。同一目录任意时刻只能由一个 bitcoind 进程打开。
+切换前必须等待旧进程完整退出，并确认容器 UID/GID 对目录有读写权限。
 
 关闭公网 `8333/TCP` 不影响 Bitcoin Core 主动建立出站 peer 和同步主链，只是不接收入站 peer。
 如需公开 `8333`，必须同时将 `BTC_P2P_BIND_ADDRESS=0.0.0.0` 并采用 firewall public profile；仅增加

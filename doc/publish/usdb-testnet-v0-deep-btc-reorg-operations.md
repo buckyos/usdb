@@ -56,7 +56,7 @@ rollback/replay，供事故诊断和新 generation 使用；旧 chain node 不�
 1. 停止所有节点的 miner、chain runtime 和 control-plane 写入口。
 2. 保存三节点的 `halted.json`、最后 USDB block number/hash、genesis hash 和 peer 信息。
 3. 保存 indexer readiness、reorg epoch、rollback target、旧/新 BTC stable hash 与 common ancestor。
-4. 将旧 `USDB_DATA_ROOT/usdb-chain` 目录和日志转为只读归档；不要直接删除。
+4. 将旧 `node.env` 所指向的 `USDB_CHAIN_DATA_HOST_DIR` 和日志转为只读归档；不要直接删除。
 5. 等待 Bitcoin Core、balance-history 和 usdb-indexer 在 replacement branch 上重新达到一致状态。
 6. 对 replacement state 执行 state-ref、profile、candidate 和 snapshot 复核。
 7. 准备新的 network generation bundle，至少更换 release `vN`、chain ID、network ID 和 genesis。

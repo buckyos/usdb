@@ -58,15 +58,15 @@ usdb-indexer 本地状态之间的启动兼容关系。Snapshot 是可替换的�
 
 ```bash
 usdb-indexer-checkpoint-tool --json export \
-  --indexer-root /home/usdb/.usdb/usdb-indexer \
+  --indexer-root "${USDB_INDEXER_DATA_HOST_DIR}" \
   --indexer-rpc-url http://127.0.0.1:28020 \
   --height "${H}" \
   --network-bundle-id "${USDB_NETWORK_BUNDLE_ID}" \
   --chain-id "${USDB_CHAIN_ID}" \
   --index-origin-height "${USDB_GENESIS_BLOCK_HEIGHT}" \
   --balance-history-manifest "${BH_SNAPSHOT_MANIFEST}" \
-  --trusted-keys /home/usdb/.usdb/secure/snapshot-trusted-keys.json \
-  --signing-key /home/usdb/.usdb/secure/snapshot-signing-key.json \
+  --trusted-keys "${SNAPSHOT_TRUSTED_KEYS}" \
+  --signing-key "${SNAPSHOT_SIGNING_KEY}" \
   --output-root /home/usdb/.usdb/snapshots
 ```
 
@@ -77,7 +77,7 @@ system state ID。独立验收命令会再次验证双方签名、所有文件 h
 usdb-indexer-checkpoint-tool --json verify \
   --checkpoint-manifest "${USDB_INDEXER_CHECKPOINT_MANIFEST}" \
   --balance-history-manifest "${BH_SNAPSHOT_MANIFEST}" \
-  --trusted-keys /home/usdb/.usdb/secure/snapshot-trusted-keys.json
+  --trusted-keys "${SNAPSHOT_TRUSTED_KEYS}"
 ```
 
 签名私钥只存在于制作机。部署 bundle 只携带 trusted public-key catalog、两个 manifest、两个 detached
@@ -91,9 +91,9 @@ signature sidecar 和对应数据文件。
 usdb-indexer-checkpoint-tool --json install-pair \
   --checkpoint-manifest "${USDB_INDEXER_CHECKPOINT_MANIFEST}" \
   --balance-history-manifest "${BH_SNAPSHOT_MANIFEST}" \
-  --trusted-keys /home/usdb/.usdb/secure/snapshot-trusted-keys.json \
-  --indexer-root /home/usdb/.usdb/usdb-indexer \
-  --balance-history-root /home/usdb/.usdb/balance-history \
+  --trusted-keys "${SNAPSHOT_TRUSTED_KEYS}" \
+  --indexer-root "${USDB_INDEXER_DATA_HOST_DIR}" \
+  --balance-history-root "${BH_DATA_HOST_DIR}" \
   --network-bundle-id "${USDB_NETWORK_BUNDLE_ID}" \
   --chain-id "${USDB_CHAIN_ID}" \
   --index-origin-height "${USDB_GENESIS_BLOCK_HEIGHT}"
@@ -110,8 +110,8 @@ fail closed，不会被覆盖。
 ```bash
 usdb-indexer-checkpoint-tool --json verify-recovery \
   --checkpoint-manifest "${USDB_INDEXER_CHECKPOINT_MANIFEST}" \
-  --trusted-keys /home/usdb/.usdb/secure/snapshot-trusted-keys.json \
-  --indexer-root /home/usdb/.usdb/usdb-indexer \
+  --trusted-keys "${SNAPSHOT_TRUSTED_KEYS}" \
+  --indexer-root "${USDB_INDEXER_DATA_HOST_DIR}" \
   --indexer-rpc-url http://127.0.0.1:28020 \
   --balance-history-rpc-url http://127.0.0.1:28010 \
   --readiness-timeout-secs 300

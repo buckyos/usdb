@@ -8,8 +8,23 @@ import hashlib
 import hmac
 import json
 import re
+import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from runtime_compatibility import (  # noqa: E402
+    DATA_LAYOUT_VERSION,
+    LEGACY_PERSISTENT_DATA_PATHS,
+    PERSISTENT_DATA_SERVICES,
+    build_persistent_data_paths,
+    build_runtime_compatibility,
+    network_secure_dir,
+    snapshot_artifact_dir,
+)
 
 EXPECTED_BUNDLE_ID = "usdb-testnet-v0"
 EXPECTED_CHAIN_ID = 202608250
@@ -26,13 +41,7 @@ KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
         "0xabcd35afbb4561213feaff01b5f91e18f8df7c37",
     }
 )
-PERSISTENT_DATA_PATHS = {
-    "BTC_NODE_DATA_HOST_DIR": "bitcoin/mainnet",
-    "BH_DATA_HOST_DIR": "balance-history",
-    "USDB_INDEXER_DATA_HOST_DIR": "usdb-indexer",
-    "USDB_CHAIN_DATA_HOST_DIR": "usdb-chain",
-    "CONTROL_PLANE_DATA_HOST_DIR": "control-plane",
-}
+PERSISTENT_DATA_PATHS = LEGACY_PERSISTENT_DATA_PATHS
 
 
 def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -557,6 +566,47 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
     )
 
     validate_artifact_hashes(bundle_dir, network)
+    template = read_env(bundle_dir / "node.env.example")
+    data_root = Path(template.get("USDB_DATA_ROOT", ""))
+    require(data_root.is_absolute(), "node.env.example USDB_DATA_ROOT must be absolute")
+    network_identity = {
+        "bundle_id": network["network_bundle_id"],
+        "chain_id": network["chain_id"],
+        "genesis_block_hash": genesis_manifest["block_hash"],
+        "btc_network_id": btc_source["network_id"],
+        "btc_index_origin_height": index_origin_height,
+        "btc_activation_registry_id": btc_source["activation_registry_id"],
+    }
+    compatibility = build_runtime_compatibility(network_identity)
+    require(
+        template.get("USDB_DATA_LAYOUT") == DATA_LAYOUT_VERSION,
+        "node.env.example data layout version mismatch",
+    )
+    require(
+        template.get("USDB_RUNTIME_COMPATIBILITY_ID")
+        == compatibility["compatibility_id"],
+        "node.env.example runtime compatibility ID mismatch",
+    )
+    for key, expected_path in build_persistent_data_paths(
+        data_root,
+        network_identity,
+        compatibility,
+    ).items():
+        require(
+            Path(template.get(key, "")) == expected_path,
+            f"node.env.example {key} mismatch",
+        )
+    require(
+        Path(template.get("BTC_RPCAUTH_HOST_FILE", ""))
+        == network_secure_dir(data_root, network["network_bundle_id"])
+        / "bitcoin-mainnet-rpcauth",
+        "node.env.example Bitcoin rpcauth path mismatch",
+    )
+    require(
+        Path(template.get("BH_SNAPSHOT_HOST_DIR", ""))
+        == snapshot_artifact_dir(data_root),
+        "node.env.example snapshot artifact path mismatch",
+    )
     return network
 
 
@@ -577,6 +627,8 @@ def validate_node_env(
     network: dict[str, Any],
     require_runtime: bool,
     require_bitcoin_runtime: bool = False,
+    expected_data_paths: dict[str, Path] | None = None,
+    expected_compatibility_id: str | None = None,
 ) -> None:
     env = read_env(path)
     index_origin_height = network_index_origin_height(network)
@@ -603,15 +655,73 @@ def validate_node_env(
     require(env.get("BTC_RPC_URL") == "http://btc-node:8332", "BTC_RPC_URL must use the private btc-node endpoint")
     data_root = Path(env.get("USDB_DATA_ROOT", ""))
     require(data_root.is_absolute(), "USDB_DATA_ROOT must be an absolute path")
-    for key, relative_path in PERSISTENT_DATA_PATHS.items():
+    layout_version = env.get("USDB_DATA_LAYOUT", "")
+    if not layout_version:
+        expected_paths = {
+            key: data_root / relative
+            for key, relative in LEGACY_PERSISTENT_DATA_PATHS.items()
+        }
+    else:
+        require(
+            layout_version == DATA_LAYOUT_VERSION,
+            f"unsupported USDB_DATA_LAYOUT: {layout_version}",
+        )
+        compatibility_id = env.get("USDB_RUNTIME_COMPATIBILITY_ID", "")
+        require(
+            re.fullmatch(r"[0-9a-f]{64}", compatibility_id) is not None,
+            "USDB_RUNTIME_COMPATIBILITY_ID must be lowercase SHA-256",
+        )
+        if expected_compatibility_id is not None:
+            require(
+                compatibility_id == expected_compatibility_id,
+                "node runtime compatibility ID does not match the selected release",
+            )
+        expected_paths = expected_data_paths
+    for key in PERSISTENT_DATA_SERVICES:
         path_value = Path(env.get(key, ""))
         require(path_value.is_absolute(), f"{key} must be an absolute path")
-        require(
-            path_value == data_root / relative_path,
-            f"{key} must be derived from USDB_DATA_ROOT",
-        )
+        if expected_paths is not None:
+            require(
+                path_value == expected_paths[key],
+                f"{key} must match the selected data layout and runtime contract",
+            )
+        elif layout_version == DATA_LAYOUT_VERSION:
+            require(
+                path_value.is_relative_to(data_root),
+                f"{key} must be below USDB_DATA_ROOT",
+            )
         if require_runtime:
             require(path_value.is_dir(), f"persistent data directory does not exist: {path_value}")
+    if layout_version == DATA_LAYOUT_VERSION and expected_paths is None:
+        btc_network_id = network["btc_source"]["network_id"]
+        bundle_id = network["network_bundle_id"]
+        require(
+            Path(env["BTC_NODE_DATA_HOST_DIR"])
+            == data_root / "datasets/bitcoin" / btc_network_id,
+            "BTC_NODE_DATA_HOST_DIR has invalid source-dataset scope",
+        )
+        balance_path = Path(env["BH_DATA_HOST_DIR"])
+        require(
+            balance_path.parent == data_root / "datasets/balance-history" / btc_network_id
+            and re.fullmatch(r"[0-9a-f]{64}", balance_path.name) is not None,
+            "BH_DATA_HOST_DIR has invalid source-dataset scope",
+        )
+        indexer_path = Path(env["USDB_INDEXER_DATA_HOST_DIR"])
+        require(
+            indexer_path.parent == data_root / "datasets/usdb-indexer"
+            and re.fullmatch(r"[0-9a-f]{64}", indexer_path.name) is not None,
+            "USDB_INDEXER_DATA_HOST_DIR has invalid derivation-dataset scope",
+        )
+        require(
+            Path(env["USDB_CHAIN_DATA_HOST_DIR"])
+            == data_root / "networks" / bundle_id / "usdb-chain",
+            "USDB_CHAIN_DATA_HOST_DIR has invalid network scope",
+        )
+        require(
+            Path(env["CONTROL_PLANE_DATA_HOST_DIR"])
+            == data_root / "networks" / bundle_id / "control-plane",
+            "CONTROL_PLANE_DATA_HOST_DIR has invalid network scope",
+        )
     require(
         env.get("BTC_P2P_BIND_ADDRESS") in {"127.0.0.1", "0.0.0.0"},
         "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",

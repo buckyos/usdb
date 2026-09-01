@@ -184,5 +184,6 @@ trusted_keys_file = "/etc/usdb/snapshot-keys/usdb-mainnet-snapshot-v1.trusted-ke
 - 为 snapshot 发布补充独立 SBOM/长期 provenance 归档；
 - 在 `r3` 真机部署中完成公开 R2 下载、断点恢复、安装后 state-ref 和多节点 joiner 验证。
 
-testnet-v0 release manifest v4 已冻结官方 record URL/hash、signer、catalog、height 和文件 inventory；
+testnet-v0 release manifest v5 已冻结官方 record URL/hash、signer、catalog、height、文件 inventory 和
+runtime compatibility contract；
 snapshot DB 仍独立存放在对象存储，不进入 GitHub Release。

@@ -250,13 +250,14 @@ python3 docker/scripts/tools/release_manifest.py create \
   --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
 ```
 
-当前 v4 candidate manifest 固定以下边界：
+当前 v5 candidate manifest 固定以下边界：
 
 - 只接受 canonical `buckyos` repositories 和 GHCR image names；
 - 只接受完整 lowercase Git SHA 和 digest-only image reference；
 - 固定平台为 `linux/amd64`；
 - 绑定 `network.json`、genesis、BTC origin/registry 和 snapshot trusted-key catalog hash；
 - 绑定 Go commit 内的 compatibility lock hash，并拒绝混搭其他 `usdb/SourceDAO` revision；
+- 绑定 data layout、各服务 storage/source identity 和 runtime compatibility ID；
 - 可选 snapshot record、record SHA-256/URL、height、BTC block hash、snapshot ID、下载规模、signer 和
   trusted-key catalog 必须与 tagged bundle 完全一致，且 height 不得超过 BTC index origin；
 - candidate 和 publish 都会精确比对公开 content-addressed record，对四个对象执行 HTTPS/Content-Length

@@ -23,6 +23,7 @@ NODE_KIT_FILES = (
     "docker/scripts/tools/prepare_usdb_firewall.sh",
     "docker/scripts/tools/prepare_usdb_host.sh",
     "docker/scripts/tools/release_manifest.py",
+    "docker/scripts/tools/runtime_compatibility.py",
     "docker/scripts/tools/run_testnet_bitcoin.sh",
     "docker/scripts/tools/run_testnet_runtime.sh",
     "docker/scripts/tools/snapshot_distribution.py",

@@ -38,11 +38,13 @@ class UsdbNodeTests(unittest.TestCase):
         self.release_dir.mkdir()
         self.manifest_path = self.release_dir / "usdb-release-manifest.json"
         digest = "1" * 64
+        network_identity = NODE.build_network_identity(self.bundle)
         self.manifest = {
-            "schema_version": "usdb-release-manifest:v4",
+            "schema_version": "usdb-release-manifest:v5",
             "release_id": "usdb-testnet-v0-r1",
-            "network_bundle": NODE.build_network_identity(self.bundle),
+            "network_bundle": network_identity,
             "snapshot": NODE.build_snapshot_state(self.bundle),
+            "runtime_compatibility": NODE.build_runtime_compatibility(network_identity),
             "images": {
                 "usdb_services": {
                     "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"
@@ -85,13 +87,16 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_p2p="private",
         )
         env = NODE.read_env(node_env)
+        expected_paths = NODE._data_directories(layout, data_root)
         self.assertEqual(env["USDB_SERVICES_IMAGE"], self.manifest["images"]["usdb_services"]["reference"])
-        self.assertEqual(env["BTC_NODE_DATA_HOST_DIR"], str(data_root / "bitcoin/mainnet"))
         self.assertEqual(env["USDB_DATA_ROOT"], str(data_root))
-        self.assertEqual(env["BH_DATA_HOST_DIR"], str(data_root / "balance-history"))
-        self.assertEqual(env["USDB_INDEXER_DATA_HOST_DIR"], str(data_root / "usdb-indexer"))
-        self.assertEqual(env["USDB_CHAIN_DATA_HOST_DIR"], str(data_root / "usdb-chain"))
-        self.assertEqual(env["CONTROL_PLANE_DATA_HOST_DIR"], str(data_root / "control-plane"))
+        self.assertEqual(env["USDB_DATA_LAYOUT"], NODE.DATA_LAYOUT_VERSION)
+        self.assertEqual(
+            env["USDB_RUNTIME_COMPATIBILITY_ID"],
+            layout.runtime_compatibility["compatibility_id"],
+        )
+        for key, expected in expected_paths.items():
+            self.assertEqual(env[key], str(expected))
         self.assertEqual(env["BTC_RPC_USER"], "node-a")
         self.assertTrue(env["BTC_RPC_PASSWORD"])
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
@@ -99,11 +104,17 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
         self.assertEqual(env["USDB_NAT"], "extip:203.0.113.10")
         self.assertEqual(stat.S_IMODE(node_env.stat().st_mode), 0o600)
-        rpcauth = data_root / "secure/bitcoin-mainnet-rpcauth"
+        rpcauth = NODE.network_secure_dir(data_root, layout.bundle_id) / "bitcoin-mainnet-rpcauth"
         self.assertTrue(rpcauth.is_file())
         self.assertEqual(stat.S_IMODE(rpcauth.stat().st_mode), 0o600)
-        for relative in NODE.PERSISTENT_DATA_PATHS.values():
-            self.assertTrue((data_root / relative).is_dir())
+        for key, path in expected_paths.items():
+            self.assertTrue(path.is_dir())
+            marker = path / NODE.DATASET_IDENTITY_FILE
+            self.assertTrue(marker.is_file())
+            self.assertEqual(
+                json.loads(marker.read_text(encoding="utf-8"))["service"],
+                NODE.PERSISTENT_DATA_SERVICES[key],
+            )
 
         with self.assertRaisesRegex(ValueError, "refusing to replace"):
             NODE.configure_node(
@@ -170,7 +181,28 @@ class UsdbNodeTests(unittest.TestCase):
                 output=io.StringIO(),
             )
         self.assertFalse(layout.node_env.exists())
-        self.assertFalse((data_root / "secure/bitcoin-mainnet-rpcauth").exists())
+        self.assertFalse(
+            (NODE.network_secure_dir(data_root, layout.bundle_id) / "bitcoin-mainnet-rpcauth").exists()
+        )
+
+    def test_configure_rejects_non_empty_unmarked_dataset(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "unmarked-data"
+        bitcoin = NODE._data_directories(layout, data_root)["BTC_NODE_DATA_HOST_DIR"]
+        bitcoin.mkdir(parents=True)
+        (bitcoin / "blocks").mkdir()
+        with self.assertRaisesRegex(ValueError, "non-empty unmarked bitcoin_core"):
+            NODE.configure_node(
+                layout,
+                data_root=data_root,
+                role="full",
+                miner_address="",
+                miner_threads=1,
+                bootnodes="",
+                nat="",
+                bitcoin_rpc_user="node-a",
+                bitcoin_p2p="private",
+            )
 
     def test_setup_can_select_the_release_approved_snapshot(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -397,11 +429,78 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(updated["BTC_RPC_PASSWORD"], original["BTC_RPC_PASSWORD"])
         self.assertEqual(updated["USDB_BOOTNODES"], "enode://example")
 
+        incompatible = dict(layout.runtime_compatibility)
+        incompatible["compatibility_id"] = "8" * 64
+        blocked_layout = replace(
+            next_layout,
+            release_id="usdb-testnet-v0-r3",
+            runtime_compatibility=incompatible,
+        )
+        before = layout.node_env.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "runtime compatibility ID"):
+            NODE.activate_release(blocked_layout)
+        self.assertEqual(layout.node_env.read_text(encoding="utf-8"), before)
+
+    def test_activate_release_rejects_tampered_dataset_marker_atomically(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "tampered-marker-data"
+        NODE.configure_node(
+            layout,
+            data_root=data_root,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        marker = (
+            NODE._data_directories(layout, data_root)["USDB_INDEXER_DATA_HOST_DIR"]
+            / NODE.DATASET_IDENTITY_FILE
+        )
+        marker.write_text("{}\n", encoding="utf-8")
+        replacement_images = {
+            key: value[:-64] + "7" * 64 for key, value in layout.images.items()
+        }
+        next_layout = replace(layout, release_id="usdb-testnet-v0-r2", images=replacement_images)
+        before = layout.node_env.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "dataset identity mismatch"):
+            NODE.activate_release(next_layout)
+        self.assertEqual(layout.node_env.read_text(encoding="utf-8"), before)
+
+    def test_activate_release_rejects_legacy_node_config(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "legacy-data"
+        legacy_paths = NODE.build_legacy_data_paths(data_root)
+        for path in legacy_paths.values():
+            path.mkdir(parents=True)
+        template = (layout.bundle_dir / "node.env.example").read_text(encoding="utf-8")
+        updates = {
+            **layout.images,
+            "USDB_DATA_ROOT": str(data_root),
+            **{key: str(value) for key, value in legacy_paths.items()},
+            "BTC_RPCAUTH_HOST_FILE": str(data_root / "secure/bitcoin-mainnet-rpcauth"),
+            "BTC_RPC_USER": "node-a",
+            "BTC_RPC_PASSWORD": "secret",
+            "BH_SNAPSHOT_HOST_DIR": str(data_root / "releases/balance-history"),
+        }
+        legacy = NODE.render_env(template, updates)
+        legacy = "\n".join(
+            line
+            for line in legacy.splitlines()
+            if not line.startswith("USDB_DATA_LAYOUT=")
+            and not line.startswith("USDB_RUNTIME_COMPATIBILITY_ID=")
+        ) + "\n"
+        NODE._atomic_write_private(layout.node_env, legacy)
+        with self.assertRaisesRegex(ValueError, "legacy node data layout"):
+            NODE.activate_release(layout)
+
     def _installed_snapshot_fixture(self, data_root: Path) -> mock.Mock:
         record = NODE._approved_snapshot_record(NODE.load_release_layout(self.root, self.node_env))
         release_id = record["snapshot_release_id"]
         by_role = {item["role"]: item for item in record["files"]}
-        release_dir = data_root / "releases/balance-history" / release_id
+        release_dir = NODE.snapshot_artifact_dir(data_root) / release_id
         release_dir.mkdir(parents=True)
         snapshot = release_dir / by_role["snapshot_db"]["path"]
         snapshot.write_bytes(b"snapshot")
@@ -496,7 +595,9 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
         )
-        database = data_root / "balance-history/db"
+        database = (
+            NODE._data_directories(layout, data_root)["BH_DATA_HOST_DIR"] / "db"
+        )
         database.mkdir()
         (database / "CURRENT").write_text("initialized", encoding="utf-8")
         with mock.patch.object(NODE, "install_snapshot_artifact") as install:

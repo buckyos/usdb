@@ -217,7 +217,7 @@ usdb-node up
 3. 对大于等于 `128 MiB` 的 DB 默认使用 `8 x 64 MiB` 并行 HTTP Range；预分配 `.part`，将已 fsync 的
    chunk 记录到 `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
 4. 汇总分片后对完整 `.part` 校验 size 和 SHA-256；
-5. 原子发布到 `<USDB_DATA_ROOT>/releases/balance-history/<snapshot-release-id>`；
+5. 原子发布到 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>`；
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
 7. 重新执行 runtime snapshot validator。
 
@@ -261,5 +261,5 @@ node.env 选择和已有 DB 拒绝。仍需完成：
 - 使用真实 R2 凭证的小文件 upload/head/download smoke；
 - 最新主网大 DB 的中断上传和 HTTP Range 恢复；
 - 空白目标机通过 `usdb-node snapshot install` 启动并核对 provenance/state-ref；
-- 完成 manifest v4 已冻结 record URL/hash 的首个真实节点下载、安装和 state-ref 验收；
+- 完成 manifest v5 已冻结 record URL/hash 的首个真实节点下载、安装和 state-ref 验收；
 - paired-checkpoint 对象存储 schema 和真实 joiner 演练。

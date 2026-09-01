@@ -7,15 +7,16 @@ digest、编辑 Bitcoin RPC 密码或记忆服务启动顺序，同时保留不�
 
 ## 1. 配置分层
 
-部署输入严格分为三层：
+部署输入严格分为四层：
 
 | 层 | 所有者 | 内容 | 是否进入 Release |
 | --- | --- | --- | --- |
 | release identity | 发布流程 | release ID、三仓 revision、三张 digest-pinned image | 是 |
 | network identity | network bundle | chain/network ID、genesis、BTC origin/registry、SourceDAO public config | 是 |
+| runtime compatibility | release manifest | data layout、各服务 storage/source identity、compatibility ID | 是 |
 | node-local state | 节点运维 | 数据路径、RPC secret、role、bootnodes、NAT、miner address | 否 |
 
-前两层由 `usdb-release-publish.yml` 冻结。节点只提供第三层，不能覆盖 manifest 中的 image 或 network
+前三层由 `usdb-release-publish.yml` 冻结。节点只提供第四层，不能覆盖 manifest 中的 image、network 或 runtime
 identity。Bootstrap Admin 私钥、矿工私钥和 snapshot signing key 都不进入 node kit。
 
 ## 2. GitHub Release 资产
@@ -93,7 +94,8 @@ bootnode，以及是否开放 Bitcoin 入站 P2P。它从当前 `SSH_CONNECTION`
 它自动完成：
 
 - 从 manifest 写入三张 image digest；
-- 在一个 `USDB_DATA_ROOT` 下生成所有绝对数据目录；
+- 在一个 `USDB_DATA_ROOT` 下按 source dataset 与 network bundle 生成绝对目录；
+- 写入 release runtime compatibility ID，并为每个服务目录创建公开 dataset identity marker；
 - 根据 bundle ID 和 hostname 派生 Bitcoin RPC username；
 - 生成 Bitcoin RPC password 和 `rpcauth`，但不打印密码；
 - 写入权限为 `0600` 的 `node.env`；
@@ -156,20 +158,22 @@ usdb-node configure --role full --data-root /data/usdb
 
 `--bitcoin-rpc-user`、`--sync-timeout-secs`、`--nat` 等只属于高级覆盖项，不需要进入普通节点手册。
 
-宿主机持久化布局统一为：
+新节点的宿主机持久化布局统一为：
 
 ```text
-<USDB_DATA_ROOT>/bitcoin/mainnet
-<USDB_DATA_ROOT>/balance-history
-<USDB_DATA_ROOT>/usdb-indexer
-<USDB_DATA_ROOT>/usdb-chain
-<USDB_DATA_ROOT>/control-plane
-<USDB_DATA_ROOT>/secure
-<USDB_DATA_ROOT>/releases
+<USDB_DATA_ROOT>/datasets/bitcoin/<btc-network-id>
+<USDB_DATA_ROOT>/datasets/balance-history/<btc-network-id>/<balance-history-contract-id>
+<USDB_DATA_ROOT>/datasets/usdb-indexer/<indexer-contract-id>
+<USDB_DATA_ROOT>/artifacts/balance-history
+<USDB_DATA_ROOT>/networks/<bundle-id>/usdb-chain
+<USDB_DATA_ROOT>/networks/<bundle-id>/control-plane
+<USDB_DATA_ROOT>/networks/<bundle-id>/secure
 ```
 
 这些目录通过 bind mount 映射到容器内稳定的 `/data/*` 路径。默认根是 `~/.usdb`；专用数据盘使用
-`usdb-node configure --data-root /data/usdb ...` 或在 `setup` 中选择 `/data/usdb`。工具不会自行迁移旧目录。
+`usdb-node configure --data-root /data/usdb ...` 或在 `setup` 中选择 `/data/usdb`。hash 路径由工具生成，
+以 `node.env` 为准。工具不会自行迁移、复制或认领旧目录。完整兼容边界见
+[Network 数据布局与 Release 兼容契约](./usdb-network-data-layout-and-release-compatibility.md)。
 
 安装同一 network bundle 的新 `rN` 后，如果继续复用该 bundle 已有的 `node.env`，先显式激活新 release
 冻结的 image：
@@ -180,19 +184,22 @@ usdb-node doctor
 usdb-node up
 ```
 
-`activate-release` 只替换三个 release-owned image digest；如果 network bundle 变化，则使用新的
-bundle-scoped `node.env`，不能把旧 genesis 的配置直接带入新网络。
+`activate-release` 先校验 runtime compatibility ID、所有数据路径和 dataset marker，完全一致后才替换三个
+release-owned image digest。如果 contract 或 network bundle 变化，则使用新的 bundle-scoped `node.env`
+和相应数据目录，不能把旧 genesis 的配置直接带入新网络。
 
 `activate-release` 的使用边界如下：
 
 | 场景 | 是否执行 | 原因 |
 | --- | --- | --- |
 | 首次安装并运行 `setup`/`configure` | 否 | 新配置已经写入当前 release 的 image digest |
-| 同一 bundle 从 `rN` 升级到 `rN+1`，复用原 `node.env` | 是 | bundle-scoped 配置仍记录旧 release image digest |
+| 同一 bundle 从 `rN` 升级到 `rN+1`，runtime contract 不变 | 是 | 只需更新 release image digest |
+| 同一 bundle 的新 release 改变 storage/source contract | 禁止 | 当前不实现迁移，使用新配置和 rebuild |
 | 重复安装或重启同一 release | 否 | release identity 和配置没有变化 |
 | 新建 `vN` network bundle、chain ID 或 genesis | 禁止复用旧配置 | 应运行新 bundle 的 `setup`，使用独立配置和数据处置流程 |
 
-该命令不拉取 image、不重启容器、不修改 RPC secret、角色、bootnode、数据路径或 miner 配置。更新采用原子写入；
+该命令不拉取 image、不重启容器、不修改 RPC secret、角色、bootnode、数据路径、compatibility marker 或 miner
+配置。更新采用原子写入；
 校验失败时恢复原配置。激活后运行 `doctor`，再执行 `up` 让 Compose 拉取并协调新 image。若跳过激活，
 `doctor` 和 `up` 都会因 image digest 与当前 release 不一致而失败关闭。
 

@@ -17,6 +17,8 @@ assert SPEC is not None and SPEC.loader is not None
 VALIDATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATOR)
 
+import runtime_compatibility as RUNTIME
+
 
 class NetworkBundleValidatorTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -34,8 +36,36 @@ class NetworkBundleValidatorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def write_node_env(self, **overrides: str) -> Path:
+    def runtime_network_identity(self) -> dict:
+        genesis_manifest = json.loads(
+            (self.bundle / "artifacts/usdb-genesis.manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        btc_source = self.network["btc_source"]
+        return {
+            "bundle_id": self.network["network_bundle_id"],
+            "chain_id": self.network["chain_id"],
+            "genesis_block_hash": genesis_manifest["block_hash"],
+            "btc_network_id": btc_source["network_id"],
+            "btc_index_origin_height": btc_source["index_origin_height"],
+            "btc_activation_registry_id": btc_source["activation_registry_id"],
+        }
+
+    def write_node_env(self, *, legacy_layout: bool = False, **overrides: str) -> Path:
         data_root = self.root / "node-data"
+        compatibility = RUNTIME.build_runtime_compatibility(
+            self.runtime_network_identity()
+        )
+        data_paths = (
+            RUNTIME.build_legacy_data_paths(data_root)
+            if legacy_layout
+            else RUNTIME.build_persistent_data_paths(
+                data_root,
+                self.runtime_network_identity(),
+                compatibility,
+            )
+        )
         values = {
             "USDB_SERVICES_IMAGE": "ghcr.io/buckyos/usdb-services@sha256:" + "a" * 64,
             "USDB_CHAIN_IMAGE": "ghcr.io/buckyos/usdb-chain@sha256:" + "b" * 64,
@@ -48,11 +78,7 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_P2P_BIND_PORT": "8333",
             "USDB_OPERATOR_SSH_PORT": "22",
             "USDB_DATA_ROOT": str(data_root),
-            "BTC_NODE_DATA_HOST_DIR": str(data_root / "bitcoin/mainnet"),
-            "BH_DATA_HOST_DIR": str(data_root / "balance-history"),
-            "USDB_INDEXER_DATA_HOST_DIR": str(data_root / "usdb-indexer"),
-            "USDB_CHAIN_DATA_HOST_DIR": str(data_root / "usdb-chain"),
-            "CONTROL_PLANE_DATA_HOST_DIR": str(data_root / "control-plane"),
+            **{key: str(value) for key, value in data_paths.items()},
             "BTC_RPCAUTH_HOST_FILE": str(self.root / "bitcoin-rpcauth"),
             "USDB_NODE_ROLE": "full",
             "USDB_P2P_BIND_ADDRESS": "0.0.0.0",
@@ -68,8 +94,13 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BH_SNAPSHOT_MANIFEST": "",
             "USDB_INDEXER_CHECKPOINT_MANIFEST": "",
         }
+        if not legacy_layout:
+            values["USDB_DATA_LAYOUT"] = RUNTIME.DATA_LAYOUT_VERSION
+            values["USDB_RUNTIME_COMPATIBILITY_ID"] = compatibility[
+                "compatibility_id"
+            ]
         values.update(overrides)
-        for key in VALIDATOR.PERSISTENT_DATA_PATHS:
+        for key in RUNTIME.PERSISTENT_DATA_SERVICES:
             candidate = Path(values[key])
             if candidate.is_absolute():
                 candidate.mkdir(parents=True, exist_ok=True)
@@ -559,8 +590,30 @@ class NetworkBundleValidatorTests(unittest.TestCase):
 
     def test_rejects_persistent_data_path_outside_root(self) -> None:
         path = self.write_node_env(BH_DATA_HOST_DIR=str(self.root / "other-balance-history"))
-        with self.assertRaisesRegex(ValueError, "derived from USDB_DATA_ROOT"):
+        with self.assertRaisesRegex(ValueError, "below USDB_DATA_ROOT"):
             self.validate_node_env(path, False)
+
+    def test_legacy_layout_remains_recognizable_without_being_upgraded(self) -> None:
+        path = self.write_node_env(legacy_layout=True)
+        self.validate_node_env(path, False)
+        env = VALIDATOR.read_env(path)
+        self.assertNotIn("USDB_DATA_LAYOUT", env)
+        self.assertEqual(
+            env["USDB_CHAIN_DATA_HOST_DIR"],
+            str(self.root / "node-data/usdb-chain"),
+        )
+
+    def test_v2_layout_rejects_runtime_compatibility_mismatch(self) -> None:
+        path = self.write_node_env()
+        with self.assertRaisesRegex(ValueError, "selected release"):
+            VALIDATOR.validate_node_env(
+                path,
+                self.network,
+                False,
+                False,
+                None,
+                "f" * 64,
+            )
 
 
 if __name__ == "__main__":

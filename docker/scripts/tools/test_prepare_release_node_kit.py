@@ -20,6 +20,7 @@ sys.modules[SPEC.name] = BUILDER
 SPEC.loader.exec_module(BUILDER)
 
 from release_manifest import build_network_identity, build_snapshot_state
+from runtime_compatibility import build_runtime_compatibility
 
 REPOSITORY_ROOT = MODULE_PATH.resolve().parents[3]
 SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
@@ -33,12 +34,14 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         shutil.copytree(SOURCE_BUNDLE, self.bundle)
         digest = "1" * 64
         self.manifest = self.root / "usdb-release-manifest.json"
+        network_identity = build_network_identity(self.bundle)
         content = json.dumps(
             {
-                "schema_version": "usdb-release-manifest:v4",
+                "schema_version": "usdb-release-manifest:v5",
                 "release_id": "usdb-testnet-v0-r1",
-                "network_bundle": build_network_identity(self.bundle),
+                "network_bundle": network_identity,
                 "snapshot": build_snapshot_state(self.bundle),
+                "runtime_compatibility": build_runtime_compatibility(network_identity),
                 "images": {
                     "usdb_services": {
                         "reference": f"ghcr.io/buckyos/usdb-services@sha256:{digest}"
@@ -80,6 +83,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         self.assertEqual(layout.release_id, "usdb-testnet-v0-r1")
         self.assertTrue((output / "docker/compose.runtime.yml").is_file())
         self.assertTrue((output / "docker/scripts/tools/usdb_node.py").is_file())
+        self.assertTrue((output / "docker/scripts/tools/runtime_compatibility.py").is_file())
         self.assertTrue((output / "docker/scripts/tools/snapshot_distribution.py").is_file())
         self.assertFalse((layout.bundle_dir / "node.env").exists())
 

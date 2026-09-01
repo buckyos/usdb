@@ -91,6 +91,18 @@ class ReleaseManifestTests(unittest.TestCase):
             manifest["network_bundle"]["genesis_block_hash"],
             "0x12a1baed070d1521d791b73956a8b5cf1613fc9504636f215390c1f839992a23",
         )
+        compatibility = manifest["runtime_compatibility"]
+        self.assertEqual(compatibility["schema_version"], "usdb-runtime-compatibility:v1")
+        self.assertEqual(compatibility["data_layout_version"], "usdb-node-data-layout:v2")
+        self.assertEqual(compatibility["migration_support"], "none")
+        self.assertEqual(
+            compatibility["services"]["balance_history"]["storage_schema"],
+            "balance-history-rocksdb-schema:v1",
+        )
+        self.assertEqual(
+            compatibility["services"]["usdb_chain"]["identity"]["genesis_block_hash"],
+            manifest["network_bundle"]["genesis_block_hash"],
+        )
         path = self.root / "release-manifest.json"
         RELEASE.write_manifest(path, manifest)
         self.assertEqual(RELEASE.load_manifest(path, self.bundle, self.compatibility_lock), manifest)
@@ -174,6 +186,14 @@ class ReleaseManifestTests(unittest.TestCase):
         record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "snapshot release ID does not match"):
             self.valid_manifest()
+
+    def test_runtime_compatibility_tamper_is_rejected(self) -> None:
+        tampered = self.valid_manifest()
+        tampered["runtime_compatibility"]["services"]["usdb_indexer"][
+            "storage_schema"
+        ] = "usdb-indexer-data:v2"
+        with self.assertRaisesRegex(ValueError, "runtime compatibility"):
+            RELEASE.validate_manifest(tampered, self.bundle, self.compatibility_lock)
 
     def test_snapshot_catalog_bytes_must_match_release_record(self) -> None:
         catalog = self.bundle / "trust/usdb-mainnet-snapshot-v1.trusted-keys.json"

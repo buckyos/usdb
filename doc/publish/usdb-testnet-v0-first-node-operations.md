@@ -231,9 +231,9 @@ SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
 首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
-同一 `usdb-testnet-v0` bundle 的新 `rN`、并继续复用现有 `node.env` 时，才按
-`activate-release -> doctor -> up -> status` 升级。新的 `vN`、chain ID 或 genesis 不得复用本配置，必须
-按新 network bundle 重新执行 `setup` 并遵循对应的数据处置方案。
+同一 `usdb-testnet-v0` bundle 的新 `rN`、runtime compatibility ID 不变且继续复用现有 `node.env` 时，才按
+`activate-release -> doctor -> up -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接
+复用本配置，必须使用新配置和经过审核的数据处置方案。
 
 ### 5.2 手工回退路径
 
@@ -260,74 +260,36 @@ docker login ghcr.io
 
 ## 6. 节点私有配置
 
-本节以及第 7 至第 9 节保留为手工回退和故障排查参考。使用 node kit 时，`usdb-node setup`
-已经完成本节，`usdb-node up` 会执行后续服务顺序，不要再手工生成第二份 `node.env` 或 RPC secret。
+本节以及第 7 至第 9 节仅保留为故障排查参考。使用 node kit 时，`usdb-node setup` 已经完成本节，
+`usdb-node up` 会执行后续服务顺序，不要再手工生成第二份 `node.env`、RPC secret 或 dataset marker。
 
 ```bash
-cd "/home/usdb/releases/${RELEASE_ID}/usdb"
-docker/scripts/tools/run_testnet_runtime.sh init-env
-chmod 600 docker/networks/testnet-v0/node.env
+NODE_ENV="${HOME}/.config/usdb/usdb-testnet-v0/node.env"
+KIT_ROOT="${HOME}/.local/share/usdb/releases/${RELEASE_ID}"
+test -r "$NODE_ENV"
+test -d "$KIT_ROOT"
 ```
 
-编辑 `node.env`：
-
-```text
-USDB_SERVICES_IMAGE=ghcr.io/buckyos/usdb-services@sha256:<digest>
-USDB_CHAIN_IMAGE=ghcr.io/buckyos/usdb-chain@sha256:<digest>
-USDB_BITCOIN_IMAGE=ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
-
-USDB_DATA_ROOT=/home/usdb/.usdb
-BTC_NODE_DATA_HOST_DIR=/home/usdb/.usdb/bitcoin/mainnet
-BH_DATA_HOST_DIR=/home/usdb/.usdb/balance-history
-USDB_INDEXER_DATA_HOST_DIR=/home/usdb/.usdb/usdb-indexer
-USDB_CHAIN_DATA_HOST_DIR=/home/usdb/.usdb/usdb-chain
-CONTROL_PLANE_DATA_HOST_DIR=/home/usdb/.usdb/control-plane
-
-SNAPSHOT_MODE=none
-BH_SNAPSHOT_FILE=
-BH_SNAPSHOT_MANIFEST=
-USDB_NODE_ROLE=full
-USDB_OPERATOR_SSH_PORT=<actual-ssh-port>
-```
-
-保留默认数据根 `/home/usdb/.usdb`，创建运行目录：
+不要手工拼接 data path 或 compatibility ID。发布版应使用 `usdb-node setup/configure` 生成配置；故障排查时
+可读取实际值：
 
 ```bash
-install -d -m 0700 /home/usdb/.usdb/secure
-install -d -m 0700 /home/usdb/.usdb/bitcoin/mainnet
-install -d -m 0700 /home/usdb/.usdb/balance-history
-install -d -m 0700 /home/usdb/.usdb/usdb-indexer
-install -d -m 0700 /home/usdb/.usdb/usdb-chain
-install -d -m 0700 /home/usdb/.usdb/control-plane
-install -d -m 0755 /home/usdb/.usdb/releases/balance-history
+grep -E '^(USDB_DATA_LAYOUT|USDB_RUNTIME_COMPATIBILITY_ID|.*_DATA_HOST_DIR)=' "$NODE_ENV"
 ```
 
-生成专用 Bitcoin RPC 凭据：
+每个服务目录必须包含由工具写入的 `.usdb-dataset-identity.json`。非空但没有 marker 的目录不会被自动
+认领；应继续使用原 release，或在停服后执行单独审核的 migration/rebuild。
+
+需要绕过 launcher 定位 helper 日志时，只复用上述私有配置：
 
 ```bash
-docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet-v0-node1
+export USDB_TESTNET_NODE_ENV="$NODE_ENV"
+export USDB_TESTNET_BUNDLE_DIR="$KIT_ROOT/docker/networks/usdb-testnet-v0"
+"$KIT_ROOT/docker/scripts/tools/run_testnet_runtime.sh" validate-node
 ```
 
-把命令只显示一次的 user/password 写入 `node.env`。随后执行：
-
-```bash
-docker/scripts/tools/run_testnet_runtime.sh validate
-docker/scripts/tools/run_testnet_runtime.sh validate-node
-sudo docker/scripts/tools/prepare_usdb_firewall.sh apply \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port <actual-ssh-port> \
-  --bitcoin-p2p private \
-  --confirm
-sudo docker/scripts/tools/prepare_usdb_firewall.sh check \
-  --node-env docker/networks/testnet-v0/node.env \
-  --ssh-port <actual-ssh-port> \
-  --bitcoin-p2p private
-docker/scripts/tools/run_testnet_bitcoin.sh pull
-docker/scripts/tools/run_testnet_runtime.sh pull
-```
-
-如果明确需要接受 Bitcoin 入站 peer，先把 `BTC_P2P_BIND_ADDRESS` 改成 `0.0.0.0`，并将上述两个
-命令的模式改成 `--bitcoin-p2p public`。不要把 `8332` 与 `8333` 一起开放。
+角色、Bitcoin P2P 和 firewall 修改仍使用 `usdb-node set-role`/`firewall`；不要直接改私有 env 绕过校验，
+也不要把 `8332` 与 `8333` 一起开放。
 
 ## 7. Bitcoin Core 全量同步
 
@@ -357,7 +319,7 @@ docker/scripts/tools/run_testnet_runtime.sh data-status
 ```
 
 runtime 会把 Bitcoin 数据目录只读挂载为 `/data/bitcoin`，落后超过 500 块时使用 LocalLoader。
-同步数据保存在 `USDB_DATA_ROOT/balance-history` bind mount 中，重启或 `down` 不会删除。
+同步数据保存在 `BH_DATA_HOST_DIR` 指向的 bind mount 中，重启或 `down` 不会删除。
 
 等待完整共识状态：
 
@@ -506,7 +468,7 @@ testnet-v0 默认启用 deep-reorg guard。每个节点在
 写入 `halted.json`、停止 geth，并保持容器处于无 RPC 的 halted 状态。普通 restart 不会删除 latch。
 
 测试网允许重置，但重置必须使用新的 network generation `vN`，记录旧节点最后区块/hash，并由负责人
-批准归档旧 `USDB_DATA_ROOT/usdb-chain` 目录。不得把同一 genesis 下的 `rN` 更新当成深重组恢复，也不得直接删除
+批准归档旧 `USDB_CHAIN_DATA_HOST_DIR` 目录。不得把同一 genesis 下的 `rN` 更新当成深重组恢复，也不得直接删除
 `halted.json` 后续跑旧链。具体步骤见
 [深 BTC 重组停链与整网重置](./usdb-testnet-v0-deep-btc-reorg-operations.md)。
 

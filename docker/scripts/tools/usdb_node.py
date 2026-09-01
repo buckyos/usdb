@@ -30,13 +30,23 @@ from release_manifest import (  # noqa: E402
     build_network_identity,
     build_snapshot_state,
 )
+from runtime_compatibility import (  # noqa: E402
+    DATA_LAYOUT_VERSION,
+    DATASET_IDENTITY_FILE,
+    PERSISTENT_DATA_SERVICES,
+    build_dataset_identity,
+    build_legacy_data_paths,
+    build_persistent_data_paths,
+    build_runtime_compatibility,
+    network_secure_dir,
+    snapshot_artifact_dir,
+)
 from snapshot_distribution import (  # noqa: E402
     DEFAULT_DOWNLOAD_CHUNK_SIZE_MIB,
     DEFAULT_DOWNLOAD_CONCURRENCY,
     install_release as install_snapshot_artifact,
 )
 from validate_network_bundle import (  # noqa: E402
-    PERSISTENT_DATA_PATHS,
     read_env,
     validate_network_bundle,
     validate_node_env,
@@ -57,6 +67,8 @@ class ReleaseLayout:
     bundle_id: str
     bundle_dir: Path
     node_env: Path
+    network_identity: dict[str, Any]
+    runtime_compatibility: dict[str, Any]
     images: dict[str, str]
     snapshot: dict[str, Any]
 
@@ -144,6 +156,11 @@ def load_release_layout(
     snapshot = build_snapshot_state(bundle_dir)
     if manifest.get("snapshot") != snapshot:
         raise ValueError("release manifest snapshot binding does not match the bundled network")
+    runtime_compatibility = build_runtime_compatibility(network_identity)
+    if manifest.get("runtime_compatibility") != runtime_compatibility:
+        raise ValueError(
+            "release manifest runtime compatibility does not match the bundled network"
+        )
     images = {
         "USDB_SERVICES_IMAGE": _require_image(manifest, "usdb_services", "usdb-services"),
         "USDB_CHAIN_IMAGE": _require_image(manifest, "usdb_chain", "usdb-chain"),
@@ -161,6 +178,8 @@ def load_release_layout(
         bundle_id=bundle_id,
         bundle_dir=bundle_dir,
         node_env=private_node_env,
+        network_identity=network_identity,
+        runtime_compatibility=runtime_compatibility,
         images=images,
         snapshot=snapshot,
     )
@@ -195,6 +214,22 @@ def _atomic_write_private(path: Path, content: str) -> None:
     temporary = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_public(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o644)
         with os.fdopen(descriptor, "w", encoding="utf-8") as target:
             target.write(content)
             target.flush()
@@ -244,9 +279,83 @@ def default_bitcoin_rpc_user(layout: ReleaseLayout, hostname: str | None = None)
     return f"{layout.bundle_id}-{normalized}"[:96].rstrip("-._")
 
 
-def _data_directories(data_root: Path) -> dict[str, Path]:
-    root = data_root.expanduser().resolve()
-    return {key: root / relative for key, relative in PERSISTENT_DATA_PATHS.items()}
+def _data_directories(layout: ReleaseLayout, data_root: Path) -> dict[str, Path]:
+    return build_persistent_data_paths(
+        data_root,
+        layout.network_identity,
+        layout.runtime_compatibility,
+    )
+
+
+def _dataset_marker_content(service: str, layout: ReleaseLayout) -> str:
+    identity = build_dataset_identity(service, layout.runtime_compatibility)
+    return json.dumps(identity, indent=2, sort_keys=True) + "\n"
+
+
+def _initialize_dataset_directory(path: Path, service: str, layout: ReleaseLayout) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+    marker = path / DATASET_IDENTITY_FILE
+    expected = _dataset_marker_content(service, layout)
+    if marker.exists():
+        if not marker.is_file() or marker.is_symlink():
+            raise ValueError(f"dataset identity marker is not a regular file: {marker}")
+        if marker.read_text(encoding="utf-8") != expected:
+            raise ValueError(
+                f"dataset identity mismatch for {service} at {path}; use a separate "
+                "data root or rebuild the dataset"
+            )
+        return
+    if any(path.iterdir()):
+        raise ValueError(
+            f"refusing to adopt non-empty unmarked {service} data directory: {path}; "
+            "use the original release or an explicit reviewed migration"
+        )
+    _atomic_write_public(marker, expected)
+
+
+def _validate_dataset_directories(layout: ReleaseLayout, env: dict[str, str]) -> None:
+    layout_version = env.get("USDB_DATA_LAYOUT", "")
+    if layout_version != DATA_LAYOUT_VERSION:
+        raise ValueError(
+            "legacy node data layout cannot be activated by this release; keep the old "
+            "release or create a new node configuration and rebuild explicitly"
+        )
+    expected_compatibility_id = layout.runtime_compatibility["compatibility_id"]
+    if env.get("USDB_RUNTIME_COMPATIBILITY_ID") != expected_compatibility_id:
+        raise ValueError(
+            "node runtime compatibility ID does not match this release; automatic data "
+            "migration is not supported"
+        )
+    for key, service in PERSISTENT_DATA_SERVICES.items():
+        data_dir = Path(env.get(key, "")).expanduser().resolve()
+        marker = data_dir / DATASET_IDENTITY_FILE
+        if not marker.is_file() or marker.is_symlink():
+            raise ValueError(f"dataset identity marker is missing or invalid: {marker}")
+        if marker.read_text(encoding="utf-8") != _dataset_marker_content(service, layout):
+            raise ValueError(
+                f"dataset identity mismatch for {service} at {data_dir}; rebuild is required"
+            )
+
+
+def _validate_node_config(
+    layout: ReleaseLayout,
+    *,
+    require_runtime: bool,
+    require_bitcoin_runtime: bool,
+) -> None:
+    network = validate_network_bundle(layout.bundle_dir)
+    env = read_env(layout.node_env)
+    _validate_dataset_directories(layout, env)
+    expected_paths = _data_directories(layout, Path(env.get("USDB_DATA_ROOT", "")))
+    validate_node_env(
+        layout.node_env,
+        network,
+        require_runtime,
+        require_bitcoin_runtime,
+        expected_paths,
+        layout.runtime_compatibility["compatibility_id"],
+    )
 
 
 def configure_node(
@@ -272,17 +381,15 @@ def configure_node(
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_port("operator SSH port", ssh_port)
     root = data_root.expanduser().resolve()
-    secure_dir = root / "secure"
-    snapshot_dir = root / "releases/balance-history"
+    secure_dir = network_secure_dir(root, layout.bundle_id)
+    snapshot_dir = snapshot_artifact_dir(root)
     rpcauth_path = secure_dir / "bitcoin-mainnet-rpcauth"
-    data_directories = _data_directories(root)
-    for path, mode in (
-        (secure_dir, 0o700),
-        *((path, 0o700) for path in data_directories.values()),
-        (snapshot_dir, 0o755),
-    ):
+    data_directories = _data_directories(layout, root)
+    for path, mode in ((secure_dir, 0o700), (snapshot_dir, 0o755)):
         path.mkdir(mode=mode, parents=True, exist_ok=True)
         path.chmod(mode)
+    for key, path in data_directories.items():
+        _initialize_dataset_directory(path, PERSISTENT_DATA_SERVICES[key], layout)
 
     credentials_created = False
     try:
@@ -295,6 +402,10 @@ def configure_node(
         updates = {
             **layout.images,
             "USDB_DATA_ROOT": str(root),
+            "USDB_DATA_LAYOUT": DATA_LAYOUT_VERSION,
+            "USDB_RUNTIME_COMPATIBILITY_ID": layout.runtime_compatibility[
+                "compatibility_id"
+            ],
             **{key: str(path) for key, path in data_directories.items()},
             "BTC_RPCAUTH_HOST_FILE": str(rpcauth_path),
             "BTC_RPC_USER": credentials["username"],
@@ -312,8 +423,11 @@ def configure_node(
         }
         content = render_env(template_path.read_text(encoding="utf-8"), updates)
         _atomic_write_private(layout.node_env, content)
-        network = validate_network_bundle(layout.bundle_dir)
-        validate_node_env(layout.node_env, network, False, True)
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
     except BaseException:
         layout.node_env.unlink(missing_ok=True)
         if credentials_created:
@@ -512,8 +626,11 @@ def set_role(
     )
     try:
         _atomic_write_private(layout.node_env, updated)
-        network = validate_network_bundle(layout.bundle_dir)
-        validate_node_env(layout.node_env, network, False, True)
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
     except BaseException:
         _atomic_write_private(layout.node_env, original)
         raise
@@ -532,11 +649,19 @@ def activate_release(layout: ReleaseLayout) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
     original = layout.node_env.read_text(encoding="utf-8")
+    _validate_node_config(
+        layout,
+        require_runtime=False,
+        require_bitcoin_runtime=True,
+    )
     updated = render_env(original, layout.images)
     try:
         _atomic_write_private(layout.node_env, updated)
-        network = validate_network_bundle(layout.bundle_dir)
-        validate_node_env(layout.node_env, network, False, True)
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
         _validate_node_release_images(layout)
     except BaseException:
         _atomic_write_private(layout.node_env, original)
@@ -605,7 +730,11 @@ def install_snapshot_release(
     if not all(env.get(key, "") == value for key, value in updates.items()):
         try:
             _atomic_write_private(layout.node_env, render_env(original, updates))
-            validate_node_env(layout.node_env, network, False, False)
+            _validate_node_config(
+                layout,
+                require_runtime=False,
+                require_bitcoin_runtime=False,
+            )
         except BaseException:
             _atomic_write_private(layout.node_env, original)
             raise
@@ -621,7 +750,11 @@ def install_snapshot_release(
     )
     if installed.release_id != record["snapshot_release_id"]:
         raise ValueError("installed snapshot release ID differs from the approved record")
-    validate_node_env(layout.node_env, network, True, False)
+    _validate_node_config(
+        layout,
+        require_runtime=True,
+        require_bitcoin_runtime=False,
+    )
     return installed.release_dir
 
 
@@ -735,8 +868,11 @@ def doctor(layout: ReleaseLayout) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
     run_host_action(layout, "check", docker_user=default_docker_user())
-    network = validate_network_bundle(layout.bundle_dir)
-    validate_node_env(layout.node_env, network, True, True)
+    _validate_node_config(
+        layout,
+        require_runtime=True,
+        require_bitcoin_runtime=True,
+    )
     _validate_node_release_images(layout)
     run_helper(layout, "run_testnet_runtime.sh", ["validate-node"])
     run_firewall_action(layout, "check")
