@@ -76,6 +76,7 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_RPC_PASSWORD": "test-password",
             "BTC_P2P_BIND_ADDRESS": "127.0.0.1",
             "BTC_P2P_BIND_PORT": "8333",
+            "USDB_FIREWALL_MODE": "external",
             "USDB_OPERATOR_SSH_PORT": "22",
             "USDB_DATA_ROOT": str(data_root),
             **{key: str(value) for key, value in data_paths.items()},
@@ -390,6 +391,24 @@ class NetworkBundleValidatorTests(unittest.TestCase):
                 path = self.write_node_env(USDB_OPERATOR_SSH_PORT=value)
                 with self.assertRaisesRegex(ValueError, "USDB_OPERATOR_SSH_PORT"):
                     self.validate_node_env(path, False)
+
+    def test_firewall_mode_must_be_external_or_managed(self) -> None:
+        for value in ("", "disabled", "ufw"):
+            with self.subTest(value=value):
+                path = self.write_node_env(USDB_FIREWALL_MODE=value)
+                with self.assertRaisesRegex(ValueError, "USDB_FIREWALL_MODE"):
+                    self.validate_node_env(path, False)
+
+    def test_legacy_node_env_without_firewall_mode_keeps_managed_semantics(self) -> None:
+        path = self.write_node_env()
+        content = "\n".join(
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("USDB_FIREWALL_MODE=")
+        ) + "\n"
+        path.write_text(content, encoding="utf-8")
+
+        self.validate_node_env(path, False)
 
     def test_noncanonical_bitcoin_p2p_bind_is_rejected(self) -> None:
         path = self.write_node_env(BTC_P2P_BIND_ADDRESS="192.0.2.10")

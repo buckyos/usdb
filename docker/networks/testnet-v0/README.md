@@ -59,8 +59,8 @@ usdb-node doctor
 usdb-node up
 ```
 
-`usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，并确认 SSH
-port 与 UFW profile；
+`usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，并选择
+external firewall 或 managed UFW profile；
 `usdb-node up` 依次等待 Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
 中断后重复执行会从现有数据继续。详细契约见
 [`doc/publish/usdb-release-node-kit-and-deployment.md`](../../../doc/publish/usdb-release-node-kit-and-deployment.md)。

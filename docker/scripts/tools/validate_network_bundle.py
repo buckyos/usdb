@@ -36,6 +36,7 @@ EXPECTED_INDEXER_CHECKPOINT_MANIFEST_VERSION = "usdb-indexer-checkpoint-manifest
 EXPECTED_INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION = "usdb-indexer-data:v1"
 PUBLIC_DEPLOYMENT_TIERS = frozenset({"testnet", "mainnet"})
 SUPPORTED_DEPLOYMENT_TIERS = frozenset({"development"}) | PUBLIC_DEPLOYMENT_TIERS
+SUPPORTED_FIREWALL_MODES = frozenset({"external", "managed"})
 KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
     {
         "0xabcd35afbb4561213feaff01b5f91e18f8df7c37",
@@ -607,6 +608,10 @@ def validate_network_bundle(bundle_dir: Path) -> dict[str, Any]:
         == snapshot_artifact_dir(data_root),
         "node.env.example snapshot artifact path mismatch",
     )
+    require(
+        template.get("USDB_FIREWALL_MODE") == "external",
+        "node.env.example must default to externally managed host firewall",
+    )
     return network
 
 
@@ -727,6 +732,13 @@ def validate_node_env(
         "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",
     )
     require(env.get("BTC_P2P_BIND_PORT", "8333") == "8333", "Bitcoin mainnet P2P bind port must be 8333")
+    # Configurations created before this field existed had mandatory managed
+    # UFW behavior, so absence retains that fail-closed meaning during upgrade.
+    firewall_mode = env.get("USDB_FIREWALL_MODE", "managed")
+    require(
+        firewall_mode in SUPPORTED_FIREWALL_MODES,
+        "USDB_FIREWALL_MODE must be external or managed",
+    )
     ssh_port = env.get("USDB_OPERATOR_SSH_PORT", "")
     require(re.fullmatch(r"[0-9]+", ssh_port) is not None, "USDB_OPERATOR_SSH_PORT must be a decimal port")
     require(1 <= int(ssh_port) <= 65535, "USDB_OPERATOR_SSH_PORT must be between 1 and 65535")

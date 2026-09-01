@@ -87,9 +87,9 @@ usdb-node host install
 `prepare_usdb_host.sh` bootstrap 路径。
 
 `setup` 只询问无法从 release 或主机安全推导的值：数据根、节点角色、miner 地址/线程、joiner
-bootnode，以及是否开放 Bitcoin 入站 P2P。它从当前 `SSH_CONNECTION` 检测宿主机 SSH server port，显示并要求
-确认；无法检测时默认建议 `22`。这里记录的是宿主机实际监听端口，不是客户端临时端口或云 NAT 的外部端口。
-默认使用 `~/.usdb`、full role、Bitcoin private P2P。
+bootnode、是否开放 Bitcoin 入站 P2P，以及 firewall mode。只有选择 managed UFW 时，它才从当前
+`SSH_CONNECTION` 检测宿主机 SSH server port 并要求确认；这里不是客户端临时端口或云 NAT 外部端口。
+默认使用 `~/.usdb`、full role、Bitcoin private P2P 和 external firewall。
 
 输入 data root 后，`setup` 会立即检查该路径所在文件系统，而不是只检查目录本身。文件系统总容量和当前
 可用空间任一少于 `1.5 TiB` 都会在创建配置、凭证或开始 snapshot/Bitcoin 下载前失败关闭；`2.0 TiB` 是
@@ -106,26 +106,25 @@ bootnode，以及是否开放 Bitcoin 入站 P2P。它从当前 `SSH_CONNECTION`
 - 生成 Bitcoin RPC password 和 `rpcauth`，但不打印密码；
 - 写入权限为 `0600` 的 `node.env`；
 - 校验 release/network identity、RPC credential 和所有安全 bind address。
-- 保存已确认的 operator SSH port；
+- 保存检测到的 operator SSH port；managed 模式额外要求 operator 确认；
 - 显示 release-approved snapshot 的高度、下载量和建议剩余空间，并询问使用 snapshot 还是 full sync；
-- 询问是否立即应用并验证 UFW profile，默认是 `yes`。
+- 选择宿主机 firewall 模式，默认 `external`；只有明确选择 `managed` 才安装、应用并验证 UFW profile。
 
-UFW 写操作会再次显示确认问题，并通过 sudo 在放行 SSH 后才启用默认拒绝入站策略。选择不应用时，`setup`
-仍保留已生成配置，并提示稍后显式执行：
+`external` 表示防火墙由云平台、虚拟化环境或 operator 管理，或该节点处于不需要 UFW 的隔离 VM；此模式下
+`usdb-node` 不安装、不读取、不修改 UFW，但仍校验所有容器 bind address。切换到 managed 并应用：
 
 ```bash
+usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 ```
 
-运行 `usdb-node` 的节点 operator 必须是 root，或拥有可用密码和 sudo 权限；sudo 验证的是当前 operator
-密码，不接受 root 密码。由 root 创建的 locked/no-password service account 不能直接使用标准
-`firewall -> doctor -> up` 流程。该 operator 已需加入 Docker group，而 Docker group 本身具备等价 root 的
-主机控制能力，因此测试网可把同一受控账户加入 sudo group；正式环境也可以使用独立、可审计的 operator
-账户。`setup` 会先应用 firewall，再开始长时间 snapshot 下载，避免下载完成后才暴露权限配置错误。
+只有 managed 模式要求执行 `usdb-node` 的 operator 是 root，或拥有可用密码和 sudo 权限；sudo 验证当前
+operator 密码，不接受 root 密码。external 模式不因 firewall 要求 sudo，但该 operator 为控制 Docker 仍需
+加入 Docker group，而 Docker group 本身具备等价 root 的主机控制能力。
 
-完整 firewall check 必须在 `setup` 后运行，因为它需要依据生成的 `node.env` 对照 SSH、USDB P2P、Bitcoin
-P2P 和 operator API 的实际 bind policy。高级入口为 `usdb-node firewall check` 和
-`usdb-node firewall apply --confirm`；`--ssh-port` 仅用于显式覆盖已经保存的端口。
+managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P、Bitcoin P2P 和 operator API 的
+实际 bind policy。external 模式的 `doctor/up` 跳过 UFW inspection，但相同的 bind policy 校验不会跳过。
+高级入口为 `set-firewall-mode`、`firewall check` 和 `firewall apply --confirm`。
 
 `setup` 拒绝覆盖已有 `node.env` 或 `rpcauth`。角色切换使用 `set-role`，不重新生成 secret。
 
@@ -149,8 +148,8 @@ record 缺失、文件不完整或哈希不一致时失败关闭，不会把可�
 已经进入最终不可变目录的异常状态；正常下载中断只会留下 `.<snapshot-release-id>.installing`、`.part` 和
 `.ranges.json`，重跑命令会继续下载而不是按上述规则拒绝。
 大文件下载完成后的 SHA-256 阶段显示 `Verify downloaded ...` 的字节、吞吐和 ETA；首次安装只进行这一次
-完整哈希。复用已有最终 artifact 时则显示 `Verify cached ...`。进入 UFW 配置前会单独提示下一步可能请求
-operator sudo 密码，避免把等待密码误判为 snapshot 仍在处理。
+完整哈希。复用已有最终 artifact 时则显示 `Verify cached ...`。managed 模式会在 snapshot 下载前应用 UFW，
+并单独提示可能请求 operator sudo 密码；external 模式不执行该步骤。
 下载中断后 `up` 会因 runtime artifact 缺失而失败关闭；重跑同一命令会续传。snapshot 高度高于当前
 bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-history DB 已初始化时都会失败关闭。
 完整操作见
@@ -162,18 +161,18 @@ bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-
 - release manifest、network bundle 和节点私有配置是否相互一致；
 - `node.env` 的路径、RPC credential、安全 bind address 和角色配置是否有效；
 - 三张 image 是否仍是当前已安装 release 冻结的 digest。
-- UFW 是否 active、默认入站策略、SSH/USDB/Bitcoin 规则是否与 `node.env` 一致，以及敏感 RPC 端口是否未开放。
+- 始终检查安全 bind address；managed 模式额外检查 UFW active/default/rules，external 模式明确跳过 UFW。
 
 `doctor` 不拉取 image、不启动或停止容器，也不修改 `node.env`。首次配置后单独执行它，便于在开放防火墙或
 开始长时间 Bitcoin IBD 前尽早发现问题；`usdb-node up` 也会先执行同一组检查，因此正常启动不依赖运维人员
 预先手工运行 `doctor`。服务启动后的当前状态使用 `usdb-node status`，持续运行期间依赖 Docker healthcheck、
-restart policy 和各服务自身的 readiness/consensus gate，不能把 `doctor` 当作监控探针。读取 UFW 状态可能
-请求 sudo，但仍是只读操作；上游云防火墙不在宿主机可见范围内，仍需独立复核。
+restart policy 和各服务自身的 readiness/consensus gate，不能把 `doctor` 当作监控探针。managed 模式读取
+UFW 状态可能请求 sudo；external 模式的上游或宿主机防火墙不在工具检查范围内，必须独立复核。
 
 无人值守部署继续使用确定性的底层接口，例如：
 
 ```bash
-usdb-node configure --role full --data-root /data/usdb
+usdb-node configure --role full --data-root /data/usdb --firewall-mode external
 ```
 
 `--bitcoin-rpc-user`、`--sync-timeout-secs`、`--nat` 等只属于高级覆盖项，不需要进入普通节点手册。
@@ -230,8 +229,8 @@ usdb-node up
 usdb-node status
 ```
 
-首次部署路径是 `prepare-host -> setup -> doctor -> up -> status`。`setup` 已成功应用 UFW 时，可以省略
-单独的 `doctor`，因为 `up` 会重新执行；同一 bundle 的 release 升级路径是
+首次部署路径是 `prepare-host -> setup -> doctor -> up -> status`。无论 external 还是 managed，均可省略
+单独的 `doctor`，因为 `up` 会重新执行对应模式的 preflight；同一 bundle 的 release 升级路径是
 `install new release -> activate-release -> doctor -> up -> status`。
 
 `up` 内部顺序固定为：

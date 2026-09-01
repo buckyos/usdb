@@ -3,7 +3,19 @@
 ## 1. 适用范围
 
 本文定义 USDB 测试网和正式网节点的主机入站基线。具体网络的 P2P 端口来自 network bundle；
-当前 `testnet-v0` 使用 `31303/TCP+UDP`。Release node kit 的首选入口是：
+当前 `testnet-v0` 使用 `31303/TCP+UDP`。宿主机防火墙有两种节点本地模式：
+
+- `external`：默认值。由虚拟化平台、云安全组或运维人员负责，`usdb-node` 不安装、不读取也不修改 UFW；
+- `managed`：由 `usdb-node` 安装、应用并检查项目提供的 UFW profile。
+
+两种模式都强制校验 Compose bind address，敏感 RPC 仍必须只监听 loopback。切换模式使用：
+
+```bash
+usdb-node set-firewall-mode --mode external
+usdb-node set-firewall-mode --mode managed
+```
+
+选择 `managed` 后的入口是：
 
 ```bash
 usdb-node firewall check
@@ -12,7 +24,7 @@ usdb-node firewall apply --confirm
 
 底层实现是 `docker/scripts/tools/prepare_usdb_firewall.sh`，保留给源码 checkout、测试和故障排查。
 
-当前自动处理后端为 UFW，适用于项目优先验证的 Ubuntu/Debian 节点。云安全组、机房 ACL、路由器
+当前 managed 后端为 UFW，适用于项目优先验证的 Ubuntu/Debian 节点。云安全组、机房 ACL、路由器
 端口转发和托管防火墙不由本工具修改，必须在部署记录中单独复核。
 
 ## 2. 端口语义
@@ -40,7 +52,7 @@ deny 规则：
 1. `node.env` 必须把 operator API 固定到 `127.0.0.1`；
 2. 默认私有 Bitcoin P2P 必须设置 `BTC_P2P_BIND_ADDRESS=127.0.0.1`；
 3. USDB P2P 设置 `USDB_P2P_BIND_ADDRESS=0.0.0.0`；
-4. UFW 使用默认拒绝入站，只放行 SSH、USDB P2P 和可选 Bitcoin P2P；
+4. managed 模式下 UFW 使用默认拒绝入站，只放行 SSH、USDB P2P 和可选 Bitcoin P2P；
 5. 云安全组或机房 ACL 使用相同允许列表。
 
 `prepare_usdb_firewall.sh` 会先检查上述 bind 地址，再检查或修改 UFW。这样即使 Docker 的转发规则
@@ -48,9 +60,10 @@ deny 规则：
 
 ## 4. 默认私有 Bitcoin P2P
 
-先通过 `usdb-node setup` 生成私有 `node.env`，保留：
+先通过 `usdb-node setup` 生成私有 `node.env`。默认配置为：
 
 ```text
+USDB_FIREWALL_MODE=external
 BTC_P2P_BIND_ADDRESS=127.0.0.1
 BTC_P2P_BIND_PORT=8333
 USDB_P2P_BIND_ADDRESS=0.0.0.0
@@ -58,10 +71,12 @@ USDB_P2P_BIND_PORT=31303
 USDB_OPERATOR_SSH_PORT=22
 ```
 
-`setup` 从当前 `SSH_CONNECTION` 读取 server-side port 并要求确认；它不是客户端临时端口，也不是云 NAT
-映射后的外部端口。确认值保存在 `USDB_OPERATOR_SSH_PORT`，后续命令无需重复输入：
+选择 managed 时，`setup` 从当前 `SSH_CONNECTION` 读取 server-side port 并要求确认；它不是客户端临时端口，
+也不是云 NAT 映射后的外部端口。确认值保存在 `USDB_OPERATOR_SSH_PORT`；external 模式不显示该提示。
+managed 向导会自动应用；高级或后续切换路径为：
 
 ```bash
+usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 ```
 
@@ -75,7 +90,8 @@ usdb-node firewall apply --confirm
 usdb-node firewall check
 ```
 
-`doctor` 会调用该只读检查。读取 UFW 状态可能请求 sudo；`--ssh-port` 只用于紧急或自动化场景下覆盖已保存值。
+`doctor` 仅在 managed 模式调用该只读检查。external 模式会明确报告跳过 UFW，但仍检查全部容器端口绑定。
+读取 UFW 状态可能请求 sudo；`--ssh-port` 只用于紧急或自动化场景下覆盖已保存值。
 
 ## 5. 可选公开 Bitcoin P2P
 
@@ -85,8 +101,8 @@ usdb-node firewall check
 BTC_P2P_BIND_ADDRESS=0.0.0.0
 ```
 
-然后应用和检查 public profile。Controller 会从 `BTC_P2P_BIND_ADDRESS` 自动推导 private/public，不需要
-再提供模式参数：
+然后在 managed 模式应用和检查 public profile。Controller 会从 `BTC_P2P_BIND_ADDRESS` 自动推导
+private/public，不需要再提供模式参数：
 
 ```bash
 usdb-node firewall apply --confirm
@@ -97,7 +113,7 @@ usdb-node firewall check
 
 ## 6. 验收与归档
 
-每台节点至少归档以下非敏感信息：
+managed 节点至少归档以下非敏感信息：
 
 ```bash
 usdb-node firewall check
@@ -112,3 +128,7 @@ docker compose --env-file docker/networks/testnet-v0/node.env \
 不要归档完整 `node.env`，其中包含 Bitcoin RPC password。只保存检查输出、节点角色、公开端口、
 上游防火墙规则摘要和操作时间。通过外部机器再次探测公网 IP，确认 `31303/TCP+UDP` 可达，并确认
 `8332`、`8545`、`8546`、`28010`、`28020`、`28040` 不可达。
+
+external 节点不执行 `usdb-node firewall check` 或 `sudo ufw status`，但同样必须归档上游防火墙/隔离边界
+摘要并完成外部端口探测。隔离开发 VM 可以没有 UFW；连接公网的测试网或正式网节点不能把 external 模式
+误解为无需任何入站控制。

@@ -89,9 +89,9 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 
 归档检查输出，其中包含实际 Docker、Compose、Git、Python、curl 和 jq 版本。若目标机器已有
 容器运行时或工作负载，不要直接执行建议的卸载命令，应先人工确认迁移和数据保留方案。
-Docker 发布的容器端口可能绕过 UFW 规则；本项目因此同时校验 Compose bind address 和 UFW。
-具体操作见 [USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)，并在上游云防火墙中
-复核同一暴露面。
+Docker 发布的容器端口可能绕过宿主机规则，因此 Compose bind address 始终校验。managed 模式额外检查
+UFW；external 模式必须在上游云防火墙、虚拟化平台或隔离边界复核同一暴露面。具体操作见
+[USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)。
 
 ## 4. 发布协调机流程
 
@@ -196,34 +196,34 @@ usdb-node setup
 usdb-node doctor
 ```
 
-执行这些命令的节点 operator 必须具有可用的 sudo 身份。sudo 默认验证当前 operator 的密码，不验证 root
-密码；不要使用没有密码且未加入 sudo group 的 locked service account。`setup` 会在 snapshot 下载前应用
-firewall，因此权限问题会尽早暴露。
+节点 operator 必须具备 Docker 权限。只有在 `setup` 中选择 managed UFW 时才要求可用的 sudo 身份；sudo
+验证当前 operator 的密码，不验证 root 密码。默认 external 模式不会安装、读取或修改 UFW。
 
 `prepare-host` 统一包装主机软件检查，并只在失败后询问是否安装；如果安装修改了 docker 用户组，退出后重新
 登录再继续。`doctor` 是可选的显式预检：它会执行完整主机、release/network identity、节点配置、image
-digest 和 UFW 只读检查，不会拉取 image、启动服务或修改配置。读取 UFW 状态可能请求 sudo。后面的
-`usdb-node up` 会自动再次执行同一检查。节点运行后的服务状态使用 `usdb-node status` 查看，`doctor` 不是
-常驻监控程序。
+digest 和安全 bind 检查，不会拉取 image、启动服务或修改配置。managed 模式额外读取 UFW 状态并可能请求
+sudo；external 模式明确跳过 UFW。后面的 `usdb-node up` 会自动再次执行同一检查。
 
 向导默认选择 `/home/usdb/.usdb`、full role 和 private Bitcoin P2P。RPC username 自动使用
-bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当前 SSH 会话检测并要求确认，随后写入
-节点本地配置。只有角色、miner 地址、bootnode、SSH port 无法正确检测和确实需要开放 Bitcoin 入站时才需要
-运维修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
+bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当前 SSH 会话检测；external 模式不再
+询问，只有 managed UFW 才要求确认后写入规则。只有角色、miner 地址、bootnode、managed SSH port 无法正确
+检测和确实需要开放 Bitcoin 入站时才需修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
 
 release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
 建议剩余空间和当前磁盘空间，并询问是否使用；选择后直接开始可断点续传安装，不需要填写 URL 或 S3 凭证。
 大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载。选择 full sync 仍受支持；下载中断时重跑
 `usdb-node snapshot install` 只补缺失 chunk，完成后再执行 `doctor/up`。
 
-`setup` 询问是否应用 UFW，默认 `yes`。确认后会在 snapshot 下载前先保留 SSH 端口、开放
-`31303/TCP+UDP`，并按 Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：
+`setup` 询问是否使用 bundled UFW，默认 `no`，对应 `USDB_FIREWALL_MODE=external`。该模式适合已有云安全组、
+虚拟化平台规则或隔离 VM，`usdb-node` 不安装或检查 UFW；运维仍须确保 `31303/TCP+UDP` 可达且敏感 RPC
+不可公网访问。需要由工具管理 UFW 时选择 managed，或后续执行：
 
 ```bash
+usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 ```
 
-防火墙通过后，一条命令完成拉取镜像和 readiness-ordered 启动：
+external 边界已复核或 managed UFW 已通过后，一条命令完成拉取镜像和 readiness-ordered 启动：
 
 ```bash
 usdb-node up
@@ -292,7 +292,8 @@ export USDB_TESTNET_BUNDLE_DIR="$KIT_ROOT/docker/networks/usdb-testnet-v0"
 "$KIT_ROOT/docker/scripts/tools/run_testnet_runtime.sh" validate-node
 ```
 
-角色、Bitcoin P2P 和 firewall 修改仍使用 `usdb-node set-role`/`firewall`；不要直接改私有 env 绕过校验，
+角色和 firewall policy 修改使用 `usdb-node set-role`/`set-firewall-mode`；managed UFW 操作使用 `firewall`；
+不要直接改私有 env 绕过校验，
 也不要把 `8332` 与 `8333` 一起开放。
 
 ## 7. Bitcoin Core 全量同步

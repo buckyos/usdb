@@ -111,6 +111,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["BTC_RPC_USER"], "node-a")
         self.assertTrue(env["BTC_RPC_PASSWORD"])
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
+        self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
         self.assertEqual(env["USDB_NAT"], "extip:203.0.113.10")
@@ -152,10 +153,9 @@ class UsdbNodeTests(unittest.TestCase):
                 "2",
                 "enode://example",
                 "n",
-                "2222",
+                "n",
                 "n",
                 "y",
-                "n",
             ]
         )
         output = io.StringIO()
@@ -173,7 +173,8 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["USDB_MINER_THREADS"], "2")
         self.assertEqual(env["USDB_BOOTNODES"], "enode://example")
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
-        self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "2222")
+        self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
+        self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
         self.assertEqual(
             env["BTC_RPC_USER"],
             NODE.default_bitcoin_rpc_user(layout),
@@ -250,7 +251,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "cancelled-data"
-        answers = iter([str(data_root), "full", "", "n", "22", "n", "n"])
+        answers = iter([str(data_root), "full", "", "n", "n", "n", "n"])
         with self.assertRaisesRegex(ValueError, "setup cancelled"):
             NODE.setup_node(
                 layout,
@@ -284,7 +285,7 @@ class UsdbNodeTests(unittest.TestCase):
     def test_setup_can_select_the_release_approved_snapshot(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "snapshot-setup-data"
-        answers = iter([str(data_root), "full", "", "n", "22", "y", "y", "n"])
+        answers = iter([str(data_root), "full", "", "n", "n", "y", "y"])
         with mock.patch.object(
             NODE,
             "_disk_free_bytes",
@@ -298,6 +299,23 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertTrue(result.install_snapshot)
         self.assertFalse(result.apply_firewall)
         self.assertEqual(NODE.read_env(result.node_env)["SNAPSHOT_MODE"], "none")
+
+    def test_setup_can_select_managed_ufw(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "managed-firewall-data"
+        answers = iter([str(data_root), "full", "", "n", "y", "22", "n", "y"])
+
+        result = NODE.setup_node(
+            layout,
+            input_fn=lambda _prompt: next(answers),
+            output=io.StringIO(),
+        )
+
+        self.assertTrue(result.apply_firewall)
+        self.assertEqual(
+            NODE.read_env(result.node_env)["USDB_FIREWALL_MODE"],
+            "managed",
+        )
 
     def test_detect_ssh_server_port_uses_server_side_port(self) -> None:
         self.assertEqual(
@@ -380,6 +398,7 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="public",
             ssh_port=2222,
+            firewall_mode="managed",
         )
         calls: list[tuple[str, tuple[str, ...], bool]] = []
 
@@ -458,6 +477,7 @@ class UsdbNodeTests(unittest.TestCase):
             nat="",
             bitcoin_rpc_user="node-a",
             bitcoin_p2p="private",
+            firewall_mode="managed",
         )
         with (
             mock.patch.object(NODE, "run_host_action") as host,
@@ -472,6 +492,52 @@ class UsdbNodeTests(unittest.TestCase):
         )
         helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["validate-node"])
         firewall.assert_called_once_with(layout, "check")
+
+    def test_doctor_skips_ufw_for_external_firewall_mode(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        NODE.configure_node(
+            layout,
+            data_root=Path(self.temporary.name) / "external-firewall-data",
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(NODE, "run_host_action") as host,
+            mock.patch.object(NODE, "run_helper") as helper,
+            mock.patch.object(NODE, "run_firewall_action") as firewall,
+            mock.patch("sys.stdout", new=output),
+        ):
+            NODE.doctor(layout)
+        host.assert_called_once()
+        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["validate-node"])
+        firewall.assert_not_called()
+        self.assertIn("skipped UFW inspection", output.getvalue())
+
+    def test_external_mode_rejects_explicit_ufw_action_until_changed(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        NODE.configure_node(
+            layout,
+            data_root=Path(self.temporary.name) / "firewall-mode-data",
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+
+        with self.assertRaisesRegex(ValueError, "firewall mode is external"):
+            NODE.run_firewall_action(layout, "check")
+
+        NODE.set_firewall_mode(layout, "managed")
+        self.assertEqual(NODE.configured_firewall_mode(layout), "managed")
 
     def test_render_env_rejects_missing_keys_and_newlines(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing keys"):
@@ -493,6 +559,13 @@ class UsdbNodeTests(unittest.TestCase):
             bitcoin_p2p="private",
         )
         original = NODE.read_env(layout.node_env)
+        legacy = "\n".join(
+            line
+            for line in layout.node_env.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("USDB_FIREWALL_MODE=")
+        ) + "\n"
+        NODE._atomic_write_private(layout.node_env, legacy)
+        self.assertEqual(NODE.configured_firewall_mode(layout), "managed")
         replacement_images = {
             key: value[:-64] + "9" * 64 for key, value in layout.images.items()
         }
@@ -503,6 +576,7 @@ class UsdbNodeTests(unittest.TestCase):
         updated = NODE.read_env(layout.node_env)
         for key, value in replacement_images.items():
             self.assertEqual(updated[key], value)
+        self.assertEqual(updated["USDB_FIREWALL_MODE"], "managed")
         self.assertEqual(updated["BTC_RPC_PASSWORD"], original["BTC_RPC_PASSWORD"])
         self.assertEqual(updated["USDB_BOOTNODES"], "enode://example")
 

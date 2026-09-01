@@ -61,6 +61,7 @@ ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 # installed databases together, so setup needs substantial free headroom.
 MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
 RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
+FIREWALL_MODES = ("external", "managed")
 
 
 @dataclass(frozen=True)
@@ -219,6 +220,27 @@ def render_env(template: str, updates: dict[str, str]) -> str:
     return "\n".join(rendered) + "\n"
 
 
+def upsert_env(template: str, updates: dict[str, str]) -> str:
+    """Replace existing env keys and append explicitly approved new keys."""
+    for key, value in updates.items():
+        _validate_env_value(key, value)
+    remaining = set(updates)
+    rendered: list[str] = []
+    for line in template.splitlines():
+        match = ENV_KEY_RE.fullmatch(line)
+        if match is not None and match.group(1) in updates:
+            key = match.group(1)
+            rendered.append(f"{key}={updates[key]}")
+            remaining.remove(key)
+        else:
+            rendered.append(line)
+    if remaining:
+        if rendered and rendered[-1]:
+            rendered.append("")
+        rendered.extend(f"{key}={updates[key]}" for key in sorted(remaining))
+    return "\n".join(rendered) + "\n"
+
+
 def _atomic_write_private(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -267,6 +289,18 @@ def _require_port(label: str, value: int) -> int:
     if value < 1 or value > 65535:
         raise ValueError(f"{label} must be between 1 and 65535")
     return value
+
+
+def _require_firewall_mode(mode: str) -> str:
+    if mode not in FIREWALL_MODES:
+        raise ValueError("firewall mode must be external or managed")
+    return mode
+
+
+def configured_firewall_mode(layout: ReleaseLayout) -> str:
+    env = read_env(layout.node_env)
+    # Missing means the mandatory managed behavior used by older node kits.
+    return _require_firewall_mode(env.get("USDB_FIREWALL_MODE", "managed"))
 
 
 def detect_ssh_server_port(environment: dict[str, str] | None = None) -> int:
@@ -381,6 +415,7 @@ def configure_node(
     bitcoin_rpc_user: str | None,
     bitcoin_p2p: str,
     ssh_port: int = 22,
+    firewall_mode: str = "external",
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -390,6 +425,7 @@ def configure_node(
     _require_role(role, miner_address, miner_threads)
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
+    _require_firewall_mode(firewall_mode)
     _require_port("operator SSH port", ssh_port)
     _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
@@ -423,6 +459,7 @@ def configure_node(
             "BTC_RPC_USER": credentials["username"],
             "BTC_RPC_PASSWORD": credentials["password"],
             "BTC_P2P_BIND_ADDRESS": "0.0.0.0" if bitcoin_p2p == "public" else "127.0.0.1",
+            "USDB_FIREWALL_MODE": firewall_mode,
             "USDB_OPERATOR_SSH_PORT": str(ssh_port),
             "BTC_CONTAINER_UID": str(os.getuid()),
             "BTC_CONTAINER_GID": str(os.getgid()),
@@ -597,15 +634,24 @@ def setup_node(
         input_fn=input_fn,
         output=output,
     )
-    ssh_port_text = _prompt(
-        "Operator SSH server port",
-        default=str(detect_ssh_server_port()),
+    manage_firewall = _prompt_yes_no(
+        "Manage this host firewall with the bundled UFW profile",
+        default=False,
         input_fn=input_fn,
+        output=output,
     )
-    try:
-        ssh_port = _require_port("operator SSH port", int(ssh_port_text))
-    except ValueError as error:
-        raise ValueError("operator SSH port must be an integer between 1 and 65535") from error
+    firewall_mode = "managed" if manage_firewall else "external"
+    ssh_port = detect_ssh_server_port()
+    if manage_firewall:
+        ssh_port_text = _prompt(
+            "Operator SSH server port",
+            default=str(ssh_port),
+            input_fn=input_fn,
+        )
+        try:
+            ssh_port = _require_port("operator SSH port", int(ssh_port_text))
+        except ValueError as error:
+            raise ValueError("operator SSH port must be an integer between 1 and 65535") from error
     install_snapshot = False
     snapshot = layout.snapshot
     if snapshot.get("status") == "available":
@@ -629,7 +675,9 @@ def setup_node(
     print(f"Role: {role}", file=output)
     print("USDB P2P: public TCP/UDP 31303", file=output)
     print(f"Bitcoin P2P: {'public' if bitcoin_public else 'private'}", file=output)
-    print(f"Operator SSH port preserved by UFW: {ssh_port}", file=output)
+    print(f"Host firewall: {firewall_mode}", file=output)
+    if manage_firewall:
+        print(f"Operator SSH port preserved by UFW: {ssh_port}", file=output)
     if not _prompt_yes_no(
         "Write this node configuration",
         default=True,
@@ -648,16 +696,11 @@ def setup_node(
         bitcoin_rpc_user=None,
         bitcoin_p2p="public" if bitcoin_public else "private",
         ssh_port=ssh_port,
-    )
-    apply_firewall = _prompt_yes_no(
-        "Apply and verify UFW now (requires this operator account to have root/sudo access)",
-        default=True,
-        input_fn=input_fn,
-        output=output,
+        firewall_mode=firewall_mode,
     )
     return SetupResult(
         node_env=path,
-        apply_firewall=apply_firewall,
+        apply_firewall=manage_firewall,
         install_snapshot=install_snapshot,
     )
 
@@ -693,6 +736,24 @@ def set_role(
         raise
 
 
+def set_firewall_mode(layout: ReleaseLayout, mode: str) -> None:
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run configure first")
+    _require_firewall_mode(mode)
+    original = layout.node_env.read_text(encoding="utf-8")
+    updated = upsert_env(original, {"USDB_FIREWALL_MODE": mode})
+    try:
+        _atomic_write_private(layout.node_env, updated)
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+
+
 def _validate_node_release_images(layout: ReleaseLayout) -> None:
     env = read_env(layout.node_env)
     for key, expected in layout.images.items():
@@ -711,7 +772,11 @@ def activate_release(layout: ReleaseLayout) -> None:
         require_runtime=False,
         require_bitcoin_runtime=True,
     )
-    updated = render_env(original, layout.images)
+    updates = {
+        **layout.images,
+        "USDB_FIREWALL_MODE": configured_firewall_mode(layout),
+    }
+    updated = upsert_env(original, updates)
     try:
         _atomic_write_private(layout.node_env, updated)
         _validate_node_config(
@@ -892,6 +957,11 @@ def run_firewall_action(
 ) -> subprocess.CompletedProcess[str]:
     if action not in {"check", "apply"}:
         raise ValueError(f"unsupported firewall action: {action}")
+    if configured_firewall_mode(layout) != "managed":
+        raise ValueError(
+            "host firewall mode is external; use set-firewall-mode --mode managed "
+            "before invoking the bundled UFW profile"
+        )
     env = read_env(layout.node_env)
     configured_ssh_port = env.get("USDB_OPERATOR_SSH_PORT", "")
     try:
@@ -933,7 +1003,13 @@ def doctor(layout: ReleaseLayout) -> None:
     )
     _validate_node_release_images(layout)
     run_helper(layout, "run_testnet_runtime.sh", ["validate-node"])
-    run_firewall_action(layout, "check")
+    if configured_firewall_mode(layout) == "managed":
+        run_firewall_action(layout, "check")
+    else:
+        print(
+            "Host firewall mode is external; skipped UFW inspection. "
+            "Container bind-address validation still passed."
+        )
 
 
 def start_node(layout: ReleaseLayout, *, sync_timeout_secs: int, pull: bool) -> None:
@@ -999,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     configure.add_argument("--bitcoin-p2p", choices=("private", "public"), default="private")
     configure.add_argument(
+        "--firewall-mode",
+        choices=FIREWALL_MODES,
+        default="external",
+        help="external leaves host policy untouched; managed enables bundled UFW checks",
+    )
+    configure.add_argument(
         "--ssh-port",
         type=int,
         default=detect_ssh_server_port(),
@@ -1010,6 +1092,12 @@ def build_parser() -> argparse.ArgumentParser:
     role.add_argument("--miner-address", default="")
     role.add_argument("--miner-threads", type=int, default=1)
 
+    firewall_mode = subparsers.add_parser(
+        "set-firewall-mode",
+        help="Select externally managed firewall policy or bundled UFW management",
+    )
+    firewall_mode.add_argument("--mode", choices=FIREWALL_MODES, required=True)
+
     subparsers.add_parser(
         "activate-release",
         help="Update only release-owned image digests in existing private config",
@@ -1017,7 +1105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "doctor",
-        help="Read-only host, firewall, release identity and local configuration preflight",
+        help="Read-only host, release identity, config and selected firewall preflight",
     )
 
     snapshot = subparsers.add_parser("snapshot", help="Install an immutable signed snapshot release")
@@ -1084,7 +1172,9 @@ def main() -> int:
                 run_firewall_action(layout, "apply", confirm=True)
                 print("Applied and verified the host UFW firewall profile.")
             else:
-                print("Firewall was not changed. Run 'usdb-node firewall apply --confirm' before startup.")
+                print(
+                    "Host firewall mode is external; UFW was not installed, inspected, or modified."
+                )
             if result.install_snapshot:
                 release_dir = install_snapshot_release(layout)
                 print(f"Installed and selected signed balance-history snapshot: {release_dir}")
@@ -1101,6 +1191,7 @@ def main() -> int:
                 bitcoin_rpc_user=args.bitcoin_rpc_user,
                 bitcoin_p2p=args.bitcoin_p2p,
                 ssh_port=args.ssh_port,
+                firewall_mode=args.firewall_mode,
             )
             print(f"Configured {layout.release_id} node: {path}")
             print("Bitcoin RPC credentials were generated locally and were not printed.")
@@ -1112,6 +1203,17 @@ def main() -> int:
                 miner_threads=args.miner_threads,
             )
             print(f"Updated node role to {args.role}; run usdb-node up to reconcile containers.")
+        elif args.command == "set-firewall-mode":
+            set_firewall_mode(layout, args.mode)
+            if args.mode == "managed":
+                print(
+                    "Host firewall mode is managed; run "
+                    "'usdb-node firewall apply --confirm' before startup."
+                )
+            else:
+                print(
+                    "Host firewall mode is external; usdb-node will not inspect or modify UFW."
+                )
         elif args.command == "activate-release":
             activate_release(layout)
             print(f"Activated release images in private node config: {layout.release_id}")

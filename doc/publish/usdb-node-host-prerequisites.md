@@ -102,15 +102,20 @@ id usdb >/dev/null 2>&1 || useradd --create-home --shell /bin/bash usdb
 
 ## 5. 防火墙准备
 
-软件准备工具不会修改防火墙。Release node kit 的 `setup` 生成私有 `node.env`、检测并确认 SSH port 后，
-默认询问是否应用 UFW。跳过时使用统一入口：
+软件准备工具不会修改防火墙。Release node kit 的 `setup` 生成私有 `node.env` 并询问是否让 `usdb-node`
+管理 UFW，默认选择 `external`，即不安装、不读取也不修改 UFW。只有 managed 模式才确认 SSH port。云安全组、
+虚拟化平台防火墙、已有宿主机规则或隔离 VM 都可以采用 external 模式；容器 bind address 仍会被校验。
+
+需要使用项目 UFW profile 时显式切换：
 
 ```bash
+usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 usdb-node firewall check
 ```
 
-`doctor` 会再次执行同一只读 firewall check。源码 checkout 的直接脚本接口保留为手工回退路径。
+`doctor` 仅在 managed 模式执行 UFW 只读检查；external 模式会报告跳过 UFW。源码 checkout 的直接脚本
+接口保留为手工回退路径。
 
 测试网和正式网共用该工具，但具体端口和 public/private P2P 决策必须服从对应 network bundle 与
 发布手册。完整边界见 [USDB 节点防火墙与端口暴露操作](./usdb-node-firewall-operations.md)。
@@ -118,7 +123,7 @@ usdb-node firewall check
 ## 6. 安全与运维边界
 
 - `docker` 组拥有 root 级主机权限，只允许专用运维用户加入；
-- Docker 发布端口可能绕过 UFW，必须同时校验容器 bind address 和上游云防火墙；
+- Docker 发布端口可能绕过 UFW；容器 bind address 始终校验，external 模式还必须独立复核上游防火墙；
 - 已有容器工作负载的主机不能直接删除冲突包，应先评估迁移和数据保留；
 - 自动安装不修改 Docker daemon storage driver、data root、日志策略或防火墙；
 - 正式网可复用同一工具，但必须使用正式网单独冻结的 network bundle 和 release manifest。
