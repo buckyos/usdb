@@ -743,6 +743,7 @@ def install_snapshot_release(
         record_url=layout.snapshot["record"]["url"],
         destination_root=snapshot_root,
         trusted_keys=_snapshot_trusted_keys(layout),
+        approved_record_path=layout.bundle_dir / layout.snapshot["record"]["path"],
         expected_network=env.get("BTC_NETWORK", "bitcoin"),
         max_height=btc_source["index_origin_height"],
         download_concurrency=download_concurrency,

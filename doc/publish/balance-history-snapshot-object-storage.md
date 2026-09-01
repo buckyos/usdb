@@ -221,9 +221,11 @@ usdb-node up
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
 7. 重新执行 runtime snapshot validator。
 
-中断后重跑同一命令会复用 `.part` 和 staging 文件。已有同 ID 完整目录会逐文件复核；不同内容不会被
-覆盖。若 `<BH_DATA_HOST_DIR>/db` 已初始化，命令会在下载前拒绝修改配置；应使用新的 data root，或执行
-单独 review 的显式恢复流程。
+中断后重跑同一命令会复用 `.part` 和 staging 文件。已有同 ID 完整目录会使用 release bundle 内冻结的
+本地 record 逐文件复核 size/SHA-256，完全跳过网络下载并直接进入 runtime 选择与后续容器内安装；不同内容
+不会被覆盖。最终 `<snapshot-release-id>` 目录只在全部文件校验和 fsync 完成后原子创建，因此进程或宿主机
+在下载中途退出时通常不会产生“不完整的最终目录”。若 `<BH_DATA_HOST_DIR>/db` 已初始化，命令会在下载前
+拒绝修改配置；应使用新的 data root，或执行单独 review 的显式恢复流程。
 
 默认参数适合普通 1 Gbps 级节点。确认 CDN、网络、磁盘和 CPU 有余量时可覆盖：
 

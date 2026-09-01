@@ -1152,6 +1152,7 @@ def install_release(
     record_url: str,
     destination_root: Path,
     trusted_keys: Path,
+    approved_record_path: Path | None = None,
     curl_executable: str = "curl",
     expected_network: str | None = None,
     max_height: int | None = None,
@@ -1180,21 +1181,33 @@ def install_release(
     lock_path = root / ".snapshot-distribution.lock"
     with lock_path.open("a+b") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        downloads = root / ".downloads"
-        record_cache = downloads / record_name
-        if not record_cache.is_file() or _sha256(record_cache) != expected_record_sha256:
-            record_part = record_cache.with_name(record_cache.name + ".part")
-            if record_part.is_file() and _sha256(record_part) == expected_record_sha256:
-                record_part.replace(record_cache)
-            else:
-                # Release records are small, so a bad partial is restarted
-                # instead of carrying an unknown prefix into a Range request.
-                record_part.unlink(missing_ok=True)
-                _download_with_resume(record_url, record_part, curl_executable)
-                if _sha256(record_part) != expected_record_sha256:
+        if approved_record_path is not None:
+            approved_record = approved_record_path.expanduser()
+            _require(
+                approved_record.is_file() and not approved_record.is_symlink(),
+                f"approved snapshot release record is missing or invalid: {approved_record}",
+            )
+            record_cache = approved_record.resolve()
+            _require(
+                _sha256(record_cache) == expected_record_sha256,
+                "approved snapshot release record SHA-256 does not match its URL",
+            )
+        else:
+            downloads = root / ".downloads"
+            record_cache = downloads / record_name
+            if not record_cache.is_file() or _sha256(record_cache) != expected_record_sha256:
+                record_part = record_cache.with_name(record_cache.name + ".part")
+                if record_part.is_file() and _sha256(record_part) == expected_record_sha256:
+                    record_part.replace(record_cache)
+                else:
+                    # Release records are small, so a bad partial is restarted
+                    # instead of carrying an unknown prefix into a Range request.
                     record_part.unlink(missing_ok=True)
-                    raise ValueError("downloaded snapshot release record SHA-256 mismatch")
-                record_part.replace(record_cache)
+                    _download_with_resume(record_url, record_part, curl_executable)
+                    if _sha256(record_part) != expected_record_sha256:
+                        record_part.unlink(missing_ok=True)
+                        raise ValueError("downloaded snapshot release record SHA-256 mismatch")
+                    record_part.replace(record_cache)
         record = _load_json(record_cache)
         validate_release_record(record)
         record_content = record_cache.read_bytes()

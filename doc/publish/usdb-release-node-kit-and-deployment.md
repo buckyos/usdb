@@ -131,6 +131,11 @@ usdb-node snapshot install
 `node.env`，再校验小 record 与 bundle trusted-key catalog、默认用 `8 x 64 MiB` HTTP Range 并行续传
 大文件、逐文件校验并原子发布。高级硬件可通过 `--download-concurrency` 和
 `--download-chunk-size-mib` 覆盖本次下载参数。
+如果 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>` 已完整存在，命令使用 release bundle
+内冻结的本地 record 逐文件复核 size/SHA-256，跳过全部网络下载并直接完成 snapshot 选择。目录存在但
+record 缺失、文件不完整或哈希不一致时失败关闭，不会把可疑目录当作缓存命中，也不会静默覆盖。这里指的是
+已经进入最终不可变目录的异常状态；正常下载中断只会留下 `.<snapshot-release-id>.installing`、`.part` 和
+`.ranges.json`，重跑命令会继续下载而不是按上述规则拒绝。
 下载中断后 `up` 会因 runtime artifact 缺失而失败关闭；重跑同一命令会续传。snapshot 高度高于当前
 bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-history DB 已初始化时都会失败关闭。
 完整操作见

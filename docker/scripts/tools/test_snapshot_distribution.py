@@ -220,6 +220,87 @@ class SnapshotDistributionTests(unittest.TestCase):
             "a complete staged .part file should be reused without another download",
         )
 
+    def _seed_installed_release(
+        self,
+        record_path: Path,
+        record: dict[str, object],
+        destination_root: Path,
+    ) -> Path:
+        release_dir = destination_root / str(record["snapshot_release_id"])
+        release_dir.mkdir(parents=True)
+        files = record["files"]
+        assert isinstance(files, list)
+        for item in files:
+            assert isinstance(item, dict)
+            source = self.artifact / str(item["path"])
+            destination = release_dir / str(item["path"])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+        shutil.copyfile(record_path, release_dir / "snapshot-release-record.json")
+        return release_dir
+
+    def test_install_reuses_complete_approved_artifact_without_network(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "preinstalled"
+        release_dir = self._seed_installed_release(record_path, record, destination_root)
+        record_url = (
+            "https://snapshots.example.test/snapshot-records/v2/"
+            f"{record_sha256}.json"
+        )
+
+        with mock.patch.object(
+            DISTRIBUTION,
+            "_download_with_resume",
+            side_effect=AssertionError("network download must not run"),
+        ) as sequential:
+            with mock.patch.object(
+                DISTRIBUTION,
+                "_download_parallel_ranges",
+                side_effect=AssertionError("parallel download must not run"),
+            ) as parallel:
+                installed = DISTRIBUTION.install_release(
+                    record_url=record_url,
+                    destination_root=destination_root,
+                    trusted_keys=self.trusted_keys,
+                    approved_record_path=record_path,
+                    expected_network="bitcoin",
+                    max_height=self.height,
+                )
+
+        self.assertEqual(installed.release_dir, release_dir)
+        self.assertFalse((destination_root / ".downloads").exists())
+        sequential.assert_not_called()
+        parallel.assert_not_called()
+
+    def test_install_rejects_corrupt_approved_artifact_without_overwrite(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "corrupt-preinstalled"
+        release_dir = self._seed_installed_release(record_path, record, destination_root)
+        snapshot_entry = next(
+            item for item in record["files"] if item["role"] == "snapshot_db"
+        )
+        corrupt_path = release_dir / snapshot_entry["path"]
+        corrupt_path.write_bytes(b"corrupt")
+
+        with mock.patch.object(DISTRIBUTION, "_download_with_resume") as sequential:
+            with mock.patch.object(DISTRIBUTION, "_download_parallel_ranges") as parallel:
+                with self.assertRaisesRegex(ValueError, "snapshot file size mismatch"):
+                    DISTRIBUTION.install_release(
+                        record_url=(
+                            "https://snapshots.example.test/snapshot-records/v2/"
+                            f"{record_sha256}.json"
+                        ),
+                        destination_root=destination_root,
+                        trusted_keys=self.trusted_keys,
+                        approved_record_path=record_path,
+                        expected_network="bitcoin",
+                        max_height=self.height,
+                    )
+
+        self.assertEqual(corrupt_path.read_bytes(), b"corrupt")
+        sequential.assert_not_called()
+        parallel.assert_not_called()
+
     def test_aws_cli_uses_r2_endpoint_region_and_profile_without_credentials(self) -> None:
         client = DISTRIBUTION.AwsCliClient(
             endpoint_url=DISTRIBUTION.DEFAULT_ENDPOINT_URL,

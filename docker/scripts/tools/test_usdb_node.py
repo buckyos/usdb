@@ -580,6 +580,10 @@ class UsdbNodeTests(unittest.TestCase):
             install.call_args.kwargs["record_url"],
             layout.snapshot["record"]["url"],
         )
+        self.assertEqual(
+            install.call_args.kwargs["approved_record_path"],
+            layout.bundle_dir / layout.snapshot["record"]["path"],
+        )
 
     def test_snapshot_install_rejects_initialized_database_before_download(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
