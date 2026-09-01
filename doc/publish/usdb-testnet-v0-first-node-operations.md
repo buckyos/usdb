@@ -43,7 +43,7 @@ bootstrap 或持续出块。
 | 系统 | Linux kernel 5.10+、x86-64；Ubuntu 24.04 为优先验证基线 |
 | CPU | 8 个逻辑核或以上；首轮只要求低难度 Ethash 可持续出块 |
 | 内存 | 32 GiB；不要在同机运行额外构建任务 |
-| 磁盘 | 至少 2 TiB 可用 NVMe，建议预留扩容空间 |
+| 磁盘 | 建议 2 TiB 以上 NVMe；首次配置硬下限为总容量和当前可用空间均不少于 1.5 TiB |
 | 软件 | Docker Engine、Compose plugin、Git、Python 3、curl、jq |
 | 时间 | Bitcoin IBD 与 balance-history full sync 均按小时到数天规划 |
 

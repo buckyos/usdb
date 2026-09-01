@@ -91,9 +91,15 @@ bootnode，以及是否开放 Bitcoin 入站 P2P。它从当前 `SSH_CONNECTION`
 确认；无法检测时默认建议 `22`。这里记录的是宿主机实际监听端口，不是客户端临时端口或云 NAT 的外部端口。
 默认使用 `~/.usdb`、full role、Bitcoin private P2P。
 
+输入 data root 后，`setup` 会立即检查该路径所在文件系统，而不是只检查目录本身。文件系统总容量和当前
+可用空间任一少于 `1.5 TiB` 都会在创建配置、凭证或开始 snapshot/Bitcoin 下载前失败关闭；`2.0 TiB` 是
+长期运行建议容量。常见标称 `2 TB` 磁盘格式化后约为 `1.8 TiB`，可通过硬下限但会显示低于建议值的警告。
+底层 `configure --data-root` 执行相同硬检查，自动化不能绕过。
+
 它自动完成：
 
 - 从 manifest 写入三张 image digest；
+- 校验 data root 所在文件系统的总容量和当前可用空间；
 - 在一个 `USDB_DATA_ROOT` 下按 source dataset 与 network bundle 生成绝对目录；
 - 写入 release runtime compatibility ID，并为每个服务目录创建公开 dataset identity marker；
 - 根据 bundle ID 和 hostname 派生 Bitcoin RPC username；

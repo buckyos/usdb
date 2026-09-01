@@ -30,6 +30,16 @@ SOURCE_BUNDLE = REPOSITORY_ROOT / "docker/networks/testnet-v0"
 class UsdbNodeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="usdb-node-test-")
+        self.capacity_patcher = mock.patch.object(
+            NODE,
+            "_data_root_capacity",
+            return_value=NODE.DataRootCapacity(
+                filesystem_path=Path(self.temporary.name),
+                total_bytes=3 * 1024**4,
+                free_bytes=3 * 1024**4,
+            ),
+        )
+        self.capacity_patcher.start()
         self.root = Path(self.temporary.name) / "usdb-node-kit"
         self.bundle = self.root / "docker/networks/usdb-testnet-v0"
         self.bundle.parent.mkdir(parents=True)
@@ -61,6 +71,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.node_env = self.root / "private/node.env"
 
     def tearDown(self) -> None:
+        self.capacity_patcher.stop()
         self.temporary.cleanup()
 
     def write_manifest(self) -> None:
@@ -169,6 +180,72 @@ class UsdbNodeTests(unittest.TestCase):
         )
         self.assertIn("USDB P2P: public TCP/UDP 31303", output.getvalue())
         self.assertIn("Release-approved balance-history snapshot", output.getvalue())
+        self.assertIn("Required/recommended: 1.5 TiB / 2.0 TiB", output.getvalue())
+
+    def test_configure_rejects_small_or_insufficient_data_root_before_writes(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "insufficient-data-root"
+        cases = (
+            (
+                NODE.DataRootCapacity(
+                    filesystem_path=Path(self.temporary.name),
+                    total_bytes=NODE.MIN_DATA_ROOT_BYTES - 1,
+                    free_bytes=NODE.MIN_DATA_ROOT_BYTES - 1,
+                ),
+                "filesystem is too small",
+            ),
+            (
+                NODE.DataRootCapacity(
+                    filesystem_path=Path(self.temporary.name),
+                    total_bytes=NODE.RECOMMENDED_DATA_ROOT_BYTES,
+                    free_bytes=NODE.MIN_DATA_ROOT_BYTES - 1,
+                ),
+                "insufficient available space",
+            ),
+        )
+        for capacity, message in cases:
+            with self.subTest(message=message):
+                with mock.patch.object(
+                    NODE,
+                    "_data_root_capacity",
+                    return_value=capacity,
+                ):
+                    with self.assertRaisesRegex(ValueError, message):
+                        NODE.configure_node(
+                            layout,
+                            data_root=data_root,
+                            role="full",
+                            miner_address="",
+                            miner_threads=1,
+                            bootnodes="",
+                            nat="",
+                            bitcoin_rpc_user="node-a",
+                            bitcoin_p2p="private",
+                        )
+                self.assertFalse(layout.node_env.exists())
+                self.assertFalse(data_root.exists())
+
+    def test_setup_rejects_insufficient_data_root_before_other_prompts(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "small-setup-data-root"
+        answers = iter([str(data_root)])
+        with mock.patch.object(
+            NODE,
+            "_data_root_capacity",
+            return_value=NODE.DataRootCapacity(
+                filesystem_path=Path(self.temporary.name),
+                total_bytes=NODE.RECOMMENDED_DATA_ROOT_BYTES,
+                free_bytes=NODE.MIN_DATA_ROOT_BYTES - 1,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "insufficient available space"):
+                NODE.setup_node(
+                    layout,
+                    input_fn=lambda _prompt: next(answers),
+                    output=io.StringIO(),
+                )
+        self.assertFalse(layout.node_env.exists())
+        self.assertFalse(data_root.exists())
 
     def test_setup_cancellation_writes_no_config_or_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

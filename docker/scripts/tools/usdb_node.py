@@ -57,6 +57,10 @@ RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 IMAGE_RE = re.compile(r"^ghcr\.io/buckyos/[a-z0-9-]+@sha256:[0-9a-f]{64}$")
 ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+# A fresh node temporarily retains source data, signed snapshot artifacts, and
+# installed databases together, so setup needs substantial free headroom.
+MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
+RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,13 @@ class SetupResult:
     node_env: Path
     apply_firewall: bool
     install_snapshot: bool
+
+
+@dataclass(frozen=True)
+class DataRootCapacity:
+    filesystem_path: Path
+    total_bytes: int
+    free_bytes: int
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -380,6 +391,7 @@ def configure_node(
     if bitcoin_p2p not in {"private", "public"}:
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_port("operator SSH port", ssh_port)
+    _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
     secure_dir = network_secure_dir(root, layout.bundle_id)
     snapshot_dir = snapshot_artifact_dir(root)
@@ -490,11 +502,37 @@ def _snapshot_required_free_bytes(snapshot: dict[str, Any]) -> int:
     return download_size + database_size + safety_margin
 
 
-def _disk_free_bytes(path: Path) -> int:
+def _data_root_capacity(path: Path) -> DataRootCapacity:
     candidate = path.expanduser().resolve()
     while not candidate.exists() and candidate != candidate.parent:
         candidate = candidate.parent
-    return shutil.disk_usage(candidate).free
+    usage = shutil.disk_usage(candidate)
+    return DataRootCapacity(
+        filesystem_path=candidate,
+        total_bytes=usage.total,
+        free_bytes=usage.free,
+    )
+
+
+def _validate_data_root_capacity(path: Path) -> DataRootCapacity:
+    capacity = _data_root_capacity(path)
+    if capacity.total_bytes < MIN_DATA_ROOT_BYTES:
+        raise ValueError(
+            f"data root filesystem is too small: {capacity.filesystem_path} has "
+            f"{_human_bytes(capacity.total_bytes)} total; at least "
+            f"{_human_bytes(MIN_DATA_ROOT_BYTES)} is required"
+        )
+    if capacity.free_bytes < MIN_DATA_ROOT_BYTES:
+        raise ValueError(
+            f"data root filesystem has insufficient available space: "
+            f"{capacity.filesystem_path} has {_human_bytes(capacity.free_bytes)} free; "
+            f"at least {_human_bytes(MIN_DATA_ROOT_BYTES)} is required before setup"
+        )
+    return capacity
+
+
+def _disk_free_bytes(path: Path) -> int:
+    return _data_root_capacity(path).free_bytes
 
 
 def setup_node(
@@ -515,6 +553,25 @@ def setup_node(
             input_fn=input_fn,
         )
     )
+    capacity = _validate_data_root_capacity(data_root)
+    print("Data root filesystem:", file=output)
+    print(f"  Resolved through: {capacity.filesystem_path}", file=output)
+    print(f"  Total capacity: {_human_bytes(capacity.total_bytes)}", file=output)
+    print(f"  Available now: {_human_bytes(capacity.free_bytes)}", file=output)
+    print(
+        f"  Required/recommended: {_human_bytes(MIN_DATA_ROOT_BYTES)} / "
+        f"{_human_bytes(RECOMMENDED_DATA_ROOT_BYTES)}",
+        file=output,
+    )
+    if (
+        capacity.total_bytes < RECOMMENDED_DATA_ROOT_BYTES
+        or capacity.free_bytes < RECOMMENDED_DATA_ROOT_BYTES
+    ):
+        print(
+            "  Warning: filesystem meets the hard minimum but total capacity or "
+            "current free space is below the recommended long-running headroom.",
+            file=output,
+        )
     role = _prompt_choice(
         "Node role",
         ("full", "bootnode", "miner"),
