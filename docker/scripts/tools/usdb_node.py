@@ -650,7 +650,7 @@ def setup_node(
         ssh_port=ssh_port,
     )
     apply_firewall = _prompt_yes_no(
-        "Apply and verify the UFW firewall profile now",
+        "Apply and verify UFW now (requires this operator account to have root/sudo access)",
         default=True,
         input_fn=input_fn,
         output=output,
@@ -1076,14 +1076,18 @@ def main() -> int:
                 raise ValueError("setup requires an interactive terminal; use configure for automation")
             result = setup_node(layout)
             print(f"Configured {layout.release_id} node: {result.node_env}")
-            if result.install_snapshot:
-                release_dir = install_snapshot_release(layout)
-                print(f"Installed and selected signed balance-history snapshot: {release_dir}")
             if result.apply_firewall:
+                print(
+                    "Applying the UFW firewall profile; sudo may request the operator password.",
+                    flush=True,
+                )
                 run_firewall_action(layout, "apply", confirm=True)
                 print("Applied and verified the host UFW firewall profile.")
             else:
                 print("Firewall was not changed. Run 'usdb-node firewall apply --confirm' before startup.")
+            if result.install_snapshot:
+                release_dir = install_snapshot_release(layout)
+                print(f"Installed and selected signed balance-history snapshot: {release_dir}")
             print("Run usdb-node doctor, then usdb-node up.")
         elif args.command == "configure":
             path = configure_node(

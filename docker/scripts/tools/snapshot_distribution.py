@@ -1098,10 +1098,19 @@ def _download_parallel_ranges(
         os.close(descriptor)
 
 
-def _verify_download(path: Path, expected_size: int, expected_sha256: str) -> None:
+def _verify_download(
+    path: Path,
+    expected_size: int,
+    expected_sha256: str,
+    *,
+    progress_label: str,
+) -> None:
     _require(path.is_file() and not path.is_symlink(), f"downloaded snapshot file is missing or not regular: {path}")
     _require(path.stat().st_size == expected_size, f"downloaded snapshot file size mismatch: {path}")
-    _require(_sha256(path) == expected_sha256, f"downloaded snapshot file SHA-256 mismatch: {path}")
+    _require(
+        _sha256(path, progress_label=progress_label) == expected_sha256,
+        f"downloaded snapshot file SHA-256 mismatch: {path}",
+    )
 
 
 def _fsync_path(path: Path) -> None:
@@ -1143,7 +1152,12 @@ def _verify_installed_release(record: dict[str, Any], release_dir: Path, record_
     installed_record = release_dir / "snapshot-release-record.json"
     _require(installed_record.is_file() and installed_record.read_bytes() == record_content, f"installed snapshot release record mismatch: {release_dir}")
     for item in record["files"]:
-        _verify_download(release_dir / item["path"], item["size"], item["sha256"])
+        _verify_download(
+            release_dir / item["path"],
+            item["size"],
+            item["sha256"],
+            progress_label=f"Verify cached {item['path']}",
+        )
     return _installed_snapshot(record, release_dir)
 
 
@@ -1228,6 +1242,11 @@ def install_release(
         release_id = record["snapshot_release_id"]
         destination = root / release_id
         if destination.exists():
+            print(
+                f"Snapshot artifact exists; verifying before reuse: {destination}",
+                file=sys.stderr,
+                flush=True,
+            )
             return _verify_installed_release(record, destination, record_content)
         staging = root / f".{release_id}.installing"
         staging.mkdir(mode=0o755, exist_ok=True)
@@ -1235,7 +1254,12 @@ def install_release(
             final_path = staging / item["path"]
             if final_path.exists():
                 try:
-                    _verify_download(final_path, item["size"], item["sha256"])
+                    _verify_download(
+                        final_path,
+                        item["size"],
+                        item["sha256"],
+                        progress_label=f"Verify staged {item['path']}",
+                    )
                     continue
                 except ValueError:
                     final_path.unlink(missing_ok=True)
@@ -1246,7 +1270,11 @@ def install_release(
                 part_path.is_file()
                 and not range_state_exists
                 and part_path.stat().st_size == item["size"]
-                and _sha256(part_path) == item["sha256"]
+                and _sha256(
+                    part_path,
+                    progress_label=f"Verify completed {item['path']}",
+                )
+                == item["sha256"]
             ):
                 part_path.replace(final_path)
                 continue
@@ -1263,6 +1291,11 @@ def install_release(
                 and not range_state_exists
                 and 0 < part_path.stat().st_size < item["size"]
             )
+            print(
+                f"Downloading snapshot artifact: {item['path']}",
+                file=sys.stderr,
+                flush=True,
+            )
             if use_parallel_ranges and not legacy_partial:
                 _download_parallel_ranges(
                     object_url,
@@ -1276,7 +1309,12 @@ def install_release(
             else:
                 _download_with_resume(object_url, part_path, curl_executable)
             try:
-                _verify_download(part_path, item["size"], item["sha256"])
+                _verify_download(
+                    part_path,
+                    item["size"],
+                    item["sha256"],
+                    progress_label=f"Verify downloaded {item['path']}",
+                )
             except ValueError:
                 part_path.unlink(missing_ok=True)
                 _cleanup_range_download(part_path)
@@ -1288,9 +1326,17 @@ def install_release(
             _fsync_path(staging / item["path"])
         _fsync_path(staging / "snapshot-release-record.json")
         _fsync_path(staging)
+        print(
+            f"Snapshot files verified; publishing atomically: {destination}",
+            file=sys.stderr,
+            flush=True,
+        )
         os.replace(staging, destination)
         _fsync_path(root)
-        return _verify_installed_release(record, destination, record_content)
+        # All files were hashed and fsynced immediately before the atomic rename.
+        # Rehashing the immutable 250+ GiB database here would double install time.
+        print(f"Snapshot artifact ready: {destination}", file=sys.stderr, flush=True)
+        return _installed_snapshot(record, destination)
 
 
 def _print_json(value: dict[str, Any]) -> None:

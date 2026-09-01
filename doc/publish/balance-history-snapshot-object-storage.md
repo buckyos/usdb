@@ -221,6 +221,10 @@ usdb-node up
 6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
 7. 重新执行 runtime snapshot validator。
 
+完整 DB 的 SHA-256 是下载结束后的独立顺序读取阶段，终端会显示 `Verify downloaded ...` 的已处理字节、
+百分比、吞吐和 ETA。首次下载在该校验及 fsync 后直接原子发布，不会再对同一 250+ GiB 文件执行第二次
+重复哈希；只有以后复用已存在的最终 artifact 时，才显示 `Verify cached ...` 并重新完整校验一次。
+
 中断后重跑同一命令会复用 `.part` 和 staging 文件。已有同 ID 完整目录会使用 release bundle 内冻结的
 本地 record 逐文件复核 size/SHA-256，完全跳过网络下载并直接进入 runtime 选择与后续容器内安装；不同内容
 不会被覆盖。最终 `<snapshot-release-id>` 目录只在全部文件校验和 fsync 完成后原子创建，因此进程或宿主机

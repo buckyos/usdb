@@ -117,6 +117,12 @@ UFW 写操作会再次显示确认问题，并通过 sudo 在放行 SSH 后才�
 usdb-node firewall apply --confirm
 ```
 
+运行 `usdb-node` 的节点 operator 必须是 root，或拥有可用密码和 sudo 权限；sudo 验证的是当前 operator
+密码，不接受 root 密码。由 root 创建的 locked/no-password service account 不能直接使用标准
+`firewall -> doctor -> up` 流程。该 operator 已需加入 Docker group，而 Docker group 本身具备等价 root 的
+主机控制能力，因此测试网可把同一受控账户加入 sudo group；正式环境也可以使用独立、可审计的 operator
+账户。`setup` 会先应用 firewall，再开始长时间 snapshot 下载，避免下载完成后才暴露权限配置错误。
+
 完整 firewall check 必须在 `setup` 后运行，因为它需要依据生成的 `node.env` 对照 SSH、USDB P2P、Bitcoin
 P2P 和 operator API 的实际 bind policy。高级入口为 `usdb-node firewall check` 和
 `usdb-node firewall apply --confirm`；`--ssh-port` 仅用于显式覆盖已经保存的端口。
@@ -142,6 +148,9 @@ usdb-node snapshot install
 record 缺失、文件不完整或哈希不一致时失败关闭，不会把可疑目录当作缓存命中，也不会静默覆盖。这里指的是
 已经进入最终不可变目录的异常状态；正常下载中断只会留下 `.<snapshot-release-id>.installing`、`.part` 和
 `.ranges.json`，重跑命令会继续下载而不是按上述规则拒绝。
+大文件下载完成后的 SHA-256 阶段显示 `Verify downloaded ...` 的字节、吞吐和 ETA；首次安装只进行这一次
+完整哈希。复用已有最终 artifact 时则显示 `Verify cached ...`。进入 UFW 配置前会单独提示下一步可能请求
+operator sudo 密码，避免把等待密码误判为 snapshot 仍在处理。
 下载中断后 `up` 会因 runtime artifact 缺失而失败关闭；重跑同一命令会续传。snapshot 高度高于当前
 bundle index origin、network/catalog 不匹配、磁盘文件异常或 balance-history DB 已初始化时都会失败关闭。
 完整操作见

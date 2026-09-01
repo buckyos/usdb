@@ -2,6 +2,7 @@
 set -euo pipefail
 
 command_dir="${USDB_FIREWALL_COMMAND_DIR:-}"
+system_command_dirs="${USDB_FIREWALL_SYSTEM_COMMAND_DIRS:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 node_env=""
 ssh_port=""
 bitcoin_p2p_mode="private"
@@ -55,7 +56,26 @@ resolve_command() {
     fi
     return 1
   fi
-  command -v "${name}"
+
+  local resolved
+  if resolved="$(command -v "${name}" 2>/dev/null)" && [[ -n "${resolved}" ]]; then
+    printf '%s\n' "${resolved}"
+    return 0
+  fi
+
+  # Debian-family non-root login shells may omit /usr/sbin even though sudo
+  # installs administrative commands there. Resolve those commands without
+  # requiring the operator to modify their interactive PATH.
+  local -a search_dirs=()
+  local dir
+  IFS=: read -r -a search_dirs <<<"${system_command_dirs}"
+  for dir in "${search_dirs[@]}"; do
+    if [[ -n "${dir}" && -x "${dir}/${name}" ]]; then
+      printf '%s\n' "${dir}/${name}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 run_root() {
@@ -218,6 +238,7 @@ install_ufw_if_needed() {
   local apt_get
   apt_get="$(resolve_command apt-get)" || fail \
     "ufw is missing; install it with the host distribution package manager"
+  echo "UFW is not installed; installing it now. sudo may request the operator password."
   run_root "${apt_get}" update
   run_root "${apt_get}" install -y ufw
 }

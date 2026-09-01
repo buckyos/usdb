@@ -197,21 +197,32 @@ class SnapshotDistributionTests(unittest.TestCase):
             self.artifact / signature_entry["path"],
             staging / f"{signature_entry['path']}.part",
         )
+        status_output = io.StringIO()
         with mock.patch.object(DISTRIBUTION, "_download_with_resume", side_effect=download):
-            installed = DISTRIBUTION.install_release(
-                record_url=published["record_url"],
-                destination_root=destination_root,
-                trusted_keys=self.trusted_keys,
-                expected_network="bitcoin",
-                max_height=self.height,
-            )
-            replay = DISTRIBUTION.install_release(
-                record_url=published["record_url"],
-                destination_root=destination_root,
-                trusted_keys=self.trusted_keys,
-                expected_network="bitcoin",
-                max_height=self.height,
-            )
+            with mock.patch.object(
+                DISTRIBUTION,
+                "_sha256",
+                wraps=DISTRIBUTION._sha256,
+            ) as calculate_hash:
+                with mock.patch.dict(
+                    DISTRIBUTION.os.environ,
+                    {"USDB_SNAPSHOT_FORCE_PROGRESS": "1"},
+                ):
+                    with redirect_stderr(status_output):
+                        installed = DISTRIBUTION.install_release(
+                            record_url=published["record_url"],
+                            destination_root=destination_root,
+                            trusted_keys=self.trusted_keys,
+                            expected_network="bitcoin",
+                            max_height=self.height,
+                        )
+                        replay = DISTRIBUTION.install_release(
+                            record_url=published["record_url"],
+                            destination_root=destination_root,
+                            trusted_keys=self.trusted_keys,
+                            expected_network="bitcoin",
+                            max_height=self.height,
+                        )
         self.assertEqual(installed, replay)
         self.assertEqual(installed.snapshot_file.read_bytes(), self.snapshot.read_bytes())
         self.assertFalse(any(destination_root.glob(".*.installing")))
@@ -219,6 +230,23 @@ class SnapshotDistributionTests(unittest.TestCase):
             any(url.endswith(signature_entry["object_key"]) for url in download_calls),
             "a complete staged .part file should be reused without another download",
         )
+        snapshot_hashes = [
+            Path(call.args[0]).name
+            for call in calculate_hash.call_args_list
+            if Path(call.args[0]).name
+            in {self.snapshot.name, f"{self.snapshot.name}.part"}
+        ]
+        self.assertEqual(
+            snapshot_hashes,
+            [f"{self.snapshot.name}.part", self.snapshot.name],
+            "fresh install and explicit cache replay must each hash the DB exactly once",
+        )
+        status = status_output.getvalue()
+        self.assertIn("Verify downloaded snapshot_42.db", status)
+        self.assertIn("Verify cached snapshot_42.db", status)
+        self.assertIn("100.00%", status)
+        self.assertIn("Snapshot files verified; publishing atomically", status)
+        self.assertIn("Snapshot artifact ready", status)
 
     def _seed_installed_release(
         self,
@@ -258,14 +286,15 @@ class SnapshotDistributionTests(unittest.TestCase):
                 "_download_parallel_ranges",
                 side_effect=AssertionError("parallel download must not run"),
             ) as parallel:
-                installed = DISTRIBUTION.install_release(
-                    record_url=record_url,
-                    destination_root=destination_root,
-                    trusted_keys=self.trusted_keys,
-                    approved_record_path=record_path,
-                    expected_network="bitcoin",
-                    max_height=self.height,
-                )
+                with redirect_stderr(io.StringIO()):
+                    installed = DISTRIBUTION.install_release(
+                        record_url=record_url,
+                        destination_root=destination_root,
+                        trusted_keys=self.trusted_keys,
+                        approved_record_path=record_path,
+                        expected_network="bitcoin",
+                        max_height=self.height,
+                    )
 
         self.assertEqual(installed.release_dir, release_dir)
         self.assertFalse((destination_root / ".downloads").exists())
@@ -284,18 +313,19 @@ class SnapshotDistributionTests(unittest.TestCase):
 
         with mock.patch.object(DISTRIBUTION, "_download_with_resume") as sequential:
             with mock.patch.object(DISTRIBUTION, "_download_parallel_ranges") as parallel:
-                with self.assertRaisesRegex(ValueError, "snapshot file size mismatch"):
-                    DISTRIBUTION.install_release(
-                        record_url=(
-                            "https://snapshots.example.test/snapshot-records/v2/"
-                            f"{record_sha256}.json"
-                        ),
-                        destination_root=destination_root,
-                        trusted_keys=self.trusted_keys,
-                        approved_record_path=record_path,
-                        expected_network="bitcoin",
-                        max_height=self.height,
-                    )
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaisesRegex(ValueError, "snapshot file size mismatch"):
+                        DISTRIBUTION.install_release(
+                            record_url=(
+                                "https://snapshots.example.test/snapshot-records/v2/"
+                                f"{record_sha256}.json"
+                            ),
+                            destination_root=destination_root,
+                            trusted_keys=self.trusted_keys,
+                            approved_record_path=record_path,
+                            expected_network="bitcoin",
+                            max_height=self.height,
+                        )
 
         self.assertEqual(corrupt_path.read_bytes(), b"corrupt")
         sequential.assert_not_called()
@@ -460,11 +490,12 @@ class SnapshotDistributionTests(unittest.TestCase):
         with mock.patch.object(DISTRIBUTION, "PARALLEL_DOWNLOAD_MIN_SIZE", 1):
             with mock.patch.object(DISTRIBUTION, "_download_with_resume", side_effect=sequential):
                 with mock.patch.object(DISTRIBUTION, "_download_parallel_ranges", side_effect=parallel):
-                    installed = DISTRIBUTION.install_release(
-                        record_url=published["record_url"],
-                        destination_root=self.root / "parallel-installed",
-                        trusted_keys=self.trusted_keys,
-                    )
+                    with redirect_stderr(io.StringIO()):
+                        installed = DISTRIBUTION.install_release(
+                            record_url=published["record_url"],
+                            destination_root=self.root / "parallel-installed",
+                            trusted_keys=self.trusted_keys,
+                        )
         snapshot_entry = next(item for item in record["files"] if item["role"] == "snapshot_db")
         self.assertEqual(len(parallel_calls), 1)
         self.assertTrue(parallel_calls[0].endswith(snapshot_entry["object_key"]))

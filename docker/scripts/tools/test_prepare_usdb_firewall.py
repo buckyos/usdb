@@ -74,8 +74,8 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
             lines.append("8545/tcp                   ALLOW IN    Anywhere")
         self.status_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def write_ufw(self) -> None:
-        path = self.command_dir / "ufw"
+    def write_ufw(self, command_dir: Path | None = None) -> None:
+        path = (command_dir or self.command_dir) / "ufw"
         path.write_text(
             textwrap.dedent(
                 """\
@@ -102,6 +102,8 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         *,
         bitcoin_p2p: str = "private",
         confirm: bool = False,
+        use_command_dir: bool = True,
+        system_command_dirs: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         args = [
             "bash",
@@ -119,12 +121,18 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
         env = os.environ.copy()
         env.update(
             {
-                "USDB_FIREWALL_COMMAND_DIR": str(self.command_dir),
                 "USDB_FIREWALL_SKIP_ROOT": "1",
                 "USDB_TEST_UFW_STATUS_FILE": str(self.status_file),
                 "USDB_TEST_UFW_CALL_LOG": str(self.call_log),
             }
         )
+        if use_command_dir:
+            env["USDB_FIREWALL_COMMAND_DIR"] = str(self.command_dir)
+        else:
+            env.pop("USDB_FIREWALL_COMMAND_DIR", None)
+        if system_command_dirs is not None:
+            env["USDB_FIREWALL_SYSTEM_COMMAND_DIRS"] = str(system_command_dirs)
+            env["PATH"] = "/usr/bin:/bin"
         return subprocess.run(
             args,
             env=env,
@@ -138,6 +146,20 @@ class PrepareUsdbFirewallTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS Bitcoin P2P binding: loopback-only", result.stdout)
+        self.assertIn("Firewall check passed", result.stdout)
+
+    def test_check_resolves_ufw_when_login_path_omits_sbin(self) -> None:
+        system_sbin = self.root / "system-sbin"
+        system_sbin.mkdir()
+        self.write_ufw(system_sbin)
+
+        result = self.run_script(
+            "check",
+            use_command_dir=False,
+            system_command_dirs=system_sbin,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Firewall check passed", result.stdout)
 
     def test_check_accepts_public_bitcoin_profile(self) -> None:

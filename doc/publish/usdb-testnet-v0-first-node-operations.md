@@ -196,6 +196,10 @@ usdb-node setup
 usdb-node doctor
 ```
 
+执行这些命令的节点 operator 必须具有可用的 sudo 身份。sudo 默认验证当前 operator 的密码，不验证 root
+密码；不要使用没有密码且未加入 sudo group 的 locked service account。`setup` 会在 snapshot 下载前应用
+firewall，因此权限问题会尽早暴露。
+
 `prepare-host` 统一包装主机软件检查，并只在失败后询问是否安装；如果安装修改了 docker 用户组，退出后重新
 登录再继续。`doctor` 是可选的显式预检：它会执行完整主机、release/network identity、节点配置、image
 digest 和 UFW 只读检查，不会拉取 image、启动服务或修改配置。读取 UFW 状态可能请求 sudo。后面的
@@ -212,8 +216,8 @@ release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`s
 大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载。选择 full sync 仍受支持；下载中断时重跑
 `usdb-node snapshot install` 只补缺失 chunk，完成后再执行 `doctor/up`。
 
-`setup` 最后询问是否应用 UFW，默认 `yes`。它会先保留确认的 SSH 端口，再开放 `31303/TCP+UDP`，并按
-Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：
+`setup` 询问是否应用 UFW，默认 `yes`。确认后会在 snapshot 下载前先保留 SSH 端口、开放
+`31303/TCP+UDP`，并按 Bitcoin private/public 选择处理 `8333/TCP`。选择暂不应用时，后续显式执行：
 
 ```bash
 usdb-node firewall apply --confirm
