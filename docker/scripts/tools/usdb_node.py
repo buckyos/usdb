@@ -62,6 +62,14 @@ ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
 RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
+NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
+CORE_RUNTIME_SERVICES = (
+    "btc-node",
+    "balance-history",
+    "usdb-indexer",
+    "usdb-chain",
+    "usdb-control-plane",
+)
 
 
 @dataclass(frozen=True)
@@ -899,6 +907,7 @@ def run_helper(
     *,
     check: bool = True,
     sync_timeout_secs: int | None = None,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     path = layout.kit_root / "docker/scripts/tools" / helper
     if not path.is_file():
@@ -908,6 +917,7 @@ def run_helper(
         check=check,
         env=_helper_environment(layout, sync_timeout_secs),
         text=True,
+        capture_output=capture_output,
     )
 
 
@@ -1028,14 +1038,383 @@ def start_node(layout: ReleaseLayout, *, sync_timeout_secs: int, pull: bool) -> 
     run_helper(layout, "run_testnet_runtime.sh", ["up"])
 
 
-def print_status(layout: ReleaseLayout) -> int:
-    results = [
-        run_helper(layout, "run_testnet_bitcoin.sh", ["status"], check=False),
-        run_helper(layout, "run_testnet_runtime.sh", ["ps"], check=False),
-        run_helper(layout, "run_testnet_runtime.sh", ["data-status"], check=False),
-        run_helper(layout, "run_testnet_runtime.sh", ["indexer-status"], check=False),
+def _parse_compose_ps(output: str) -> list[dict[str, Any]]:
+    text = output.strip()
+    if not text:
+        return []
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+            return value
+    except json.JSONDecodeError:
+        pass
+
+    items: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError("Docker Compose returned invalid JSON status") from error
+        if not isinstance(value, dict):
+            raise ValueError("Docker Compose status entry must be an object")
+        items.append(value)
+    return items
+
+
+def _normalize_compose_service(item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    service = item.get("Service", item.get("service", ""))
+    if not isinstance(service, str) or not service:
+        raise ValueError("Docker Compose status entry is missing Service")
+    state = item.get("State", item.get("state", "unknown"))
+    health = item.get("Health", item.get("health", ""))
+    exit_code = item.get("ExitCode", item.get("exit_code"))
+    return service, {
+        "state": str(state).lower(),
+        "health": str(health).lower(),
+        "exit_code": exit_code if isinstance(exit_code, int) else None,
+    }
+
+
+def _snapshot_lifecycle_status(
+    layout: ReleaseLayout,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    mode = env.get("SNAPSHOT_MODE", "none")
+    if mode == "none":
+        return {
+            "state": "not_selected",
+            "summary": "no snapshot selected; full synchronization is configured",
+            "mode": mode,
+        }
+    if mode != "balance-history":
+        return {
+            "state": "configured",
+            "summary": f"{mode} snapshot is configured; deep validation remains in doctor",
+            "mode": mode,
+        }
+
+    try:
+        record = _approved_snapshot_record(layout)
+    except (OSError, ValueError) as error:
+        return {
+            "state": "invalid",
+            "summary": str(error),
+            "mode": mode,
+        }
+    expected = _snapshot_env_updates(record)
+    for key in ("BH_SNAPSHOT_FILE", "BH_SNAPSHOT_MANIFEST"):
+        if env.get(key) != expected[key]:
+            return {
+                "state": "invalid",
+                "summary": f"{key} does not select the release-approved snapshot",
+                "mode": mode,
+                "snapshot_release_id": record["snapshot_release_id"],
+            }
+
+    root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
+    release_id = record["snapshot_release_id"]
+    destination = root / release_id
+    staging = root / f".{release_id}.installing"
+    if destination.exists():
+        if not destination.is_dir() or destination.is_symlink():
+            return {
+                "state": "invalid",
+                "summary": "snapshot final path is not a regular directory",
+                "mode": mode,
+                "snapshot_release_id": release_id,
+            }
+        approved_record = layout.bundle_dir / layout.snapshot["record"]["path"]
+        installed_record = destination / "snapshot-release-record.json"
+        if (
+            not installed_record.is_file()
+            or installed_record.is_symlink()
+            or installed_record.read_bytes() != approved_record.read_bytes()
+        ):
+            return {
+                "state": "invalid",
+                "summary": "snapshot installed record is missing or differs from the release record",
+                "mode": mode,
+                "snapshot_release_id": release_id,
+            }
+        for item in record["files"]:
+            path = destination / item["path"]
+            if not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"]:
+                return {
+                    "state": "invalid",
+                    "summary": f"snapshot file is missing or has the wrong size: {item['path']}",
+                    "mode": mode,
+                    "snapshot_release_id": release_id,
+                }
+        return {
+            "state": "installed",
+            "summary": f"release-approved snapshot is installed at BTC height {record['height']}",
+            "mode": mode,
+            "snapshot_release_id": release_id,
+            "height": record["height"],
+        }
+
+    if staging.exists():
+        if not staging.is_dir() or staging.is_symlink():
+            return {
+                "state": "invalid",
+                "summary": "snapshot staging path is not a regular directory",
+                "mode": mode,
+                "snapshot_release_id": release_id,
+            }
+        present_files = sum(
+            1
+            for item in record["files"]
+            if (staging / item["path"]).is_file()
+        )
+        return {
+            "state": "incomplete",
+            "summary": "snapshot download or verification is resumable",
+            "mode": mode,
+            "snapshot_release_id": release_id,
+            "complete_file_count": present_files,
+            "expected_file_count": len(record["files"]),
+        }
+    return {
+        "state": "incomplete",
+        "summary": "snapshot is selected but its local artifact is missing",
+        "mode": mode,
+        "snapshot_release_id": release_id,
+        "complete_file_count": 0,
+        "expected_file_count": len(record["files"]),
+    }
+
+
+def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
+    commands = (
+        ("run_testnet_bitcoin.sh", ["ps", "--all", "--format", "json"]),
+        ("run_testnet_runtime.sh", ["ps", "--all", "--format", "json"]),
+    )
+    services: dict[str, dict[str, Any]] = {}
+    for helper, arguments in commands:
+        result = run_helper(
+            layout,
+            helper,
+            arguments,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return {
+                "state": "unavailable",
+                "summary": "Docker Compose service state could not be read",
+                "services": services,
+            }
+        for item in _parse_compose_ps(result.stdout or ""):
+            service, status = _normalize_compose_service(item)
+            services[service] = status
+
+    present_core = [name for name in CORE_RUNTIME_SERVICES if name in services]
+    if not present_core:
+        return {
+            "state": "stopped",
+            "summary": "USDB services have not been started",
+            "services": services,
+        }
+
+    problem_states = {"dead", "exited", "removing", "restarting"}
+    unhealthy = [
+        name
+        for name in CORE_RUNTIME_SERVICES
+        if name in services
+        and (
+            services[name]["state"] in problem_states
+            or services[name]["health"] == "unhealthy"
+        )
     ]
-    return 0 if all(result.returncode == 0 for result in results) else 1
+    if unhealthy:
+        return {
+            "state": "degraded",
+            "summary": f"core services are unhealthy: {', '.join(unhealthy)}",
+            "services": services,
+        }
+
+    missing = [name for name in CORE_RUNTIME_SERVICES if name not in services]
+    not_running = [
+        name
+        for name in CORE_RUNTIME_SERVICES
+        if name in services and services[name]["state"] != "running"
+    ]
+    health_starting = [
+        name
+        for name in CORE_RUNTIME_SERVICES
+        if name in services and services[name]["health"] == "starting"
+    ]
+    if missing or not_running or health_starting:
+        pending = [*missing, *not_running, *health_starting]
+        return {
+            "state": "starting",
+            "summary": f"waiting for core services: {', '.join(dict.fromkeys(pending))}",
+            "services": services,
+        }
+
+    readiness_commands = (
+        ("btc-node", "run_testnet_bitcoin.sh", ["status"]),
+        ("balance-history", "run_testnet_runtime.sh", ["data-status"]),
+        ("usdb-indexer", "run_testnet_runtime.sh", ["indexer-status"]),
+    )
+    readiness: dict[str, str] = {}
+    for service, helper, arguments in readiness_commands:
+        result = run_helper(
+            layout,
+            helper,
+            arguments,
+            check=False,
+            capture_output=True,
+        )
+        readiness[service] = "ready" if result.returncode == 0 else "not_ready"
+    failed = [service for service, state in readiness.items() if state != "ready"]
+    if failed:
+        return {
+            "state": "degraded",
+            "summary": f"service readiness checks failed: {', '.join(failed)}",
+            "services": services,
+            "readiness": readiness,
+        }
+    return {
+        "state": "ready",
+        "summary": "all core services are running and ready",
+        "services": services,
+        "readiness": readiness,
+    }
+
+
+def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
+    checks: dict[str, dict[str, Any]] = {
+        "release": {
+            "state": "ok",
+            "summary": f"immutable node kit {layout.release_id} is valid",
+        }
+    }
+    report: dict[str, Any] = {
+        "schema_version": NODE_STATUS_SCHEMA_VERSION,
+        "release_id": layout.release_id,
+        "network_bundle_id": layout.bundle_id,
+        "overall_state": "BLOCKED",
+        "checks": checks,
+        "next_actions": [],
+    }
+    if not layout.node_env.is_file():
+        checks["configuration"] = {
+            "state": "missing",
+            "summary": f"node configuration is missing: {layout.node_env}",
+        }
+        report["overall_state"] = "UNCONFIGURED"
+        report["next_actions"] = ["usdb-node setup"]
+        return report
+
+    try:
+        env = read_env(layout.node_env)
+    except (OSError, ValueError) as error:
+        checks["configuration"] = {"state": "invalid", "summary": str(error)}
+        report["next_actions"] = ["usdb-node doctor"]
+        return report
+
+    checks["configuration"] = {
+        "state": "ok",
+        "summary": "private node configuration is present and parseable",
+        "firewall_mode": env.get("USDB_FIREWALL_MODE", "managed"),
+    }
+    mismatched_images = [key for key, expected in layout.images.items() if env.get(key) != expected]
+    activation_required = bool(mismatched_images)
+    checks["activation"] = {
+        "state": "required" if activation_required else "active",
+        "summary": (
+            f"release activation is required for: {', '.join(mismatched_images)}"
+            if activation_required
+            else "private configuration uses this release's image digests"
+        ),
+    }
+
+    try:
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
+    except (OSError, ValueError) as error:
+        checks["data"] = {"state": "invalid", "summary": str(error)}
+        report["next_actions"] = ["usdb-node doctor"]
+        return report
+    checks["data"] = {
+        "state": "ok",
+        "summary": "local paths, credentials and dataset contracts are valid",
+    }
+
+    snapshot = _snapshot_lifecycle_status(layout, env)
+    checks["snapshot"] = snapshot
+    if snapshot["state"] == "invalid":
+        report["next_actions"] = ["usdb-node doctor"]
+        return report
+
+    next_actions: list[str] = []
+    if activation_required:
+        next_actions.append("usdb-node activate-release")
+    if snapshot["state"] == "incomplete":
+        next_actions.append("usdb-node snapshot install")
+    if activation_required:
+        report["overall_state"] = "ACTIVATION_REQUIRED"
+        report["next_actions"] = next_actions
+        return report
+    if snapshot["state"] == "incomplete":
+        report["overall_state"] = "SNAPSHOT_INCOMPLETE"
+        report["next_actions"] = next_actions
+        return report
+
+    try:
+        runtime = _runtime_lifecycle_status(layout)
+    except (OSError, ValueError) as error:
+        checks["runtime"] = {"state": "unavailable", "summary": str(error)}
+        report["next_actions"] = ["usdb-node doctor"]
+        return report
+    checks["runtime"] = runtime
+    runtime_state = runtime["state"]
+    if runtime_state == "stopped":
+        report["overall_state"] = "READY_TO_START"
+        report["next_actions"] = ["usdb-node up"]
+    elif runtime_state == "starting":
+        report["overall_state"] = "STARTING"
+        report["next_actions"] = ["usdb-node logs"]
+    elif runtime_state == "ready":
+        report["overall_state"] = "READY"
+    elif runtime_state == "degraded":
+        report["overall_state"] = "DEGRADED"
+        report["next_actions"] = ["usdb-node logs"]
+    else:
+        report["next_actions"] = ["usdb-node doctor"]
+    return report
+
+
+def print_status(layout: ReleaseLayout, *, json_output: bool = False) -> int:
+    report = collect_node_status(layout)
+    if json_output:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(f"USDB node lifecycle status: {report['release_id']}")
+        labels = {
+            "release": "Release kit",
+            "configuration": "Node config",
+            "activation": "Activation",
+            "data": "Local data",
+            "snapshot": "Snapshot",
+            "runtime": "Runtime",
+        }
+        for key, label in labels.items():
+            check = report["checks"].get(key)
+            if check is not None:
+                print(f"{label:<14} {check['state'].upper():<12} {check['summary']}")
+        print(f"Overall        {report['overall_state']}")
+        if report["next_actions"]:
+            print("Next actions:")
+            for index, action in enumerate(report["next_actions"], start=1):
+                print(f"  {index}. {action}")
+    return 0 if report["overall_state"] == "READY" else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1138,7 +1517,11 @@ def build_parser() -> argparse.ArgumentParser:
     up = subparsers.add_parser("up", help="Pull and start all services in readiness order")
     up.add_argument("--sync-timeout-secs", type=int, default=604800)
     up.add_argument("--skip-pull", action="store_true")
-    subparsers.add_parser("status", help="Show Bitcoin and USDB service readiness")
+    status = subparsers.add_parser(
+        "status",
+        help="Show node installation, activation, snapshot and runtime lifecycle state",
+    )
+    status.add_argument("--json", action="store_true", help="emit machine-readable status")
 
     logs = subparsers.add_parser("logs", help="Follow Bitcoin or runtime service logs")
     logs.add_argument("--bitcoin", action="store_true")
@@ -1242,7 +1625,7 @@ def main() -> int:
             start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
             print(f"USDB node is ready: {layout.release_id}")
         elif args.command == "status":
-            return print_status(layout)
+            return print_status(layout, json_output=args.json)
         elif args.command == "logs":
             helper = "run_testnet_bitcoin.sh" if args.bitcoin else "run_testnet_runtime.sh"
             arguments = ["logs", *args.service]

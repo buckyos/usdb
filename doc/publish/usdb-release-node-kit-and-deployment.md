@@ -243,6 +243,34 @@ usdb-node status
 6. 初始化并启动 USDB chain 与 control-plane。
 
 默认同步等待上限是 7 天，普通操作无需提供该参数；高级模式可使用 `--sync-timeout-secs` 覆盖。
+
+`usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
+配置、release activation、数据契约和 snapshot 安装状态；只有所有核心容器都处于 running 且不再处于
+health starting 时，才调用 Bitcoin、balance-history 和 usdb-indexer readiness。因而尚未执行 `up` 或仍在
+启动时，不会再附带无意义的 `connection refused` RPC 输出。
+
+生命周期状态及主要处置如下：
+
+| 状态 | 含义 | 典型 `next_actions` |
+| --- | --- | --- |
+| `UNCONFIGURED` | 尚无 private `node.env` | `usdb-node setup` |
+| `ACTIVATION_REQUIRED` | 配置仍引用同 bundle 的旧 release image | `usdb-node activate-release` |
+| `SNAPSHOT_INCOMPLETE` | 已选择 snapshot，但下载或校验尚未完成 | `usdb-node snapshot install` |
+| `READY_TO_START` | 本地安装和数据前置条件完成，容器未启动 | `usdb-node up` |
+| `STARTING` | 核心容器正在创建、启动或等待 health | `usdb-node logs` |
+| `READY` | 核心容器和服务 readiness 全部通过 | 无 |
+| `DEGRADED` | 已启动服务退出、不健康或 readiness 失败 | `usdb-node logs` |
+| `BLOCKED` | 配置、数据契约或状态读取异常 | `usdb-node doctor` |
+
+自动化使用结构化输出：
+
+```bash
+usdb-node status --json
+```
+
+输出 schema 为 `usdb-node-status:v1`，包含 `release_id`、`network_bundle_id`、`overall_state`、分层
+`checks` 和有序 `next_actions`。只有 `READY` 返回退出码 `0`，其他状态返回 `1`；调用方应读取
+`overall_state`，不要从人类可读文本或底层连接错误推断安装阶段。
 命令中断或等待超时不会删除容器、bind-mounted 数据。重新执行相同 `up` 会从现有同步状态继续。长期 Bitcoin
 IBD 可以在 `tmux`、`screen` 或受控 systemd unit 中运行；后续可再为 node kit 增加 systemd 模板。
 

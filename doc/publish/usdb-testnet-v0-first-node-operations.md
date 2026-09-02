@@ -230,6 +230,11 @@ usdb-node up
 usdb-node status
 ```
 
+`status` 会同时报告安装、activation、snapshot 和服务运行阶段，并给出下一条 `next_actions`；它不会在容器
+尚未启动时继续调用服务 RPC，因此此阶段不应再出现派生的 `connection refused`。自动化或远程采集使用
+`usdb-node status --json`，以 `overall_state` 和 `next_actions` 为准。只有 `READY` 的退出码是 `0`；
+`READY_TO_START` 表示应执行 `up`，不是安装损坏。
+
 SSH 中断不会删除数据。重新执行 `usdb-node up` 会从 Bitcoin/balance-history 的现有同步状态继续。
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。

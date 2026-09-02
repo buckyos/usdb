@@ -83,6 +83,19 @@ class UsdbNodeTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def configure_full_node(self, layout: object, name: str) -> None:
+        NODE.configure_node(
+            layout,
+            data_root=Path(self.temporary.name) / name,
+            role="full",
+            miner_address="",
+            miner_threads=1,
+            bootnodes="",
+            nat="",
+            bitcoin_rpc_user="node-a",
+            bitcoin_p2p="private",
+        )
+
     def test_configure_derives_release_images_paths_and_private_credentials(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         data_root = Path(self.temporary.name) / "node-data"
@@ -384,6 +397,159 @@ class UsdbNodeTests(unittest.TestCase):
                 ("run_testnet_runtime.sh", ("up",)),
             ],
         )
+
+    def test_status_reports_unconfigured_without_runtime_queries(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        with mock.patch.object(NODE, "run_helper") as helper:
+            report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "UNCONFIGURED")
+        self.assertEqual(report["next_actions"], ["usdb-node setup"])
+        helper.assert_not_called()
+
+    def test_status_reports_activation_required_before_runtime_queries(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "activation-required-data")
+        next_images = {key: value[:-64] + "9" * 64 for key, value in layout.images.items()}
+        next_layout = replace(layout, release_id="usdb-testnet-v0-r2", images=next_images)
+
+        with mock.patch.object(NODE, "run_helper") as helper:
+            report = NODE.collect_node_status(next_layout)
+
+        self.assertEqual(report["overall_state"], "ACTIVATION_REQUIRED")
+        self.assertEqual(report["next_actions"], ["usdb-node activate-release"])
+        helper.assert_not_called()
+
+    def test_status_reports_resumable_snapshot_before_runtime_queries(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "incomplete-snapshot-data")
+        record = NODE._approved_snapshot_record(layout)
+        original = layout.node_env.read_text(encoding="utf-8")
+        NODE._atomic_write_private(
+            layout.node_env,
+            NODE.render_env(original, NODE._snapshot_env_updates(record)),
+        )
+        staging = (
+            Path(NODE.read_env(layout.node_env)["BH_SNAPSHOT_HOST_DIR"])
+            / f".{record['snapshot_release_id']}.installing"
+        )
+        staging.mkdir(parents=True)
+
+        with mock.patch.object(NODE, "run_helper") as helper:
+            report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "SNAPSHOT_INCOMPLETE")
+        self.assertEqual(report["checks"]["snapshot"]["state"], "incomplete")
+        self.assertEqual(report["next_actions"], ["usdb-node snapshot install"])
+        helper.assert_not_called()
+
+    def test_status_stopped_does_not_probe_readiness(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "stopped-status-data")
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def stopped(
+            _layout: object,
+            helper: str,
+            arguments: list[str],
+            **_kwargs: object,
+        ) -> object:
+            calls.append((helper, tuple(arguments)))
+            return mock.Mock(returncode=0, stdout="[]\n", stderr="")
+
+        with mock.patch.object(NODE, "run_helper", side_effect=stopped):
+            report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "READY_TO_START")
+        self.assertEqual(report["next_actions"], ["usdb-node up"])
+        self.assertEqual(
+            calls,
+            [
+                ("run_testnet_bitcoin.sh", ("ps", "--all", "--format", "json")),
+                ("run_testnet_runtime.sh", ("ps", "--all", "--format", "json")),
+            ],
+        )
+
+    def test_status_starting_does_not_emit_derived_readiness_failures(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "starting-status-data")
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def starting(
+            _layout: object,
+            helper: str,
+            arguments: list[str],
+            **_kwargs: object,
+        ) -> object:
+            calls.append((helper, tuple(arguments)))
+            if helper == "run_testnet_bitcoin.sh":
+                output = json.dumps(
+                    [{"Service": "btc-node", "State": "running", "Health": "starting"}]
+                )
+            else:
+                output = "[]"
+            return mock.Mock(returncode=0, stdout=output, stderr="")
+
+        with mock.patch.object(NODE, "run_helper", side_effect=starting):
+            output = io.StringIO()
+            with mock.patch("sys.stdout", new=output):
+                result = NODE.print_status(layout)
+
+        self.assertEqual(result, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("connection refused", output.getvalue().lower())
+        self.assertIn("STARTING", output.getvalue())
+
+    def test_status_ready_runs_readiness_after_all_core_services_are_running(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "ready-status-data")
+        calls: list[tuple[str, tuple[str, ...]]] = []
+        bitcoin = [{"Service": "btc-node", "State": "running", "Health": "healthy"}]
+        runtime = [
+            {"Service": service, "State": "running", "Health": "healthy"}
+            for service in NODE.CORE_RUNTIME_SERVICES
+            if service != "btc-node"
+        ]
+
+        def ready(
+            _layout: object,
+            helper: str,
+            arguments: list[str],
+            **_kwargs: object,
+        ) -> object:
+            calls.append((helper, tuple(arguments)))
+            if arguments[0] == "ps":
+                output = json.dumps(bitcoin if helper == "run_testnet_bitcoin.sh" else runtime)
+            else:
+                output = "ready\n"
+            return mock.Mock(returncode=0, stdout=output, stderr="")
+
+        with mock.patch.object(NODE, "run_helper", side_effect=ready):
+            report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "READY")
+        self.assertEqual(report["next_actions"], [])
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(
+            calls[2:],
+            [
+                ("run_testnet_bitcoin.sh", ("status",)),
+                ("run_testnet_runtime.sh", ("data-status",)),
+                ("run_testnet_runtime.sh", ("indexer-status",)),
+            ],
+        )
+
+    def test_status_json_is_machine_readable(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        output = io.StringIO()
+        with mock.patch("sys.stdout", new=output):
+            result = NODE.print_status(layout, json_output=True)
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(result, 1)
+        self.assertEqual(report["schema_version"], "usdb-node-status:v1")
+        self.assertEqual(report["overall_state"], "UNCONFIGURED")
+        self.assertEqual(report["next_actions"], ["usdb-node setup"])
 
     def test_host_and_firewall_actions_delegate_with_frozen_node_configuration(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
