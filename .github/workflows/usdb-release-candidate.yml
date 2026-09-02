@@ -3,6 +3,16 @@ run-name: USDB candidate ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
+    inputs:
+      qualification_level:
+        description: Highest completed CI qualification for this installable candidate
+        required: true
+        type: choice
+        default: fast
+        options:
+          - fast
+          - nightly
+          - weekly
 
 permissions:
   actions: read
@@ -124,24 +134,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ github.ref_name }}
+          QUALIFICATION_LEVEL: ${{ inputs.qualification_level }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
         run: |
           set -euo pipefail
           python3 go-ethereum/scripts/usdb/ci_revisions.py validate
+          source_dao_revision="$(jq -er \
+            '.dependencies.source_dao.revision' \
+            go-ethereum/scripts/usdb/ci-revisions.json)"
           gh api \
             "/repos/buckyos/usdb/actions/workflows/usdb-release-build.yml/runs?event=push&status=success&head_sha=${USDB_REVISION}&per_page=100" \
             >usdb-release-runs.json
           gh api \
             "/repos/buckyos/go-ethereum/actions/workflows/usdb-release-build.yml/runs?event=push&status=success&head_sha=${GO_ETHEREUM_REVISION}&per_page=100" \
             >go-release-runs.json
+          gh api \
+            "/repos/buckyos/SourceDAO/actions/workflows/usdb-fast.yml/runs?event=push&status=success&head_sha=${source_dao_revision}&per_page=100" \
+            >source-dao-fast-runs.json
+          printf '%s\n' '{"workflow_runs":[]}' >qualification-runs.json
+          if [[ "$QUALIFICATION_LEVEL" != "fast" ]]; then
+            gh api \
+              "/repos/buckyos/go-ethereum/actions/workflows/usdb-${QUALIFICATION_LEVEL}.yml/runs?status=success&head_sha=${GO_ETHEREUM_REVISION}&per_page=100" \
+              >qualification-runs.json
+          fi
           python3 usdb/docker/scripts/tools/release_candidate_resolver.py \
             --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json \
             --usdb-runs usdb-release-runs.json \
             --go-runs go-release-runs.json \
+            --source-dao-runs source-dao-fast-runs.json \
+            --qualification-runs qualification-runs.json \
             --usdb-revision "$USDB_REVISION" \
             --go-ethereum-revision "$GO_ETHEREUM_REVISION" \
             --release-id "$RELEASE_ID" \
+            --qualification-level "$QUALIFICATION_LEVEL" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Check out SourceDAO revision
@@ -316,10 +342,14 @@ jobs:
           SERVICES_IMAGE: ${{ steps.images.outputs.services_image }}
           CHAIN_IMAGE: ${{ steps.images.outputs.chain_image }}
           BITCOIN_IMAGE: ${{ steps.images.outputs.bitcoin_image }}
+          QUALIFICATION_LEVEL: ${{ steps.candidate.outputs.qualification_level }}
+          QUALIFICATION_EVIDENCE_JSON: ${{ steps.candidate.outputs.qualification_evidence_json }}
         run: |
           set -euo pipefail
           mkdir -p release-output
           manifest="release-output/usdb-release-manifest.json"
+          evidence="release-output/qualification-evidence.json"
+          printf '%s\n' "$QUALIFICATION_EVIDENCE_JSON" >"$evidence"
           python3 usdb/docker/scripts/tools/release_manifest.py create \
             --bundle-dir usdb/docker/networks/testnet-v0 \
             --output "$manifest" \
@@ -331,17 +361,23 @@ jobs:
             --source-dao-revision "$SOURCE_DAO_REVISION" \
             --services-image "$SERVICES_IMAGE" \
             --chain-image "$CHAIN_IMAGE" \
-            --bitcoin-image "$BITCOIN_IMAGE"
+            --bitcoin-image "$BITCOIN_IMAGE" \
+            --qualification-level "$QUALIFICATION_LEVEL" \
+            --qualification-evidence "$evidence"
+          rm "$evidence"
           python3 usdb/docker/scripts/tools/release_manifest.py validate \
             --bundle-dir usdb/docker/networks/testnet-v0 \
             --manifest "$manifest" \
             --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json
           (cd release-output && sha256sum usdb-release-manifest.json >usdb-release-manifest.json.sha256)
           manifest_sha256="$(cut -d ' ' -f 1 release-output/usdb-release-manifest.json.sha256)"
-          echo "sha256=$manifest_sha256" >>"$GITHUB_OUTPUT"
-          echo "snapshot_status=$(jq -r '.snapshot.status' "$manifest")" >>"$GITHUB_OUTPUT"
-          echo "snapshot_height=$(jq -r '.snapshot.height' "$manifest")" >>"$GITHUB_OUTPUT"
-          echo "snapshot_record_url=$(jq -r '.snapshot.record.url' "$manifest")" >>"$GITHUB_OUTPUT"
+          {
+            echo "sha256=$manifest_sha256"
+            echo "snapshot_status=$(jq -r '.snapshot.status' "$manifest")"
+            echo "snapshot_height=$(jq -r '.snapshot.height' "$manifest")"
+            echo "snapshot_record_url=$(jq -r '.snapshot.record.url' "$manifest")"
+            echo "qualification_level=$(jq -r '.qualification.level' "$manifest")"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Upload candidate manifest
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -361,6 +397,8 @@ jobs:
             echo "Release ID: \`${{ github.ref_name }}\`"
             echo
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.sha256 }}\`"
+            echo
+            echo "Qualification: \`${{ steps.manifest.outputs.qualification_level }}\`"
             echo
             echo "Snapshot status: \`${{ steps.manifest.outputs.snapshot_status }}\`"
             echo

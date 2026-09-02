@@ -6,6 +6,7 @@
 校验和显式 release tag 构建两层：
 
 - `pull_request` / `master` push 只运行 Fast CI，用于合并前后反馈；
+- Go coordinator 按固定 revision lock 运行 Nightly / Weekly 跨仓长测，并保留日志与报告；
 - 两仓同名、不可移动的 annotated release tag 重新运行 Fast gate，并发布 `linux/amd64` 候选镜像；
 - 每个镜像绑定 source commit、OCI digest 和 GitHub provenance attestation；
 - manifest workflow 只接收 release ID，从两仓同名 tag、compatibility lock、tag build 和 network bundle
@@ -36,6 +37,7 @@ GitHub 官方参考：
 | OCI artifact | `ghcr.io/buckyos/usdb-chain@sha256:...` | 节点实际拉取和执行的不可变字节 |
 | 部署 release | `usdb-testnet-v0-r1` | 一次跨仓、跨 artifact 的部署集合 |
 | 网络 bundle | `usdb-testnet-v0` | chain ID、genesis、BTC source 和公共网络身份 |
+| CI 资格 | `fast` / `nightly` / `weekly` | 该 release 精确 revision 组合已完成的最高门禁及 run 证据 |
 
 `deployment release` 更新不一定重置网络。仅替换经过兼容性验证的 binary/image 时可发布 `r2` 并
 滚动重启；改变 genesis、链身份或 block-0 activation 时必须生成新 network bundle 和空数据目录。
@@ -78,7 +80,8 @@ release tag 必须满足：
 4. 人工确定尚未使用的 `release_id`；
 5. 分别在 `U`、`G` 上创建同名 annotated tag，不能隐式使用可能继续变化的本地 `HEAD`；
 6. push 两个 tag，等待两仓 `USDB Release Build` 成功；
-7. 从同名 release tag 手工运行 manifest workflow；release ID 自动取自该 tag，不再重复输入。
+7. 选择 `fast`、`nightly` 或 `weekly` 资格；后两者先在 Go 同名 tag 上手工运行对应长测；
+8. 从同名 release tag 手工运行 manifest workflow，选择已完成的资格级别；release ID 自动取自该 tag。
 
 协调工具位于 Go 仓库 `scripts/usdb/prepare_release.py`。默认从脚本所在 `go-ethereum` checkout
 推导其上级 workspace，因此标准 sibling 布局不需要传 `--workspace-root`；非标准布局可显式覆盖。
@@ -173,6 +176,38 @@ ghcr.io/buckyos/usdb-bitcoin-core@sha256:<64-char-digest>
 - attestation source digest 等于 manifest 中冻结的 Git commit；
 - runner 不是 self-hosted runner。
 
+### 3.6 CI 资格与可安装候选
+
+资格等级与发布介质是两个维度。三个等级都生成相同的完整 GitHub Release assets，因此都可通过
+release-bound installer 部署：
+
+| 等级 | 必需证据 | 适用场景 |
+| --- | --- | --- |
+| `fast` | 两仓 release-tag Fast/build、locked SourceDAO Fast | 高频测试网构建、快速回归 |
+| `nightly` | `fast` 加同一 Go revision/lock 的 Nightly 全矩阵 | 较稳定的集群测试候选 |
+| `weekly` | `fast` 加同一 Go revision/lock 的 Weekly 全矩阵；Weekly 同时执行 Nightly 分片 | 发布前完整候选 |
+
+中央长测位于 Go 仓库：
+
+```text
+.github/workflows/usdb-nightly.yml
+.github/workflows/usdb-weekly.yml
+.github/workflows/usdb-integration.yml
+```
+
+定时任务验证默认分支当时的精确 Go SHA；需要为某个 release tag 取得确定资格时，在 Go 仓库对同名
+tag 手工 dispatch：
+
+```bash
+gh workflow run usdb-nightly.yml \
+  --repo buckyos/go-ethereum \
+  --ref usdb-testnet-v0-r1
+```
+
+`rN` 只表示不可移动的 deployment release sequence，不隐含测试等级。资格写入 manifest 后属于发布
+身份的一部分：已经发布的 `fast` release 不能修改为 `nightly`；同一组源码后续通过更高等级时，创建
+新的 `rN`，可以让新 tag 指向相同 commit，但仍须重新执行 tag build、candidate 和 publish 门禁。
+
 ## 4. 一次性 GitHub 配置
 
 在第一次发布前完成：
@@ -207,12 +242,13 @@ runner hardening 和 attestation policy；当前 coordinator 会明确拒绝 sel
 workflow 不再接受 `release_id` input，而是直接把所选 tag 的 `github.ref_name` 作为 release ID：
 
 在 GitHub Actions 页面点击 `Run workflow` 时，必须先在 `Use workflow from` 下拉框选择同名
-release tag，不要保留默认的 `master`；选定后不再需要填写其他字段。命令行只需要提供 `--ref`：
+release tag，不要保留默认的 `master`；同时选择该 revision 已实际完成的 `qualification_level`：
 
 ```bash
 gh workflow run usdb-release-candidate.yml \
   --repo buckyos/usdb \
-  --ref usdb-testnet-v0-r1
+  --ref usdb-testnet-v0-r1 \
+  -f qualification_level=fast
 ```
 
 workflow 会：
@@ -221,13 +257,14 @@ workflow 会：
 2. 检查两个 tag target 都属于各自 `master` 历史；
 3. 从 Go tag commit 的 compatibility lock 取得 SourceDAO revision，并要求其中 USDB revision 等于
    USDB tag target；
-4. 在两个仓库分别查找该 tag 上唯一成功的 `USDB Release Build` push run；
-5. 从 run ID、attempt 和 source commit 构造唯一 candidate tag，再把 tag 解析为不可变 OCI digest；
-6. 严格校验 `testnet-v0` network bundle，并用选中的 Go revision 重算 genesis block hash；
-7. 验证三个 OCI artifact 的 digest、signer workflow 和 source commit；
-8. 使用 USDB annotated tag 的固定 tagger timestamp 生成确定性 manifest；
-9. 再次读取验证 `usdb-release-manifest.json`，上传 manifest 和 SHA-256，保留 30 天供 review；
-10. 拒绝已经存在未过期同名 candidate artifact 的第二次独立 dispatch，避免 publish 阶段自动选择“最新”。
+4. 在两个仓库分别查找该 tag 上唯一成功的 `USDB Release Build` push run，并校验 locked SourceDAO Fast run；
+5. `nightly/weekly` 额外要求同一 Go revision 上成功的中央长测 run，不允许借用其他 commit 的结果；
+6. 从 run ID、attempt 和 source commit 构造唯一 candidate tag，再把 tag 解析为不可变 OCI digest；
+7. 严格校验 `testnet-v0` network bundle，并用选中的 Go revision 重算 genesis block hash；
+8. 验证三个 OCI artifact 的 digest、signer workflow 和 source commit；
+9. 使用 USDB annotated tag 的固定 tagger timestamp 生成确定性 manifest；
+10. 再次读取验证 `usdb-release-manifest.json`，上传 manifest 和 SHA-256，保留 30 天供 review；
+11. 拒绝已经存在未过期同名 candidate artifact 的第二次独立 dispatch，避免 publish 阶段自动选择“最新”。
 
 不存在 tag、tag 不是 annotated tag、tag target 不在主线、成功 release build 缺失或存在歧义、
 compatibility lock 不匹配、genesis hash 漂移或 attestation 不匹配时都会 fail closed。自动解析只用于
@@ -247,16 +284,22 @@ python3 docker/scripts/tools/release_manifest.py create \
   --source-dao-revision <40-char-sha> \
   --services-image ghcr.io/buckyos/usdb-services@sha256:<digest> \
   --chain-image ghcr.io/buckyos/usdb-chain@sha256:<digest> \
-  --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest>
+  --bitcoin-image ghcr.io/buckyos/usdb-bitcoin-core@sha256:<digest> \
+  --qualification-level fast \
+  --qualification-evidence /path/to/qualification-evidence.json
 ```
 
-当前 v5 candidate manifest 固定以下边界：
+`qualification-evidence.json` 使用 `{"evidence":[...]}` 结构，每条记录冻结 suite、repository、workflow、
+revision、run ID 和 attempt。工具会要求证据集合与所选等级精确相等并与三仓 revision 一致。
+
+当前 v6 candidate manifest 固定以下边界：
 
 - 只接受 canonical `buckyos` repositories 和 GHCR image names；
 - 只接受完整 lowercase Git SHA 和 digest-only image reference；
 - 固定平台为 `linux/amd64`；
 - 绑定 `network.json`、genesis、BTC origin/registry 和 snapshot trusted-key catalog hash；
 - 绑定 Go commit 内的 compatibility lock hash，并拒绝混搭其他 `usdb/SourceDAO` revision；
+- 绑定 `fast/nightly/weekly` 资格及对应的不可变 Actions run 证据；
 - 绑定 data layout、各服务 storage/source identity 和 runtime compatibility ID；
 - 可选 snapshot record、record SHA-256/URL、height、BTC block hash、snapshot ID、下载规模、signer 和
   trusted-key catalog 必须与 tagged bundle 完全一致，且 height 不得超过 BTC index origin；
@@ -315,9 +358,12 @@ node kit 内含 release manifest、network bundle、批准的 snapshot record、
 secret、snapshot DB 或节点数据。安装和运行
 流程见 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
-正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。private key、RPC credential、
+正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。Fast-qualified testnet
+prerelease 同样包含全部安装资产，是否允许进入某个集群由该集群自己的最低 qualification policy 决定。
+private key、RPC credential、
 节点本地 `node.env` 和实际 snapshot 大文件不得进入 GitHub Release。v4 manifest 已冻结 snapshot release
-record、URL、大小、SHA-256、signer 和 catalog hash；节点仍可在 `setup` 中选择 full sync。PoW 校准、
+record、URL、大小、SHA-256、signer 和 catalog hash；v6 进一步冻结 CI qualification。节点仍可在
+`setup` 中选择 full sync。PoW 校准、
 E2E 与人工批准证据继续保留在对应 workflow/deployment record。
 
 ## 7. 当前限制

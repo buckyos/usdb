@@ -37,7 +37,7 @@ class PrepareReleaseNodeKitTests(unittest.TestCase):
         network_identity = build_network_identity(self.bundle)
         content = json.dumps(
             {
-                "schema_version": "usdb-release-manifest:v5",
+                "schema_version": "usdb-release-manifest:v6",
                 "release_id": "usdb-testnet-v0-r1",
                 "network_bundle": network_identity,
                 "snapshot": build_snapshot_state(self.bundle),

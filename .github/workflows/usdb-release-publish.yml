@@ -257,6 +257,7 @@ jobs:
             echo "chain_image=$(jq -er '.images.usdb_chain.reference' "$manifest")"
             echo "bitcoin_image=$(jq -er '.images.bitcoin_core.reference' "$manifest")"
             echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+            echo "qualification_level=$(jq -er '.qualification.level' "$manifest")"
             echo "snapshot_height=$(jq -er '.snapshot.height' "$manifest")"
             echo "snapshot_record_url=$(jq -er '.snapshot.record.url' "$manifest")"
             echo "snapshot_release_id=$(jq -er '.snapshot.snapshot_release_id' "$manifest")"
@@ -383,6 +384,7 @@ jobs:
           GENESIS_HASH: ${{ steps.manifest.outputs.genesis_hash }}
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
+          QUALIFICATION_LEVEL: ${{ steps.manifest.outputs.qualification_level }}
           RELEASE_ID: ${{ github.ref_name }}
           SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
           SNAPSHOT_HEIGHT: ${{ steps.manifest.outputs.snapshot_height }}
@@ -403,6 +405,7 @@ jobs:
           - USDB revision: \`${USDB_REVISION}\`
           - Go-Ethereum revision: \`${GO_ETHEREUM_REVISION}\`
           - SourceDAO revision: \`${SOURCE_DAO_REVISION}\`
+          - Qualification: \`${QUALIFICATION_LEVEL}\`
           - Candidate manifest SHA-256: \`${MANIFEST_SHA256}\`
           - Candidate validation: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/attempts/${CANDIDATE_RUN_ATTEMPT}
           - Optional balance-history snapshot: \`${SNAPSHOT_RELEASE_ID}\` at BTC height \`${SNAPSHOT_HEIGHT}\`
@@ -521,6 +524,8 @@ jobs:
             echo "Release ID: \`${{ github.ref_name }}\`"
             echo
             echo "Manifest SHA-256: \`${{ steps.manifest.outputs.manifest_sha256 }}\`"
+            echo
+            echo "Qualification: \`${{ steps.manifest.outputs.qualification_level }}\`"
             echo
             echo "GitHub Release: ${{ steps.release.outputs.release_url }}"
           } >>"$GITHUB_STEP_SUMMARY"

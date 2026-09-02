@@ -44,6 +44,7 @@ usdb-{testnet|mainnet}-v{network-generation}-r{release-sequence}
 - node data layout、各服务 storage/source identity 和 runtime compatibility ID；
 - Rust/Go/Node、Bitcoin Core、ord 和容器工具版本；
 - 所有实际使用的 binary/image/config/contract/snapshot artifact 的 SHA-256 或 OCI digest；
+- `fast`、`nightly` 或 `weekly` 资格，以及与三仓 revision 精确绑定的 Actions run/attempt 证据；
 - release 提供 snapshot 时记录 content-addressed record URL/hash、height、BTC block hash、snapshot ID、
   signer ID 和 trusted-key catalog SHA-256；节点是否采用它仍属于本地显式选择；
 - 负责构建、复核和批准发布的人员；
@@ -76,6 +77,8 @@ HEAD 的 release manifest，也不是共识输入。正式 release 必须显式�
 状态：`implemented/candidate`
 
 - Fast CI 成功后从主分支冻结 commit 构建 GHCR candidate images；
+- 高频测试网候选可使用 `fast` 资格并照常生成完整可安装 GitHub prerelease；Nightly/Weekly 通过中央
+  coordinator 对 revision lock 组合运行，结果写入新的不可移动 `rN`，不修改已发布 release；
 - 记录工具链和外部依赖版本；
 - 生成 artifact hash；
 - 禁止从未记录的本地 binary 或 mutable host path 直接发布；

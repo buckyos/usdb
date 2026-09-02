@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 
@@ -63,6 +64,14 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
                 f"usdb-chain-image.yml@{self.go_revision}"
             },
         )
+        self.source_dao_runs = self.workflow_runs(
+            revision=self.source_dao_revision,
+            run_id=303,
+            workflow=".github/workflows/usdb-fast.yml",
+            event="push",
+        )
+        self.qualification_runs = {"workflow_runs": []}
+        self.qualification_level = "fast"
 
     def runs(self, *, revision: str, run_id: int, workflows: set[str]) -> dict:
         return {
@@ -87,14 +96,39 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
             ]
         }
 
+    def workflow_runs(
+        self,
+        *,
+        revision: str,
+        run_id: int,
+        workflow: str,
+        event: str,
+    ) -> dict:
+        return {
+            "workflow_runs": [
+                {
+                    "id": run_id,
+                    "run_attempt": 1,
+                    "path": workflow,
+                    "head_sha": revision,
+                    "event": event,
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+            ]
+        }
+
     def resolve(self) -> dict[str, str]:
         return RESOLVER.resolve_candidate(
             compatibility_lock=self.lock,
             usdb_runs=self.usdb_runs,
             go_runs=self.go_runs,
+            source_dao_runs=self.source_dao_runs,
+            qualification_runs=self.qualification_runs,
             usdb_revision=self.usdb_revision,
             go_ethereum_revision=self.go_revision,
             release_id=self.release_id,
+            qualification_level=self.qualification_level,
         )
 
     def test_resolves_locked_revision_and_run_scoped_tags(self) -> None:
@@ -113,6 +147,53 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
             "ghcr.io/buckyos/usdb-bitcoin-core:bitcoin-28.1-"
             f"git-{self.usdb_revision}-run-101-2",
         )
+        evidence = json.loads(resolved["qualification_evidence_json"])["evidence"]
+        self.assertEqual(resolved["qualification_level"], "fast")
+        self.assertEqual(len(evidence), 3)
+        self.assertEqual(
+            {item["repository"] for item in evidence},
+            {"buckyos/go-ethereum", "buckyos/usdb", "buckyos/SourceDAO"},
+        )
+
+    def test_nightly_and_weekly_require_matching_long_test_run(self) -> None:
+        for level in ("nightly", "weekly"):
+            self.qualification_level = level
+            workflow = f".github/workflows/usdb-{level}.yml"
+            self.qualification_runs = self.workflow_runs(
+                revision=self.go_revision,
+                run_id=400 if level == "nightly" else 500,
+                workflow=workflow,
+                event="workflow_dispatch",
+            )
+            resolved = self.resolve()
+            evidence = json.loads(resolved["qualification_evidence_json"])["evidence"]
+            self.assertEqual(evidence[-1]["suite"], level)
+            self.assertEqual(evidence[-1]["workflow"], workflow)
+
+        self.qualification_level = "nightly"
+        self.qualification_runs = {"workflow_runs": []}
+        with self.assertRaisesRegex(ValueError, "missing successful"):
+            self.resolve()
+
+    def test_qualification_rejects_wrong_revision_and_event(self) -> None:
+        self.qualification_level = "weekly"
+        self.qualification_runs = self.workflow_runs(
+            revision="d" * 40,
+            run_id=500,
+            workflow=".github/workflows/usdb-weekly.yml",
+            event="workflow_dispatch",
+        )
+        with self.assertRaisesRegex(ValueError, "missing successful"):
+            self.resolve()
+
+        self.qualification_runs = self.workflow_runs(
+            revision=self.go_revision,
+            run_id=500,
+            workflow=".github/workflows/usdb-weekly.yml",
+            event="push",
+        )
+        with self.assertRaisesRegex(ValueError, "missing successful"):
+            self.resolve()
 
     def test_release_coordinator_must_match_go_lock(self) -> None:
         self.lock["dependencies"]["usdb"]["revision"] = "d" * 40
@@ -132,6 +213,11 @@ class ReleaseCandidateResolverTests(unittest.TestCase):
     def test_missing_image_workflow_is_rejected(self) -> None:
         self.usdb_runs["workflow_runs"][0]["referenced_workflows"].pop()
         with self.assertRaisesRegex(ValueError, "exactly one successful"):
+            self.resolve()
+
+    def test_missing_source_dao_fast_run_is_rejected(self) -> None:
+        self.source_dao_runs = {"workflow_runs": []}
+        with self.assertRaisesRegex(ValueError, "missing successful"):
             self.resolve()
 
     def test_non_push_or_wrong_revision_run_is_rejected(self) -> None:

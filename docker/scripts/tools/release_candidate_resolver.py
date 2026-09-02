@@ -15,6 +15,11 @@ SCHEMA_VERSION = "usdb-ci-revisions:v2"
 GIT_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 RELEASE_WORKFLOW_PATH = ".github/workflows/usdb-release-build.yml"
+SOURCE_DAO_FAST_WORKFLOW_PATH = ".github/workflows/usdb-fast.yml"
+QUALIFICATION_WORKFLOWS = {
+    "nightly": ".github/workflows/usdb-nightly.yml",
+    "weekly": ".github/workflows/usdb-weekly.yml",
+}
 EXPECTED_COORDINATOR = {
     "repository": "buckyos/go-ethereum",
     "directory": "go-ethereum",
@@ -163,16 +168,55 @@ def select_successful_run(
     return {"id": run_id, "attempt": run_attempt}
 
 
+def select_latest_successful_run(
+    payload: dict[str, Any],
+    *,
+    revision: str,
+    repository: str,
+    workflow_path: str,
+    allowed_events: set[str],
+) -> dict[str, int]:
+    require_revision(revision, f"{repository} revision")
+    workflow_runs = payload.get("workflow_runs")
+    if not isinstance(workflow_runs, list):
+        raise ValueError(f"{repository} workflow API response is missing workflow_runs")
+    candidates = [
+        run
+        for run in workflow_runs
+        if isinstance(run, dict)
+        and workflow_path_matches(run.get("path"), workflow_path)
+        and run.get("head_sha") == revision
+        and run.get("event") in allowed_events
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+        and isinstance(run.get("id"), int)
+        and run["id"] > 0
+        and isinstance(run.get("run_attempt"), int)
+        and run["run_attempt"] > 0
+    ]
+    if not candidates:
+        raise ValueError(
+            f"missing successful {repository} {workflow_path} run for revision {revision}"
+        )
+    selected = max(candidates, key=lambda run: (run["id"], run["run_attempt"]))
+    return {"id": selected["id"], "attempt": selected["run_attempt"]}
+
+
 def resolve_candidate(
     *,
     compatibility_lock: dict[str, Any],
     usdb_runs: dict[str, Any],
     go_runs: dict[str, Any],
+    source_dao_runs: dict[str, Any],
+    qualification_runs: dict[str, Any],
     usdb_revision: str,
     go_ethereum_revision: str,
     release_id: str,
+    qualification_level: str,
 ) -> dict[str, str]:
     require_release_id(release_id)
+    if qualification_level not in {"fast", *QUALIFICATION_WORKFLOWS}:
+        raise ValueError("qualification level must be fast, nightly, or weekly")
     source_dao_revision = resolve_locked_revisions(
         compatibility_lock, usdb_revision, go_ethereum_revision
     )
@@ -199,12 +243,68 @@ def resolve_candidate(
             f"usdb-chain-image.yml@{go_ethereum_revision}",
         },
     )
+    source_dao_run = select_latest_successful_run(
+        source_dao_runs,
+        revision=source_dao_revision,
+        repository="buckyos/SourceDAO",
+        workflow_path=SOURCE_DAO_FAST_WORKFLOW_PATH,
+        allowed_events={"push"},
+    )
+    evidence = [
+        {
+            "suite": "fast",
+            "repository": "buckyos/go-ethereum",
+            "workflow": RELEASE_WORKFLOW_PATH,
+            "revision": go_ethereum_revision,
+            "run_id": go_run["id"],
+            "run_attempt": go_run["attempt"],
+        },
+        {
+            "suite": "fast",
+            "repository": "buckyos/usdb",
+            "workflow": RELEASE_WORKFLOW_PATH,
+            "revision": usdb_revision,
+            "run_id": usdb_run["id"],
+            "run_attempt": usdb_run["attempt"],
+        },
+        {
+            "suite": "fast",
+            "repository": "buckyos/SourceDAO",
+            "workflow": SOURCE_DAO_FAST_WORKFLOW_PATH,
+            "revision": source_dao_revision,
+            "run_id": source_dao_run["id"],
+            "run_attempt": source_dao_run["attempt"],
+        },
+    ]
+    if qualification_level != "fast":
+        workflow = QUALIFICATION_WORKFLOWS[qualification_level]
+        qualification_run = select_latest_successful_run(
+            qualification_runs,
+            revision=go_ethereum_revision,
+            repository="buckyos/go-ethereum",
+            workflow_path=workflow,
+            allowed_events={"schedule", "workflow_dispatch"},
+        )
+        evidence.append(
+            {
+                "suite": qualification_level,
+                "repository": "buckyos/go-ethereum",
+                "workflow": workflow,
+                "revision": go_ethereum_revision,
+                "run_id": qualification_run["id"],
+                "run_attempt": qualification_run["attempt"],
+            }
+        )
     return {
         "source_dao_revision": source_dao_revision,
         "usdb_run_id": str(usdb_run["id"]),
         "usdb_run_attempt": str(usdb_run["attempt"]),
         "go_run_id": str(go_run["id"]),
         "go_run_attempt": str(go_run["attempt"]),
+        "qualification_level": qualification_level,
+        "qualification_evidence_json": json.dumps(
+            {"evidence": evidence}, separators=(",", ":"), sort_keys=True
+        ),
         "services_tag": (
             "ghcr.io/buckyos/usdb-services:"
             f"git-{usdb_revision}-run-{usdb_run['id']}-{usdb_run['attempt']}"
@@ -225,9 +325,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--compatibility-lock", type=pathlib.Path, required=True)
     parser.add_argument("--usdb-runs", type=pathlib.Path, required=True)
     parser.add_argument("--go-runs", type=pathlib.Path, required=True)
+    parser.add_argument("--source-dao-runs", type=pathlib.Path, required=True)
+    parser.add_argument("--qualification-runs", type=pathlib.Path, required=True)
     parser.add_argument("--usdb-revision", required=True)
     parser.add_argument("--go-ethereum-revision", required=True)
     parser.add_argument("--release-id", required=True)
+    parser.add_argument(
+        "--qualification-level", choices=("fast", "nightly", "weekly"), required=True
+    )
     parser.add_argument("--github-output", type=pathlib.Path)
     return parser.parse_args()
 
@@ -239,9 +344,12 @@ def main() -> int:
             compatibility_lock=load_json(args.compatibility_lock),
             usdb_runs=load_json(args.usdb_runs),
             go_runs=load_json(args.go_runs),
+            source_dao_runs=load_json(args.source_dao_runs),
+            qualification_runs=load_json(args.qualification_runs),
             usdb_revision=args.usdb_revision,
             go_ethereum_revision=args.go_ethereum_revision,
             release_id=args.release_id,
+            qualification_level=args.qualification_level,
         )
         if args.github_output is not None:
             with args.github_output.open("a", encoding="utf-8") as output:

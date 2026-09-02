@@ -54,6 +54,57 @@ class ReleaseManifestTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def qualification_evidence(self, level: str = "fast") -> list[dict]:
+        evidence = [
+            {
+                "suite": "fast",
+                "repository": "buckyos/go-ethereum",
+                "workflow": ".github/workflows/usdb-release-build.yml",
+                "revision": "a" * 40,
+                "run_id": 101,
+                "run_attempt": 1,
+            },
+            {
+                "suite": "fast",
+                "repository": "buckyos/usdb",
+                "workflow": ".github/workflows/usdb-release-build.yml",
+                "revision": "b" * 40,
+                "run_id": 102,
+                "run_attempt": 2,
+            },
+            {
+                "suite": "fast",
+                "repository": "buckyos/SourceDAO",
+                "workflow": ".github/workflows/usdb-fast.yml",
+                "revision": "c" * 40,
+                "run_id": 103,
+                "run_attempt": 1,
+            },
+        ]
+        if level == "nightly":
+            evidence.append(
+                {
+                    "suite": "nightly",
+                    "repository": "buckyos/go-ethereum",
+                    "workflow": ".github/workflows/usdb-nightly.yml",
+                    "revision": "a" * 40,
+                    "run_id": 201,
+                    "run_attempt": 1,
+                }
+            )
+        if level == "weekly":
+            evidence.append(
+                {
+                    "suite": "weekly",
+                    "repository": "buckyos/go-ethereum",
+                    "workflow": ".github/workflows/usdb-weekly.yml",
+                    "revision": "a" * 40,
+                    "run_id": 301,
+                    "run_attempt": 1,
+                }
+            )
+        return evidence
+
     def valid_manifest(self) -> dict:
         return RELEASE.create_manifest(
             bundle_dir=self.bundle,
@@ -70,6 +121,8 @@ class ReleaseManifestTests(unittest.TestCase):
                 "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                 "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
             },
+            qualification_level="fast",
+            qualification_evidence=self.qualification_evidence(),
         )
 
     def test_candidate_round_trip_is_stable(self) -> None:
@@ -132,6 +185,8 @@ class ReleaseManifestTests(unittest.TestCase):
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                     "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
                 },
+                qualification_level="fast",
+                qualification_evidence=self.qualification_evidence(),
             )
 
     def test_release_id_must_match_immutable_tag_format(self) -> None:
@@ -151,7 +206,45 @@ class ReleaseManifestTests(unittest.TestCase):
                     "usdb_chain": "ghcr.io/buckyos/usdb-chain@sha256:" + "e" * 64,
                     "bitcoin_core": "ghcr.io/buckyos/usdb-bitcoin-core@sha256:" + "f" * 64,
                 },
+                qualification_level="fast",
+                qualification_evidence=self.qualification_evidence(),
             )
+
+    def test_qualification_levels_require_exact_workflow_evidence(self) -> None:
+        revisions = {
+            "go_ethereum": "a" * 40,
+            "usdb": "b" * 40,
+            "source_dao": "c" * 40,
+        }
+        for level in ("fast", "nightly", "weekly"):
+            qualification = RELEASE.build_qualification(
+                level, self.qualification_evidence(level), revisions
+            )
+            self.assertEqual(qualification["level"], level)
+            self.assertEqual(
+                qualification["evidence"],
+                sorted(
+                    self.qualification_evidence(level),
+                    key=lambda item: (
+                        item["suite"],
+                        item["repository"],
+                        item["workflow"],
+                    ),
+                ),
+            )
+
+        with self.assertRaisesRegex(ValueError, "does not satisfy"):
+            RELEASE.build_qualification("nightly", self.qualification_evidence(), revisions)
+        with self.assertRaisesRegex(ValueError, "selected source"):
+            tampered = self.qualification_evidence()
+            tampered[0]["revision"] = "d" * 40
+            RELEASE.build_qualification("fast", tampered, revisions)
+
+    def test_manifest_rejects_qualification_tamper(self) -> None:
+        manifest = self.valid_manifest()
+        manifest["qualification"]["level"] = "nightly"
+        with self.assertRaisesRegex(ValueError, "does not satisfy"):
+            RELEASE.validate_manifest(manifest, self.bundle, self.compatibility_lock)
 
     def test_image_source_revision_mismatch_is_rejected(self) -> None:
         manifest = self.valid_manifest()

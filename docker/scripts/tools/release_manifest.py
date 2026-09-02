@@ -26,7 +26,8 @@ from validate_network_bundle import (  # noqa: E402
 from snapshot_distribution import validate_release_record  # noqa: E402
 from runtime_compatibility import build_runtime_compatibility  # noqa: E402
 
-SCHEMA_VERSION = "usdb-release-manifest:v5"
+SCHEMA_VERSION = "usdb-release-manifest:v6"
+QUALIFICATION_SCHEMA_VERSION = "usdb-ci-qualification:v1"
 SNAPSHOT_RECORD_RELATIVE_PATH = Path(
     "snapshots/balance-history-snapshot-release-record.json"
 )
@@ -70,6 +71,20 @@ REQUIRED_CHECKS = {
     "usdb": ["Rust workspace"],
     "source_dao": ["SourceDAO contracts"],
 }
+QUALIFICATION_LEVELS = {"fast", "nightly", "weekly"}
+QUALIFICATION_EVIDENCE = {
+    "fast": {
+        ("fast", "buckyos/go-ethereum", ".github/workflows/usdb-release-build.yml", "go_ethereum"),
+        ("fast", "buckyos/usdb", ".github/workflows/usdb-release-build.yml", "usdb"),
+        ("fast", "buckyos/SourceDAO", ".github/workflows/usdb-fast.yml", "source_dao"),
+    },
+    "nightly": {
+        ("nightly", "buckyos/go-ethereum", ".github/workflows/usdb-nightly.yml", "go_ethereum"),
+    },
+    "weekly": {
+        ("weekly", "buckyos/go-ethereum", ".github/workflows/usdb-weekly.yml", "go_ethereum"),
+    },
+}
 
 
 def require_exact_keys(value: dict[str, Any], expected: set[str], context: str) -> None:
@@ -106,6 +121,68 @@ def require_image_reference(value: Any, expected_name: str, context: str) -> str
     pattern = re.compile(rf"^{re.escape(expected_name)}@sha256:[0-9a-f]{{64}}$")
     require(pattern.fullmatch(value) is not None, f"{context} must use the canonical GHCR digest reference")
     return value
+
+
+def build_qualification(
+    level: str,
+    evidence: list[dict[str, Any]],
+    revisions: dict[str, str],
+) -> dict[str, Any]:
+    require(level in QUALIFICATION_LEVELS, "unsupported qualification level")
+    require(isinstance(evidence, list), "qualification evidence must be an array")
+    required = set(QUALIFICATION_EVIDENCE["fast"])
+    if level != "fast":
+        required.update(QUALIFICATION_EVIDENCE[level])
+
+    normalized: list[dict[str, Any]] = []
+    actual: set[tuple[str, str, str, str]] = set()
+    for index, entry in enumerate(evidence):
+        context = f"qualification.evidence[{index}]"
+        require(isinstance(entry, dict), f"{context} must be an object")
+        require_exact_keys(
+            entry,
+            {"suite", "repository", "workflow", "revision", "run_id", "run_attempt"},
+            context,
+        )
+        suite = entry["suite"]
+        repository = entry["repository"]
+        workflow = entry["workflow"]
+        revision = require_revision(entry["revision"], f"{context}.revision")
+        require(isinstance(suite, str), f"{context}.suite must be a string")
+        require(isinstance(repository, str), f"{context}.repository must be a string")
+        require(isinstance(workflow, str), f"{context}.workflow must be a string")
+        run_id = entry["run_id"]
+        run_attempt = entry["run_attempt"]
+        require(isinstance(run_id, int) and not isinstance(run_id, bool) and run_id > 0, f"{context}.run_id must be a positive integer")
+        require(isinstance(run_attempt, int) and not isinstance(run_attempt, bool) and run_attempt > 0, f"{context}.run_attempt must be a positive integer")
+
+        matching = [
+            spec
+            for spec in required
+            if spec[0] == suite and spec[1] == repository and spec[2] == workflow
+        ]
+        require(len(matching) == 1, f"{context} is not required by qualification level {level}")
+        source_key = matching[0][3]
+        require(revision == revisions[source_key], f"{context}.revision does not match selected source")
+        require(matching[0] not in actual, f"duplicate qualification evidence for {repository} {workflow}")
+        actual.add(matching[0])
+        normalized.append(dict(entry))
+
+    require(actual == required, "qualification evidence does not satisfy the selected level")
+    normalized.sort(key=lambda item: (item["suite"], item["repository"], item["workflow"]))
+    return {
+        "schema_version": QUALIFICATION_SCHEMA_VERSION,
+        "level": level,
+        "evidence": normalized,
+    }
+
+
+def load_qualification_evidence(path: Path) -> list[dict[str, Any]]:
+    payload = read_json(path)
+    require_exact_keys(payload, {"evidence"}, "qualification evidence document")
+    evidence = payload["evidence"]
+    require(isinstance(evidence, list), "qualification evidence document must contain an array")
+    return evidence
 
 
 def build_network_identity(bundle_dir: Path) -> dict[str, Any]:
@@ -258,6 +335,8 @@ def create_manifest(
     compatibility_lock_path: Path,
     revisions: dict[str, str],
     image_references: dict[str, str],
+    qualification_level: str,
+    qualification_evidence: list[dict[str, Any]],
 ) -> dict[str, Any]:
     require(RELEASE_ID_RE.fullmatch(release_id) is not None, "release_id contains unsupported characters")
     require_created_at(created_at_utc)
@@ -304,6 +383,9 @@ def create_manifest(
         "repositories": repositories,
         "images": images,
         "ci_required_checks": {key: list(value) for key, value in REQUIRED_CHECKS.items()},
+        "qualification": build_qualification(
+            qualification_level, qualification_evidence, revisions
+        ),
         "snapshot": build_snapshot_state(bundle_dir),
         "runtime_compatibility": build_runtime_compatibility(network_identity),
     }
@@ -324,6 +406,7 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
             "repositories",
             "images",
             "ci_required_checks",
+            "qualification",
             "snapshot",
             "runtime_compatibility",
         },
@@ -415,6 +498,24 @@ def validate_manifest(manifest: dict[str, Any], bundle_dir: Path, compatibility_
     checks = manifest["ci_required_checks"]
     require(isinstance(checks, dict), "ci_required_checks must be an object")
     require(checks == REQUIRED_CHECKS, "ci_required_checks do not match the v1 release gate")
+    qualification = manifest["qualification"]
+    require(isinstance(qualification, dict), "qualification must be an object")
+    require_exact_keys(
+        qualification,
+        {"schema_version", "level", "evidence"},
+        "qualification",
+    )
+    require(
+        qualification["schema_version"] == QUALIFICATION_SCHEMA_VERSION,
+        "unsupported qualification schema",
+    )
+    require(
+        qualification
+        == build_qualification(
+            qualification["level"], qualification["evidence"], selected_revisions
+        ),
+        "qualification is not canonical",
+    )
     require(
         manifest["snapshot"] == build_snapshot_state(bundle_dir),
         "candidate snapshot state does not match the network bundle",
@@ -462,6 +563,8 @@ def parse_args() -> argparse.Namespace:
     create.add_argument("--services-image", required=True)
     create.add_argument("--chain-image", required=True)
     create.add_argument("--bitcoin-image", required=True)
+    create.add_argument("--qualification-level", choices=sorted(QUALIFICATION_LEVELS), required=True)
+    create.add_argument("--qualification-evidence", type=Path, required=True)
 
     validate = subparsers.add_parser("validate", help="validate an existing manifest")
     validate.add_argument("--bundle-dir", type=Path, required=True)
@@ -490,6 +593,10 @@ def main() -> int:
                     "usdb_chain": args.chain_image,
                     "bitcoin_core": args.bitcoin_image,
                 },
+                qualification_level=args.qualification_level,
+                qualification_evidence=load_qualification_evidence(
+                    args.qualification_evidence.resolve()
+                ),
             )
             write_manifest(args.output.resolve(), manifest)
             path = args.output.resolve()
