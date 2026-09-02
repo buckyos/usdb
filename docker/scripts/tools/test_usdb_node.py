@@ -387,7 +387,12 @@ class UsdbNodeTests(unittest.TestCase):
             calls.append((helper, tuple(arguments)))
             return mock.Mock(returncode=0)
 
-        with mock.patch.object(NODE, "doctor"), mock.patch.object(NODE, "run_helper", side_effect=record):
+        output = io.StringIO()
+        with (
+            mock.patch.object(NODE, "doctor"),
+            mock.patch.object(NODE, "run_helper", side_effect=record),
+            mock.patch("sys.stdout", new=output),
+        ):
             NODE.start_node(layout, sync_timeout_secs=123, pull=True)
         self.assertEqual(
             calls,
@@ -400,6 +405,178 @@ class UsdbNodeTests(unittest.TestCase):
                 ("run_testnet_runtime.sh", ("up",)),
             ],
         )
+        rendered = output.getvalue()
+        for phase in (
+            "preflight",
+            "images",
+            "bitcoin",
+            "balance-history",
+            "balance-history-readiness",
+            "indexer-and-chain",
+            "ready",
+        ):
+            self.assertIn(f"phase={phase}:", rendered)
+
+    def test_dashboard_suppresses_only_duplicate_helper_heartbeats(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+
+        environment = NODE._helper_environment(
+            layout,
+            sync_timeout_secs=123,
+            quiet_progress=True,
+        )
+
+        self.assertEqual(environment["BTC_READY_WAIT_TIMEOUT_SECS"], "123")
+        self.assertEqual(environment["BTC_READY_PROGRESS_INTERVAL_SECS"], "0")
+        self.assertEqual(environment["USDB_READINESS_PROGRESS_INTERVAL_SECS"], "0")
+        self.assertEqual(environment["USDB_TESTNET_BUNDLE_DIR"], str(layout.bundle_dir))
+
+    def test_parallel_snapshot_progress_counts_completed_ranges_not_preallocation(self) -> None:
+        staging = Path(self.temporary.name) / "snapshot-staging"
+        staging.mkdir()
+        snapshot = staging / "snapshot.db"
+        with snapshot.open("wb") as output:
+            output.truncate(100)
+        part = staging / "snapshot.db.part"
+        with part.open("wb") as output:
+            output.truncate(100)
+        (staging / "snapshot.db.part.ranges.json").write_text(
+            json.dumps(
+                {
+                    "chunk_size_bytes": 25,
+                    "completed_chunks": [0, 2],
+                }
+            ),
+            encoding="utf-8",
+        )
+        snapshot.unlink()
+        (staging / "manifest.json").write_bytes(b"0123456789")
+        record = {
+            "files": [
+                {"path": "snapshot.db", "size": 100},
+                {"path": "manifest.json", "size": 10},
+            ]
+        }
+
+        self.assertEqual(NODE._snapshot_staging_bytes(staging, record), 60)
+
+    def test_progress_renderer_has_stable_component_rows(self) -> None:
+        components = [
+            NODE._component_progress(component_id, "WAITING", "pending")
+            for component_id, _label in NODE.PROGRESS_COMPONENTS
+        ]
+        report = {
+            "release_id": "usdb-testnet-v0-r1",
+            "observed_at": "2026-09-02T00:00:00+00:00",
+            "overall_state": "WAITING",
+            "components": components,
+        }
+
+        rendered = NODE.render_node_progress(report, phase="bitcoin", width=120)
+
+        self.assertIn("phase=bitcoin", rendered)
+        positions = [rendered.index(label) for _component_id, label in NODE.PROGRESS_COMPONENTS]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(rendered.count("[------------------------]"), 5)
+
+    def test_chain_progress_verifies_identity_and_reports_sync(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        running = {"state": "running", "health": "healthy", "exit_code": None}
+        expected_hash = layout.network_identity["genesis_block_hash"]
+        results = {
+            "eth_chainId": hex(layout.network_identity["chain_id"]),
+            "eth_getBlockByNumber": {"hash": expected_hash},
+            "eth_syncing": {"currentBlock": "0x32", "highestBlock": "0x64"},
+            "eth_blockNumber": "0x32",
+            "net_peerCount": "0x3",
+        }
+        with mock.patch.object(NODE, "_json_rpc_batch", return_value=results):
+            component = NODE._chain_component(layout, {}, running)
+
+        self.assertEqual(component["state"], "SYNCING")
+        self.assertEqual(component["current"], 50)
+        self.assertEqual(component["total"], 100)
+        self.assertEqual(component["progress_percent"], 50.0)
+
+        tampered = dict(results)
+        tampered["eth_chainId"] = hex(layout.network_identity["chain_id"] + 1)
+        with mock.patch.object(NODE, "_json_rpc_batch", return_value=tampered):
+            component = NODE._chain_component(layout, {}, running)
+        self.assertEqual(component["state"], "BLOCKED")
+
+    def test_progress_view_cross_checks_all_running_components(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "progress-view-data")
+        running = {"state": "running", "health": "healthy", "exit_code": None}
+        services = {
+            "btc-node": running,
+            "balance-history": running,
+            "usdb-indexer": running,
+            "usdb-chain": running,
+        }
+        bitcoin = {
+            "schema_version": "usdb-bitcoin-readiness:v1",
+            "ready": True,
+            "status": {
+                "blocks": 963_800,
+                "headers": 963_800,
+                "verification_progress": 1.0,
+                "txindex_synced": True,
+                "txindex_height": 963_800,
+                "connections": 8,
+            },
+            "blockers": [],
+        }
+        readiness = [
+            (
+                {
+                    "service": "balance-history",
+                    "consensus_ready": False,
+                    "current": 900_000,
+                    "total": 963_800,
+                },
+                None,
+            ),
+            (
+                {
+                    "service": "usdb-indexer",
+                    "consensus_ready": True,
+                    "current": 963_800,
+                    "total": 963_800,
+                },
+                None,
+            ),
+        ]
+        chain_results = {
+            "eth_chainId": hex(layout.network_identity["chain_id"]),
+            "eth_getBlockByNumber": {
+                "hash": layout.network_identity["genesis_block_hash"]
+            },
+            "eth_syncing": False,
+            "eth_blockNumber": "0x1",
+            "net_peerCount": "0x1",
+        }
+        with (
+            mock.patch.object(NODE, "_collect_compose_services", return_value=services),
+            mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=bitcoin),
+            mock.patch.object(NODE, "_read_service_readiness", side_effect=readiness),
+            mock.patch.object(NODE, "_json_rpc_batch", return_value=chain_results),
+        ):
+            report = NODE.collect_node_progress(layout)
+
+        self.assertEqual(report["schema_version"], "usdb-node-progress:v1")
+        self.assertEqual(report["overall_state"], "SYNCING")
+        self.assertEqual(
+            [component["state"] for component in report["components"]],
+            ["SKIPPED", "READY", "SYNCING", "READY", "READY"],
+        )
+
+    def test_status_parser_exposes_watch_and_progress_json(self) -> None:
+        watch = NODE.build_parser().parse_args(["status", "--watch", "--refresh-secs", "2"])
+        self.assertTrue(watch.watch)
+        self.assertEqual(watch.refresh_secs, 2)
+        progress = NODE.build_parser().parse_args(["status", "--progress-json"])
+        self.assertTrue(progress.progress_json)
 
     def test_status_reports_unconfigured_without_runtime_queries(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -510,6 +687,58 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("connection refused", output.getvalue().lower())
         self.assertIn("STARTING", output.getvalue())
+
+    def test_status_reports_bitcoin_ibd_as_starting_with_progress(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "bitcoin-ibd-status-data")
+        calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def starting(
+            _layout: object,
+            helper: str,
+            arguments: list[str],
+            **_kwargs: object,
+        ) -> object:
+            calls.append((helper, tuple(arguments)))
+            if arguments[0] == "progress":
+                output = json.dumps(
+                    {
+                        "schema_version": "usdb-bitcoin-readiness:v1",
+                        "ready": False,
+                        "status": {
+                            "blocks": 236_706,
+                            "headers": 965_135,
+                            "verification_progress": 0.0116,
+                            "txindex_synced": False,
+                            "txindex_height": 236_701,
+                            "connections": 8,
+                        },
+                        "blockers": ["initialblockdownload=true"],
+                    }
+                )
+            elif helper == "run_testnet_bitcoin.sh":
+                output = json.dumps(
+                    [{"Service": "btc-node", "State": "running", "Health": "unhealthy"}]
+                )
+            else:
+                output = "[]"
+            return mock.Mock(returncode=0, stdout=output, stderr="")
+
+        with mock.patch.object(NODE, "run_helper", side_effect=starting):
+            report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "STARTING")
+        runtime = report["checks"]["runtime"]
+        self.assertEqual(runtime["bitcoin_progress"]["status"]["blocks"], 236_706)
+        self.assertEqual(
+            calls[-1],
+            ("run_testnet_bitcoin.sh", ("progress",)),
+        )
+        output = io.StringIO()
+        with mock.patch("sys.stdout", new=output):
+            NODE._print_node_status_report(report)
+        self.assertIn("Bitcoin sync", output.getvalue())
+        self.assertIn("verification=1.16%", output.getvalue())
 
     def test_status_ready_runs_readiness_after_all_core_services_are_running(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

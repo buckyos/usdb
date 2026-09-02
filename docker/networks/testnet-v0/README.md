@@ -62,6 +62,8 @@ usdb-node up
 `usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，并选择
 external firewall 或 managed UFW profile；
 `usdb-node up` 依次等待 Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
+交互式启动会显示 snapshot、Bitcoin、balance-history、usdb-indexer 和 USDB chain 的固定进度面板；
+`usdb-node status --watch` 可在独立终端持续观察，非 TTY 仍输出带时间的 heartbeat。
 中断后重复执行会从现有数据继续。详细契约见
 [`doc/publish/usdb-release-node-kit-and-deployment.md`](../../../doc/publish/usdb-release-node-kit-and-deployment.md)。
 共享 runtime 默认把每个容器的 JSON log 限制为 `5 x 100 MiB`，并给长服务 2 分钟优雅停止时间；

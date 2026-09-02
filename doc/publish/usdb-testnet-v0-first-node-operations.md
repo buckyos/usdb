@@ -235,6 +235,16 @@ usdb-node status
 `usdb-node status --json`，以 `overall_state` 和 `next_actions` 为准。只有 `READY` 的退出码是 `0`；
 `READY_TO_START` 表示应执行 `up`，不是安装损坏。
 
+首次同步时，Docker 将 Bitcoin 容器显示为 `unhealthy`，只表示完整 readiness 尚未满足。只要容器仍在
+running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，`usdb-node status` 会将其归为
+`STARTING` 并显示当前 blocks/headers、verification、txindex 和 peer；只有进程退出、所有服务启动后仍
+不健康或 readiness 失败，才归为 `DEGRADED`。
+
+交互式 `up/resume` 会固定显示 snapshot、Bitcoin、balance-history、usdb-indexer、USDB chain 五行进度；
+另一个 SSH 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
+`usdb-node status --progress-json`，schema 为 `usdb-node-progress:v1`。面板不会改变上述顺序或门禁；
+USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
+
 部署中断后优先运行 `usdb-node resume --dry-run` 查看允许的转换，再运行 `usdb-node resume`。它只自动续传
 已选择的官方 snapshot，或继续 `READY_TO_START/STARTING` 的启动流程；release activation 必须显式添加
 `--activate-release`。`UNCONFIGURED/DEGRADED/BLOCKED` 会停止并打印具体失败 check、人工命令和保留现场建议，
@@ -317,9 +327,14 @@ SSH 断开或等待超时不会删除 Bitcoin 数据。重新连接后执行：
 
 ```bash
 docker/scripts/tools/run_testnet_bitcoin.sh ps
+docker/scripts/tools/run_testnet_bitcoin.sh progress
 docker/scripts/tools/run_testnet_bitcoin.sh status
 docker/scripts/tools/run_testnet_bitcoin.sh wait
 ```
+
+`up/resume/wait` 会在开始等待时立即输出一次进度，之后定期输出带 UTC 时间和 elapsed 的 heartbeat。
+`progress` 是单次只读查询，输出 `usdb-bitcoin-readiness:v1` JSON；`ready=false` 代表仍在正常门禁内，
+并不等同于进程故障。
 
 只有 readiness 同时确认 `chain=main`、`pruned=false`、`initialblockdownload=false`、
 `blocks=headers`、txindex 同高度、tip 新鲜且存在 peer，才进入下一阶段。

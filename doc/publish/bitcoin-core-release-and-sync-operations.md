@@ -101,9 +101,14 @@ docker/scripts/tools/run_testnet_bitcoin.sh up
 ```bash
 docker/scripts/tools/run_testnet_bitcoin.sh ps
 docker/scripts/tools/run_testnet_bitcoin.sh logs
+docker/scripts/tools/run_testnet_bitcoin.sh progress
 docker/scripts/tools/run_testnet_bitcoin.sh status
 docker/scripts/tools/run_testnet_bitcoin.sh wait
 ```
+
+`up/wait` 会立即输出一次等待状态，之后默认每 60 秒向 stderr 输出 UTC 时间、elapsed、blocks/headers、
+Bitcoin Core verification progress、txindex 高度、peer 数和当前 blockers。`progress` 只查询一次，输出
+`usdb-bitcoin-readiness:v1` JSON，适合监控程序和另一条 SSH 会话读取；它不会改变容器或同步状态。
 
 readiness 必须同时满足：
 

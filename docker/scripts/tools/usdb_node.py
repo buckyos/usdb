@@ -15,6 +15,10 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
 from contextlib import contextmanager, nullcontext, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -67,7 +71,16 @@ RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
 NODE_RESUME_SCHEMA_VERSION = "usdb-node-resume:v1"
+NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v1"
 MAX_RESUME_TRANSITIONS = 4
+DEFAULT_PROGRESS_REFRESH_SECS = 5.0
+PROGRESS_COMPONENTS = (
+    ("snapshot", "Snapshot"),
+    ("bitcoin", "Bitcoin"),
+    ("balance_history", "Balance history"),
+    ("usdb_indexer", "USDB indexer"),
+    ("usdb_chain", "USDB chain"),
+)
 CORE_RUNTIME_SERVICES = (
     "btc-node",
     "balance-history",
@@ -951,7 +964,12 @@ def install_snapshot_release(
     return installed.release_dir
 
 
-def _helper_environment(layout: ReleaseLayout, sync_timeout_secs: int | None = None) -> dict[str, str]:
+def _helper_environment(
+    layout: ReleaseLayout,
+    sync_timeout_secs: int | None = None,
+    *,
+    quiet_progress: bool = False,
+) -> dict[str, str]:
     environment = os.environ.copy()
     environment["USDB_TESTNET_BUNDLE_DIR"] = str(layout.bundle_dir)
     environment["USDB_TESTNET_NODE_ENV"] = str(layout.node_env)
@@ -959,6 +977,9 @@ def _helper_environment(layout: ReleaseLayout, sync_timeout_secs: int | None = N
     environment["USDB_TESTNET_BITCOIN_PROJECT_NAME"] = f"{layout.bundle_id}-bitcoin"
     if sync_timeout_secs is not None:
         environment["BTC_READY_WAIT_TIMEOUT_SECS"] = str(sync_timeout_secs)
+    if quiet_progress:
+        environment["BTC_READY_PROGRESS_INTERVAL_SECS"] = "0"
+        environment["USDB_READINESS_PROGRESS_INTERVAL_SECS"] = "0"
     return environment
 
 
@@ -971,6 +992,8 @@ def run_helper(
     sync_timeout_secs: int | None = None,
     capture_output: bool = False,
     output_to_stderr: bool = False,
+    quiet_progress: bool = False,
+    command_timeout_secs: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     path = layout.kit_root / "docker/scripts/tools" / helper
     if not path.is_file():
@@ -979,12 +1002,18 @@ def run_helper(
         raise ValueError("helper output cannot be captured and redirected simultaneously")
     options: dict[str, Any] = {
         "check": check,
-        "env": _helper_environment(layout, sync_timeout_secs),
+        "env": _helper_environment(
+            layout,
+            sync_timeout_secs,
+            quiet_progress=quiet_progress,
+        ),
         "text": True,
         "capture_output": capture_output,
     }
     if output_to_stderr:
         options["stdout"] = sys.stderr
+    if command_timeout_secs is not None:
+        options["timeout"] = command_timeout_secs
     return subprocess.run([str(path), *arguments], **options)
 
 
@@ -1112,32 +1141,97 @@ def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
         )
 
 
+def _print_startup_phase(
+    phase: str,
+    detail: str,
+    *,
+    output_to_stderr: bool,
+) -> None:
+    output = sys.stderr if output_to_stderr else sys.stdout
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"[{timestamp}] [usdb-node] phase={phase}: {detail}", file=output, flush=True)
+
+
 def start_node(
     layout: ReleaseLayout,
     *,
     sync_timeout_secs: int,
     pull: bool,
     output_to_stderr: bool = False,
+    progress_monitor: NodeProgressMonitor | None = None,
 ) -> None:
+    owns_monitor = progress_monitor is None
+    monitor = progress_monitor or NodeProgressMonitor(
+        layout,
+        enabled=(
+            not output_to_stderr and sys.stdout.isatty() and sys.stderr.isatty()
+        ),
+    )
+    context = monitor if owns_monitor else nullcontext(monitor)
+    with context:
+        _start_node(
+            layout,
+            sync_timeout_secs=sync_timeout_secs,
+            pull=pull,
+            output_to_stderr=output_to_stderr,
+            progress_monitor=monitor,
+        )
+
+
+def _start_node(
+    layout: ReleaseLayout,
+    *,
+    sync_timeout_secs: int,
+    pull: bool,
+    output_to_stderr: bool,
+    progress_monitor: NodeProgressMonitor,
+) -> None:
+    progress_monitor.set_phase("preflight")
+    _print_startup_phase(
+        "preflight",
+        "validating host, release, configuration, data identity and network policy",
+        output_to_stderr=output_to_stderr,
+    )
     doctor(layout, output_to_stderr=output_to_stderr)
     if pull:
+        progress_monitor.set_phase("images")
+        _print_startup_phase(
+            "images",
+            "pulling digest-pinned Bitcoin and USDB runtime images",
+            output_to_stderr=output_to_stderr,
+        )
         run_helper(
             layout,
             "run_testnet_bitcoin.sh",
             ["pull"],
             output_to_stderr=output_to_stderr,
+            quiet_progress=progress_monitor.enabled,
         )
         run_helper(
             layout,
             "run_testnet_runtime.sh",
             ["pull"],
             output_to_stderr=output_to_stderr,
+            quiet_progress=progress_monitor.enabled,
         )
+    progress_monitor.set_phase("bitcoin")
+    _print_startup_phase(
+        "bitcoin",
+        "starting Bitcoin Core and waiting for mainnet IBD, tip and txindex readiness",
+        output_to_stderr=output_to_stderr,
+    )
     run_helper(
         layout,
         "run_testnet_bitcoin.sh",
         ["up"],
         sync_timeout_secs=sync_timeout_secs,
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("balance-history")
+    _print_startup_phase(
+        "balance-history",
+        "starting snapshot loader and balance-history",
         output_to_stderr=output_to_stderr,
     )
     run_helper(
@@ -1145,17 +1239,38 @@ def start_node(
         "run_testnet_runtime.sh",
         ["up-data"],
         output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("balance-history-readiness")
+    _print_startup_phase(
+        "balance-history-readiness",
+        "waiting for balance-history consensus readiness",
+        output_to_stderr=output_to_stderr,
     )
     run_helper(
         layout,
         "run_testnet_runtime.sh",
         ["wait-data", str(sync_timeout_secs)],
         output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("indexer-and-chain")
+    _print_startup_phase(
+        "indexer-and-chain",
+        "starting usdb-indexer, waiting for consensus readiness, then starting the USDB chain",
+        output_to_stderr=output_to_stderr,
     )
     run_helper(
         layout,
         "run_testnet_runtime.sh",
         ["up"],
+        output_to_stderr=output_to_stderr,
+        quiet_progress=progress_monitor.enabled,
+    )
+    progress_monitor.set_phase("ready")
+    _print_startup_phase(
+        "ready",
+        "Bitcoin, balance-history, usdb-indexer and USDB chain startup gates passed",
         output_to_stderr=output_to_stderr,
     )
 
@@ -1199,6 +1314,104 @@ def _normalize_compose_service(item: dict[str, Any]) -> tuple[str, dict[str, Any
     }
 
 
+def _bitcoin_startup_progress(
+    layout: ReleaseLayout,
+    *,
+    command_timeout_secs: float | None = None,
+) -> dict[str, Any] | None:
+    result = run_helper(
+        layout,
+        "run_testnet_bitcoin.sh",
+        ["progress"],
+        check=False,
+        capture_output=True,
+        command_timeout_secs=command_timeout_secs,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        report = json.loads((result.stdout or "").strip())
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(report, dict)
+        or report.get("schema_version") != "usdb-bitcoin-readiness:v1"
+        or not isinstance(report.get("ready"), bool)
+        or not isinstance(report.get("blockers"), list)
+    ):
+        return None
+    status = report.get("status")
+    if status is not None and not isinstance(status, dict):
+        return None
+    return report
+
+
+def _bitcoin_progress_summary(report: dict[str, Any]) -> str:
+    status = report.get("status")
+    if not isinstance(status, dict):
+        blockers = report.get("blockers", [])
+        return f"readiness unavailable: {'; '.join(str(item) for item in blockers)}"
+    blocks = status.get("blocks", "unknown")
+    headers = status.get("headers", "unknown")
+    verification = status.get("verification_progress")
+    verification_text = (
+        f"{verification * 100:.2f}%"
+        if isinstance(verification, (int, float)) and not isinstance(verification, bool)
+        else "unknown"
+    )
+    txindex_state = "synced" if status.get("txindex_synced") is True else "indexing"
+    txindex_height = status.get("txindex_height", "unknown")
+    connections = status.get("connections", "unknown")
+    return (
+        f"blocks={blocks}/{headers}, verification={verification_text}, "
+        f"txindex={txindex_state}@{txindex_height}, peers={connections}"
+    )
+
+
+def _snapshot_staging_bytes(staging: Path, record: dict[str, Any]) -> int:
+    completed_bytes = 0
+    for item in record["files"]:
+        expected_size = item["size"]
+        final_path = staging / item["path"]
+        if final_path.is_file() and not final_path.is_symlink():
+            completed_bytes += min(final_path.stat().st_size, expected_size)
+            continue
+
+        part_path = final_path.with_name(final_path.name + ".part")
+        if not part_path.is_file() or part_path.is_symlink():
+            continue
+        range_state_path = part_path.with_name(part_path.name + ".ranges.json")
+        if not range_state_path.is_file() or range_state_path.is_symlink():
+            completed_bytes += min(part_path.stat().st_size, expected_size)
+            continue
+        try:
+            state = _load_json(range_state_path)
+            chunk_size = state.get("chunk_size_bytes")
+            completed_chunks = state.get("completed_chunks")
+            if (
+                not isinstance(chunk_size, int)
+                or isinstance(chunk_size, bool)
+                or chunk_size <= 0
+                or not isinstance(completed_chunks, list)
+            ):
+                continue
+            chunk_count = (expected_size + chunk_size - 1) // chunk_size
+            indexes = {
+                index
+                for index in completed_chunks
+                if isinstance(index, int)
+                and not isinstance(index, bool)
+                and 0 <= index < chunk_count
+            }
+            completed_bytes += sum(
+                min(chunk_size, expected_size - index * chunk_size)
+                for index in indexes
+            )
+        except (OSError, ValueError):
+            continue
+    return completed_bytes
+
+
 def _snapshot_lifecycle_status(
     layout: ReleaseLayout,
     env: dict[str, str],
@@ -1226,6 +1439,7 @@ def _snapshot_lifecycle_status(
             "mode": mode,
         }
     expected = _snapshot_env_updates(record)
+    expected_bytes = sum(item["size"] for item in record["files"])
     for key in ("BH_SNAPSHOT_FILE", "BH_SNAPSHOT_MANIFEST"):
         if env.get(key) != expected[key]:
             return {
@@ -1275,6 +1489,8 @@ def _snapshot_lifecycle_status(
             "mode": mode,
             "snapshot_release_id": release_id,
             "height": record["height"],
+            "completed_bytes": expected_bytes,
+            "expected_bytes": expected_bytes,
         }
 
     if staging.exists():
@@ -1290,13 +1506,20 @@ def _snapshot_lifecycle_status(
             for item in record["files"]
             if (staging / item["path"]).is_file()
         )
+        completed_bytes = _snapshot_staging_bytes(staging, record)
         return {
             "state": "incomplete",
-            "summary": "snapshot download or verification is resumable",
+            "summary": (
+                "snapshot verification is in progress"
+                if completed_bytes >= expected_bytes
+                else "snapshot download is resumable"
+            ),
             "mode": mode,
             "snapshot_release_id": release_id,
             "complete_file_count": present_files,
             "expected_file_count": len(record["files"]),
+            "completed_bytes": completed_bytes,
+            "expected_bytes": expected_bytes,
         }
     return {
         "state": "incomplete",
@@ -1305,10 +1528,16 @@ def _snapshot_lifecycle_status(
         "snapshot_release_id": release_id,
         "complete_file_count": 0,
         "expected_file_count": len(record["files"]),
+        "completed_bytes": 0,
+        "expected_bytes": expected_bytes,
     }
 
 
-def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
+def _collect_compose_services(
+    layout: ReleaseLayout,
+    *,
+    command_timeout_secs: float | None = None,
+) -> dict[str, dict[str, Any]]:
     commands = (
         ("run_testnet_bitcoin.sh", ["ps", "--all", "--format", "json"]),
         ("run_testnet_runtime.sh", ["ps", "--all", "--format", "json"]),
@@ -1321,16 +1550,25 @@ def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
             arguments,
             check=False,
             capture_output=True,
+            command_timeout_secs=command_timeout_secs,
         )
         if result.returncode != 0:
-            return {
-                "state": "unavailable",
-                "summary": "Docker Compose service state could not be read",
-                "services": services,
-            }
+            raise ValueError("Docker Compose service state could not be read")
         for item in _parse_compose_ps(result.stdout or ""):
             service, status = _normalize_compose_service(item)
             services[service] = status
+    return services
+
+
+def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
+    try:
+        services = _collect_compose_services(layout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {
+            "state": "unavailable",
+            "summary": "Docker Compose service state could not be read",
+            "services": {},
+        }
 
     present_core = [name for name in CORE_RUNTIME_SERVICES if name in services]
     if not present_core:
@@ -1341,19 +1579,16 @@ def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
         }
 
     problem_states = {"dead", "exited", "removing", "restarting"}
-    unhealthy = [
+    failed_processes = [
         name
         for name in CORE_RUNTIME_SERVICES
         if name in services
-        and (
-            services[name]["state"] in problem_states
-            or services[name]["health"] == "unhealthy"
-        )
+        and services[name]["state"] in problem_states
     ]
-    if unhealthy:
+    if failed_processes:
         return {
             "state": "degraded",
-            "summary": f"core services are unhealthy: {', '.join(unhealthy)}",
+            "summary": f"core service processes failed: {', '.join(failed_processes)}",
             "services": services,
         }
 
@@ -1368,11 +1603,32 @@ def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
         for name in CORE_RUNTIME_SERVICES
         if name in services and services[name]["health"] == "starting"
     ]
+    unhealthy = [
+        name
+        for name in CORE_RUNTIME_SERVICES
+        if name in services and services[name]["health"] == "unhealthy"
+    ]
     if missing or not_running or health_starting:
-        pending = [*missing, *not_running, *health_starting]
-        return {
+        pending = [*missing, *not_running, *health_starting, *unhealthy]
+        result: dict[str, Any] = {
             "state": "starting",
             "summary": f"waiting for core services: {', '.join(dict.fromkeys(pending))}",
+            "services": services,
+        }
+        bitcoin = services.get("btc-node")
+        if (
+            bitcoin is not None
+            and bitcoin["state"] == "running"
+            and bitcoin["health"] == "unhealthy"
+        ):
+            progress = _bitcoin_startup_progress(layout)
+            if progress is not None:
+                result["bitcoin_progress"] = progress
+        return result
+    if unhealthy:
+        return {
+            "state": "degraded",
+            "summary": f"core services are unhealthy: {', '.join(unhealthy)}",
             "services": services,
         }
 
@@ -1405,6 +1661,585 @@ def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
         "services": services,
         "readiness": readiness,
     }
+
+
+def _component_progress(
+    component_id: str,
+    state: str,
+    detail: str,
+    *,
+    current: int | None = None,
+    total: int | None = None,
+    progress_percent: float | None = None,
+    unit: str = "blocks",
+) -> dict[str, Any]:
+    label = dict(PROGRESS_COMPONENTS)[component_id]
+    if progress_percent is None and current is not None and total is not None and total > 0:
+        progress_percent = min(100.0, max(0.0, current * 100.0 / total))
+    return {
+        "id": component_id,
+        "label": label,
+        "state": state,
+        "detail": detail,
+        "current": current,
+        "total": total,
+        "progress_percent": progress_percent,
+        "unit": unit,
+    }
+
+
+def _snapshot_component(snapshot: dict[str, Any]) -> dict[str, Any]:
+    state = snapshot["state"]
+    if state == "not_selected":
+        return _component_progress("snapshot", "SKIPPED", snapshot["summary"])
+    if state == "installed":
+        return _component_progress(
+            "snapshot",
+            "READY",
+            snapshot["summary"],
+            current=snapshot.get("completed_bytes"),
+            total=snapshot.get("expected_bytes"),
+            unit="bytes",
+        )
+    if state == "invalid":
+        return _component_progress("snapshot", "BLOCKED", snapshot["summary"])
+    if state == "incomplete":
+        current = snapshot.get("completed_bytes")
+        total = snapshot.get("expected_bytes")
+        progress_state = (
+            "VERIFYING"
+            if isinstance(current, int)
+            and isinstance(total, int)
+            and total > 0
+            and current >= total
+            else "INSTALLING"
+        )
+        return _component_progress(
+            "snapshot",
+            progress_state,
+            snapshot["summary"],
+            current=current if isinstance(current, int) else None,
+            total=total if isinstance(total, int) else None,
+            unit="bytes",
+        )
+    return _component_progress("snapshot", "WAITING", snapshot["summary"])
+
+
+def _failed_container_component(
+    component_id: str,
+    service: dict[str, Any] | None,
+    waiting_detail: str,
+) -> dict[str, Any] | None:
+    if service is None:
+        return _component_progress(component_id, "WAITING", waiting_detail)
+    state = service["state"]
+    if state in {"dead", "exited", "removing", "restarting"}:
+        exit_code = service.get("exit_code")
+        suffix = f", exit_code={exit_code}" if exit_code is not None else ""
+        return _component_progress(
+            component_id,
+            "FAILED",
+            f"container state={state}{suffix}",
+        )
+    if state != "running":
+        return _component_progress(component_id, "STARTING", f"container state={state}")
+    return None
+
+
+def _read_service_readiness(
+    layout: ReleaseLayout,
+    helper: str,
+    arguments: list[str],
+    expected_service: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        result = run_helper(
+            layout,
+            helper,
+            arguments,
+            check=False,
+            capture_output=True,
+            command_timeout_secs=8,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, str(error)
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        return None, detail[-1] if detail else "readiness RPC is unavailable"
+    try:
+        readiness = json.loads((result.stdout or "").strip())
+    except json.JSONDecodeError:
+        return None, "readiness RPC returned invalid JSON"
+    if not isinstance(readiness, dict):
+        return None, "readiness RPC result is not an object"
+    if readiness.get("service") != expected_service:
+        return None, "readiness RPC returned the wrong service identity"
+    if not isinstance(readiness.get("consensus_ready"), bool):
+        return None, "readiness RPC omitted consensus_ready"
+    return readiness, None
+
+
+def _indexed_service_component(
+    component_id: str,
+    service: dict[str, Any] | None,
+    readiness: dict[str, Any] | None,
+    error: str | None,
+    waiting_detail: str,
+) -> dict[str, Any]:
+    container_state = _failed_container_component(component_id, service, waiting_detail)
+    if container_state is not None:
+        return container_state
+    if readiness is None:
+        return _component_progress(
+            component_id,
+            "STARTING",
+            error or "waiting for readiness RPC",
+        )
+
+    current = readiness.get("current")
+    total = readiness.get("total")
+    current_value = current if isinstance(current, int) and not isinstance(current, bool) else None
+    total_value = total if isinstance(total, int) and not isinstance(total, bool) else None
+    detail_parts: list[str] = []
+    phase = readiness.get("phase")
+    if isinstance(phase, str) and phase:
+        detail_parts.append(f"phase={phase}")
+    message = readiness.get("message")
+    if isinstance(message, str) and message:
+        detail_parts.append(message)
+    blockers = readiness.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        detail_parts.append("blockers=" + ",".join(str(item) for item in blockers))
+    state = "READY" if readiness["consensus_ready"] else "SYNCING"
+    return _component_progress(
+        component_id,
+        state,
+        "; ".join(detail_parts) or "readiness state received",
+        current=current_value,
+        total=total_value,
+    )
+
+
+def _host_rpc_url(env: dict[str, str], address_key: str, port_key: str, default_port: int) -> str:
+    address = env.get(address_key, "127.0.0.1") or "127.0.0.1"
+    if address == "0.0.0.0":
+        address = "127.0.0.1"
+    elif address == "::":
+        address = "::1"
+    if ":" in address and not address.startswith("["):
+        address = f"[{address}]"
+    port = env.get(port_key, str(default_port)) or str(default_port)
+    return f"http://{address}:{port}"
+
+
+def _json_rpc_batch(
+    url: str,
+    calls: tuple[tuple[str, list[Any]], ...],
+    *,
+    timeout_secs: float = 3,
+) -> dict[str, Any]:
+    payload = [
+        {"jsonrpc": "2.0", "id": index, "method": method, "params": params}
+        for index, (method, params) in enumerate(calls, start=1)
+    ]
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_secs) as response:
+            values = json.load(response)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+        raise ValueError(f"USDB chain RPC is unavailable: {error}") from error
+    if not isinstance(values, list):
+        raise ValueError("USDB chain RPC batch response must be a list")
+    by_id: dict[int, Any] = {}
+    for value in values:
+        if not isinstance(value, dict) or not isinstance(value.get("id"), int):
+            raise ValueError("USDB chain RPC returned an invalid batch item")
+        if value.get("error") is not None:
+            raise ValueError(f"USDB chain RPC returned an error: {value['error']}")
+        by_id[value["id"]] = value.get("result")
+    if set(by_id) != set(range(1, len(calls) + 1)):
+        raise ValueError("USDB chain RPC returned an incomplete batch")
+    return {method: by_id[index] for index, (method, _params) in enumerate(calls, start=1)}
+
+
+def _hex_quantity(value: Any, label: str) -> int:
+    if not isinstance(value, str) or re.fullmatch(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)", value) is None:
+        raise ValueError(f"{label} is not a canonical hex quantity")
+    return int(value, 16)
+
+
+def _chain_component(
+    layout: ReleaseLayout,
+    env: dict[str, str],
+    service: dict[str, Any] | None,
+) -> dict[str, Any]:
+    container_state = _failed_container_component(
+        "usdb_chain",
+        service,
+        "waiting for the USDB indexer readiness gate",
+    )
+    if container_state is not None:
+        return container_state
+    try:
+        results = _json_rpc_batch(
+            _host_rpc_url(env, "USDB_HTTP_BIND_ADDRESS", "USDB_HTTP_BIND_PORT", 8545),
+            (
+                ("eth_chainId", []),
+                ("eth_getBlockByNumber", ["0x0", False]),
+                ("eth_syncing", []),
+                ("eth_blockNumber", []),
+                ("net_peerCount", []),
+            ),
+        )
+        chain_id = _hex_quantity(results["eth_chainId"], "eth_chainId")
+        block_number = _hex_quantity(results["eth_blockNumber"], "eth_blockNumber")
+        peer_count = _hex_quantity(results["net_peerCount"], "net_peerCount")
+        genesis = results["eth_getBlockByNumber"]
+        if not isinstance(genesis, dict) or not isinstance(genesis.get("hash"), str):
+            raise ValueError("USDB chain genesis block is unavailable")
+        expected_chain_id = layout.network_identity["chain_id"]
+        expected_genesis = layout.network_identity["genesis_block_hash"]
+        if chain_id != expected_chain_id or genesis["hash"].lower() != expected_genesis.lower():
+            return _component_progress(
+                "usdb_chain",
+                "BLOCKED",
+                "chain identity differs from the release manifest",
+            )
+        syncing = results["eth_syncing"]
+        if syncing is False:
+            return _component_progress(
+                "usdb_chain",
+                "READY",
+                f"block={block_number}, peers={peer_count}",
+                current=block_number,
+            )
+        if not isinstance(syncing, dict):
+            raise ValueError("eth_syncing returned an invalid result")
+        current = _hex_quantity(syncing.get("currentBlock"), "eth_syncing.currentBlock")
+        highest = _hex_quantity(syncing.get("highestBlock"), "eth_syncing.highestBlock")
+        return _component_progress(
+            "usdb_chain",
+            "SYNCING",
+            f"peers={peer_count}",
+            current=current,
+            total=highest,
+        )
+    except ValueError as error:
+        return _component_progress("usdb_chain", "STARTING", str(error))
+
+
+def _overall_progress_state(components: list[dict[str, Any]]) -> str:
+    states = {component["state"] for component in components}
+    for state in ("FAILED", "BLOCKED", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"):
+        if state in states:
+            return state
+    if states <= {"READY", "SKIPPED"}:
+        return "READY"
+    return "WAITING"
+
+
+def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if not layout.node_env.is_file():
+        components = [
+            _component_progress(component_id, "WAITING", "node configuration is missing")
+            for component_id, _label in PROGRESS_COMPONENTS
+        ]
+        return {
+            "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
+            "release_id": layout.release_id,
+            "network_bundle_id": layout.bundle_id,
+            "observed_at": observed_at,
+            "overall_state": "WAITING",
+            "components": components,
+        }
+    try:
+        env = read_env(layout.node_env)
+        snapshot_component = _snapshot_component(_snapshot_lifecycle_status(layout, env))
+    except (OSError, ValueError) as error:
+        env = {}
+        snapshot_component = _component_progress("snapshot", "BLOCKED", str(error))
+
+    try:
+        services = _collect_compose_services(layout, command_timeout_secs=8)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        components = [snapshot_component]
+        components.extend(
+            _component_progress(component_id, "BLOCKED", str(error))
+            for component_id in ("bitcoin", "balance_history", "usdb_indexer", "usdb_chain")
+        )
+        return {
+            "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
+            "release_id": layout.release_id,
+            "network_bundle_id": layout.bundle_id,
+            "observed_at": observed_at,
+            "overall_state": _overall_progress_state(components),
+            "components": components,
+        }
+
+    bitcoin_service = services.get("btc-node")
+    bitcoin_component = _failed_container_component(
+        "bitcoin",
+        bitcoin_service,
+        "waiting for Bitcoin Core startup",
+    )
+    if bitcoin_component is None:
+        try:
+            bitcoin = _bitcoin_startup_progress(layout, command_timeout_secs=8)
+        except (OSError, subprocess.TimeoutExpired):
+            bitcoin = None
+        if bitcoin is None:
+            bitcoin_component = _component_progress(
+                "bitcoin", "STARTING", "waiting for Bitcoin readiness RPC"
+            )
+        else:
+            status = bitcoin.get("status")
+            if not isinstance(status, dict):
+                bitcoin_component = _component_progress(
+                    "bitcoin", "STARTING", _bitcoin_progress_summary(bitcoin)
+                )
+            else:
+                verification = status.get("verification_progress")
+                bitcoin_component = _component_progress(
+                    "bitcoin",
+                    "READY" if bitcoin["ready"] else "SYNCING",
+                    _bitcoin_progress_summary(bitcoin),
+                    current=status.get("blocks") if isinstance(status.get("blocks"), int) else None,
+                    total=status.get("headers") if isinstance(status.get("headers"), int) else None,
+                    progress_percent=(
+                        verification * 100
+                        if isinstance(verification, (int, float))
+                        and not isinstance(verification, bool)
+                        else None
+                    ),
+                )
+
+    balance_service = services.get("balance-history")
+    balance_readiness: dict[str, Any] | None = None
+    balance_error: str | None = None
+    if balance_service is not None and balance_service["state"] == "running":
+        balance_readiness, balance_error = _read_service_readiness(
+            layout,
+            "run_testnet_runtime.sh",
+            ["data-status"],
+            "balance-history",
+        )
+    balance_component = _indexed_service_component(
+        "balance_history",
+        balance_service,
+        balance_readiness,
+        balance_error,
+        "waiting for the Bitcoin readiness gate",
+    )
+
+    indexer_service = services.get("usdb-indexer")
+    indexer_readiness: dict[str, Any] | None = None
+    indexer_error: str | None = None
+    if indexer_service is not None and indexer_service["state"] == "running":
+        indexer_readiness, indexer_error = _read_service_readiness(
+            layout,
+            "run_testnet_runtime.sh",
+            ["indexer-status"],
+            "usdb-indexer",
+        )
+    indexer_component = _indexed_service_component(
+        "usdb_indexer",
+        indexer_service,
+        indexer_readiness,
+        indexer_error,
+        "waiting for the balance-history readiness gate",
+    )
+    chain_component = _chain_component(layout, env, services.get("usdb-chain"))
+    components = [
+        snapshot_component,
+        bitcoin_component,
+        balance_component,
+        indexer_component,
+        chain_component,
+    ]
+    return {
+        "schema_version": NODE_PROGRESS_SCHEMA_VERSION,
+        "release_id": layout.release_id,
+        "network_bundle_id": layout.bundle_id,
+        "observed_at": observed_at,
+        "overall_state": _overall_progress_state(components),
+        "components": components,
+    }
+
+
+def _human_size(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024:
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}TiB"
+
+
+def render_node_progress(
+    report: dict[str, Any],
+    *,
+    phase: str = "observe",
+    width: int = 120,
+) -> str:
+    lines = [
+        f"USDB node progress | {report['release_id']} | phase={phase}",
+        f"Observed {report['observed_at']} | overall={report['overall_state']}",
+    ]
+    bar_width = 24
+    for component in report["components"]:
+        percent = component.get("progress_percent")
+        if isinstance(percent, (int, float)) and not isinstance(percent, bool):
+            bounded = min(100.0, max(0.0, float(percent)))
+            filled = min(bar_width, int(bounded * bar_width / 100))
+            bar = "#" * filled + "-" * (bar_width - filled)
+            percent_text = f"{bounded:6.2f}%"
+        else:
+            bar = "-" * bar_width
+            percent_text = "    -- "
+        current = component.get("current")
+        total = component.get("total")
+        progress_text = ""
+        if isinstance(current, int) and isinstance(total, int):
+            if component.get("unit") == "bytes":
+                progress_text = f" {_human_size(current)}/{_human_size(total)}"
+            else:
+                progress_text = f" {current}/{total}"
+        elif isinstance(current, int):
+            progress_text = f" {current}"
+        prefix = (
+            f"{component['label']:<17} {component['state']:<10} "
+            f"[{bar}] {percent_text}{progress_text} "
+        )
+        available = max(20, width - len(prefix))
+        detail = component["detail"]
+        if len(detail) > available:
+            detail = detail[: max(0, available - 3)] + "..."
+        lines.append(prefix + detail)
+    return "\n".join(lines)
+
+
+class NodeProgressMonitor:
+    """Render read-only node progress without participating in startup decisions."""
+
+    def __init__(
+        self,
+        layout: ReleaseLayout,
+        *,
+        enabled: bool,
+        refresh_secs: float = DEFAULT_PROGRESS_REFRESH_SECS,
+        output: Any | None = None,
+    ) -> None:
+        self.layout = layout
+        self.enabled = enabled
+        self.refresh_secs = refresh_secs
+        self.output = sys.stderr if output is None else output
+        self._phase = "startup"
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._refresh = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._latest: dict[str, Any] | None = None
+
+    def __enter__(self) -> NodeProgressMonitor:
+        if self.enabled:
+            self._thread = threading.Thread(
+                target=self._run,
+                name="usdb-node-progress",
+                daemon=False,
+            )
+            self._thread.start()
+        return self
+
+    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
+        self.stop()
+
+    def set_phase(self, phase: str) -> None:
+        with self._lock:
+            self._phase = phase
+        self._refresh.set()
+
+    def _render(self, report: dict[str, Any]) -> None:
+        with self._lock:
+            phase = self._phase
+        width = shutil.get_terminal_size(fallback=(120, 24)).columns
+        self.output.write("\x1b[H\x1b[2J")
+        self.output.write(render_node_progress(report, phase=phase, width=width))
+        self.output.write("\n")
+        self.output.flush()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                report = collect_node_progress(self.layout)
+                self._latest = report
+                self._render(report)
+            except Exception as error:  # Display failures must never change node control flow.
+                self.output.write(f"[usdb-node] progress observation failed: {error}\n")
+                self.output.flush()
+            self._refresh.wait(self.refresh_secs)
+            self._refresh.clear()
+
+    def stop(self) -> None:
+        if not self.enabled or self._thread is None:
+            return
+        self._stop.set()
+        self._refresh.set()
+        self._thread.join(timeout=20)
+        if self._thread.is_alive():
+            self.output.write("[usdb-node] progress observer did not stop within 20 seconds\n")
+        elif self._latest is not None:
+            self._render(self._latest)
+        self.output.write("\n")
+        self.output.flush()
+        self._thread = None
+
+
+def print_progress_status(
+    layout: ReleaseLayout,
+    *,
+    json_output: bool,
+    watch: bool,
+    refresh_secs: float,
+) -> int:
+    if refresh_secs <= 0:
+        raise ValueError("progress refresh interval must be positive")
+    if json_output and watch:
+        raise ValueError("--progress-json and --watch cannot be combined")
+    if not watch:
+        report = collect_node_progress(layout)
+        if json_output:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(render_node_progress(report, width=shutil.get_terminal_size().columns))
+        return 0 if report["overall_state"] == "READY" else 1
+
+    output = sys.stderr
+    tty = output.isatty()
+    try:
+        while True:
+            report = collect_node_progress(layout)
+            rendered = render_node_progress(
+                report,
+                phase="observe",
+                width=shutil.get_terminal_size(fallback=(120, 24)).columns,
+            )
+            if tty:
+                output.write("\x1b[H\x1b[2J")
+            else:
+                output.write(f"\n[{report['observed_at']}]\n")
+            output.write(rendered + "\n")
+            output.flush()
+            time.sleep(refresh_secs)
+    except KeyboardInterrupt:
+        output.write("\n")
+        output.flush()
+        return 0
 
 
 STATUS_RECOVERY: dict[str, dict[str, Any]] = {
@@ -1644,6 +2479,11 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
         check = report["checks"].get(key)
         if check is not None:
             print(f"{label:<14} {check['state'].upper():<12} {check['summary']}")
+            if key == "runtime" and isinstance(check.get("bitcoin_progress"), dict):
+                print(
+                    f"{'Bitcoin sync':<14} {'WAITING':<12} "
+                    f"{_bitcoin_progress_summary(check['bitcoin_progress'])}"
+                )
     print(f"Overall        {report['overall_state']}")
     print(
         f"Resume         {report['resume']['mode'].upper():<12} "
@@ -1687,6 +2527,7 @@ def resume_node(
     sync_timeout_secs: int,
     pull: bool,
     json_output: bool,
+    enable_progress: bool = False,
 ) -> tuple[dict[str, Any], int]:
     initial = collect_node_status(layout)
     action = _resume_action(initial, allow_activation)
@@ -1708,7 +2549,11 @@ def resume_node(
 
     completed: list[str] = []
     output_context = redirect_stdout(sys.stderr) if json_output else nullcontext()
-    with node_operation_lock(layout, "resume"):
+    progress_monitor = NodeProgressMonitor(
+        layout,
+        enabled=enable_progress and not json_output,
+    )
+    with progress_monitor, node_operation_lock(layout, "resume"):
         report = collect_node_status(layout)
         with output_context:
             for _transition in range(MAX_RESUME_TRANSITIONS):
@@ -1735,16 +2580,20 @@ def resume_node(
                     return result, 1
 
                 if action == "activate-release":
+                    progress_monitor.set_phase("activate-release")
                     activate_release(layout)
                 elif action == "snapshot-install":
+                    progress_monitor.set_phase("snapshot-install")
                     install_snapshot_release(layout)
                 elif action == "up":
-                    start_node(
-                        layout,
-                        sync_timeout_secs=sync_timeout_secs,
-                        pull=pull,
-                        output_to_stderr=json_output,
-                    )
+                    startup_options: dict[str, Any] = {
+                        "sync_timeout_secs": sync_timeout_secs,
+                        "pull": pull,
+                        "output_to_stderr": json_output,
+                    }
+                    if progress_monitor.enabled:
+                        startup_options["progress_monitor"] = progress_monitor
+                    start_node(layout, **startup_options)
                 else:
                     raise AssertionError(f"unsupported internal resume action: {action}")
                 completed.append(action)
@@ -1881,7 +2730,24 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         help="Show node installation, activation, snapshot and runtime lifecycle state",
     )
-    status.add_argument("--json", action="store_true", help="emit machine-readable status")
+    status_output = status.add_mutually_exclusive_group()
+    status_output.add_argument("--json", action="store_true", help="emit lifecycle JSON")
+    status_output.add_argument(
+        "--progress-json",
+        action="store_true",
+        help="emit one machine-readable five-component progress observation",
+    )
+    status_output.add_argument(
+        "--watch",
+        action="store_true",
+        help="continuously render snapshot, Bitcoin, indexer and chain progress",
+    )
+    status.add_argument(
+        "--refresh-secs",
+        type=float,
+        default=DEFAULT_PROGRESS_REFRESH_SECS,
+        help="dashboard refresh interval (default: 5 seconds)",
+    )
 
     resume = subparsers.add_parser(
         "resume",
@@ -2020,6 +2886,13 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
         print(f"USDB node is ready: {layout.release_id}")
     elif args.command == "status":
+        if args.progress_json or args.watch:
+            return print_progress_status(
+                layout,
+                json_output=args.progress_json,
+                watch=args.watch,
+                refresh_secs=args.refresh_secs,
+            )
         return print_status(layout, json_output=args.json)
     elif args.command == "resume":
         if args.sync_timeout_secs <= 0:
@@ -2031,6 +2904,9 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             sync_timeout_secs=args.sync_timeout_secs,
             pull=not args.skip_pull,
             json_output=args.json,
+            enable_progress=(
+                not args.json and sys.stdout.isatty() and sys.stderr.isatty()
+            ),
         )
         print_resume_result(result, json_output=args.json)
         return return_code

@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ class BitcoinReadiness:
     tip_age_secs: int
     network_active: bool
     connections: int
+    verification_progress: float
 
 
 def require_type(value: Any, expected: type, path: str) -> Any:
@@ -37,7 +39,13 @@ def require_type(value: Any, expected: type, path: str) -> Any:
     return value
 
 
-def evaluate_readiness(
+def require_number(value: Any, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{path} must be a number")
+    return float(value)
+
+
+def assess_readiness(
     blockchain_info: dict[str, Any],
     index_info: dict[str, Any],
     network_info: dict[str, Any],
@@ -46,7 +54,7 @@ def evaluate_readiness(
     maximum_tip_age_secs: int,
     minimum_connections: int,
     now_timestamp: int | None = None,
-) -> BitcoinReadiness:
+) -> tuple[BitcoinReadiness, list[str]]:
     chain = require_type(blockchain_info.get("chain"), str, "getblockchaininfo.chain")
     blocks = require_type(blockchain_info.get("blocks"), int, "getblockchaininfo.blocks")
     headers = require_type(blockchain_info.get("headers"), int, "getblockchaininfo.headers")
@@ -57,6 +65,12 @@ def evaluate_readiness(
     )
     pruned = require_type(blockchain_info.get("pruned"), bool, "getblockchaininfo.pruned")
     tip_time = require_type(blockchain_info.get("time"), int, "getblockchaininfo.time")
+    verification_progress = require_number(
+        blockchain_info.get("verificationprogress"),
+        "getblockchaininfo.verificationprogress",
+    )
+    if not 0.0 <= verification_progress <= 1.0:
+        raise ValueError("getblockchaininfo.verificationprogress must be between 0 and 1")
     now = int(time.time()) if now_timestamp is None else now_timestamp
     tip_age_secs = max(0, now - tip_time)
 
@@ -93,9 +107,6 @@ def evaluate_readiness(
         failures.append("networkactive=false")
     if connections < minimum_connections:
         failures.append(f"connections={connections}, minimum {minimum_connections}")
-    if failures:
-        raise ValueError("; ".join(failures))
-
     return BitcoinReadiness(
         chain=chain,
         blocks=blocks,
@@ -108,6 +119,70 @@ def evaluate_readiness(
         tip_age_secs=tip_age_secs,
         network_active=network_active,
         connections=connections,
+        verification_progress=verification_progress,
+    ), failures
+
+
+def evaluate_readiness(
+    blockchain_info: dict[str, Any],
+    index_info: dict[str, Any],
+    network_info: dict[str, Any],
+    expected_chain: str,
+    minimum_height: int,
+    maximum_tip_age_secs: int,
+    minimum_connections: int,
+    now_timestamp: int | None = None,
+) -> BitcoinReadiness:
+    status, failures = assess_readiness(
+        blockchain_info,
+        index_info,
+        network_info,
+        expected_chain,
+        minimum_height,
+        maximum_tip_age_secs,
+        minimum_connections,
+        now_timestamp,
+    )
+    if failures:
+        raise ValueError("; ".join(failures))
+    return status
+
+
+def readiness_report(
+    status: BitcoinReadiness | None,
+    blockers: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "usdb-bitcoin-readiness:v1",
+        "ready": status is not None and not blockers,
+        "status": asdict(status) if status is not None else None,
+        "blockers": blockers,
+    }
+
+
+def _duration_text(seconds: float) -> str:
+    elapsed = max(0, int(seconds))
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def format_wait_progress(
+    status: BitcoinReadiness | None,
+    blockers: list[str],
+    elapsed_secs: float,
+) -> str:
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    prefix = f"[{timestamp}] [usdb-node] Bitcoin readiness waiting: elapsed={_duration_text(elapsed_secs)}"
+    if status is None:
+        return f"{prefix}, detail={'; '.join(blockers)}"
+    txindex = "synced" if status.txindex_synced else "indexing"
+    detail = "; ".join(blockers)
+    return (
+        f"{prefix}, blocks={status.blocks}/{status.headers}, "
+        f"verification={status.verification_progress * 100:.2f}%, "
+        f"txindex={txindex}@{status.txindex_height}, peers={status.connections}, "
+        f"blockers={detail}"
     )
 
 
@@ -178,6 +253,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rpc-timeout-secs", type=float, default=5.0)
     parser.add_argument("--wait-timeout-secs", type=float, default=0.0)
     parser.add_argument("--poll-interval-secs", type=float, default=5.0)
+    parser.add_argument(
+        "--progress-interval-secs",
+        type=float,
+        default=float(os.environ.get("BTC_READY_PROGRESS_INTERVAL_SECS", "60")),
+    )
+    parser.add_argument(
+        "--status-json",
+        action="store_true",
+        help="emit one structured ready/not-ready report without failing for sync lag",
+    )
     return parser.parse_args()
 
 
@@ -191,14 +276,21 @@ def main() -> int:
         raise ValueError("maximum tip age must be non-negative")
     if args.minimum_connections < 0:
         raise ValueError("minimum connections must be non-negative")
+    if args.rpc_timeout_secs <= 0 or args.poll_interval_secs <= 0:
+        raise ValueError("RPC timeout and poll interval must be positive")
+    if args.progress_interval_secs < 0:
+        raise ValueError("progress interval must be non-negative")
     password = read_password(args)
     rpc = BitcoinRpc(args.url, args.user, password, args.rpc_timeout_secs)
+    started_at = time.monotonic()
     deadline = time.monotonic() + args.wait_timeout_secs
-    last_error = "readiness check did not run"
+    next_progress_at = started_at
+    last_status: BitcoinReadiness | None = None
+    last_blockers = ["readiness check did not run"]
 
     while True:
         try:
-            status = evaluate_readiness(
+            status, blockers = assess_readiness(
                 rpc.call("getblockchaininfo"),
                 rpc.call("getindexinfo"),
                 rpc.call("getnetworkinfo"),
@@ -207,12 +299,33 @@ def main() -> int:
                 args.maximum_tip_age_secs,
                 args.minimum_connections,
             )
-            print(json.dumps(asdict(status), sort_keys=True))
-            return 0
+            last_status = status
+            last_blockers = blockers
         except ValueError as exc:
-            last_error = str(exc)
-        if time.monotonic() >= deadline:
-            raise ValueError(last_error)
+            last_status = None
+            last_blockers = [str(exc)]
+
+        if args.status_json:
+            print(json.dumps(readiness_report(last_status, last_blockers), sort_keys=True))
+            return 0
+        if last_status is not None and not last_blockers:
+            print(json.dumps(asdict(last_status), sort_keys=True))
+            return 0
+
+        now = time.monotonic()
+        if (
+            args.wait_timeout_secs > 0
+            and args.progress_interval_secs > 0
+            and now >= next_progress_at
+        ):
+            print(
+                format_wait_progress(last_status, last_blockers, now - started_at),
+                file=sys.stderr,
+                flush=True,
+            )
+            next_progress_at = now + args.progress_interval_secs
+        if now >= deadline:
+            raise ValueError("; ".join(last_blockers))
         time.sleep(args.poll_interval_secs)
 
 

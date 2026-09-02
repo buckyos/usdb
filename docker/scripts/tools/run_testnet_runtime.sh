@@ -85,6 +85,7 @@ check_readiness() {
   python3 "${readiness_checker}" \
     --url "${url}" \
     --expected-service "${service}" \
+    --progress-interval-secs "${USDB_READINESS_PROGRESS_INTERVAL_SECS:-30}" \
     "$@"
 }
 

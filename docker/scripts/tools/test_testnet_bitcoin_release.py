@@ -124,6 +124,20 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         for action in ("up-data", "data-status", "wait-data", "indexer-status"):
             self.assertIn(action, content)
 
+    def test_bitcoin_runner_exposes_machine_readable_sync_progress(self) -> None:
+        content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("progress  Print one machine-readable", content)
+        self.assertIn("--status-json", content)
+        self.assertIn("BTC_READY_PROGRESS_INTERVAL_SECS", content)
+
+    def test_runtime_runner_can_suppress_readiness_heartbeat_for_dashboard(self) -> None:
+        content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("USDB_READINESS_PROGRESS_INTERVAL_SECS", content)
+
 
 if __name__ == "__main__":
     unittest.main()

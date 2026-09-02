@@ -19,6 +19,7 @@ Actions:
   validate  Validate the bundle and Bitcoin node configuration.
   up        Create the shared network, start Bitcoin Core, then wait for readiness.
   wait      Wait for mainnet, full sync and txindex readiness.
+  progress  Print one machine-readable Bitcoin sync/readiness observation.
   status    Show service state and perform a single readiness check.
   ps        Show service state.
   logs      Follow Bitcoin Core logs.
@@ -110,7 +111,8 @@ wait_ready() {
   compose exec -T btc-node \
     python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py \
       --wait-timeout-secs "${timeout_secs}" \
-      --poll-interval-secs "${BTC_READY_POLL_INTERVAL_SECS:-15}"
+      --poll-interval-secs "${BTC_READY_POLL_INTERVAL_SECS:-15}" \
+      --progress-interval-secs "${BTC_READY_PROGRESS_INTERVAL_SECS:-60}"
 }
 
 case "${action}" in
@@ -147,6 +149,12 @@ case "${action}" in
     require_node_env
     validate_bitcoin_runtime
     wait_ready
+    ;;
+  progress)
+    require_node_env
+    compose exec -T btc-node \
+      python3 /opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py \
+        --status-json
     ;;
   status)
     require_node_env

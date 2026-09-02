@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 MODULE_PATH = Path(__file__).with_name("check_bitcoin_readiness.py")
 SPEC = importlib.util.spec_from_file_location("check_bitcoin_readiness", MODULE_PATH)
@@ -24,6 +28,7 @@ class BitcoinReadinessTests(unittest.TestCase):
             "initialblockdownload": False,
             "pruned": False,
             "time": 1_799_999_400,
+            "verificationprogress": 0.9999,
         }
         self.indexes = {"txindex": {"synced": True, "best_block_height": 963900}}
         self.network = {"networkactive": True, "connections": 8}
@@ -89,6 +94,172 @@ class BitcoinReadinessTests(unittest.TestCase):
         self.network["connections"] = 0
         with self.assertRaisesRegex(ValueError, "tip age=.*networkactive=false.*connections=0"):
             self.evaluate()
+
+    def test_assessment_and_status_report_preserve_sync_progress(self) -> None:
+        self.blockchain["blocks"] = 236_706
+        self.blockchain["headers"] = 965_135
+        self.blockchain["initialblockdownload"] = True
+        self.blockchain["verificationprogress"] = 0.0116
+        self.indexes["txindex"]["synced"] = False
+        self.indexes["txindex"]["best_block_height"] = 236_701
+        status, blockers = READINESS.assess_readiness(
+            self.blockchain,
+            self.indexes,
+            self.network,
+            "main",
+            963_800,
+            7200,
+            1,
+            1_800_000_000,
+        )
+
+        report = READINESS.readiness_report(status, blockers)
+        self.assertFalse(report["ready"])
+        self.assertEqual(report["status"]["blocks"], 236_706)
+        self.assertIn("initialblockdownload=true", report["blockers"])
+        progress = READINESS.format_wait_progress(status, blockers, 125)
+        self.assertIn("elapsed=00:02:05", progress)
+        self.assertIn("blocks=236706/965135", progress)
+        self.assertIn("verification=1.16%", progress)
+        self.assertIn("txindex=indexing@236701", progress)
+
+    def test_verification_progress_must_be_bounded_number(self) -> None:
+        self.blockchain["verificationprogress"] = True
+        with self.assertRaisesRegex(ValueError, "must be a number"):
+            self.evaluate()
+        self.blockchain["verificationprogress"] = 1.1
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            self.evaluate()
+
+    def test_wait_main_keeps_heartbeat_off_json_stdout(self) -> None:
+        blockchain_calls = 0
+
+        class FakeRpc:
+            def call(inner_self, method: str):
+                nonlocal blockchain_calls
+                if method == "getblockchaininfo":
+                    blockchain_calls += 1
+                    value = dict(self.blockchain)
+                    if blockchain_calls == 1:
+                        value["initialblockdownload"] = True
+                        value["blocks"] = 900_000
+                        value["headers"] = 963_900
+                        value["verificationprogress"] = 0.9
+                    return value
+                if method == "getindexinfo":
+                    return self.indexes
+                return self.network
+
+        arguments = SimpleNamespace(
+            user="node",
+            minimum_height=0,
+            maximum_tip_age_secs=7_200,
+            minimum_connections=1,
+            rpc_timeout_secs=5.0,
+            poll_interval_secs=1.0,
+            progress_interval_secs=60.0,
+            password_file="",
+            url="http://127.0.0.1:8332",
+            expected_chain="main",
+            wait_timeout_secs=120.0,
+            status_json=False,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(READINESS, "parse_args", return_value=arguments),
+            mock.patch.object(READINESS, "read_password", return_value="secret"),
+            mock.patch.object(READINESS, "BitcoinRpc", return_value=FakeRpc()),
+            mock.patch.object(READINESS.time, "sleep"),
+            mock.patch.object(READINESS.time, "monotonic", side_effect=[0.0, 0.0, 0.0]),
+            mock.patch("sys.stdout", new=stdout),
+            mock.patch("sys.stderr", new=stderr),
+        ):
+            result = READINESS.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["blocks"], 963_900)
+        self.assertIn("Bitcoin readiness waiting", stderr.getvalue())
+        self.assertNotIn("Bitcoin readiness waiting", stdout.getvalue())
+
+    def test_status_json_reports_not_ready_without_failure(self) -> None:
+        class FakeRpc:
+            def call(inner_self, method: str):
+                if method == "getblockchaininfo":
+                    value = dict(self.blockchain)
+                    value["initialblockdownload"] = True
+                    return value
+                if method == "getindexinfo":
+                    return self.indexes
+                return self.network
+
+        arguments = SimpleNamespace(
+            user="node",
+            minimum_height=0,
+            maximum_tip_age_secs=7_200,
+            minimum_connections=1,
+            rpc_timeout_secs=5.0,
+            poll_interval_secs=1.0,
+            progress_interval_secs=60.0,
+            password_file="",
+            url="http://127.0.0.1:8332",
+            expected_chain="main",
+            wait_timeout_secs=0.0,
+            status_json=True,
+        )
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(READINESS, "parse_args", return_value=arguments),
+            mock.patch.object(READINESS, "read_password", return_value="secret"),
+            mock.patch.object(READINESS, "BitcoinRpc", return_value=FakeRpc()),
+            mock.patch.object(READINESS.time, "monotonic", side_effect=[0.0, 0.0]),
+            mock.patch("sys.stdout", new=stdout),
+        ):
+            result = READINESS.main()
+
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(result, 0)
+        self.assertFalse(report["ready"])
+        self.assertEqual(report["schema_version"], "usdb-bitcoin-readiness:v1")
+
+    def test_zero_progress_interval_disables_wait_heartbeat(self) -> None:
+        class FakeRpc:
+            def call(inner_self, method: str):
+                if method == "getblockchaininfo":
+                    value = dict(self.blockchain)
+                    value["initialblockdownload"] = True
+                    return value
+                if method == "getindexinfo":
+                    return self.indexes
+                return self.network
+
+        arguments = SimpleNamespace(
+            user="node",
+            minimum_height=0,
+            maximum_tip_age_secs=7_200,
+            minimum_connections=1,
+            rpc_timeout_secs=5.0,
+            poll_interval_secs=1.0,
+            progress_interval_secs=0.0,
+            password_file="",
+            url="http://127.0.0.1:8332",
+            expected_chain="main",
+            wait_timeout_secs=1.0,
+            status_json=False,
+        )
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(READINESS, "parse_args", return_value=arguments),
+            mock.patch.object(READINESS, "read_password", return_value="secret"),
+            mock.patch.object(READINESS, "BitcoinRpc", return_value=FakeRpc()),
+            mock.patch.object(READINESS.time, "sleep"),
+            mock.patch.object(READINESS.time, "monotonic", side_effect=[0.0, 0.0, 1.0]),
+            mock.patch("sys.stderr", new=stderr),
+        ):
+            with self.assertRaisesRegex(ValueError, "initialblockdownload"):
+                READINESS.main()
+
+        self.assertNotIn("readiness waiting", stderr.getvalue())
 
 
 if __name__ == "__main__":

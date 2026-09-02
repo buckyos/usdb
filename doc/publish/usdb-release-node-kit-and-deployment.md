@@ -243,11 +243,31 @@ usdb-node status
 6. 初始化并启动 USDB chain 与 control-plane。
 
 默认同步等待上限是 7 天，普通操作无需提供该参数；高级模式可使用 `--sync-timeout-secs` 覆盖。
+`up/resume` 在每个阶段开始时输出 UTC 时间和阶段名；长时间 Bitcoin、balance-history、usdb-indexer
+readiness 等待会定期输出 elapsed、同步高度、百分比及 blocker。heartbeat 只写 stderr，因此
+`resume --json` 的 stdout 仍保持单个 JSON 对象。
+
+交互式 TTY 中，`up` 和 `resume` 会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
+balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时显示 `SKIPPED`；并行 range 下载按已完成
+chunk 的实际字节计数，不把预分配文件误算为完成。USDB chain 使用标准 `eth_syncing`、`eth_blockNumber`
+和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察已有状态，不启动、停止、重试
+或放宽任何 readiness gate；非 TTY、重定向和 `resume --json` 继续使用原有阶段日志与 heartbeat。
+
+需要在另一个终端持续观察，或由监控系统采集单次结构化状态时使用：
+
+```bash
+usdb-node status --watch
+usdb-node status --progress-json
+```
+
+面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/READY/SKIPPED/BLOCKED/FAILED`。
+`--progress-json` 输出 `usdb-node-progress:v1`，固定包含五个 component；这是观测接口，不可代替下述
+`usdb-node-status:v1` 生命周期判断。
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
-配置、release activation、数据契约和 snapshot 安装状态；只有所有核心容器都处于 running 且不再处于
-health starting 时，才调用 Bitcoin、balance-history 和 usdb-indexer readiness。因而尚未执行 `up` 或仍在
-启动时，不会再附带无意义的 `connection refused` RPC 输出。
+配置、release activation、数据契约和 snapshot 安装状态。Bitcoin 容器已经 running、但仍处于 IBD/txindex
+同步且后续服务尚未启动时，状态是 `STARTING`，并附带 Bitcoin block/header、verification、txindex 和 peer
+进度；不会把正常初始同步误报为 `DEGRADED`。所有核心容器 running 后，再逐项执行完整服务 readiness。
 
 生命周期状态及主要处置如下：
 
@@ -316,6 +336,7 @@ IBD 可以在 `tmux`、`screen` 或受控 systemd unit 中运行；后续可再�
 
 ```bash
 usdb-node status
+usdb-node status --watch
 usdb-node resume --dry-run
 usdb-node resume
 usdb-node logs balance-history
@@ -324,6 +345,9 @@ usdb-node logs --bitcoin
 usdb-node down
 usdb-node down --include-bitcoin
 ```
+
+需要独立采集 Bitcoin 当前门禁进度时，可在 release node kit 环境中执行
+`run_testnet_bitcoin.sh progress`；该命令只查询一次并输出 `usdb-bitcoin-readiness:v1` JSON，不等待同步完成。
 
 默认 `down` 不停止独立 Bitcoin Core，且所有命令都不会执行 `compose down -v`。
 
