@@ -5,6 +5,11 @@ snapshot_marker_path() {
   echo "${root_dir}/bootstrap/snapshot-loader.done.json"
 }
 
+snapshot_progress_path() {
+  local root_dir="${1:?root_dir is required}"
+  echo "${root_dir}/bootstrap/snapshot-loader.progress.json"
+}
+
 snapshot_marker_escape() {
   local value="${1:-}"
   value="${value//\\/\\\\}"

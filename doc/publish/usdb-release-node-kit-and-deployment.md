@@ -130,7 +130,8 @@ managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P�
 
 正式 snapshot 是可选启动加速器。release manifest 已冻结经过 review 的 content-addressed record、
 高度、BTC block hash、snapshot ID、下载规模和 trusted-key catalog。交互式 `setup` 会显示这些信息并
-询问是否使用；选择后会直接执行可续传安装，不要求运维人员填写 URL。
+询问是否使用；选择后会直接执行可续传 artifact 下载/校验/选择，不要求运维人员填写 URL。live RocksDB
+导入仍由后续 `up/resume` 中的 `snapshot-loader` 完成。
 
 若 `setup` 中选择 full sync，之后仍可在 balance-history 第一次启动前执行：
 
@@ -249,9 +250,13 @@ readiness 等待会定期输出 elapsed、同步高度、百分比及 blocker。
 
 交互式 TTY 中，`up` 和 `resume` 会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
 balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时显示 `SKIPPED`；并行 range 下载按已完成
-chunk 的实际字节计数，不把预分配文件误算为完成。USDB chain 使用标准 `eth_syncing`、`eth_blockNumber`
-和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察已有状态，不启动、停止、重试
-或放宽任何 readiness gate；非 TTY、重定向和 `resume --json` 继续使用原有阶段日志与 heartbeat。
+chunk 的实际字节计数，不把预分配文件误算为完成。artifact 下载并校验完成后显示 `WAITING`，明确等待
+Bitcoin readiness；`snapshot-loader` 开始把 SQLite 导入 live RocksDB 后显示 `IMPORTING`，并区分 source
+verify、staging DB、balance history、UTXO、block commit、script registry、finalize 和 atomic swap 八个阶段。
+只有匹配的 `snapshot-loader.done.json` 与非空 live DB 同时存在才显示 `READY`。USDB chain 使用标准
+`eth_syncing`、`eth_blockNumber` 和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察
+已有状态，不启动、停止、重试或放宽任何 readiness gate；非 TTY、重定向和 `resume --json` 继续使用原有
+阶段日志与 heartbeat。
 
 需要在另一个终端持续观察，或由监控系统采集单次结构化状态时使用：
 
@@ -260,9 +265,15 @@ usdb-node status --watch
 usdb-node status --progress-json
 ```
 
-面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/READY/SKIPPED/BLOCKED/FAILED`。
-`--progress-json` 输出 `usdb-node-progress:v1`，固定包含五个 component；这是观测接口，不可代替下述
+面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
+`--progress-json` 输出 `usdb-node-progress:v2`，固定包含五个 component；Snapshot 在导入期间额外包含
+`stage/stage_index/stage_count/stage_current/stage_total/updated_at_unix`。这是观测接口，不可代替下述
 `usdb-node-status:v1` 生命周期判断。
+
+`snapshot-loader` 将导入观测值以原子替换方式写入
+`<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，写入失败只记录 warning，不影响 installer
+原有校验与原子切换。每次 loader 启动先清理旧进度；面板还要求进度中的 snapshot file 与当前 `node.env`
+选择一致。该文件即使显示 `complete` 也不能代替 `snapshot-loader.done.json` 完成 marker。
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
 配置、release activation、数据契约和 snapshot 安装状态。Bitcoin 容器已经 running、但仍处于 IBD/txindex

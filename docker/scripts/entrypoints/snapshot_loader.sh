@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../helpers/snapshot_marker.sh
 source "${script_dir}/../helpers/snapshot_marker.sh"
 
@@ -10,10 +11,16 @@ root_dir="${BH_ROOT_DIR:-/data/balance-history}"
 config_path="${root_dir}/config.toml"
 db_dir="${root_dir}/db"
 marker_path="$(snapshot_marker_path "${root_dir}")"
+progress_path="$(snapshot_progress_path "${root_dir}")"
 indexer_root="${USDB_INDEXER_ROOT_DIR:-/data/usdb-indexer}"
 indexer_config_path="${indexer_root}/config.json"
 
 "${script_dir}/../helpers/render_balance_history_config.sh" "${config_path}"
+
+if [[ -f "${progress_path}" ]]; then
+  echo "Removing stale snapshot import progress at ${progress_path}" >&2
+  rm -f "${progress_path}"
+fi
 
 case "${snapshot_mode}" in
   none)
@@ -81,8 +88,12 @@ if [[ -f "${marker_path}" ]]; then
   echo "Removing stale snapshot marker at ${marker_path}" >&2
   rm -f "${marker_path}"
 fi
-
-args=(--root-dir "${root_dir}" install-snapshot --file "${snapshot_file}")
+args=(
+  --root-dir "${root_dir}"
+  install-snapshot
+  --file "${snapshot_file}"
+  --progress-file "${progress_path}"
+)
 if [[ -n "${snapshot_manifest}" ]]; then
   args+=(--manifest "${snapshot_manifest}")
 fi

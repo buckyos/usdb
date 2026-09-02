@@ -203,7 +203,7 @@ curl -fsSL "${RECORD_URL}" | sha256sum
 
 ```bash
 usdb-node setup
-# setup 选择 snapshot 后会直接安装；中断时执行：
+# setup 选择 snapshot 后会下载、校验并选择 artifact；中断时执行：
 usdb-node snapshot install
 usdb-node doctor
 usdb-node up
@@ -242,8 +242,12 @@ usdb-node snapshot install \
 Range worker 只同时保留每个 worker 的一个临时 chunk，不额外保留完整分片副本；目标 DB 仍会在开始时
 预分配全尺寸空间。调整 concurrency 不改变已有 `.ranges.json` 的 chunk 划分，调整 chunk size 只影响新任务。
 
-安装命令只校验传输和 release identity。容器内 `snapshot-loader` 随后仍会使用 balance-history 原生
-Ed25519 校验和 staging install；两层校验不能互相替代。
+这里的 `setup` / `snapshot install` 只把 signed SQLite artifact 下载到本地 immutable artifact 目录，
+完成 release identity 校验并写入 `node.env` 选择；它不会创建 live balance-history RocksDB。
+`usdb-node up/resume` 等 Bitcoin readiness 通过后，才启动一次性 `snapshot-loader`：再次执行 balance-history
+原生 Ed25519/manifest/hash 校验，把 SQLite 分阶段导入 staging RocksDB，原子切换为 live `db/`，最后写入
+`<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.done.json`。两层校验不能互相替代，只有 marker 与当前选择匹配
+且 live DB 非空时，节点进度中的 Snapshot 才是 `READY`。
 
 ## 7. Paired Checkpoint 与后续工作
 

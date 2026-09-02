@@ -13,7 +13,8 @@
 Snapshot 只是 balance-history 的启动加速器。release 未批准 snapshot 或在 `setup` 中选择 full sync 时，
 节点保持 `SNAPSHOT_MODE=none`，仍会建立完整 UTXO、balance、block commit 和 state-ref；只有同步耗时不同，
 最终共识视图不应不同。使用 snapshot 时由 `setup` 读取 release manifest 并执行安装；中断后运行
-`usdb-node snapshot install` 续传，不得手工填写 URL、改写高度或文件路径。
+`usdb-node snapshot install` 续传 artifact，不得手工填写 URL、改写高度或文件路径；live RocksDB 导入发生
+在后续 `up/resume` 的一次性 `snapshot-loader` 阶段。
 
 ## 2. 当前发布级别
 
@@ -210,7 +211,8 @@ bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当�
 检测和确实需要开放 Bitcoin 入站时才需修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
 
 release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
-建议剩余空间和当前磁盘空间，并询问是否使用；选择后直接开始可断点续传安装，不需要填写 URL 或 S3 凭证。
+建议剩余空间和当前磁盘空间，并询问是否使用；选择后直接开始可断点续传的 artifact 下载与校验，不需要填写
+URL 或 S3 凭证。
 大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载。选择 full sync 仍受支持；下载中断时重跑
 `usdb-node snapshot install` 只补缺失 chunk，完成后再执行 `doctor/up`。
 
@@ -242,8 +244,10 @@ running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，
 
 交互式 `up/resume` 会固定显示 snapshot、Bitcoin、balance-history、usdb-indexer、USDB chain 五行进度；
 另一个 SSH 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
-`usdb-node status --progress-json`，schema 为 `usdb-node-progress:v1`。面板不会改变上述顺序或门禁；
-USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
+`usdb-node status --progress-json`，schema 为 `usdb-node-progress:v2`。Snapshot 行把本地 artifact 下载/校验
+与 SQLite 到 live RocksDB 的导入明确分开：artifact 完成但 Bitcoin gate 尚未通过时是 `WAITING`，loader
+运行时是带八阶段和 entry 计数的 `IMPORTING`，匹配 marker 与非空 live DB 同时存在后才是 `READY`。
+面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
 
 部署中断后优先运行 `usdb-node resume --dry-run` 查看允许的转换，再运行 `usdb-node resume`。它只自动续传
 已选择的官方 snapshot，或继续 `READY_TO_START/STARTING` 的启动流程；release activation 必须显式添加

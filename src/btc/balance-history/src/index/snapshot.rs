@@ -13,15 +13,19 @@ use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use usdb_util::{BtcScriptHash, UTXOEntry};
 
 /// Current external snapshot manifest sidecar schema version.
 pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v3";
 /// Detached signature scheme name used by signed snapshot manifests.
 pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
+const SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION: &str =
+    "balance-history-snapshot-install-progress:v1";
+const SNAPSHOT_INSTALL_STAGE_COUNT: u8 = 8;
+const SNAPSHOT_INSTALL_PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct SnapshotIndexer {
     config: BalanceHistoryConfigRef,
@@ -554,6 +558,144 @@ pub struct SnapshotData {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct SnapshotInstallProgressRecord {
+    schema_version: String,
+    state: String,
+    stage: String,
+    stage_index: u8,
+    stage_count: u8,
+    current: u64,
+    total: u64,
+    unit: String,
+    stage_current: u64,
+    stage_total: u64,
+    block_height: Option<u32>,
+    snapshot_file: String,
+    message: String,
+    updated_at_unix: u64,
+}
+
+#[derive(Clone)]
+struct SnapshotInstallProgressReporter {
+    path: PathBuf,
+    snapshot_file: String,
+    last_write: Arc<Mutex<Option<Instant>>>,
+    disabled: Arc<AtomicBool>,
+}
+
+impl SnapshotInstallProgressReporter {
+    fn new(path: PathBuf, snapshot_file: &Path) -> Self {
+        Self {
+            path,
+            snapshot_file: snapshot_file.display().to_string(),
+            last_write: Arc::new(Mutex::new(None)),
+            disabled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn report(
+        &self,
+        state: &str,
+        stage: &str,
+        stage_index: u8,
+        current: u64,
+        total: u64,
+        unit: &str,
+        stage_current: u64,
+        stage_total: u64,
+        block_height: Option<u32>,
+        message: &str,
+        force: bool,
+    ) {
+        if self.disabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = Instant::now();
+        let mut last_write = self.last_write.lock().unwrap();
+        if !force
+            && last_write.as_ref().is_some_and(|last| {
+                now.duration_since(*last) < SNAPSHOT_INSTALL_PROGRESS_WRITE_INTERVAL
+            })
+        {
+            return;
+        }
+
+        let record = SnapshotInstallProgressRecord {
+            schema_version: SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION.to_string(),
+            state: state.to_string(),
+            stage: stage.to_string(),
+            stage_index,
+            stage_count: SNAPSHOT_INSTALL_STAGE_COUNT,
+            current,
+            total,
+            unit: unit.to_string(),
+            stage_current,
+            stage_total,
+            block_height,
+            snapshot_file: self.snapshot_file.clone(),
+            message: message.to_string(),
+            updated_at_unix: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        };
+        *last_write = Some(now);
+        if let Err(error) = self.write_record(&record) {
+            self.disabled.store(true, Ordering::Relaxed);
+            warn!(
+                "Failed to write snapshot install progress to {}; disabling further progress writes: {}",
+                self.path.display(),
+                error
+            );
+        }
+    }
+
+    fn write_record(&self, record: &SnapshotInstallProgressRecord) -> Result<(), String> {
+        let parent = self.path.parent().ok_or_else(|| {
+            format!(
+                "Snapshot install progress path has no parent: {}",
+                self.path.display()
+            )
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create snapshot install progress directory {}: {}",
+                parent.display(),
+                error
+            )
+        })?;
+        let file_name = self
+            .path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                format!(
+                    "Snapshot install progress path has no file name: {}",
+                    self.path.display()
+                )
+            })?;
+        let temporary_path = self.path.with_file_name(format!(".{file_name}.tmp"));
+        let contents = serde_json::to_vec_pretty(record)
+            .map_err(|error| format!("Failed to encode snapshot install progress: {error}"))?;
+        std::fs::write(&temporary_path, contents).map_err(|error| {
+            format!(
+                "Failed to write temporary snapshot install progress {}: {}",
+                temporary_path.display(),
+                error
+            )
+        })?;
+        std::fs::rename(&temporary_path, &self.path).map_err(|error| {
+            format!(
+                "Failed to publish snapshot install progress {}: {}",
+                self.path.display(),
+                error
+            )
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SnapshotManifest {
     /// Version tag of the external sidecar manifest schema.
     pub manifest_version: String,
@@ -937,20 +1079,60 @@ pub struct SnapshotInstaller {
     config: BalanceHistoryConfigRef,
     db: BalanceHistoryDBRef,
     output: IndexOutputRef,
+    progress_file: Option<PathBuf>,
 }
 
 impl SnapshotInstaller {
+    /// Creates a snapshot installer without an external progress observer.
     pub fn new(
         config: BalanceHistoryConfigRef,
         db: BalanceHistoryDBRef,
         output: IndexOutputRef,
     ) -> Self {
-        Self { config, db, output }
+        Self {
+            config,
+            db,
+            output,
+            progress_file: None,
+        }
+    }
+
+    /// Enables best-effort atomic progress records for operational observers.
+    ///
+    /// Progress records never participate in snapshot validation or installation decisions.
+    /// A write failure is logged and installation continues with its existing safety checks.
+    pub fn with_progress_file(mut self, progress_file: PathBuf) -> Self {
+        self.progress_file = Some(progress_file);
+        self
     }
 
     pub fn install(self, data: SnapshotData) -> Result<(), String> {
         let install_begin = Instant::now();
         info!("Starting snapshot installation from {:?}", data,);
+        let progress = self
+            .progress_file
+            .as_ref()
+            .map(|path| SnapshotInstallProgressReporter::new(path.clone(), &data.file));
+        let source_size = data
+            .file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if let Some(progress) = progress.as_ref() {
+            progress.report(
+                "running",
+                "verify_source",
+                1,
+                0,
+                source_size,
+                "bytes",
+                0,
+                source_size,
+                None,
+                "verifying snapshot source",
+                true,
+            );
+        }
 
         self.output.start_load(0);
         let trust_mode = self.config.snapshot.trust_mode.clone();
@@ -1057,7 +1239,24 @@ impl SnapshotInstaller {
         if let Some(hash) = expected_hash {
             self.output.println("Verifying snapshot file hash...");
             let hash_begin = Instant::now();
-            let file_hash = SnapshotHash::calc_hash(&data.file)?;
+            let file_hash =
+                SnapshotHash::calc_hash_with_progress(&data.file, |processed, total| {
+                    if let Some(progress) = progress.as_ref() {
+                        progress.report(
+                            "running",
+                            "verify_source",
+                            1,
+                            processed,
+                            total,
+                            "bytes",
+                            processed,
+                            total,
+                            None,
+                            "verifying snapshot file hash",
+                            processed >= total,
+                        );
+                    }
+                })?;
             if !file_hash.eq_ignore_ascii_case(&hash) {
                 let msg = format!(
                     "Snapshot file hash mismatch: expected {}, got {}",
@@ -1147,6 +1346,27 @@ impl SnapshotInstaller {
             verification_begin.elapsed().as_millis()
         );
 
+        let import_total = meta
+            .balance_history_count
+            .saturating_add(meta.utxo_count)
+            .saturating_add(meta.block_commit_count)
+            .saturating_add(meta.script_registry_count);
+        if let Some(progress) = progress.as_ref() {
+            progress.report(
+                "running",
+                "open_staging_db",
+                2,
+                0,
+                import_total,
+                "entries",
+                0,
+                1,
+                Some(meta.block_height),
+                "opening staging RocksDB",
+                true,
+            );
+        }
+
         let staging_open_begin = Instant::now();
         let staging_root = self.prepare_staging_root()?;
         let staging_config = self.make_staging_config(staging_root.clone());
@@ -1164,7 +1384,13 @@ impl SnapshotInstaller {
 
         // Install into staging DB first, then atomically switch the live DB directory.
         let balance_history_begin = Instant::now();
-        self.install_balance_history_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_balance_history_snapshot(
+            &staging_db,
+            &snapshot_db,
+            &meta,
+            progress.as_ref(),
+            import_total,
+        )?;
         info!(
             "Snapshot installation stage completed: stage=balance_history, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
@@ -1172,7 +1398,13 @@ impl SnapshotInstaller {
             balance_history_begin.elapsed().as_millis()
         );
         let utxo_begin = Instant::now();
-        self.install_utxo_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_utxo_snapshot(
+            &staging_db,
+            &snapshot_db,
+            &meta,
+            progress.as_ref(),
+            import_total,
+        )?;
         info!(
             "Snapshot installation stage completed: stage=utxo, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
@@ -1180,7 +1412,13 @@ impl SnapshotInstaller {
             utxo_begin.elapsed().as_millis()
         );
         let block_commit_begin = Instant::now();
-        self.install_block_commit_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_block_commit_snapshot(
+            &staging_db,
+            &snapshot_db,
+            &meta,
+            progress.as_ref(),
+            import_total,
+        )?;
         info!(
             "Snapshot installation stage completed: stage=block_commit, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
@@ -1188,7 +1426,13 @@ impl SnapshotInstaller {
             block_commit_begin.elapsed().as_millis()
         );
         let script_registry_begin = Instant::now();
-        self.install_script_registry_snapshot(&staging_db, &snapshot_db, &meta)?;
+        self.install_script_registry_snapshot(
+            &staging_db,
+            &snapshot_db,
+            &meta,
+            progress.as_ref(),
+            import_total,
+        )?;
         info!(
             "Snapshot installation stage completed: stage=script_registry, block_height={}, row_count={}, elapsed_ms={}",
             meta.block_height,
@@ -1197,6 +1441,21 @@ impl SnapshotInstaller {
         );
 
         let finalize_begin = Instant::now();
+        if let Some(progress) = progress.as_ref() {
+            progress.report(
+                "running",
+                "finalize",
+                7,
+                import_total,
+                import_total,
+                "entries",
+                0,
+                1,
+                Some(meta.block_height),
+                "validating and flushing staging RocksDB",
+                true,
+            );
+        }
         staging_db
             .put_btc_block_height(meta.block_height)
             .map_err(|e| {
@@ -1278,8 +1537,39 @@ impl SnapshotInstaller {
 
         let swap_begin = Instant::now();
         let output = self.output.clone();
+        if let Some(progress) = progress.as_ref() {
+            progress.report(
+                "running",
+                "swap",
+                8,
+                import_total,
+                import_total,
+                "entries",
+                0,
+                1,
+                Some(meta.block_height),
+                "promoting staging RocksDB to live DB",
+                true,
+            );
+        }
         self.swap_staging_db_into_place(staging_db, staging_root)?;
         let swap_elapsed_ms = swap_begin.elapsed().as_millis();
+
+        if let Some(progress) = progress.as_ref() {
+            progress.report(
+                "complete",
+                "complete",
+                SNAPSHOT_INSTALL_STAGE_COUNT,
+                import_total,
+                import_total,
+                "entries",
+                1,
+                1,
+                Some(meta.block_height),
+                "snapshot imported into live RocksDB",
+                true,
+            );
+        }
 
         output.println(&format!(
             "Completed snapshot installation up to block height {}",
@@ -1295,6 +1585,36 @@ impl SnapshotInstaller {
         );
 
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn report_import_progress(
+        progress: Option<&SnapshotInstallProgressReporter>,
+        meta: &SnapshotMeta,
+        stage: &str,
+        stage_index: u8,
+        completed_before_stage: u64,
+        stage_current: u64,
+        stage_total: u64,
+        import_total: u64,
+        message: &str,
+        force: bool,
+    ) {
+        if let Some(progress) = progress {
+            progress.report(
+                "running",
+                stage,
+                stage_index,
+                completed_before_stage.saturating_add(stage_current),
+                import_total,
+                "entries",
+                stage_current,
+                stage_total,
+                Some(meta.block_height),
+                message,
+                force,
+            );
+        }
     }
 
     fn validate_staged_manifest(
@@ -1352,8 +1672,22 @@ impl SnapshotInstaller {
         target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
+        progress: Option<&SnapshotInstallProgressReporter>,
+        import_total: u64,
     ) -> Result<(), String> {
         let total = meta.balance_history_count;
+        Self::report_import_progress(
+            progress,
+            meta,
+            "balance_history",
+            3,
+            0,
+            0,
+            total,
+            import_total,
+            "importing balance history entries",
+            true,
+        );
         if total == 0 {
             self.output
                 .println("No balance history entries in snapshot, skipping installation");
@@ -1391,6 +1725,18 @@ impl SnapshotInstaller {
             }
 
             self.output.update_load_current_count(installed_total);
+            Self::report_import_progress(
+                progress,
+                meta,
+                "balance_history",
+                3,
+                0,
+                installed_total,
+                total,
+                import_total,
+                "importing balance history entries",
+                installed_total >= total,
+            );
 
             if entries.len() < page_size as usize {
                 break;
@@ -1421,8 +1767,23 @@ impl SnapshotInstaller {
         target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
+        progress: Option<&SnapshotInstallProgressReporter>,
+        import_total: u64,
     ) -> Result<(), String> {
         let total = meta.utxo_count;
+        let completed_before_stage = meta.balance_history_count;
+        Self::report_import_progress(
+            progress,
+            meta,
+            "utxo",
+            4,
+            completed_before_stage,
+            0,
+            total,
+            import_total,
+            "importing UTXO entries",
+            true,
+        );
         if total == 0 {
             self.output
                 .println("No UTXO entries in snapshot, skipping installation");
@@ -1460,6 +1821,18 @@ impl SnapshotInstaller {
             }
 
             self.output.update_load_current_count(installed_total);
+            Self::report_import_progress(
+                progress,
+                meta,
+                "utxo",
+                4,
+                completed_before_stage,
+                installed_total,
+                total,
+                import_total,
+                "importing UTXO entries",
+                installed_total >= total,
+            );
 
             if utxos.len() < page_size as usize {
                 break;
@@ -1489,8 +1862,23 @@ impl SnapshotInstaller {
         target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
+        progress: Option<&SnapshotInstallProgressReporter>,
+        import_total: u64,
     ) -> Result<(), String> {
         let total = meta.block_commit_count;
+        let completed_before_stage = meta.balance_history_count.saturating_add(meta.utxo_count);
+        Self::report_import_progress(
+            progress,
+            meta,
+            "block_commit",
+            5,
+            completed_before_stage,
+            0,
+            total,
+            import_total,
+            "importing block commit entries",
+            true,
+        );
         if total == 0 {
             self.output
                 .println("No block commit entries in snapshot, skipping installation");
@@ -1527,6 +1915,18 @@ impl SnapshotInstaller {
             }
 
             self.output.update_load_current_count(installed_total);
+            Self::report_import_progress(
+                progress,
+                meta,
+                "block_commit",
+                5,
+                completed_before_stage,
+                installed_total,
+                total,
+                import_total,
+                "importing block commit entries",
+                installed_total >= total,
+            );
 
             if entries.len() < page_size as usize {
                 break;
@@ -1557,8 +1957,26 @@ impl SnapshotInstaller {
         target_db: &BalanceHistoryDB,
         snapshot_db: &SnapshotDB,
         meta: &SnapshotMeta,
+        progress: Option<&SnapshotInstallProgressReporter>,
+        import_total: u64,
     ) -> Result<(), String> {
         let total = meta.script_registry_count;
+        let completed_before_stage = meta
+            .balance_history_count
+            .saturating_add(meta.utxo_count)
+            .saturating_add(meta.block_commit_count);
+        Self::report_import_progress(
+            progress,
+            meta,
+            "script_registry",
+            6,
+            completed_before_stage,
+            0,
+            total,
+            import_total,
+            "importing script registry entries",
+            true,
+        );
         if total == 0 {
             self.output
                 .println("No script registry entries in snapshot, skipping installation");
@@ -1600,6 +2018,18 @@ impl SnapshotInstaller {
             }
 
             self.output.update_load_current_count(installed_total);
+            Self::report_import_progress(
+                progress,
+                meta,
+                "script_registry",
+                6,
+                completed_before_stage,
+                installed_total,
+                total,
+                import_total,
+                "importing script registry entries",
+                installed_total >= total,
+            );
 
             if entries.len() < page_size as usize {
                 break;
@@ -1955,13 +2385,32 @@ mod tests {
 
         let status = Arc::new(SyncStatusManager::new());
         let output = Arc::new(IndexOutput::new(status));
-        let installer = SnapshotInstaller::new(config.clone(), live_db, output);
+        let progress_path = root_dir.join("bootstrap/snapshot-loader.progress.json");
+        let installer = SnapshotInstaller::new(config.clone(), live_db, output)
+            .with_progress_file(progress_path.clone());
         installer
             .install(SnapshotData {
                 file: snapshot_path,
                 manifest_file: None,
             })
             .unwrap();
+
+        let progress: SnapshotInstallProgressRecord =
+            serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+        assert_eq!(
+            progress.schema_version,
+            SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION
+        );
+        assert_eq!(progress.state, "complete");
+        assert_eq!(progress.stage, "complete");
+        assert_eq!(progress.current, 4);
+        assert_eq!(progress.total, 4);
+        assert_eq!(progress.block_height, Some(10));
+        assert!(
+            !progress_path
+                .with_file_name(".snapshot-loader.progress.json.tmp")
+                .exists()
+        );
 
         let reopened_db =
             BalanceHistoryDB::open(config.clone(), BalanceHistoryDBMode::Normal).unwrap();

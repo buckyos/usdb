@@ -479,6 +479,174 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(rendered.count("[------------------------]"), 5)
 
+    def test_snapshot_artifact_ready_waits_for_live_rocksdb_import(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-waiting"
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": "/snapshots/release/snapshot.db",
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/release/snapshot.manifest.json",
+        }
+        artifact = {
+            "state": "installed",
+            "summary": "release-approved snapshot artifact is verified",
+            "completed_bytes": 100,
+            "expected_bytes": 100,
+        }
+
+        component = NODE._snapshot_component(artifact, env, None)
+
+        self.assertEqual(component["state"], "WAITING")
+        self.assertEqual(component["progress_percent"], 100.0)
+        self.assertIn("after the Bitcoin readiness gate", component["detail"])
+
+    def test_snapshot_import_reports_stage_and_aggregate_progress(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-running"
+        progress_path = data_root / "bootstrap/snapshot-loader.progress.json"
+        progress_path.parent.mkdir(parents=True)
+        selected_file = "/snapshots/release/snapshot.db"
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": NODE.SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION,
+                    "state": "running",
+                    "stage": "script_registry",
+                    "stage_index": 6,
+                    "stage_count": 8,
+                    "current": 75,
+                    "total": 100,
+                    "unit": "entries",
+                    "stage_current": 25,
+                    "stage_total": 50,
+                    "block_height": 963800,
+                    "snapshot_file": selected_file,
+                    "message": "importing script registry entries",
+                    "updated_at_unix": 1_788_000_000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": selected_file,
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/release/snapshot.manifest.json",
+        }
+        artifact = {"state": "installed", "summary": "artifact verified"}
+        loader = {"state": "running", "health": "", "exit_code": None}
+
+        component = NODE._snapshot_component(artifact, env, loader)
+
+        self.assertEqual(component["state"], "IMPORTING")
+        self.assertEqual(component["progress_percent"], 75.0)
+        self.assertEqual(component["stage"], "script_registry")
+        self.assertEqual(component["stage_current"], 25)
+        self.assertIn("stage=script registry (6/8)", component["detail"])
+        self.assertIn("stage_progress=25/50", component["detail"])
+
+    def test_snapshot_import_ignores_stale_progress_for_selected_artifact(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-stale-progress"
+        progress_path = data_root / "bootstrap/snapshot-loader.progress.json"
+        progress_path.parent.mkdir(parents=True)
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": NODE.SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION,
+                    "state": "complete",
+                    "stage": "complete",
+                    "stage_index": 8,
+                    "stage_count": 8,
+                    "current": 100,
+                    "total": 100,
+                    "unit": "entries",
+                    "stage_current": 1,
+                    "stage_total": 1,
+                    "block_height": 963800,
+                    "snapshot_file": "/snapshots/old/snapshot.db",
+                    "message": "old import",
+                    "updated_at_unix": 1_788_000_000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": "/snapshots/new/snapshot.db",
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/new/snapshot.manifest.json",
+        }
+
+        component = NODE._snapshot_component(
+            {"state": "installed", "summary": "artifact verified"},
+            env,
+            {"state": "running", "health": "", "exit_code": None},
+        )
+
+        self.assertEqual(component["state"], "IMPORTING")
+        self.assertIsNone(component["current"])
+        self.assertIn("does not match the selected artifact", component["detail"])
+
+    def test_snapshot_ready_requires_matching_marker_and_nonempty_live_db(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-ready"
+        database = data_root / "db"
+        database.mkdir(parents=True)
+        (database / "CURRENT").write_text("MANIFEST-000001\n", encoding="utf-8")
+        selected_file = "/snapshots/release/snapshot.db"
+        selected_manifest = "/snapshots/release/snapshot.manifest.json"
+        marker = data_root / "bootstrap/snapshot-loader.done.json"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(
+            json.dumps(
+                {
+                    "snapshot_mode": "balance-history",
+                    "snapshot_file": selected_file,
+                    "snapshot_manifest": selected_manifest,
+                    "installed_at": "2026-09-02T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": selected_file,
+            "BH_SNAPSHOT_MANIFEST": selected_manifest,
+        }
+        artifact = {
+            "state": "installed",
+            "summary": "artifact verified",
+            "completed_bytes": 100,
+            "expected_bytes": 100,
+        }
+
+        component = NODE._snapshot_component(
+            artifact,
+            env,
+            {"state": "exited", "health": "", "exit_code": 0},
+        )
+
+        self.assertEqual(component["state"], "READY")
+        self.assertIn("live balance-history RocksDB", component["detail"])
+
+    def test_snapshot_loader_failure_is_distinct_from_artifact_install(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-failed"
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": "/snapshots/release/snapshot.db",
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/release/snapshot.manifest.json",
+        }
+        artifact = {"state": "installed", "summary": "artifact verified"}
+
+        component = NODE._snapshot_component(
+            artifact,
+            env,
+            {"state": "exited", "health": "", "exit_code": 1},
+        )
+
+        self.assertEqual(component["state"], "FAILED")
+        self.assertIn("exit_code=1", component["detail"])
+
     def test_chain_progress_verifies_identity_and_reports_sync(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         running = {"state": "running", "health": "healthy", "exit_code": None}
@@ -564,7 +732,7 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             report = NODE.collect_node_progress(layout)
 
-        self.assertEqual(report["schema_version"], "usdb-node-progress:v1")
+        self.assertEqual(report["schema_version"], "usdb-node-progress:v2")
         self.assertEqual(report["overall_state"], "SYNCING")
         self.assertEqual(
             [component["state"] for component in report["components"]],

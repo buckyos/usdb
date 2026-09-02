@@ -101,6 +101,11 @@ enum BalanceHistoryCommands {
         /// If omitted, the installer will look for `<snapshot>.manifest.json` next to the snapshot DB.
         #[arg(long)]
         manifest: Option<String>,
+
+        /// Optional best-effort JSON progress file for read-only operational observers.
+        /// Relative paths are resolved against root_dir and never affect install validation.
+        #[arg(long)]
+        progress_file: Option<PathBuf>,
     },
 
     /// Generate one snapshot signing key and matching public-key export files.
@@ -264,7 +269,11 @@ async fn main() {
             log_handle.shutdown();
             return;
         }
-        Some(BalanceHistoryCommands::InstallSnapshot { source, manifest }) => {
+        Some(BalanceHistoryCommands::InstallSnapshot {
+            source,
+            manifest,
+            progress_file,
+        }) => {
             let file_name = format!(
                 "{}_install_snapshot",
                 usdb_util::BALANCE_HISTORY_SERVICE_NAME
@@ -361,8 +370,16 @@ async fn main() {
                 file: file_path.clone(),
                 manifest_file: manifest_path,
             };
-            let snapshot_installer =
+            let mut snapshot_installer =
                 index::SnapshotInstaller::new(config.clone(), db, output.clone());
+            if let Some(progress_file) = progress_file {
+                let progress_file = if progress_file.is_absolute() {
+                    progress_file
+                } else {
+                    root_dir.join(progress_file)
+                };
+                snapshot_installer = snapshot_installer.with_progress_file(progress_file);
+            }
             if let Err(e) = snapshot_installer.install(data) {
                 let message = format!("Failed to install snapshot: {}", e);
                 output.eprintln(&message);

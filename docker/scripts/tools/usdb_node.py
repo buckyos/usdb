@@ -71,7 +71,8 @@ RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
 NODE_RESUME_SCHEMA_VERSION = "usdb-node-resume:v1"
-NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v1"
+NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v2"
+SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v1"
 MAX_RESUME_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 PROGRESS_COMPONENTS = (
@@ -1688,19 +1689,125 @@ def _component_progress(
     }
 
 
-def _snapshot_component(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _directory_has_entries(path: Path) -> bool:
+    try:
+        return path.is_dir() and next(path.iterdir(), None) is not None
+    except OSError:
+        return False
+
+
+def _snapshot_import_state(env: dict[str, str]) -> dict[str, Any]:
+    root_value = env.get("BH_DATA_HOST_DIR", "")
+    if not root_value:
+        return {"state": "invalid", "summary": "BH_DATA_HOST_DIR is not configured"}
+    root = Path(root_value).expanduser().resolve()
+    marker_path = root / "bootstrap/snapshot-loader.done.json"
+    db_has_entries = _directory_has_entries(root / "db")
+    if not marker_path.exists():
+        return {
+            "state": "unmarked",
+            "summary": "live RocksDB snapshot import marker is absent",
+            "db_has_entries": db_has_entries,
+        }
+    if not marker_path.is_file() or marker_path.is_symlink():
+        return {
+            "state": "invalid",
+            "summary": "snapshot import marker is not a regular file",
+            "db_has_entries": db_has_entries,
+        }
+    try:
+        marker = _load_json(marker_path)
+    except (OSError, ValueError) as error:
+        return {
+            "state": "invalid",
+            "summary": f"snapshot import marker is invalid: {error}",
+            "db_has_entries": db_has_entries,
+        }
+    expected = {
+        "snapshot_mode": env.get("SNAPSHOT_MODE", "none"),
+        "snapshot_file": env.get("BH_SNAPSHOT_FILE", ""),
+        "snapshot_manifest": env.get("BH_SNAPSHOT_MANIFEST", ""),
+    }
+    for key, value in expected.items():
+        if marker.get(key) != value:
+            return {
+                "state": "invalid",
+                "summary": f"snapshot import marker {key} does not match node configuration",
+                "db_has_entries": db_has_entries,
+            }
+    if not db_has_entries:
+        return {
+            "state": "invalid",
+            "summary": "snapshot import marker exists but live RocksDB is empty",
+            "db_has_entries": False,
+        }
+    return {
+        "state": "installed",
+        "summary": "snapshot is imported into live balance-history RocksDB",
+        "db_has_entries": True,
+        "installed_at": marker.get("installed_at"),
+    }
+
+
+def _read_snapshot_import_progress(env: dict[str, str]) -> dict[str, Any]:
+    root_value = env.get("BH_DATA_HOST_DIR", "")
+    if not root_value:
+        raise ValueError("BH_DATA_HOST_DIR is not configured")
+    progress_path = (
+        Path(root_value).expanduser().resolve()
+        / "bootstrap/snapshot-loader.progress.json"
+    )
+    if not progress_path.is_file() or progress_path.is_symlink():
+        raise ValueError("snapshot import progress is not available yet")
+    progress = _load_json(progress_path)
+    if progress.get("schema_version") != SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION:
+        raise ValueError("snapshot import progress has an unsupported schema")
+    if progress.get("snapshot_file") != env.get("BH_SNAPSHOT_FILE", ""):
+        raise ValueError("snapshot import progress does not match the selected artifact")
+    if progress.get("state") not in {"running", "complete"}:
+        raise ValueError("snapshot import progress has an invalid state")
+    if not isinstance(progress.get("stage"), str) or not progress["stage"]:
+        raise ValueError("snapshot import progress has no stage")
+    for key in (
+        "stage_index",
+        "stage_count",
+        "current",
+        "total",
+        "stage_current",
+        "stage_total",
+        "updated_at_unix",
+    ):
+        value = progress.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"snapshot import progress has invalid {key}")
+    if (
+        progress["stage_index"] == 0
+        or progress["stage_count"] == 0
+        or progress["stage_index"] > progress["stage_count"]
+    ):
+        raise ValueError("snapshot import progress has an invalid stage range")
+    if progress["total"] > 0 and progress["current"] > progress["total"]:
+        raise ValueError("snapshot import progress exceeds its aggregate total")
+    if (
+        progress["stage_total"] > 0
+        and progress["stage_current"] > progress["stage_total"]
+    ):
+        raise ValueError("snapshot import progress exceeds its stage total")
+    if progress.get("unit") not in {"bytes", "entries"}:
+        raise ValueError("snapshot import progress has an invalid unit")
+    if not isinstance(progress.get("message"), str):
+        raise ValueError("snapshot import progress has an invalid message")
+    return progress
+
+
+def _snapshot_component(
+    snapshot: dict[str, Any],
+    env: dict[str, str],
+    loader_service: dict[str, Any] | None,
+) -> dict[str, Any]:
     state = snapshot["state"]
     if state == "not_selected":
         return _component_progress("snapshot", "SKIPPED", snapshot["summary"])
-    if state == "installed":
-        return _component_progress(
-            "snapshot",
-            "READY",
-            snapshot["summary"],
-            current=snapshot.get("completed_bytes"),
-            total=snapshot.get("expected_bytes"),
-            unit="bytes",
-        )
     if state == "invalid":
         return _component_progress("snapshot", "BLOCKED", snapshot["summary"])
     if state == "incomplete":
@@ -1722,7 +1829,88 @@ def _snapshot_component(snapshot: dict[str, Any]) -> dict[str, Any]:
             total=total if isinstance(total, int) else None,
             unit="bytes",
         )
-    return _component_progress("snapshot", "WAITING", snapshot["summary"])
+    if state not in {"installed", "configured"}:
+        return _component_progress("snapshot", "WAITING", snapshot["summary"])
+
+    import_state = _snapshot_import_state(env)
+    if import_state["state"] == "installed":
+        return _component_progress(
+            "snapshot",
+            "READY",
+            import_state["summary"],
+            current=snapshot.get("completed_bytes"),
+            total=snapshot.get("expected_bytes"),
+            unit="bytes",
+        )
+    if import_state["state"] == "invalid":
+        return _component_progress("snapshot", "BLOCKED", import_state["summary"])
+
+    loader_state = loader_service.get("state") if loader_service is not None else None
+    if loader_state == "running":
+        try:
+            progress = _read_snapshot_import_progress(env)
+        except (OSError, ValueError) as error:
+            return _component_progress(
+                "snapshot",
+                "IMPORTING",
+                f"artifact verified; RocksDB import started; {error}",
+            )
+        stage = progress["stage"].replace("_", " ")
+        detail = (
+            f"stage={stage} ({progress['stage_index']}/{progress['stage_count']}), "
+            f"stage_progress={progress['stage_current']}/{progress['stage_total']}; "
+            f"{progress['message']}"
+        )
+        component = _component_progress(
+            "snapshot",
+            "IMPORTING",
+            detail,
+            current=progress["current"],
+            total=progress["total"],
+            unit=progress["unit"],
+        )
+        component["stage"] = progress["stage"]
+        component["stage_index"] = progress["stage_index"]
+        component["stage_count"] = progress["stage_count"]
+        component["stage_current"] = progress["stage_current"]
+        component["stage_total"] = progress["stage_total"]
+        component["updated_at_unix"] = progress["updated_at_unix"]
+        return component
+    if loader_state in {"dead", "exited", "removing", "restarting"}:
+        exit_code = loader_service.get("exit_code") if loader_service is not None else None
+        try:
+            last_progress = _read_snapshot_import_progress(env)
+            last_stage = f"; last_stage={last_progress['stage']}"
+        except (OSError, ValueError):
+            last_stage = ""
+        if loader_state == "exited" and exit_code == 0:
+            return _component_progress(
+                "snapshot",
+                "BLOCKED",
+                "snapshot-loader exited successfully but the live RocksDB marker is absent"
+                + last_stage,
+            )
+        suffix = f", exit_code={exit_code}" if exit_code is not None else ""
+        return _component_progress(
+            "snapshot",
+            "FAILED",
+            f"snapshot-loader state={loader_state}{suffix}; "
+            f"live RocksDB import is incomplete{last_stage}",
+        )
+    if import_state.get("db_has_entries") is True:
+        return _component_progress(
+            "snapshot",
+            "BLOCKED",
+            "live balance-history RocksDB exists without a matching snapshot import marker",
+        )
+    return _component_progress(
+        "snapshot",
+        "WAITING",
+        "artifact verified; RocksDB import runs after the Bitcoin readiness gate",
+        current=snapshot.get("completed_bytes"),
+        total=snapshot.get("expected_bytes"),
+        unit="bytes",
+    )
 
 
 def _failed_container_component(
@@ -1935,7 +2123,15 @@ def _chain_component(
 
 def _overall_progress_state(components: list[dict[str, Any]]) -> str:
     states = {component["state"] for component in components}
-    for state in ("FAILED", "BLOCKED", "VERIFYING", "INSTALLING", "SYNCING", "STARTING"):
+    for state in (
+        "FAILED",
+        "BLOCKED",
+        "VERIFYING",
+        "INSTALLING",
+        "IMPORTING",
+        "SYNCING",
+        "STARTING",
+    ):
         if state in states:
             return state
     if states <= {"READY", "SKIPPED"}:
@@ -1960,14 +2156,18 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         }
     try:
         env = read_env(layout.node_env)
-        snapshot_component = _snapshot_component(_snapshot_lifecycle_status(layout, env))
+        snapshot_lifecycle = _snapshot_lifecycle_status(layout, env)
     except (OSError, ValueError) as error:
         env = {}
-        snapshot_component = _component_progress("snapshot", "BLOCKED", str(error))
+        snapshot_lifecycle = {
+            "state": "invalid",
+            "summary": str(error),
+        }
 
     try:
         services = _collect_compose_services(layout, command_timeout_secs=8)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        snapshot_component = _snapshot_component(snapshot_lifecycle, env, None)
         components = [snapshot_component]
         components.extend(
             _component_progress(component_id, "BLOCKED", str(error))
@@ -1981,6 +2181,12 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             "overall_state": _overall_progress_state(components),
             "components": components,
         }
+
+    snapshot_component = _snapshot_component(
+        snapshot_lifecycle,
+        env,
+        services.get("snapshot-loader"),
+    )
 
     bitcoin_service = services.get("btc-node")
     bitcoin_component = _failed_container_component(
