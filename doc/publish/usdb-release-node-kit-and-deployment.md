@@ -254,10 +254,10 @@ health starting 时，才调用 Bitcoin、balance-history 和 usdb-indexer readi
 | 状态 | 含义 | 典型 `next_actions` |
 | --- | --- | --- |
 | `UNCONFIGURED` | 尚无 private `node.env` | `usdb-node setup` |
-| `ACTIVATION_REQUIRED` | 配置仍引用同 bundle 的旧 release image | `usdb-node activate-release` |
-| `SNAPSHOT_INCOMPLETE` | 已选择 snapshot，但下载或校验尚未完成 | `usdb-node snapshot install` |
-| `READY_TO_START` | 本地安装和数据前置条件完成，容器未启动 | `usdb-node up` |
-| `STARTING` | 核心容器正在创建、启动或等待 health | `usdb-node logs` |
+| `ACTIVATION_REQUIRED` | 配置仍引用同 bundle 的旧 release image | `usdb-node resume --activate-release` |
+| `SNAPSHOT_INCOMPLETE` | 已选择 snapshot，但下载或校验尚未完成 | `usdb-node resume` |
+| `READY_TO_START` | 本地安装和数据前置条件完成，容器未启动 | `usdb-node resume` |
+| `STARTING` | 核心容器正在创建、启动或等待 health | `usdb-node resume` / `logs` |
 | `READY` | 核心容器和服务 readiness 全部通过 | 无 |
 | `DEGRADED` | 已启动服务退出、不健康或 readiness 失败 | `usdb-node logs` |
 | `BLOCKED` | 配置、数据契约或状态读取异常 | `usdb-node doctor` |
@@ -269,8 +269,46 @@ usdb-node status --json
 ```
 
 输出 schema 为 `usdb-node-status:v1`，包含 `release_id`、`network_bundle_id`、`overall_state`、分层
-`checks` 和有序 `next_actions`。只有 `READY` 返回退出码 `0`，其他状态返回 `1`；调用方应读取
-`overall_state`，不要从人类可读文本或底层连接错误推断安装阶段。
+`checks`、`resume.mode`、有序 `next_actions` 和 `operator_guidance`。只有 `READY` 返回退出码 `0`，其他状态
+返回 `1`；调用方应读取 `overall_state`，不要从人类可读文本或底层连接错误推断安装阶段。
+
+### 4.1 受限恢复
+
+安装、snapshot 下载或启动被 SSH 断开、进程退出或等待超时中断后，可先预览再继续：
+
+```bash
+usdb-node resume --dry-run
+usdb-node resume
+```
+
+`resume` 不是通用修复器。它只按内部状态枚举执行以下白名单转换，不会执行 `next_actions` 中的任意字符串：
+
+- `SNAPSHOT_INCOMPLETE`：继续 release-approved snapshot 的 `.part/.ranges.json` 下载、签名与哈希校验；
+- `READY_TO_START`、`STARTING`：重入幂等的 readiness-ordered `up`；
+- `ACTIVATION_REQUIRED`：默认停止，只有 `--activate-release` 才允许同 compatibility contract 的 image 激活；
+- `READY`：不做修改并成功退出。
+
+一次 resume 最多执行四个不同转换；相同动作执行后状态没有前进时主动停止。bundle-scoped operation lock 防止
+`setup/configure/snapshot/up/resume/down` 及配置变更并发执行。`setup` 中选择 snapshot 后，选择意图会在下载
+开始前先写入 `node.env`，所以在配置写入与长时间下载之间中断，后续仍会得到 `SNAPSHOT_INCOMPLETE`，不会误启
+full sync。
+
+自动化接口为：
+
+```bash
+usdb-node resume --dry-run --json
+usdb-node resume --json
+```
+
+输出 schema 为 `usdb-node-resume:v1`。JSON 模式把底层同步日志定向到 stderr，只在 stdout 输出一个结果对象。
+`--skip-pull` 和 `--sync-timeout-secs` 仅是高级启动覆盖项。
+
+`UNCONFIGURED`、`DEGRADED`、`BLOCKED` 不自动处理。状态输出会保留第一个 invalid/unavailable check，并给出
+人工处置建议：先保存 `node.env`、artifact、持久数据和服务日志；再运行 `doctor` 或对应 `logs`；不要通过覆盖
+配置、删除最终 snapshot 目录、移动 dataset marker 或循环重启来绕过身份、哈希、storage 或 consensus 错误。
+`DEGRADED` 尤其要求先确认退出服务及 readiness 失败原因。若另一个操作仍持有锁，等待原命令结束或确认其进程
+已退出后再重试，不能删除锁文件来绕过仍运行的操作。
+
 命令中断或等待超时不会删除容器、bind-mounted 数据。重新执行相同 `up` 会从现有同步状态继续。长期 Bitcoin
 IBD 可以在 `tmux`、`screen` 或受控 systemd unit 中运行；后续可再为 node kit 增加 systemd 模板。
 
@@ -278,6 +316,8 @@ IBD 可以在 `tmux`、`screen` 或受控 systemd unit 中运行；后续可再�
 
 ```bash
 usdb-node status
+usdb-node resume --dry-run
+usdb-node resume
 usdb-node logs balance-history
 usdb-node logs usdb-chain
 usdb-node logs --bitcoin

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import getpass
 import hashlib
 import json
@@ -14,9 +15,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -63,6 +66,8 @@ MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
 RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
+NODE_RESUME_SCHEMA_VERSION = "usdb-node-resume:v1"
+MAX_RESUME_TRANSITIONS = 4
 CORE_RUNTIME_SERVICES = (
     "btc-node",
     "balance-history",
@@ -98,6 +103,51 @@ class DataRootCapacity:
     filesystem_path: Path
     total_bytes: int
     free_bytes: int
+
+
+@contextmanager
+def node_operation_lock(layout: ReleaseLayout, operation: str) -> Iterator[None]:
+    """Serialize bundle-scoped operations that mutate configuration or runtime state."""
+    lock_path = layout.node_env.parent / ".usdb-node-operation.lock"
+    lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    acquired = False
+    with os.fdopen(descriptor, "r+", encoding="utf-8") as lock:
+        os.fchmod(lock.fileno(), 0o600)
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except BlockingIOError as error:
+            lock.seek(0)
+            holder = lock.read().strip()
+            detail = f": {holder}" if holder else ""
+            raise ValueError(
+                f"another usdb-node operation is already running for {layout.bundle_id}{detail}"
+            ) from error
+
+        metadata = {
+            "operation": operation,
+            "pid": os.getpid(),
+            "release_id": layout.release_id,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        lock.seek(0)
+        lock.truncate()
+        lock.write(json.dumps(metadata, sort_keys=True) + "\n")
+        lock.flush()
+        os.fsync(lock.fileno())
+        try:
+            yield
+        finally:
+            if acquired:
+                lock.seek(0)
+                lock.truncate()
+                lock.flush()
+                os.fsync(lock.fileno())
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -424,6 +474,7 @@ def configure_node(
     bitcoin_p2p: str,
     ssh_port: int = 22,
     firewall_mode: str = "external",
+    select_snapshot: bool = False,
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -478,6 +529,8 @@ def configure_node(
             "USDB_MINER_ADDRESS": miner_address,
             "USDB_MINER_THREADS": str(miner_threads),
         }
+        if select_snapshot:
+            updates.update(_snapshot_env_updates(_approved_snapshot_record(layout)))
         content = render_env(template_path.read_text(encoding="utf-8"), updates)
         _atomic_write_private(layout.node_env, content)
         _validate_node_config(
@@ -705,6 +758,7 @@ def setup_node(
         bitcoin_p2p="public" if bitcoin_public else "private",
         ssh_port=ssh_port,
         firewall_mode=firewall_mode,
+        select_snapshot=install_snapshot,
     )
     return SetupResult(
         node_env=path,
@@ -829,6 +883,37 @@ def _snapshot_env_updates(record: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def select_snapshot_release(layout: ReleaseLayout) -> dict[str, Any]:
+    """Persist the approved snapshot choice before any long-running download begins."""
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run setup or configure first")
+    env = read_env(layout.node_env)
+    balance_history_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()
+    database = balance_history_root / "db"
+    if database.is_dir() and any(database.iterdir()):
+        raise ValueError(
+            "refusing to change snapshot selection after balance-history DB initialization; "
+            "use a fresh data root or an explicit reviewed recovery procedure"
+        )
+    record = _approved_snapshot_record(layout)
+    updates = _snapshot_env_updates(record)
+    if all(env.get(key, "") == value for key, value in updates.items()):
+        return record
+
+    original = layout.node_env.read_text(encoding="utf-8")
+    try:
+        _atomic_write_private(layout.node_env, render_env(original, updates))
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=False,
+        )
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+    return record
+
+
 def install_snapshot_release(
     layout: ReleaseLayout,
     *,
@@ -839,36 +924,13 @@ def install_snapshot_release(
         raise ValueError("download concurrency must be between 1 and 64")
     if not 1 <= download_chunk_size_mib <= 1024:
         raise ValueError("download chunk size must be between 1 and 1024 MiB")
-    if not layout.node_env.is_file():
-        raise ValueError("node is not configured; run setup or configure first")
+    record = select_snapshot_release(layout)
     env = read_env(layout.node_env)
     snapshot_root = Path(env.get("BH_SNAPSHOT_HOST_DIR", "")).expanduser().resolve()
-    balance_history_root = Path(env.get("BH_DATA_HOST_DIR", "")).expanduser().resolve()
-    database = balance_history_root / "db"
-    if database.is_dir() and any(database.iterdir()):
-        raise ValueError(
-            "refusing to change snapshot selection after balance-history DB initialization; "
-            "use a fresh data root or an explicit reviewed recovery procedure"
-        )
-    record = _approved_snapshot_record(layout)
-    updates = _snapshot_env_updates(record)
     network = validate_network_bundle(layout.bundle_dir)
     btc_source = network.get("btc_source")
     if not isinstance(btc_source, dict) or not isinstance(btc_source.get("index_origin_height"), int):
         raise ValueError("network bundle is missing BTC index origin")
-    original = layout.node_env.read_text(encoding="utf-8")
-    if not all(env.get(key, "") == value for key, value in updates.items()):
-        try:
-            _atomic_write_private(layout.node_env, render_env(original, updates))
-            _validate_node_config(
-                layout,
-                require_runtime=False,
-                require_bitcoin_runtime=False,
-            )
-        except BaseException:
-            _atomic_write_private(layout.node_env, original)
-            raise
-
     installed = install_snapshot_artifact(
         record_url=layout.snapshot["record"]["url"],
         destination_root=snapshot_root,
@@ -908,17 +970,22 @@ def run_helper(
     check: bool = True,
     sync_timeout_secs: int | None = None,
     capture_output: bool = False,
+    output_to_stderr: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     path = layout.kit_root / "docker/scripts/tools" / helper
     if not path.is_file():
         raise ValueError(f"release node kit is missing helper: {path}")
-    return subprocess.run(
-        [str(path), *arguments],
-        check=check,
-        env=_helper_environment(layout, sync_timeout_secs),
-        text=True,
-        capture_output=capture_output,
-    )
+    if capture_output and output_to_stderr:
+        raise ValueError("helper output cannot be captured and redirected simultaneously")
+    options: dict[str, Any] = {
+        "check": check,
+        "env": _helper_environment(layout, sync_timeout_secs),
+        "text": True,
+        "capture_output": capture_output,
+    }
+    if output_to_stderr:
+        options["stdout"] = sys.stderr
+    return subprocess.run([str(path), *arguments], **options)
 
 
 def run_host_action(
@@ -927,13 +994,20 @@ def run_host_action(
     *,
     docker_user: str = "",
     check: bool = True,
+    output_to_stderr: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if action not in {"check", "install"}:
         raise ValueError(f"unsupported host action: {action}")
     arguments = [action]
     if docker_user:
         arguments.extend(["--docker-user", docker_user])
-    return run_helper(layout, "prepare_usdb_host.sh", arguments, check=check)
+    return run_helper(
+        layout,
+        "prepare_usdb_host.sh",
+        arguments,
+        check=check,
+        output_to_stderr=output_to_stderr,
+    )
 
 
 def prepare_host(
@@ -964,6 +1038,7 @@ def run_firewall_action(
     *,
     confirm: bool = False,
     ssh_port: int | None = None,
+    output_to_stderr: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     if action not in {"check", "apply"}:
         raise ValueError(f"unsupported firewall action: {action}")
@@ -999,22 +1074,37 @@ def run_firewall_action(
     ]
     if confirm:
         arguments.append("--confirm")
-    return run_helper(layout, "prepare_usdb_firewall.sh", arguments)
+    return run_helper(
+        layout,
+        "prepare_usdb_firewall.sh",
+        arguments,
+        output_to_stderr=output_to_stderr,
+    )
 
 
-def doctor(layout: ReleaseLayout) -> None:
+def doctor(layout: ReleaseLayout, *, output_to_stderr: bool = False) -> None:
     if not layout.node_env.is_file():
         raise ValueError("node is not configured; run configure first")
-    run_host_action(layout, "check", docker_user=default_docker_user())
+    run_host_action(
+        layout,
+        "check",
+        docker_user=default_docker_user(),
+        output_to_stderr=output_to_stderr,
+    )
     _validate_node_config(
         layout,
         require_runtime=True,
         require_bitcoin_runtime=True,
     )
     _validate_node_release_images(layout)
-    run_helper(layout, "run_testnet_runtime.sh", ["validate-node"])
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["validate-node"],
+        output_to_stderr=output_to_stderr,
+    )
     if configured_firewall_mode(layout) == "managed":
-        run_firewall_action(layout, "check")
+        run_firewall_action(layout, "check", output_to_stderr=output_to_stderr)
     else:
         print(
             "Host firewall mode is external; skipped UFW inspection. "
@@ -1022,20 +1112,52 @@ def doctor(layout: ReleaseLayout) -> None:
         )
 
 
-def start_node(layout: ReleaseLayout, *, sync_timeout_secs: int, pull: bool) -> None:
-    doctor(layout)
+def start_node(
+    layout: ReleaseLayout,
+    *,
+    sync_timeout_secs: int,
+    pull: bool,
+    output_to_stderr: bool = False,
+) -> None:
+    doctor(layout, output_to_stderr=output_to_stderr)
     if pull:
-        run_helper(layout, "run_testnet_bitcoin.sh", ["pull"])
-        run_helper(layout, "run_testnet_runtime.sh", ["pull"])
+        run_helper(
+            layout,
+            "run_testnet_bitcoin.sh",
+            ["pull"],
+            output_to_stderr=output_to_stderr,
+        )
+        run_helper(
+            layout,
+            "run_testnet_runtime.sh",
+            ["pull"],
+            output_to_stderr=output_to_stderr,
+        )
     run_helper(
         layout,
         "run_testnet_bitcoin.sh",
         ["up"],
         sync_timeout_secs=sync_timeout_secs,
+        output_to_stderr=output_to_stderr,
     )
-    run_helper(layout, "run_testnet_runtime.sh", ["up-data"])
-    run_helper(layout, "run_testnet_runtime.sh", ["wait-data", str(sync_timeout_secs)])
-    run_helper(layout, "run_testnet_runtime.sh", ["up"])
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["up-data"],
+        output_to_stderr=output_to_stderr,
+    )
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["wait-data", str(sync_timeout_secs)],
+        output_to_stderr=output_to_stderr,
+    )
+    run_helper(
+        layout,
+        "run_testnet_runtime.sh",
+        ["up"],
+        output_to_stderr=output_to_stderr,
+    )
 
 
 def _parse_compose_ps(output: str) -> list[dict[str, Any]]:
@@ -1285,6 +1407,100 @@ def _runtime_lifecycle_status(layout: ReleaseLayout) -> dict[str, Any]:
     }
 
 
+STATUS_RECOVERY: dict[str, dict[str, Any]] = {
+    "UNCONFIGURED": {
+        "resume_mode": "manual",
+        "resume_summary": "resume cannot invent operator-owned node configuration",
+        "next_actions": ["usdb-node setup"],
+        "guidance": [
+            "Run interactive setup to choose the data root, node role and network exposure.",
+            "No existing node.env will be created or overwritten by resume.",
+        ],
+    },
+    "ACTIVATION_REQUIRED": {
+        "resume_mode": "explicit",
+        "resume_summary": "release activation requires explicit operator approval",
+        "next_actions": [
+            "usdb-node resume --activate-release",
+            "usdb-node activate-release",
+        ],
+        "guidance": [
+            "Review the installed release ID and image digests before activation.",
+            "Activation is allowed only when the runtime compatibility contract still matches.",
+        ],
+    },
+    "SNAPSHOT_INCOMPLETE": {
+        "resume_mode": "automatic",
+        "resume_summary": "resume can continue the approved snapshot installation",
+        "next_actions": ["usdb-node resume", "usdb-node snapshot install"],
+        "guidance": [
+            "Keep the .installing, .part and .ranges.json files; they contain resumable state.",
+            "The immutable final directory will be published only after full verification.",
+        ],
+    },
+    "READY_TO_START": {
+        "resume_mode": "automatic",
+        "resume_summary": "resume can enter the readiness-ordered startup path",
+        "next_actions": ["usdb-node resume", "usdb-node up"],
+        "guidance": [
+            "Configuration and local data contracts passed; services may be started safely.",
+        ],
+    },
+    "STARTING": {
+        "resume_mode": "automatic",
+        "resume_summary": "resume can reconcile containers and continue readiness waits",
+        "next_actions": ["usdb-node resume", "usdb-node logs"],
+        "guidance": [
+            "If another usdb-node operation is still active, resume will refuse to run concurrently.",
+            "Use logs when synchronization or readiness is making no visible progress.",
+        ],
+    },
+    "READY": {
+        "resume_mode": "noop",
+        "resume_summary": "the node is already ready",
+        "next_actions": [],
+        "guidance": [],
+    },
+    "DEGRADED": {
+        "resume_mode": "manual",
+        "resume_summary": "automatic restart is disabled for unhealthy services",
+        "next_actions": ["usdb-node logs", "usdb-node doctor"],
+        "guidance": [
+            "Inspect service logs before restarting; repeated restart may hide consensus or storage faults.",
+            "Run doctor to recheck release identity, configuration, data contracts and safe bindings.",
+            "Preserve node.env and persistent data until the failing service is understood.",
+        ],
+    },
+    "BLOCKED": {
+        "resume_mode": "manual",
+        "resume_summary": "automatic changes are disabled because local state could not be trusted",
+        "next_actions": ["usdb-node doctor"],
+        "guidance": [
+            "Read the first INVALID or UNAVAILABLE check above and run doctor for full diagnostics.",
+            "Do not overwrite node.env, delete artifacts or reuse another data directory as a shortcut.",
+            "Preserve the failing files and logs for operator review before any recovery action.",
+        ],
+    },
+}
+
+
+def _finish_node_status(
+    report: dict[str, Any],
+    overall_state: str,
+    *,
+    additional_guidance: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    recovery = STATUS_RECOVERY[overall_state]
+    report["overall_state"] = overall_state
+    report["next_actions"] = list(recovery["next_actions"])
+    report["resume"] = {
+        "mode": recovery["resume_mode"],
+        "summary": recovery["resume_summary"],
+    }
+    report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
+    return report
+
+
 def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {
         "release": {
@@ -1299,22 +1515,27 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         "overall_state": "BLOCKED",
         "checks": checks,
         "next_actions": [],
+        "resume": {},
+        "operator_guidance": [],
     }
     if not layout.node_env.is_file():
         checks["configuration"] = {
             "state": "missing",
             "summary": f"node configuration is missing: {layout.node_env}",
         }
-        report["overall_state"] = "UNCONFIGURED"
-        report["next_actions"] = ["usdb-node setup"]
-        return report
+        return _finish_node_status(report, "UNCONFIGURED")
 
     try:
         env = read_env(layout.node_env)
     except (OSError, ValueError) as error:
         checks["configuration"] = {"state": "invalid", "summary": str(error)}
-        report["next_actions"] = ["usdb-node doctor"]
-        return report
+        return _finish_node_status(
+            report,
+            "BLOCKED",
+            additional_guidance=(
+                "Inspect node.env syntax and permissions; do not rerun setup over the existing file.",
+            ),
+        )
 
     checks["configuration"] = {
         "state": "ok",
@@ -1340,8 +1561,14 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         )
     except (OSError, ValueError) as error:
         checks["data"] = {"state": "invalid", "summary": str(error)}
-        report["next_actions"] = ["usdb-node doctor"]
-        return report
+        return _finish_node_status(
+            report,
+            "BLOCKED",
+            additional_guidance=(
+                "A data path, credential or dataset identity check failed; do not move "
+                "or adopt data automatically.",
+            ),
+        )
     checks["data"] = {
         "state": "ok",
         "summary": "local paths, credentials and dataset contracts are valid",
@@ -1350,45 +1577,86 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
     snapshot = _snapshot_lifecycle_status(layout, env)
     checks["snapshot"] = snapshot
     if snapshot["state"] == "invalid":
-        report["next_actions"] = ["usdb-node doctor"]
-        return report
+        return _finish_node_status(
+            report,
+            "BLOCKED",
+            additional_guidance=(
+                "The selected snapshot is not a valid resumable staging state; compare it "
+                "with the release-approved record.",
+            ),
+        )
 
-    next_actions: list[str] = []
     if activation_required:
-        next_actions.append("usdb-node activate-release")
+        return _finish_node_status(report, "ACTIVATION_REQUIRED")
     if snapshot["state"] == "incomplete":
-        next_actions.append("usdb-node snapshot install")
-    if activation_required:
-        report["overall_state"] = "ACTIVATION_REQUIRED"
-        report["next_actions"] = next_actions
-        return report
-    if snapshot["state"] == "incomplete":
-        report["overall_state"] = "SNAPSHOT_INCOMPLETE"
-        report["next_actions"] = next_actions
-        return report
+        return _finish_node_status(report, "SNAPSHOT_INCOMPLETE")
 
     try:
         runtime = _runtime_lifecycle_status(layout)
     except (OSError, ValueError) as error:
         checks["runtime"] = {"state": "unavailable", "summary": str(error)}
-        report["next_actions"] = ["usdb-node doctor"]
-        return report
+        return _finish_node_status(
+            report,
+            "BLOCKED",
+            additional_guidance=(
+                "Verify that Docker is running and that the current operator can access its daemon.",
+            ),
+        )
     checks["runtime"] = runtime
     runtime_state = runtime["state"]
     if runtime_state == "stopped":
-        report["overall_state"] = "READY_TO_START"
-        report["next_actions"] = ["usdb-node up"]
+        return _finish_node_status(report, "READY_TO_START")
     elif runtime_state == "starting":
-        report["overall_state"] = "STARTING"
-        report["next_actions"] = ["usdb-node logs"]
+        return _finish_node_status(report, "STARTING")
     elif runtime_state == "ready":
-        report["overall_state"] = "READY"
+        return _finish_node_status(report, "READY")
     elif runtime_state == "degraded":
-        report["overall_state"] = "DEGRADED"
-        report["next_actions"] = ["usdb-node logs"]
-    else:
-        report["next_actions"] = ["usdb-node doctor"]
-    return report
+        return _finish_node_status(report, "DEGRADED")
+    elif runtime_state == "unavailable":
+        return _finish_node_status(
+            report,
+            "BLOCKED",
+            additional_guidance=(
+                "Docker Compose state could not be read; verify the daemon, Compose plugin "
+                "and operator permissions.",
+            ),
+        )
+    return _finish_node_status(
+        report,
+        "BLOCKED",
+        additional_guidance=(
+            "Docker Compose state could not be classified; retain its raw service state for review.",
+        ),
+    )
+
+
+def _print_node_status_report(report: dict[str, Any]) -> None:
+    print(f"USDB node lifecycle status: {report['release_id']}")
+    labels = {
+        "release": "Release kit",
+        "configuration": "Node config",
+        "activation": "Activation",
+        "data": "Local data",
+        "snapshot": "Snapshot",
+        "runtime": "Runtime",
+    }
+    for key, label in labels.items():
+        check = report["checks"].get(key)
+        if check is not None:
+            print(f"{label:<14} {check['state'].upper():<12} {check['summary']}")
+    print(f"Overall        {report['overall_state']}")
+    print(
+        f"Resume         {report['resume']['mode'].upper():<12} "
+        f"{report['resume']['summary']}"
+    )
+    if report["next_actions"]:
+        print("Next actions:")
+        for index, action in enumerate(report["next_actions"], start=1):
+            print(f"  {index}. {action}")
+    if report["operator_guidance"]:
+        print("Operator guidance:")
+        for item in report["operator_guidance"]:
+            print(f"  - {item}")
 
 
 def print_status(layout: ReleaseLayout, *, json_output: bool = False) -> int:
@@ -1396,25 +1664,117 @@ def print_status(layout: ReleaseLayout, *, json_output: bool = False) -> int:
     if json_output:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        print(f"USDB node lifecycle status: {report['release_id']}")
-        labels = {
-            "release": "Release kit",
-            "configuration": "Node config",
-            "activation": "Activation",
-            "data": "Local data",
-            "snapshot": "Snapshot",
-            "runtime": "Runtime",
-        }
-        for key, label in labels.items():
-            check = report["checks"].get(key)
-            if check is not None:
-                print(f"{label:<14} {check['state'].upper():<12} {check['summary']}")
-        print(f"Overall        {report['overall_state']}")
-        if report["next_actions"]:
-            print("Next actions:")
-            for index, action in enumerate(report["next_actions"], start=1):
-                print(f"  {index}. {action}")
+        _print_node_status_report(report)
     return 0 if report["overall_state"] == "READY" else 1
+
+
+def _resume_action(report: dict[str, Any], allow_activation: bool) -> str | None:
+    state = report["overall_state"]
+    if state == "ACTIVATION_REQUIRED" and allow_activation:
+        return "activate-release"
+    if state == "SNAPSHOT_INCOMPLETE":
+        return "snapshot-install"
+    if state in {"READY_TO_START", "STARTING"}:
+        return "up"
+    return None
+
+
+def resume_node(
+    layout: ReleaseLayout,
+    *,
+    dry_run: bool,
+    allow_activation: bool,
+    sync_timeout_secs: int,
+    pull: bool,
+    json_output: bool,
+) -> tuple[dict[str, Any], int]:
+    initial = collect_node_status(layout)
+    action = _resume_action(initial, allow_activation)
+    result: dict[str, Any] = {
+        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+        "release_id": layout.release_id,
+        "network_bundle_id": layout.bundle_id,
+        "initial_state": initial["overall_state"],
+        "completed_actions": [],
+        "status": initial,
+    }
+    if dry_run:
+        result["outcome"] = "dry_run"
+        result["planned_actions"] = [action] if action is not None else []
+        return result, 0
+    if action is None:
+        result["outcome"] = "manual_action_required"
+        return result, 1
+
+    completed: list[str] = []
+    output_context = redirect_stdout(sys.stderr) if json_output else nullcontext()
+    with node_operation_lock(layout, "resume"):
+        report = collect_node_status(layout)
+        with output_context:
+            for _transition in range(MAX_RESUME_TRANSITIONS):
+                if report["overall_state"] == "READY":
+                    result["outcome"] = "ready"
+                    result["completed_actions"] = completed
+                    result["status"] = report
+                    return result, 0
+
+                action = _resume_action(report, allow_activation)
+                if action is None:
+                    result["outcome"] = "manual_action_required"
+                    result["completed_actions"] = completed
+                    result["status"] = report
+                    return result, 1
+                if action in completed:
+                    result["outcome"] = "no_forward_progress"
+                    result["completed_actions"] = completed
+                    result["status"] = report
+                    result["operator_guidance"] = [
+                        "The same resumable action completed without changing lifecycle state.",
+                        "Inspect status and logs before another attempt; automatic retry stopped.",
+                    ]
+                    return result, 1
+
+                if action == "activate-release":
+                    activate_release(layout)
+                elif action == "snapshot-install":
+                    install_snapshot_release(layout)
+                elif action == "up":
+                    start_node(
+                        layout,
+                        sync_timeout_secs=sync_timeout_secs,
+                        pull=pull,
+                        output_to_stderr=json_output,
+                    )
+                else:
+                    raise AssertionError(f"unsupported internal resume action: {action}")
+                completed.append(action)
+                report = collect_node_status(layout)
+
+    result["outcome"] = "transition_limit_reached"
+    result["completed_actions"] = completed
+    result["status"] = report
+    result["operator_guidance"] = [
+        "Resume reached its bounded transition limit and stopped without forcing another action.",
+        "Inspect status and logs before continuing manually.",
+    ]
+    return result, 1
+
+
+def print_resume_result(result: dict[str, Any], *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    print(f"USDB node resume outcome: {result['outcome']}")
+    print(f"Initial state: {result['initial_state']}")
+    completed = result.get("completed_actions", [])
+    if completed:
+        print(f"Completed actions: {', '.join(completed)}")
+    planned = result.get("planned_actions", [])
+    if planned:
+        print(f"Planned actions: {', '.join(planned)}")
+    _print_node_status_report(result["status"])
+    for item in result.get("operator_guidance", []):
+        print(f"  - {item}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1523,6 +1883,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status.add_argument("--json", action="store_true", help="emit machine-readable status")
 
+    resume = subparsers.add_parser(
+        "resume",
+        help="Safely continue an approved snapshot install or readiness-ordered startup",
+    )
+    resume.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report the allowed next transition without changing local state",
+    )
+    resume.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one machine-readable resume result on stdout",
+    )
+    resume.add_argument(
+        "--activate-release",
+        action="store_true",
+        help="explicitly allow same-contract release image activation",
+    )
+    resume.add_argument("--sync-timeout-secs", type=int, default=604800)
+    resume.add_argument("--skip-pull", action="store_true")
+
     logs = subparsers.add_parser("logs", help="Follow Bitcoin or runtime service logs")
     logs.add_argument("--bitcoin", action="store_true")
     logs.add_argument("service", nargs="*")
@@ -1532,111 +1914,162 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _operation_name(args: argparse.Namespace) -> str | None:
+    if args.command == "resume":
+        return None
+    if args.command == "firewall" and args.firewall_action != "apply":
+        return None
+    if args.command in {
+        "setup",
+        "configure",
+        "set-role",
+        "set-firewall-mode",
+        "activate-release",
+        "snapshot",
+        "firewall",
+        "up",
+        "down",
+    }:
+        return args.command
+    return None
+
+
+def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
+    if args.command == "prepare-host":
+        prepare_host(layout, docker_user=args.docker_user)
+        print("USDB host prerequisites are ready.")
+        print("If Docker group membership changed, start a new login session before doctor/up.")
+    elif args.command == "host":
+        run_host_action(layout, args.host_action, docker_user=args.docker_user)
+    elif args.command == "setup":
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ValueError("setup requires an interactive terminal; use configure for automation")
+        result = setup_node(layout)
+        print(f"Configured {layout.release_id} node: {result.node_env}")
+        if result.apply_firewall:
+            print(
+                "Applying the UFW firewall profile; sudo may request the operator password.",
+                flush=True,
+            )
+            run_firewall_action(layout, "apply", confirm=True)
+            print("Applied and verified the host UFW firewall profile.")
+        else:
+            print("Host firewall mode is external; UFW was not installed, inspected, or modified.")
+        if result.install_snapshot:
+            release_dir = install_snapshot_release(layout)
+            print(f"Installed and selected signed balance-history snapshot: {release_dir}")
+        print("Run usdb-node doctor, then usdb-node up.")
+    elif args.command == "configure":
+        path = configure_node(
+            layout,
+            data_root=args.data_root,
+            role=args.role,
+            miner_address=args.miner_address,
+            miner_threads=args.miner_threads,
+            bootnodes=args.bootnodes,
+            nat=args.nat,
+            bitcoin_rpc_user=args.bitcoin_rpc_user,
+            bitcoin_p2p=args.bitcoin_p2p,
+            ssh_port=args.ssh_port,
+            firewall_mode=args.firewall_mode,
+        )
+        print(f"Configured {layout.release_id} node: {path}")
+        print("Bitcoin RPC credentials were generated locally and were not printed.")
+    elif args.command == "set-role":
+        set_role(
+            layout,
+            role=args.role,
+            miner_address=args.miner_address,
+            miner_threads=args.miner_threads,
+        )
+        print(f"Updated node role to {args.role}; run usdb-node up to reconcile containers.")
+    elif args.command == "set-firewall-mode":
+        set_firewall_mode(layout, args.mode)
+        if args.mode == "managed":
+            print(
+                "Host firewall mode is managed; run "
+                "'usdb-node firewall apply --confirm' before startup."
+            )
+        else:
+            print("Host firewall mode is external; usdb-node will not inspect or modify UFW.")
+    elif args.command == "activate-release":
+        activate_release(layout)
+        print(f"Activated release images in private node config: {layout.release_id}")
+    elif args.command == "doctor":
+        doctor(layout)
+        print(f"USDB node preflight passed: {layout.release_id}")
+    elif args.command == "snapshot":
+        release_dir = install_snapshot_release(
+            layout,
+            download_concurrency=args.download_concurrency,
+            download_chunk_size_mib=args.download_chunk_size_mib,
+        )
+        print(f"Installed and selected signed balance-history snapshot: {release_dir}")
+    elif args.command == "firewall":
+        if args.firewall_action == "apply" and not args.confirm:
+            raise ValueError("firewall apply requires --confirm")
+        run_firewall_action(
+            layout,
+            args.firewall_action,
+            confirm=getattr(args, "confirm", False),
+            ssh_port=args.ssh_port,
+        )
+    elif args.command == "up":
+        if args.sync_timeout_secs <= 0:
+            raise ValueError("sync timeout must be positive")
+        start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
+        print(f"USDB node is ready: {layout.release_id}")
+    elif args.command == "status":
+        return print_status(layout, json_output=args.json)
+    elif args.command == "resume":
+        if args.sync_timeout_secs <= 0:
+            raise ValueError("sync timeout must be positive")
+        result, return_code = resume_node(
+            layout,
+            dry_run=args.dry_run,
+            allow_activation=args.activate_release,
+            sync_timeout_secs=args.sync_timeout_secs,
+            pull=not args.skip_pull,
+            json_output=args.json,
+        )
+        print_resume_result(result, json_output=args.json)
+        return return_code
+    elif args.command == "logs":
+        helper = "run_testnet_bitcoin.sh" if args.bitcoin else "run_testnet_runtime.sh"
+        arguments = ["logs", *args.service]
+        run_helper(layout, helper, arguments)
+    elif args.command == "down":
+        run_helper(layout, "run_testnet_runtime.sh", ["down"])
+        if args.include_bitcoin:
+            run_helper(layout, "run_testnet_bitcoin.sh", ["down"])
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     try:
         layout = load_release_layout(args.kit_root, args.node_env)
-        if args.command == "prepare-host":
-            prepare_host(layout, docker_user=args.docker_user)
-            print("USDB host prerequisites are ready.")
-            print("If Docker group membership changed, start a new login session before doctor/up.")
-        elif args.command == "host":
-            run_host_action(layout, args.host_action, docker_user=args.docker_user)
-        elif args.command == "setup":
-            if not sys.stdin.isatty() or not sys.stdout.isatty():
-                raise ValueError("setup requires an interactive terminal; use configure for automation")
-            result = setup_node(layout)
-            print(f"Configured {layout.release_id} node: {result.node_env}")
-            if result.apply_firewall:
-                print(
-                    "Applying the UFW firewall profile; sudo may request the operator password.",
-                    flush=True,
-                )
-                run_firewall_action(layout, "apply", confirm=True)
-                print("Applied and verified the host UFW firewall profile.")
-            else:
-                print(
-                    "Host firewall mode is external; UFW was not installed, inspected, or modified."
-                )
-            if result.install_snapshot:
-                release_dir = install_snapshot_release(layout)
-                print(f"Installed and selected signed balance-history snapshot: {release_dir}")
-            print("Run usdb-node doctor, then usdb-node up.")
-        elif args.command == "configure":
-            path = configure_node(
-                layout,
-                data_root=args.data_root,
-                role=args.role,
-                miner_address=args.miner_address,
-                miner_threads=args.miner_threads,
-                bootnodes=args.bootnodes,
-                nat=args.nat,
-                bitcoin_rpc_user=args.bitcoin_rpc_user,
-                bitcoin_p2p=args.bitcoin_p2p,
-                ssh_port=args.ssh_port,
-                firewall_mode=args.firewall_mode,
-            )
-            print(f"Configured {layout.release_id} node: {path}")
-            print("Bitcoin RPC credentials were generated locally and were not printed.")
-        elif args.command == "set-role":
-            set_role(
-                layout,
-                role=args.role,
-                miner_address=args.miner_address,
-                miner_threads=args.miner_threads,
-            )
-            print(f"Updated node role to {args.role}; run usdb-node up to reconcile containers.")
-        elif args.command == "set-firewall-mode":
-            set_firewall_mode(layout, args.mode)
-            if args.mode == "managed":
-                print(
-                    "Host firewall mode is managed; run "
-                    "'usdb-node firewall apply --confirm' before startup."
-                )
-            else:
-                print(
-                    "Host firewall mode is external; usdb-node will not inspect or modify UFW."
-                )
-        elif args.command == "activate-release":
-            activate_release(layout)
-            print(f"Activated release images in private node config: {layout.release_id}")
-        elif args.command == "doctor":
-            doctor(layout)
-            print(f"USDB node preflight passed: {layout.release_id}")
-        elif args.command == "snapshot":
-            release_dir = install_snapshot_release(
-                layout,
-                download_concurrency=args.download_concurrency,
-                download_chunk_size_mib=args.download_chunk_size_mib,
-            )
-            print(f"Installed and selected signed balance-history snapshot: {release_dir}")
-        elif args.command == "firewall":
-            if args.firewall_action == "apply" and not args.confirm:
-                raise ValueError("firewall apply requires --confirm")
-            run_firewall_action(
-                layout,
-                args.firewall_action,
-                confirm=getattr(args, "confirm", False),
-                ssh_port=args.ssh_port,
-            )
-        elif args.command == "up":
-            if args.sync_timeout_secs <= 0:
-                raise ValueError("sync timeout must be positive")
-            start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
-            print(f"USDB node is ready: {layout.release_id}")
-        elif args.command == "status":
-            return print_status(layout, json_output=args.json)
-        elif args.command == "logs":
-            helper = "run_testnet_bitcoin.sh" if args.bitcoin else "run_testnet_runtime.sh"
-            arguments = ["logs", *args.service]
-            run_helper(layout, helper, arguments)
-        elif args.command == "down":
-            run_helper(layout, "run_testnet_runtime.sh", ["down"])
-            if args.include_bitcoin:
-                run_helper(layout, "run_testnet_bitcoin.sh", ["down"])
-        return 0
+        operation = _operation_name(args)
+        operation_context = (
+            node_operation_lock(layout, operation) if operation is not None else nullcontext()
+        )
+        with operation_context:
+            return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"USDB node operation failed: {error}", file=sys.stderr)
+        if args.command == "resume" and args.json:
+            print(
+                json.dumps(
+                    {
+                        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+                        "outcome": "error",
+                        "error": str(error),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"USDB node operation failed: {error}", file=sys.stderr)
         return 1
 
 

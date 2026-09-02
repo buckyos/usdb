@@ -311,7 +311,10 @@ class UsdbNodeTests(unittest.TestCase):
             )
         self.assertTrue(result.install_snapshot)
         self.assertFalse(result.apply_firewall)
-        self.assertEqual(NODE.read_env(result.node_env)["SNAPSHOT_MODE"], "none")
+        env = NODE.read_env(result.node_env)
+        self.assertEqual(env["SNAPSHOT_MODE"], "balance-history")
+        self.assertTrue(env["BH_SNAPSHOT_FILE"].startswith("/snapshots/"))
+        self.assertTrue(env["BH_SNAPSHOT_MANIFEST"].startswith("/snapshots/"))
 
     def test_setup_can_select_managed_ufw(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -417,7 +420,11 @@ class UsdbNodeTests(unittest.TestCase):
             report = NODE.collect_node_status(next_layout)
 
         self.assertEqual(report["overall_state"], "ACTIVATION_REQUIRED")
-        self.assertEqual(report["next_actions"], ["usdb-node activate-release"])
+        self.assertEqual(report["resume"]["mode"], "explicit")
+        self.assertEqual(
+            report["next_actions"],
+            ["usdb-node resume --activate-release", "usdb-node activate-release"],
+        )
         helper.assert_not_called()
 
     def test_status_reports_resumable_snapshot_before_runtime_queries(self) -> None:
@@ -440,7 +447,11 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(report["overall_state"], "SNAPSHOT_INCOMPLETE")
         self.assertEqual(report["checks"]["snapshot"]["state"], "incomplete")
-        self.assertEqual(report["next_actions"], ["usdb-node snapshot install"])
+        self.assertEqual(report["resume"]["mode"], "automatic")
+        self.assertEqual(
+            report["next_actions"],
+            ["usdb-node resume", "usdb-node snapshot install"],
+        )
         helper.assert_not_called()
 
     def test_status_stopped_does_not_probe_readiness(self) -> None:
@@ -461,7 +472,7 @@ class UsdbNodeTests(unittest.TestCase):
             report = NODE.collect_node_status(layout)
 
         self.assertEqual(report["overall_state"], "READY_TO_START")
-        self.assertEqual(report["next_actions"], ["usdb-node up"])
+        self.assertEqual(report["next_actions"], ["usdb-node resume", "usdb-node up"])
         self.assertEqual(
             calls,
             [
@@ -550,6 +561,185 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], "usdb-node-status:v1")
         self.assertEqual(report["overall_state"], "UNCONFIGURED")
         self.assertEqual(report["next_actions"], ["usdb-node setup"])
+        self.assertEqual(report["resume"]["mode"], "manual")
+        self.assertTrue(report["operator_guidance"])
+
+    def test_status_blocked_explains_manual_data_recovery_boundary(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "blocked-status-data"
+        self.configure_full_node(layout, "blocked-status-data")
+        marker = (
+            NODE._data_directories(layout, data_root)["USDB_INDEXER_DATA_HOST_DIR"]
+            / NODE.DATASET_IDENTITY_FILE
+        )
+        marker.write_text("{}\n", encoding="utf-8")
+
+        report = NODE.collect_node_status(layout)
+
+        self.assertEqual(report["overall_state"], "BLOCKED")
+        self.assertEqual(report["resume"]["mode"], "manual")
+        self.assertEqual(report["next_actions"], ["usdb-node doctor"])
+        self.assertTrue(any("do not move" in item.lower() for item in report["operator_guidance"]))
+
+    def test_operation_lock_rejects_a_concurrent_bundle_mutation(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        with NODE.node_operation_lock(layout, "first"):
+            with self.assertRaisesRegex(ValueError, "another usdb-node operation"):
+                with NODE.node_operation_lock(layout, "second"):
+                    self.fail("concurrent operation lock unexpectedly succeeded")
+
+        with NODE.node_operation_lock(layout, "after-release"):
+            pass
+
+    def test_resume_requires_explicit_activation(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        report = {"overall_state": "ACTIVATION_REQUIRED"}
+        with (
+            mock.patch.object(NODE, "collect_node_status", return_value=report),
+            mock.patch.object(NODE, "activate_release") as activate,
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+                sync_timeout_secs=60,
+                pull=True,
+                json_output=False,
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(result["outcome"], "manual_action_required")
+        activate.assert_not_called()
+        self.assertFalse((layout.node_env.parent / ".usdb-node-operation.lock").exists())
+
+    def test_resume_runs_activation_snapshot_and_startup_in_order(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        reports = [
+            {"overall_state": "ACTIVATION_REQUIRED"},
+            {"overall_state": "ACTIVATION_REQUIRED"},
+            {"overall_state": "SNAPSHOT_INCOMPLETE"},
+            {"overall_state": "READY_TO_START"},
+            {"overall_state": "READY"},
+        ]
+        calls: list[str] = []
+
+        with (
+            mock.patch.object(NODE, "collect_node_status", side_effect=reports),
+            mock.patch.object(
+                NODE,
+                "activate_release",
+                side_effect=lambda _layout: calls.append("activate-release"),
+            ),
+            mock.patch.object(
+                NODE,
+                "install_snapshot_release",
+                side_effect=lambda _layout: calls.append("snapshot-install"),
+            ),
+            mock.patch.object(
+                NODE,
+                "start_node",
+                side_effect=lambda _layout, **_kwargs: calls.append("up"),
+            ) as start,
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=False,
+                allow_activation=True,
+                sync_timeout_secs=120,
+                pull=False,
+                json_output=True,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(result["outcome"], "ready")
+        self.assertEqual(calls, ["activate-release", "snapshot-install", "up"])
+        self.assertEqual(result["completed_actions"], calls)
+        start.assert_called_once_with(
+            layout,
+            sync_timeout_secs=120,
+            pull=False,
+            output_to_stderr=True,
+        )
+
+    def test_resume_dry_run_does_not_change_snapshot_state(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        report = {"overall_state": "SNAPSHOT_INCOMPLETE"}
+        with (
+            mock.patch.object(NODE, "collect_node_status", return_value=report),
+            mock.patch.object(NODE, "install_snapshot_release") as install,
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=True,
+                allow_activation=False,
+                sync_timeout_secs=60,
+                pull=True,
+                json_output=False,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(result["planned_actions"], ["snapshot-install"])
+        install.assert_not_called()
+        self.assertFalse((layout.node_env.parent / ".usdb-node-operation.lock").exists())
+
+    def test_resume_stops_when_action_makes_no_forward_progress(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        reports = [
+            {"overall_state": "STARTING"},
+            {"overall_state": "STARTING"},
+            {"overall_state": "STARTING"},
+        ]
+        with (
+            mock.patch.object(NODE, "collect_node_status", side_effect=reports),
+            mock.patch.object(NODE, "start_node") as start,
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+                sync_timeout_secs=60,
+                pull=True,
+                json_output=False,
+            )
+
+        self.assertEqual(return_code, 1)
+        self.assertEqual(result["outcome"], "no_forward_progress")
+        start.assert_called_once()
+
+    def test_resume_json_keeps_operation_logs_off_stdout(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        reports = [
+            {"overall_state": "READY_TO_START"},
+            {"overall_state": "READY_TO_START"},
+            {"overall_state": "READY"},
+        ]
+
+        def noisy_start(_layout: object, **_kwargs: object) -> None:
+            print("startup progress")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(NODE, "collect_node_status", side_effect=reports),
+            mock.patch.object(NODE, "start_node", side_effect=noisy_start),
+            mock.patch("sys.stdout", new=stdout),
+            mock.patch("sys.stderr", new=stderr),
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+                sync_timeout_secs=60,
+                pull=True,
+                json_output=True,
+            )
+            NODE.print_resume_result(result, json_output=True)
+
+        decoded = json.loads(stdout.getvalue())
+        self.assertEqual(return_code, 0)
+        self.assertEqual(decoded["outcome"], "ready")
+        self.assertNotIn("startup progress", stdout.getvalue())
+        self.assertIn("startup progress", stderr.getvalue())
 
     def test_host_and_firewall_actions_delegate_with_frozen_node_configuration(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -655,9 +845,15 @@ class UsdbNodeTests(unittest.TestCase):
             layout,
             "check",
             docker_user=NODE.default_docker_user(),
+            output_to_stderr=False,
         )
-        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["validate-node"])
-        firewall.assert_called_once_with(layout, "check")
+        helper.assert_called_once_with(
+            layout,
+            "run_testnet_runtime.sh",
+            ["validate-node"],
+            output_to_stderr=False,
+        )
+        firewall.assert_called_once_with(layout, "check", output_to_stderr=False)
 
     def test_doctor_skips_ufw_for_external_firewall_mode(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -681,7 +877,12 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             NODE.doctor(layout)
         host.assert_called_once()
-        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["validate-node"])
+        helper.assert_called_once_with(
+            layout,
+            "run_testnet_runtime.sh",
+            ["validate-node"],
+            output_to_stderr=False,
+        )
         firewall.assert_not_called()
         self.assertIn("skipped UFW inspection", output.getvalue())
 

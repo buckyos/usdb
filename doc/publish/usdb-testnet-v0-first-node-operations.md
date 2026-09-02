@@ -235,6 +235,11 @@ usdb-node status
 `usdb-node status --json`，以 `overall_state` 和 `next_actions` 为准。只有 `READY` 的退出码是 `0`；
 `READY_TO_START` 表示应执行 `up`，不是安装损坏。
 
+部署中断后优先运行 `usdb-node resume --dry-run` 查看允许的转换，再运行 `usdb-node resume`。它只自动续传
+已选择的官方 snapshot，或继续 `READY_TO_START/STARTING` 的启动流程；release activation 必须显式添加
+`--activate-release`。`UNCONFIGURED/DEGRADED/BLOCKED` 会停止并打印具体失败 check、人工命令和保留现场建议，
+不会覆盖配置、删除数据或循环重启。并发运行的 setup/snapshot/up/resume 由 bundle operation lock 拒绝。
+
 SSH 中断不会删除数据。重新执行 `usdb-node up` 会从 Bitcoin/balance-history 的现有同步状态继续。
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
