@@ -257,11 +257,18 @@ jobs:
             echo "chain_image=$(jq -er '.images.usdb_chain.reference' "$manifest")"
             echo "bitcoin_image=$(jq -er '.images.bitcoin_core.reference' "$manifest")"
             echo "manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)"
-            echo "qualification_level=$(jq -er '.qualification.level' "$manifest")"
+            qualification_level="$(jq -er '.qualification.level' "$manifest")"
+            echo "qualification_level=$qualification_level"
             echo "snapshot_height=$(jq -er '.snapshot.height' "$manifest")"
             echo "snapshot_record_url=$(jq -er '.snapshot.record.url' "$manifest")"
             echo "snapshot_release_id=$(jq -er '.snapshot.snapshot_release_id' "$manifest")"
           } >>"$GITHUB_OUTPUT"
+          python3 usdb/docker/scripts/tools/release_publish_resolver.py \
+            release-title \
+            --release-id "$RELEASE_ID" \
+            --qualification-level "$qualification_level" \
+            --github-output "$GITHUB_OUTPUT" \
+            >/dev/null
 
       - name: Reverify approved snapshot publication
         shell: bash
@@ -385,6 +392,7 @@ jobs:
           GO_ETHEREUM_REVISION: ${{ steps.revisions.outputs.go_ethereum_revision }}
           MANIFEST_SHA256: ${{ steps.manifest.outputs.manifest_sha256 }}
           QUALIFICATION_LEVEL: ${{ steps.manifest.outputs.qualification_level }}
+          RELEASE_TITLE: ${{ steps.manifest.outputs.release_title }}
           RELEASE_ID: ${{ github.ref_name }}
           SERVICES_IMAGE: ${{ steps.manifest.outputs.services_image }}
           SNAPSHOT_HEIGHT: ${{ steps.manifest.outputs.snapshot_height }}
@@ -395,7 +403,7 @@ jobs:
         run: |
           set -euo pipefail
           cat >dist/release-notes.md <<EOF
-          # ${RELEASE_ID}
+          # ${RELEASE_TITLE}
 
           Immutable USDB deployment release for network bundle \`${BUNDLE_ID}\`.
 
@@ -443,11 +451,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           RELEASE_ID: ${{ github.ref_name }}
+          RELEASE_TITLE: ${{ steps.manifest.outputs.release_title }}
         run: |
           set -euo pipefail
-          # GitHub's narrow release list truncates suffixes, so keep the immutable
-          # release ID first and avoid a redundant repository-name prefix.
-          title="${RELEASE_ID}"
+          title="${RELEASE_TITLE}"
           assets=(
             dist/usdb-release-manifest.json
             dist/usdb-release-manifest.json.sha256
@@ -500,7 +507,7 @@ jobs:
             verify-release \
             --release existing-release.json \
             --release-id "$RELEASE_ID" \
-            --title "$title" \
+            --qualification-level "${{ steps.manifest.outputs.qualification_level }}" \
             --notes dist/release-notes.md \
             --asset "${assets[0]}" \
             --asset "${assets[1]}" \

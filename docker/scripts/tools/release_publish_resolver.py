@@ -16,6 +16,7 @@ RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 CANDIDATE_WORKFLOW_PATH = ".github/workflows/usdb-release-candidate.yml"
+QUALIFICATION_LEVELS = {"fast", "nightly", "weekly"}
 
 
 def _object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -45,6 +46,13 @@ def _require_release_id(value: str) -> None:
 def _require_revision(value: str) -> None:
     if REVISION_RE.fullmatch(value) is None:
         raise ValueError("USDB revision must be a full lowercase Git SHA")
+
+
+def canonical_release_title(release_id: str, qualification_level: str) -> str:
+    _require_release_id(release_id)
+    if qualification_level not in QUALIFICATION_LEVELS:
+        raise ValueError("qualification level must be fast, nightly, or weekly")
+    return f"[{qualification_level.upper()}] {release_id}"
 
 
 def _workflow_path_matches(value: Any) -> bool:
@@ -157,20 +165,20 @@ def verify_existing_release(
     release: dict[str, Any],
     *,
     release_id: str,
-    title: str,
+    qualification_level: str,
     notes: str,
     assets: list[Path],
     prerelease: bool,
 ) -> str:
     """Require an existing GitHub Release to equal the intended publication."""
 
-    _require_release_id(release_id)
+    expected_title = canonical_release_title(release_id, qualification_level)
     expected_assets = {path.name: f"sha256:{_sha256(path)}" for path in assets}
     if len(expected_assets) != len(assets):
         raise ValueError("release asset file names must be unique")
     if release.get("tag_name") != release_id:
         raise ValueError("existing release tag does not match the release ID")
-    if release.get("name") != title:
+    if release.get("name") != expected_title:
         raise ValueError("existing release title does not match")
     body = release.get("body")
     if not isinstance(body, str) or body.rstrip("\n") != notes.rstrip("\n"):
@@ -226,10 +234,23 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--usdb-revision", required=True)
     resolve.add_argument("--github-output", type=Path)
 
+    title = subparsers.add_parser("release-title")
+    title.add_argument("--release-id", required=True)
+    title.add_argument(
+        "--qualification-level",
+        choices=sorted(QUALIFICATION_LEVELS),
+        required=True,
+    )
+    title.add_argument("--github-output", type=Path)
+
     verify = subparsers.add_parser("verify-release")
     verify.add_argument("--release", type=Path, required=True)
     verify.add_argument("--release-id", required=True)
-    verify.add_argument("--title", required=True)
+    verify.add_argument(
+        "--qualification-level",
+        choices=sorted(QUALIFICATION_LEVELS),
+        required=True,
+    )
     verify.add_argument("--notes", type=Path, required=True)
     verify.add_argument("--asset", action="append", type=Path, required=True)
     verify.add_argument("--prerelease", action="store_true")
@@ -247,11 +268,17 @@ def main() -> int:
                 release_id=args.release_id,
                 usdb_revision=args.usdb_revision,
             )
+        elif args.command == "release-title":
+            resolved = {
+                "release_title": canonical_release_title(
+                    args.release_id, args.qualification_level
+                )
+            }
         else:
             url = verify_existing_release(
                 load_json(args.release),
                 release_id=args.release_id,
-                title=args.title,
+                qualification_level=args.qualification_level,
                 notes=args.notes.read_text(encoding="utf-8"),
                 assets=args.asset,
                 prerelease=args.prerelease,

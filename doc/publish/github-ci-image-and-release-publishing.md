@@ -208,6 +208,18 @@ gh workflow run usdb-nightly.yml \
 身份的一部分：已经发布的 `fast` release 不能修改为 `nightly`；同一组源码后续通过更高等级时，创建
 新的 `rN`，可以让新 tag 指向相同 commit，但仍须重新执行 tag build、candidate 和 publish 门禁。
 
+Git tag 和 `release_id` 始终保持原格式；GitHub Release title 使用资格前缀，便于在 Releases 列表直接
+区分，同时正文和 manifest 保留完整信息：
+
+```text
+[FAST] usdb-testnet-v0-r8
+[NIGHTLY] usdb-testnet-v0-r9
+[WEEKLY] usdb-testnet-v0-r10
+```
+
+`Pre-release` 仍只表达 testnet 发布属性，不能复用为 Fast/Nightly/Weekly 标志。publish resolver 会从
+manifest qualification 派生 canonical title，并拒绝 title 与资格不一致的已有 Release。
+
 ## 4. 一次性 GitHub 配置
 
 在第一次发布前完成：
@@ -336,8 +348,8 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest 和 network bundle；
 4. 再次验证三张 digest-pinned OCI image 的 signer workflow、source revision 和 provenance；
 5. 从 tagged source 生成稳定的 public network bundle、self-contained node kit 及 SHA-256；
-6. GitHub Release title 直接使用完整 `release_id`，确保窄列表也优先显示网络和版本；testnet 创建
-   prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
+6. GitHub Release title 使用 `[FAST|NIGHTLY|WEEKLY] <release_id>`，tag 仍使用完整 `release_id`；testnet
+   创建 prerelease，mainnet 创建普通 release，且两者都不更新 mutable `latest`；
 7. release 已存在时只允许 title、notes、flags、完整 asset 集合和每个 SHA-256 全部一致，否则 fail closed。
 
 当前 Release assets 固定为：

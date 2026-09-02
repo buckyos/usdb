@@ -109,6 +109,17 @@ class ReleasePublishResolverTests(unittest.TestCase):
         self.assertIn("run-name: Publish ${{ github.ref_name }}", publish)
         self.assertIn("RELEASE_ID: ${{ github.ref_name }}", candidate)
         self.assertIn("RELEASE_ID: ${{ github.ref_name }}", publish)
+        self.assertIn("release-title", publish)
+        self.assertIn("--qualification-level", publish)
+
+    def test_release_title_is_canonical_for_each_qualification(self) -> None:
+        for level in ("fast", "nightly", "weekly"):
+            self.assertEqual(
+                RESOLVER.canonical_release_title(self.release_id, level),
+                f"[{level.upper()}] {self.release_id}",
+            )
+        with self.assertRaisesRegex(ValueError, "qualification level"):
+            RESOLVER.canonical_release_title(self.release_id, "custom")
 
     def test_verifies_exact_existing_release(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -120,7 +131,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             notes = "release notes\n"
             release = {
                 "tag_name": self.release_id,
-                "name": self.release_id,
+                "name": f"[FAST] {self.release_id}",
                 "body": notes,
                 "draft": False,
                 "prerelease": True,
@@ -141,7 +152,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             url = RESOLVER.verify_existing_release(
                 release,
                 release_id=self.release_id,
-                title=self.release_id,
+                qualification_level="fast",
                 notes=notes,
                 assets=[first, second],
                 prerelease=True,
@@ -153,9 +164,38 @@ class ReleasePublishResolverTests(unittest.TestCase):
                 RESOLVER.verify_existing_release(
                     release,
                     release_id=self.release_id,
-                    title=self.release_id,
+                    qualification_level="fast",
                     notes=notes,
                     assets=[first, second],
+                    prerelease=True,
+                )
+
+    def test_release_title_must_match_qualification(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            asset = Path(temp_dir) / "manifest.json"
+            asset.write_text("manifest\n", encoding="utf-8")
+            release = {
+                "tag_name": self.release_id,
+                "name": f"[WEEKLY] {self.release_id}",
+                "body": "notes\n",
+                "draft": False,
+                "prerelease": True,
+                "html_url": f"https://github.com/buckyos/usdb/releases/{self.release_id}",
+                "assets": [
+                    {
+                        "name": asset.name,
+                        "digest": "sha256:" + RESOLVER._sha256(asset),
+                        "state": "uploaded",
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "title does not match"):
+                RESOLVER.verify_existing_release(
+                    release,
+                    release_id=self.release_id,
+                    qualification_level="fast",
+                    notes="notes\n",
+                    assets=[asset],
                     prerelease=True,
                 )
 
