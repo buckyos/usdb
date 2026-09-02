@@ -46,6 +46,19 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_world_simul
 log "running regtest harness lifecycle tests"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$INDEXER_SCRIPTS/test_regtest_reorg_lib.py"
 
+log "checking balance-history shell scripts"
+(
+  local_scripts="src/btc/balance-history/scripts"
+  declare -a shell_files
+  cd "$REPO_DIR"
+  mapfile -d '' shell_files < <(find "$local_scripts" -maxdepth 1 -type f -name '*.sh' -print0)
+  shellcheck -x -P "$local_scripts" "${shell_files[@]}"
+)
+
+log "running balance-history audit oracle tests"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$BTC_DIR/balance-history/scripts/test_audit_bitcoin_core_utxo_sample.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$BTC_DIR/balance-history/scripts/test_regtest_balance_oracle.py"
+
 log "checking Docker P2P defaults"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_p2p_defaults.py"
 
@@ -75,4 +88,8 @@ env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_insta
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_testnet_bitcoin_release.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_prepare_usdb_firewall.py"
 env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_prepare_usdb_host.py"
+
+log "checking snapshot release and distribution tools"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_snapshot_distribution.py"
+env PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_DIR/docker/scripts/tools/test_mainnet_snapshot_release_wrapper.py"
 log "Rust fast gate passed"
