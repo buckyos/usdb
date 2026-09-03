@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
-RELEASE_ID_RE = re.compile(r"^usdb-(?:testnet|mainnet)-v[0-9]+-r[1-9][0-9]*$")
+RELEASE_ID_RE = re.compile(
+    r"^usdb-(?P<network>testnet|mainnet)-v(?P<generation>[0-9]+)-r(?P<sequence>[1-9][0-9]*)$"
+)
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 CANDIDATE_WORKFLOW_PATH = ".github/workflows/usdb-release-candidate.yml"
@@ -49,10 +51,15 @@ def _require_revision(value: str) -> None:
 
 
 def canonical_release_title(release_id: str, qualification_level: str) -> str:
-    _require_release_id(release_id)
+    match = RELEASE_ID_RE.fullmatch(release_id)
+    if match is None:
+        raise ValueError("release ID must use usdb-{testnet|mainnet}-vN-rN")
     if qualification_level not in QUALIFICATION_LEVELS:
         raise ValueError("qualification level must be fast, nightly, or weekly")
-    return f"[{qualification_level.upper()}] {release_id}"
+    return (
+        f"r{match.group('sequence')} [{qualification_level.upper()}] "
+        f"{match.group('network')}-v{match.group('generation')}"
+    )
 
 
 def _workflow_path_matches(value: Any) -> bool:

@@ -116,8 +116,12 @@ class ReleasePublishResolverTests(unittest.TestCase):
         for level in ("fast", "nightly", "weekly"):
             self.assertEqual(
                 RESOLVER.canonical_release_title(self.release_id, level),
-                f"[{level.upper()}] {self.release_id}",
+                f"r1 [{level.upper()}] testnet-v0",
             )
+        self.assertEqual(
+            RESOLVER.canonical_release_title("usdb-mainnet-v12-r34", "weekly"),
+            "r34 [WEEKLY] mainnet-v12",
+        )
         with self.assertRaisesRegex(ValueError, "qualification level"):
             RESOLVER.canonical_release_title(self.release_id, "custom")
 
@@ -131,7 +135,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             notes = "release notes\n"
             release = {
                 "tag_name": self.release_id,
-                "name": f"[FAST] {self.release_id}",
+                "name": "r1 [FAST] testnet-v0",
                 "body": notes,
                 "draft": False,
                 "prerelease": True,
@@ -176,7 +180,7 @@ class ReleasePublishResolverTests(unittest.TestCase):
             asset.write_text("manifest\n", encoding="utf-8")
             release = {
                 "tag_name": self.release_id,
-                "name": f"[WEEKLY] {self.release_id}",
+                "name": "r1 [WEEKLY] testnet-v0",
                 "body": "notes\n",
                 "draft": False,
                 "prerelease": True,

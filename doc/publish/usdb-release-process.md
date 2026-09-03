@@ -32,8 +32,9 @@ usdb-{testnet|mainnet}-v{network-generation}-r{release-sequence}
   运维配置、部署 artifact 或对未来 activation 的代码支持变化时递增。
 - 在线 UIP/policy 升级由 activation matrix 的 policy version 表达，不用 `vN` 代替。
 - 两仓同名 annotated tag 和 release manifest 必须使用同一个 release ID；已发布 tag 不得移动或复用。
-- GitHub Release title 在 release ID 前增加 `[FAST]`、`[NIGHTLY]` 或 `[WEEKLY]` 展示前缀；该前缀不属于
-  tag/release ID，并必须与 manifest qualification 一致。
+- GitHub Release title 使用紧凑的 `rN [FAST|NIGHTLY|WEEKLY] <testnet|mainnet>-vN`，保证窄列表优先显示
+  release sequence 和 qualification；该展示名不属于 tag/release ID，并必须与 manifest qualification
+  一致。
 
 例如 `usdb-testnet-v0-r2` 可以继续运行在 `v0` genesis 上；只有重置为新的网络身份时才进入
 `usdb-testnet-v1-r1`。
