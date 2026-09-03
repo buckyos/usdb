@@ -221,6 +221,11 @@ jobs:
           python3 go-ethereum/scripts/usdb/ci_revisions.py verify
           --workspace-root "$GITHUB_WORKSPACE"
 
+      - name: Verify shared project skills
+        run: >-
+          python3 usdb/docker/scripts/tools/sync_project_skills.py check
+          --workspace-root "$GITHUB_WORKSPACE"
+
       - name: Validate frozen network bundle
         run: >-
           python3 usdb/docker/scripts/tools/validate_network_bundle.py

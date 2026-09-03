@@ -1,0 +1,22 @@
+{
+  "change_id": "shared-project-skill-sync",
+  "compatibility": {
+    "config_change": false,
+    "data_rebuild": false,
+    "network_reset": false,
+    "restart_required": false
+  },
+  "details": [
+    "USDB now owns the canonical release-fragment skill while go-ethereum and SourceDAO carry byte-identical project-local copies for automatic discovery.",
+    "The release Candidate gate rejects frozen repository revisions whose shared skill copies have drifted."
+  ],
+  "operator_actions": [],
+  "references": [],
+  "schema_version": "usdb-change-fragment:v1",
+  "scopes": [
+    "release",
+    "testing"
+  ],
+  "summary": "Synchronize shared release-fragment guidance across project repositories",
+  "type": "internal"
+}
