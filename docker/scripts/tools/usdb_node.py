@@ -55,6 +55,8 @@ from snapshot_distribution import (  # noqa: E402
     install_release as install_snapshot_artifact,
 )
 from validate_network_bundle import (  # noqa: E402
+    BITCOIN_RESOURCE_PROFILES,
+    DEFAULT_BITCOIN_RESOURCE_PROFILE,
     read_env,
     validate_network_bundle,
     validate_node_env,
@@ -83,6 +85,9 @@ CONTROLLER_START_LIMIT_BURST = 20
 DEFAULT_SYNC_TIMEOUT_SECS = 604800
 MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
+AUTO_BITCOIN_RESOURCE_PROFILE = "auto"
+PERFORMANCE_BITCOIN_RESOURCE_PROFILE = "performance-64g"
+PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES = 56 * 1024**3
 ALT_SCREEN_ENTER = "\x1b[?1049h"
 ALT_SCREEN_EXIT = "\x1b[?1049l"
 CURSOR_HIDE = "\x1b[?25l"
@@ -351,6 +356,16 @@ def disable_controller_unit(layout: ReleaseLayout) -> None:
     """Stop and disable bootstrap orchestration without deleting its audit trail."""
     unit = _require_controller_unit(layout).name
     _privileged_command(["systemctl", "disable", "--now", unit])
+
+
+def down_node(layout: ReleaseLayout, *, keep_bitcoin: bool) -> None:
+    """Stop bootstrap orchestration and then stop node services in dependency order."""
+    if controller_unit_path(layout).is_file():
+        stop_controller_unit(layout)
+    with node_operation_lock(layout, "down"):
+        run_helper(layout, "run_testnet_runtime.sh", ["down"])
+        if not keep_bitcoin:
+            run_helper(layout, "run_testnet_bitcoin.sh", ["down"])
 
 
 def show_controller_unit(layout: ReleaseLayout) -> int:
@@ -654,6 +669,49 @@ def _require_firewall_mode(mode: str) -> str:
     return mode
 
 
+def _host_memory_bytes() -> int:
+    """Return physical host memory used to choose a conservative local profile."""
+    try:
+        values = Path("/proc/meminfo").read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ValueError(f"failed to read host memory from /proc/meminfo: {error}") from error
+    for line in values:
+        if line.startswith("MemTotal:"):
+            fields = line.split()
+            if len(fields) == 3 and fields[2] == "kB" and fields[1].isdigit():
+                return int(fields[1]) * 1024
+    raise ValueError("/proc/meminfo does not contain a valid MemTotal value")
+
+
+def resolve_bitcoin_resource_profile(
+    profile: str,
+    *,
+    host_memory_bytes: int | None = None,
+) -> tuple[str, dict[str, str]]:
+    """Resolve an operator profile and reject unsafe high-memory selection."""
+    memory_bytes = _host_memory_bytes() if host_memory_bytes is None else host_memory_bytes
+    selected = profile
+    if profile == AUTO_BITCOIN_RESOURCE_PROFILE:
+        selected = (
+            PERFORMANCE_BITCOIN_RESOURCE_PROFILE
+            if memory_bytes >= PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES
+            else DEFAULT_BITCOIN_RESOURCE_PROFILE
+        )
+    resources = BITCOIN_RESOURCE_PROFILES.get(selected)
+    if resources is None:
+        raise ValueError(
+            "Bitcoin resource profile must be auto, balanced-32g, or performance-64g"
+        )
+    if (
+        selected == PERFORMANCE_BITCOIN_RESOURCE_PROFILE
+        and memory_bytes < PERFORMANCE_PROFILE_MIN_HOST_MEMORY_BYTES
+    ):
+        raise ValueError(
+            "performance-64g requires at least 56 GiB of physical host memory"
+        )
+    return selected, resources
+
+
 def configured_firewall_mode(layout: ReleaseLayout) -> str:
     env = read_env(layout.node_env)
     # Missing means the mandatory managed behavior used by older node kits.
@@ -774,6 +832,7 @@ def configure_node(
     ssh_port: int = 22,
     firewall_mode: str = "external",
     select_snapshot: bool = False,
+    bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
 ) -> Path:
     if layout.node_env.exists():
         raise ValueError(
@@ -785,6 +844,9 @@ def configure_node(
         raise ValueError("bitcoin P2P mode must be private or public")
     _require_firewall_mode(firewall_mode)
     _require_port("operator SSH port", ssh_port)
+    bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
+        bitcoin_resource_profile
+    )
     _validate_data_root_capacity(data_root)
     root = data_root.expanduser().resolve()
     secure_dir = network_secure_dir(root, layout.bundle_id)
@@ -821,6 +883,9 @@ def configure_node(
             "USDB_OPERATOR_SSH_PORT": str(ssh_port),
             "BTC_CONTAINER_UID": str(os.getuid()),
             "BTC_CONTAINER_GID": str(os.getgid()),
+            "BTC_RESOURCE_PROFILE": bitcoin_profile,
+            "BTC_MEMORY_LIMIT": bitcoin_resources["memory_limit"],
+            "BTC_DBCACHE_MB": bitcoin_resources["dbcache_mb"],
             "BH_SNAPSHOT_HOST_DIR": str(snapshot_dir),
             "USDB_NODE_ROLE": role,
             "USDB_BOOTNODES": bootnodes,
@@ -937,6 +1002,7 @@ def setup_node(
     *,
     input_fn: Any = input,
     output: Any = sys.stdout,
+    bitcoin_resource_profile: str = DEFAULT_BITCOIN_RESOURCE_PROFILE,
 ) -> SetupResult:
     if layout.node_env.exists():
         raise ValueError(
@@ -951,6 +1017,11 @@ def setup_node(
         )
     )
     capacity = _validate_data_root_capacity(data_root)
+    host_memory_bytes = _host_memory_bytes()
+    bitcoin_profile, bitcoin_resources = resolve_bitcoin_resource_profile(
+        bitcoin_resource_profile,
+        host_memory_bytes=host_memory_bytes,
+    )
     print("Data root filesystem:", file=output)
     print(f"  Resolved through: {capacity.filesystem_path}", file=output)
     print(f"  Total capacity: {_human_bytes(capacity.total_bytes)}", file=output)
@@ -969,6 +1040,11 @@ def setup_node(
             "current free space is below the recommended long-running headroom.",
             file=output,
         )
+    print("Bitcoin resource profile:", file=output)
+    print(f"  Selected: {bitcoin_profile}", file=output)
+    print(f"  Host memory: {_human_bytes(host_memory_bytes)}", file=output)
+    print(f"  Container limit: {bitcoin_resources['memory_limit']}", file=output)
+    print(f"  Bitcoin dbcache: {bitcoin_resources['dbcache_mb']} MiB", file=output)
     role = _prompt_choice(
         "Node role",
         ("full", "bootnode", "miner"),
@@ -1058,6 +1134,7 @@ def setup_node(
         ssh_port=ssh_port,
         firewall_mode=firewall_mode,
         select_snapshot=install_snapshot,
+        bitcoin_resource_profile=bitcoin_profile,
     )
     return SetupResult(
         node_env=path,
@@ -1113,6 +1190,45 @@ def set_firewall_mode(layout: ReleaseLayout, mode: str) -> None:
     except BaseException:
         _atomic_write_private(layout.node_env, original)
         raise
+
+
+def set_bitcoin_resource_profile(layout: ReleaseLayout, profile: str) -> dict[str, str]:
+    """Atomically update operator-owned Bitcoin memory settings for the next reconcile."""
+    if not layout.node_env.is_file():
+        raise ValueError("node is not configured; run configure first")
+    services = _collect_compose_services(layout)
+    active_services = sorted(
+        name
+        for name, service in services.items()
+        if service.get("state") not in {"exited", "dead"}
+    )
+    if active_services:
+        raise ValueError(
+            "Bitcoin resource profile can only change while all node containers are stopped; "
+            "run 'usdb-node down' first; active services: "
+            + ", ".join(active_services)
+        )
+    selected, resources = resolve_bitcoin_resource_profile(profile)
+    original = layout.node_env.read_text(encoding="utf-8")
+    updated = upsert_env(
+        original,
+        {
+            "BTC_RESOURCE_PROFILE": selected,
+            "BTC_MEMORY_LIMIT": resources["memory_limit"],
+            "BTC_DBCACHE_MB": resources["dbcache_mb"],
+        },
+    )
+    try:
+        _atomic_write_private(layout.node_env, updated)
+        _validate_node_config(
+            layout,
+            require_runtime=False,
+            require_bitcoin_runtime=True,
+        )
+    except BaseException:
+        _atomic_write_private(layout.node_env, original)
+        raise
+    return resources
 
 
 def _validate_node_release_images(layout: ReleaseLayout) -> None:
@@ -1633,7 +1749,10 @@ def _bitcoin_startup_progress(
     return report
 
 
-def _bitcoin_progress_summary(report: dict[str, Any]) -> str:
+def _bitcoin_progress_summary(
+    report: dict[str, Any],
+    resource_profile: str | None = None,
+) -> str:
     status = report.get("status")
     if not isinstance(status, dict):
         blockers = report.get("blockers", [])
@@ -1649,9 +1768,10 @@ def _bitcoin_progress_summary(report: dict[str, Any]) -> str:
     txindex_state = "synced" if status.get("txindex_synced") is True else "indexing"
     txindex_height = status.get("txindex_height", "unknown")
     connections = status.get("connections", "unknown")
+    profile_text = f", profile={resource_profile}" if resource_profile else ""
     return (
         f"blocks={blocks}/{headers}, verification={verification_text}, "
-        f"txindex={txindex_state}@{txindex_height}, peers={connections}"
+        f"txindex={txindex_state}@{txindex_height}, peers={connections}{profile_text}"
     )
 
 
@@ -2498,14 +2618,22 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             status = bitcoin.get("status")
             if not isinstance(status, dict):
                 bitcoin_component = _component_progress(
-                    "bitcoin", "STARTING", _bitcoin_progress_summary(bitcoin)
+                    "bitcoin",
+                    "STARTING",
+                    _bitcoin_progress_summary(
+                        bitcoin,
+                        env.get("BTC_RESOURCE_PROFILE", DEFAULT_BITCOIN_RESOURCE_PROFILE),
+                    ),
                 )
             else:
                 verification = status.get("verification_progress")
                 bitcoin_component = _component_progress(
                     "bitcoin",
                     "READY" if bitcoin["ready"] else "SYNCING",
-                    _bitcoin_progress_summary(bitcoin),
+                    _bitcoin_progress_summary(
+                        bitcoin,
+                        env.get("BTC_RESOURCE_PROFILE", DEFAULT_BITCOIN_RESOURCE_PROFILE),
+                    ),
                     current=status.get("blocks") if isinstance(status.get("blocks"), int) else None,
                     total=status.get("headers") if isinstance(status.get("headers"), int) else None,
                     progress_percent=(
@@ -3377,6 +3505,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write configuration without installing the default systemd controller",
     )
+    setup.add_argument(
+        "--bitcoin-profile",
+        choices=(AUTO_BITCOIN_RESOURCE_PROFILE, *BITCOIN_RESOURCE_PROFILES),
+        default=AUTO_BITCOIN_RESOURCE_PROFILE,
+        help="select Bitcoin memory tuning; auto uses host physical memory",
+    )
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
@@ -3390,6 +3524,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="advanced override; defaults to a bundle- and host-scoped username",
     )
     configure.add_argument("--bitcoin-p2p", choices=("private", "public"), default="private")
+    configure.add_argument(
+        "--bitcoin-profile",
+        choices=tuple(BITCOIN_RESOURCE_PROFILES),
+        default=DEFAULT_BITCOIN_RESOURCE_PROFILE,
+    )
     configure.add_argument(
         "--firewall-mode",
         choices=FIREWALL_MODES,
@@ -3413,6 +3552,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Select externally managed firewall policy or bundled UFW management",
     )
     firewall_mode.add_argument("--mode", choices=FIREWALL_MODES, required=True)
+
+    bitcoin_profile = subparsers.add_parser(
+        "set-bitcoin-profile",
+        help="Update Bitcoin memory tuning after stopping all node services",
+    )
+    bitcoin_profile.add_argument(
+        "--profile",
+        choices=tuple(BITCOIN_RESOURCE_PROFILES),
+        required=True,
+    )
 
     subparsers.add_parser(
         "activate-release",
@@ -3546,8 +3695,15 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--bitcoin", action="store_true")
     logs.add_argument("service", nargs="*")
 
-    down = subparsers.add_parser("down", help="Stop USDB runtime without deleting data")
-    down.add_argument("--include-bitcoin", action="store_true")
+    down = subparsers.add_parser(
+        "down",
+        help="Stop the bootstrap controller and all node services without deleting data",
+    )
+    down.add_argument(
+        "--keep-bitcoin",
+        action="store_true",
+        help="stop USDB runtime but leave Bitcoin Core running",
+    )
     return parser
 
 
@@ -3563,10 +3719,10 @@ def _operation_name(args: argparse.Namespace) -> str | None:
         "configure",
         "set-role",
         "set-firewall-mode",
+        "set-bitcoin-profile",
         "activate-release",
         "snapshot",
         "firewall",
-        "down",
     }:
         return args.command
     return None
@@ -3584,7 +3740,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             raise ValueError("setup requires an interactive terminal; use configure for automation")
         if not args.no_controller:
             _controller_install_context()
-        result = setup_node(layout)
+        result = setup_node(layout, bitcoin_resource_profile=args.bitcoin_profile)
         print(f"Configured {layout.release_id} node: {result.node_env}")
         if result.apply_firewall:
             print(
@@ -3637,6 +3793,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             bitcoin_p2p=args.bitcoin_p2p,
             ssh_port=args.ssh_port,
             firewall_mode=args.firewall_mode,
+            bitcoin_resource_profile=args.bitcoin_profile,
         )
         print(f"Configured {layout.release_id} node: {path}")
         print("Bitcoin RPC credentials were generated locally and were not printed.")
@@ -3661,6 +3818,13 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             )
         else:
             print("Host firewall mode is external; usdb-node will not inspect or modify UFW.")
+    elif args.command == "set-bitcoin-profile":
+        resources = set_bitcoin_resource_profile(layout, args.profile)
+        print(
+            f"Updated Bitcoin resource profile to {args.profile}: "
+            f"memory={resources['memory_limit']}, dbcache={resources['dbcache_mb']} MiB."
+        )
+        print("Run usdb-node up to start the node and resume the existing Bitcoin data directory.")
     elif args.command == "activate-release":
         activate_release(layout)
         print(f"Activated release images in private node config: {layout.release_id}")
@@ -3767,9 +3931,11 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         arguments = ["logs", *args.service]
         run_helper(layout, helper, arguments)
     elif args.command == "down":
-        run_helper(layout, "run_testnet_runtime.sh", ["down"])
-        if args.include_bitcoin:
-            run_helper(layout, "run_testnet_bitcoin.sh", ["down"])
+        down_node(layout, keep_bitcoin=args.keep_bitcoin)
+        if args.keep_bitcoin:
+            print("Stopped bootstrap orchestration and USDB runtime; Bitcoin Core was left running.")
+        else:
+            print("Stopped bootstrap orchestration, USDB runtime, and Bitcoin Core.")
     return 0
 
 

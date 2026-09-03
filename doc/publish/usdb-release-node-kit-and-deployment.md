@@ -249,6 +249,10 @@ usdb-node status
 首次部署路径是 `prepare-host -> setup -> doctor -> up -> status`。无论 external
 还是 managed，均可省略单独的 `doctor`，因为 controller 会重新执行对应模式的 preflight；同一 bundle 的
 release 升级路径是 `install new release -> activate-release -> controller install -> doctor -> up -> status`。
+`setup --bitcoin-profile auto` 会根据主机可见物理内存在 `balanced-32g` 与 `performance-64g` 之间选择；
+自动化 `configure` 应显式指定 profile。运行中调整先执行 `down` 停止 controller 和所有容器，然后使用
+`set-bitcoin-profile`，最后重新执行 `up`；数据目录不会
+因此重建，profile 修改也会拒绝仍有运行中容器的状态。
 
 默认的 `up` 不把数天的初始化生命周期绑定到当前终端。它向 bundle-scoped systemd unit 提交任务，
 然后在交互式终端附加只读进度面板；Ctrl+C、SSH 断开或本地界面退出只会脱离观察，不会停止 controller。
@@ -375,7 +379,7 @@ usdb-node up --json
 
 Ctrl+C 只退出 `up` 的前端进度显示；controller 与容器继续运行。明确执行
 `usdb-node controller stop` 只停止后续编排，也不停止已经 detached 的 Docker 服务；停止整个 runtime 仍使用
-`usdb-node down`。controller 及其 journal 使用：
+`usdb-node down --keep-bitcoin`，停止整个节点使用默认的 `usdb-node down`。controller 及其 journal 使用：
 
 ```bash
 usdb-node controller status
@@ -405,13 +409,14 @@ usdb-node logs balance-history
 usdb-node logs usdb-chain
 usdb-node logs --bitcoin
 usdb-node down
-usdb-node down --include-bitcoin
+usdb-node down --keep-bitcoin
 ```
 
 需要独立采集 Bitcoin 当前门禁进度时，可在 release node kit 环境中执行
 `run_testnet_bitcoin.sh progress`；该命令只查询一次并输出 `usdb-bitcoin-readiness:v1` JSON，不等待同步完成。
 
-默认 `down` 不停止独立 Bitcoin Core，且所有命令都不会执行 `compose down -v`。
+默认 `down` 停止 controller、USDB runtime 和独立 Bitcoin Core；`--keep-bitcoin` 明确保留 Bitcoin 继续同步。
+所有命令都不会执行 `compose down -v`，也不会删除持久数据。
 
 ## 5. 矿工和 Joiner
 

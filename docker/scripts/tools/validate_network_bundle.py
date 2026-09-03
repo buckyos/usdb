@@ -37,6 +37,17 @@ EXPECTED_INDEXER_CHECKPOINT_DATA_SCHEMA_VERSION = "usdb-indexer-data:v1"
 PUBLIC_DEPLOYMENT_TIERS = frozenset({"testnet", "mainnet"})
 SUPPORTED_DEPLOYMENT_TIERS = frozenset({"development"}) | PUBLIC_DEPLOYMENT_TIERS
 SUPPORTED_FIREWALL_MODES = frozenset({"external", "managed"})
+DEFAULT_BITCOIN_RESOURCE_PROFILE = "balanced-32g"
+BITCOIN_RESOURCE_PROFILES = {
+    "balanced-32g": {
+        "memory_limit": "5g",
+        "dbcache_mb": "3072",
+    },
+    "performance-64g": {
+        "memory_limit": "16g",
+        "dbcache_mb": "12288",
+    },
+}
 KNOWN_DEVELOPMENT_BOOTSTRAP_ADMINS = frozenset(
     {
         "0xabcd35afbb4561213feaff01b5f91e18f8df7c37",
@@ -732,6 +743,23 @@ def validate_node_env(
         "BTC_P2P_BIND_ADDRESS must be explicit loopback-only or public IPv4",
     )
     require(env.get("BTC_P2P_BIND_PORT", "8333") == "8333", "Bitcoin mainnet P2P bind port must be 8333")
+    bitcoin_profile = env.get(
+        "BTC_RESOURCE_PROFILE",
+        DEFAULT_BITCOIN_RESOURCE_PROFILE,
+    )
+    require(
+        bitcoin_profile in BITCOIN_RESOURCE_PROFILES,
+        "BTC_RESOURCE_PROFILE must be balanced-32g or performance-64g",
+    )
+    expected_bitcoin_resources = BITCOIN_RESOURCE_PROFILES[bitcoin_profile]
+    require(
+        env.get("BTC_MEMORY_LIMIT") == expected_bitcoin_resources["memory_limit"],
+        "BTC_MEMORY_LIMIT does not match BTC_RESOURCE_PROFILE",
+    )
+    require(
+        env.get("BTC_DBCACHE_MB") == expected_bitcoin_resources["dbcache_mb"],
+        "BTC_DBCACHE_MB does not match BTC_RESOURCE_PROFILE",
+    )
     # Configurations created before this field existed had mandatory managed
     # UFW behavior, so absence retains that fail-closed meaning during upgrade.
     firewall_mode = env.get("USDB_FIREWALL_MODE", "managed")

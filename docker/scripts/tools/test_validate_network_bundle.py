@@ -76,6 +76,9 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             "BTC_RPC_PASSWORD": "test-password",
             "BTC_P2P_BIND_ADDRESS": "127.0.0.1",
             "BTC_P2P_BIND_PORT": "8333",
+            "BTC_RESOURCE_PROFILE": "balanced-32g",
+            "BTC_MEMORY_LIMIT": "5g",
+            "BTC_DBCACHE_MB": "3072",
             "USDB_FIREWALL_MODE": "external",
             "USDB_OPERATOR_SSH_PORT": "22",
             "USDB_DATA_ROOT": str(data_root),
@@ -128,6 +131,19 @@ class NetworkBundleValidatorTests(unittest.TestCase):
             require_runtime,
             require_bitcoin_runtime,
         )
+
+    def test_bitcoin_resource_profile_must_match_memory_and_dbcache(self) -> None:
+        path = self.write_node_env(BTC_RESOURCE_PROFILE="performance-64g")
+        with self.assertRaisesRegex(ValueError, "BTC_MEMORY_LIMIT does not match"):
+            self.validate_node_env(path, False)
+
+        path = self.write_node_env(BTC_DBCACHE_MB="4096")
+        with self.assertRaisesRegex(ValueError, "BTC_DBCACHE_MB does not match"):
+            self.validate_node_env(path, False)
+
+        path = self.write_node_env(BTC_RESOURCE_PROFILE="custom")
+        with self.assertRaisesRegex(ValueError, "BTC_RESOURCE_PROFILE"):
+            self.validate_node_env(path, False)
 
     def write_snapshot_artifacts(
         self,

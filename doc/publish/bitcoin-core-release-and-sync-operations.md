@@ -137,6 +137,37 @@ hard limits 合计 `27 GiB`，为内核、page cache、Docker 和短时峰值保
 height-963800 snapshot 后的增量运行模板，不是从 BTC genesis 构建 balance-history snapshot 的 profile。
 容量紧张或发生 cgroup OOM 时应提高机器内存，不得通过启用 Bitcoin pruning 规避。
 
+节点工具提供两档经过约束的 Bitcoin 资源配置：
+
+| profile | 最低主机内存 | Bitcoin 容器上限 | `dbcache` | 用途 |
+| --- | ---: | ---: | ---: | --- |
+| `balanced-32g` | 32 GiB 级 | `5g` | `3072 MiB` | 共机增量运行基线 |
+| `performance-64g` | 56 GiB 可见物理内存 | `16g` | `12288 MiB` | 首次 IBD、txindex 追赶和高吞吐验证 |
+
+交互式 `setup` 默认使用 `--bitcoin-profile auto`：主机可见内存达到 56 GiB 时选择
+`performance-64g`，否则选择 `balanced-32g`。自动化 `configure` 为保持部署确定性，默认仍使用
+`balanced-32g`，可显式传入 `--bitcoin-profile performance-64g`。profile、容器上限和 `dbcache`
+必须成组匹配，validator 会拒绝只修改其中一个字段的配置。
+
+已有节点切换 profile 时，先停止整个节点，再修改配置并重新提交 `up`：
+
+```bash
+usdb-node down
+usdb-node set-bitcoin-profile --profile performance-64g
+usdb-node up
+```
+
+`down` 先停止 bootstrap controller，再按顺序停止 USDB runtime 和 Bitcoin 容器。只有显式使用
+`down --keep-bitcoin` 才会保留 Bitcoin 继续同步。`set-bitcoin-profile` 会拒绝存在运行中容器的节点，并且只原子修改私有
+`node.env`。后续 `up` 按新内存限制创建 Bitcoin 容器并继续使用原 bind-mounted 数据目录。正常关闭会先
+flush 数据库，因此应保留 `BTC_STOP_GRACE_PERIOD`，不要 kill 容器。切换前后使用
+`usdb-node status --watch`、`docker stats` 和 Bitcoin 日志比较 verification progress、CPU、内存及磁盘等待。
+
+`maxconnections` 不是这一路径的吞吐旋钮。Bitcoin Core 默认只建立有限数量的 outbound 连接，
+`maxconnections` 主要限制总连接及可接受的 inbound；提高它不会相应增加常规 IBD 下载 peer。当前 Compose
+也未限制 CPU，Bitcoin Core 默认自行选择脚本验证线程。不要为了追块设置固定公共 `addnode`、关闭
+`txindex`、启用 pruning 或长期启用 `blocksonly`；这些选项会改变网络韧性或破坏 USDB 数据依赖。
+
 Bitcoin blocks、chainstate 和 txindex 需要长期独立磁盘容量。上线前以实际数据目录加增长余量做
 preflight，不把 snapshot 下载目录、Docker build cache 或 USDB chain DB 与其误算为可用空间。
 

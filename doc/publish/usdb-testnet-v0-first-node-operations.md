@@ -493,7 +493,8 @@ usdb-node down
 usdb-node up
 ```
 
-Bitcoin 独立运行，不会被默认 `down` 停止。不要删除 `USDB_DATA_ROOT` 下的服务目录、Bitcoin 数据目录
+默认 `down` 会停止 controller、USDB runtime 和 Bitcoin Core；仅维护 runtime 且希望 Bitcoin 继续追块时使用
+`usdb-node down --keep-bitcoin`。不要删除 `USDB_DATA_ROOT` 下的服务目录、Bitcoin 数据目录
 或替换 genesis。发现以下任一情况时停止 miner 并保留现场：
 
 - genesis/chain ID 不一致；

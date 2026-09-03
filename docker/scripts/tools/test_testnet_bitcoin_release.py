@@ -76,6 +76,8 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertEqual(network_env["BTC_MIN_CONNECTIONS"], "1")
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
         self.assertEqual(env["BTC_P2P_BIND_PORT"], "8333")
+        self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
         self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
         self.assertEqual(env["SNAPSHOT_MODE"], "none")
         self.assertEqual(env["BH_SNAPSHOT_FILE"], "")

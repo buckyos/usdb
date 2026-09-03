@@ -124,6 +124,9 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(env["BTC_RPC_USER"], "node-a")
         self.assertTrue(env["BTC_RPC_PASSWORD"])
         self.assertEqual(env["BTC_P2P_BIND_ADDRESS"], "127.0.0.1")
+        self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
+        self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
         self.assertEqual(env["USDB_FIREWALL_MODE"], "external")
         self.assertEqual(env["USDB_OPERATOR_SSH_PORT"], "22")
         self.assertEqual(env["USDB_NODE_ROLE"], "full")
@@ -195,6 +198,68 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("USDB P2P: public TCP/UDP 31303", output.getvalue())
         self.assertIn("Release-approved balance-history snapshot", output.getvalue())
         self.assertIn("Required/recommended: 1.5 TiB / 2.0 TiB", output.getvalue())
+        self.assertIn("Selected: balanced-32g", output.getvalue())
+
+    def test_bitcoin_resource_profile_auto_selects_and_enforces_host_memory(self) -> None:
+        selected, resources = NODE.resolve_bitcoin_resource_profile(
+            "auto",
+            host_memory_bytes=64 * 1024**3,
+        )
+        self.assertEqual(selected, "performance-64g")
+        self.assertEqual(resources["memory_limit"], "16g")
+        self.assertEqual(resources["dbcache_mb"], "12288")
+
+        selected, resources = NODE.resolve_bitcoin_resource_profile(
+            "auto",
+            host_memory_bytes=32 * 1024**3,
+        )
+        self.assertEqual(selected, "balanced-32g")
+        self.assertEqual(resources["memory_limit"], "5g")
+
+        with self.assertRaisesRegex(ValueError, "at least 56 GiB"):
+            NODE.resolve_bitcoin_resource_profile(
+                "performance-64g",
+                host_memory_bytes=48 * 1024**3,
+            )
+
+    def test_configure_and_update_performance_bitcoin_profile(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        data_root = Path(self.temporary.name) / "performance-node-data"
+        with mock.patch.object(NODE, "_host_memory_bytes", return_value=64 * 1024**3):
+            NODE.configure_node(
+                layout,
+                data_root=data_root,
+                role="full",
+                miner_address="",
+                miner_threads=1,
+                bootnodes="",
+                nat="",
+                bitcoin_rpc_user="node-a",
+                bitcoin_p2p="private",
+                bitcoin_resource_profile="performance-64g",
+            )
+        env = NODE.read_env(layout.node_env)
+        self.assertEqual(env["BTC_RESOURCE_PROFILE"], "performance-64g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "16g")
+        self.assertEqual(env["BTC_DBCACHE_MB"], "12288")
+
+        with mock.patch.object(NODE, "_collect_compose_services", return_value={}):
+            resources = NODE.set_bitcoin_resource_profile(layout, "balanced-32g")
+        self.assertEqual(resources["memory_limit"], "5g")
+        env = NODE.read_env(layout.node_env)
+        self.assertEqual(env["BTC_RESOURCE_PROFILE"], "balanced-32g")
+        self.assertEqual(env["BTC_MEMORY_LIMIT"], "5g")
+        self.assertEqual(env["BTC_DBCACHE_MB"], "3072")
+
+        before = layout.node_env.read_text(encoding="utf-8")
+        with mock.patch.object(
+            NODE,
+            "_collect_compose_services",
+            return_value={"btc-node": {"state": "running"}},
+        ):
+            with self.assertRaisesRegex(ValueError, "all node containers are stopped"):
+                NODE.set_bitcoin_resource_profile(layout, "performance-64g")
+        self.assertEqual(layout.node_env.read_text(encoding="utf-8"), before)
 
     def test_configure_rejects_small_or_insufficient_data_root_before_writes(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -786,6 +851,10 @@ class UsdbNodeTests(unittest.TestCase):
             [component["state"] for component in report["components"]],
             ["SKIPPED", "READY", "SYNCING", "READY", "READY"],
         )
+        bitcoin_component = next(
+            item for item in report["components"] if item["id"] == "bitcoin"
+        )
+        self.assertIn("profile=balanced-32g", bitcoin_component["detail"])
 
     def test_progress_view_explains_bitcoin_height_is_unavailable_before_rpc(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -813,6 +882,12 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(watch.refresh_secs, 2)
         progress = NODE.build_parser().parse_args(["status", "--progress-json"])
         self.assertTrue(progress.progress_json)
+        setup = NODE.build_parser().parse_args(["setup"])
+        self.assertEqual(setup.bitcoin_profile, "auto")
+        profile = NODE.build_parser().parse_args(
+            ["set-bitcoin-profile", "--profile", "performance-64g"]
+        )
+        self.assertEqual(profile.profile, "performance-64g")
 
     def test_status_reports_unconfigured_without_runtime_queries(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1281,6 +1356,48 @@ class UsdbNodeTests(unittest.TestCase):
                 mock.call(["systemctl", "start", "--no-block", unit.name]),
             ],
         )
+
+    def test_down_stops_controller_runtime_and_bitcoin_by_default(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        unit = self.root / "usdb-node-bootstrap-test.service"
+        unit.touch()
+        with (
+            mock.patch.object(NODE, "controller_unit_path", return_value=unit),
+            mock.patch.object(NODE, "stop_controller_unit") as stop,
+            mock.patch.object(NODE, "run_helper") as helper,
+        ):
+            NODE.down_node(layout, keep_bitcoin=False)
+
+        stop.assert_called_once_with(layout)
+        self.assertEqual(
+            helper.call_args_list,
+            [
+                mock.call(layout, "run_testnet_runtime.sh", ["down"]),
+                mock.call(layout, "run_testnet_bitcoin.sh", ["down"]),
+            ],
+        )
+
+    def test_down_can_explicitly_keep_bitcoin_running(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        with (
+            mock.patch.object(
+                NODE,
+                "controller_unit_path",
+                return_value=self.root / "missing-controller.service",
+            ),
+            mock.patch.object(NODE, "stop_controller_unit") as stop,
+            mock.patch.object(NODE, "run_helper") as helper,
+        ):
+            NODE.down_node(layout, keep_bitcoin=True)
+
+        stop.assert_not_called()
+        helper.assert_called_once_with(layout, "run_testnet_runtime.sh", ["down"])
+
+        default_args = NODE.build_parser().parse_args(["down"])
+        keep_args = NODE.build_parser().parse_args(["down", "--keep-bitcoin"])
+        self.assertFalse(default_args.keep_bitcoin)
+        self.assertTrue(keep_args.keep_bitcoin)
+        self.assertIsNone(NODE._operation_name(default_args))
 
     def test_background_up_does_not_hold_the_foreground_operation_lock(self) -> None:
         parser = NODE.build_parser()
