@@ -70,8 +70,8 @@ ENV_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 MIN_DATA_ROOT_BYTES = 3 * 1024**4 // 2
 RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
-NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
-NODE_RESUME_SCHEMA_VERSION = "usdb-node-resume:v1"
+NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v2"
+NODE_UP_SCHEMA_VERSION = "usdb-node-up:v1"
 NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v3"
 SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v1"
 CONTROLLER_MANUAL_EXIT_CODE = 2
@@ -81,7 +81,7 @@ CONTROLLER_START_GRACE_SECS = 10
 CONTROLLER_START_LIMIT_INTERVAL_SECS = 1800
 CONTROLLER_START_LIMIT_BURST = 20
 DEFAULT_SYNC_TIMEOUT_SECS = 604800
-MAX_RESUME_TRANSITIONS = 4
+MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 PROGRESS_COMPONENTS = (
     ("snapshot", "Snapshot"),
@@ -125,6 +125,14 @@ class DataRootCapacity:
     filesystem_path: Path
     total_bytes: int
     free_bytes: int
+
+
+@dataclass(frozen=True)
+class ControllerInstallContext:
+    launcher: Path
+    docker_launcher: Path
+    service_user: str
+    home: Path
 
 
 def controller_unit_name(layout: ReleaseLayout) -> str:
@@ -236,6 +244,28 @@ def _systemd_available() -> bool:
     return shutil.which("systemctl") is not None and Path("/run/systemd/system").is_dir()
 
 
+def _controller_install_context(launcher: Path | None = None) -> ControllerInstallContext:
+    """Validate host prerequisites before node configuration or unit installation."""
+    if not _systemd_available():
+        raise ValueError(
+            "a running systemd system manager is required; "
+            "use setup --no-controller only for explicit foreground operation"
+        )
+    stable_launcher = _controller_launcher_path(launcher)
+    docker_command = shutil.which("docker")
+    if docker_command is None:
+        raise ValueError("docker is required before installing the bootstrap controller")
+    if os.geteuid() != 0 and shutil.which("sudo") is None:
+        raise ValueError("sudo is required to install the systemd bootstrap controller")
+    account = pwd.getpwuid(os.getuid())
+    return ControllerInstallContext(
+        launcher=stable_launcher,
+        docker_launcher=Path(docker_command).absolute(),
+        service_user=account.pw_name,
+        home=Path(account.pw_dir),
+    )
+
+
 def install_controller_unit(
     layout: ReleaseLayout,
     *,
@@ -246,19 +276,13 @@ def install_controller_unit(
     """Install and enable the restartable controller without starting node services."""
     if not layout.node_env.is_file():
         raise ValueError("configure the node before installing its bootstrap controller")
-    if not _systemd_available():
-        raise ValueError("a running systemd system manager is required")
-    stable_launcher = _controller_launcher_path(launcher)
-    docker_command = shutil.which("docker")
-    if docker_command is None:
-        raise ValueError("docker is required before installing the bootstrap controller")
-    account = pwd.getpwuid(os.getuid())
+    context = _controller_install_context(launcher)
     content = render_controller_unit(
         layout,
-        launcher=stable_launcher,
-        service_user=account.pw_name,
-        home=Path(account.pw_dir),
-        docker_launcher=Path(docker_command).absolute(),
+        launcher=context.launcher,
+        service_user=context.service_user,
+        home=context.home,
+        docker_launcher=context.docker_launcher,
         sync_timeout_secs=sync_timeout_secs,
         pull=pull,
     )
@@ -274,10 +298,10 @@ def install_controller_unit(
             ),
             "",
         )
-        if existing_user != account.pw_name:
+        if existing_user != context.service_user:
             raise ValueError(
                 "refusing to change the bootstrap controller service user from "
-                f"{existing_user or 'unknown'} to {account.pw_name}"
+                f"{existing_user or 'unknown'} to {context.service_user}"
             )
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.")
     temporary = Path(temporary_name)
@@ -306,7 +330,7 @@ def _require_controller_unit(layout: ReleaseLayout) -> Path:
 def start_controller_unit(layout: ReleaseLayout) -> str:
     """Submit the controller to systemd and return its stable unit name."""
     unit = _require_controller_unit(layout).name
-    # An explicit operator resume is allowed to clear a previous bounded retry stop.
+    # An explicit operator start is allowed to clear a previous bounded retry stop.
     _privileged_command(["systemctl", "reset-failed", unit], check=False)
     _privileged_command(["systemctl", "start", "--no-block", unit])
     return unit
@@ -2711,19 +2735,19 @@ def print_progress_status(
 
 STATUS_RECOVERY: dict[str, dict[str, Any]] = {
     "UNCONFIGURED": {
-        "resume_mode": "manual",
-        "resume_summary": "resume cannot invent operator-owned node configuration",
+        "up_mode": "manual",
+        "up_summary": "up cannot invent operator-owned node configuration",
         "next_actions": ["usdb-node setup"],
         "guidance": [
             "Run interactive setup to choose the data root, node role and network exposure.",
-            "No existing node.env will be created or overwritten by resume.",
+            "No existing node.env will be created or overwritten by up.",
         ],
     },
     "ACTIVATION_REQUIRED": {
-        "resume_mode": "explicit",
-        "resume_summary": "release activation requires explicit operator approval",
+        "up_mode": "explicit",
+        "up_summary": "release activation requires explicit operator approval",
         "next_actions": [
-            "usdb-node resume --activate-release",
+            "usdb-node up --activate-release",
             "usdb-node activate-release",
         ],
         "guidance": [
@@ -2732,40 +2756,40 @@ STATUS_RECOVERY: dict[str, dict[str, Any]] = {
         ],
     },
     "SNAPSHOT_INCOMPLETE": {
-        "resume_mode": "automatic",
-        "resume_summary": "resume can continue the approved snapshot installation",
-        "next_actions": ["usdb-node resume", "usdb-node snapshot install"],
+        "up_mode": "automatic",
+        "up_summary": "up can continue the approved snapshot installation",
+        "next_actions": ["usdb-node up", "usdb-node snapshot install"],
         "guidance": [
             "Keep the .installing, .part and .ranges.json files; they contain resumable state.",
             "The immutable final directory will be published only after full verification.",
         ],
     },
     "READY_TO_START": {
-        "resume_mode": "automatic",
-        "resume_summary": "resume can enter the readiness-ordered startup path",
-        "next_actions": ["usdb-node resume", "usdb-node up"],
+        "up_mode": "automatic",
+        "up_summary": "up can enter the readiness-ordered startup path",
+        "next_actions": ["usdb-node up"],
         "guidance": [
             "Configuration and local data contracts passed; services may be started safely.",
         ],
     },
     "STARTING": {
-        "resume_mode": "automatic",
-        "resume_summary": "resume can reconcile containers and continue readiness waits",
-        "next_actions": ["usdb-node resume", "usdb-node logs"],
+        "up_mode": "automatic",
+        "up_summary": "up can reconcile containers and continue readiness waits",
+        "next_actions": ["usdb-node up", "usdb-node logs"],
         "guidance": [
-            "If another usdb-node operation is still active, resume will refuse to run concurrently.",
+            "If another usdb-node operation is still active, up will refuse to run concurrently.",
             "Use logs when synchronization or readiness is making no visible progress.",
         ],
     },
     "READY": {
-        "resume_mode": "noop",
-        "resume_summary": "the node is already ready",
+        "up_mode": "noop",
+        "up_summary": "the node is already ready",
         "next_actions": [],
         "guidance": [],
     },
     "DEGRADED": {
-        "resume_mode": "manual",
-        "resume_summary": "automatic restart is disabled for unhealthy services",
+        "up_mode": "manual",
+        "up_summary": "automatic restart is disabled for unhealthy services",
         "next_actions": ["usdb-node logs", "usdb-node doctor"],
         "guidance": [
             "Inspect service logs before restarting; repeated restart may hide consensus or storage faults.",
@@ -2774,8 +2798,8 @@ STATUS_RECOVERY: dict[str, dict[str, Any]] = {
         ],
     },
     "BLOCKED": {
-        "resume_mode": "manual",
-        "resume_summary": "automatic changes are disabled because local state could not be trusted",
+        "up_mode": "manual",
+        "up_summary": "automatic changes are disabled because local state could not be trusted",
         "next_actions": ["usdb-node doctor"],
         "guidance": [
             "Read the first INVALID or UNAVAILABLE check above and run doctor for full diagnostics.",
@@ -2795,9 +2819,9 @@ def _finish_node_status(
     recovery = STATUS_RECOVERY[overall_state]
     report["overall_state"] = overall_state
     report["next_actions"] = list(recovery["next_actions"])
-    report["resume"] = {
-        "mode": recovery["resume_mode"],
-        "summary": recovery["resume_summary"],
+    report["up"] = {
+        "mode": recovery["up_mode"],
+        "summary": recovery["up_summary"],
     }
     report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
     controller = report["checks"].get("controller")
@@ -2828,7 +2852,7 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         "overall_state": "BLOCKED",
         "checks": checks,
         "next_actions": [],
-        "resume": {},
+        "up": {},
         "operator_guidance": [],
     }
     if not layout.node_env.is_file():
@@ -2972,10 +2996,7 @@ def _print_node_status_report(report: dict[str, Any]) -> None:
                     f"{_bitcoin_progress_summary(check['bitcoin_progress'])}"
                 )
     print(f"Overall        {report['overall_state']}")
-    print(
-        f"Resume         {report['resume']['mode'].upper():<12} "
-        f"{report['resume']['summary']}"
-    )
+    print(f"Up             {report['up']['mode'].upper():<12} {report['up']['summary']}")
     if report["next_actions"]:
         print("Next actions:")
         for index, action in enumerate(report["next_actions"], start=1):
@@ -2995,7 +3016,7 @@ def print_status(layout: ReleaseLayout, *, json_output: bool = False) -> int:
     return 0 if report["overall_state"] == "READY" else 1
 
 
-def _resume_action(report: dict[str, Any], allow_activation: bool) -> str | None:
+def _up_action(report: dict[str, Any], allow_activation: bool) -> str | None:
     state = report["overall_state"]
     if state == "ACTIVATION_REQUIRED" and allow_activation:
         return "activate-release"
@@ -3006,7 +3027,7 @@ def _resume_action(report: dict[str, Any], allow_activation: bool) -> str | None
     return None
 
 
-def resume_node(
+def up_node(
     layout: ReleaseLayout,
     *,
     dry_run: bool,
@@ -3017,9 +3038,9 @@ def resume_node(
     enable_progress: bool = False,
 ) -> tuple[dict[str, Any], int]:
     initial = collect_node_status(layout)
-    action = _resume_action(initial, allow_activation)
+    action = _up_action(initial, allow_activation)
     result: dict[str, Any] = {
-        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+        "schema_version": NODE_UP_SCHEMA_VERSION,
         "release_id": layout.release_id,
         "network_bundle_id": layout.bundle_id,
         "initial_state": initial["overall_state"],
@@ -3043,17 +3064,17 @@ def resume_node(
         layout,
         enabled=enable_progress and not json_output,
     )
-    with progress_monitor, node_operation_lock(layout, "resume"):
+    with progress_monitor, node_operation_lock(layout, "up"):
         report = collect_node_status(layout)
         with output_context:
-            for _transition in range(MAX_RESUME_TRANSITIONS):
+            for _transition in range(MAX_UP_TRANSITIONS):
                 if report["overall_state"] == "READY":
                     result["outcome"] = "ready"
                     result["completed_actions"] = completed
                     result["status"] = report
                     return result, 0
 
-                action = _resume_action(report, allow_activation)
+                action = _up_action(report, allow_activation)
                 if action is None:
                     result["outcome"] = "manual_action_required"
                     result["completed_actions"] = completed
@@ -3085,7 +3106,7 @@ def resume_node(
                         startup_options["progress_monitor"] = progress_monitor
                     start_node(layout, **startup_options)
                 else:
-                    raise AssertionError(f"unsupported internal resume action: {action}")
+                    raise AssertionError(f"unsupported internal up action: {action}")
                 completed.append(action)
                 report = collect_node_status(layout)
 
@@ -3093,7 +3114,7 @@ def resume_node(
     result["completed_actions"] = completed
     result["status"] = report
     result["operator_guidance"] = [
-        "Resume reached its bounded transition limit and stopped without forcing another action.",
+        "Up reached its bounded transition limit and stopped without forcing another action.",
         "Inspect status and logs before continuing manually.",
     ]
     return result, 1
@@ -3105,8 +3126,8 @@ def run_bootstrap_controller(
     sync_timeout_secs: int,
     pull: bool,
 ) -> int:
-    """Run the non-interactive, non-activating resume state machine for systemd."""
-    result, return_code = resume_node(
+    """Run the non-interactive, non-activating up state machine for systemd."""
+    result, return_code = up_node(
         layout,
         dry_run=False,
         allow_activation=False,
@@ -3115,7 +3136,7 @@ def run_bootstrap_controller(
         json_output=False,
         enable_progress=False,
     )
-    print_resume_result(result, json_output=False)
+    print_up_result(result, json_output=False)
     if return_code == 0:
         return 0
     if result["outcome"] in {
@@ -3127,15 +3148,15 @@ def run_bootstrap_controller(
     return return_code
 
 
-def submit_resume_to_controller(
+def submit_up_to_controller(
     layout: ReleaseLayout,
     *,
     dry_run: bool,
     allow_activation: bool,
 ) -> tuple[dict[str, Any], int]:
-    """Apply explicit activation when allowed, then submit safe resume work to systemd."""
+    """Apply explicit activation when allowed, then submit safe up work to systemd."""
     if dry_run:
-        return resume_node(
+        return up_node(
             layout,
             dry_run=True,
             allow_activation=allow_activation,
@@ -3146,7 +3167,7 @@ def submit_resume_to_controller(
 
     initial = collect_node_status(layout)
     result: dict[str, Any] = {
-        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+        "schema_version": NODE_UP_SCHEMA_VERSION,
         "release_id": layout.release_id,
         "network_bundle_id": layout.bundle_id,
         "initial_state": initial["overall_state"],
@@ -3174,7 +3195,7 @@ def submit_resume_to_controller(
         result["outcome"] = "ready"
         result["status"] = report
         return result, 0
-    if _resume_action(report, False) is None:
+    if _up_action(report, False) is None:
         result["outcome"] = "manual_action_required"
         result["status"] = report
         return result, 1
@@ -3255,11 +3276,11 @@ def follow_submitted_controller(
         return result, 0
 
 
-def print_resume_result(result: dict[str, Any], *, json_output: bool) -> None:
+def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
     if json_output:
         print(json.dumps(result, indent=2, sort_keys=True))
         return
-    print(f"USDB node resume outcome: {result['outcome']}")
+    print(f"USDB node up outcome: {result['outcome']}")
     print(f"Initial state: {result['initial_state']}")
     completed = result.get("completed_actions", [])
     if completed:
@@ -3294,7 +3315,15 @@ def build_parser() -> argparse.ArgumentParser:
         host_action = host_actions.add_parser(action)
         host_action.add_argument("--docker-user", default=default_docker_user())
 
-    subparsers.add_parser("setup", help="Interactively create a safe node configuration")
+    setup = subparsers.add_parser(
+        "setup",
+        help="Interactively configure the node and install its bootstrap controller",
+    )
+    setup.add_argument(
+        "--no-controller",
+        action="store_true",
+        help="write configuration without installing the default systemd controller",
+    )
 
     configure = subparsers.add_parser("configure", help="Create private node configuration and Bitcoin RPC credentials")
     configure.add_argument("--data-root", type=Path, default=Path.home() / ".usdb")
@@ -3346,7 +3375,7 @@ def build_parser() -> argparse.ArgumentParser:
     snapshot_actions = snapshot.add_subparsers(dest="snapshot_action", required=True)
     snapshot_install = snapshot_actions.add_parser(
         "install",
-        help="Resume download, verify, atomically stage, and select one snapshot",
+        help="Continue download, verify, atomically stage, and select one snapshot",
     )
     snapshot_install.add_argument(
         "--download-concurrency",
@@ -3371,7 +3400,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = subparsers.add_parser(
         "up",
-        help="Submit readiness-ordered bootstrap and attach progress",
+        help="Idempotently bring a configured node to READY and attach progress",
+    )
+    up.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report the allowed next transition without changing local state",
+    )
+    up.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one machine-readable up result on stdout",
+    )
+    up.add_argument(
+        "--activate-release",
+        action="store_true",
+        help="explicitly allow same-contract release image activation",
     )
     up.add_argument(
         "--foreground",
@@ -3402,33 +3446,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PROGRESS_REFRESH_SECS,
         help="dashboard refresh interval (default: 5 seconds)",
     )
-
-    resume = subparsers.add_parser(
-        "resume",
-        help="Submit safe snapshot/start continuation and attach progress",
-    )
-    resume.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="report the allowed next transition without changing local state",
-    )
-    resume.add_argument(
-        "--json",
-        action="store_true",
-        help="emit one machine-readable resume result on stdout",
-    )
-    resume.add_argument(
-        "--activate-release",
-        action="store_true",
-        help="explicitly allow same-contract release image activation",
-    )
-    resume.add_argument(
-        "--foreground",
-        action="store_true",
-        help="run bootstrap in this terminal instead of submitting the installed controller",
-    )
-    resume.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS)
-    resume.add_argument("--skip-pull", action="store_true")
 
     controller = subparsers.add_parser(
         "controller",
@@ -3482,9 +3499,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _operation_name(args: argparse.Namespace) -> str | None:
-    if args.command == "resume":
-        return None
-    if args.command == "up" and not args.foreground:
+    if args.command == "up":
         return None
     if args.command == "controller":
         return "controller-install" if args.controller_action == "install" else None
@@ -3498,7 +3513,6 @@ def _operation_name(args: argparse.Namespace) -> str | None:
         "activate-release",
         "snapshot",
         "firewall",
-        "up",
         "down",
     }:
         return args.command
@@ -3515,6 +3529,8 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "setup":
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             raise ValueError("setup requires an interactive terminal; use configure for automation")
+        if not args.no_controller:
+            _controller_install_context()
         result = setup_node(layout)
         print(f"Configured {layout.release_id} node: {result.node_env}")
         if result.apply_firewall:
@@ -3527,11 +3543,34 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         else:
             print("Host firewall mode is external; UFW was not installed, inspected, or modified.")
         if result.install_snapshot:
+            if args.no_controller:
+                print(
+                    "Selected the release-approved balance-history snapshot; "
+                    "up --foreground or a later controller installation will download and verify it."
+                )
+            else:
+                print(
+                    "Selected the release-approved balance-history snapshot; "
+                    "the bootstrap controller will download and verify it."
+                )
+        if args.no_controller:
             print(
-                "Selected the release-approved balance-history snapshot; "
-                "the bootstrap controller will download and verify it."
+                "Skipped the bootstrap controller by explicit request; "
+                "use usdb-node up --foreground or install the controller later."
             )
-        print("Run usdb-node controller install, usdb-node doctor, then usdb-node resume.")
+            print("Run usdb-node doctor, then usdb-node up --foreground.")
+        else:
+            try:
+                path = install_controller_unit(layout)
+            except (OSError, ValueError, subprocess.CalledProcessError):
+                print(
+                    f"Node configuration was preserved at {result.node_env}; "
+                    "fix the reported host issue, then run usdb-node controller install.",
+                    file=sys.stderr,
+                )
+                raise
+            print(f"Installed and enabled USDB bootstrap controller: {path.name}")
+            print("Run usdb-node doctor, then usdb-node up.")
     elif args.command == "configure":
         path = configure_node(
             layout,
@@ -3548,6 +3587,10 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         )
         print(f"Configured {layout.release_id} node: {path}")
         print("Bitcoin RPC credentials were generated locally and were not printed.")
+        print(
+            "Run usdb-node controller install before background up, "
+            "or use usdb-node up --foreground for explicit foreground operation."
+        )
     elif args.command == "set-role":
         set_role(
             layout,
@@ -3591,42 +3634,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         if args.sync_timeout_secs <= 0:
             raise ValueError("sync timeout must be positive")
         if args.foreground:
-            start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
-            print(f"USDB node is ready: {layout.release_id}")
-        else:
-            if args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull:
-                raise ValueError(
-                    "background controller settings are frozen by controller install; "
-                    "reinstall it with the desired options or use up --foreground"
-                )
-            result, return_code = submit_resume_to_controller(
-                layout,
-                dry_run=False,
-                allow_activation=False,
-            )
-            if (
-                return_code == 0
-                and result["outcome"] == "controller_started"
-                and sys.stdout.isatty()
-                and sys.stderr.isatty()
-            ):
-                result, return_code = follow_submitted_controller(layout, result)
-            print_resume_result(result, json_output=False)
-            return return_code
-    elif args.command == "status":
-        if args.progress_json or args.watch:
-            return print_progress_status(
-                layout,
-                json_output=args.progress_json,
-                watch=args.watch,
-                refresh_secs=args.refresh_secs,
-            )
-        return print_status(layout, json_output=args.json)
-    elif args.command == "resume":
-        if args.sync_timeout_secs <= 0:
-            raise ValueError("sync timeout must be positive")
-        if args.foreground:
-            result, return_code = resume_node(
+            result, return_code = up_node(
                 layout,
                 dry_run=args.dry_run,
                 allow_activation=args.activate_release,
@@ -3641,9 +3649,9 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
             if args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull:
                 raise ValueError(
                     "background controller settings are frozen by controller install; "
-                    "reinstall it with the desired options or use resume --foreground"
+                    "reinstall it with the desired options or use up --foreground"
                 )
-            result, return_code = submit_resume_to_controller(
+            result, return_code = submit_up_to_controller(
                 layout,
                 dry_run=args.dry_run,
                 allow_activation=args.activate_release,
@@ -3656,8 +3664,17 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 and sys.stderr.isatty()
             ):
                 result, return_code = follow_submitted_controller(layout, result)
-        print_resume_result(result, json_output=args.json)
+        print_up_result(result, json_output=args.json)
         return return_code
+    elif args.command == "status":
+        if args.progress_json or args.watch:
+            return print_progress_status(
+                layout,
+                json_output=args.progress_json,
+                watch=args.watch,
+                refresh_secs=args.refresh_secs,
+            )
+        return print_status(layout, json_output=args.json)
     elif args.command == "controller":
         if args.controller_action == "install":
             if args.sync_timeout_secs <= 0:
@@ -3669,7 +3686,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 pull=not args.skip_pull,
             )
             print(f"Installed and enabled USDB bootstrap controller: {path.name}")
-            print("Run usdb-node resume to start it and attach the progress view.")
+            print("Run usdb-node up to start it and attach the progress view.")
         elif args.controller_action == "stop":
             stop_controller_unit(layout)
             print("Stopped bootstrap orchestration; Docker services were left running.")
@@ -3714,11 +3731,11 @@ def main() -> int:
         with operation_context:
             return _execute_command(layout, args)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        if args.command == "resume" and args.json:
+        if args.command == "up" and args.json:
             print(
                 json.dumps(
                     {
-                        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+                        "schema_version": NODE_UP_SCHEMA_VERSION,
                         "outcome": "error",
                         "error": str(error),
                     },

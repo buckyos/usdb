@@ -12,9 +12,9 @@
 
 Snapshot 只是 balance-history 的启动加速器。release 未批准 snapshot 或在 `setup` 中选择 full sync 时，
 节点保持 `SNAPSHOT_MODE=none`，仍会建立完整 UTXO、balance、block commit 和 state-ref；只有同步耗时不同，
-最终共识视图不应不同。使用 snapshot 时由 `setup` 读取 release manifest 并执行安装；中断后运行
+最终共识视图不应不同。使用 snapshot 时由 `setup` 读取 release manifest 并记录选择；中断后运行
 `usdb-node snapshot install` 续传 artifact，不得手工填写 URL、改写高度或文件路径；live RocksDB 导入发生
-在后续 `up/resume` 的一次性 `snapshot-loader` 阶段。
+在后续 `up` 的一次性 `snapshot-loader` 阶段。
 
 ## 2. 当前发布级别
 
@@ -194,12 +194,12 @@ password/rpcauth，并保持 operator RPC 只监听 loopback：
 ```bash
 usdb-node prepare-host
 usdb-node setup
-usdb-node controller install
 usdb-node doctor
 ```
 
-节点 operator 必须具备 Docker 权限。只有在 `setup` 中选择 managed UFW 时才要求可用的 sudo 身份；sudo
-验证当前 operator 的密码，不验证 root 密码。默认 external 模式不会安装、读取或修改 UFW。
+节点 operator 必须具备 Docker 权限。默认 `setup` 会安装并 enable systemd controller，因此要求可用的 sudo
+身份；sudo 验证当前 operator 的密码，不验证 root 密码。默认 external 模式不会安装、读取或修改 UFW。
+只有明确的前台调试、CI 或非 systemd 环境才使用 `setup --no-controller`。
 
 `prepare-host` 统一包装主机软件检查，并只在失败后询问是否安装；如果安装修改了 docker 用户组，退出后重新
 登录再继续。`doctor` 是可选的显式预检：它会执行完整主机、release/network identity、节点配置、image
@@ -212,7 +212,7 @@ bundle ID 与 hostname 派生，password 自动生成。SSH server port 从当�
 检测和确实需要开放 Bitcoin 入站时才需修改默认值。专用数据盘可在向导中选择 `/data/usdb`。
 
 release 内已固定 BTC height `963800` 的官方 balance-history snapshot。`setup` 会显示 snapshot ID、下载量、
-建议剩余空间和当前磁盘空间，并询问是否使用；选择后只把批准记录写入 `node.env`。后续 `resume` 通过 systemd
+建议剩余空间和当前磁盘空间，并询问是否使用；选择后只把批准记录写入 `node.env`。后续 `up` 通过 systemd
 controller 执行可断点续传的 artifact 下载与校验，不需要填写 URL 或 S3 凭证，也不依赖当前 SSH 会话。
 大 DB 默认使用 `8 x 64 MiB` HTTP Range 并行下载。选择 full sync 仍受支持；也可在 balance-history 首次启动前
 显式运行 `usdb-node snapshot install`。
@@ -229,21 +229,21 @@ usdb-node firewall apply --confirm
 external 边界已复核或 managed UFW 已通过后，一条命令完成拉取镜像和 readiness-ordered 启动：
 
 ```bash
-usdb-node resume
+usdb-node up
 usdb-node status
 ```
 
 `status` 会同时报告安装、activation、snapshot 和服务运行阶段，并给出下一条 `next_actions`；它不会在容器
 尚未启动时继续调用服务 RPC，因此此阶段不应再出现派生的 `connection refused`。自动化或远程采集使用
 `usdb-node status --json`，以 `overall_state` 和 `next_actions` 为准。只有 `READY` 的退出码是 `0`；
-`READY_TO_START` 表示应执行 `resume`，不是安装损坏。
+`READY_TO_START` 表示应执行 `up`，不是安装损坏。
 
 首次同步时，Docker 将 Bitcoin 容器显示为 `unhealthy`，只表示完整 readiness 尚未满足。只要容器仍在
 running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，`usdb-node status` 会将其归为
 `STARTING` 并显示当前 blocks/headers、verification、txindex 和 peer；只有进程退出、所有服务启动后仍
 不健康或 readiness 失败，才归为 `DEGRADED`。
 
-交互式 `up/resume` 会先向 systemd 提交 bootstrap controller，再固定显示 snapshot、Bitcoin、
+交互式 `up` 会先向 systemd 提交 bootstrap controller，再固定显示 snapshot、Bitcoin、
 balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面板，controller 继续运行。另一个 SSH
 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
 `usdb-node status --progress-json`，schema 为 `usdb-node-progress:v3`，并显式报告 systemd controller state。
@@ -252,20 +252,20 @@ Snapshot 行把本地 artifact 下载/校验
 运行时是带八阶段和 entry 计数的 `IMPORTING`，匹配 marker 与非空 live DB 同时存在后才是 `READY`。
 面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
 
-部署中断后优先运行 `usdb-node resume --dry-run` 查看允许的转换，再运行 `usdb-node resume`。它只自动续传
+部署中断后优先运行 `usdb-node up --dry-run` 查看允许的转换，再运行 `usdb-node up`。它只自动续传
 已选择的官方 snapshot，或继续 `READY_TO_START/STARTING` 的启动流程；release activation 必须显式添加
 `--activate-release`。`UNCONFIGURED/DEGRADED/BLOCKED` 会停止并打印具体失败 check、人工命令和保留现场建议，
-不会覆盖配置、删除数据或循环重启。并发运行的 setup/snapshot/up/resume 由 bundle operation lock 拒绝。
+不会覆盖配置、删除数据或循环重启。并发运行的 setup/snapshot/up 由 bundle operation lock 拒绝。
 
 SSH 中断不会停止 controller 或删除数据。`usdb-node controller status` 与
-`usdb-node controller logs --follow` 分别查询后台编排状态和 journal；重新执行 `resume` 会附加或从
+`usdb-node controller logs --follow` 分别查询后台编排状态和 journal；重新执行 `up` 会附加或从
 Bitcoin/balance-history 的现有同步状态继续。controller 到达 `READY` 后退出，长期容器由 Docker 维持。
 SourceDAO bootstrap 仍保持独立，因为 Bootstrap Admin 私钥不能进入 node kit 或 Compose。设计与故障边界见
 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
 
 首次安装不执行 `usdb-node activate-release`，因为 `setup` 已写入当前 release 的 image digest。只有以后安装
 同一 `usdb-testnet-v0` bundle 的新 `rN`、runtime compatibility ID 不变且继续复用现有 `node.env` 时，才按
-`activate-release -> doctor -> resume -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接
+`activate-release -> controller install -> doctor -> up -> status` 升级。contract 改变或新的 `vN`、chain ID、genesis 不得直接
 复用本配置，必须使用新配置和经过审核的数据处置方案。
 
 ### 5.2 手工回退路径
@@ -342,7 +342,7 @@ docker/scripts/tools/run_testnet_bitcoin.sh status
 docker/scripts/tools/run_testnet_bitcoin.sh wait
 ```
 
-`up/resume/wait` 会在开始等待时立即输出一次进度，之后定期输出带 UTC 时间和 elapsed 的 heartbeat。
+`up/wait` 会在开始等待时立即输出一次进度，之后定期输出带 UTC 时间和 elapsed 的 heartbeat。
 `progress` 是单次只读查询，输出 `usdb-bitcoin-readiness:v1` JSON；`ready=false` 代表仍在正常门禁内，
 并不等同于进程故障。
 

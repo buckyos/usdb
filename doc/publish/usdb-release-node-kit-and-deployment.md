@@ -57,8 +57,8 @@ manifest/node-kit digest。它安装到
 重复执行是幂等的；如果目标目录内容不同则拒绝覆盖。
 
 该安装脚本只安装经过校验的 node kit 和 launcher，不自动修改宿主机、生成节点配置或启动服务。成功后会明确
-输出首次部署的 `prepare-host -> setup -> controller install -> doctor -> resume -> status` 路径，以及同
-bundle 升级的 `activate-release -> doctor -> resume -> status` 路径。
+输出首次部署的 `prepare-host -> setup -> doctor -> up -> status` 路径，以及同 bundle 升级的
+`activate-release -> controller install -> doctor -> up -> status` 路径。
 
 mainnet 或需要先审阅脚本时，下载 `install-<release_id>.sh` 及其 checksum，执行 `sha256sum -c` 后
 再运行。`install-usdb-node.sh --release-id ...` 保留为镜像站和故障排查使用的高级入口，不作为默认操作。
@@ -108,7 +108,12 @@ bootnode、是否开放 Bitcoin 入站 P2P，以及 firewall mode。只有选择
 - 校验 release/network identity、RPC credential 和所有安全 bind address。
 - 保存检测到的 operator SSH port；managed 模式额外要求 operator 确认；
 - 显示 release-approved snapshot 的高度、下载量和建议剩余空间，并询问使用 snapshot 还是 full sync；
-- 选择宿主机 firewall 模式，默认 `external`；只有明确选择 `managed` 才安装、应用并验证 UFW profile。
+- 选择宿主机 firewall 模式，默认 `external`；只有明确选择 `managed` 才安装、应用并验证 UFW profile；
+- 默认安装并 enable bundle-scoped systemd bootstrap controller，但不在 `setup` 内启动长时间同步。
+
+只有明确的前台调试、CI、非 systemd 主机或外部编排环境才使用 `usdb-node setup --no-controller`。该选项仅
+生成节点配置；之后必须执行 `usdb-node up --foreground`，或补充执行 `usdb-node controller install` 后再使用
+普通后台 `up`。
 
 `external` 表示防火墙由云平台、虚拟化环境或 operator 管理，或该节点处于不需要 UFW 的隔离 VM；此模式下
 `usdb-node` 不安装、不读取、不修改 UFW，但仍校验所有容器 bind address。切换到 managed 并应用：
@@ -118,9 +123,9 @@ usdb-node set-firewall-mode --mode managed
 usdb-node firewall apply --confirm
 ```
 
-只有 managed 模式要求执行 `usdb-node` 的 operator 是 root，或拥有可用密码和 sudo 权限；sudo 验证当前
-operator 密码，不接受 root 密码。external 模式不因 firewall 要求 sudo，但该 operator 为控制 Docker 仍需
-加入 Docker group，而 Docker group 本身具备等价 root 的主机控制能力。
+默认 `setup` 为安装 systemd unit 要求 operator 是 root，或拥有可用密码和 sudo 权限；sudo 验证当前 operator
+密码，不接受 root 密码。`setup --no-controller` 的 external firewall 模式不需要 sudo，但该 operator 为控制
+Docker 仍需加入 Docker group，而 Docker group 本身具备等价 root 的主机控制能力。
 
 managed 模式的完整 firewall check 依据 `node.env` 对照 SSH、USDB P2P、Bitcoin P2P 和 operator API 的
 实际 bind policy。external 模式的 `doctor/up` 跳过 UFW inspection，但相同的 bind policy 校验不会跳过。
@@ -204,7 +209,7 @@ usdb-node configure --role full --data-root /data/usdb --firewall-mode external
 usdb-node activate-release
 usdb-node controller install
 usdb-node doctor
-usdb-node resume
+usdb-node up
 ```
 
 `activate-release` 先校验 runtime compatibility ID、所有数据路径和 dataset marker，完全一致后才替换三个
@@ -224,28 +229,28 @@ release-owned image digest。如果 contract 或 network bundle 变化，则使�
 该命令不拉取 image、不重启容器、不修改 RPC secret、角色、bootnode、数据路径、compatibility marker 或 miner
 配置。更新采用原子写入；
 校验失败时恢复原配置。`controller install` 是幂等的，会刷新 unit 但不会启动服务；首次安装后已经执行过时，
-同一 operator 和参数的普通 release 升级可以省略。激活后运行 `doctor`，再执行 `resume` 让 controller 拉取并
+同一 operator 和参数的普通 release 升级可以省略。激活后运行 `doctor`，再执行 `up` 让 controller 拉取并
 协调新 image。若跳过激活，`doctor` 和 controller 都会因 image digest 与当前 release 不一致而失败关闭。
 
 ## 4. 启动和续跑
 
-先以日常节点 operator 执行一次 controller 安装；命令仅在写入 `/etc/systemd/system` 和调用 `systemctl` 时内部
-请求 sudo，unit 的 `User`、`HOME`、private `node.env` 和稳定 launcher 都冻结为当前 operator。不要通过
+默认 `setup` 已以日常节点 operator 安装 controller；独立 `controller install` 用于修复 unit、刷新 release
+launcher 或冻结高级参数。命令仅在写入 `/etc/systemd/system` 和调用 `systemctl` 时内部请求 sudo，unit 的
+`User`、`HOME`、private `node.env` 和稳定 launcher 都冻结为当前 operator。不要通过
 `sudo usdb-node controller install` 改变 service user；只有节点本来就由 root 管理时才直接以 root 执行。
 unit 的 `ExecStart` 使用 installer 创建的稳定 `~/.local/bin/usdb-node` 软链接，而不是某个不可变 release 目录，
 release activation 仍必须由 operator 显式执行。
 
 ```bash
-usdb-node controller install
-usdb-node resume
+usdb-node up
 usdb-node status
 ```
 
-首次部署路径是 `prepare-host -> setup -> controller install -> doctor -> resume -> status`。无论 external
+首次部署路径是 `prepare-host -> setup -> doctor -> up -> status`。无论 external
 还是 managed，均可省略单独的 `doctor`，因为 controller 会重新执行对应模式的 preflight；同一 bundle 的
-release 升级路径是 `install new release -> activate-release -> doctor -> resume -> status`。
+release 升级路径是 `install new release -> activate-release -> controller install -> doctor -> up -> status`。
 
-默认的 `up/resume` 不再把数天的初始化生命周期绑定到当前终端。它们向 bundle-scoped systemd unit 提交任务，
+默认的 `up` 不把数天的初始化生命周期绑定到当前终端。它向 bundle-scoped systemd unit 提交任务，
 然后在交互式终端附加只读进度面板；Ctrl+C、SSH 断开或本地界面退出只会脱离观察，不会停止 controller。
 systemd unit 内部顺序固定为：
 
@@ -260,18 +265,18 @@ controller 默认单次同步等待上限是 7 天；超时或其他临时失败
 数据状态继续。systemd 在 30 分钟窗口内最多允许 20 次启动，持续故障会停止而不是无限刷日志；Docker daemon
 未就绪由 unit 的 `docker info` 前置检查归入这一有界重试。高级参数在
 `controller install --sync-timeout-secs ... [--skip-pull]` 时冻结；前台调试可使用
-`up/resume --foreground` 并为该次运行覆盖参数。controller 在每个阶段输出 UTC 时间和阶段名；长时间
+`up --foreground` 并为该次运行覆盖参数。controller 在每个阶段输出 UTC 时间和阶段名；长时间
 Bitcoin、balance-history、usdb-indexer readiness 等待会定期把 elapsed、同步高度、百分比和 blocker 写入
 journal。
 
-交互式 TTY 中，`up` 和 `resume` 提交 controller 后会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
+交互式 TTY 中，`up` 提交 controller 后会自动显示固定五行的只读进度面板：可选 snapshot、Bitcoin、
 balance-history、usdb-indexer 和 USDB chain。snapshot 未选择时显示 `SKIPPED`；并行 range 下载按已完成
 chunk 的实际字节计数，不把预分配文件误算为完成。artifact 下载并校验完成后显示 `WAITING`，明确等待
 Bitcoin readiness；`snapshot-loader` 开始把 SQLite 导入 live RocksDB 后显示 `IMPORTING`，并区分 source
 verify、staging DB、balance history、UTXO、block commit、script registry、finalize 和 atomic swap 八个阶段。
 只有匹配的 `snapshot-loader.done.json` 与非空 live DB 同时存在才显示 `READY`。USDB chain 使用标准
 `eth_syncing`、`eth_blockNumber` 和 `net_peerCount`，同时只读核对 `eth_chainId` 与 genesis hash。面板只观察
-已有状态，不启动、停止、重试或放宽任何 readiness gate；非 TTY、重定向和 `resume --json` 提交 controller
+已有状态，不启动、停止、重试或放宽任何 readiness gate；非 TTY、重定向和 `up --json` 提交 controller
 后立即返回，阶段日志与 heartbeat 通过 `usdb-node controller logs --follow` 查询。
 
 需要在另一个终端持续观察，或由监控系统采集单次结构化状态时使用：
@@ -284,7 +289,7 @@ usdb-node status --progress-json
 面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
 `--progress-json` 输出 `usdb-node-progress:v3`，固定包含 `controller_state` 和五个 component；Snapshot 在导入期间额外包含
 `stage/stage_index/stage_count/stage_current/stage_total/updated_at_unix`。这是观测接口，不可代替下述
-`usdb-node-status:v1` 生命周期判断。
+`usdb-node-status:v2` 生命周期判断。
 
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，写入失败只记录 warning，不影响 installer
@@ -301,10 +306,10 @@ usdb-node status --progress-json
 | 状态 | 含义 | 典型 `next_actions` |
 | --- | --- | --- |
 | `UNCONFIGURED` | 尚无 private `node.env` | `usdb-node setup` |
-| `ACTIVATION_REQUIRED` | 配置仍引用同 bundle 的旧 release image | `usdb-node resume --activate-release` |
-| `SNAPSHOT_INCOMPLETE` | 已选择 snapshot，但下载或校验尚未完成 | `usdb-node resume` |
-| `READY_TO_START` | 本地安装和数据前置条件完成，容器未启动 | `usdb-node resume` |
-| `STARTING` | 核心容器正在创建、启动或等待 health | `usdb-node resume` / `logs` |
+| `ACTIVATION_REQUIRED` | 配置仍引用同 bundle 的旧 release image | `usdb-node up --activate-release` |
+| `SNAPSHOT_INCOMPLETE` | 已选择 snapshot，但下载或校验尚未完成 | `usdb-node up` |
+| `READY_TO_START` | 本地安装和数据前置条件完成，容器未启动 | `usdb-node up` |
+| `STARTING` | 核心容器正在创建、启动或等待 health | `usdb-node up` / `logs` |
 | `READY` | 核心容器和服务 readiness 全部通过 | 无 |
 | `DEGRADED` | 已启动服务退出、不健康或 readiness 失败 | `usdb-node logs` |
 | `BLOCKED` | 配置、数据契约或状态读取异常 | `usdb-node doctor` |
@@ -319,8 +324,8 @@ usdb-node status --progress-json
 usdb-node status --json
 ```
 
-输出 schema 为 `usdb-node-status:v1`，包含 `release_id`、`network_bundle_id`、`overall_state`、分层
-`checks`、`resume.mode`、有序 `next_actions` 和 `operator_guidance`。只有 `READY` 返回退出码 `0`，其他状态
+输出 schema 为 `usdb-node-status:v2`，包含 `release_id`、`network_bundle_id`、`overall_state`、分层
+`checks`、`up.mode`、有序 `next_actions` 和 `operator_guidance`。只有 `READY` 返回退出码 `0`，其他状态
 返回 `1`；调用方应读取 `overall_state`，不要从人类可读文本或底层连接错误推断安装阶段。
 
 ### 4.1 受限恢复
@@ -328,11 +333,12 @@ usdb-node status --json
 systemd controller 安装、snapshot 下载或服务启动前，可先预览允许的状态转换，再提交后台任务：
 
 ```bash
-usdb-node resume --dry-run
-usdb-node resume
+usdb-node up --dry-run
+usdb-node up
 ```
 
-`resume` 是 controller 的提交和观察前端，不是通用修复器。它只按内部状态枚举执行以下白名单转换，不会执行
+`up` 是幂等的 controller 提交和观察前端，不是通用修复器。全新配置、安装中断、主机重启和已达 `READY` 都
+使用同一命令。它只按内部状态枚举执行以下白名单转换，不会执行
 `next_actions` 中的任意字符串：
 
 - `SNAPSHOT_INCOMPLETE`：继续 release-approved snapshot 的 `.part/.ranges.json` 下载、签名与哈希校验；
@@ -353,11 +359,11 @@ systemd unit 名为 `usdb-node-bootstrap-<bundle-id>.service`，随主机启动�
 自动化接口为：
 
 ```bash
-usdb-node resume --dry-run --json
-usdb-node resume --json
+usdb-node up --dry-run --json
+usdb-node up --json
 ```
 
-输出 schema 为 `usdb-node-resume:v1`。JSON 模式把底层同步日志定向到 stderr，只在 stdout 输出一个结果对象。
+输出 schema 为 `usdb-node-up:v1`。JSON 模式把底层同步日志定向到 stderr，只在 stdout 输出一个结果对象。
 后台 JSON 模式在成功提交 systemd 后立即返回 `controller_started`。`--skip-pull` 和
 `--sync-timeout-secs` 是 `controller install` 或显式 `--foreground` 的高级覆盖项，不能临时改变已安装 unit。
 
@@ -367,7 +373,7 @@ usdb-node resume --json
 `DEGRADED` 尤其要求先确认退出服务及 readiness 失败原因。若另一个操作仍持有锁，等待原命令结束或确认其进程
 已退出后再重试，不能删除锁文件来绕过仍运行的操作。
 
-Ctrl+C 只退出 `up/resume` 的前端进度显示；controller 与容器继续运行。明确执行
+Ctrl+C 只退出 `up` 的前端进度显示；controller 与容器继续运行。明确执行
 `usdb-node controller stop` 只停止后续编排，也不停止已经 detached 的 Docker 服务；停止整个 runtime 仍使用
 `usdb-node down`。controller 及其 journal 使用：
 
@@ -382,7 +388,7 @@ usdb-node controller disable
 Compose down，也不删除容器、journal、配置或数据。重新运行 `controller install` 会再次启用 unit。
 
 主机重启时，enabled controller 会在 Docker 和 network-online 后重新读取状态并继续未完成阶段。节点已经
-`READY` 时再次执行 `resume` 只复核状态并成功退出，不会重启容器。此时 systemd controller 显示
+`READY` 时再次执行 `up` 只复核状态并成功退出，不会重启容器。此时 systemd controller 显示
 `inactive (dead)` 是正常完成，不表示 Docker 服务停止；只有节点尚未 READY 且 controller 为 `failed` 时才需要
 检查 journal。
 
@@ -391,8 +397,8 @@ Compose down，也不删除容器、journal、配置或数据。重新运行 `co
 ```bash
 usdb-node status
 usdb-node status --watch
-usdb-node resume --dry-run
-usdb-node resume
+usdb-node up --dry-run
+usdb-node up
 usdb-node controller status
 usdb-node controller logs --follow
 usdb-node logs balance-history
@@ -448,4 +454,4 @@ SourceDAO bootstrap 保持独立，是因为 node kit 不应接触管理员私�
 - release-approved snapshot binding、setup 选择、断点 staging、原子安装、中断阻断和已有 DB 拒绝。
 
 仍需在新 release ID 上完成 GitHub workflow 产物检查，并在空白目标机执行一次从 installer、可选
-R2 snapshot 到三类 image、Bitcoin IBD/resume 和完整 runtime readiness 的跨进程 E2E。
+R2 snapshot 到三类 image、Bitcoin IBD 断点续跑和完整 runtime readiness 的跨进程 E2E。

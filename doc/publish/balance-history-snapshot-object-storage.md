@@ -199,13 +199,12 @@ curl -fsSL "${RECORD_URL}" | sha256sum
 
 ## 6. 节点下载和选择
 
-从 release node kit 配置一个全新节点后安装 bootstrap controller：
+从 release node kit 配置一个全新节点；`setup` 默认同时安装并 enable bootstrap controller：
 
 ```bash
 usdb-node setup
-usdb-node controller install
 usdb-node doctor
-usdb-node resume
+usdb-node up
 ```
 
 `setup` 选择 snapshot 后只冻结批准记录；后台 controller 下载、校验并选择 artifact。Ctrl+C 或 SSH 断开只

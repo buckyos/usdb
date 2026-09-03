@@ -766,12 +766,12 @@ class UsdbNodeTests(unittest.TestCase):
             report = NODE.collect_node_status(next_layout)
 
         self.assertEqual(report["overall_state"], "ACTIVATION_REQUIRED")
-        self.assertEqual(report["resume"]["mode"], "explicit")
+        self.assertEqual(report["up"]["mode"], "explicit")
         self.assertEqual(
             report["next_actions"],
             [
                 "usdb-node controller install",
-                "usdb-node resume --activate-release",
+                "usdb-node up --activate-release",
                 "usdb-node activate-release",
             ],
         )
@@ -797,12 +797,12 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(report["overall_state"], "SNAPSHOT_INCOMPLETE")
         self.assertEqual(report["checks"]["snapshot"]["state"], "incomplete")
-        self.assertEqual(report["resume"]["mode"], "automatic")
+        self.assertEqual(report["up"]["mode"], "automatic")
         self.assertEqual(
             report["next_actions"],
             [
                 "usdb-node controller install",
-                "usdb-node resume",
+                "usdb-node up",
                 "usdb-node snapshot install",
             ],
         )
@@ -828,7 +828,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["overall_state"], "READY_TO_START")
         self.assertEqual(
             report["next_actions"],
-            ["usdb-node controller install", "usdb-node resume", "usdb-node up"],
+            ["usdb-node controller install", "usdb-node up"],
         )
         self.assertEqual(
             calls,
@@ -967,10 +967,10 @@ class UsdbNodeTests(unittest.TestCase):
 
         report = json.loads(output.getvalue())
         self.assertEqual(result, 1)
-        self.assertEqual(report["schema_version"], "usdb-node-status:v1")
+        self.assertEqual(report["schema_version"], "usdb-node-status:v2")
         self.assertEqual(report["overall_state"], "UNCONFIGURED")
         self.assertEqual(report["next_actions"], ["usdb-node setup"])
-        self.assertEqual(report["resume"]["mode"], "manual")
+        self.assertEqual(report["up"]["mode"], "manual")
         self.assertTrue(report["operator_guidance"])
 
     def test_status_blocked_explains_manual_data_recovery_boundary(self) -> None:
@@ -986,7 +986,7 @@ class UsdbNodeTests(unittest.TestCase):
         report = NODE.collect_node_status(layout)
 
         self.assertEqual(report["overall_state"], "BLOCKED")
-        self.assertEqual(report["resume"]["mode"], "manual")
+        self.assertEqual(report["up"]["mode"], "manual")
         self.assertEqual(report["next_actions"], ["usdb-node doctor"])
         self.assertTrue(any("do not move" in item.lower() for item in report["operator_guidance"]))
 
@@ -1095,7 +1095,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         privileged.assert_not_called()
 
-    def test_resume_is_idempotent_when_node_is_already_ready(self) -> None:
+    def test_up_is_idempotent_when_node_is_already_ready(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         report = {"overall_state": "READY"}
         with (
@@ -1103,7 +1103,7 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch.object(NODE, "start_node") as start,
             mock.patch.object(NODE, "activate_release") as activate,
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=False,
                 allow_activation=False,
@@ -1114,6 +1114,7 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(return_code, 0)
         self.assertEqual(result["outcome"], "ready")
+        self.assertEqual(result["schema_version"], "usdb-node-up:v1")
         start.assert_not_called()
         activate.assert_not_called()
 
@@ -1126,7 +1127,7 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch.object(NODE, "start_controller_unit") as start,
             mock.patch.object(NODE, "activate_release") as activate,
         ):
-            result, return_code = NODE.submit_resume_to_controller(
+            result, return_code = NODE.submit_up_to_controller(
                 layout,
                 dry_run=False,
                 allow_activation=False,
@@ -1147,8 +1148,8 @@ class UsdbNodeTests(unittest.TestCase):
             "status": {"overall_state": "ACTIVATION_REQUIRED"},
         }
         with (
-            mock.patch.object(NODE, "resume_node", return_value=(result, 1)) as resume,
-            mock.patch.object(NODE, "print_resume_result"),
+            mock.patch.object(NODE, "up_node", return_value=(result, 1)) as up,
+            mock.patch.object(NODE, "print_up_result"),
         ):
             return_code = NODE.run_bootstrap_controller(
                 layout,
@@ -1157,7 +1158,7 @@ class UsdbNodeTests(unittest.TestCase):
             )
 
         self.assertEqual(return_code, NODE.CONTROLLER_MANUAL_EXIT_CODE)
-        resume.assert_called_once_with(
+        up.assert_called_once_with(
             layout,
             dry_run=False,
             allow_activation=False,
@@ -1184,7 +1185,7 @@ class UsdbNodeTests(unittest.TestCase):
                 return_value="usdb-node-bootstrap-test.service",
             ) as start,
         ):
-            result, return_code = NODE.submit_resume_to_controller(
+            result, return_code = NODE.submit_up_to_controller(
                 layout,
                 dry_run=False,
                 allow_activation=True,
@@ -1220,7 +1221,7 @@ class UsdbNodeTests(unittest.TestCase):
         foreground = parser.parse_args(["up", "--foreground"])
 
         self.assertIsNone(NODE._operation_name(background))
-        self.assertEqual(NODE._operation_name(foreground), "up")
+        self.assertIsNone(NODE._operation_name(foreground))
 
     def test_background_up_submits_controller_without_running_foreground_start(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1235,11 +1236,11 @@ class UsdbNodeTests(unittest.TestCase):
         with (
             mock.patch.object(
                 NODE,
-                "submit_resume_to_controller",
+                "submit_up_to_controller",
                 return_value=(result, 0),
             ) as submit,
             mock.patch.object(NODE, "start_node") as foreground_start,
-            mock.patch.object(NODE, "print_resume_result"),
+            mock.patch.object(NODE, "print_up_result"),
             mock.patch("sys.stdout", new=output),
         ):
             return_code = NODE._execute_command(layout, args)
@@ -1252,35 +1253,41 @@ class UsdbNodeTests(unittest.TestCase):
         )
         foreground_start.assert_not_called()
 
-    def test_background_resume_submits_controller_without_foreground_state_machine(self) -> None:
+    def test_foreground_up_uses_the_complete_up_state_machine(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
-        args = NODE.build_parser().parse_args(["resume"])
+        args = NODE.build_parser().parse_args(
+            ["up", "--foreground", "--dry-run", "--json"]
+        )
         result = {
-            "outcome": "controller_started",
-            "initial_state": "STARTING",
+            "outcome": "dry_run",
+            "initial_state": "SNAPSHOT_INCOMPLETE",
             "completed_actions": [],
-            "status": {"overall_state": "STARTING"},
+            "status": {"overall_state": "SNAPSHOT_INCOMPLETE"},
         }
-        output = io.StringIO()
         with (
-            mock.patch.object(
-                NODE,
-                "submit_resume_to_controller",
-                return_value=(result, 0),
-            ) as submit,
-            mock.patch.object(NODE, "resume_node") as foreground_resume,
-            mock.patch.object(NODE, "print_resume_result"),
-            mock.patch("sys.stdout", new=output),
+            mock.patch.object(NODE, "up_node", return_value=(result, 0)) as up,
+            mock.patch.object(NODE, "print_up_result") as print_result,
         ):
             return_code = NODE._execute_command(layout, args)
 
         self.assertEqual(return_code, 0)
-        submit.assert_called_once_with(
+        up.assert_called_once_with(
             layout,
-            dry_run=False,
+            dry_run=True,
             allow_activation=False,
+            sync_timeout_secs=NODE.DEFAULT_SYNC_TIMEOUT_SECS,
+            pull=True,
+            json_output=True,
+            enable_progress=False,
         )
-        foreground_resume.assert_not_called()
+        print_result.assert_called_once_with(result, json_output=True)
+
+    def test_resume_is_not_a_public_command(self) -> None:
+        with (
+            mock.patch("sys.stderr", new=io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            NODE.build_parser().parse_args(["resume"])
 
     def test_setup_defers_selected_snapshot_work_to_controller(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1291,9 +1298,16 @@ class UsdbNodeTests(unittest.TestCase):
             apply_firewall=False,
             install_snapshot=True,
         )
+        controller_path = self.root / "usdb-node-bootstrap-test.service"
         with (
+            mock.patch.object(NODE, "_controller_install_context"),
             mock.patch.object(NODE, "setup_node", return_value=setup_result),
             mock.patch.object(NODE, "install_snapshot_release") as install_snapshot,
+            mock.patch.object(
+                NODE,
+                "install_controller_unit",
+                return_value=controller_path,
+            ) as install_controller,
             mock.patch.object(sys.stdin, "isatty", return_value=True),
             mock.patch("sys.stdout", new=output),
             mock.patch.object(output, "isatty", return_value=True),
@@ -1302,8 +1316,82 @@ class UsdbNodeTests(unittest.TestCase):
 
         self.assertEqual(return_code, 0)
         install_snapshot.assert_not_called()
+        install_controller.assert_called_once_with(layout)
         self.assertIn("bootstrap controller will download", output.getvalue())
-        self.assertIn("usdb-node controller install", output.getvalue())
+        self.assertIn("Installed and enabled", output.getvalue())
+        self.assertIn("usdb-node doctor, then usdb-node up", output.getvalue())
+
+    def test_setup_no_controller_writes_config_without_touching_systemd(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["setup", "--no-controller"])
+        output = io.StringIO()
+        setup_result = NODE.SetupResult(
+            node_env=self.node_env,
+            apply_firewall=False,
+            install_snapshot=False,
+        )
+        with (
+            mock.patch.object(NODE, "setup_node", return_value=setup_result),
+            mock.patch.object(NODE, "_controller_install_context") as controller_context,
+            mock.patch.object(NODE, "install_controller_unit") as install_controller,
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch("sys.stdout", new=output),
+            mock.patch.object(output, "isatty", return_value=True),
+        ):
+            return_code = NODE._execute_command(layout, args)
+
+        self.assertEqual(return_code, 0)
+        controller_context.assert_not_called()
+        install_controller.assert_not_called()
+        self.assertIn("Skipped the bootstrap controller", output.getvalue())
+        self.assertIn("usdb-node up --foreground", output.getvalue())
+
+    def test_setup_preserves_configuration_when_controller_install_fails(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["setup"])
+        setup_result = NODE.SetupResult(
+            node_env=self.node_env,
+            apply_firewall=False,
+            install_snapshot=False,
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(NODE, "_controller_install_context"),
+            mock.patch.object(NODE, "setup_node", return_value=setup_result),
+            mock.patch.object(
+                NODE,
+                "install_controller_unit",
+                side_effect=ValueError("systemd unavailable"),
+            ),
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch("sys.stdout", new=stdout),
+            mock.patch.object(stdout, "isatty", return_value=True),
+            mock.patch("sys.stderr", new=stderr),
+            self.assertRaisesRegex(ValueError, "systemd unavailable"),
+        ):
+            NODE._execute_command(layout, args)
+
+        self.assertIn("Node configuration was preserved", stderr.getvalue())
+        self.assertIn("usdb-node controller install", stderr.getvalue())
+
+    def test_setup_checks_controller_host_before_writing_configuration(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["setup"])
+        with (
+            mock.patch.object(
+                NODE,
+                "_controller_install_context",
+                side_effect=ValueError("systemd unavailable"),
+            ),
+            mock.patch.object(NODE, "setup_node") as setup,
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch.object(sys.stdout, "isatty", return_value=True),
+            self.assertRaisesRegex(ValueError, "systemd unavailable"),
+        ):
+            NODE._execute_command(layout, args)
+
+        setup.assert_not_called()
 
     def test_detaching_progress_does_not_stop_controller(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
@@ -1335,14 +1423,14 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(detached["outcome"], "controller_detached")
         stop.assert_not_called()
 
-    def test_resume_requires_explicit_activation(self) -> None:
+    def test_up_requires_explicit_activation(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         report = {"overall_state": "ACTIVATION_REQUIRED"}
         with (
             mock.patch.object(NODE, "collect_node_status", return_value=report),
             mock.patch.object(NODE, "activate_release") as activate,
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=False,
                 allow_activation=False,
@@ -1356,7 +1444,7 @@ class UsdbNodeTests(unittest.TestCase):
         activate.assert_not_called()
         self.assertFalse((layout.node_env.parent / ".usdb-node-operation.lock").exists())
 
-    def test_resume_runs_activation_snapshot_and_startup_in_order(self) -> None:
+    def test_up_runs_activation_snapshot_and_startup_in_order(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         reports = [
             {"overall_state": "ACTIVATION_REQUIRED"},
@@ -1385,7 +1473,7 @@ class UsdbNodeTests(unittest.TestCase):
                 side_effect=lambda _layout, **_kwargs: calls.append("up"),
             ) as start,
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=False,
                 allow_activation=True,
@@ -1405,14 +1493,14 @@ class UsdbNodeTests(unittest.TestCase):
             output_to_stderr=True,
         )
 
-    def test_resume_dry_run_does_not_change_snapshot_state(self) -> None:
+    def test_up_dry_run_does_not_change_snapshot_state(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         report = {"overall_state": "SNAPSHOT_INCOMPLETE"}
         with (
             mock.patch.object(NODE, "collect_node_status", return_value=report),
             mock.patch.object(NODE, "install_snapshot_release") as install,
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=True,
                 allow_activation=False,
@@ -1426,7 +1514,7 @@ class UsdbNodeTests(unittest.TestCase):
         install.assert_not_called()
         self.assertFalse((layout.node_env.parent / ".usdb-node-operation.lock").exists())
 
-    def test_resume_stops_when_action_makes_no_forward_progress(self) -> None:
+    def test_up_stops_when_action_makes_no_forward_progress(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         reports = [
             {"overall_state": "STARTING"},
@@ -1437,7 +1525,7 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch.object(NODE, "collect_node_status", side_effect=reports),
             mock.patch.object(NODE, "start_node") as start,
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=False,
                 allow_activation=False,
@@ -1450,7 +1538,7 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "no_forward_progress")
         start.assert_called_once()
 
-    def test_resume_json_keeps_operation_logs_off_stdout(self) -> None:
+    def test_up_json_keeps_operation_logs_off_stdout(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         reports = [
             {"overall_state": "READY_TO_START"},
@@ -1469,7 +1557,7 @@ class UsdbNodeTests(unittest.TestCase):
             mock.patch("sys.stdout", new=stdout),
             mock.patch("sys.stderr", new=stderr),
         ):
-            result, return_code = NODE.resume_node(
+            result, return_code = NODE.up_node(
                 layout,
                 dry_run=False,
                 allow_activation=False,
@@ -1477,7 +1565,7 @@ class UsdbNodeTests(unittest.TestCase):
                 pull=True,
                 json_output=True,
             )
-            NODE.print_resume_result(result, json_output=True)
+            NODE.print_up_result(result, json_output=True)
 
         decoded = json.loads(stdout.getvalue())
         self.assertEqual(return_code, 0)
