@@ -199,7 +199,7 @@ jobs:
           printf '%s  candidate.zip\n' "${ARTIFACT_DIGEST#sha256:}" | sha256sum -c -
           mapfile -t entries < <(unzip -Z1 candidate.zip | sort)
           [[ "${entries[*]}" == \
-            "usdb-release-manifest.json usdb-release-manifest.json.sha256" ]] || {
+            "release-changes.json release-changes.json.sha256 release-changes.md usdb-release-manifest.json usdb-release-manifest.json.sha256" ]] || {
             printf 'unexpected candidate archive entries: %s\n' "${entries[*]}" >&2
             exit 1
           }
@@ -218,6 +218,17 @@ jobs:
           }
           printf '%s  candidate/usdb-release-manifest.json\n' "$manifest_sha" | \
             sha256sum -c -
+          changes_sha="$(cut -d ' ' -f 1 candidate/release-changes.json.sha256)"
+          [[ "$changes_sha" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "candidate release changes checksum is invalid" >&2
+            exit 1
+          }
+          [[ "$(cat candidate/release-changes.json.sha256)" == \
+            "${changes_sha}  release-changes.json" ]] || {
+            echo "candidate release changes checksum file is not canonical" >&2
+            exit 1
+          }
+          printf '%s  candidate/release-changes.json\n' "$changes_sha" | sha256sum -c -
 
       - name: Revalidate candidate manifest
         id: manifest
@@ -246,6 +257,10 @@ jobs:
             --bundle-dir "$bundle_dir" \
             --manifest "$manifest" \
             --compatibility-lock go-ethereum/scripts/usdb/ci-revisions.json
+          python3 usdb/docker/scripts/tools/release_notes.py validate-release \
+            --release-id "$RELEASE_ID" \
+            --manifest "$manifest" \
+            --changes candidate/release-changes.json
           {
             echo "bundle_dir=$bundle_dir"
             echo "bundle_id=$bundle_id"
@@ -332,6 +347,9 @@ jobs:
           mkdir dist
           cp candidate/usdb-release-manifest.json dist/
           cp candidate/usdb-release-manifest.json.sha256 dist/
+          cp candidate/release-changes.json dist/
+          cp candidate/release-changes.json.sha256 dist/
+          cp candidate/release-changes.md dist/
           archive="${RELEASE_ID}-network-bundle.tar.gz"
           bundle_parent="$(dirname "$BUNDLE_DIR")"
           bundle_name="$(basename "$BUNDLE_DIR")"
@@ -402,10 +420,16 @@ jobs:
           USDB_REVISION: ${{ steps.revisions.outputs.usdb_revision }}
         run: |
           set -euo pipefail
-          cat >dist/release-notes.md <<EOF
+          {
+          cat <<EOF
           # ${RELEASE_TITLE}
 
           Immutable USDB deployment release for network bundle \`${BUNDLE_ID}\`.
+
+          EOF
+          cat dist/release-changes.md
+          cat <<EOF
+          ## Deployment Identity
 
           - Chain ID: \`${CHAIN_ID}\`
           - Genesis hash: \`${GENESIS_HASH}\`
@@ -440,6 +464,7 @@ jobs:
           For mainnet, download the script and its SHA-256 asset, verify and review it
           before execution instead of using process substitution.
           EOF
+          } >dist/release-notes.md
 
       - name: Publish or verify immutable GitHub Release
         id: release
@@ -458,6 +483,9 @@ jobs:
           assets=(
             dist/usdb-release-manifest.json
             dist/usdb-release-manifest.json.sha256
+            dist/release-changes.json
+            dist/release-changes.json.sha256
+            dist/release-changes.md
             "dist/${ARCHIVE}"
             "dist/${ARCHIVE}.sha256"
             "dist/${NODE_KIT_ARCHIVE}"
@@ -519,6 +547,9 @@ jobs:
             --asset "${assets[7]}" \
             --asset "${assets[8]}" \
             --asset "${assets[9]}" \
+            --asset "${assets[10]}" \
+            --asset "${assets[11]}" \
+            --asset "${assets[12]}" \
             "${verify_args[@]}" \
             --github-output "$GITHUB_OUTPUT"
 

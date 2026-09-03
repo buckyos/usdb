@@ -276,8 +276,11 @@ workflow 会：
 7. 严格校验 `testnet-v0` network bundle，并用选中的 Go revision 重算 genesis block hash；
 8. 验证三个 OCI artifact 的 digest、signer workflow 和 source commit；
 9. 使用 USDB annotated tag 的固定 tagger timestamp 生成确定性 manifest；
-10. 再次读取验证 `usdb-release-manifest.json`，上传 manifest 和 SHA-256，保留 30 天供 review；
-11. 拒绝已经存在未过期同名 candidate artifact 的第二次独立 dispatch，避免 publish 阶段自动选择“最新”。
+10. 找到同一 network bundle 最近一个已发布 release，校验其 manifest，并从三仓冻结 revision range
+    生成结构化 changelog、compatibility 摘要和完整 commit inventory；
+11. 再次读取验证 `usdb-release-manifest.json` 与 `release-changes.json`，上传 JSON、checksum 和 Markdown，
+    保留 30 天供 review；
+12. 拒绝已经存在未过期同名 candidate artifact 的第二次独立 dispatch，避免 publish 阶段自动选择“最新”。
 
 不存在 tag、tag 不是 annotated tag、tag target 不在主线、成功 release build 缺失或存在歧义、
 compatibility lock 不匹配、genesis hash 漂移或 attestation 不匹配时都会 fail closed。自动解析只用于
@@ -346,7 +349,7 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 
 1. 再次验证两仓 annotated tag target 和主线 ancestry；
 2. 下载原 candidate archive，并校验 GitHub Actions artifact digest、archive 文件集合和 manifest checksum；
-3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest 和 network bundle；
+3. 使用 tagged USDB/Go source 重新校验 v2 compatibility lock、manifest、release changes 和 network bundle；
 4. 再次验证三张 digest-pinned OCI image 的 signer workflow、source revision 和 provenance；
 5. 从 tagged source 生成稳定的 public network bundle、self-contained node kit 及 SHA-256；
 6. GitHub Release title 使用 `rN [FAST|NIGHTLY|WEEKLY] <testnet|mainnet>-vN`，tag 仍使用完整
@@ -357,6 +360,9 @@ preflight job 自动定位唯一成功且未过期的 candidate run/artifact，�
 
 - `usdb-release-manifest.json`；
 - `usdb-release-manifest.json.sha256`；
+- `release-changes.json`；
+- `release-changes.json.sha256`；
+- `release-changes.md`；
 - `<release_id>-network-bundle.tar.gz`；
 - `<release_id>-network-bundle.tar.gz.sha256`；
 - `<release_id>-node-kit.tar.gz`；
@@ -370,6 +376,8 @@ node kit 内含 release manifest、network bundle、批准的 snapshot record、
 控制器。它将 image digest、snapshot 来源和服务顺序从人工输入改为 release-owned 输入，但仍不包含
 secret、snapshot DB 或节点数据。安装和运行
 流程见 [Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)。
+结构化变更的 schema、compatibility 推导和 review 规则见
+[Release 变更记录与 Changelog 管理](./usdb-release-change-management.md)。
 
 正式节点只按 release ID、manifest hash 和 digest 安装，不能自动追踪 `latest`。Fast-qualified testnet
 prerelease 同样包含全部安装资产，是否允许进入某个集群由该集群自己的最低 qualification policy 决定。

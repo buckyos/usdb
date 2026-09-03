@@ -18,6 +18,7 @@
 - [USDB 节点主机软件基线与准备工具](./usdb-node-host-prerequisites.md)
 - [USDB testnet-v0 参数冻结清单](./usdb-testnet-v0-parameter-freeze.md)
 - [GitHub CI 镜像与跨仓 Release 发布](./github-ci-image-and-release-publishing.md)
+- [USDB Release 变更记录与 Changelog 管理](./usdb-release-change-management.md)
 - [Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)
 - [USDB testnet-v0 首节点发布与部署操作](./usdb-testnet-v0-first-node-operations.md)
 - [USDB Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)

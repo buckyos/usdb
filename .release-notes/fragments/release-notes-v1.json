@@ -1,0 +1,23 @@
+{
+  "change_id": "release-notes-v1",
+  "compatibility": {
+    "config_change": false,
+    "data_rebuild": false,
+    "network_reset": false,
+    "restart_required": false
+  },
+  "details": [
+    "Collect structured change fragments from the USDB, go-ethereum, and SourceDAO revisions frozen by each release manifest.",
+    "Compare the current manifest with the most recent published manifest and derive network reset, data rebuild, configuration, and restart impact.",
+    "Publish deterministic release-changes JSON and Markdown alongside the deployment manifest while retaining a complete commit inventory."
+  ],
+  "operator_actions": [],
+  "references": [],
+  "schema_version": "usdb-change-fragment:v1",
+  "scopes": [
+    "documentation",
+    "release"
+  ],
+  "summary": "Generate structured cross-repository release notes",
+  "type": "added"
+}
