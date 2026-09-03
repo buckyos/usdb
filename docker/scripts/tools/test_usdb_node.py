@@ -479,6 +479,53 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertEqual(rendered.count("[------------------------]"), 5)
 
+    def test_terminal_progress_display_uses_alternate_screen(self) -> None:
+        class TtyBuffer(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        output = TtyBuffer()
+        with mock.patch.dict(NODE.os.environ, {"TERM": "xterm-256color"}):
+            display = NODE.TerminalProgressDisplay(output)
+            display.start()
+            display.render("first frame")
+            display.render("second frame")
+            display.close()
+
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count(NODE.ALT_SCREEN_ENTER), 1)
+        self.assertEqual(rendered.count(NODE.ALT_SCREEN_EXIT), 1)
+        self.assertEqual(rendered.count(NODE.SCREEN_CLEAR), 2)
+        self.assertIn(NODE.CURSOR_HIDE, rendered)
+        self.assertIn(NODE.CURSOR_SHOW, rendered)
+
+    def test_terminal_progress_display_falls_back_for_dumb_terminal(self) -> None:
+        class TtyBuffer(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        output = TtyBuffer()
+        with mock.patch.dict(NODE.os.environ, {"TERM": "dumb"}):
+            display = NODE.TerminalProgressDisplay(output)
+            display.start()
+            display.render("plain frame")
+            display.close()
+
+        self.assertFalse(display.live)
+        self.assertEqual(output.getvalue(), "plain frame\n")
+
+    def test_run_helper_uses_release_kit_as_working_directory(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        helper = layout.kit_root / "docker/scripts/tools/test-helper.sh"
+        helper.parent.mkdir(parents=True, exist_ok=True)
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        completed = NODE.subprocess.CompletedProcess([str(helper)], 0, "", "")
+
+        with mock.patch.object(NODE.subprocess, "run", return_value=completed) as run:
+            NODE.run_helper(layout, helper.name, ["status"], capture_output=True)
+
+        self.assertEqual(run.call_args.kwargs["cwd"], str(layout.kit_root))
+
     def test_snapshot_artifact_ready_waits_for_live_rocksdb_import(self) -> None:
         data_root = Path(self.temporary.name) / "snapshot-import-waiting"
         env = {
@@ -739,6 +786,26 @@ class UsdbNodeTests(unittest.TestCase):
             [component["state"] for component in report["components"]],
             ["SKIPPED", "READY", "SYNCING", "READY", "READY"],
         )
+
+    def test_progress_view_explains_bitcoin_height_is_unavailable_before_rpc(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "progress-view-bitcoin-starting")
+        services = {
+            "btc-node": {"state": "running", "health": "starting", "exit_code": None}
+        }
+        with (
+            mock.patch.object(NODE, "_collect_compose_services", return_value=services),
+            mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=None),
+        ):
+            report = NODE.collect_node_progress(layout)
+
+        bitcoin = next(
+            component for component in report["components"] if component["id"] == "bitcoin"
+        )
+        self.assertEqual(bitcoin["state"], "STARTING")
+        self.assertIsNone(bitcoin["current"])
+        self.assertIn("height is unavailable", bitcoin["detail"])
+        self.assertIn("RPC responds", bitcoin["detail"])
 
     def test_status_parser_exposes_watch_and_progress_json(self) -> None:
         watch = NODE.build_parser().parse_args(["status", "--watch", "--refresh-secs", "2"])

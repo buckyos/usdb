@@ -83,6 +83,11 @@ CONTROLLER_START_LIMIT_BURST = 20
 DEFAULT_SYNC_TIMEOUT_SECS = 604800
 MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
+ALT_SCREEN_ENTER = "\x1b[?1049h"
+ALT_SCREEN_EXIT = "\x1b[?1049l"
+CURSOR_HIDE = "\x1b[?25l"
+CURSOR_SHOW = "\x1b[?25h"
+SCREEN_CLEAR = "\x1b[H\x1b[2J"
 PROGRESS_COMPONENTS = (
     ("snapshot", "Snapshot"),
     ("bitcoin", "Bitcoin"),
@@ -1283,6 +1288,7 @@ def run_helper(
         raise ValueError("helper output cannot be captured and redirected simultaneously")
     options: dict[str, Any] = {
         "check": check,
+        "cwd": str(layout.kit_root),
         "env": _helper_environment(
             layout,
             sync_timeout_secs,
@@ -2484,7 +2490,9 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             bitcoin = None
         if bitcoin is None:
             bitcoin_component = _component_progress(
-                "bitcoin", "STARTING", "waiting for Bitcoin readiness RPC"
+                "bitcoin",
+                "STARTING",
+                "container is running; height is unavailable until the Bitcoin readiness RPC responds",
             )
         else:
             status = bitcoin.get("status")
@@ -2615,6 +2623,43 @@ def render_node_progress(
     return "\n".join(lines)
 
 
+def _terminal_refresh_supported(output: Any) -> bool:
+    try:
+        is_tty = output.isatty()
+    except (AttributeError, OSError):
+        return False
+    terminal = os.environ.get("TERM", "").strip().lower()
+    return bool(is_tty and terminal not in {"", "dumb", "unknown"})
+
+
+class TerminalProgressDisplay:
+    """Render a live dashboard in an alternate screen when the TTY supports it."""
+
+    def __init__(self, output: Any, *, enabled: bool = True) -> None:
+        self.output = output
+        self.live = enabled and _terminal_refresh_supported(output)
+        self._active = False
+
+    def start(self) -> None:
+        if not self.live or self._active:
+            return
+        self.output.write(ALT_SCREEN_ENTER + CURSOR_HIDE)
+        self.output.flush()
+        self._active = True
+
+    def render(self, content: str) -> None:
+        prefix = SCREEN_CLEAR if self._active else ""
+        self.output.write(prefix + content.rstrip() + "\n")
+        self.output.flush()
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        self.output.write(CURSOR_SHOW + ALT_SCREEN_EXIT)
+        self.output.flush()
+        self._active = False
+
+
 class NodeProgressMonitor:
     """Render read-only node progress without participating in startup decisions."""
 
@@ -2627,9 +2672,10 @@ class NodeProgressMonitor:
         output: Any | None = None,
     ) -> None:
         self.layout = layout
-        self.enabled = enabled
         self.refresh_secs = refresh_secs
         self.output = sys.stderr if output is None else output
+        self._display = TerminalProgressDisplay(self.output, enabled=enabled)
+        self.enabled = self._display.live
         self._phase = "startup"
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -2639,12 +2685,17 @@ class NodeProgressMonitor:
 
     def __enter__(self) -> NodeProgressMonitor:
         if self.enabled:
-            self._thread = threading.Thread(
-                target=self._run,
-                name="usdb-node-progress",
-                daemon=False,
-            )
-            self._thread.start()
+            self._display.start()
+            try:
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="usdb-node-progress",
+                    daemon=False,
+                )
+                self._thread.start()
+            except Exception:
+                self._display.close()
+                raise
         return self
 
     def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
@@ -2659,10 +2710,7 @@ class NodeProgressMonitor:
         with self._lock:
             phase = self._phase
         width = shutil.get_terminal_size(fallback=(120, 24)).columns
-        self.output.write("\x1b[H\x1b[2J")
-        self.output.write(render_node_progress(report, phase=phase, width=width))
-        self.output.write("\n")
-        self.output.flush()
+        self._display.render(render_node_progress(report, phase=phase, width=width))
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -2686,6 +2734,7 @@ class NodeProgressMonitor:
             self.output.write("[usdb-node] progress observer did not stop within 20 seconds\n")
         elif self._latest is not None:
             self._render(self._latest)
+        self._display.close()
         self.output.write("\n")
         self.output.flush()
         self._thread = None
@@ -2711,7 +2760,8 @@ def print_progress_status(
         return 0 if report["overall_state"] == "READY" else 1
 
     output = sys.stderr
-    tty = output.isatty()
+    display = TerminalProgressDisplay(output)
+    display.start()
     try:
         while True:
             report = collect_node_progress(layout)
@@ -2720,17 +2770,19 @@ def print_progress_status(
                 phase="observe",
                 width=shutil.get_terminal_size(fallback=(120, 24)).columns,
             )
-            if tty:
-                output.write("\x1b[H\x1b[2J")
+            if display.live:
+                display.render(rendered)
             else:
                 output.write(f"\n[{report['observed_at']}]\n")
-            output.write(rendered + "\n")
-            output.flush()
+                output.write(rendered + "\n")
+                output.flush()
             time.sleep(refresh_secs)
     except KeyboardInterrupt:
         output.write("\n")
         output.flush()
         return 0
+    finally:
+        display.close()
 
 
 STATUS_RECOVERY: dict[str, dict[str, Any]] = {
@@ -3220,21 +3272,20 @@ def follow_submitted_controller(
 ) -> tuple[dict[str, Any], int]:
     """Render controller progress until READY, a manual stop, or operator detach."""
     output = sys.stderr
+    display = TerminalProgressDisplay(output)
     started_at = time.monotonic()
     observed_running = False
+    display.start()
     try:
         while True:
             progress = collect_node_progress(layout)
-            output.write("\x1b[H\x1b[2J")
-            output.write(
+            display.render(
                 render_node_progress(
                     progress,
                     phase="bootstrap-controller",
                     width=shutil.get_terminal_size(fallback=(120, 24)).columns,
                 )
             )
-            output.write("\n")
-            output.flush()
 
             if progress["overall_state"] == "READY":
                 result["outcome"] = "ready"
@@ -3274,6 +3325,8 @@ def follow_submitted_controller(
         output.write("\n")
         output.flush()
         return result, 0
+    finally:
+        display.close()
 
 
 def print_up_result(result: dict[str, Any], *, json_output: bool) -> None:
@@ -3661,7 +3714,7 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
                 and result["outcome"] == "controller_started"
                 and not args.json
                 and sys.stdout.isatty()
-                and sys.stderr.isatty()
+                and _terminal_refresh_supported(sys.stderr)
             ):
                 result, return_code = follow_submitted_controller(layout, result)
         print_up_result(result, json_output=args.json)
