@@ -732,7 +732,8 @@ class UsdbNodeTests(unittest.TestCase):
         ):
             report = NODE.collect_node_progress(layout)
 
-        self.assertEqual(report["schema_version"], "usdb-node-progress:v2")
+        self.assertEqual(report["schema_version"], "usdb-node-progress:v3")
+        self.assertEqual(report["controller_state"], "uninstalled")
         self.assertEqual(report["overall_state"], "SYNCING")
         self.assertEqual(
             [component["state"] for component in report["components"]],
@@ -768,7 +769,11 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["resume"]["mode"], "explicit")
         self.assertEqual(
             report["next_actions"],
-            ["usdb-node resume --activate-release", "usdb-node activate-release"],
+            [
+                "usdb-node controller install",
+                "usdb-node resume --activate-release",
+                "usdb-node activate-release",
+            ],
         )
         helper.assert_not_called()
 
@@ -795,7 +800,11 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["resume"]["mode"], "automatic")
         self.assertEqual(
             report["next_actions"],
-            ["usdb-node resume", "usdb-node snapshot install"],
+            [
+                "usdb-node controller install",
+                "usdb-node resume",
+                "usdb-node snapshot install",
+            ],
         )
         helper.assert_not_called()
 
@@ -817,7 +826,10 @@ class UsdbNodeTests(unittest.TestCase):
             report = NODE.collect_node_status(layout)
 
         self.assertEqual(report["overall_state"], "READY_TO_START")
-        self.assertEqual(report["next_actions"], ["usdb-node resume", "usdb-node up"])
+        self.assertEqual(
+            report["next_actions"],
+            ["usdb-node controller install", "usdb-node resume", "usdb-node up"],
+        )
         self.assertEqual(
             calls,
             [
@@ -987,6 +999,341 @@ class UsdbNodeTests(unittest.TestCase):
 
         with NODE.node_operation_lock(layout, "after-release"):
             pass
+
+    def test_controller_unit_is_non_activating_and_uses_stable_launcher(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        launcher = self.root / "bin/usdb-node"
+        launcher.parent.mkdir()
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+        content = NODE.render_controller_unit(
+            layout,
+            launcher=launcher,
+            service_user="node-user",
+            home=self.root / "home",
+            sync_timeout_secs=123,
+            pull=False,
+        )
+
+        self.assertIn(f'ExecStart="{launcher}"', content)
+        self.assertIn(
+            'ExecStartPre="/usr/bin/docker" info --format {{.ServerVersion}}',
+            content,
+        )
+        self.assertIn(f'--node-env "{layout.node_env}" controller run', content)
+        self.assertIn("--sync-timeout-secs 123 --skip-pull", content)
+        self.assertIn("Wants=network-online.target docker.service", content)
+        self.assertIn("StartLimitIntervalSec=1800s", content)
+        self.assertIn("StartLimitBurst=20", content)
+        self.assertIn("Restart=on-failure", content)
+        self.assertIn("RestartPreventExitStatus=2", content)
+        self.assertNotIn("Requires=docker.service", content)
+        self.assertNotIn("activate-release", content)
+
+    def test_controller_install_writes_enables_but_does_not_start_unit(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "controller-install-data")
+        launcher = self.root / "bin/usdb-node"
+        launcher.parent.mkdir()
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        unit_dir = self.root / "systemd"
+        unit_dir.mkdir()
+        commands: list[list[str]] = []
+
+        def privileged(arguments: list[str], *, check: bool = True) -> mock.Mock:
+            self.assertTrue(check)
+            commands.append(arguments)
+            if arguments[0] == "install":
+                shutil.copyfile(arguments[-2], arguments[-1])
+            return mock.Mock(returncode=0)
+
+        account = mock.Mock(pw_name="node-user", pw_dir=str(self.root / "home"))
+        with (
+            mock.patch.dict("os.environ", {"USDB_SYSTEMD_UNIT_DIR": str(unit_dir)}),
+            mock.patch.object(NODE, "_systemd_available", return_value=True),
+            mock.patch.object(NODE.shutil, "which", return_value="/usr/bin/docker"),
+            mock.patch.object(NODE.pwd, "getpwuid", return_value=account),
+            mock.patch.object(NODE, "_privileged_command", side_effect=privileged),
+        ):
+            path = NODE.install_controller_unit(layout, launcher=launcher)
+
+        self.assertTrue(path.is_file())
+        self.assertEqual(
+            commands,
+            [
+                ["install", "-m", "0644", mock.ANY, str(path)],
+                ["systemctl", "daemon-reload"],
+                ["systemctl", "enable", path.name],
+            ],
+        )
+        self.assertFalse(any("start" in command for command in commands))
+
+    def test_controller_install_refuses_to_change_service_user(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "controller-owner-data")
+        launcher = self.root / "bin/usdb-node"
+        launcher.parent.mkdir()
+        launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        unit_dir = self.root / "systemd"
+        unit_dir.mkdir()
+        unit = unit_dir / NODE.controller_unit_name(layout)
+        unit.write_text("[Service]\nUser=original-user\n", encoding="utf-8")
+        account = mock.Mock(pw_name="replacement-user", pw_dir=str(self.root / "home"))
+
+        with (
+            mock.patch.dict("os.environ", {"USDB_SYSTEMD_UNIT_DIR": str(unit_dir)}),
+            mock.patch.object(NODE, "_systemd_available", return_value=True),
+            mock.patch.object(NODE.shutil, "which", return_value="/usr/bin/docker"),
+            mock.patch.object(NODE.pwd, "getpwuid", return_value=account),
+            mock.patch.object(NODE, "_privileged_command") as privileged,
+            self.assertRaisesRegex(ValueError, "refusing to change"),
+        ):
+            NODE.install_controller_unit(layout, launcher=launcher)
+
+        privileged.assert_not_called()
+
+    def test_resume_is_idempotent_when_node_is_already_ready(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        report = {"overall_state": "READY"}
+        with (
+            mock.patch.object(NODE, "collect_node_status", return_value=report),
+            mock.patch.object(NODE, "start_node") as start,
+            mock.patch.object(NODE, "activate_release") as activate,
+        ):
+            result, return_code = NODE.resume_node(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+                sync_timeout_secs=60,
+                pull=True,
+                json_output=False,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(result["outcome"], "ready")
+        start.assert_not_called()
+        activate.assert_not_called()
+
+    def test_controller_submission_is_a_noop_when_node_is_already_ready(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        report = {"overall_state": "READY"}
+        with (
+            mock.patch.object(NODE, "collect_node_status", return_value=report),
+            mock.patch.object(NODE, "_require_controller_unit") as require_unit,
+            mock.patch.object(NODE, "start_controller_unit") as start,
+            mock.patch.object(NODE, "activate_release") as activate,
+        ):
+            result, return_code = NODE.submit_resume_to_controller(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(result["outcome"], "ready")
+        require_unit.assert_not_called()
+        start.assert_not_called()
+        activate.assert_not_called()
+
+    def test_controller_maps_manual_state_to_restart_preventing_exit_code(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        result = {
+            "outcome": "manual_action_required",
+            "initial_state": "ACTIVATION_REQUIRED",
+            "completed_actions": [],
+            "status": {"overall_state": "ACTIVATION_REQUIRED"},
+        }
+        with (
+            mock.patch.object(NODE, "resume_node", return_value=(result, 1)) as resume,
+            mock.patch.object(NODE, "print_resume_result"),
+        ):
+            return_code = NODE.run_bootstrap_controller(
+                layout,
+                sync_timeout_secs=60,
+                pull=True,
+            )
+
+        self.assertEqual(return_code, NODE.CONTROLLER_MANUAL_EXIT_CODE)
+        resume.assert_called_once_with(
+            layout,
+            dry_run=False,
+            allow_activation=False,
+            sync_timeout_secs=60,
+            pull=True,
+            json_output=False,
+            enable_progress=False,
+        )
+
+    def test_controller_submission_keeps_release_activation_explicit(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        reports = [
+            {"overall_state": "ACTIVATION_REQUIRED"},
+            {"overall_state": "ACTIVATION_REQUIRED"},
+            {"overall_state": "READY_TO_START"},
+        ]
+        with (
+            mock.patch.object(NODE, "collect_node_status", side_effect=reports),
+            mock.patch.object(NODE, "_require_controller_unit"),
+            mock.patch.object(NODE, "activate_release") as activate,
+            mock.patch.object(
+                NODE,
+                "start_controller_unit",
+                return_value="usdb-node-bootstrap-test.service",
+            ) as start,
+        ):
+            result, return_code = NODE.submit_resume_to_controller(
+                layout,
+                dry_run=False,
+                allow_activation=True,
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(result["outcome"], "controller_started")
+        self.assertEqual(result["completed_actions"], ["activate-release"])
+        activate.assert_called_once_with(layout)
+        start.assert_called_once_with(layout)
+
+    def test_explicit_controller_start_clears_a_bounded_retry_stop(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        unit = self.root / "usdb-node-bootstrap-test.service"
+        with (
+            mock.patch.object(NODE, "_require_controller_unit", return_value=unit),
+            mock.patch.object(NODE, "_privileged_command") as privileged,
+        ):
+            name = NODE.start_controller_unit(layout)
+
+        self.assertEqual(name, unit.name)
+        self.assertEqual(
+            privileged.call_args_list,
+            [
+                mock.call(["systemctl", "reset-failed", unit.name], check=False),
+                mock.call(["systemctl", "start", "--no-block", unit.name]),
+            ],
+        )
+
+    def test_background_up_does_not_hold_the_foreground_operation_lock(self) -> None:
+        parser = NODE.build_parser()
+        background = parser.parse_args(["up"])
+        foreground = parser.parse_args(["up", "--foreground"])
+
+        self.assertIsNone(NODE._operation_name(background))
+        self.assertEqual(NODE._operation_name(foreground), "up")
+
+    def test_background_up_submits_controller_without_running_foreground_start(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["up"])
+        result = {
+            "outcome": "controller_started",
+            "initial_state": "READY_TO_START",
+            "completed_actions": [],
+            "status": {"overall_state": "READY_TO_START"},
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                NODE,
+                "submit_resume_to_controller",
+                return_value=(result, 0),
+            ) as submit,
+            mock.patch.object(NODE, "start_node") as foreground_start,
+            mock.patch.object(NODE, "print_resume_result"),
+            mock.patch("sys.stdout", new=output),
+        ):
+            return_code = NODE._execute_command(layout, args)
+
+        self.assertEqual(return_code, 0)
+        submit.assert_called_once_with(
+            layout,
+            dry_run=False,
+            allow_activation=False,
+        )
+        foreground_start.assert_not_called()
+
+    def test_background_resume_submits_controller_without_foreground_state_machine(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["resume"])
+        result = {
+            "outcome": "controller_started",
+            "initial_state": "STARTING",
+            "completed_actions": [],
+            "status": {"overall_state": "STARTING"},
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                NODE,
+                "submit_resume_to_controller",
+                return_value=(result, 0),
+            ) as submit,
+            mock.patch.object(NODE, "resume_node") as foreground_resume,
+            mock.patch.object(NODE, "print_resume_result"),
+            mock.patch("sys.stdout", new=output),
+        ):
+            return_code = NODE._execute_command(layout, args)
+
+        self.assertEqual(return_code, 0)
+        submit.assert_called_once_with(
+            layout,
+            dry_run=False,
+            allow_activation=False,
+        )
+        foreground_resume.assert_not_called()
+
+    def test_setup_defers_selected_snapshot_work_to_controller(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        args = NODE.build_parser().parse_args(["setup"])
+        output = io.StringIO()
+        setup_result = NODE.SetupResult(
+            node_env=self.node_env,
+            apply_firewall=False,
+            install_snapshot=True,
+        )
+        with (
+            mock.patch.object(NODE, "setup_node", return_value=setup_result),
+            mock.patch.object(NODE, "install_snapshot_release") as install_snapshot,
+            mock.patch.object(sys.stdin, "isatty", return_value=True),
+            mock.patch("sys.stdout", new=output),
+            mock.patch.object(output, "isatty", return_value=True),
+        ):
+            return_code = NODE._execute_command(layout, args)
+
+        self.assertEqual(return_code, 0)
+        install_snapshot.assert_not_called()
+        self.assertIn("bootstrap controller will download", output.getvalue())
+        self.assertIn("usdb-node controller install", output.getvalue())
+
+    def test_detaching_progress_does_not_stop_controller(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        progress = {
+            "overall_state": "SYNCING",
+            "components": [],
+        }
+        result = {
+            "outcome": "controller_started",
+            "initial_state": "STARTING",
+            "status": {"overall_state": "STARTING"},
+        }
+        with (
+            mock.patch.object(NODE, "collect_node_progress", return_value=progress),
+            mock.patch.object(NODE, "render_node_progress", return_value="progress"),
+            mock.patch.object(NODE, "controller_active_state", return_value="active"),
+            mock.patch.object(
+                NODE,
+                "collect_node_status",
+                return_value={"overall_state": "STARTING"},
+            ),
+            mock.patch.object(NODE.time, "sleep", side_effect=KeyboardInterrupt),
+            mock.patch("sys.stderr", new=io.StringIO()),
+            mock.patch.object(NODE, "stop_controller_unit") as stop,
+        ):
+            detached, return_code = NODE.follow_submitted_controller(layout, result)
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(detached["outcome"], "controller_detached")
+        stop.assert_not_called()
 
     def test_resume_requires_explicit_activation(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

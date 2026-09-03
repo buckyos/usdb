@@ -55,18 +55,19 @@ bash <(curl -fsSL \
 export PATH="${HOME}/.local/bin:${PATH}"
 usdb-node prepare-host
 usdb-node setup
+usdb-node controller install
 usdb-node doctor
-usdb-node up
+usdb-node resume
 ```
 
 `usdb-node setup` 从 release manifest 写入三张 image digest，在本机生成 Bitcoin RPC secret，并选择
-external firewall 或 managed UFW profile；选择 snapshot 时只下载、校验并选择 SQLite artifact，不会在
-setup 阶段生成 live RocksDB；
-`usdb-node up` 依次等待 Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
-交互式启动会显示 snapshot、Bitcoin、balance-history、usdb-indexer 和 USDB chain 的固定进度面板；
+external firewall 或 managed UFW profile；选择 snapshot 时只冻结批准记录，不在 setup 前台下载或生成 live
+RocksDB。`controller install` 安装并启用 bundle-scoped systemd unit；`resume` 提交该 controller，依次等待
+Bitcoin、balance-history 和 indexer readiness，最后启动 USDB chain。
+交互式启动会附加 snapshot、Bitcoin、balance-history、usdb-indexer 和 USDB chain 的固定进度面板；
 Snapshot 行会显示 artifact 等待、SQLite 导入阶段和最终 live DB marker；`usdb-node status --watch` 可在
-独立终端持续观察，非 TTY 仍输出带时间的 heartbeat。
-中断后重复执行会从现有数据继续。详细契约见
+独立终端持续观察。Ctrl+C 或 SSH 断开只退出面板，systemd controller 继续推进；阶段 heartbeat 写入
+`usdb-node controller logs --follow`。详细契约见
 [`doc/publish/usdb-release-node-kit-and-deployment.md`](../../../doc/publish/usdb-release-node-kit-and-deployment.md)。
 共享 runtime 默认把每个容器的 JSON log 限制为 `5 x 100 MiB`，并给长服务 2 分钟优雅停止时间；
 这些是节点运行参数，不进入链共识身份。

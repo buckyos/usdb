@@ -94,8 +94,9 @@ class InstallUsdbNodeTests(unittest.TestCase):
         )
         self.assertIn("usdb-node prepare-host", first.stdout)
         self.assertIn("usdb-node setup", first.stdout)
+        self.assertIn("usdb-node controller install", first.stdout)
         self.assertIn("usdb-node doctor", first.stdout)
-        self.assertIn("usdb-node up", first.stdout)
+        self.assertIn("usdb-node resume", first.stdout)
         self.assertIn("usdb-node status", first.stdout)
         self.assertIn("does not run these commands automatically", first.stdout)
 

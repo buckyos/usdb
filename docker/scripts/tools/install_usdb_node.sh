@@ -230,15 +230,18 @@ Next steps for a first node install:
      If Docker group membership changes, log out and back in before continuing.
   3. Configure node identity, data paths, snapshot, and firewall:
        usdb-node setup
-  4. Run the explicit read-only preflight, then start services:
+  4. Install the systemd bootstrap controller:
+       usdb-node controller install
+  5. Run the explicit read-only preflight, then start or resume services:
        usdb-node doctor
-       usdb-node up
+       usdb-node resume
        usdb-node status
 
 Existing node upgrade within the same network bundle:
   usdb-node activate-release
+  usdb-node controller install
   usdb-node doctor
-  usdb-node up
+  usdb-node resume
   usdb-node status
 
 The installer does not run these commands automatically.

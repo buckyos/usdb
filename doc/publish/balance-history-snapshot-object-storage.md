@@ -199,15 +199,18 @@ curl -fsSL "${RECORD_URL}" | sha256sum
 
 ## 6. 节点下载和选择
 
-从 release node kit 配置一个全新节点后、第一次 `usdb-node up` 前执行：
+从 release node kit 配置一个全新节点后安装 bootstrap controller：
 
 ```bash
 usdb-node setup
-# setup 选择 snapshot 后会下载、校验并选择 artifact；中断时执行：
-usdb-node snapshot install
+usdb-node controller install
 usdb-node doctor
-usdb-node up
+usdb-node resume
 ```
+
+`setup` 选择 snapshot 后只冻结批准记录；后台 controller 下载、校验并选择 artifact。Ctrl+C 或 SSH 断开只
+脱离进度面板，systemd 中的下载继续运行。需要手工前台诊断或覆盖下载并发参数时，仍可在 balance-history
+第一次启动前执行 `usdb-node snapshot install`。
 
 标准节点命令不接受自由输入的 record URL；它从当前 release manifest 读取并复核已批准 URL/哈希。
 `RECORD_URL` 仅用于本页前面的发布者审计。`snapshot install` 会：
@@ -218,7 +221,7 @@ usdb-node up
    chunk 记录到 `.ranges.json`，中断后只补缺失 chunk；小文件和旧连续 `.part` 继续单路续传；
 4. 汇总分片后对完整 `.part` 校验 size 和 SHA-256；
 5. 原子发布到 `<USDB_DATA_ROOT>/artifacts/balance-history/<snapshot-release-id>`；
-6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止 `up`；
+6. 在下载前持久化 bundle-scoped `node.env` 中的批准 snapshot 选择，并在未完成时阻止后续 runtime；
 7. 重新执行 runtime snapshot validator。
 
 完整 DB 的 SHA-256 是下载结束后的独立顺序读取阶段，终端会显示 `Verify downloaded ...` 的已处理字节、
@@ -242,9 +245,9 @@ usdb-node snapshot install \
 Range worker 只同时保留每个 worker 的一个临时 chunk，不额外保留完整分片副本；目标 DB 仍会在开始时
 预分配全尺寸空间。调整 concurrency 不改变已有 `.ranges.json` 的 chunk 划分，调整 chunk size 只影响新任务。
 
-这里的 `setup` / `snapshot install` 只把 signed SQLite artifact 下载到本地 immutable artifact 目录，
-完成 release identity 校验并写入 `node.env` 选择；它不会创建 live balance-history RocksDB。
-`usdb-node up/resume` 等 Bitcoin readiness 通过后，才启动一次性 `snapshot-loader`：再次执行 balance-history
+这里的 controller snapshot 阶段或手工 `snapshot install` 只把 signed SQLite artifact 下载到本地 immutable
+artifact 目录，完成 release identity 校验并写入 `node.env` 选择；它不会创建 live balance-history RocksDB。
+controller 等 Bitcoin readiness 通过后，才启动一次性 `snapshot-loader`：再次执行 balance-history
 原生 Ed25519/manifest/hash 校验，把 SQLite 分阶段导入 staging RocksDB，原子切换为 live `db/`，最后写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.done.json`。两层校验不能互相替代，只有 marker 与当前选择匹配
 且 live DB 非空时，节点进度中的 Snapshot 才是 `READY`。

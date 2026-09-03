@@ -9,6 +9,7 @@ import getpass
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import socket
@@ -71,8 +72,15 @@ RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v1"
 NODE_RESUME_SCHEMA_VERSION = "usdb-node-resume:v1"
-NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v2"
+NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v3"
 SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v1"
+CONTROLLER_MANUAL_EXIT_CODE = 2
+CONTROLLER_UNIT_PREFIX = "usdb-node-bootstrap"
+CONTROLLER_RESTART_SECS = 30
+CONTROLLER_START_GRACE_SECS = 10
+CONTROLLER_START_LIMIT_INTERVAL_SECS = 1800
+CONTROLLER_START_LIMIT_BURST = 20
+DEFAULT_SYNC_TIMEOUT_SECS = 604800
 MAX_RESUME_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 PROGRESS_COMPONENTS = (
@@ -117,6 +125,254 @@ class DataRootCapacity:
     filesystem_path: Path
     total_bytes: int
     free_bytes: int
+
+
+def controller_unit_name(layout: ReleaseLayout) -> str:
+    """Return the systemd unit name scoped to one immutable network bundle."""
+    return f"{CONTROLLER_UNIT_PREFIX}-{layout.bundle_id}.service"
+
+
+def controller_unit_path(layout: ReleaseLayout) -> Path:
+    """Return the system-level unit path, allowing an isolated test override."""
+    root = Path(os.environ.get("USDB_SYSTEMD_UNIT_DIR", "/etc/systemd/system"))
+    return root / controller_unit_name(layout)
+
+
+def _systemd_quote(value: str) -> str:
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError("systemd unit value contains an unsupported control character")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
+
+
+def _controller_launcher_path(launcher: Path | None = None) -> Path:
+    candidate = launcher
+    if candidate is None:
+        configured = os.environ.get("USDB_NODE_LAUNCHER", "")
+        if configured:
+            candidate = Path(configured)
+        else:
+            discovered = shutil.which("usdb-node")
+            if discovered is None:
+                raise ValueError(
+                    "the stable usdb-node launcher is unavailable; install the release node kit first"
+                )
+            candidate = Path(discovered)
+    path = candidate.expanduser().absolute()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError(f"usdb-node launcher is not executable: {path}")
+    return path
+
+
+def render_controller_unit(
+    layout: ReleaseLayout,
+    *,
+    launcher: Path,
+    service_user: str,
+    home: Path,
+    docker_launcher: Path = Path("/usr/bin/docker"),
+    sync_timeout_secs: int = DEFAULT_SYNC_TIMEOUT_SECS,
+    pull: bool = True,
+) -> str:
+    """Render the non-activating bootstrap controller as a systemd service."""
+    if not service_user or re.fullmatch(r"[A-Za-z0-9_.-]+", service_user) is None:
+        raise ValueError(f"invalid systemd service user: {service_user}")
+    if sync_timeout_secs <= 0:
+        raise ValueError("controller sync timeout must be positive")
+    command_parts = [
+        _systemd_quote(str(launcher)),
+        "--node-env",
+        _systemd_quote(str(layout.node_env)),
+        "controller",
+        "run",
+        "--sync-timeout-secs",
+        str(sync_timeout_secs),
+    ]
+    if not pull:
+        command_parts.append("--skip-pull")
+    command = " ".join(command_parts)
+    return f"""[Unit]
+Description=USDB bootstrap controller for {layout.bundle_id}
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+StartLimitIntervalSec={CONTROLLER_START_LIMIT_INTERVAL_SECS}s
+StartLimitBurst={CONTROLLER_START_LIMIT_BURST}
+
+[Service]
+Type=simple
+User={service_user}
+Environment={_systemd_quote(f"HOME={home}")}
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre={_systemd_quote(str(docker_launcher))} info --format {{{{.ServerVersion}}}}
+ExecStart={command}
+Restart=on-failure
+RestartSec={CONTROLLER_RESTART_SECS}s
+RestartPreventExitStatus={CONTROLLER_MANUAL_EXIT_CODE}
+TimeoutStartSec=infinity
+TimeoutStopSec=45s
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _privileged_command(
+    arguments: list[str],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    command = arguments
+    if os.geteuid() != 0:
+        sudo = shutil.which("sudo")
+        if sudo is None:
+            raise ValueError("this controller operation requires root privileges or sudo")
+        command = [sudo, *arguments]
+    return subprocess.run(command, check=check, text=True)
+
+
+def _systemd_available() -> bool:
+    return shutil.which("systemctl") is not None and Path("/run/systemd/system").is_dir()
+
+
+def install_controller_unit(
+    layout: ReleaseLayout,
+    *,
+    launcher: Path | None = None,
+    sync_timeout_secs: int = DEFAULT_SYNC_TIMEOUT_SECS,
+    pull: bool = True,
+) -> Path:
+    """Install and enable the restartable controller without starting node services."""
+    if not layout.node_env.is_file():
+        raise ValueError("configure the node before installing its bootstrap controller")
+    if not _systemd_available():
+        raise ValueError("a running systemd system manager is required")
+    stable_launcher = _controller_launcher_path(launcher)
+    docker_command = shutil.which("docker")
+    if docker_command is None:
+        raise ValueError("docker is required before installing the bootstrap controller")
+    account = pwd.getpwuid(os.getuid())
+    content = render_controller_unit(
+        layout,
+        launcher=stable_launcher,
+        service_user=account.pw_name,
+        home=Path(account.pw_dir),
+        docker_launcher=Path(docker_command).absolute(),
+        sync_timeout_secs=sync_timeout_secs,
+        pull=pull,
+    )
+    destination = controller_unit_path(layout)
+    if destination.is_symlink():
+        raise ValueError(f"refusing to replace symlinked controller unit: {destination}")
+    if destination.is_file():
+        existing_user = next(
+            (
+                line.removeprefix("User=")
+                for line in destination.read_text(encoding="utf-8").splitlines()
+                if line.startswith("User=")
+            ),
+            "",
+        )
+        if existing_user != account.pw_name:
+            raise ValueError(
+                "refusing to change the bootstrap controller service user from "
+                f"{existing_user or 'unknown'} to {account.pw_name}"
+            )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.")
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        _privileged_command(["install", "-m", "0644", str(temporary), str(destination)])
+        _privileged_command(["systemctl", "daemon-reload"])
+        _privileged_command(["systemctl", "enable", destination.name])
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def _require_controller_unit(layout: ReleaseLayout) -> Path:
+    path = controller_unit_path(layout)
+    if not path.is_file():
+        raise ValueError(
+            f"bootstrap controller is not installed: {path}; run usdb-node controller install"
+        )
+    return path
+
+
+def start_controller_unit(layout: ReleaseLayout) -> str:
+    """Submit the controller to systemd and return its stable unit name."""
+    unit = _require_controller_unit(layout).name
+    # An explicit operator resume is allowed to clear a previous bounded retry stop.
+    _privileged_command(["systemctl", "reset-failed", unit], check=False)
+    _privileged_command(["systemctl", "start", "--no-block", unit])
+    return unit
+
+
+def stop_controller_unit(layout: ReleaseLayout) -> None:
+    """Stop only bootstrap orchestration; detached Docker services remain running."""
+    unit = _require_controller_unit(layout).name
+    _privileged_command(["systemctl", "stop", unit])
+
+
+def disable_controller_unit(layout: ReleaseLayout) -> None:
+    """Stop and disable bootstrap orchestration without deleting its audit trail."""
+    unit = _require_controller_unit(layout).name
+    _privileged_command(["systemctl", "disable", "--now", unit])
+
+
+def show_controller_unit(layout: ReleaseLayout) -> int:
+    """Print the systemd controller status without changing node state."""
+    unit = _require_controller_unit(layout).name
+    return_code = subprocess.run(
+        ["systemctl", "status", "--no-pager", unit],
+        check=False,
+        text=True,
+    ).returncode
+    if return_code != 0 and collect_node_status(layout)["overall_state"] == "READY":
+        return 0
+    return return_code
+
+
+def follow_controller_logs(layout: ReleaseLayout, *, follow: bool) -> int:
+    """Print controller journal records, optionally following new entries."""
+    unit = _require_controller_unit(layout).name
+    command = ["journalctl", "--unit", unit, "--no-pager"]
+    if follow:
+        command.append("--follow")
+    return subprocess.run(command, check=False, text=True).returncode
+
+
+def controller_active_state(layout: ReleaseLayout) -> str:
+    """Return systemd's current ActiveState for the installed controller."""
+    unit = _require_controller_unit(layout).name
+    result = subprocess.run(
+        ["systemctl", "show", "--property=ActiveState", "--value", unit],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "systemctl show failed"
+        raise ValueError(f"failed to query bootstrap controller: {detail}")
+    state = result.stdout.strip()
+    if not state:
+        raise ValueError("systemd returned an empty bootstrap controller state")
+    return state
+
+
+def controller_observed_state(layout: ReleaseLayout) -> str:
+    """Return a non-failing controller state for read-only progress reports."""
+    if not controller_unit_path(layout).is_file():
+        return "uninstalled"
+    try:
+        return controller_active_state(layout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return "unavailable"
 
 
 @contextmanager
@@ -2141,6 +2397,7 @@ def _overall_progress_state(components: list[dict[str, Any]]) -> str:
 
 def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
     observed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    controller_state = controller_observed_state(layout)
     if not layout.node_env.is_file():
         components = [
             _component_progress(component_id, "WAITING", "node configuration is missing")
@@ -2151,6 +2408,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             "release_id": layout.release_id,
             "network_bundle_id": layout.bundle_id,
             "observed_at": observed_at,
+            "controller_state": controller_state,
             "overall_state": "WAITING",
             "components": components,
         }
@@ -2178,6 +2436,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             "release_id": layout.release_id,
             "network_bundle_id": layout.bundle_id,
             "observed_at": observed_at,
+            "controller_state": controller_state,
             "overall_state": _overall_progress_state(components),
             "components": components,
         }
@@ -2273,6 +2532,7 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
         "release_id": layout.release_id,
         "network_bundle_id": layout.bundle_id,
         "observed_at": observed_at,
+        "controller_state": controller_state,
         "overall_state": _overall_progress_state(components),
         "components": components,
     }
@@ -2295,7 +2555,8 @@ def render_node_progress(
 ) -> str:
     lines = [
         f"USDB node progress | {report['release_id']} | phase={phase}",
-        f"Observed {report['observed_at']} | overall={report['overall_state']}",
+        f"Observed {report['observed_at']} | overall={report['overall_state']} | "
+        f"controller={report.get('controller_state', 'unknown')}",
     ]
     bar_width = 24
     for component in report["components"]:
@@ -2539,6 +2800,17 @@ def _finish_node_status(
         "summary": recovery["resume_summary"],
     }
     report["operator_guidance"] = [*recovery["guidance"], *additional_guidance]
+    controller = report["checks"].get("controller")
+    if (
+        overall_state
+        in {"ACTIVATION_REQUIRED", "SNAPSHOT_INCOMPLETE", "READY_TO_START", "STARTING"}
+        and isinstance(controller, dict)
+        and controller.get("state") == "missing"
+    ):
+        report["next_actions"].insert(0, "usdb-node controller install")
+        report["operator_guidance"].append(
+            "Install the systemd bootstrap controller before starting a multi-stage operation."
+        )
     return report
 
 
@@ -2582,6 +2854,15 @@ def collect_node_status(layout: ReleaseLayout) -> dict[str, Any]:
         "state": "ok",
         "summary": "private node configuration is present and parseable",
         "firewall_mode": env.get("USDB_FIREWALL_MODE", "managed"),
+    }
+    controller_path = controller_unit_path(layout)
+    checks["controller"] = {
+        "state": "installed" if controller_path.is_file() else "missing",
+        "summary": (
+            f"systemd bootstrap controller is installed: {controller_path.name}"
+            if controller_path.is_file()
+            else f"systemd bootstrap controller is not installed: {controller_path}"
+        ),
     }
     mismatched_images = [key for key, expected in layout.images.items() if env.get(key) != expected]
     activation_required = bool(mismatched_images)
@@ -2749,6 +3030,9 @@ def resume_node(
         result["outcome"] = "dry_run"
         result["planned_actions"] = [action] if action is not None else []
         return result, 0
+    if initial["overall_state"] == "READY":
+        result["outcome"] = "ready"
+        return result, 0
     if action is None:
         result["outcome"] = "manual_action_required"
         return result, 1
@@ -2813,6 +3097,162 @@ def resume_node(
         "Inspect status and logs before continuing manually.",
     ]
     return result, 1
+
+
+def run_bootstrap_controller(
+    layout: ReleaseLayout,
+    *,
+    sync_timeout_secs: int,
+    pull: bool,
+) -> int:
+    """Run the non-interactive, non-activating resume state machine for systemd."""
+    result, return_code = resume_node(
+        layout,
+        dry_run=False,
+        allow_activation=False,
+        sync_timeout_secs=sync_timeout_secs,
+        pull=pull,
+        json_output=False,
+        enable_progress=False,
+    )
+    print_resume_result(result, json_output=False)
+    if return_code == 0:
+        return 0
+    if result["outcome"] in {
+        "manual_action_required",
+        "no_forward_progress",
+        "transition_limit_reached",
+    }:
+        return CONTROLLER_MANUAL_EXIT_CODE
+    return return_code
+
+
+def submit_resume_to_controller(
+    layout: ReleaseLayout,
+    *,
+    dry_run: bool,
+    allow_activation: bool,
+) -> tuple[dict[str, Any], int]:
+    """Apply explicit activation when allowed, then submit safe resume work to systemd."""
+    if dry_run:
+        return resume_node(
+            layout,
+            dry_run=True,
+            allow_activation=allow_activation,
+            sync_timeout_secs=1,
+            pull=True,
+            json_output=False,
+        )
+
+    initial = collect_node_status(layout)
+    result: dict[str, Any] = {
+        "schema_version": NODE_RESUME_SCHEMA_VERSION,
+        "release_id": layout.release_id,
+        "network_bundle_id": layout.bundle_id,
+        "initial_state": initial["overall_state"],
+        "completed_actions": [],
+        "status": initial,
+    }
+    if initial["overall_state"] == "READY":
+        result["outcome"] = "ready"
+        return result, 0
+
+    report = initial
+    if report["overall_state"] == "ACTIVATION_REQUIRED":
+        if not allow_activation:
+            result["outcome"] = "manual_action_required"
+            return result, 1
+        _require_controller_unit(layout)
+        with node_operation_lock(layout, "activate-release"):
+            report = collect_node_status(layout)
+            if report["overall_state"] == "ACTIVATION_REQUIRED":
+                activate_release(layout)
+                result["completed_actions"].append("activate-release")
+            report = collect_node_status(layout)
+
+    if report["overall_state"] == "READY":
+        result["outcome"] = "ready"
+        result["status"] = report
+        return result, 0
+    if _resume_action(report, False) is None:
+        result["outcome"] = "manual_action_required"
+        result["status"] = report
+        return result, 1
+
+    _require_controller_unit(layout)
+    unit = start_controller_unit(layout)
+    result["outcome"] = "controller_started"
+    result["controller_unit"] = unit
+    result["status"] = report
+    result["operator_guidance"] = [
+        "Bootstrap continues under systemd if this terminal disconnects.",
+        "Ctrl+C detaches only this progress view; use usdb-node status --watch to reattach.",
+    ]
+    return result, 0
+
+
+def follow_submitted_controller(
+    layout: ReleaseLayout,
+    result: dict[str, Any],
+    *,
+    refresh_secs: float = DEFAULT_PROGRESS_REFRESH_SECS,
+) -> tuple[dict[str, Any], int]:
+    """Render controller progress until READY, a manual stop, or operator detach."""
+    output = sys.stderr
+    started_at = time.monotonic()
+    observed_running = False
+    try:
+        while True:
+            progress = collect_node_progress(layout)
+            output.write("\x1b[H\x1b[2J")
+            output.write(
+                render_node_progress(
+                    progress,
+                    phase="bootstrap-controller",
+                    width=shutil.get_terminal_size(fallback=(120, 24)).columns,
+                )
+            )
+            output.write("\n")
+            output.flush()
+
+            if progress["overall_state"] == "READY":
+                result["outcome"] = "ready"
+                result["status"] = collect_node_status(layout)
+                return result, 0
+
+            state = controller_active_state(layout)
+            if state in {"active", "activating", "reloading"}:
+                observed_running = True
+            elif (
+                not observed_running
+                and time.monotonic() - started_at < CONTROLLER_START_GRACE_SECS
+            ):
+                time.sleep(refresh_secs)
+                continue
+            else:
+                report = collect_node_status(layout)
+                result["status"] = report
+                if report["overall_state"] == "READY":
+                    result["outcome"] = "ready"
+                    return result, 0
+                result["outcome"] = "controller_stopped"
+                result["controller_state"] = state
+                result["operator_guidance"] = [
+                    "The bootstrap controller stopped before the node became ready.",
+                    "Inspect usdb-node controller status and controller logs before restarting it.",
+                ]
+                return result, 1
+            time.sleep(refresh_secs)
+    except KeyboardInterrupt:
+        result["outcome"] = "controller_detached"
+        result["status"] = collect_node_status(layout)
+        result["operator_guidance"] = [
+            "The bootstrap controller is still running under systemd.",
+            "Use usdb-node status --watch to reattach without starting another controller.",
+        ]
+        output.write("\n")
+        output.flush()
+        return result, 0
 
 
 def print_resume_result(result: dict[str, Any], *, json_output: bool) -> None:
@@ -2929,8 +3369,16 @@ def build_parser() -> argparse.ArgumentParser:
     firewall_apply.add_argument("--ssh-port", type=int)
     firewall_apply.add_argument("--confirm", action="store_true")
 
-    up = subparsers.add_parser("up", help="Pull and start all services in readiness order")
-    up.add_argument("--sync-timeout-secs", type=int, default=604800)
+    up = subparsers.add_parser(
+        "up",
+        help="Submit readiness-ordered bootstrap and attach progress",
+    )
+    up.add_argument(
+        "--foreground",
+        action="store_true",
+        help="run bootstrap in this terminal instead of submitting the installed controller",
+    )
+    up.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS)
     up.add_argument("--skip-pull", action="store_true")
     status = subparsers.add_parser(
         "status",
@@ -2957,7 +3405,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     resume = subparsers.add_parser(
         "resume",
-        help="Safely continue an approved snapshot install or readiness-ordered startup",
+        help="Submit safe snapshot/start continuation and attach progress",
     )
     resume.add_argument(
         "--dry-run",
@@ -2974,8 +3422,55 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="explicitly allow same-contract release image activation",
     )
-    resume.add_argument("--sync-timeout-secs", type=int, default=604800)
+    resume.add_argument(
+        "--foreground",
+        action="store_true",
+        help="run bootstrap in this terminal instead of submitting the installed controller",
+    )
+    resume.add_argument("--sync-timeout-secs", type=int, default=DEFAULT_SYNC_TIMEOUT_SECS)
     resume.add_argument("--skip-pull", action="store_true")
+
+    controller = subparsers.add_parser(
+        "controller",
+        help="Install and operate the systemd-supervised bootstrap controller",
+    )
+    controller_actions = controller.add_subparsers(dest="controller_action", required=True)
+    controller_install = controller_actions.add_parser(
+        "install",
+        help="install and enable the bundle-scoped systemd controller",
+    )
+    controller_install.add_argument(
+        "--launcher",
+        type=Path,
+        help="stable usdb-node launcher path; defaults to the launcher found in PATH",
+    )
+    controller_install.add_argument(
+        "--sync-timeout-secs",
+        type=int,
+        default=DEFAULT_SYNC_TIMEOUT_SECS,
+    )
+    controller_install.add_argument("--skip-pull", action="store_true")
+    controller_actions.add_parser(
+        "stop",
+        help="stop bootstrap orchestration without stopping Docker services",
+    )
+    controller_actions.add_parser(
+        "disable",
+        help="stop the controller and prevent it from resuming after host reboot",
+    )
+    controller_actions.add_parser("status", help="show the systemd controller status")
+    controller_logs = controller_actions.add_parser("logs", help="show controller journal logs")
+    controller_logs.add_argument("--follow", action="store_true")
+    controller_run = controller_actions.add_parser(
+        "run",
+        help=argparse.SUPPRESS,
+    )
+    controller_run.add_argument(
+        "--sync-timeout-secs",
+        type=int,
+        default=DEFAULT_SYNC_TIMEOUT_SECS,
+    )
+    controller_run.add_argument("--skip-pull", action="store_true")
 
     logs = subparsers.add_parser("logs", help="Follow Bitcoin or runtime service logs")
     logs.add_argument("--bitcoin", action="store_true")
@@ -2989,6 +3484,10 @@ def build_parser() -> argparse.ArgumentParser:
 def _operation_name(args: argparse.Namespace) -> str | None:
     if args.command == "resume":
         return None
+    if args.command == "up" and not args.foreground:
+        return None
+    if args.command == "controller":
+        return "controller-install" if args.controller_action == "install" else None
     if args.command == "firewall" and args.firewall_action != "apply":
         return None
     if args.command in {
@@ -3028,9 +3527,11 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
         else:
             print("Host firewall mode is external; UFW was not installed, inspected, or modified.")
         if result.install_snapshot:
-            release_dir = install_snapshot_release(layout)
-            print(f"Installed and selected signed balance-history snapshot: {release_dir}")
-        print("Run usdb-node doctor, then usdb-node up.")
+            print(
+                "Selected the release-approved balance-history snapshot; "
+                "the bootstrap controller will download and verify it."
+            )
+        print("Run usdb-node controller install, usdb-node doctor, then usdb-node resume.")
     elif args.command == "configure":
         path = configure_node(
             layout,
@@ -3089,8 +3590,29 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "up":
         if args.sync_timeout_secs <= 0:
             raise ValueError("sync timeout must be positive")
-        start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
-        print(f"USDB node is ready: {layout.release_id}")
+        if args.foreground:
+            start_node(layout, sync_timeout_secs=args.sync_timeout_secs, pull=not args.skip_pull)
+            print(f"USDB node is ready: {layout.release_id}")
+        else:
+            if args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull:
+                raise ValueError(
+                    "background controller settings are frozen by controller install; "
+                    "reinstall it with the desired options or use up --foreground"
+                )
+            result, return_code = submit_resume_to_controller(
+                layout,
+                dry_run=False,
+                allow_activation=False,
+            )
+            if (
+                return_code == 0
+                and result["outcome"] == "controller_started"
+                and sys.stdout.isatty()
+                and sys.stderr.isatty()
+            ):
+                result, return_code = follow_submitted_controller(layout, result)
+            print_resume_result(result, json_output=False)
+            return return_code
     elif args.command == "status":
         if args.progress_json or args.watch:
             return print_progress_status(
@@ -3103,19 +3625,73 @@ def _execute_command(layout: ReleaseLayout, args: argparse.Namespace) -> int:
     elif args.command == "resume":
         if args.sync_timeout_secs <= 0:
             raise ValueError("sync timeout must be positive")
-        result, return_code = resume_node(
-            layout,
-            dry_run=args.dry_run,
-            allow_activation=args.activate_release,
-            sync_timeout_secs=args.sync_timeout_secs,
-            pull=not args.skip_pull,
-            json_output=args.json,
-            enable_progress=(
-                not args.json and sys.stdout.isatty() and sys.stderr.isatty()
-            ),
-        )
+        if args.foreground:
+            result, return_code = resume_node(
+                layout,
+                dry_run=args.dry_run,
+                allow_activation=args.activate_release,
+                sync_timeout_secs=args.sync_timeout_secs,
+                pull=not args.skip_pull,
+                json_output=args.json,
+                enable_progress=(
+                    not args.json and sys.stdout.isatty() and sys.stderr.isatty()
+                ),
+            )
+        else:
+            if args.sync_timeout_secs != DEFAULT_SYNC_TIMEOUT_SECS or args.skip_pull:
+                raise ValueError(
+                    "background controller settings are frozen by controller install; "
+                    "reinstall it with the desired options or use resume --foreground"
+                )
+            result, return_code = submit_resume_to_controller(
+                layout,
+                dry_run=args.dry_run,
+                allow_activation=args.activate_release,
+            )
+            if (
+                return_code == 0
+                and result["outcome"] == "controller_started"
+                and not args.json
+                and sys.stdout.isatty()
+                and sys.stderr.isatty()
+            ):
+                result, return_code = follow_submitted_controller(layout, result)
         print_resume_result(result, json_output=args.json)
         return return_code
+    elif args.command == "controller":
+        if args.controller_action == "install":
+            if args.sync_timeout_secs <= 0:
+                raise ValueError("sync timeout must be positive")
+            path = install_controller_unit(
+                layout,
+                launcher=args.launcher,
+                sync_timeout_secs=args.sync_timeout_secs,
+                pull=not args.skip_pull,
+            )
+            print(f"Installed and enabled USDB bootstrap controller: {path.name}")
+            print("Run usdb-node resume to start it and attach the progress view.")
+        elif args.controller_action == "stop":
+            stop_controller_unit(layout)
+            print("Stopped bootstrap orchestration; Docker services were left running.")
+        elif args.controller_action == "disable":
+            disable_controller_unit(layout)
+            print(
+                "Disabled bootstrap orchestration; Docker services and journal records were left intact."
+            )
+        elif args.controller_action == "status":
+            return show_controller_unit(layout)
+        elif args.controller_action == "logs":
+            return follow_controller_logs(layout, follow=args.follow)
+        elif args.controller_action == "run":
+            if args.sync_timeout_secs <= 0:
+                raise ValueError("sync timeout must be positive")
+            return run_bootstrap_controller(
+                layout,
+                sync_timeout_secs=args.sync_timeout_secs,
+                pull=not args.skip_pull,
+            )
+        else:
+            raise AssertionError(f"unsupported controller action: {args.controller_action}")
     elif args.command == "logs":
         helper = "run_testnet_bitcoin.sh" if args.bitcoin else "run_testnet_runtime.sh"
         arguments = ["logs", *args.service]
