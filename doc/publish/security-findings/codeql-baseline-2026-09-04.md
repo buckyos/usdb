@@ -130,8 +130,12 @@ comparison。
 - `reachability/exposure`：`confirmed` / `operator terminal or CI log`
 - `impact`：命令输出被日志或 shell history 周边工具捕获时泄露 Bitcoin RPC password
 - `decision`：`fix`
-- `planned fix`：CLI 改为写入权限为 `0600` 的显式 credentials file，只在终端输出文件位置；
-  `usdb-node setup` 已通过进程内调用直接写入私有 `node.env`，不打印密码
+- `worktree fix`：standalone CLI 要求已有 mode `0600` 的普通 `node.env`，原子更新其中的
+  `BTC_RPC_USER/BTC_RPC_PASSWORD`；stdout 只返回 username 和文件位置。symlink、权限过宽、字段
+  重复/缺失、rpcauth 路径不匹配或并发修改均失败关闭，失败时删除本次新建的 rpcauth
+- `verification`：生成器 7 个 CLI/unit tests、Bitcoin runner 12 个 contract tests、bundle
+  validator 49 tests、`usdb-node` 94 tests、shellcheck 与 release fragment validation 已通过；
+  待提交后的下一次 CodeQL 扫描
 - `release_gate`：`mainnet`
 
 ## 3. go-ethereum inherited baseline
@@ -167,8 +171,7 @@ comparison。
 
 ## 5. 下一步
 
-1. 提交 USDB-CQL-002/003 修复后复跑 CodeQL，并把新 scan revision/alert 状态写入下一份基线。
-2. 修复 USDB-CQL-008，确认 secret 不进入 stdout、CI log、artifact 或 image layer。
-3. 对 snapshot/checkpoint 安装路径执行 archive traversal、symlink 和 staging failure 专项审计。
-4. 为 SourceDAO 增加 Solidity 专用扫描和人工 findings。
-5. 按最终 go-ethereum binary/image 的可达性拆分 GO-CQL-001。
+1. 提交 USDB-CQL-002/003/008 修复后复跑 CodeQL，并把新 scan revision/alert 状态写入下一份基线。
+2. 对 snapshot/checkpoint 安装路径执行 archive traversal、symlink 和 staging failure 专项审计。
+3. 为 SourceDAO 增加 Solidity 专用扫描和人工 findings。
+4. 按最终 go-ethereum binary/image 的可达性拆分 GO-CQL-001。

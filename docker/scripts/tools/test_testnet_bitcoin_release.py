@@ -236,6 +236,15 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertIn("--data-start", content)
         self.assertIn("BTC_READY_PROGRESS_INTERVAL_SECS", content)
 
+    def test_bitcoin_runner_installs_rpc_secret_without_printing_it(self) -> None:
+        content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('--node-env "${node_env}"', content)
+        self.assertIn("no password was printed", content)
+        self.assertNotIn("Store the printed username/password", content)
+
     def test_bitcoin_runner_stops_explicitly_and_reports_shutdown_outcome(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
             encoding="utf-8"

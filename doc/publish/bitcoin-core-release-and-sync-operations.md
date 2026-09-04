@@ -81,9 +81,10 @@ docker/scripts/tools/run_testnet_runtime.sh init-env
 docker/scripts/tools/run_testnet_bitcoin.sh init-rpc-auth usdb-testnet
 ```
 
-该命令原子创建 mode `0600` 的 rpcauth 文件，并只在终端输出一次随机 password。把输出的 username 和
-password 写入未提交的 `node.env`。validator 会复算 HMAC，拒绝用户名、password、rpcauth 不一致或
-权限过宽的配置。不要把输出写入 Git、普通日志或 release manifest。
+该命令创建 mode `0600` 的 rpcauth 文件，并原子更新私有 `node.env` 中的 `BTC_RPC_USER` 和
+`BTC_RPC_PASSWORD`。stdout 只包含 username 与文件位置，不包含 password；若 node env 校验或更新失败，
+新建的 rpcauth 会被删除。validator 会复算 HMAC，拒绝用户名、password、rpcauth 不一致或权限过宽的
+配置。`node.env` 仍是 secret，不能写入 Git、普通日志或 release manifest。
 
 ## 5. 启动与同步
 

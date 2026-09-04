@@ -15,7 +15,7 @@ Usage:
 
 Actions:
   init-rpc-auth [username]
-            Create the private rpcauth file and print the generated client secret once.
+            Create the private rpcauth file and atomically update the private node.env.
   validate  Validate the bundle and Bitcoin node configuration.
   start     Create the shared network and start Bitcoin Core without waiting for full sync.
   up        Start Bitcoin Core, then wait for full consensus-source readiness.
@@ -300,8 +300,9 @@ case "${action}" in
     fi
     python3 "${script_dir}/generate_bitcoin_rpcauth.py" \
       --username "${1:-usdb-testnet}" \
-      --output "${rpcauth_file}"
-    echo "Store the printed username/password in node.env; the password is not recoverable from rpcauth." >&2
+      --output "${rpcauth_file}" \
+      --node-env "${node_env}"
+    echo "Bitcoin RPC credentials were written directly to the private node env; no password was printed." >&2
     ;;
   validate)
     require_node_env
