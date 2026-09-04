@@ -76,8 +76,8 @@ RECOMMENDED_DATA_ROOT_BYTES = 2 * 1024**4
 FIREWALL_MODES = ("external", "managed")
 NODE_STATUS_SCHEMA_VERSION = "usdb-node-status:v2"
 NODE_UP_SCHEMA_VERSION = "usdb-node-up:v1"
-NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v3"
-SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v1"
+NODE_PROGRESS_SCHEMA_VERSION = "usdb-node-progress:v4"
+SNAPSHOT_IMPORT_PROGRESS_SCHEMA_VERSION = "balance-history-snapshot-install-progress:v2"
 CONTROLLER_MANUAL_EXIT_CODE = 2
 CONTROLLER_UNIT_PREFIX = "usdb-node-bootstrap"
 CONTROLLER_RESTART_SECS = 30
@@ -88,6 +88,7 @@ DEFAULT_SYNC_TIMEOUT_SECS = 604800
 MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 MAX_STALE_PROGRESS_AGE_SECS = 60.0
+MAX_STALE_SNAPSHOT_PROGRESS_AGE_SECS = 60
 AUTO_BITCOIN_RESOURCE_PROFILE = "auto"
 PERFORMANCE_BITCOIN_RESOURCE_PROFILE = "performance-64g"
 IBD_BITCOIN_RESOURCE_PROFILE = "ibd-64g"
@@ -2318,6 +2319,8 @@ def _read_snapshot_import_progress(env: dict[str, str]) -> dict[str, Any]:
         "total",
         "stage_current",
         "stage_total",
+        "attempt_started_at_unix",
+        "stage_started_at_unix",
         "updated_at_unix",
     ):
         value = progress.get(key)
@@ -2340,7 +2343,59 @@ def _read_snapshot_import_progress(env: dict[str, str]) -> dict[str, Any]:
         raise ValueError("snapshot import progress has an invalid unit")
     if not isinstance(progress.get("message"), str):
         raise ValueError("snapshot import progress has an invalid message")
+    if not (
+        progress["attempt_started_at_unix"]
+        <= progress["stage_started_at_unix"]
+        <= progress["updated_at_unix"]
+    ):
+        raise ValueError("snapshot import progress has invalid timing order")
     return progress
+
+
+def _duration_text(seconds: int | float) -> str:
+    elapsed = max(0, int(seconds))
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _snapshot_progress_metrics(
+    progress: dict[str, Any],
+    *,
+    now_unix: int | None = None,
+) -> dict[str, Any]:
+    """Derive display-only timing without making wall-clock data an install input."""
+    now = int(time.time()) if now_unix is None else now_unix
+    attempt_elapsed = max(0, now - progress["attempt_started_at_unix"])
+    stage_elapsed = max(0, now - progress["stage_started_at_unix"])
+    update_age = max(0, now - progress["updated_at_unix"])
+    measured_stage_elapsed = max(
+        0,
+        progress["updated_at_unix"] - progress["stage_started_at_unix"],
+    )
+    stage_rate: float | None = None
+    stage_eta: int | None = None
+    if progress["stage_current"] > 0 and measured_stage_elapsed > 0:
+        stage_rate = progress["stage_current"] / measured_stage_elapsed
+        if progress["stage_total"] >= progress["stage_current"]:
+            remaining = progress["stage_total"] - progress["stage_current"]
+            stage_eta = int(remaining / stage_rate) if stage_rate > 0 else None
+    return {
+        "attempt_elapsed_secs": attempt_elapsed,
+        "stage_elapsed_secs": stage_elapsed,
+        "last_update_age_secs": update_age,
+        "stage_rate_per_sec": stage_rate,
+        "stage_eta_secs": stage_eta,
+        "progress_stale": update_age > MAX_STALE_SNAPSHOT_PROGRESS_AGE_SECS,
+    }
+
+
+def _progress_rate_text(rate: float, unit: str) -> str:
+    if unit == "bytes":
+        return f"{_human_size(max(0, int(rate)))}/s"
+    if rate >= 100:
+        return f"{rate:,.0f} entries/s"
+    return f"{rate:,.1f} entries/s"
 
 
 def _snapshot_component(
@@ -2398,26 +2453,43 @@ def _snapshot_component(
                 "IMPORTING",
                 f"artifact verified; RocksDB import started; {error}",
             )
+        metrics = _snapshot_progress_metrics(progress)
         stage = progress["stage"].replace("_", " ")
-        detail = (
-            f"stage={stage} ({progress['stage_index']}/{progress['stage_count']}), "
-            f"stage_progress={progress['stage_current']}/{progress['stage_total']}; "
-            f"{progress['message']}"
-        )
+        timing = [
+            f"stage={stage} ({progress['stage_index']}/{progress['stage_count']})",
+            f"elapsed={_duration_text(metrics['attempt_elapsed_secs'])}",
+            f"stage_elapsed={_duration_text(metrics['stage_elapsed_secs'])}",
+        ]
+        if metrics["stage_rate_per_sec"] is not None:
+            timing.append(
+                f"rate={_progress_rate_text(metrics['stage_rate_per_sec'], progress['unit'])}"
+            )
+        if metrics["stage_eta_secs"] is not None:
+            timing.append(f"stage_eta={_duration_text(metrics['stage_eta_secs'])}")
+        updated = f"updated={_duration_text(metrics['last_update_age_secs'])} ago"
+        timing.append(f"STALE {updated}" if metrics["progress_stale"] else updated)
+        detail = ", ".join(timing) + f"; {progress['message']}"
         component = _component_progress(
             "snapshot",
             "IMPORTING",
             detail,
-            current=progress["current"],
-            total=progress["total"],
+            current=progress["stage_current"],
+            total=progress["stage_total"],
             unit=progress["unit"],
         )
+        component["label"] = "Snapshot import"
+        component["progress_scope"] = "stage"
         component["stage"] = progress["stage"]
         component["stage_index"] = progress["stage_index"]
         component["stage_count"] = progress["stage_count"]
         component["stage_current"] = progress["stage_current"]
         component["stage_total"] = progress["stage_total"]
+        component["aggregate_current"] = progress["current"]
+        component["aggregate_total"] = progress["total"]
+        component["attempt_started_at_unix"] = progress["attempt_started_at_unix"]
+        component["stage_started_at_unix"] = progress["stage_started_at_unix"]
         component["updated_at_unix"] = progress["updated_at_unix"]
+        component.update(metrics)
         return component
     if loader_state in {"dead", "exited", "removing", "restarting"}:
         exit_code = loader_service.get("exit_code") if loader_service is not None else None
@@ -2548,6 +2620,35 @@ def _indexed_service_component(
         "; ".join(detail_parts) or "readiness state received",
         current=current_value,
         total=total_value,
+    )
+
+
+def _balance_history_component(
+    snapshot_component: dict[str, Any],
+    service: dict[str, Any] | None,
+    readiness: dict[str, Any] | None,
+    error: str | None,
+    waiting_detail: str,
+) -> dict[str, Any]:
+    service_state = service.get("state") if service is not None else None
+    if snapshot_component["state"] == "IMPORTING" and service_state in {None, "created"}:
+        stage = snapshot_component.get("stage")
+        stage_index = snapshot_component.get("stage_index")
+        stage_count = snapshot_component.get("stage_count")
+        if isinstance(stage, str) and isinstance(stage_index, int) and isinstance(stage_count, int):
+            snapshot_detail = (
+                f"waiting for independent Snapshot import stage "
+                f"{stage.replace('_', ' ')} ({stage_index}/{stage_count})"
+            )
+        else:
+            snapshot_detail = "waiting for independent Snapshot import to complete"
+        return _component_progress("balance_history", "WAITING", snapshot_detail)
+    return _indexed_service_component(
+        "balance_history",
+        service,
+        readiness,
+        error,
+        waiting_detail,
     )
 
 
@@ -2802,8 +2903,8 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             data_start_detail += " with the signed snapshot block-hash match"
     except ValueError as error:
         data_start_detail = f"Bitcoin data-start gate is invalid: {error}"
-    balance_component = _indexed_service_component(
-        "balance_history",
+    balance_component = _balance_history_component(
+        snapshot_component,
         balance_service,
         balance_readiness,
         balance_error,

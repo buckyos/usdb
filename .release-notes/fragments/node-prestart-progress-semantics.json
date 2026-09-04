@@ -10,7 +10,9 @@
   "details": [
     "The node dashboard now leaves balance-history and usdb-indexer progress unset while those services are waiting to start, while retaining the upstream gate description.",
     "Once a service starts, its row reports only current, total, and percentage values obtained from that service's own readiness response, avoiding an apparent progress reset at startup.",
-    "Continuous up and status --watch dashboards retain the last successful service progress for at most 60 seconds across transient readiness RPC failures, mark it STALE, and keep current lifecycle state and errors authoritative."
+    "Continuous up and status --watch dashboards retain the last successful service progress for at most 60 seconds across transient readiness RPC failures, mark it STALE, and keep current lifecycle state and errors authoritative.",
+    "Snapshot import remains an independent one-shot component from the long-running balance-history service; its progress is scoped to the current one of eight stages and reports attempt/stage elapsed time, average rate, stage ETA, and update age without inventing a cross-unit overall percentage.",
+    "A pre-created balance-history container remains WAITING while the snapshot loader runs, and stale snapshot observations are labeled after 60 seconds without changing install or readiness decisions."
   ],
   "operator_actions": [],
   "compatibility": {

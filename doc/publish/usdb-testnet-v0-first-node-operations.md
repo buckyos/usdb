@@ -246,10 +246,12 @@ running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，
 交互式 `up` 会先向 systemd 提交 bootstrap controller，再固定显示 snapshot、Bitcoin、
 balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面板，controller 继续运行。另一个 SSH
 终端可随时运行 `usdb-node status --watch` 获得同一只读面板。自动采集使用
-`usdb-node status --progress-json`，schema 为 `usdb-node-progress:v3`，并显式报告 systemd controller state。
-Snapshot 行把本地 artifact 下载/校验
+`usdb-node status --progress-json`，schema 为 `usdb-node-progress:v4`，并显式报告 systemd controller state。
+独立的 Snapshot import 行把本地 artifact 下载/校验
 与 SQLite 到 live RocksDB 的导入明确分开：artifact 完成但 Bitcoin data-start gate 尚未通过时是 `WAITING`，loader
-运行时是带八阶段和 entry 计数的 `IMPORTING`，匹配 marker 与非空 live DB 同时存在后才是 `READY`。
+运行时是带八阶段、阶段进度、elapsed、rate、阶段 ETA 和最近更新时间的 `IMPORTING`，匹配 marker 与非空 live DB
+同时存在后才是 `READY`。阶段百分比只描述当前阶段，不是全流程百分比；导入期间 balance-history 服务保持
+`WAITING`，直到 loader 成功完成原子切换后才启动。
 面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
 
 部署中断后优先运行 `usdb-node up --dry-run` 查看允许的转换，再运行 `usdb-node up`。它只自动续传

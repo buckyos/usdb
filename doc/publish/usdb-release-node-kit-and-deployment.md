@@ -299,8 +299,11 @@ usdb-node status --progress-json
 ```
 
 面板状态为 `WAITING/STARTING/SYNCING/INSTALLING/VERIFYING/IMPORTING/READY/SKIPPED/BLOCKED/FAILED`。
-`--progress-json` 输出 `usdb-node-progress:v3`，固定包含 `controller_state` 和五个 component；Snapshot 在导入期间额外包含
-`stage/stage_index/stage_count/stage_current/stage_total/updated_at_unix`。这是观测接口，不可代替下述
+`--progress-json` 输出 `usdb-node-progress:v4`，固定包含 `controller_state` 和五个 component；独立的
+`Snapshot import` 行在导入期间使用当前阶段的 `stage_current/stage_total` 绘制进度条，并额外包含
+`stage/stage_index/stage_count`、任务和阶段开始时间、累计和阶段耗时、阶段平均速率、阶段 ETA、最近更新时间及
+`aggregate_current/aggregate_total`。字节 hash 校验和 entry 导入没有可靠的统一工作量，因此面板不构造虚假的
+全流程百分比；每次阶段切换时进度条明确重置为新阶段口径。这是观测接口，不可代替下述
 `usdb-node-status:v2` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
 `WAITING` 和上游门禁说明，`current/total/progress_percent` 保持 `null`；只有服务启动并返回自身 readiness
 后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。连续运行的
@@ -308,9 +311,12 @@ usdb-node status --progress-json
 `STALE`；component 状态和最新错误仍使用当前探测结果，该缓存只改善显示连续性，不参与启动门禁或生命周期判断。
 
 `snapshot-loader` 将导入观测值以原子替换方式写入
-`<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，写入失败只记录 warning，不影响 installer
+`<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，schema 为
+`balance-history-snapshot-install-progress:v2`。写入失败只记录 warning，不影响 installer
 原有校验与原子切换。每次 loader 启动先清理旧进度；面板还要求进度中的 snapshot file 与当前 `node.env`
-选择一致。该文件即使显示 `complete` 也不能代替 `snapshot-loader.done.json` 完成 marker。
+选择一致。超过 60 秒没有更新时只在观测层标记 `STALE`，不擅自终止导入。该文件即使显示 `complete` 也不能
+代替 `snapshot-loader.done.json` 完成 marker。导入期间预创建但未运行的 balance-history 容器显示为
+`WAITING`；只有独立 snapshot-loader 成功退出并完成 live RocksDB 原子切换后，balance-history 才开始运行。
 
 `usdb-node status` 查询的是完整节点生命周期，而不只是已启动服务的 readiness。它先检查 release kit、私有
 配置、release activation、数据契约和 snapshot 安装状态。Bitcoin 容器已经 running、但仍处于 IBD/txindex

@@ -23,7 +23,7 @@ pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v
 /// Detached signature scheme name used by signed snapshot manifests.
 pub const SNAPSHOT_SIGNATURE_SCHEME_ED25519: &str = "ed25519";
 const SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION: &str =
-    "balance-history-snapshot-install-progress:v1";
+    "balance-history-snapshot-install-progress:v2";
 const SNAPSHOT_INSTALL_STAGE_COUNT: u8 = 8;
 const SNAPSHOT_INSTALL_PROGRESS_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -572,6 +572,8 @@ struct SnapshotInstallProgressRecord {
     block_height: Option<u32>,
     snapshot_file: String,
     message: String,
+    attempt_started_at_unix: u64,
+    stage_started_at_unix: u64,
     updated_at_unix: u64,
 }
 
@@ -579,18 +581,30 @@ struct SnapshotInstallProgressRecord {
 struct SnapshotInstallProgressReporter {
     path: PathBuf,
     snapshot_file: String,
+    attempt_started_at_unix: u64,
+    stage_started_at: Arc<Mutex<(String, u64)>>,
     last_write: Arc<Mutex<Option<Instant>>>,
     disabled: Arc<AtomicBool>,
 }
 
 impl SnapshotInstallProgressReporter {
     fn new(path: PathBuf, snapshot_file: &Path) -> Self {
+        let attempt_started_at_unix = Self::unix_time_secs();
         Self {
             path,
             snapshot_file: snapshot_file.display().to_string(),
+            attempt_started_at_unix,
+            stage_started_at: Arc::new(Mutex::new((String::new(), attempt_started_at_unix))),
             last_write: Arc::new(Mutex::new(None)),
             disabled: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    fn unix_time_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -621,6 +635,17 @@ impl SnapshotInstallProgressReporter {
             return;
         }
 
+        let observed_at_unix = Self::unix_time_secs();
+        let (stage_started_at_unix, updated_at_unix) = {
+            let mut stage_started_at = self.stage_started_at.lock().unwrap();
+            if stage_started_at.0 != stage {
+                *stage_started_at = (
+                    stage.to_string(),
+                    observed_at_unix.max(self.attempt_started_at_unix),
+                );
+            }
+            (stage_started_at.1, observed_at_unix.max(stage_started_at.1))
+        };
         let record = SnapshotInstallProgressRecord {
             schema_version: SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION.to_string(),
             state: state.to_string(),
@@ -635,10 +660,9 @@ impl SnapshotInstallProgressReporter {
             block_height,
             snapshot_file: self.snapshot_file.clone(),
             message: message.to_string(),
-            updated_at_unix: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            attempt_started_at_unix: self.attempt_started_at_unix,
+            stage_started_at_unix,
+            updated_at_unix,
         };
         *last_write = Some(now);
         if let Err(error) = self.write_record(&record) {
@@ -2292,6 +2316,85 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_install_progress_tracks_attempt_and_stage_start_times() {
+        let root_dir = temp_root("install_progress_timing");
+        let progress_path = root_dir.join("snapshot-loader.progress.json");
+        let snapshot_path = root_dir.join("snapshot.db");
+        let reporter = SnapshotInstallProgressReporter::new(progress_path.clone(), &snapshot_path);
+
+        reporter.report(
+            "running",
+            "verify_source",
+            1,
+            10,
+            100,
+            "bytes",
+            10,
+            100,
+            None,
+            "verifying snapshot file hash",
+            true,
+        );
+        let first: SnapshotInstallProgressRecord =
+            serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+        assert_eq!(
+            first.schema_version,
+            SNAPSHOT_INSTALL_PROGRESS_SCHEMA_VERSION
+        );
+        assert!(first.stage_started_at_unix >= first.attempt_started_at_unix);
+
+        reporter.report(
+            "running",
+            "verify_source",
+            1,
+            20,
+            100,
+            "bytes",
+            20,
+            100,
+            None,
+            "verifying snapshot file hash",
+            true,
+        );
+        let same_stage: SnapshotInstallProgressRecord =
+            serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+        assert_eq!(
+            same_stage.stage_started_at_unix,
+            first.stage_started_at_unix
+        );
+        assert_eq!(
+            same_stage.attempt_started_at_unix,
+            first.attempt_started_at_unix
+        );
+
+        *reporter.stage_started_at.lock().unwrap() = ("verify_source".to_string(), 1);
+        reporter.report(
+            "running",
+            "open_staging_db",
+            2,
+            0,
+            4,
+            "entries",
+            0,
+            1,
+            Some(10),
+            "opening staging RocksDB",
+            true,
+        );
+        let next_stage: SnapshotInstallProgressRecord =
+            serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+        assert_eq!(next_stage.stage, "open_staging_db");
+        assert!(next_stage.stage_started_at_unix > 1);
+        assert_eq!(
+            next_stage.attempt_started_at_unix,
+            first.attempt_started_at_unix
+        );
+        assert!(next_stage.updated_at_unix >= next_stage.stage_started_at_unix);
+
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
     fn test_install_replaces_live_db_with_staged_snapshot() {
         let root_dir = temp_root("install_replace");
         let config = Arc::new(test_config_with_root(&root_dir));
@@ -2406,6 +2509,9 @@ mod tests {
         assert_eq!(progress.current, 4);
         assert_eq!(progress.total, 4);
         assert_eq!(progress.block_height, Some(10));
+        assert!(progress.attempt_started_at_unix > 0);
+        assert!(progress.stage_started_at_unix >= progress.attempt_started_at_unix);
+        assert!(progress.updated_at_unix >= progress.stage_started_at_unix);
         assert!(
             !progress_path
                 .with_file_name(".snapshot-loader.progress.json.tmp")
