@@ -15,6 +15,7 @@ BTC_P2P_PORT="${BTC_P2P_PORT:-28133}"
 BH_RPC_PORT="${BH_RPC_PORT:-28110}"
 WALLET_NAME="${WALLET_NAME:-bhitest}"
 SYNC_TIMEOUT_SEC="${SYNC_TIMEOUT_SEC:-120}"
+SNAPSHOT_TOOL_TIMEOUT_SEC="${SNAPSHOT_TOOL_TIMEOUT_SEC:-1200}"
 CURL_CONNECT_TIMEOUT_SEC="${CURL_CONNECT_TIMEOUT_SEC:-2}"
 CURL_MAX_TIME_SEC="${CURL_MAX_TIME_SEC:-5}"
 REGTEST_DIAG_TAIL_LINES="${REGTEST_DIAG_TAIL_LINES:-120}"
@@ -77,6 +78,27 @@ regtest_json_extract_python() {
 
 regtest_parse_json_number_result() {
   sed -n 's/.*"result"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' | head -n 1
+}
+
+regtest_embedded_stable_lag() {
+  local network="${1:-regtest}"
+  local registry="$REPO_ROOT/src/btc/usdb-util/activation-registry/btc-${network}.json"
+
+  [[ -f "$registry" ]] || {
+    regtest_log "Missing embedded BTC activation registry: ${registry}" >&2
+    return 1
+  }
+  python3 - "$registry" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    registry = json.load(source)
+stable_lag = registry["scope"]["stable_lag_blocks"]
+if not isinstance(stable_lag, int) or isinstance(stable_lag, bool) or stable_lag <= 0:
+    raise SystemExit(f"invalid stable_lag_blocks: {stable_lag!r}")
+print(stable_lag)
+PY
 }
 
 regtest_parse_json_string_result() {
@@ -525,9 +547,11 @@ regtest_run_snapshot_tool() {
   local builder_root="$1"
   shift
 
+  regtest_require_cmd timeout
   (
     cd "$REPO_ROOT" || exit 1
-    cargo run --quiet --manifest-path src/btc/Cargo.toml \
+    timeout --signal=TERM --kill-after=30s "$SNAPSHOT_TOOL_TIMEOUT_SEC" \
+      cargo run --quiet --manifest-path src/btc/Cargo.toml \
       -p balance-history-snapshot-tool -- \
       --root-dir "$builder_root" \
       --json \

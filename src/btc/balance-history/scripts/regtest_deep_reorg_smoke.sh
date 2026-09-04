@@ -43,7 +43,7 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address current_height stable_prefix_height affected_height receiver_address txid original_affected_hash original_tip_hash replacement_tip_hash round replacement_address
+  local mining_address current_height stable_lag stable_prefix_height affected_height receiver_address txid original_affected_hash original_tip_hash replacement_tip_hash replacement_blocks round replacement_address
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
 
@@ -65,6 +65,9 @@ main() {
     regtest_log "Mining remaining ${REORG_DEPTH}-1 tail blocks to reach target height=${TARGET_HEIGHT}"
     regtest_mine_blocks $((REORG_DEPTH - 1)) "$mining_address"
   fi
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  regtest_log "Mining ${stable_lag} confirmation blocks so target height=${TARGET_HEIGHT} enters the stable view"
+  regtest_mine_blocks "$stable_lag" "$mining_address"
 
   regtest_create_balance_history_config
   regtest_start_balance_history
@@ -78,9 +81,10 @@ main() {
   regtest_log "Triggering deep reorg: affected_height=${affected_height}, original_affected_hash=${original_affected_hash}, original_tip_hash=${original_tip_hash}"
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_affected_hash"
 
-  for round in $(seq 1 "$REORG_DEPTH"); do
+  replacement_blocks=$((REORG_DEPTH + stable_lag))
+  for round in $(seq 1 "$replacement_blocks"); do
     replacement_address="$(regtest_get_new_address)"
-    regtest_log "Mining empty replacement block ${round}/${REORG_DEPTH} to address=${replacement_address}"
+    regtest_log "Mining empty replacement block ${round}/${replacement_blocks} to address=${replacement_address}"
     regtest_mine_empty_block "$replacement_address"
   done
 

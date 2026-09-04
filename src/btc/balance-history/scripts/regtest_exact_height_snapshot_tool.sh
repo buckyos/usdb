@@ -33,14 +33,20 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address tip target_h target_h1 hash_h hash_h1
+  local mining_address tip stable_lag target_h target_h1 hash_h hash_h1
   local report_h report_h_repeat report_h1 verify_h verify_h1 status_file
 
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
   tip="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  target_h=$((tip - 6))
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  if (( tip <= stable_lag + 1 )); then
+    regtest_log "BTC tip ${tip} cannot provide two stable snapshot targets with lag=${stable_lag}"
+    exit 1
+  fi
+  target_h=$((tip - stable_lag - 1))
   target_h1=$((target_h + 1))
+  regtest_log "Snapshot target plan: tip=${tip}, stable_lag=${stable_lag}, target=${target_h}, next=${target_h1}"
   hash_h="$(regtest_get_block_hash_by_height "$target_h")"
   hash_h1="$(regtest_get_block_hash_by_height "$target_h1")"
 

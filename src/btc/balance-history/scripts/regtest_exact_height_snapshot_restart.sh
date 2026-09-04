@@ -45,7 +45,7 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address tip base_height base_hash base_report
+  local mining_address tip stable_lag base_height base_hash base_report
   local checkpoint expected_stage target_height target_hash crash_log crash_stdout
   local status_file resume_report exit_code index
   local checkpoints=(syncing sealed building verifying published job_complete)
@@ -54,7 +54,13 @@ main() {
   regtest_ensure_mature_funds "$mining_address"
   regtest_mine_blocks 6 "$mining_address"
   tip="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  base_height=$((tip - 12))
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  if (( tip <= stable_lag + ${#checkpoints[@]} )); then
+    regtest_log "BTC tip ${tip} cannot provide the checkpoint matrix with lag=${stable_lag}"
+    exit 1
+  fi
+  base_height=$((tip - stable_lag - ${#checkpoints[@]}))
+  regtest_log "Restart snapshot target plan: tip=${tip}, stable_lag=${stable_lag}, base=${base_height}, final=$((base_height + ${#checkpoints[@]}))"
   base_hash="$(regtest_get_block_hash_by_height "$base_height")"
   base_report="$WORK_DIR/base-${base_height}.json"
 

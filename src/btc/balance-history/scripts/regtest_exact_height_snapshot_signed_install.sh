@@ -64,7 +64,7 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address tip snapshot_height baseline_height snapshot_hash report
+  local mining_address tip stable_lag snapshot_height baseline_height snapshot_hash report
   local signer_key trusted_keys untrusted_keys artifact_dir snapshot_file manifest_file signature_file
   local snapshot_path manifest_path signature_path tampered_dir tampered_snapshot tampered_signature
   local failure_output baseline_hash resp
@@ -72,8 +72,14 @@ main() {
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
   tip="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  snapshot_height=$((tip - 6))
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  if (( tip <= stable_lag + 1 )); then
+    regtest_log "BTC tip ${tip} cannot provide snapshot and baseline heights with lag=${stable_lag}"
+    exit 1
+  fi
+  snapshot_height=$((tip - stable_lag))
   baseline_height=$((snapshot_height - 1))
+  regtest_log "Signed snapshot target plan: tip=${tip}, stable_lag=${stable_lag}, baseline=${baseline_height}, snapshot=${snapshot_height}"
   snapshot_hash="$(regtest_get_block_hash_by_height "$snapshot_height")"
   baseline_hash="$(regtest_get_block_hash_by_height "$baseline_height")"
 

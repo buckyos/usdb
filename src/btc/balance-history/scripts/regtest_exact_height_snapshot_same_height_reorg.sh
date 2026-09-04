@@ -33,15 +33,22 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address replacement_address tip target_height next_height
+  local mining_address replacement_address tip stable_lag target_height next_height replacement_blocks
   local old_hash new_hash next_hash old_report new_report next_report status_file
   local old_verify new_verify artifact_count ambiguous_log
 
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
   tip="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  target_height=$((tip - 6))
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  if (( tip <= stable_lag + 1 )); then
+    regtest_log "BTC tip ${tip} cannot provide two stable snapshot targets with lag=${stable_lag}"
+    exit 1
+  fi
+  target_height=$((tip - stable_lag - 1))
   next_height=$((target_height + 1))
+  replacement_blocks=$((stable_lag + 2))
+  regtest_log "Reorg snapshot target plan: tip=${tip}, stable_lag=${stable_lag}, target=${target_height}, next=${next_height}"
   old_hash="$(regtest_get_block_hash_by_height "$target_height")"
   old_report="$WORK_DIR/create-old.json"
   new_report="$WORK_DIR/create-new.json"
@@ -62,7 +69,8 @@ main() {
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" \
     invalidateblock "$old_hash"
   replacement_address="$(regtest_get_new_address)"
-  regtest_mine_blocks 7 "$replacement_address"
+  regtest_log "Mining ${replacement_blocks} replacement blocks so height=${next_height} is stable"
+  regtest_mine_blocks "$replacement_blocks" "$replacement_address"
   new_hash="$(regtest_get_block_hash_by_height "$target_height")"
   next_hash="$(regtest_get_block_hash_by_height "$next_height")"
   if [[ "$new_hash" == "$old_hash" ]]; then

@@ -56,17 +56,18 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address current_height stable_prefix_height warmup_target_height target_height affected_height tx_index receiver_address txid original_affected_hash original_tip_hash replacement_tip_hash replacement_address round
+  local mining_address current_height stable_lag stable_prefix_height warmup_target_height target_height affected_height tx_index receiver_address txid original_affected_hash original_tip_hash replacement_tip_hash replacement_blocks replacement_address round
   local -a receiver_addresses=()
 
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
 
   current_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
   stable_prefix_height=$((current_height + SCENARIO_START_HEIGHT))
 
-  regtest_log "Mining stable prefix to height=${stable_prefix_height}"
-  regtest_mine_blocks "$((stable_prefix_height - current_height))" "$mining_address"
+  regtest_log "Mining stable prefix to height=${stable_prefix_height} plus ${stable_lag} confirmation blocks"
+  regtest_mine_blocks "$((stable_prefix_height - current_height + stable_lag))" "$mining_address"
 
   regtest_create_balance_history_config
   regtest_config_set_sync_value "$BALANCE_HISTORY_ROOT/config.toml" "undo_retention_blocks" "$UNDO_RETENTION_BLOCKS"
@@ -88,7 +89,7 @@ main() {
     exit 1
   fi
 
-  target_height=$warmup_target_height
+  target_height="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
   for tx_index in $(seq 1 "$TRACKED_TX_COUNT"); do
     receiver_address="$(regtest_get_new_address)"
     receiver_addresses+=("$receiver_address")
@@ -99,6 +100,8 @@ main() {
     target_height=$((target_height + 1))
   done
   affected_height=$((target_height - REORG_DEPTH + 1))
+  regtest_log "Mining ${stable_lag} confirmation blocks so retained-window target height=${target_height} is stable"
+  regtest_mine_blocks "$stable_lag" "$mining_address"
   regtest_wait_until_synced_height "$target_height"
 
   for receiver_address in "${receiver_addresses[@]}"; do
@@ -111,9 +114,10 @@ main() {
   regtest_stop_balance_history
 
   "$BITCOIN_CLI_BIN" -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" invalidateblock "$original_affected_hash"
-  for round in $(seq 1 "$REORG_DEPTH"); do
+  replacement_blocks=$((REORG_DEPTH + stable_lag))
+  for round in $(seq 1 "$replacement_blocks"); do
     replacement_address="$(regtest_get_new_address)"
-    regtest_log "Mining retained-window replacement block ${round}/${REORG_DEPTH} to address=${replacement_address}"
+    regtest_log "Mining retained-window replacement block ${round}/${replacement_blocks} to address=${replacement_address}"
     regtest_mine_empty_block "$replacement_address"
   done
 

@@ -49,7 +49,7 @@ main() {
   regtest_start_bitcoind
   regtest_ensure_wallet
 
-  local mining_address tip target_height next_height target_hash next_hash wrong_hash
+  local mining_address tip stable_lag target_height next_height target_hash next_hash wrong_hash
   local wrong_hash_output abort_output conflict_output resume_report publish_failure_output
   local publish_status publish_report verify_failure_output final_dir temp_count
   local artifact_dir snapshot_file snapshot_path exit_code
@@ -57,8 +57,14 @@ main() {
   mining_address="$(regtest_get_new_address)"
   regtest_ensure_mature_funds "$mining_address"
   tip="$($BITCOIN_CLI_BIN -regtest -datadir="$BITCOIN_DIR" -rpcport="$BTC_RPC_PORT" getblockcount)"
-  target_height=$((tip - 6))
+  stable_lag="$(regtest_embedded_stable_lag regtest)"
+  if (( tip <= stable_lag + 1 )); then
+    regtest_log "BTC tip ${tip} cannot provide two stable snapshot targets with lag=${stable_lag}"
+    exit 1
+  fi
+  target_height=$((tip - stable_lag - 1))
   next_height=$((target_height + 1))
+  regtest_log "Snapshot target plan: tip=${tip}, stable_lag=${stable_lag}, target=${target_height}, next=${next_height}"
   target_hash="$(regtest_get_block_hash_by_height "$target_height")"
   next_hash="$(regtest_get_block_hash_by_height "$next_height")"
   wrong_hash="$(printf '0%.0s' {1..64})"
@@ -69,6 +75,7 @@ main() {
   regtest_create_balance_history_config_at "$BALANCE_HISTORY_ROOT" "$BH_RPC_PORT"
 
   wrong_hash_output="$WORK_DIR/wrong-hash.out"
+  regtest_log "Checking canonical block-hash rejection at height=${target_height}"
   regtest_expect_command_failure "$wrong_hash_output" "Canonical BTC block hash mismatch" \
     regtest_run_snapshot_tool "$WRONG_HASH_BUILDER_ROOT" create \
       --height "$target_height" \
@@ -81,6 +88,7 @@ main() {
   fi
 
   abort_output="$WORK_DIR/abort-syncing.out"
+  regtest_log "Injecting interruption at syncing checkpoint for height=${target_height}"
   export USDB_BH_SNAPSHOT_TEST_ABORT_AFTER_CHECKPOINT=syncing
   set +e
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
@@ -97,6 +105,7 @@ main() {
   fi
 
   conflict_output="$WORK_DIR/conflicting-target.out"
+  regtest_log "Checking conflicting active target rejection at height=${next_height}"
   regtest_expect_command_failure "$conflict_output" "is still active" \
     regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
       --height "$next_height" \
@@ -104,6 +113,7 @@ main() {
       --poll-interval-secs 1
 
   resume_report="$WORK_DIR/resume-target.json"
+  regtest_log "Resuming interrupted target at height=${target_height}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" create \
     --height "$target_height" \
     --expected-block-hash "$target_hash" \
@@ -111,6 +121,7 @@ main() {
   regtest_assert_json_file "$resume_report" "data['height']" "$target_height"
 
   publish_failure_output="$WORK_DIR/before-publish.out"
+  regtest_log "Injecting failure before publication at height=${next_height}"
   export USDB_BH_SNAPSHOT_TEST_FAIL_AT_CHECKPOINT=before_publish
   regtest_expect_command_failure "$publish_failure_output" \
     "Injected snapshot test failure at checkpoint before_publish" \
@@ -132,12 +143,14 @@ main() {
   fi
 
   publish_status="$WORK_DIR/before-publish-status.json"
+  regtest_log "Checking resumable verification state at height=${next_height}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" status \
     --height "$next_height" >"$publish_status"
   regtest_assert_json_file "$publish_status" "data['job']['stage']" "verifying"
   regtest_assert_json_file "$publish_status" "data['state']['active_job_height']" "$next_height"
 
   publish_report="$WORK_DIR/publish-resume.json"
+  regtest_log "Resuming verification and publication at height=${next_height}"
   regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" resume-verify \
     --height "$next_height" \
     --expected-block-hash "$next_hash" >"$publish_report"
@@ -154,6 +167,7 @@ main() {
   snapshot_path="$SNAPSHOT_BUILDER_ROOT/$artifact_dir/$snapshot_file"
   printf 'tampered-after-publication' >>"$snapshot_path"
   verify_failure_output="$WORK_DIR/tampered-verify.out"
+  regtest_log "Checking published snapshot tamper detection at height=${next_height}"
   regtest_expect_command_failure "$verify_failure_output" "Snapshot file hash mismatch" \
     regtest_run_snapshot_tool "$SNAPSHOT_BUILDER_ROOT" verify \
       --height "$next_height" \
