@@ -22,6 +22,8 @@
 - [USDB 依赖安全策略](./usdb-dependency-security-policy.md)
 - [USDB 依赖安全基线（2026-09-04）](./usdb-dependency-security-baseline-2026-09-04.md)
 - [USDB 安全审计与 Go 工具链资格验证计划](./usdb-security-audit-and-toolchain-qualification-plan.md)
+- [USDB Security Finding Registry](./security-findings/README.md)
+- [CodeQL 初始基线（2026-09-04）](./security-findings/codeql-baseline-2026-09-04.md)
 - [Bitcoin Core Release Image 与同步操作](./bitcoin-core-release-and-sync-operations.md)
 - [USDB testnet-v0 首节点发布与部署操作](./usdb-testnet-v0-first-node-operations.md)
 - [USDB Release Node Kit 与简化部署](./usdb-release-node-kit-and-deployment.md)

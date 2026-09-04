@@ -161,8 +161,17 @@ const USDB_INDEXER_PROXY_METHODS: &[&str] = &[
     "get_collab_breakdown",
     "get_miner_economic_aggregate",
 ];
+const MAX_WORLD_SIM_WALLET_NAME_BYTES: usize = 64;
 
 pub async fn run_server(config: ControlPlaneConfig) -> Result<(), String> {
+    config.validate().map_err(|e| {
+        let msg = format!(
+            "Refusing to start with invalid control-plane configuration: {}",
+            e
+        );
+        error!("{}", msg);
+        msg
+    })?;
     let console_root = config.resolve_runtime_path(&config.web.console_root)?;
     ensure_dir_exists("console web root", &console_root)?;
 
@@ -1408,13 +1417,13 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
         .zip(marker.agent_addresses)
         .enumerate()
         .map(|(agent_id, (wallet_name, owner_address))| {
-            let wallet_name = wallet_name.trim();
-            if wallet_name.is_empty() {
-                return Err(format!(
-                    "World-sim bootstrap marker contains an empty wallet_name at agent {}",
-                    agent_id
-                ));
-            }
+            let wallet_name = wallet_name.trim().to_string();
+            validate_world_sim_wallet_name(&wallet_name).map_err(|error| {
+                format!(
+                    "World-sim bootstrap marker contains an invalid wallet_name at agent {}: {}",
+                    agent_id, error
+                )
+            })?;
 
             let owner_address = owner_address.trim();
             if owner_address.is_empty() {
@@ -1426,12 +1435,31 @@ fn decode_world_sim_identities(marker_data: Value) -> Result<Vec<BtcWorldSimIden
 
             Ok(BtcWorldSimIdentity {
                 agent_id,
-                wallet_name: wallet_name.to_string(),
+                wallet_name,
                 owner_address: owner_address.to_string(),
                 is_usdb_chain_miner_aligned: usdb_chain_miner_agent_id == Some(agent_id),
             })
         })
         .collect()
+}
+
+fn validate_world_sim_wallet_name(wallet_name: &str) -> Result<(), String> {
+    if wallet_name.is_empty() {
+        return Err("wallet name is empty".to_string());
+    }
+    if wallet_name.len() > MAX_WORLD_SIM_WALLET_NAME_BYTES {
+        return Err(format!(
+            "wallet name exceeds {} bytes",
+            MAX_WORLD_SIM_WALLET_NAME_BYTES
+        ));
+    }
+    if !wallet_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("wallet name must contain only ASCII letters, digits, '-' or '_'".to_string());
+    }
+    Ok(())
 }
 
 fn normalize_balance_history_params(
@@ -1682,6 +1710,12 @@ async fn execute_world_sim_ord_mint(
     destination: &str,
     inscription_payload_json: &str,
 ) -> Result<OrdMintExecution, String> {
+    validate_world_sim_wallet_name(wallet_name).map_err(|error| {
+        format!(
+            "Invalid world-sim wallet name for mint execution: {}",
+            error
+        )
+    })?;
     let payload_dir = state
         .config
         .resolve_runtime_path(&state.config.root_dir)?
@@ -2906,6 +2940,38 @@ mod tests {
         .unwrap_err();
 
         assert!(error.contains("mismatched identities"));
+    }
+
+    #[test]
+    fn decode_world_sim_identities_rejects_path_like_wallet_names() {
+        for wallet_name in [
+            "../outside",
+            "agent/wallet",
+            "agent\\wallet",
+            "agent.wallet",
+            "agent wallet",
+            "agent-\u{4e00}",
+        ] {
+            let error = decode_world_sim_identities(json!({
+                "agent_wallets": [wallet_name],
+                "agent_addresses": ["bcrt1qa"]
+            }))
+            .unwrap_err();
+
+            assert!(
+                error.contains("invalid wallet_name"),
+                "{wallet_name}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn world_sim_wallet_name_has_a_bounded_safe_alphabet() {
+        validate_world_sim_wallet_name("usdb_world-agent-42").unwrap();
+        assert!(
+            validate_world_sim_wallet_name(&"a".repeat(MAX_WORLD_SIM_WALLET_NAME_BYTES + 1))
+                .is_err()
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use usdb_util::{
@@ -297,6 +298,11 @@ impl ControlPlaneConfig {
                 "Config file {} does not exist. Using default configuration.",
                 path.display()
             );
+            default_config.validate().map_err(|e| {
+                let msg = format!("Invalid default control-plane configuration: {}", e);
+                error!("{}", msg);
+                msg
+            })?;
             return Ok(default_config);
         }
 
@@ -312,7 +318,34 @@ impl ControlPlaneConfig {
             msg
         })?;
         config.root_dir = root_dir.to_path_buf();
+        config.validate().map_err(|e| {
+            let msg = format!(
+                "Invalid control-plane configuration {}: {}",
+                path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
         Ok(config)
+    }
+
+    /// Validates operator-controlled endpoints before the control plane performs
+    /// any outbound requests. Credentials belong in dedicated auth fields, not URLs.
+    pub fn validate(&self) -> Result<(), String> {
+        for (label, value) in [
+            (
+                "rpc.balance_history_url",
+                self.rpc.balance_history_url.as_str(),
+            ),
+            ("rpc.usdb_indexer_url", self.rpc.usdb_indexer_url.as_str()),
+            ("rpc.usdb_chain_url", self.rpc.usdb_chain_url.as_str()),
+            ("rpc.ord_url", self.rpc.ord_url.as_str()),
+            ("bitcoin.url", self.bitcoin.url.as_str()),
+        ] {
+            parse_http_endpoint(label, value)?;
+        }
+        Ok(())
     }
 
     pub fn listen_addr(&self) -> String {
@@ -331,6 +364,34 @@ impl ControlPlaneConfig {
         })?;
         Ok(current_dir.join(path))
     }
+}
+
+pub(crate) fn parse_http_endpoint(label: &str, value: &str) -> Result<Url, String> {
+    if value.trim() != value {
+        return Err(format!("{} must not contain surrounding whitespace", label));
+    }
+
+    let url = Url::parse(value).map_err(|e| format!("{} is not a valid URL: {}", label, e))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "{} must use the http or https scheme, got {}",
+            label,
+            url.scheme()
+        ));
+    }
+    if url.host().is_none() {
+        return Err(format!("{} must include a host", label));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(format!(
+            "{} must not embed credentials; use the dedicated authentication fields",
+            label
+        ));
+    }
+    if url.fragment().is_some() {
+        return Err(format!("{} must not include a URL fragment", label));
+    }
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -364,5 +425,44 @@ mod tests {
             config.bootstrap.world_sim_bootstrap_marker,
             PathBuf::from("docker/local/world-sim/runtime/bootstrap/world-sim-bootstrap.done.json")
         );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn endpoint_validation_accepts_remote_http_paths() {
+        let endpoint = parse_http_endpoint(
+            "rpc.usdb_indexer_url",
+            "https://indexer.example.test/rpc/v1",
+        )
+        .unwrap();
+
+        assert_eq!(endpoint.scheme(), "https");
+        assert_eq!(endpoint.host_str(), Some("indexer.example.test"));
+        assert_eq!(endpoint.path(), "/rpc/v1");
+    }
+
+    #[test]
+    fn endpoint_validation_rejects_unsafe_url_forms() {
+        for value in [
+            "file:///tmp/usdb.sock",
+            "http://user:secret@127.0.0.1:8332",
+            "http://127.0.0.1:8332/#ignored",
+            " http://127.0.0.1:8332",
+        ] {
+            assert!(
+                parse_http_endpoint("test.endpoint", value).is_err(),
+                "unexpected valid endpoint: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_validation_identifies_the_invalid_endpoint() {
+        let mut config = ControlPlaneConfig::default();
+        config.rpc.balance_history_url = "file:///tmp/balance-history.sock".to_string();
+
+        let error = config.validate().unwrap_err();
+
+        assert!(error.contains("rpc.balance_history_url"), "{error}");
     }
 }

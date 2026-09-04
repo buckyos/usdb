@@ -1,4 +1,4 @@
-use crate::config::{BitcoinAuthMode, ControlPlaneConfig};
+use crate::config::{BitcoinAuthMode, ControlPlaneConfig, parse_http_endpoint};
 use crate::models::{
     BalanceHistoryReadiness, BitcoinBlockHeader, BitcoinBlockchainInfo, UsdbChainBlockHeader,
     UsdbIndexerReadiness, UsdbIndexerRpcInfo,
@@ -65,6 +65,7 @@ impl RpcClient {
     pub fn new() -> Result<Self, String> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(3))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| {
                 let msg = format!("Failed to build HTTP client: {}", e);
@@ -187,11 +188,17 @@ impl RpcClient {
     /// This is used for health probes where the caller only cares whether the
     /// endpoint is reachable and what status it returned.
     pub async fn http_probe(&self, url: &str) -> Result<u16, String> {
-        let response = self.client.get(url).send().await.map_err(|e| {
-            let msg = format!("Failed to probe HTTP endpoint {}: {}", url, e);
-            warn!("{}", msg);
-            msg
-        })?;
+        let endpoint = parse_http_endpoint("HTTP probe endpoint", url)?;
+        let response = self
+            .client
+            .get(endpoint.clone())
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to probe HTTP endpoint {}: {}", endpoint, e);
+                warn!("{}", msg);
+                msg
+            })?;
 
         Ok(response.status().as_u16())
     }
@@ -201,23 +208,29 @@ impl RpcClient {
     /// The control plane uses this for human-readable status pages and artifact-style
     /// endpoints where the raw text body is meaningful.
     pub async fn http_text(&self, url: &str) -> Result<String, String> {
-        let response = self.client.get(url).send().await.map_err(|e| {
-            let msg = format!("Failed to fetch HTTP endpoint {}: {}", url, e);
-            warn!("{}", msg);
-            msg
-        })?;
+        let endpoint = parse_http_endpoint("HTTP text endpoint", url)?;
+        let response = self
+            .client
+            .get(endpoint.clone())
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = format!("Failed to fetch HTTP endpoint {}: {}", endpoint, e);
+                warn!("{}", msg);
+                msg
+            })?;
         let status = response.status();
         if !status.is_success() {
             let msg = format!(
                 "HTTP endpoint {} returned non-success status {}",
-                url, status
+                endpoint, status
             );
             warn!("{}", msg);
             return Err(msg);
         }
 
         response.text().await.map_err(|e| {
-            let msg = format!("Failed to read HTTP response body from {}: {}", url, e);
+            let msg = format!("Failed to read HTTP response body from {}: {}", endpoint, e);
             warn!("{}", msg);
             msg
         })
@@ -336,6 +349,7 @@ impl RpcClient {
         method: &str,
         params: Value,
     ) -> Result<T, String> {
+        let endpoint = parse_http_endpoint("JSON-RPC endpoint", url)?;
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -345,14 +359,14 @@ impl RpcClient {
 
         let response = self
             .client
-            .post(url)
+            .post(endpoint.clone())
             .json(&request)
             .send()
             .await
             .map_err(|e| {
                 let msg = format!(
                     "Failed to send RPC request to {} (method={}): {}",
-                    url, method, e
+                    endpoint, method, e
                 );
                 warn!("{}", msg);
                 msg
@@ -362,7 +376,7 @@ impl RpcClient {
         let response_body: Value = response.json().await.map_err(|e| {
             let msg = format!(
                 "Failed to decode RPC response from {} (method={}, status={}): {}",
-                url, method, status, e
+                endpoint, method, status, e
             );
             warn!("{}", msg);
             msg
@@ -371,7 +385,7 @@ impl RpcClient {
             response_body,
             "RPC",
             method,
-            &format!("{} (status={})", url, status),
+            &format!("{} (status={})", endpoint, status),
         )
     }
 
@@ -390,11 +404,7 @@ impl RpcClient {
         config: &ControlPlaneConfig,
         wallet_name: &str,
     ) -> Result<String, String> {
-        let mut url = reqwest::Url::parse(&config.bitcoin.url).map_err(|e| {
-            let msg = format!("Failed to parse BTC RPC URL {}: {}", config.bitcoin.url, e);
-            warn!("{}", msg);
-            msg
-        })?;
+        let mut url = parse_http_endpoint("bitcoin.url", &config.bitcoin.url)?;
         let mut segments = url.path_segments_mut().map_err(|_| {
             let msg = format!(
                 "BTC RPC URL {} cannot be extended with wallet path segments",
@@ -417,6 +427,7 @@ impl RpcClient {
         method: &str,
         params: Value,
     ) -> Result<T, String> {
+        let endpoint = parse_http_endpoint("BTC RPC endpoint", url)?;
         let request = json!({
             "jsonrpc": "1.0",
             "id": "usdb-control-plane",
@@ -424,7 +435,7 @@ impl RpcClient {
             "params": params,
         });
 
-        let mut builder = self.client.post(url).json(&request);
+        let mut builder = self.client.post(endpoint.clone()).json(&request);
         match config.bitcoin.auth_mode {
             BitcoinAuthMode::None => {}
             BitcoinAuthMode::Userpass => {
@@ -466,7 +477,7 @@ impl RpcClient {
         let response = builder.send().await.map_err(|e| {
             let msg = format!(
                 "Failed to send BTC RPC request to {} (method={}): {}",
-                url, method, e
+                endpoint, method, e
             );
             warn!("{}", msg);
             msg
@@ -476,7 +487,7 @@ impl RpcClient {
         let response_body: Value = response.json().await.map_err(|e| {
             let msg = format!(
                 "Failed to decode BTC RPC response from {} (method={}, status={}): {}",
-                url, method, status, e
+                endpoint, method, status, e
             );
             warn!("{}", msg);
             msg
@@ -485,7 +496,7 @@ impl RpcClient {
             response_body,
             "BTC RPC",
             method,
-            &format!("{} (status={})", url, status),
+            &format!("{} (status={})", endpoint, status),
         )
     }
 }

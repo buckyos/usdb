@@ -1,0 +1,23 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "control-plane-outbound-boundaries",
+  "type": "security",
+  "scopes": [
+    "node-runtime",
+    "security"
+  ],
+  "summary": "Constrain control-plane outbound endpoints and development mint file names",
+  "details": [
+    "Control-plane startup and outbound requests now reject non-HTTP endpoints, embedded URL credentials, URL fragments, and surrounding whitespace while retaining operator-configured remote HTTP and HTTPS RPC targets.",
+    "The shared HTTP client no longer follows redirects, so a configured service cannot redirect probes or authenticated Bitcoin RPC calls to another endpoint.",
+    "World-sim wallet names used for development mint payload files are bounded to 64 bytes and an ASCII identifier alphabet before any file is written."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}
