@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -202,10 +203,36 @@ def _safe_object_key(value: Any, label: str) -> str:
     return value
 
 
+def _path_exists(path: Path) -> bool:
+    """Returns whether a directory entry exists without following symlinks."""
+    return os.path.lexists(path)
+
+
+def _ensure_managed_directory(path: Path, label: str) -> None:
+    """Creates a tool-managed directory or validates its existing entry type."""
+    if _path_exists(path):
+        _require(
+            path.is_dir() and not path.is_symlink(),
+            f"{label} must be a real directory, not a symlink: {path}",
+        )
+        return
+    path.mkdir(mode=0o755)
+
+
+def _require_managed_file(path: Path, label: str) -> None:
+    """Rejects a present tool-managed entry unless it is a regular file."""
+    if _path_exists(path):
+        _require(
+            path.is_file() and not path.is_symlink(),
+            f"{label} must be a regular file, not a symlink: {path}",
+        )
+
+
 def _write_new_or_identical(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        _require(path.is_file() and path.read_bytes() == content, f"refusing to replace different existing file: {path}")
+    if _path_exists(path):
+        _require_managed_file(path, "existing immutable file")
+        _require(path.read_bytes() == content, f"refusing to replace different existing file: {path}")
         return
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     try:
@@ -823,7 +850,8 @@ def _quoted_object_url(base_url: str, object_key: str) -> str:
 
 
 def _download_with_resume(url: str, destination_part: Path, curl_executable: str = "curl") -> None:
-    destination_part.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_managed_directory(destination_part.parent, "download directory")
+    _require_managed_file(destination_part, "resumable download target")
     subprocess.run(
         [
             curl_executable,
@@ -858,6 +886,8 @@ def _range_download_paths(destination_part: Path) -> tuple[Path, Path]:
 
 
 def _write_range_state(path: Path, state: dict[str, Any]) -> None:
+    _ensure_managed_directory(path.parent, "parallel download directory")
+    _require_managed_file(path, "parallel download state")
     temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
     content = _canonical_json(state)
     try:
@@ -877,8 +907,9 @@ def _write_range_state(path: Path, state: dict[str, Any]) -> None:
 
 def _cleanup_range_download(destination_part: Path) -> None:
     state_path, work_dir = _range_download_paths(destination_part)
+    _require_managed_file(state_path, "parallel download state")
     state_path.unlink(missing_ok=True)
-    if work_dir.exists():
+    if _path_exists(work_dir):
         _require(work_dir.is_dir() and not work_dir.is_symlink(), f"invalid range download work directory: {work_dir}")
         shutil.rmtree(work_dir)
 
@@ -910,6 +941,7 @@ def _download_range_chunk(
     length = _chunk_length(index, chunk_size, expected_size)
     end = start + length - 1
     chunk_path = work_dir / f"{index:08d}.part"
+    _require_managed_file(chunk_path, "parallel download chunk")
     chunk_path.unlink(missing_ok=True)
     result = subprocess.run(
         [
@@ -975,15 +1007,15 @@ def _download_parallel_ranges(
     _require(chunk_size >= 1024 * 1024, "parallel download chunk size must be at least 1 MiB")
     _require(expected_size > 0, "parallel download expected size must be positive")
     _require(SHA256_RE.fullmatch(expected_sha256) is not None, "parallel download expected SHA-256 is invalid")
-    destination_part.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_managed_directory(destination_part.parent, "parallel download directory")
     state_path, work_dir = _range_download_paths(destination_part)
     url_sha256 = _sha256_bytes(url.encode("utf-8"))
 
-    _require(not destination_part.is_symlink(), f"parallel download target must not be a symlink: {destination_part}")
-    if state_path.exists() and not destination_part.is_file():
+    _require_managed_file(destination_part, "parallel download target")
+    _require_managed_file(state_path, "parallel download state")
+    if _path_exists(state_path) and not destination_part.is_file():
         _cleanup_range_download(destination_part)
-    if state_path.is_file():
-        _require(not state_path.is_symlink(), f"parallel download state must not be a symlink: {state_path}")
+    if _path_exists(state_path):
         state = _load_json(state_path)
         _require_exact_keys(
             state,
@@ -1013,7 +1045,7 @@ def _download_parallel_ranges(
             "parallel download preallocated file size mismatch",
         )
     else:
-        if destination_part.exists():
+        if _path_exists(destination_part):
             destination_part.unlink()
         state = {
             "version": 1,
@@ -1040,9 +1072,7 @@ def _download_parallel_ranges(
     )
     completed = set(completed_value)
     _require(len(completed) == len(completed_value), "parallel download completed chunk set is duplicated")
-    if work_dir.exists():
-        _require(work_dir.is_dir() and not work_dir.is_symlink(), f"invalid range download work directory: {work_dir}")
-    work_dir.mkdir(mode=0o755, exist_ok=True)
+    _ensure_managed_directory(work_dir, "parallel download work directory")
     progress = _FileReadProgress(f"Download {destination_part.name}", expected_size)
     completed_bytes = sum(_chunk_length(index, chunk_size, expected_size) for index in completed)
     progress.update(completed_bytes, force=True)
@@ -1121,6 +1151,49 @@ def _fsync_path(path: Path) -> None:
         os.close(descriptor)
 
 
+def _validate_release_directory(
+    record: dict[str, Any],
+    directory: Path,
+    *,
+    allow_transient: bool,
+) -> None:
+    """Ensures a release directory contains only regular managed entries."""
+    expected_files = {item["path"] for item in record["files"]}
+    expected_files.add("snapshot-release-record.json")
+    transient_files: set[str] = set()
+    transient_directories: set[str] = set()
+    for item in record["files"]:
+        part_name = f"{item['path']}.part"
+        transient_files.add(part_name)
+        transient_files.add(f"{part_name}.ranges.json")
+        transient_directories.add(f"{part_name}.ranges")
+
+    seen: set[str] = set()
+    for child in directory.iterdir():
+        name = child.name
+        seen.add(name)
+        if name in expected_files or (allow_transient and name in transient_files):
+            _require(
+                child.is_file() and not child.is_symlink(),
+                f"snapshot release entry must be a regular file, not a symlink: {child}",
+            )
+            continue
+        if allow_transient and name in transient_directories:
+            _require(
+                child.is_dir() and not child.is_symlink(),
+                f"snapshot release work entry must be a real directory, not a symlink: {child}",
+            )
+            continue
+        raise ValueError(f"unexpected entry in snapshot release directory: {child}")
+
+    if not allow_transient:
+        _require(
+            seen == expected_files,
+            "snapshot release directory inventory mismatch: "
+            f"missing={sorted(expected_files - seen)}, extra={sorted(seen - expected_files)}",
+        )
+
+
 @dataclass(frozen=True)
 class InstalledSnapshot:
     release_id: str
@@ -1149,8 +1222,9 @@ def _installed_snapshot(record: dict[str, Any], release_dir: Path) -> InstalledS
 
 def _verify_installed_release(record: dict[str, Any], release_dir: Path, record_content: bytes) -> InstalledSnapshot:
     _require(release_dir.is_dir() and not release_dir.is_symlink(), f"installed snapshot release is missing or invalid: {release_dir}")
+    _validate_release_directory(record, release_dir, allow_transient=False)
     installed_record = release_dir / "snapshot-release-record.json"
-    _require(installed_record.is_file() and installed_record.read_bytes() == record_content, f"installed snapshot release record mismatch: {release_dir}")
+    _require(installed_record.read_bytes() == record_content, f"installed snapshot release record mismatch: {release_dir}")
     for item in record["files"]:
         _verify_download(
             release_dir / item["path"],
@@ -1193,7 +1267,16 @@ def install_release(
     root = destination_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".snapshot-distribution.lock"
-    with lock_path.open("a+b") as lock:
+    _require_managed_file(lock_path, "snapshot distribution lock")
+    lock_flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        lock_flags |= os.O_NOFOLLOW
+    lock_descriptor = os.open(lock_path, lock_flags, 0o600)
+    with os.fdopen(lock_descriptor, "a+b") as lock:
+        _require(
+            stat.S_ISREG(os.fstat(lock.fileno()).st_mode),
+            f"snapshot distribution lock is not a regular file: {lock_path}",
+        )
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         if approved_record_path is not None:
             approved_record = approved_record_path.expanduser()
@@ -1208,9 +1291,12 @@ def install_release(
             )
         else:
             downloads = root / ".downloads"
+            _ensure_managed_directory(downloads, "snapshot record download directory")
             record_cache = downloads / record_name
+            _require_managed_file(record_cache, "snapshot release record cache")
             if not record_cache.is_file() or _sha256(record_cache) != expected_record_sha256:
                 record_part = record_cache.with_name(record_cache.name + ".part")
+                _require_managed_file(record_part, "snapshot release record partial")
                 if record_part.is_file() and _sha256(record_part) == expected_record_sha256:
                     record_part.replace(record_cache)
                 else:
@@ -1241,7 +1327,7 @@ def install_release(
 
         release_id = record["snapshot_release_id"]
         destination = root / release_id
-        if destination.exists():
+        if _path_exists(destination):
             print(
                 f"Snapshot artifact exists; verifying before reuse: {destination}",
                 file=sys.stderr,
@@ -1249,10 +1335,12 @@ def install_release(
             )
             return _verify_installed_release(record, destination, record_content)
         staging = root / f".{release_id}.installing"
-        staging.mkdir(mode=0o755, exist_ok=True)
+        _ensure_managed_directory(staging, "snapshot release staging directory")
+        _validate_release_directory(record, staging, allow_transient=True)
         for item in record["files"]:
             final_path = staging / item["path"]
-            if final_path.exists():
+            _require_managed_file(final_path, "staged snapshot file")
+            if _path_exists(final_path):
                 try:
                     _verify_download(
                         final_path,
@@ -1264,8 +1352,10 @@ def install_release(
                 except ValueError:
                     final_path.unlink(missing_ok=True)
             part_path = final_path.with_name(final_path.name + ".part")
+            _require_managed_file(part_path, "snapshot download partial")
             range_state_path, _range_work_dir = _range_download_paths(part_path)
-            range_state_exists = range_state_path.is_file()
+            _require_managed_file(range_state_path, "parallel download state")
+            range_state_exists = _path_exists(range_state_path)
             if (
                 part_path.is_file()
                 and not range_state_exists
@@ -1322,6 +1412,7 @@ def install_release(
             _cleanup_range_download(part_path)
             part_path.replace(final_path)
         _write_new_or_identical(staging / "snapshot-release-record.json", record_content)
+        _validate_release_directory(record, staging, allow_transient=False)
         for item in record["files"]:
             _fsync_path(staging / item["path"])
         _fsync_path(staging / "snapshot-release-record.json")
@@ -1331,6 +1422,7 @@ def install_release(
             file=sys.stderr,
             flush=True,
         )
+        _require(not _path_exists(destination), f"snapshot release destination appeared during install: {destination}")
         os.replace(staging, destination)
         _fsync_path(root)
         # All files were hashed and fsynced immediately before the atomic rename.

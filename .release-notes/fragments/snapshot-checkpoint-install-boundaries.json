@@ -1,0 +1,27 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "snapshot-checkpoint-install-boundaries",
+  "type": "security",
+  "scopes": [
+    "balance-history",
+    "deployment",
+    "indexer",
+    "security"
+  ],
+  "summary": "Reject symlinked or polluted snapshot and paired-checkpoint install state",
+  "details": [
+    "Snapshot downloads now require real managed directories and regular partial, range-state, and artifact files, then enforce an exact release-record inventory before atomic publication or cached reuse.",
+    "Paired-checkpoint cleanup only removes real managed directories, and signed balance-history manifests must name the snapshot database with a safe basename.",
+    "Interrupted downloads and paired installs remain resumable when their durable state has the expected identity and filesystem types; suspicious entries fail closed for operator inspection."
+  ],
+  "operator_actions": [
+    "If a resumed install reports a symlink, special file, or unexpected staging entry, inspect and move that entry out of the managed data root before retrying."
+  ],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

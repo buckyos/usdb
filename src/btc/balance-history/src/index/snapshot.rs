@@ -12,7 +12,7 @@ use crate::snapshot_provenance::{
 use base64::Engine as _;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -830,6 +830,20 @@ impl SnapshotManifest {
                 manifest.manifest_version,
                 path.display(),
                 SNAPSHOT_MANIFEST_VERSION
+            );
+            error!("{}", msg);
+            return Err(msg);
+        }
+        let mut file_name_components = Path::new(&manifest.file_name).components();
+        if !matches!(file_name_components.next(), Some(Component::Normal(_)))
+            || file_name_components.next().is_some()
+            || manifest.file_name.contains('/')
+            || manifest.file_name.contains('\\')
+        {
+            let msg = format!(
+                "Snapshot manifest file_name must be a safe basename in {}: {}",
+                path.display(),
+                manifest.file_name
             );
             error!("{}", msg);
             return Err(msg);
@@ -3115,5 +3129,45 @@ mod tests {
             !snapshot_path.with_extension("db-shm").exists(),
             "finalized snapshot should not leave sqlite shm sidecar behind"
         );
+    }
+
+    #[test]
+    fn snapshot_manifest_rejects_non_basename_snapshot_file() {
+        let root_dir = temp_root("manifest_unsafe_file_name");
+        let manifest_path = root_dir.join("snapshot.manifest.json");
+        let mut manifest = SnapshotManifest::build(
+            "snapshot.db".to_string(),
+            "1".repeat(64),
+            HistoricalSnapshotStateRef {
+                block_height: 1,
+                stable_block_hash: "2".repeat(64),
+                latest_block_commit: "3".repeat(64),
+                consensus_identity: build_consensus_snapshot_identity(
+                    &test_config_with_root(&root_dir),
+                    1,
+                    &"2".repeat(64),
+                )
+                .unwrap(),
+                snapshot_id: "4".repeat(64),
+                snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
+                snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
+                commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
+                commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
+            },
+            BalanceHistoryDBIdentity::for_network(test_config_with_root(&root_dir).btc.network()),
+            None,
+        );
+
+        for unsafe_name in ["../snapshot.db", "/tmp/snapshot.db", "nested/snapshot.db"] {
+            manifest.file_name = unsafe_name.to_string();
+            manifest.save(&manifest_path).unwrap();
+            let error = SnapshotManifest::load(&manifest_path).unwrap_err();
+            assert!(error.contains("file_name must be a safe basename"));
+        }
+
+        manifest.file_name = "snapshot.db".to_string();
+        manifest.save(&manifest_path).unwrap();
+        SnapshotManifest::load(&manifest_path).unwrap();
+        std::fs::remove_dir_all(root_dir).unwrap();
     }
 }

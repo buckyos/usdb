@@ -105,6 +105,11 @@ balance-history 各自在自己的文件系统内 staging、校验、原子 rena
 任何消费者，重新执行完全相同的命令即可识别已发布的一侧并继续。已有但不属于该 operation 的数据会
 fail closed，不会被覆盖。
 
+所有工具管理的 staging、download cache 和恢复残留必须是真实目录，普通文件必须不是 symlink。
+Snapshot staging 只允许 signed release record 声明的文件以及与其一一对应的 `.part`/Range 恢复状态；
+原子发布前和复用已有 artifact 时都要求精确 inventory。出现 symlink、特殊文件或额外条目时，安装器
+不会自动删除或覆盖，operator 必须先检查其来源，再移走非法条目后重试。
+
 服务启动后必须执行：
 
 ```bash
@@ -141,7 +146,8 @@ USDB chain 的启动依赖，因此未通过重算时不会开始组块或验块
 
 当前自动化已覆盖 manifest/signature/file tamper、离线 state-ref 重算、bundle binding、indexer staging、
 indexer publish、balance-history staging、balance-history publish 四个中断窗口的幂等恢复，以及服务已继续
-同步后的历史 state-ref 重算。发布共享 testnet 前仍需用真实导出的 artifact 完成一次跨进程演练：
+同步后的历史 state-ref 重算；同时覆盖 staging/download symlink、未声明条目、unsafe manifest file name
+和清理边界。发布共享 testnet 前仍需用真实导出的 artifact 完成一次跨进程演练：
 
 1. 三节点 joiner 从 paired artifact 启动；
 2. 与从 origin 完整重放得到的 profile、candidate、breakdown 和 system state 交叉比较；

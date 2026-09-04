@@ -331,6 +331,130 @@ class SnapshotDistributionTests(unittest.TestCase):
         sequential.assert_not_called()
         parallel.assert_not_called()
 
+    def test_install_rejects_symlinked_staging_directory(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "symlinked-staging"
+        destination_root.mkdir()
+        outside = self.root / "outside-staging"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_bytes(b"unchanged")
+        staging = destination_root / f".{record['snapshot_release_id']}.installing"
+        staging.symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "staging directory must be a real directory"):
+            DISTRIBUTION.install_release(
+                record_url=(
+                    "https://snapshots.example.test/snapshot-records/v2/"
+                    f"{record_sha256}.json"
+                ),
+                destination_root=destination_root,
+                trusted_keys=self.trusted_keys,
+                approved_record_path=record_path,
+            )
+
+        self.assertEqual(sentinel.read_bytes(), b"unchanged")
+        self.assertEqual(list(outside.iterdir()), [sentinel])
+
+    def test_install_rejects_symlinked_partial_without_touching_target(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "symlinked-partial"
+        staging = destination_root / f".{record['snapshot_release_id']}.installing"
+        staging.mkdir(parents=True)
+        snapshot_entry = next(
+            item for item in record["files"] if item["role"] == "snapshot_db"
+        )
+        outside = self.root / "outside-partial"
+        outside.write_bytes(b"unchanged")
+        (staging / f"{snapshot_entry['path']}.part").symlink_to(outside)
+
+        with mock.patch.object(DISTRIBUTION, "_download_with_resume") as download:
+            with self.assertRaisesRegex(ValueError, "must be a regular file, not a symlink"):
+                DISTRIBUTION.install_release(
+                    record_url=(
+                        "https://snapshots.example.test/snapshot-records/v2/"
+                        f"{record_sha256}.json"
+                    ),
+                    destination_root=destination_root,
+                    trusted_keys=self.trusted_keys,
+                    approved_record_path=record_path,
+                )
+
+        download.assert_not_called()
+        self.assertEqual(outside.read_bytes(), b"unchanged")
+
+    def test_install_rejects_unmanaged_staging_entry(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "unmanaged-staging"
+        staging = destination_root / f".{record['snapshot_release_id']}.installing"
+        staging.mkdir(parents=True)
+        (staging / "operator-note.txt").write_text("unexpected", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "unexpected entry in snapshot release directory"):
+            DISTRIBUTION.install_release(
+                record_url=(
+                    "https://snapshots.example.test/snapshot-records/v2/"
+                    f"{record_sha256}.json"
+                ),
+                destination_root=destination_root,
+                trusted_keys=self.trusted_keys,
+                approved_record_path=record_path,
+            )
+
+    def test_install_rejects_symlinked_download_cache(self) -> None:
+        record_path, _record, record_sha256 = self.prepare()
+        destination_root = self.root / "symlinked-downloads"
+        destination_root.mkdir()
+        outside = self.root / "outside-downloads"
+        outside.mkdir()
+        (destination_root / ".downloads").symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "download directory must be a real directory"):
+            DISTRIBUTION.install_release(
+                record_url=(
+                    "https://snapshots.example.test/snapshot-records/v2/"
+                    f"{record_sha256}.json"
+                ),
+                destination_root=destination_root,
+                trusted_keys=self.trusted_keys,
+            )
+
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assertTrue(record_path.is_file())
+
+    def test_install_rejects_extra_file_in_completed_release(self) -> None:
+        record_path, record, record_sha256 = self.prepare()
+        destination_root = self.root / "extra-installed-entry"
+        release_dir = self._seed_installed_release(record_path, record, destination_root)
+        (release_dir / "untracked").write_bytes(b"unexpected")
+
+        with self.assertRaisesRegex(ValueError, "unexpected entry in snapshot release directory"):
+            DISTRIBUTION.install_release(
+                record_url=(
+                    "https://snapshots.example.test/snapshot-records/v2/"
+                    f"{record_sha256}.json"
+                ),
+                destination_root=destination_root,
+                trusted_keys=self.trusted_keys,
+                approved_record_path=record_path,
+            )
+
+    def test_sequential_resume_rejects_symlink_target(self) -> None:
+        outside = self.root / "sequential-outside"
+        outside.write_bytes(b"unchanged")
+        destination = self.root / "download.part"
+        destination.symlink_to(outside)
+
+        with mock.patch.object(DISTRIBUTION.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "resumable download target must be a regular file"):
+                DISTRIBUTION._download_with_resume(
+                    "https://snapshots.example.test/snapshot.db",
+                    destination,
+                )
+
+        run.assert_not_called()
+        self.assertEqual(outside.read_bytes(), b"unchanged")
+
     def test_aws_cli_uses_r2_endpoint_region_and_profile_without_credentials(self) -> None:
         client = DISTRIBUTION.AwsCliClient(
             endpoint_url=DISTRIBUTION.DEFAULT_ENDPOINT_URL,
@@ -629,6 +753,46 @@ class SnapshotDistributionTests(unittest.TestCase):
                     concurrency=2,
                     chunk_size=1024 * 1024,
                 )
+
+    def test_parallel_range_download_rejects_symlinked_state(self) -> None:
+        destination = self.root / "range-state.db.part"
+        state_path, _work_dir = DISTRIBUTION._range_download_paths(destination)
+        outside = self.root / "outside-range-state"
+        outside.write_text("unchanged", encoding="utf-8")
+        state_path.symlink_to(outside)
+
+        with self.assertRaisesRegex(ValueError, "parallel download state must be a regular file"):
+            DISTRIBUTION._download_parallel_ranges(
+                "https://snapshots.example/snapshot.db",
+                destination,
+                expected_size=1024 * 1024,
+                expected_sha256="1" * 64,
+                concurrency=2,
+                chunk_size=1024 * 1024,
+            )
+
+        self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged")
+
+    def test_parallel_range_download_rejects_symlinked_work_directory(self) -> None:
+        destination = self.root / "range-work.db.part"
+        _state_path, work_dir = DISTRIBUTION._range_download_paths(destination)
+        outside = self.root / "outside-range-work"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_text("unchanged", encoding="utf-8")
+        work_dir.symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "work directory must be a real directory"):
+            DISTRIBUTION._download_parallel_ranges(
+                "https://snapshots.example/snapshot.db",
+                destination,
+                expected_size=1024 * 1024,
+                expected_sha256="1" * 64,
+                concurrency=2,
+                chunk_size=1024 * 1024,
+            )
+
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
 
     def test_pwrite_all_retries_short_writes(self) -> None:
         writes: list[tuple[bytes, int]] = []

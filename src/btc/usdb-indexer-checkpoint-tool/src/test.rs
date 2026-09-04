@@ -456,6 +456,40 @@ fn indexer_publish_is_idempotent_after_rename_before_journal_update() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn indexer_publish_rejects_symlinked_managed_staging_directory() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = build_fixture("publish_symlink_staging");
+    let target_root = fixture.root.join("symlink-target-indexer");
+    write_indexer_config(&target_root, fixture.manifest.checkpoint_height);
+    let options = InstallPairOptions {
+        checkpoint_manifest: fixture.manifest_path.clone(),
+        balance_history_manifest: fixture.balance_history_manifest_path.clone(),
+        trusted_keys: fixture.trusted_keys_path.clone(),
+        indexer_root: target_root.clone(),
+        balance_history_root: fixture.root.join("balance-history"),
+        network_bundle_id: fixture.manifest.network_bundle_id.clone(),
+        chain_id: fixture.manifest.chain_id,
+        index_origin_height: fixture.manifest.index_origin_height,
+        lock_timeout: Duration::from_secs(1),
+    };
+    let outside = fixture.root.join("outside-staging");
+    std::fs::create_dir_all(&outside).unwrap();
+    let sentinel = outside.join("sentinel");
+    std::fs::write(&sentinel, b"unchanged").unwrap();
+    let staging = target_root.join(format!(
+        ".paired-checkpoint-{}.staging",
+        &fixture.manifest.operation_id[..16]
+    ));
+    symlink(&outside, &staging).unwrap();
+
+    let error = publish_indexer_data(&options, &fixture.manifest).unwrap_err();
+    assert!(error.contains("Refusing to remove checkpoint staging"));
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+}
+
 #[test]
 fn operation_id_changes_when_file_digest_changes() {
     let fixture = build_fixture("operation_id");

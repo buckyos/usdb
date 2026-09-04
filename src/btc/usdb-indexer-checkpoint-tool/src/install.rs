@@ -357,14 +357,7 @@ pub(crate) fn publish_indexer_data(
         ".paired-checkpoint-{}.staging",
         &checkpoint.operation_id[..16]
     ));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|error| {
-            format!(
-                "Failed to clear managed checkpoint staging directory {}: {error}",
-                staging.display()
-            )
-        })?;
-    }
+    remove_managed_directory(&staging, "checkpoint staging")?;
     let artifact_data = options
         .checkpoint_manifest
         .parent()
@@ -497,13 +490,8 @@ fn cleanup_balance_history_managed_directories(
     config: &BalanceHistoryConfig,
     remove_live_db: bool,
 ) -> Result<(), String> {
-    if remove_live_db && config.db_dir().exists() {
-        std::fs::remove_dir_all(config.db_dir()).map_err(|error| {
-            format!(
-                "Failed to remove interrupted balance-history live DB {}: {error}",
-                config.db_dir().display()
-            )
-        })?;
+    if remove_live_db {
+        remove_managed_directory(&config.db_dir(), "interrupted balance-history live DB")?;
     }
     let entries = std::fs::read_dir(&config.root_dir).map_err(|error| {
         format!(
@@ -523,15 +511,32 @@ fn cleanup_balance_history_managed_directories(
         if name.starts_with("snapshot_install_staging_")
             || name.starts_with("db_backup_snapshot_install_")
         {
-            std::fs::remove_dir_all(entry.path()).map_err(|error| {
-                format!(
-                    "Failed to remove interrupted balance-history install directory {}: {error}",
-                    entry.path().display()
-                )
-            })?;
+            remove_managed_directory(&entry.path(), "balance-history snapshot install remnant")?;
         }
     }
     Ok(())
+}
+
+fn remove_managed_directory(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect {label} {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() || !file_type.is_dir() {
+        return Err(format!(
+            "Refusing to remove {label} because it is not a real directory: {}",
+            path.display()
+        ));
+    }
+    std::fs::remove_dir_all(path)
+        .map_err(|error| format!("Failed to remove {label} {}: {error}", path.display()))
 }
 
 fn verify_installed_balance_history(
@@ -585,4 +590,59 @@ fn maybe_fail(stage: &str) -> Result<(), String> {
         return Err(format!("Injected paired checkpoint failure after {stage}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod managed_directory_tests {
+    use super::remove_managed_directory;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "usdb_checkpoint_managed_dir_{tag}_{}_{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn removes_real_managed_directory() {
+        let root = temp_root("real");
+        let managed = root.join("snapshot_install_staging_test");
+        std::fs::create_dir(&managed).unwrap();
+        std::fs::write(managed.join("partial"), b"data").unwrap();
+
+        remove_managed_directory(&managed, "test managed directory").unwrap();
+
+        assert!(!managed.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_managed_directory_without_removing_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root("symlink");
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel");
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let managed = root.join("snapshot_install_staging_test");
+        symlink(&outside, &managed).unwrap();
+
+        let error = remove_managed_directory(&managed, "test managed directory").unwrap_err();
+
+        assert!(error.contains("not a real directory"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+        std::fs::remove_file(managed).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
