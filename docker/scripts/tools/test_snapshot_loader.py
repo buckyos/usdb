@@ -80,6 +80,64 @@ printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
             self.assertEqual(marker["snapshot_mode"], "balance-history")
             self.assertEqual(marker["snapshot_file"], str(snapshot))
 
+    def test_failed_import_progress_survives_fail_closed_retry(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="snapshot-loader-failure-test-") as temporary:
+            root = Path(temporary)
+            service_root = root / "balance-history"
+            snapshot = root / "snapshot.db"
+            snapshot.write_bytes(b"snapshot")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            invocation = root / "balance-history.invocations"
+            fake_balance_history = bin_dir / "balance-history"
+            fake_balance_history.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >>"${BALANCE_HISTORY_INVOCATIONS:?}"
+mkdir -p "${BH_ROOT_DIR:?}/db"
+printf 'rocksdb\n' >"${BH_ROOT_DIR}/db/CURRENT"
+mkdir -p "${BH_ROOT_DIR}/bootstrap"
+printf '{"state":"running","stage":"verify_source"}\n' >"${BH_ROOT_DIR}/bootstrap/snapshot-loader.progress.json"
+exit 1
+""",
+                encoding="utf-8",
+            )
+            fake_balance_history.chmod(0o755)
+            progress = service_root / "bootstrap/snapshot-loader.progress.json"
+            environment = {
+                **os.environ,
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "SNAPSHOT_MODE": "balance-history",
+                "BH_ROOT_DIR": str(service_root),
+                "BH_SNAPSHOT_FILE": str(snapshot),
+                "BH_SNAPSHOT_MANIFEST": "",
+                "BTC_AUTH_MODE": "none",
+                "BALANCE_HISTORY_INVOCATIONS": str(invocation),
+            }
+
+            first = subprocess.run(
+                [str(LOADER)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(first.returncode, 1)
+            self.assertEqual(invocation.read_text(encoding="utf-8"), "called\n")
+            failed_progress = progress.read_text(encoding="utf-8")
+
+            second = subprocess.run(
+                [str(LOADER)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(second.returncode, 1)
+            self.assertIn("snapshot marker is missing", second.stderr)
+            self.assertEqual(invocation.read_text(encoding="utf-8"), "called\n")
+            self.assertEqual(progress.read_text(encoding="utf-8"), failed_progress)
+
 
 if __name__ == "__main__":
     unittest.main()

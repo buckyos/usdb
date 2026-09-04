@@ -156,27 +156,60 @@ impl SnapshotDB {
         })
     }
 
-    /// Opens an existing snapshot without applying schema migrations or writable pragmas.
+    /// Opens an existing, finalized snapshot as an immutable single-file artifact.
+    ///
+    /// Published snapshots are mounted read-only by the node runtime. The SQLite database keeps
+    /// its WAL journal mode after finalization, so a plain read-only connection may still try to
+    /// open `-wal`/`-shm` sidecars when the first statement is prepared. `immutable=1` declares
+    /// that the distributed file cannot change and prevents those writes.
     pub fn open_read_only(path: &Path) -> Result<Self, String> {
         let open_begin = Instant::now();
-        let conn =
-            Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
-                let msg = format!(
-                    "Failed to open snapshot {} read-only: {}",
-                    path.display(),
-                    e
-                );
-                error!("{}", msg);
-                msg
-            })?;
+        let canonical_path = path.canonicalize().map_err(|e| {
+            format!(
+                "Failed to canonicalize snapshot read-only path {}: {}",
+                path.display(),
+                e
+            )
+        })?;
+        let mut uri = url::Url::from_file_path(&canonical_path).map_err(|_| {
+            format!(
+                "Failed to encode snapshot read-only path as file URI: {}",
+                canonical_path.display()
+            )
+        })?;
+        uri.query_pairs_mut().append_pair("immutable", "1");
+        let conn = Connection::open_with_flags(
+            uri.as_str(),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(|e| {
+            let msg = format!(
+                "Failed to open snapshot {} read-only: {}",
+                canonical_path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
+        conn.pragma_update(None, "query_only", true).map_err(|e| {
+            let msg = format!(
+                "Failed to configure immutable snapshot {} as query-only: {}",
+                canonical_path.display(),
+                e
+            );
+            error!("{}", msg);
+            msg
+        })?;
         info!(
-            "Opened snapshot SQLite: mode=read_only, path={}, elapsed_ms={}",
-            path.display(),
+            "Opened snapshot SQLite: mode=immutable_read_only, path={}, elapsed_ms={}",
+            canonical_path.display(),
             open_begin.elapsed().as_millis()
         );
 
         Ok(Self {
-            path: path.to_path_buf(),
+            path: canonical_path,
             conn,
         })
     }
@@ -1332,6 +1365,34 @@ mod tests {
         assert_eq!(retrieved_meta.script_registry_count, 0);
         assert_eq!(retrieved_meta.version, SNAPSHOT_DB_VERSION);
         assert_eq!(retrieved_meta.db_identity, test_db_identity());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_snapshot_opens_from_read_only_distribution_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TestRoot::new("snapshot_immutable_read_only");
+        let distribution_dir = root.path().join("distribution");
+        std::fs::create_dir_all(&distribution_dir).unwrap();
+        let db_path = distribution_dir.join("snapshot.db");
+        let snapshot_db = SnapshotDB::open(&db_path).unwrap();
+        snapshot_db
+            .update_meta(&SnapshotMeta::new(963_800, test_db_identity()))
+            .unwrap();
+        let db_path = snapshot_db.finalize_for_distribution().unwrap();
+
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&distribution_dir, std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+
+        let snapshot_db = SnapshotDB::open_read_only(&db_path).unwrap();
+        assert_eq!(snapshot_db.get_meta().unwrap().block_height, 963_800);
+        drop(snapshot_db);
+
+        std::fs::set_permissions(&distribution_dir, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
 
     #[test]

@@ -17,11 +17,6 @@ indexer_config_path="${indexer_root}/config.json"
 
 "${script_dir}/../helpers/render_balance_history_config.sh" "${config_path}"
 
-if [[ -f "${progress_path}" ]]; then
-  echo "Removing stale snapshot import progress at ${progress_path}" >&2
-  rm -f "${progress_path}"
-fi
-
 case "${snapshot_mode}" in
   none)
     echo "Snapshot loader disabled (SNAPSHOT_MODE=none)"
@@ -61,7 +56,7 @@ case "${snapshot_mode}" in
     ;;
 esac
 
-if [[ -d "${db_dir}" ]] && find "${db_dir}" -mindepth 1 -print -quit | grep -q .; then
+if [[ -d "${db_dir}" ]] && [[ -n "$(find "${db_dir}" -mindepth 1 -print -quit)" ]]; then
   snapshot_file="${BH_SNAPSHOT_FILE:-}"
   snapshot_manifest="${BH_SNAPSHOT_MANIFEST:-}"
   if snapshot_marker_matches "${marker_path}" "${snapshot_mode}" "${snapshot_file}" "${snapshot_manifest}"; then
@@ -70,6 +65,13 @@ if [[ -d "${db_dir}" ]] && find "${db_dir}" -mindepth 1 -print -quit | grep -q .
   fi
   echo "Existing balance-history DB detected under ${db_dir}, but snapshot marker is missing or does not match current snapshot inputs" >&2
   exit 1
+fi
+
+# Clear an earlier observation only when a new install is safe to begin. If an attempt creates a
+# live DB skeleton and then fails, the next fail-closed retry must preserve the last known stage.
+if [[ -f "${progress_path}" ]]; then
+  echo "Removing stale snapshot import progress at ${progress_path}" >&2
+  rm -f "${progress_path}"
 fi
 
 snapshot_file="${BH_SNAPSHOT_FILE:-}"

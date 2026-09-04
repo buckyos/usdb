@@ -807,6 +807,34 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("independent Snapshot import", component["detail"])
         self.assertIn("verify source (1/8)", component["detail"])
 
+    def test_snapshot_failure_reports_log_and_blocks_balance_history(self) -> None:
+        data_root = Path(self.temporary.name) / "snapshot-import-failed"
+        env = {
+            "SNAPSHOT_MODE": "balance-history",
+            "BH_DATA_HOST_DIR": str(data_root),
+            "BH_SNAPSHOT_FILE": "/snapshots/release/snapshot.db",
+            "BH_SNAPSHOT_MANIFEST": "/snapshots/release/snapshot.manifest.json",
+        }
+        artifact = {"state": "installed", "summary": "artifact verified"}
+        loader = {"state": "exited", "health": "", "exit_code": 1}
+
+        snapshot = NODE._snapshot_component(artifact, env, loader)
+        balance_history = NODE._balance_history_component(
+            snapshot,
+            {"state": "created", "health": "", "exit_code": None},
+            None,
+            None,
+            "waiting for Bitcoin data-start anchor",
+        )
+
+        expected_log = data_root / "logs/balance-history_install_snapshot_rCURRENT.log"
+        self.assertEqual(snapshot["state"], "FAILED")
+        self.assertEqual(snapshot["error_log"], str(expected_log))
+        self.assertIn(str(expected_log), snapshot["detail"])
+        self.assertEqual(balance_history["state"], "BLOCKED")
+        self.assertIsNone(balance_history["progress_percent"])
+        self.assertIn("Snapshot import did not complete", balance_history["detail"])
+
     def test_snapshot_import_ignores_stale_progress_for_selected_artifact(self) -> None:
         data_root = Path(self.temporary.name) / "snapshot-import-stale-progress"
         progress_path = data_root / "bootstrap/snapshot-loader.progress.json"

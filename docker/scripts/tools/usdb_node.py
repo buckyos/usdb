@@ -2493,6 +2493,10 @@ def _snapshot_component(
         return component
     if loader_state in {"dead", "exited", "removing", "restarting"}:
         exit_code = loader_service.get("exit_code") if loader_service is not None else None
+        error_log = (
+            Path(env["BH_DATA_HOST_DIR"]).expanduser().resolve()
+            / "logs/balance-history_install_snapshot_rCURRENT.log"
+        )
         try:
             last_progress = _read_snapshot_import_progress(env)
             last_stage = f"; last_stage={last_progress['stage']}"
@@ -2506,12 +2510,14 @@ def _snapshot_component(
                 + last_stage,
             )
         suffix = f", exit_code={exit_code}" if exit_code is not None else ""
-        return _component_progress(
+        component = _component_progress(
             "snapshot",
             "FAILED",
             f"snapshot-loader state={loader_state}{suffix}; "
-            f"live RocksDB import is incomplete{last_stage}",
+            f"live RocksDB import is incomplete{last_stage}; inspect {error_log}",
         )
+        component["error_log"] = str(error_log)
+        return component
     if import_state.get("db_has_entries") is True:
         return _component_progress(
             "snapshot",
@@ -2643,6 +2649,16 @@ def _balance_history_component(
         else:
             snapshot_detail = "waiting for independent Snapshot import to complete"
         return _component_progress("balance_history", "WAITING", snapshot_detail)
+    if snapshot_component["state"] in {"BLOCKED", "FAILED"} and service_state in {
+        None,
+        "created",
+    }:
+        return _component_progress(
+            "balance_history",
+            "BLOCKED",
+            "not started because Snapshot import did not complete; "
+            + snapshot_component["detail"],
+        )
     return _indexed_service_component(
         "balance_history",
         service,

@@ -252,6 +252,9 @@ balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面�
 运行时是带八阶段、阶段进度、elapsed、rate、阶段 ETA 和最近更新时间的 `IMPORTING`，匹配 marker 与非空 live DB
 同时存在后才是 `READY`。阶段百分比只描述当前阶段，不是全流程百分比；导入期间 balance-history 服务保持
 `WAITING`，直到 loader 成功完成原子切换后才启动。
+如果 loader 失败，Snapshot import 行会保留最后阶段并显示
+`BH_DATA_HOST_DIR/logs/balance-history_install_snapshot_rCURRENT.log` 的实际路径，尚未启动的 balance-history 行转为
+`BLOCKED`；controller 的 fail-closed 重试不会删除这份最后进度。不要在确认该日志和 live DB 内容前清理数据目录。
 面板不会改变上述顺序或门禁；USDB chain 一行还会只读核对 release manifest 冻结的 chain ID 与 genesis hash。
 
 部署中断后优先运行 `usdb-node up --dry-run` 查看允许的转换，再运行 `usdb-node up`。它只自动续传
