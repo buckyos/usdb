@@ -87,6 +87,7 @@ CONTROLLER_START_LIMIT_BURST = 20
 DEFAULT_SYNC_TIMEOUT_SECS = 604800
 MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
+MAX_STALE_PROGRESS_AGE_SECS = 60.0
 AUTO_BITCOIN_RESOURCE_PROFILE = "auto"
 PERFORMANCE_BITCOIN_RESOURCE_PROFILE = "performance-64g"
 IBD_BITCOIN_RESOURCE_PROFILE = "ibd-64g"
@@ -2940,6 +2941,70 @@ class TerminalProgressDisplay:
         self._active = False
 
 
+class NodeProgressHistory:
+    """Retain bounded last-good values for transient display-only RPC failures."""
+
+    _COMPONENT_IDS = frozenset(
+        {"bitcoin", "balance_history", "usdb_indexer", "usdb_chain"}
+    )
+
+    def __init__(self, max_stale_age_secs: float = MAX_STALE_PROGRESS_AGE_SECS) -> None:
+        if max_stale_age_secs <= 0:
+            raise ValueError("maximum stale progress age must be positive")
+        self.max_stale_age_secs = max_stale_age_secs
+        self._last_good: dict[str, tuple[float, str, dict[str, Any]]] = {}
+
+    @staticmethod
+    def _has_progress(component: dict[str, Any]) -> bool:
+        return any(
+            isinstance(component.get(key), (int, float))
+            and not isinstance(component.get(key), bool)
+            for key in ("current", "total", "progress_percent")
+        )
+
+    def apply(
+        self,
+        report: dict[str, Any],
+        *,
+        observed_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Return a display copy with recent progress retained during STARTING probes."""
+        now = time.monotonic() if observed_monotonic is None else observed_monotonic
+        observed_at = str(report.get("observed_at", "unknown"))
+        components: list[dict[str, Any]] = []
+        for original in report["components"]:
+            component = dict(original)
+            component_id = component.get("id")
+            if component_id not in self._COMPONENT_IDS:
+                components.append(component)
+                continue
+
+            state = component.get("state")
+            if state in {"SYNCING", "READY"} and self._has_progress(component):
+                self._last_good[component_id] = (now, observed_at, dict(component))
+            elif state in {"WAITING", "BLOCKED", "FAILED"}:
+                self._last_good.pop(component_id, None)
+            elif state == "STARTING" and not self._has_progress(component):
+                cached = self._last_good.get(component_id)
+                if cached is not None:
+                    cached_at, cached_observed_at, cached_component = cached
+                    if now - cached_at <= self.max_stale_age_secs:
+                        for key in ("current", "total", "progress_percent", "unit"):
+                            if cached_component.get(key) is not None:
+                                component[key] = cached_component[key]
+                        component["detail"] = (
+                            f"STALE from {cached_observed_at}: {cached_component['detail']}; "
+                            f"latest probe: {component['detail']}"
+                        )
+                    else:
+                        self._last_good.pop(component_id, None)
+            components.append(component)
+
+        merged = dict(report)
+        merged["components"] = components
+        return merged
+
+
 class NodeProgressMonitor:
     """Render read-only node progress without participating in startup decisions."""
 
@@ -2962,6 +3027,7 @@ class NodeProgressMonitor:
         self._refresh = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest: dict[str, Any] | None = None
+        self._history = NodeProgressHistory()
 
     def __enter__(self) -> NodeProgressMonitor:
         if self.enabled:
@@ -2995,7 +3061,7 @@ class NodeProgressMonitor:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                report = collect_node_progress(self.layout)
+                report = self._history.apply(collect_node_progress(self.layout))
                 self._latest = report
                 self._render(report)
             except Exception as error:  # Display failures must never change node control flow.
@@ -3041,10 +3107,11 @@ def print_progress_status(
 
     output = sys.stderr
     display = TerminalProgressDisplay(output)
+    history = NodeProgressHistory()
     display.start()
     try:
         while True:
-            report = collect_node_progress(layout)
+            report = history.apply(collect_node_progress(layout))
             rendered = render_node_progress(
                 report,
                 phase="observe",
@@ -3121,10 +3188,10 @@ STATUS_RECOVERY: dict[str, dict[str, Any]] = {
     },
     "DEGRADED": {
         "up_mode": "manual",
-        "up_summary": "automatic restart is disabled for unhealthy services",
+        "up_summary": "usdb-node will not initiate recovery for unhealthy services",
         "next_actions": ["usdb-node logs", "usdb-node doctor"],
         "guidance": [
-            "Inspect service logs before restarting; repeated restart may hide consensus or storage faults.",
+            "Inspect service logs before restarting; the Docker restart policy may already be retrying a failed container.",
             "Run doctor to recheck release identity, configuration, data contracts and safe bindings.",
             "Preserve node.env and persistent data until the failing service is understood.",
         ],

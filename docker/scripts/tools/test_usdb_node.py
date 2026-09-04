@@ -974,6 +974,80 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIn("height is unavailable", bitcoin["detail"])
         self.assertIn("RPC responds", bitcoin["detail"])
 
+    def test_progress_history_retains_and_expires_last_good_rpc_values(self) -> None:
+        history = NODE.NodeProgressHistory(max_stale_age_secs=60)
+        fresh = {
+            "observed_at": "2026-09-04T05:00:00+00:00",
+            "components": [
+                NODE._component_progress(
+                    "bitcoin",
+                    "SYNCING",
+                    "blocks=885933/965431, txindex=indexing@190686",
+                    current=885_933,
+                    total=965_431,
+                    progress_percent=78.39,
+                )
+            ],
+        }
+        history.apply(fresh, observed_monotonic=100)
+        unavailable = {
+            "observed_at": "2026-09-04T05:00:05+00:00",
+            "components": [
+                NODE._component_progress(
+                    "bitcoin",
+                    "STARTING",
+                    "readiness unavailable: Bitcoin RPC getblockchaininfo failed: timed out",
+                )
+            ],
+        }
+
+        retained = history.apply(unavailable, observed_monotonic=105)
+        bitcoin = retained["components"][0]
+        self.assertEqual(bitcoin["state"], "STARTING")
+        self.assertEqual((bitcoin["current"], bitcoin["total"]), (885_933, 965_431))
+        self.assertEqual(bitcoin["progress_percent"], 78.39)
+        self.assertIn("STALE from 2026-09-04T05:00:00+00:00", bitcoin["detail"])
+        self.assertIn("latest probe", bitcoin["detail"])
+
+        expired = history.apply(unavailable, observed_monotonic=161)
+        bitcoin = expired["components"][0]
+        self.assertIsNone(bitcoin["current"])
+        self.assertIsNone(bitcoin["progress_percent"])
+        self.assertNotIn("STALE", bitcoin["detail"])
+
+    def test_progress_history_clears_last_good_values_on_failed_container(self) -> None:
+        history = NODE.NodeProgressHistory()
+        fresh = {
+            "observed_at": "2026-09-04T05:00:00+00:00",
+            "components": [
+                NODE._component_progress(
+                    "bitcoin", "SYNCING", "blocks=10/20", current=10, total=20
+                )
+            ],
+        }
+        history.apply(fresh, observed_monotonic=100)
+        failed = {
+            "observed_at": "2026-09-04T05:00:05+00:00",
+            "components": [
+                NODE._component_progress(
+                    "bitcoin", "FAILED", "container state=exited, exit_code=134"
+                )
+            ],
+        }
+        history.apply(failed, observed_monotonic=105)
+        unavailable = {
+            "observed_at": "2026-09-04T05:00:10+00:00",
+            "components": [
+                NODE._component_progress(
+                    "bitcoin", "STARTING", "waiting for readiness RPC"
+                )
+            ],
+        }
+
+        bitcoin = history.apply(unavailable, observed_monotonic=110)["components"][0]
+        self.assertIsNone(bitcoin["current"])
+        self.assertNotIn("STALE", bitcoin["detail"])
+
     def test_progress_view_does_not_borrow_upstream_progress_before_service_start(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         self.configure_full_node(layout, "progress-view-staged-gates")
@@ -1339,6 +1413,13 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertEqual(report["next_actions"], ["usdb-node setup"])
         self.assertEqual(report["up"]["mode"], "manual")
         self.assertTrue(report["operator_guidance"])
+
+    def test_degraded_guidance_distinguishes_usdb_and_docker_restart_policy(self) -> None:
+        recovery = NODE.STATUS_RECOVERY["DEGRADED"]
+        self.assertIn("usdb-node will not initiate recovery", recovery["up_summary"])
+        self.assertTrue(
+            any("Docker restart policy" in item for item in recovery["guidance"])
+        )
 
     def test_status_blocked_explains_manual_data_recovery_boundary(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

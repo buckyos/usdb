@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -19,6 +23,76 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 class TestnetBitcoinReleaseTests(unittest.TestCase):
+    def run_fake_bitcoin_down(
+        self, exit_code: int
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle = root / "bundle"
+            bundle.mkdir()
+            node_env = bundle / "node.env"
+            node_env.write_text("", encoding="utf-8")
+            (bundle / "network.env").write_text("", encoding="utf-8")
+            state = root / "state"
+            state.write_text("running\n", encoding="utf-8")
+            calls = root / "calls"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            docker = fake_bin / "docker"
+            docker.write_text(
+                textwrap.dedent(
+                    """\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    if [[ "${1}" == "compose" ]]; then
+                      if [[ " $* " == *" ps --all --quiet btc-node "* ]]; then
+                        printf 'fake-container\\n'
+                      elif [[ " $* " == *" stop btc-node "* ]]; then
+                        printf 'stop\\n' >>"${FAKE_DOCKER_CALLS}"
+                        printf 'exited\\n' >"${FAKE_DOCKER_STATE}"
+                      elif [[ " $* " == *" down --remove-orphans "* ]]; then
+                        printf 'down\\n' >>"${FAKE_DOCKER_CALLS}"
+                      else
+                        printf 'unexpected compose invocation: %s\\n' "$*" >&2
+                        exit 3
+                      fi
+                    elif [[ "${1}" == "inspect" ]]; then
+                      case "${3}" in
+                        *State.Status*) cat "${FAKE_DOCKER_STATE}" ;;
+                        *State.ExitCode*) printf '%s\\n' "${FAKE_DOCKER_EXIT_CODE}" ;;
+                        *State.OOMKilled*) printf 'false\\n' ;;
+                        *) printf 'unexpected inspect format: %s\\n' "${3}" >&2; exit 4 ;;
+                      esac
+                    else
+                      printf 'unexpected docker invocation: %s\\n' "$*" >&2
+                      exit 5
+                    fi
+                    """
+                ),
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                    "USDB_TESTNET_BUNDLE_DIR": str(bundle),
+                    "USDB_TESTNET_NODE_ENV": str(node_env),
+                    "FAKE_DOCKER_STATE": str(state),
+                    "FAKE_DOCKER_CALLS": str(calls),
+                    "FAKE_DOCKER_EXIT_CODE": str(exit_code),
+                }
+            )
+            result = subprocess.run(
+                [str(ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh"), "down"],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+                timeout=10,
+            )
+            return result, calls.read_text(encoding="utf-8").splitlines()
+
     def test_dockerfile_freezes_release_and_three_signers(self) -> None:
         content = (ROOT / "docker/Dockerfile.bitcoin-core").read_text(encoding="utf-8")
         self.assertIn("ARG BITCOIN_VERSION=28.1", content)
@@ -39,6 +113,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
             "memswap_limit: ${BTC_MEMORY_SWAP_LIMIT:-${BTC_MEMORY_LIMIT:-5g}}",
             content,
         )
+        self.assertIn("stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-30m}", content)
         self.assertIn("external: true", content)
 
     def test_testnet_node_contract_uses_private_rpc_and_co_located_memory_profile(self) -> None:
@@ -150,6 +225,27 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         self.assertIn("wait-data", content)
         self.assertIn("--data-start", content)
         self.assertIn("BTC_READY_PROGRESS_INTERVAL_SECS", content)
+
+    def test_bitcoin_runner_stops_explicitly_and_reports_shutdown_outcome(self) -> None:
+        content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("compose stop btc-node", content)
+        self.assertIn("Bitcoin Core shutdown in progress", content)
+        self.assertIn("Bitcoin Core shutdown completed", content)
+        self.assertIn('"${exit_code}" == "137"', content)
+
+        result, calls = self.run_fake_bitcoin_down(exit_code=0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, ["stop", "down"])
+        self.assertIn("shutdown started", result.stderr)
+        self.assertIn("shutdown completed", result.stderr)
+
+    def test_bitcoin_runner_reports_forced_stop_after_compose_cleanup(self) -> None:
+        result, calls = self.run_fake_bitcoin_down(exit_code=137)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(calls, ["stop", "down"])
+        self.assertIn("forcibly killed", result.stderr)
 
     def test_runtime_runner_can_suppress_readiness_heartbeat_for_dashboard(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(

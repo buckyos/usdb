@@ -109,6 +109,105 @@ compose() {
     "$@"
 }
 
+timestamp_utc() {
+  date -u +'%Y-%m-%dT%H:%M:%SZ'
+}
+
+duration_text() {
+  local elapsed="${1}"
+  printf '%02d:%02d:%02d' \
+    "$((elapsed / 3600))" \
+    "$(((elapsed % 3600) / 60))" \
+    "$((elapsed % 60))"
+}
+
+stop_bitcoin() {
+  local container_id
+  local initial_state
+  local started_at
+  local finished_at
+  local elapsed
+  local next_heartbeat=15
+  local stop_pid
+  local stop_result=0
+  local final_state
+  local exit_code
+  local oom_killed
+  local unsafe_stop=0
+
+  container_id="$(compose ps --all --quiet btc-node)"
+  if [[ -z "${container_id}" ]]; then
+    printf '[%s] [usdb-node] Bitcoin Core has no container to stop\n' "$(timestamp_utc)" >&2
+    compose down --remove-orphans "$@"
+    return
+  fi
+
+  initial_state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
+  started_at="$(date +%s)"
+  printf '[%s] [usdb-node] Bitcoin Core shutdown started: state=%s, grace_period=%s\n' \
+    "$(timestamp_utc)" \
+    "${initial_state}" \
+    "${BTC_STOP_GRACE_PERIOD:-30m}" >&2
+
+  if [[ "${initial_state}" == "running" || "${initial_state}" == "restarting" ]]; then
+    # A Compose stop marks the container as manually stopped, preventing the
+    # unless-stopped policy from racing a graceful bitcoind SIGTERM shutdown.
+    compose stop btc-node &
+    stop_pid=$!
+    while kill -0 "${stop_pid}" 2>/dev/null; do
+      sleep 1
+      if ! kill -0 "${stop_pid}" 2>/dev/null; then
+        break
+      fi
+      elapsed="$(( $(date +%s) - started_at ))"
+      if ((elapsed >= next_heartbeat)); then
+        printf '[%s] [usdb-node] Bitcoin Core shutdown in progress: elapsed=%s\n' \
+          "$(timestamp_utc)" \
+          "$(duration_text "${elapsed}")" >&2
+        next_heartbeat="$((next_heartbeat + 15))"
+      fi
+    done
+    if wait "${stop_pid}"; then
+      stop_result=0
+    else
+      stop_result=$?
+    fi
+  fi
+  finished_at="$(date +%s)"
+  elapsed="$((finished_at - started_at))"
+
+  if ((stop_result != 0)); then
+    printf '[%s] [usdb-node] ERROR: Bitcoin Core stop failed after %s; preserving the container for diagnosis\n' \
+      "$(timestamp_utc)" \
+      "$(duration_text "${elapsed}")" >&2
+    return "${stop_result}"
+  fi
+
+  final_state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
+  exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${container_id}")"
+  oom_killed="$(docker inspect --format '{{.State.OOMKilled}}' "${container_id}")"
+  printf '[%s] [usdb-node] Bitcoin Core shutdown completed: elapsed=%s, state=%s, exit_code=%s, oom_killed=%s\n' \
+    "$(timestamp_utc)" \
+    "$(duration_text "${elapsed}")" \
+    "${final_state}" \
+    "${exit_code}" \
+    "${oom_killed}" >&2
+
+  if [[ "${exit_code}" == "137" && "${oom_killed}" != "true" ]]; then
+    unsafe_stop=1
+    printf '[%s] [usdb-node] ERROR: Bitcoin Core may have exceeded its shutdown grace period and been forcibly killed\n' \
+      "$(timestamp_utc)" >&2
+  elif [[ "${exit_code}" != "0" ]]; then
+    printf '[%s] [usdb-node] WARNING: Bitcoin Core retained a non-zero exit code; inspect its persistent debug.log before restart\n' \
+      "$(timestamp_utc)" >&2
+  fi
+
+  compose down --remove-orphans "$@"
+  if ((unsafe_stop != 0)); then
+    return 1
+  fi
+}
+
 wait_ready() {
   local timeout_secs
   timeout_secs="${BTC_READY_WAIT_TIMEOUT_SECS:-86400}"
@@ -222,7 +321,7 @@ case "${action}" in
     ;;
   down)
     require_node_env
-    compose down --remove-orphans "$@"
+    stop_bitcoin "$@"
     ;;
   *)
     echo "Unknown action: ${action}" >&2

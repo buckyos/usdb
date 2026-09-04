@@ -303,7 +303,9 @@ usdb-node status --progress-json
 `stage/stage_index/stage_count/stage_current/stage_total/updated_at_unix`。这是观测接口，不可代替下述
 `usdb-node-status:v2` 生命周期判断。balance-history 或 usdb-indexer 尚未启动时，其 component 只返回
 `WAITING` 和上游门禁说明，`current/total/progress_percent` 保持 `null`；只有服务启动并返回自身 readiness
-后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。
+后才显示该服务的同步进度，避免把 Bitcoin 或 balance-history 的上游高度误标成下游服务进度。连续运行的
+`up` 面板或 `status --watch` 在 readiness RPC 暂时超时时，最多保留 60 秒最近一次成功观测并显式标记
+`STALE`；component 状态和最新错误仍使用当前探测结果，该缓存只改善显示连续性，不参与启动门禁或生命周期判断。
 
 `snapshot-loader` 将导入观测值以原子替换方式写入
 `<BH_DATA_HOST_DIR>/bootstrap/snapshot-loader.progress.json`，写入失败只记录 warning，不影响 installer
@@ -328,6 +330,9 @@ data-start/origin gate 后，balance-history 和 usdb-indexer 可先后进入 `S
 | `READY` | 核心容器和服务 readiness 全部通过 | 无 |
 | `DEGRADED` | 已启动服务退出、不健康或 readiness 失败 | `usdb-node logs` |
 | `BLOCKED` | 配置、数据契约或状态读取异常 | `usdb-node doctor` |
+
+`DEGRADED` 下 `usdb-node up` 不会主动执行恢复，但服务已有的 Docker restart policy 可能仍在重试失败容器；
+应先从 `status` 确认 `restarting/exited`，保存日志并定位根因，不能把 manual up gate 理解为底层容器不会重启。
 
 节点已配置但 unit 尚未安装时，以上可自动推进状态的 `next_actions` 会先列出
 `usdb-node controller install`；controller 是否安装是运维能力检查，不改变已经运行节点的共识 readiness，
@@ -427,7 +432,9 @@ usdb-node down --keep-bitcoin
 `run_testnet_bitcoin.sh progress`；该命令只查询一次并输出 `usdb-bitcoin-readiness:v1` JSON，不等待同步完成。
 
 默认 `down` 停止 controller、USDB runtime 和独立 Bitcoin Core；`--keep-bitcoin` 明确保留 Bitcoin 继续同步。
-所有命令都不会执行 `compose down -v`，也不会删除持久数据。
+Bitcoin Core 独立进入 stop 阶段，默认允许最多 30 分钟完成大 `dbcache` flush，并每 15 秒输出 UTC 时间和
+elapsed heartbeat；结束时输出容器状态、退出码和 OOM 标记。非 OOM 的 `137` 退出会被报告为可能超过停止
+宽限期的强制终止。随后才清理 Compose 容器和网络。所有命令都不会执行 `compose down -v`，也不会删除持久数据。
 
 ## 5. 矿工和 Joiner
 

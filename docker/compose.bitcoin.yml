@@ -45,7 +45,8 @@ services:
     # Falling back to memory keeps old configs stoppable without granting swap;
     # validated current configs always provide the explicit profile value.
     memswap_limit: ${BTC_MEMORY_SWAP_LIMIT:-${BTC_MEMORY_LIMIT:-5g}}
-    stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-10m}
+    # Large IBD dbcache flushes can take several minutes on SATA storage.
+    stop_grace_period: ${BTC_STOP_GRACE_PERIOD:-30m}
     healthcheck:
       test: ["CMD", "python3", "/opt/usdb/docker/scripts/tools/check_bitcoin_readiness.py"]
       interval: 30s

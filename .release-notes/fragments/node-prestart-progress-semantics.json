@@ -9,7 +9,8 @@
   "summary": "Stop presenting upstream gate progress as progress of services that have not started",
   "details": [
     "The node dashboard now leaves balance-history and usdb-indexer progress unset while those services are waiting to start, while retaining the upstream gate description.",
-    "Once a service starts, its row reports only current, total, and percentage values obtained from that service's own readiness response, avoiding an apparent progress reset at startup."
+    "Once a service starts, its row reports only current, total, and percentage values obtained from that service's own readiness response, avoiding an apparent progress reset at startup.",
+    "Continuous up and status --watch dashboards retain the last successful service progress for at most 60 seconds across transient readiness RPC failures, mark it STALE, and keep current lifecycle state and errors authoritative."
   ],
   "operator_actions": [],
   "compatibility": {

@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-graceful-shutdown-guard",
+  "type": "fixed",
+  "scopes": [
+    "bitcoin",
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Give large Bitcoin caches a bounded and observable graceful shutdown phase",
+  "details": [
+    "Bitcoin Core is explicitly stopped before its Compose project is removed, with UTC start, heartbeat, completion, elapsed-time, exit-code, and OOM observations.",
+    "The default stop grace period is increased from 10 to 30 minutes so the temporary 20 GiB IBD cache can flush on slower storage before Docker resorts to a forced kill.",
+    "A non-OOM exit code 137 is reported as a possible stop-timeout kill while bind-mounted Bitcoin data remains preserved.",
+    "DEGRADED guidance now distinguishes the manual usdb-node recovery gate from Docker's existing container restart policy."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
