@@ -1046,6 +1046,7 @@ class UsdbNodeTests(unittest.TestCase):
         with (
             mock.patch.object(NODE, "_collect_compose_services", return_value=services),
             mock.patch.object(NODE, "_bitcoin_startup_progress", return_value=None),
+            mock.patch.object(NODE, "_bitcoin_replay_log_progress", return_value=None),
         ):
             report = NODE.collect_node_progress(layout)
 
@@ -1056,6 +1057,119 @@ class UsdbNodeTests(unittest.TestCase):
         self.assertIsNone(bitcoin["current"])
         self.assertIn("height is unavailable", bitcoin["detail"])
         self.assertIn("RPC responds", bitcoin["detail"])
+
+    def test_bitcoin_replay_log_progress_uses_latest_incomplete_startup(self) -> None:
+        data_dir = Path(self.temporary.name) / "bitcoin-replay"
+        data_dir.mkdir()
+        debug_log = data_dir / "debug.log"
+        debug_log.write_text(
+            "\n".join(
+                [
+                    "2026-09-04T10:00:00Z Bitcoin Core version v28.1.0 (release build)",
+                    "2026-09-04T10:00:01Z LoadBlockIndexDB: last block file info: "
+                    "CBlockFileInfo(blocks=1, heights=1...700)",
+                    "2026-09-04T10:00:02Z Replaying blocks",
+                    "2026-09-04T10:00:03Z Rolling forward "
+                    f"{'1' * 64} (600)",
+                    "2026-09-04T10:00:04Z Block index and chainstate loaded",
+                    "2026-09-04T11:00:00Z Bitcoin Core version v28.1.0 (release build)",
+                    "2026-09-04T11:00:01Z LoadBlockIndexDB: last block file info: "
+                    "CBlockFileInfo(blocks=30, size=1, heights=980...1000, time=x...y)",
+                    "2026-09-04T11:00:02Z Replaying blocks",
+                    "2026-09-04T11:00:03Z Rolling forward "
+                    f"{'2' * 64} (800)",
+                    "2026-09-04T11:00:04Z Rolling forward "
+                    f"{'3' * 64} (900)",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        NODE._BITCOIN_REPLAY_LOG_CACHE.clear()
+
+        progress = NODE._bitcoin_replay_log_progress(
+            {"BTC_NODE_DATA_HOST_DIR": str(data_dir)}
+        )
+
+        self.assertIsNotNone(progress)
+        assert progress is not None
+        self.assertEqual(progress["start_height"], 800)
+        self.assertEqual(progress["current_height"], 900)
+        self.assertEqual(progress["target_height"], 1000)
+        self.assertEqual(progress["processed_blocks"], 101)
+        self.assertEqual(progress["total_blocks"], 201)
+        self.assertAlmostEqual(progress["progress_percent"], 10100 / 201)
+
+        with debug_log.open("a", encoding="utf-8") as output:
+            output.write(
+                "2026-09-04T11:00:05Z Rolling forward "
+                f"{'4' * 64} (901)\n"
+            )
+        with mock.patch.object(
+            NODE, "_read_file_tail", wraps=NODE._read_file_tail
+        ) as read_tail:
+            cached_progress = NODE._bitcoin_replay_log_progress(
+                {"BTC_NODE_DATA_HOST_DIR": str(data_dir)}
+            )
+        self.assertIsNotNone(cached_progress)
+        assert cached_progress is not None
+        self.assertEqual(cached_progress["current_height"], 901)
+        read_tail.assert_called_once_with(
+            debug_log, NODE.BITCOIN_REPLAY_LOG_TAIL_BYTES
+        )
+
+        with debug_log.open("a", encoding="utf-8") as output:
+            output.write(
+                "2026-09-04T11:00:06Z Block index and chainstate loaded in 100ms\n"
+            )
+        self.assertIsNone(
+            NODE._bitcoin_replay_log_progress(
+                {"BTC_NODE_DATA_HOST_DIR": str(data_dir)}
+            )
+        )
+
+    def test_progress_view_uses_replay_log_while_bitcoin_rpc_is_warming_up(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        self.configure_full_node(layout, "progress-view-bitcoin-replay")
+        services = {
+            "btc-node": {"state": "running", "health": "starting", "exit_code": None}
+        }
+        report_without_status = {
+            "schema_version": "usdb-bitcoin-readiness:v1",
+            "ready": False,
+            "status": None,
+            "blockers": [
+                "Bitcoin RPC getblockchaininfo returned error: Loading block index"
+            ],
+        }
+        replay = {
+            "start_height": 800,
+            "current_height": 900,
+            "target_height": 1000,
+            "processed_blocks": 101,
+            "total_blocks": 201,
+            "progress_percent": 10100 / 201,
+        }
+        with (
+            mock.patch.object(NODE, "_collect_compose_services", return_value=services),
+            mock.patch.object(
+                NODE, "_bitcoin_startup_progress", return_value=report_without_status
+            ),
+            mock.patch.object(
+                NODE, "_bitcoin_replay_log_progress", return_value=replay
+            ),
+        ):
+            report = NODE.collect_node_progress(layout)
+
+        bitcoin = next(
+            component for component in report["components"] if component["id"] == "bitcoin"
+        )
+        self.assertEqual(bitcoin["state"], "STARTING")
+        self.assertEqual((bitcoin["current"], bitcoin["total"]), (101, 201))
+        self.assertEqual(bitcoin["startup_phase"], "chainstate_replay")
+        self.assertEqual(bitcoin["block_height"], 900)
+        self.assertEqual(bitcoin["target_source"], "block_file_height_range")
+        self.assertIn("readiness remains RPC-gated", bitcoin["detail"])
 
     def test_progress_history_retains_and_expires_last_good_rpc_values(self) -> None:
         history = NODE.NodeProgressHistory(max_stale_age_secs=60)

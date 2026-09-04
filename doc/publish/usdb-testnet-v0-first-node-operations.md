@@ -242,6 +242,8 @@ usdb-node status
 running、后续服务尚未启动且 Bitcoin 报告 IBD/txindex 正在推进，`usdb-node status` 会将其归为
 `STARTING` 并显示当前 blocks/headers、verification、txindex 和 peer；只有进程退出、所有服务启动后仍
 不健康或 readiness 失败，才归为 `DEGRADED`。
+异常停机后的 `Replaying blocks` 发生在 RPC 可用之前；此时面板会将 Bitcoin 保持为 `STARTING`，
+并从持久化 Core 日志显示 replay 区间进度。这个进度只是恢复状态观测，不能放宽 Bitcoin 或下游服务门禁。
 
 交互式 `up` 会先向 systemd 提交 bootstrap controller，再固定显示 snapshot、Bitcoin、
 balance-history、usdb-indexer、USDB chain 五行进度；Ctrl+C 只脱离面板，controller 继续运行。另一个 SSH

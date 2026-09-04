@@ -124,12 +124,12 @@ duration_text() {
 stop_bitcoin() {
   local container_id
   local initial_state
+  local current_state
   local started_at
   local finished_at
   local elapsed
   local next_heartbeat=15
-  local stop_pid
-  local stop_result=0
+  local shutdown_phase
   local final_state
   local exit_code
   local oom_killed
@@ -144,44 +144,68 @@ stop_bitcoin() {
 
   initial_state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
   started_at="$(date +%s)"
-  printf '[%s] [usdb-node] Bitcoin Core shutdown started: state=%s, grace_period=%s\n' \
+  printf '[%s] [usdb-node] Bitcoin Core shutdown started: state=%s, force_kill=disabled\n' \
     "$(timestamp_utc)" \
-    "${initial_state}" \
-    "${BTC_STOP_GRACE_PERIOD:-30m}" >&2
+    "${initial_state}" >&2
 
   if [[ "${initial_state}" == "running" || "${initial_state}" == "restarting" ]]; then
-    # A Compose stop marks the container as manually stopped, preventing the
-    # unless-stopped policy from racing a graceful bitcoind SIGTERM shutdown.
-    compose stop btc-node &
-    stop_pid=$!
-    while kill -0 "${stop_pid}" 2>/dev/null; do
-      sleep 1
-      if ! kill -0 "${stop_pid}" 2>/dev/null; then
+    # An RPC stop is invisible to Docker's unless-stopped policy. Disable that
+    # policy before requesting shutdown so a clean bitcoind exit cannot race a
+    # container restart. The next Compose up restores the declared policy.
+    if ! docker update --restart=no "${container_id}" >/dev/null; then
+      printf '[%s] [usdb-node] ERROR: failed to disable the Bitcoin container restart policy; shutdown was not requested\n' \
+        "$(timestamp_utc)" >&2
+      return 1
+    fi
+
+    if compose exec -T btc-node \
+      /opt/bitcoin/bin/bitcoin-cli \
+        -chain=main \
+        -datadir=/data/bitcoin \
+        -rpcclienttimeout=10 \
+        stop; then
+      printf '[%s] [usdb-node] Bitcoin Core accepted the authenticated RPC stop request\n' \
+        "$(timestamp_utc)" >&2
+    else
+      current_state="$(docker inspect --format '{{.State.Status}}' "${container_id}" 2>/dev/null || true)"
+      if [[ "${current_state}" == "running" || "${current_state}" == "restarting" ]]; then
+        printf '[%s] [usdb-node] WARNING: Bitcoin RPC stop is unavailable; sending SIGTERM without a forced-kill deadline\n' \
+          "$(timestamp_utc)" >&2
+        if ! docker kill --signal=SIGTERM "${container_id}" >/dev/null; then
+          printf '[%s] [usdb-node] ERROR: failed to signal Bitcoin Core; preserving the running container for diagnosis\n' \
+            "$(timestamp_utc)" >&2
+          docker update --restart=unless-stopped "${container_id}" >/dev/null 2>&1 || true
+          return 1
+        fi
+      fi
+    fi
+
+    while true; do
+      current_state="$(docker inspect --format '{{.State.Status}}' "${container_id}" 2>/dev/null || true)"
+      if [[ "${current_state}" != "running" && "${current_state}" != "restarting" ]]; then
         break
       fi
+      sleep 1
       elapsed="$(( $(date +%s) - started_at ))"
       if ((elapsed >= next_heartbeat)); then
-        printf '[%s] [usdb-node] Bitcoin Core shutdown in progress: elapsed=%s\n' \
+        shutdown_phase="$(
+          data_dir="$(env_value BTC_NODE_DATA_HOST_DIR "${node_env}")"
+          if [[ -r "${data_dir}/debug.log" ]]; then
+            tail -n 256 "${data_dir}/debug.log" 2>/dev/null \
+              | grep -E 'Shutdown:|Dumped mempool|Flushed fee estimates|thread exit' \
+              | tail -n 1 || true
+          fi
+        )"
+        printf '[%s] [usdb-node] Bitcoin Core shutdown in progress: elapsed=%s, phase=%s\n' \
           "$(timestamp_utc)" \
-          "$(duration_text "${elapsed}")" >&2
+          "$(duration_text "${elapsed}")" \
+          "${shutdown_phase:-waiting for database flush}" >&2
         next_heartbeat="$((next_heartbeat + 15))"
       fi
     done
-    if wait "${stop_pid}"; then
-      stop_result=0
-    else
-      stop_result=$?
-    fi
   fi
   finished_at="$(date +%s)"
   elapsed="$((finished_at - started_at))"
-
-  if ((stop_result != 0)); then
-    printf '[%s] [usdb-node] ERROR: Bitcoin Core stop failed after %s; preserving the container for diagnosis\n' \
-      "$(timestamp_utc)" \
-      "$(duration_text "${elapsed}")" >&2
-    return "${stop_result}"
-  fi
 
   final_state="$(docker inspect --format '{{.State.Status}}' "${container_id}")"
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "${container_id}")"
@@ -195,7 +219,7 @@ stop_bitcoin() {
 
   if [[ "${exit_code}" == "137" && "${oom_killed}" != "true" ]]; then
     unsafe_stop=1
-    printf '[%s] [usdb-node] ERROR: Bitcoin Core may have exceeded its shutdown grace period and been forcibly killed\n' \
+    printf '[%s] [usdb-node] ERROR: Bitcoin Core retained evidence of an external forced kill; inspect debug.log before restart\n' \
       "$(timestamp_utc)" >&2
   elif [[ "${exit_code}" != "0" ]]; then
     printf '[%s] [usdb-node] WARNING: Bitcoin Core retained a non-zero exit code; inspect its persistent debug.log before restart\n' \
@@ -219,6 +243,7 @@ wait_ready() {
 }
 
 start_bitcoin() {
+  local container_id
   command -v docker >/dev/null 2>&1 || {
     echo "docker is required" >&2
     exit 1
@@ -228,6 +253,13 @@ start_bitcoin() {
   ensure_network
   compose config --quiet
   compose up -d "$@" btc-node
+  container_id="$(compose ps --all --quiet btc-node)"
+  if [[ -z "${container_id}" ]]; then
+    echo "Bitcoin Core container is missing after Compose up" >&2
+    exit 1
+  fi
+  # This also repairs restart=no left by an interrupted managed shutdown.
+  docker update --restart=unless-stopped "${container_id}" >/dev/null
 }
 
 wait_data_start() {

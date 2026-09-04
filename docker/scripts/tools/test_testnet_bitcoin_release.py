@@ -24,7 +24,7 @@ def read_env(path: Path) -> dict[str, str]:
 
 class TestnetBitcoinReleaseTests(unittest.TestCase):
     def run_fake_bitcoin_down(
-        self, exit_code: int
+        self, exit_code: int, *, rpc_stop_succeeds: bool = True
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -47,15 +47,24 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                     if [[ "${1}" == "compose" ]]; then
                       if [[ " $* " == *" ps --all --quiet btc-node "* ]]; then
                         printf 'fake-container\\n'
-                      elif [[ " $* " == *" stop btc-node "* ]]; then
-                        printf 'stop\\n' >>"${FAKE_DOCKER_CALLS}"
-                        printf 'exited\\n' >"${FAKE_DOCKER_STATE}"
+                      elif [[ " $* " == *" exec -T btc-node "* && " $* " == *"/opt/bitcoin/bin/bitcoin-cli "* && " $* " == *" stop "* ]]; then
+                        printf 'rpc-stop\\n' >>"${FAKE_DOCKER_CALLS}"
+                        if [[ "${FAKE_RPC_STOP_SUCCEEDS}" == "true" ]]; then
+                          printf 'exited\\n' >"${FAKE_DOCKER_STATE}"
+                        else
+                          exit 1
+                        fi
                       elif [[ " $* " == *" down --remove-orphans "* ]]; then
                         printf 'down\\n' >>"${FAKE_DOCKER_CALLS}"
                       else
                         printf 'unexpected compose invocation: %s\\n' "$*" >&2
                         exit 3
                       fi
+                    elif [[ "${1}" == "update" ]]; then
+                      printf 'restart-%s\\n' "${2#--restart=}" >>"${FAKE_DOCKER_CALLS}"
+                    elif [[ "${1}" == "kill" && "${2}" == "--signal=SIGTERM" ]]; then
+                      printf 'signal-term\\n' >>"${FAKE_DOCKER_CALLS}"
+                      printf 'exited\\n' >"${FAKE_DOCKER_STATE}"
                     elif [[ "${1}" == "inspect" ]]; then
                       case "${3}" in
                         *State.Status*) cat "${FAKE_DOCKER_STATE}" ;;
@@ -81,6 +90,7 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
                     "FAKE_DOCKER_STATE": str(state),
                     "FAKE_DOCKER_CALLS": str(calls),
                     "FAKE_DOCKER_EXIT_CODE": str(exit_code),
+                    "FAKE_RPC_STOP_SUCCEEDS": str(rpc_stop_succeeds).lower(),
                 }
             )
             result = subprocess.run(
@@ -230,22 +240,41 @@ class TestnetBitcoinReleaseTests(unittest.TestCase):
         content = (ROOT / "docker/scripts/tools/run_testnet_bitcoin.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("compose stop btc-node", content)
+        self.assertNotIn("compose stop btc-node", content)
+        self.assertIn("docker update --restart=no", content)
+        self.assertIn("/opt/bitcoin/bin/bitcoin-cli", content)
+        self.assertIn("-rpcclienttimeout=10", content)
+        self.assertIn("docker kill --signal=SIGTERM", content)
+        self.assertIn("force_kill=disabled", content)
+        self.assertIn(
+            'docker update --restart=unless-stopped "${container_id}" >/dev/null',
+            content,
+        )
         self.assertIn("Bitcoin Core shutdown in progress", content)
         self.assertIn("Bitcoin Core shutdown completed", content)
         self.assertIn('"${exit_code}" == "137"', content)
 
         result, calls = self.run_fake_bitcoin_down(exit_code=0)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["stop", "down"])
+        self.assertEqual(calls, ["restart-no", "rpc-stop", "down"])
         self.assertIn("shutdown started", result.stderr)
         self.assertIn("shutdown completed", result.stderr)
 
-    def test_bitcoin_runner_reports_forced_stop_after_compose_cleanup(self) -> None:
+    def test_bitcoin_runner_falls_back_to_unbounded_sigterm_during_rpc_warmup(self) -> None:
+        result, calls = self.run_fake_bitcoin_down(
+            exit_code=0, rpc_stop_succeeds=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            calls, ["restart-no", "rpc-stop", "signal-term", "down"]
+        )
+        self.assertIn("without a forced-kill deadline", result.stderr)
+
+    def test_bitcoin_runner_reports_external_forced_stop_after_cleanup(self) -> None:
         result, calls = self.run_fake_bitcoin_down(exit_code=137)
         self.assertEqual(result.returncode, 1)
-        self.assertEqual(calls, ["stop", "down"])
-        self.assertIn("forcibly killed", result.stderr)
+        self.assertEqual(calls, ["restart-no", "rpc-stop", "down"])
+        self.assertIn("external forced kill", result.stderr)
 
     def test_runtime_runner_can_suppress_readiness_heartbeat_for_dashboard(self) -> None:
         content = (ROOT / "docker/scripts/tools/run_testnet_runtime.sh").read_text(

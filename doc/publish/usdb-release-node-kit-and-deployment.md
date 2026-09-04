@@ -438,9 +438,13 @@ usdb-node down --keep-bitcoin
 `run_testnet_bitcoin.sh progress`；该命令只查询一次并输出 `usdb-bitcoin-readiness:v1` JSON，不等待同步完成。
 
 默认 `down` 停止 controller、USDB runtime 和独立 Bitcoin Core；`--keep-bitcoin` 明确保留 Bitcoin 继续同步。
-Bitcoin Core 独立进入 stop 阶段，默认允许最多 30 分钟完成大 `dbcache` flush，并每 15 秒输出 UTC 时间和
-elapsed heartbeat；结束时输出容器状态、退出码和 OOM 标记。非 OOM 的 `137` 退出会被报告为可能超过停止
-宽限期的强制终止。随后才清理 Compose 容器和网络。所有命令都不会执行 `compose down -v`，也不会删除持久数据。
+Bitcoin Core 独立进入 stop 阶段：先关闭当前容器的自动重启策略，再请求认证 RPC `stop`；RPC warmup
+期间仅回退到无强杀截止时间的 `SIGTERM`。每 15 秒输出 UTC 时间、elapsed 和最近 flush 阶段，进程退出后
+才清理 Compose 容器和网络。结束时输出容器状态、退出码和 OOM 标记；非 OOM 的 `137` 被视为外部强杀
+证据。所有命令都不会执行 `compose down -v`，也不会删除持久数据。
+
+Bitcoin RPC 返回 warmup 错误时，进度面板会从本次 `debug.log` 启动段只读展示 chainstate replay
+区间进度；该 fallback 不参与 readiness，日志不可解析时仍显示高度未知。
 
 ## 5. 矿工和 Joiner
 

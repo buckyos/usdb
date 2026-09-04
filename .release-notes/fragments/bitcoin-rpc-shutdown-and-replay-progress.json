@@ -1,0 +1,24 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "bitcoin-rpc-shutdown-and-replay-progress",
+  "type": "fixed",
+  "scopes": [
+    "bitcoin",
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Remove the managed Bitcoin shutdown kill deadline and expose chainstate replay progress",
+  "details": [
+    "Managed node shutdown disables the running Bitcoin container restart policy, requests authenticated RPC stop, and waits for Core to exit before Compose cleanup.",
+    "When RPC is unavailable during warmup, shutdown falls back only to SIGTERM and never escalates automatically to SIGKILL; periodic heartbeats report elapsed time and the latest persistent shutdown phase.",
+    "While Bitcoin RPC is warming up after an unclean stop, the node dashboard derives bounded read-only ReplayBlocks progress from the current debug.log startup segment without using it for readiness decisions."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}

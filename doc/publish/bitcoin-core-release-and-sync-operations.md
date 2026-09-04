@@ -109,6 +109,11 @@ docker/scripts/tools/run_testnet_bitcoin.sh wait
 `up/wait` 会立即输出一次等待状态，之后默认每 60 秒向 stderr 输出 UTC 时间、elapsed、blocks/headers、
 Bitcoin Core verification progress、txindex 高度、peer 数和当前 blockers。`progress` 只查询一次，输出
 `usdb-bitcoin-readiness:v1` JSON，适合监控程序和另一条 SSH 会话读取；它不会改变容器或同步状态。
+若异常关机后 Bitcoin Core 在 RPC warmup 阶段执行 `Replaying blocks`，`usdb-node status --watch`
+会从持久化 `debug.log` 的本次启动段只读解析 replay 起点、当前高度和近似 block-file 目标，显示 chainstate
+恢复进度。该日志值只改善可观测性，不能通过任何 readiness gate；RPC 恢复后面板立即切回
+`getblockchaininfo/getindexinfo` 的权威状态。日志缺失、轮转或超出有界扫描窗口时保持高度未知，
+不会猜测 readiness。
 
 readiness 必须同时满足：
 
@@ -208,7 +213,9 @@ transactions/hour、容器 memory/swap、`memory.events`、major faults 和数�
 `down` 先停止 bootstrap controller，再按顺序停止 USDB runtime 和 Bitcoin 容器。只有显式使用
 `down --keep-bitcoin` 才会保留 Bitcoin 继续同步。`set-bitcoin-profile` 会拒绝存在运行中容器的节点，并且只原子修改私有
 `node.env`。后续 `up` 按新内存限制创建 Bitcoin 容器并继续使用原 bind-mounted 数据目录。正常关闭会先
-flush 数据库，因此应保留 `BTC_STOP_GRACE_PERIOD`，不要 kill 容器。切换前后使用
+禁用当前容器的自动重启策略，再通过认证 RPC 请求 `stop` 并持续等待数据库 flush；RPC 仍处于
+warmup 时只回退发送 `SIGTERM`。托管路径没有自动 `SIGKILL` 截止时间，完成退出后才删除 Compose
+容器，下一次 `up` 会恢复声明的 `unless-stopped` 策略。不要直接 kill 容器。切换前后使用
 `usdb-node status --watch`、`docker stats` 和 Bitcoin 日志比较 verification progress、CPU、内存及磁盘等待。
 
 从不含 `BTC_MEMORY_SWAP_LIMIT` 的旧 node kit 升级时，在安装新 release 后按以下顺序补齐配置：
@@ -236,6 +243,14 @@ preflight，不把 snapshot 下载目录、Docker build cache 或 USDB chain DB 
 ```bash
 docker/scripts/tools/run_testnet_bitcoin.sh down
 ```
+
+停机开始后每 15 秒输出 UTC 时间、elapsed 和最近的 Core shutdown/flush 阶段。大 `dbcache` 与慢盘
+可能需要较长时间；该命令不会因固定宽限期自动强杀。若操作终端中断，已发出的 graceful stop
+仍由容器内进程继续执行，当前容器保持 `restart=no` 以免退出后竞态重启；重新运行 `down` 可等待并
+清理已退出容器，或在确认关闭完成后运行 `up` 让 Compose 恢复正式 restart policy。
+
+`compose.bitcoin.yml` 的 `BTC_STOP_GRACE_PERIOD` 仅保护绕过节点工具、直接执行 Compose stop/down
+的非推荐路径，不能替代上述无强杀托管停机流程。
 
 升级 image 时保持数据目录不变，修改 digest 后依次执行 `pull`、`up`、`status`。升级前后记录
 `getblockchaininfo`、`getindexinfo`、image digest 和数据目录备份策略。若新 image 无法打开已有 DB，停止

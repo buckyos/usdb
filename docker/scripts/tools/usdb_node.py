@@ -89,6 +89,8 @@ MAX_UP_TRANSITIONS = 4
 DEFAULT_PROGRESS_REFRESH_SECS = 5.0
 MAX_STALE_PROGRESS_AGE_SECS = 60.0
 MAX_STALE_SNAPSHOT_PROGRESS_AGE_SECS = 60
+BITCOIN_REPLAY_LOG_SCAN_BYTES = 64 * 1024 * 1024
+BITCOIN_REPLAY_LOG_TAIL_BYTES = 512 * 1024
 AUTO_BITCOIN_RESOURCE_PROFILE = "auto"
 PERFORMANCE_BITCOIN_RESOURCE_PROFILE = "performance-64g"
 IBD_BITCOIN_RESOURCE_PROFILE = "ibd-64g"
@@ -108,6 +110,14 @@ PROGRESS_COMPONENTS = (
     ("usdb_indexer", "USDB indexer"),
     ("usdb_chain", "USDB chain"),
 )
+BITCOIN_START_RE = re.compile(r"(?m)^.*Bitcoin Core version .*$")
+BITCOIN_REPLAY_TARGET_RE = re.compile(
+    r"LoadBlockIndexDB: last block file info: .*?heights=[0-9]+\.\.\.([0-9]+)"
+)
+BITCOIN_REPLAY_HEIGHT_RE = re.compile(
+    r"Rolling forward [0-9a-f]{64} \(([0-9]+)\)"
+)
+_BITCOIN_REPLAY_LOG_CACHE: dict[Path, dict[str, Any]] = {}
 CORE_RUNTIME_SERVICES = (
     "btc-node",
     "balance-history",
@@ -1913,6 +1923,153 @@ def _bitcoin_progress_summary(
     )
 
 
+def _read_file_tail(path: Path, maximum_bytes: int) -> tuple[os.stat_result, str]:
+    stat = path.stat()
+    start = max(0, stat.st_size - maximum_bytes)
+    with path.open("rb") as source:
+        source.seek(start)
+        if start > 0:
+            source.readline()
+        content = source.read()
+    return stat, content.decode("utf-8", errors="replace")
+
+
+def _parse_bitcoin_replay_segment(segment: str) -> dict[str, int | float] | None:
+    replay_offset = segment.rfind("Replaying blocks")
+    if replay_offset < 0:
+        return None
+    replay_segment = segment[replay_offset:]
+    loaded_offset = replay_segment.rfind("Block index and chainstate loaded")
+    rolling_matches = list(BITCOIN_REPLAY_HEIGHT_RE.finditer(replay_segment))
+    if not rolling_matches:
+        return None
+    if loaded_offset > rolling_matches[-1].start():
+        return None
+
+    targets = list(BITCOIN_REPLAY_TARGET_RE.finditer(segment[:replay_offset]))
+    if not targets:
+        return None
+    start_height = int(rolling_matches[0].group(1))
+    current_height = int(rolling_matches[-1].group(1))
+    target_height = int(targets[-1].group(1))
+    if current_height < start_height or target_height < start_height:
+        return None
+
+    current_height = min(current_height, target_height)
+    processed_blocks = current_height - start_height + 1
+    total_blocks = target_height - start_height + 1
+    return {
+        "start_height": start_height,
+        "current_height": current_height,
+        "target_height": target_height,
+        "processed_blocks": processed_blocks,
+        "total_blocks": total_blocks,
+        "progress_percent": processed_blocks * 100.0 / total_blocks,
+    }
+
+
+def _bitcoin_replay_log_progress(env: dict[str, str]) -> dict[str, int | float] | None:
+    """Observe Bitcoin chainstate replay from debug.log while RPC is warming up."""
+    data_dir = env.get("BTC_NODE_DATA_HOST_DIR", "")
+    if not data_dir:
+        return None
+    path = Path(data_dir).expanduser() / "debug.log"
+    try:
+        stat, tail = _read_file_tail(path, BITCOIN_REPLAY_LOG_TAIL_BYTES)
+    except OSError:
+        return None
+
+    cached = _BITCOIN_REPLAY_LOG_CACHE.get(path)
+    latest_tail_start = BITCOIN_START_RE.findall(tail)
+    cache_valid = (
+        cached is not None
+        and cached.get("device") == stat.st_dev
+        and cached.get("inode") == stat.st_ino
+        and stat.st_size >= cached.get("size", 0)
+        and (
+            not latest_tail_start
+            or latest_tail_start[-1] == cached.get("startup_marker")
+        )
+    )
+    if cache_valid:
+        rolling_matches = list(BITCOIN_REPLAY_HEIGHT_RE.finditer(tail))
+        if not rolling_matches:
+            return None
+        loaded_offset = tail.rfind("Block index and chainstate loaded")
+        if loaded_offset > rolling_matches[-1].start():
+            _BITCOIN_REPLAY_LOG_CACHE.pop(path, None)
+            return None
+        current_height = int(rolling_matches[-1].group(1))
+        start_height = int(cached["start_height"])
+        target_height = int(cached["target_height"])
+        if not start_height <= current_height <= target_height:
+            _BITCOIN_REPLAY_LOG_CACHE.pop(path, None)
+        else:
+            processed_blocks = current_height - start_height + 1
+            total_blocks = target_height - start_height + 1
+            cached["size"] = stat.st_size
+            return {
+                "start_height": start_height,
+                "current_height": current_height,
+                "target_height": target_height,
+                "processed_blocks": processed_blocks,
+                "total_blocks": total_blocks,
+                "progress_percent": processed_blocks * 100.0 / total_blocks,
+            }
+
+    try:
+        stat, scanned = _read_file_tail(path, BITCOIN_REPLAY_LOG_SCAN_BYTES)
+    except OSError:
+        return None
+    starts = list(BITCOIN_START_RE.finditer(scanned))
+    if not starts:
+        return None
+    startup_marker = starts[-1].group(0)
+    progress = _parse_bitcoin_replay_segment(scanned[starts[-1].start() :])
+    if progress is None:
+        _BITCOIN_REPLAY_LOG_CACHE.pop(path, None)
+        return None
+    _BITCOIN_REPLAY_LOG_CACHE[path] = {
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+        "size": stat.st_size,
+        "startup_marker": startup_marker,
+        "start_height": progress["start_height"],
+        "target_height": progress["target_height"],
+    }
+    return progress
+
+
+def _bitcoin_replay_component(
+    progress: dict[str, int | float],
+    resource_profile: str | None,
+) -> dict[str, Any]:
+    profile_text = f", profile={resource_profile}" if resource_profile else ""
+    component = _component_progress(
+        "bitcoin",
+        "STARTING",
+        (
+            f"recovering chainstate replay at BTC height "
+            f"{progress['current_height']}, block-file target={progress['target_height']}, "
+            f"start={progress['start_height']}{profile_text}; readiness remains RPC-gated"
+        ),
+        current=int(progress["processed_blocks"]),
+        total=int(progress["total_blocks"]),
+        progress_percent=float(progress["progress_percent"]),
+    )
+    component.update(
+        {
+            "startup_phase": "chainstate_replay",
+            "replay_start_height": int(progress["start_height"]),
+            "block_height": int(progress["current_height"]),
+            "target_height": int(progress["target_height"]),
+            "target_source": "block_file_height_range",
+            "progress_source": "bitcoin_debug_log",
+        }
+    )
+    return component
+
+
 def _snapshot_staging_bytes(staging: Path, record: dict[str, Any]) -> int:
     completed_bytes = 0
     for item in record["files"]:
@@ -2863,14 +3020,22 @@ def collect_node_progress(layout: ReleaseLayout) -> dict[str, Any]:
             bitcoin = _bitcoin_startup_progress(layout, command_timeout_secs=8)
         except (OSError, subprocess.TimeoutExpired):
             bitcoin = None
-        if bitcoin is None:
+        status = bitcoin.get("status") if isinstance(bitcoin, dict) else None
+        replay_progress = (
+            _bitcoin_replay_log_progress(env) if not isinstance(status, dict) else None
+        )
+        if replay_progress is not None:
+            bitcoin_component = _bitcoin_replay_component(
+                replay_progress,
+                env.get("BTC_RESOURCE_PROFILE", DEFAULT_BITCOIN_RESOURCE_PROFILE),
+            )
+        elif bitcoin is None:
             bitcoin_component = _component_progress(
                 "bitcoin",
                 "STARTING",
                 "container is running; height is unavailable until the Bitcoin readiness RPC responds",
             )
         else:
-            status = bitcoin.get("status")
             if not isinstance(status, dict):
                 bitcoin_component = _component_progress(
                     "bitcoin",
