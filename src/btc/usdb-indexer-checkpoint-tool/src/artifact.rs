@@ -21,6 +21,7 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use usdb_util::parse_json_slice_strict;
 
 /// Inputs required to export one immutable checkpoint from a running indexer.
 #[derive(Clone, Debug)]
@@ -241,7 +242,7 @@ pub fn load_and_verify_checkpoint(
             manifest_path.display()
         )
     })?;
-    let manifest: IndexerCheckpointManifest = serde_json::from_slice(&data).map_err(|error| {
+    let manifest: IndexerCheckpointManifest = parse_json_slice_strict(&data).map_err(|error| {
         format!(
             "Failed to parse checkpoint manifest {}: {error}",
             manifest_path.display()

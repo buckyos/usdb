@@ -9,6 +9,7 @@ mod log_util;
 mod mem;
 mod reward_formula;
 mod rpc_diagnostics;
+mod strict_json;
 mod types;
 
 pub use activation::*;
@@ -22,6 +23,7 @@ pub use log_util::*;
 pub use mem::*;
 pub use reward_formula::*;
 pub use rpc_diagnostics::*;
+pub use strict_json::*;
 pub use types::*;
 
 pub use named_lock::{NamedLock, NamedLockGuard};

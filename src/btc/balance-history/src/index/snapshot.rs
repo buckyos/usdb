@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use usdb_util::{BtcScriptHash, UTXOEntry};
+use usdb_util::{BtcScriptHash, UTXOEntry, parse_json_strict};
 
 /// Current external snapshot manifest sidecar schema version.
 pub const SNAPSHOT_MANIFEST_VERSION: &str = "balance-history-snapshot-manifest:v3";
@@ -815,7 +815,7 @@ impl SnapshotManifest {
             error!("{}", msg);
             msg
         })?;
-        let manifest: SnapshotManifest = serde_json::from_str(&data).map_err(|e| {
+        let manifest: SnapshotManifest = parse_json_strict(&data).map_err(|e| {
             let msg = format!(
                 "Failed to parse snapshot manifest {} as JSON: {}",
                 path.display(),
@@ -884,7 +884,7 @@ impl SnapshotSigningKeyFile {
             error!("{}", msg);
             msg
         })?;
-        serde_json::from_str(&data).map_err(|e| {
+        parse_json_strict(&data).map_err(|e| {
             let msg = format!(
                 "Failed to parse snapshot signing key {} as JSON: {}",
                 path.display(),
@@ -930,7 +930,7 @@ impl SnapshotTrustedKeySet {
             error!("{}", msg);
             msg
         })?;
-        serde_json::from_str(&data).map_err(|e| {
+        parse_json_strict(&data).map_err(|e| {
             let msg = format!(
                 "Failed to parse trusted snapshot keys {} as JSON: {}",
                 path.display(),
@@ -2294,6 +2294,26 @@ mod tests {
         )
     }
 
+    fn write_test_snapshot_manifest(root_dir: &Path) -> (PathBuf, SnapshotManifest) {
+        let snapshot_path = root_dir.join("snapshot.db");
+        std::fs::write(&snapshot_path, b"test snapshot").unwrap();
+        let commit = BlockCommitEntry {
+            block_height: 1,
+            btc_block_hash: BlockHash::from_slice(&[2; 32]).unwrap(),
+            balance_delta_root: [3; 32],
+            block_commit: [4; 32],
+        };
+        let manifest = build_manifest_for_snapshot(
+            &test_config_with_root(root_dir),
+            &snapshot_path,
+            1,
+            &commit,
+        );
+        let manifest_path = root_dir.join("snapshot.manifest.json");
+        manifest.save(&manifest_path).unwrap();
+        (manifest_path, manifest)
+    }
+
     fn write_signing_material(
         root_dir: &Path,
         key_id: &str,
@@ -3134,29 +3154,7 @@ mod tests {
     #[test]
     fn snapshot_manifest_rejects_non_basename_snapshot_file() {
         let root_dir = temp_root("manifest_unsafe_file_name");
-        let manifest_path = root_dir.join("snapshot.manifest.json");
-        let mut manifest = SnapshotManifest::build(
-            "snapshot.db".to_string(),
-            "1".repeat(64),
-            HistoricalSnapshotStateRef {
-                block_height: 1,
-                stable_block_hash: "2".repeat(64),
-                latest_block_commit: "3".repeat(64),
-                consensus_identity: build_consensus_snapshot_identity(
-                    &test_config_with_root(&root_dir),
-                    1,
-                    &"2".repeat(64),
-                )
-                .unwrap(),
-                snapshot_id: "4".repeat(64),
-                snapshot_id_hash_algo: CONSENSUS_SNAPSHOT_ID_HASH_ALGO.to_string(),
-                snapshot_id_version: CONSENSUS_SNAPSHOT_ID_VERSION.to_string(),
-                commit_protocol_version: COMMIT_PROTOCOL_VERSION.to_string(),
-                commit_hash_algo: COMMIT_HASH_ALGO.to_string(),
-            },
-            BalanceHistoryDBIdentity::for_network(test_config_with_root(&root_dir).btc.network()),
-            None,
-        );
+        let (manifest_path, mut manifest) = write_test_snapshot_manifest(&root_dir);
 
         for unsafe_name in ["../snapshot.db", "/tmp/snapshot.db", "nested/snapshot.db"] {
             manifest.file_name = unsafe_name.to_string();
@@ -3168,6 +3166,44 @@ mod tests {
         manifest.file_name = "snapshot.db".to_string();
         manifest.save(&manifest_path).unwrap();
         SnapshotManifest::load(&manifest_path).unwrap();
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_manifest_rejects_duplicate_keys_before_signature_validation() {
+        let root_dir = temp_root("manifest_duplicate_key");
+        let (manifest_path, _manifest) = write_test_snapshot_manifest(&root_dir);
+        let content = std::fs::read_to_string(&manifest_path).unwrap();
+        let file_name = "  \"file_name\": \"snapshot.db\",";
+        let duplicate = content.replacen(file_name, &format!("{file_name}\n{file_name}"), 1);
+        assert_ne!(content, duplicate);
+        std::fs::write(&manifest_path, duplicate).unwrap();
+
+        let error = SnapshotManifest::load(&manifest_path).unwrap_err();
+        assert!(error.contains("duplicate JSON key: file_name"));
+        std::fs::remove_dir_all(root_dir).unwrap();
+    }
+
+    #[test]
+    fn snapshot_key_files_reject_duplicate_identity_fields() {
+        let root_dir = temp_root("key_file_duplicate_identity");
+        let signing_key_path = root_dir.join("snapshot-signing-key.json");
+        std::fs::write(
+            &signing_key_path,
+            r#"{"key_id":"first","key_id":"second","secret_key_base64":"AA=="}"#,
+        )
+        .unwrap();
+        let signing_error = SnapshotSigningKeyFile::load(&signing_key_path).unwrap_err();
+        assert!(signing_error.contains("duplicate JSON key: key_id"));
+
+        let trusted_keys_path = root_dir.join("snapshot-trusted-keys.json");
+        std::fs::write(
+            &trusted_keys_path,
+            r#"{"keys":[{"key_id":"test","public_key_base64":"AA==","key_id":"other"}]}"#,
+        )
+        .unwrap();
+        let trusted_error = SnapshotTrustedKeySet::load(&trusted_keys_path).unwrap_err();
+        assert!(trusted_error.contains("duplicate JSON key: key_id"));
         std::fs::remove_dir_all(root_dir).unwrap();
     }
 }

@@ -1,0 +1,40 @@
+{
+  "schema_version": "usdb-strict-json-duplicate-key-corpus:v1",
+  "cases": [
+    {
+      "name": "unique-nested-objects",
+      "json": "{\"manifest_version\":\"v1\",\"state_ref\":{\"height\":1,\"identity\":{\"id\":\"a\"}}}",
+      "valid": true
+    },
+    {
+      "name": "same-key-in-distinct-objects",
+      "json": "{\"left\":{\"id\":1},\"right\":{\"id\":2}}",
+      "valid": true
+    },
+    {
+      "name": "duplicate-top-level-key",
+      "json": "{\"manifest_version\":\"v1\",\"manifest_version\":\"v1\"}",
+      "valid": false
+    },
+    {
+      "name": "duplicate-nested-key",
+      "json": "{\"state_ref\":{\"height\":1,\"height\":1}}",
+      "valid": false
+    },
+    {
+      "name": "duplicate-key-inside-array-object",
+      "json": "{\"files\":[{\"path\":\"a\",\"path\":\"a\"}]}",
+      "valid": false
+    },
+    {
+      "name": "escaped-key-equivalence",
+      "json": "{\"name\":1,\"\\u006eame\":2}",
+      "valid": false
+    },
+    {
+      "name": "duplicate-values-may-differ",
+      "json": "{\"signing_key_id\":\"trusted\",\"signing_key_id\":\"other\"}",
+      "valid": false
+    }
+  ]
+}

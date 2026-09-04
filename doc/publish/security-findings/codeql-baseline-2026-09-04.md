@@ -173,7 +173,7 @@ comparison。
 
 1. USDB-CQL-002/003/008 修复已经提交；复跑 CodeQL 后把新 scan revision/alert 状态写入下一份基线。
 2. Snapshot/checkpoint 的首轮 symlink、staging inventory 和 cleanup 专项审计已经完成，结论见
-   [Snapshot/checkpoint 安装边界审计](./snapshot-checkpoint-install-audit-2026-09-04.md)；剩余 strict JSON
-   duplicate-key corpus 与真实 artifact 跨进程演练继续跟踪。
+   [Snapshot/checkpoint 安装边界审计](./snapshot-checkpoint-install-audit-2026-09-04.md)；strict JSON
+   duplicate-key corpus 已落地，剩余真实 artifact 跨进程演练继续跟踪。
 3. 为 SourceDAO 增加 Solidity 专用扫描和人工 findings。
 4. 按最终 go-ethereum binary/image 的可达性拆分 GO-CQL-001。

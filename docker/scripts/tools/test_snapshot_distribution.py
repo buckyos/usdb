@@ -17,6 +17,10 @@ from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("snapshot_distribution.py")
+STRICT_JSON_CORPUS = (
+    MODULE_PATH.parents[3]
+    / "src/btc/usdb-util/testdata/strict-json-duplicate-key-corpus.json"
+)
 SPEC = importlib.util.spec_from_file_location("snapshot_distribution", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 DISTRIBUTION = importlib.util.module_from_spec(SPEC)
@@ -155,6 +159,25 @@ class SnapshotDistributionTests(unittest.TestCase):
             producer_revision="a" * 40,
             output_dir=self.root / "records",
         )
+
+    def test_shared_strict_json_corpus_matches_python_parser(self) -> None:
+        corpus = json.loads(STRICT_JSON_CORPUS.read_text(encoding="utf-8"))
+        self.assertEqual(
+            corpus["schema_version"],
+            "usdb-strict-json-duplicate-key-corpus:v1",
+        )
+        for case in corpus["cases"]:
+            with self.subTest(case=case["name"]):
+                try:
+                    json.loads(
+                        case["json"],
+                        object_pairs_hook=DISTRIBUTION._strict_object,
+                    )
+                    valid = True
+                except ValueError as error:
+                    valid = False
+                    self.assertIn("duplicate JSON key", str(error))
+                self.assertEqual(valid, case["valid"])
 
     def test_prepare_upload_and_resumable_install_are_content_addressed(self) -> None:
         record_path, record, record_sha256 = self.prepare()

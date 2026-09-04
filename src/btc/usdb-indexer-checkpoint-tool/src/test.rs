@@ -401,6 +401,28 @@ fn signed_checkpoint_rejects_file_tampering() {
 }
 
 #[test]
+fn signed_checkpoint_rejects_duplicate_manifest_keys_before_signature_validation() {
+    let fixture = build_fixture("duplicate_manifest_key");
+    let manifest_version = format!(
+        "  \"manifest_version\": \"{}\",",
+        INDEXER_CHECKPOINT_MANIFEST_VERSION
+    );
+    let content = std::fs::read_to_string(&fixture.manifest_path).unwrap();
+    let duplicate = content.replacen(
+        &manifest_version,
+        &format!("{manifest_version}\n{manifest_version}"),
+        1,
+    );
+    assert_ne!(content, duplicate);
+    std::fs::write(&fixture.manifest_path, duplicate).unwrap();
+
+    let error =
+        load_and_verify_checkpoint(&fixture.manifest_path, &fixture.trusted_keys_path, false)
+            .unwrap_err();
+    assert!(error.contains("duplicate JSON key: manifest_version"));
+}
+
+#[test]
 fn pair_verification_requires_exact_upstream_manifest_binding() {
     let fixture = build_fixture("pair_binding");
     load_and_verify_checkpoint_pair(

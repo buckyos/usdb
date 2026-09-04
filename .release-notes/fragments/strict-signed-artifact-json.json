@@ -1,0 +1,25 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "strict-signed-artifact-json",
+  "type": "security",
+  "scopes": [
+    "balance-history",
+    "deployment",
+    "indexer",
+    "security"
+  ],
+  "summary": "Reject duplicate JSON keys throughout signed snapshot and checkpoint inputs",
+  "details": [
+    "A shared Rust strict-JSON preflight now recursively rejects duplicate object keys before schema deserialization, signature verification, or artifact file access.",
+    "Snapshot manifests, indexer checkpoint manifests, snapshot signing-key files, and trusted-key catalogs use the same parser, including detection of nested, array-contained, and Unicode-escaped equivalent keys.",
+    "Rust and Python consumers validate one shared duplicate-key golden corpus so their acceptance behavior cannot drift independently."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": true
+  },
+  "references": []
+}

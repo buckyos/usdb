@@ -110,6 +110,10 @@ Snapshot staging 只允许 signed release record 声明的文件以及与其一�
 原子发布前和复用已有 artifact 时都要求精确 inventory。出现 symlink、特殊文件或额外条目时，安装器
 不会自动删除或覆盖，operator 必须先检查其来源，再移走非法条目后重试。
 
+Snapshot manifest、indexer checkpoint manifest 和 trusted-key JSON 在 schema 解析前递归拒绝任意
+object 层的 duplicate key。字段值相同、顺序不同或使用 Unicode escape 表达同一个 key 都不例外；
+这类输入不会进入签名校验或 snapshot/checkpoint 文件读取阶段。
+
 服务启动后必须执行：
 
 ```bash
@@ -146,8 +150,8 @@ USDB chain 的启动依赖，因此未通过重算时不会开始组块或验块
 
 当前自动化已覆盖 manifest/signature/file tamper、离线 state-ref 重算、bundle binding、indexer staging、
 indexer publish、balance-history staging、balance-history publish 四个中断窗口的幂等恢复，以及服务已继续
-同步后的历史 state-ref 重算；同时覆盖 staging/download symlink、未声明条目、unsafe manifest file name
-和清理边界。发布共享 testnet 前仍需用真实导出的 artifact 完成一次跨进程演练：
+同步后的历史 state-ref 重算；同时覆盖 staging/download symlink、未声明条目、unsafe manifest file name、
+递归 duplicate JSON key 和清理边界。发布共享 testnet 前仍需用真实导出的 artifact 完成一次跨进程演练：
 
 1. 三节点 joiner 从 paired artifact 启动；
 2. 与从 origin 完整重放得到的 profile、candidate、breakdown 和 system state 交叉比较；

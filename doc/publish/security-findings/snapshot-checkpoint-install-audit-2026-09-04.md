@@ -65,12 +65,13 @@ catalog 路径属于 operator 输入。即使攻击者已经能写入 destinatio
 - `introduced_by`：Rust serde default behavior
 - `reachability/exposure`：`confirmed` / `artifact input`
 - `impact`：不同语言或工具可能对重复 key 采用不同解释，降低跨实现审计确定性
-- `decision`：`mitigate`
-- `current mitigation`：snapshot `file_name` 已强制为单个安全 basename；签名覆盖解析后的 canonical
-  structure；paired binding 另外绑定 exact manifest SHA-256、snapshot SHA-256 和完整 state-ref
-- `remaining work`：引入共享 strict JSON loader，对 snapshot/checkpoint manifest 的全部 object 层拒绝
-  duplicate key，并增加 Rust/Python golden corpus；该变更单独实施以避免与文件系统修复混合
-- `release_gate`：`mainnet`
+- `decision`：`fix`
+- `fix`：`usdb-util` 提供共享 strict JSON preflight，在 schema 反序列化前递归遍历全部 object；按 JSON
+  解码后的 key 比较，因此普通、嵌套、数组内和 Unicode escape 等价重复字段均被拒绝。Snapshot
+  manifest、indexer checkpoint manifest、snapshot signing-key 和 trusted-key catalog 均使用该入口
+- `verification`：Rust/Python 共用 `usdb-strict-json-duplicate-key-corpus:v1`；另有 snapshot、checkpoint
+  和 key catalog 集成测试确认在签名校验及文件访问前拒绝 duplicate key
+- `release_gate`：`both`
 
 ## 3. 验证结论
 
@@ -78,6 +79,7 @@ catalog 路径属于 operator 输入。即使攻击者已经能写入 destinatio
 发布前失败关闭。正常顺序断点续传、并行 Range 续传、完整 artifact 复用和 paired install 故障恢复保持
 支持。
 
-仍不把 destination root 的并发同 UID 恶意修改视为隔离边界；部署要求该目录仅由 USDB operator
+Signed artifact 与 trust-key JSON 的已知跨解析器 duplicate-key 歧义也已关闭。仍不把 destination root
+的并发同 UID 恶意修改视为隔离边界；部署要求该目录仅由 USDB operator
 账户可写。若未来 installer 以 root 身份消费非 root 可写目录，需要进一步改为基于 directory FD、
 `openat`/`O_NOFOLLOW` 的逐项操作。
