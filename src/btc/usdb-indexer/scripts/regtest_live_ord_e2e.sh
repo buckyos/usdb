@@ -351,6 +351,72 @@ print(0 if r is None else int(r))' 2>/dev/null || true)"
   done
 }
 
+wait_until_usdb_historical_state_ref() {
+  local block_height="$1"
+  local start_ts now resp available
+  start_ts="$(date +%s)"
+
+  while true; do
+    resp="$(rpc_call \
+      "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" \
+      "get_state_ref_at_height" \
+      "[{\"block_height\":${block_height},\"context\":null}]" || true)"
+    available="$(python3 -c '
+import json
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    print(0)
+else:
+    print(1 if payload.get("error") is None and payload.get("result") is not None else 0)
+' <<<"$resp")"
+    if [[ "$available" == "1" ]]; then
+      return
+    fi
+
+    now="$(date +%s)"
+    if (( now - start_ts > SYNC_TIMEOUT_SEC )); then
+      log "usdb-indexer historical state-ref timeout: block_height=${block_height}, last_response=${resp}"
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_scenario_historical_state_refs() {
+  local scenario_file="$1"
+  local block_height
+
+  while IFS= read -r block_height; do
+    [[ -n "$block_height" ]] || continue
+    log "Waiting until usdb-indexer historical state ref is available at height ${block_height}"
+    wait_until_usdb_historical_state_ref "$block_height"
+  done < <(
+    python3 - "$scenario_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    scenario = json.load(handle)
+
+heights = set()
+for step in scenario.get("steps", []):
+    if step.get("type") != "rpc_call" or step.get("service") != "usdb":
+        continue
+    for param in step.get("params", []):
+        if isinstance(param, dict):
+            block_height = param.get("block_height")
+            if isinstance(block_height, int) and block_height >= 0:
+                heights.add(block_height)
+
+for block_height in sorted(heights):
+    print(block_height)
+PY
+  )
+}
+
 get_ord_server_block_height() {
   curl -s --connect-timeout "$CURL_CONNECT_TIMEOUT_SEC" --max-time "$CURL_MAX_TIME_SEC" \
     "http://127.0.0.1:${ORD_SERVER_PORT}/blockcount" | tr -d '\n\r '
@@ -2199,6 +2265,7 @@ EOF
 
   wait_rpc_ready "usdb-indexer" "http://127.0.0.1:${USDB_INDEXER_RPC_PORT}" "get_network_type" "[]"
   wait_until_usdb_consensus_ready "$target_height"
+  wait_for_scenario_historical_state_refs "$scenario_file"
 
   SCENARIO_FILE_PATH="$scenario_file"
 

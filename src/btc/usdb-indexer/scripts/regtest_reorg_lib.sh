@@ -25,6 +25,10 @@ USDB_INDEXER_INJECT_REORG_RECOVERY_ENERGY_FAILURES="${USDB_INDEXER_INJECT_REORG_
 USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES="${USDB_INDEXER_INJECT_REORG_RECOVERY_TRANSFER_RELOAD_FAILURES:-}"
 PREMINE_BLOCKS="${PREMINE_BLOCKS:-130}"
 ORD_FEE_RATE="${ORD_FEE_RATE:-1}"
+# Regtest scenarios may replace a stable block, which is deeper than the BTC
+# stable lag. Keep dense savepoints so ord can follow those deterministic forks.
+ORD_SAVEPOINT_INTERVAL="${ORD_SAVEPOINT_INTERVAL:-1}"
+ORD_MAX_SAVEPOINTS="${ORD_MAX_SAVEPOINTS:-64}"
 FUND_ORD_AMOUNT_BTC="${FUND_ORD_AMOUNT_BTC:-5.0}"
 FUND_CONFIRM_BLOCKS="${FUND_CONFIRM_BLOCKS:-2}"
 INSCRIBE_CONFIRM_BLOCKS="${INSCRIBE_CONFIRM_BLOCKS:-2}"
@@ -1832,6 +1836,8 @@ regtest_run_ord() {
     --cookie-file "${BITCOIN_DIR}/regtest/.cookie" \
     --bitcoin-data-dir "$BITCOIN_DIR" \
     --data-dir "$ORD_DATA_DIR" \
+    --savepoint-interval "$ORD_SAVEPOINT_INTERVAL" \
+    --max-savepoints "$ORD_MAX_SAVEPOINTS" \
     "$@"
 }
 

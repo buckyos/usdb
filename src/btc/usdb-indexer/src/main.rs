@@ -111,16 +111,31 @@ async fn main() {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
     let rpc_server = if config.config().usdb.rpc_server_enabled {
-        match service::UsdbIndexerRpcServer::start(
-            config.clone(),
-            status_manager.clone(),
-            indexer.clone(),
-            shutdown_tx.clone(),
-        ) {
-            Ok(server) => Some(server),
-            Err(e) => {
+        // jsonrpc-http-server owns a synchronous Tokio runtime internally. Its
+        // startup and error-path teardown must run outside this async runtime.
+        let rpc_config = config.clone();
+        let rpc_status_manager = status_manager.clone();
+        let rpc_indexer = indexer.clone();
+        let rpc_shutdown_tx = shutdown_tx.clone();
+        match tokio::task::spawn_blocking(move || {
+            service::UsdbIndexerRpcServer::start(
+                rpc_config,
+                rpc_status_manager,
+                rpc_indexer,
+                rpc_shutdown_tx,
+            )
+        })
+        .await
+        {
+            Ok(Ok(server)) => Some(server),
+            Ok(Err(e)) => {
                 error!("Failed to start usdb-indexer RPC server: {}", e);
                 println!("Failed to start usdb-indexer RPC server: {}", e);
+                std::process::exit(1);
+            }
+            Err(e) => {
+                error!("USDB indexer RPC server startup task failed: {}", e);
+                println!("USDB indexer RPC server startup task failed: {}", e);
                 std::process::exit(1);
             }
         }

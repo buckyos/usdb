@@ -99,12 +99,17 @@ pub async fn run_service(
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(());
 
-    let ret = BalanceHistoryRpcServer::start(
-        config.clone(),
-        output.status().clone(),
-        indexer.db().clone(),
-        shutdown_tx,
-    );
+    // jsonrpc-http-server owns a synchronous Tokio runtime internally. Start it
+    // outside this async runtime so an initialization error can drop that
+    // runtime safely and preserve the original error.
+    let rpc_config = config.clone();
+    let rpc_status = output.status().clone();
+    let rpc_db = indexer.db().clone();
+    let ret = tokio::task::spawn_blocking(move || {
+        BalanceHistoryRpcServer::start(rpc_config, rpc_status, rpc_db, shutdown_tx)
+    })
+    .await
+    .unwrap_or_else(|error| Err(format!("RPC server startup task failed: {error}")));
     if let Err(e) = &ret {
         output.eprintln(&format!("Failed to start RPC server: {}", e));
         std::process::exit(1);

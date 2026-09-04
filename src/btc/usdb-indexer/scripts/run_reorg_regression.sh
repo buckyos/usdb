@@ -13,12 +13,13 @@ RUN_PENDING_RECOVERY_SUITE="${RUN_PENDING_RECOVERY_SUITE:-1}"
 RUN_HISTORICAL_VALIDATION_SUITE="${RUN_HISTORICAL_VALIDATION_SUITE:-1}"
 RUN_VALIDATOR_BLOCK_BODY_SUITE="${RUN_VALIDATOR_BLOCK_BODY_SUITE:-1}"
 
-BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-30132}"
-BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-30133}"
-BASE_BH_RPC_PORT="${BASE_BH_RPC_PORT:-30110}"
-BASE_USDB_INDEXER_RPC_PORT="${BASE_USDB_INDEXER_RPC_PORT:-30120}"
-BASE_ORD_RPC_PORT="${BASE_ORD_RPC_PORT:-30130}"
+BASE_BTC_RPC_PORT="${BASE_BTC_RPC_PORT:-24132}"
+BASE_BTC_P2P_PORT="${BASE_BTC_P2P_PORT:-24133}"
+BASE_BH_RPC_PORT="${BASE_BH_RPC_PORT:-24110}"
+BASE_USDB_INDEXER_RPC_PORT="${BASE_USDB_INDEXER_RPC_PORT:-24120}"
+BASE_ORD_RPC_PORT="${BASE_ORD_RPC_PORT:-24130}"
 PORT_STRIDE="${PORT_STRIDE:-100}"
+MAX_PORT_SLOT=66
 
 log() {
   echo "[usdb-reorg-regression] $*"
@@ -27,6 +28,28 @@ log() {
 run_cmd() {
   log "Running: $*"
   "$@"
+}
+
+validate_port_plan() {
+  local ephemeral_min=32768
+  local _ephemeral_max
+  local base max_port
+  if [[ -r /proc/sys/net/ipv4/ip_local_port_range ]]; then
+    read -r ephemeral_min _ephemeral_max </proc/sys/net/ipv4/ip_local_port_range
+  fi
+
+  for base in \
+    "$BASE_BTC_RPC_PORT" \
+    "$BASE_BTC_P2P_PORT" \
+    "$BASE_BH_RPC_PORT" \
+    "$BASE_USDB_INDEXER_RPC_PORT" \
+    "$BASE_ORD_RPC_PORT"; do
+    max_port=$((base + MAX_PORT_SLOT * PORT_STRIDE))
+    if (( base < 1024 || max_port >= ephemeral_min )); then
+      log "Invalid port plan: base=${base}, max=${max_port}, ephemeral_min=${ephemeral_min}"
+      return 1
+    fi
+  done
 }
 
 run_case() {
@@ -150,6 +173,7 @@ run_validator_block_body_suite() {
 }
 
 main() {
+  validate_port_plan
   log "Repo root: ${REPO_ROOT}"
   log "Bitcoin bin dir: ${BITCOIN_BIN_DIR}"
   log "Ord bin: ${ORD_BIN}"
