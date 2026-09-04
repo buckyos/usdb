@@ -452,8 +452,26 @@ def node_operation_lock(layout: ReleaseLayout, operation: str) -> Iterator[None]
             lock.seek(0)
             holder = lock.read().strip()
             detail = f": {holder}" if holder else ""
+            guidance = (
+                " Wait for the active operation to finish and retry; do not remove "
+                "the lock file while its process is running."
+            )
+            try:
+                holder_metadata = json.loads(holder) if holder else {}
+            except json.JSONDecodeError:
+                holder_metadata = {}
+            if (
+                operation == "activate-release"
+                and holder_metadata.get("operation") == "up"
+            ):
+                guidance = (
+                    " Release activation requires stopped node services. Run "
+                    "'usdb-node down', wait for it to complete, then rerun "
+                    "'usdb-node activate-release'."
+                )
             raise ValueError(
-                f"another usdb-node operation is already running for {layout.bundle_id}{detail}"
+                f"another usdb-node operation is already running for "
+                f"{layout.bundle_id}{detail}.{guidance}"
             ) from error
 
         metadata = {

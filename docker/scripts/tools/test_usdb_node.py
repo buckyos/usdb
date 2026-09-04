@@ -1300,12 +1300,25 @@ class UsdbNodeTests(unittest.TestCase):
     def test_operation_lock_rejects_a_concurrent_bundle_mutation(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)
         with NODE.node_operation_lock(layout, "first"):
-            with self.assertRaisesRegex(ValueError, "another usdb-node operation"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Wait for the active operation to finish",
+            ):
                 with NODE.node_operation_lock(layout, "second"):
                     self.fail("concurrent operation lock unexpectedly succeeded")
 
         with NODE.node_operation_lock(layout, "after-release"):
             pass
+
+    def test_activate_release_lock_conflict_explains_required_shutdown(self) -> None:
+        layout = NODE.load_release_layout(self.root, self.node_env)
+        with NODE.node_operation_lock(layout, "up"):
+            with self.assertRaisesRegex(
+                ValueError,
+                "Run 'usdb-node down'.*'usdb-node activate-release'",
+            ):
+                with NODE.node_operation_lock(layout, "activate-release"):
+                    self.fail("release activation unexpectedly bypassed the up lock")
 
     def test_controller_unit_is_non_activating_and_uses_stable_launcher(self) -> None:
         layout = NODE.load_release_layout(self.root, self.node_env)

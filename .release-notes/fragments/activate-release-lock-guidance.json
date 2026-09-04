@@ -1,0 +1,22 @@
+{
+  "schema_version": "usdb-change-fragment:v1",
+  "change_id": "activate-release-lock-guidance",
+  "type": "fixed",
+  "scopes": [
+    "deployment",
+    "node-runtime"
+  ],
+  "summary": "Explain how to recover when release activation conflicts with an active node startup",
+  "details": [
+    "When activate-release encounters an operation lock held by up, usdb-node now directs the operator to stop the node, wait for shutdown to complete, and retry activation.",
+    "Other operation-lock conflicts retain fail-closed behavior and now advise waiting for the active process instead of removing the lock file."
+  ],
+  "operator_actions": [],
+  "compatibility": {
+    "network_reset": false,
+    "data_rebuild": false,
+    "config_change": false,
+    "restart_required": false
+  },
+  "references": []
+}
