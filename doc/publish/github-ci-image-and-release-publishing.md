@@ -74,8 +74,8 @@ release tag 必须满足：
 
 推荐冻结顺序：
 
-1. push 目标 USDB commit，记录明确的 40 字符 commit `U`，等待普通 Fast CI 通过；
-2. 在 Go `scripts/usdb/ci-revisions.json` 中锁定 `U` 和目标 SourceDAO commit；
+1. push 目标 USDB commit `U` 和 SourceDAO commit `S`，等待两个仓库的普通 Fast CI 通过；
+2. 使用协调工具把已发布的 `U`、`S` 原子写入 Go `scripts/usdb/ci-revisions.json`；
 3. push 目标 Go commit，记录明确的 40 字符 commit `G`，等待普通 Fast / cross-repository golden 通过；
 4. 人工确定尚未使用的 `release_id`；
 5. 分别在 `U`、`G` 上创建同名 annotated tag，不能隐式使用可能继续变化的本地 `HEAD`；
@@ -93,7 +93,7 @@ cd /path/to/go-ethereum
 # 预检，不修改 lock。
 python3 scripts/usdb/prepare_release.py sync-lock
 
-# USDB Fast CI 通过后更新 lock，提交并 push Go master。
+# USDB 与 SourceDAO Fast CI 都通过后更新两个 dependency lock，提交并 push Go master。
 python3 scripts/usdb/prepare_release.py sync-lock --commit --push
 
 # Go Fast CI 通过后预检 tag，再显式创建和 push。
@@ -102,7 +102,9 @@ python3 scripts/usdb/prepare_release.py tag \
   --release-id usdb-testnet-v0-r1 --create --push
 ```
 
-工具只接受 clean、已发布且等于对应远端主分支的 HEAD。两个远端之间无法原子 push；如果 USDB tag
+`sync-lock` 同时更新 USDB 与 SourceDAO revision，不需要手工编辑 lock。工具只接受 clean、已发布且
+等于对应远端主分支的 HEAD；`--push` 续推期间任一 dependency HEAD 再次前进都会失败关闭。两个远端
+之间无法原子 push；如果 USDB tag
 已成功而 Go tag push 失败，必须修复问题后继续 push 已创建的同一 Go tag，不能删除、移动或重建
 已经发布的 release tag。`--no-fetch` 仅供明确需要使用现有 remote-tracking refs 的离线检查。
 

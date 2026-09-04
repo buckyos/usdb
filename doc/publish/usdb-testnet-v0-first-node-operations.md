@@ -106,9 +106,9 @@ git -C /path/to/go-ethereum rev-parse HEAD
 git -C /path/to/SourceDAO rev-parse HEAD
 ```
 
-所有 worktree 必须 clean。先 push USDB commit并等待 Fast CI，再使用 Go 仓库的协调工具更新
-`ci-revisions.json`。工具默认从当前 Go checkout 推导 sibling workspace；非标准布局才需要在子命令
-前提供 `--workspace-root`：
+所有 worktree 必须 clean。先 push USDB 与 SourceDAO 的目标 commit 并分别等待 Fast CI，再使用 Go
+仓库的协调工具把两个已发布 HEAD 同时写入 `ci-revisions.json`，不手工修改 lock。工具默认从当前 Go
+checkout 推导 sibling workspace；非标准布局才需要在子命令前提供 `--workspace-root`：
 
 ```bash
 cd /path/to/go-ethereum
